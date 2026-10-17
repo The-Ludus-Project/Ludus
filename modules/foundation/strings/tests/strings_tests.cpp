@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/hash/hash.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/strings/shared_string.hpp>
@@ -10,14 +11,17 @@
 
 #include "internal/reference_count.hpp"
 #include "internal/string_table_state.hpp"
+#include "internal/table_token.hpp"
 
 #include <atomic>
 #include <mutex>
 #include <new>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 #include <catch2/catch_test_macros.hpp>
@@ -743,4 +747,526 @@ TEST_CASE("hash policies use exact counted bytes and official golden vectors", "
     std::string_view resolved;
     REQUIRE(table.TryResolve(id, resolved) == StringStatus::Ok);
     REQUIRE(resolved == std::string_view{"\xff\0", 2});
+}
+
+TEST_CASE("reduced-width token issuers report exhaustion without wrapping", "[strings][intern]")
+{
+    std::atomic<uint8> next{1};
+    uint8 token = 0;
+    for (uint32 expected = 1; expected <= 0xffU; ++expected)
+    {
+        REQUIRE(detail::IssueTableToken(next, token) == StringStatus::Ok);
+        REQUIRE(token == expected);
+    }
+    REQUIRE(next.load() == 0);
+    for (usize attempt = 0; attempt < 3; ++attempt)
+    {
+        REQUIRE(detail::IssueTableToken(next, token) == StringStatus::TokenExhausted);
+        REQUIRE(token == 0xffU);
+        REQUIRE(next.load() == 0);
+    }
+}
+
+TEST_CASE("table creation fails cleanly once the process token issuer is exhausted", "[strings][intern][allocation]")
+{
+    // Moving the process issuer to its last 32-bit token reaches exhaustion
+    // without creating 2^32 tables. The restored value exceeds every token still
+    // held by a live table, and the guard also restores after a failed assertion.
+    struct IssuerRestore final
+    {
+        std::atomic<uint32>* Issuer;
+        uint32 Saved;
+        ~IssuerRestore() noexcept
+        {
+            Issuer->store(Saved);
+        }
+    };
+    std::atomic<uint32>& issuer = detail::GetTableTokenIssuer();
+    const IssuerRestore restore{&issuer, issuer.load()};
+    REQUIRE(restore.Saved != 0);
+    FaultHeap heap;
+    {
+        StringTable last;
+        issuer.store(0xffffffffU);
+        REQUIRE(CreateTable({}, heap.Domain, last) == StringStatus::Ok);
+        REQUIRE(issuer.load() == 0);
+        NameId player;
+        REQUIRE(last.TryIntern(kPlayer.Spelling, player) == StringStatus::Ok);
+        REQUIRE(player.TableToken == 0xffffffffU);
+        REQUIRE(player.IsValid() == true);
+
+        const usize liveBytes = heap.LiveBytes;
+        const usize allocations = heap.Allocations;
+        const usize frees = heap.Frees;
+        for (usize attempt = 0; attempt < 3; ++attempt)
+        {
+            StringTable exhausted;
+            REQUIRE(CreateTable({}, heap.Domain, exhausted) == StringStatus::TokenExhausted);
+            REQUIRE(exhausted.IsValid() == false);
+            REQUIRE(issuer.load() == 0);
+            NameId preserved = player;
+            REQUIRE(exhausted.TryIntern("enemy", preserved) == StringStatus::InvalidHandle);
+            REQUIRE(preserved == player);
+        }
+        // Each failed creation allocated its state and empty entry before asking
+        // for a token, then released every byte through the same domain.
+        REQUIRE(heap.Allocations > allocations);
+        REQUIRE(heap.Allocations - allocations == heap.Frees - frees);
+        REQUIRE(heap.LiveBytes == liveBytes);
+
+        // A nonempty output is rejected before any token is requested.
+        REQUIRE(CreateTable({}, heap.Domain, last) == StringStatus::InvalidArgument);
+        REQUIRE(heap.Allocations - allocations == heap.Frees - frees);
+        std::string_view spelling;
+        REQUIRE(last.TryResolve(player, spelling) == StringStatus::Ok);
+        REQUIRE(spelling == "player");
+        NameId found;
+        REQUIRE(last.TryFind("player", found) == StringStatus::Ok);
+        REQUIRE(found == player);
+    }
+    REQUIRE(heap.LiveBytes == 0);
+    REQUIRE(heap.Allocations == heap.Frees);
+    REQUIRE(heap.BadFree == false);
+}
+
+namespace
+{
+// SplitMix64 step, with thanks to Guy L. Steele Jr., Doug Lea and Christine H.
+// Flood, "Fast Splittable Pseudorandom Number Generators", OOPSLA 2014,
+// https://doi.org/10.1145/2660193.2660195. Used only to drive deterministic sequences.
+uint64 NextRandom(uint64& inoutState) noexcept
+{
+    inoutState += 0x9e3779b97f4a7c15ULL;
+    uint64 mixed = inoutState;
+    mixed = (mixed ^ (mixed >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    mixed = (mixed ^ (mixed >> 27U)) * 0x94d049bb133111ebULL;
+    return mixed ^ (mixed >> 31U);
+}
+usize PickBelow(uint64& inoutState, usize bound) noexcept
+{
+    return static_cast<usize>(NextRandom(inoutState) % bound);
+}
+
+constexpr usize SHORT_SPELLING_COUNT = 400;
+constexpr usize CASE_VARIANT_STRIDE = 8;
+constexpr usize LONG_SPELLING_COUNT = 60;
+constexpr usize ENCODED_SPELLING_COUNT = 20;
+// Operation mix per hundred steps: interns, then exact lookups, then resolutions.
+constexpr usize INTERN_PERCENT = 55;
+constexpr usize FIND_PERCENT = 25;
+// Chance per step of arming an allocation fault while none is pending. A fault
+// stays armed until an allocation consumes it, so it lands at a random step.
+constexpr usize FAULT_ARM_PERCENT = 10;
+// One intern performs at most three allocations: entries, lookup slots, page.
+constexpr usize INTERN_ALLOCATION_STAGES = 3;
+constexpr NameId SENTINEL_ID{0x5eedU, StringIndex{0x1234U}};
+constexpr std::string_view SENTINEL_VIEW = "sentinel";
+
+// A spelling, and whether its construction deliberately breaks UTF-8.
+struct SequenceSpelling final
+{
+    std::string Bytes;
+    bool IsInvalidUtf8{};
+};
+struct DifferentialScenario final
+{
+    const char* Name;
+    uint64 Seed;
+    usize Steps;
+    StringTableConfig Config;
+    bool ShouldForceCollisions;
+    bool CanExhaustByteBudget; ///< a new spelling below MaxEntries may meet CapacityExceeded
+    usize MinimumSlotGrowths;
+};
+struct DifferentialCoverage final
+{
+    usize Inserted{};
+    usize Duplicates{};
+    usize Rejected{};
+    usize OutOfMemory{};
+    usize CapacityExceeded{};
+    usize WrongTable{};
+    usize SlotGrowths{};
+};
+using ReferenceIndices = std::unordered_map<std::string, uint32>;
+// Independent model of a table: insertion-ordered exact bytes and the first
+// view the table returned for each index.
+struct ReferenceTable final
+{
+    Array<std::string> Spellings{std::string{}};
+    ReferenceIndices Indices{{std::string{}, 0U}};
+    Array<const char*> Views;
+};
+struct SequenceTokens final
+{
+    uint32 Table;
+    uint32 Other;
+};
+
+void AddSpelling(Array<SequenceSpelling>& inoutSpellings, std::string bytes, bool isInvalidUtf8)
+{
+    const bool isAdded = inoutSpellings.TryAdd({std::move(bytes), isInvalidUtf8});
+    REQUIRE(isAdded == true);
+}
+Array<SequenceSpelling> MakeSequenceSpellings(usize maxSpellingBytes, uint64& inoutState)
+{
+    Array<SequenceSpelling> spellings;
+    AddSpelling(spellings, std::string{}, false);
+    for (usize i = 0; i < SHORT_SPELLING_COUNT; ++i)
+    {
+        AddSpelling(spellings, "name" + std::to_string(i), false);
+        if (i % CASE_VARIANT_STRIDE == 0)
+        {
+            AddSpelling(spellings, "Name" + std::to_string(i), false);
+        }
+    }
+    // Long spellings share a prefix and differ only in its length and suffix.
+    const usize longSpan = maxSpellingBytes / 2;
+    for (usize i = 0; i < LONG_SPELLING_COUNT; ++i)
+    {
+        const usize length = longSpan + PickBelow(inoutState, longSpan - 8);
+        AddSpelling(spellings, std::string(length, 'p') + std::to_string(i), false);
+    }
+    AddSpelling(spellings, std::string(maxSpellingBytes, 'm'), false);
+    AddSpelling(spellings, std::string(maxSpellingBytes - 1, 'm'), false);
+    AddSpelling(spellings, std::string(maxSpellingBytes + 1, 'm'), false);
+    // Length is checked before zero bytes and UTF-8.
+    std::string oversized(maxSpellingBytes + 1, 'z');
+    oversized[0] = '\0';
+    oversized[1] = '\xff';
+    AddSpelling(spellings, oversized, true);
+    for (usize i = 0; i < ENCODED_SPELLING_COUNT; ++i)
+    {
+        const std::string suffix = std::to_string(i);
+        AddSpelling(spellings, std::string("\xc3\xa9t\xc3\xa9") + suffix, false);
+        AddSpelling(spellings, std::string("\xe2\x82\xac") + suffix, false);
+        AddSpelling(spellings, std::string("\xf0\x9f\x8e\xae") + suffix, false);
+        // Rejected unless the scenario admits opaque bytes.
+        AddSpelling(spellings, std::string("zero") + std::string(1, '\0') + suffix, false);
+        AddSpelling(spellings, std::string("\xff") + suffix, true);
+        AddSpelling(spellings, std::string("\xc0\x80") + suffix, true);
+        AddSpelling(spellings, std::string("\xed\xa0\x80") + suffix, true);
+        AddSpelling(spellings, suffix + std::string("\xc3"), true);
+    }
+    // Zero bytes are checked before UTF-8.
+    AddSpelling(spellings, std::string(1, '\0'), false);
+    AddSpelling(spellings, std::string("\0\xff", 2), true);
+    return spellings;
+}
+StringStatus ComputeExpectedValidation(const StringTableConfig& config, const SequenceSpelling& spelling)
+{
+    if (spelling.Bytes.size() > config.MaxSpellingBytes)
+    {
+        return StringStatus::TooLarge;
+    }
+    if (config.RejectEmbeddedZero == true && spelling.Bytes.find('\0') != std::string::npos)
+    {
+        return StringStatus::EmbeddedZero;
+    }
+    if (config.RequireUtf8 == true && spelling.IsInvalidUtf8 == true)
+    {
+        return StringStatus::InvalidUtf8;
+    }
+    return StringStatus::Ok;
+}
+NameId
+MakeResolveCase(uint64& inoutState, const ReferenceTable& reference, SequenceTokens tokens, StringStatus& outExpected)
+{
+    const usize count = reference.Spellings.GetSize();
+    const StringIndex known{static_cast<uint32>(PickBelow(inoutState, count))};
+    switch (PickBelow(inoutState, 6))
+    {
+        case 0:
+            outExpected = StringStatus::InvalidHandle;
+            return {tokens.Table, StringIndex{static_cast<uint32>(count + PickBelow(inoutState, 4))}};
+        case 1:
+            outExpected = StringStatus::InvalidHandle;
+            return {tokens.Table, StringIndex{}};
+        case 2:
+            outExpected = StringStatus::InvalidHandle;
+            return {0, known};
+        case 3:
+            outExpected = StringStatus::WrongTable;
+            return {tokens.Other, known};
+        default:
+            outExpected = StringStatus::Ok;
+            return {tokens.Table, known};
+    }
+}
+template <typename Lookup>
+void CheckFind(const Lookup& lookup,
+               const StringTableConfig& config,
+               const ReferenceTable& reference,
+               uint32 token,
+               const SequenceSpelling& spelling)
+{
+    const StringStatus expected = ComputeExpectedValidation(config, spelling);
+    NameId found = SENTINEL_ID;
+    const StringStatus status = lookup.TryFind(spelling.Bytes, found);
+    if (expected != StringStatus::Ok)
+    {
+        REQUIRE(status == expected);
+        REQUIRE(found == SENTINEL_ID);
+        return;
+    }
+    const ReferenceIndices::const_iterator match = reference.Indices.find(spelling.Bytes);
+    if (match == reference.Indices.end())
+    {
+        REQUIRE(status == StringStatus::NotFound);
+        REQUIRE(found == SENTINEL_ID);
+        return;
+    }
+    REQUIRE(status == StringStatus::Ok);
+    REQUIRE(found == NameId{token, StringIndex{match->second}});
+}
+template <typename Lookup>
+void CheckResolve(const Lookup& lookup, const ReferenceTable& reference, NameId id, StringStatus expected)
+{
+    std::string_view resolved = SENTINEL_VIEW;
+    REQUIRE(lookup.TryResolve(id, resolved) == expected);
+    if (expected != StringStatus::Ok)
+    {
+        REQUIRE(resolved.data() == SENTINEL_VIEW.data());
+        REQUIRE(resolved.size() == SENTINEL_VIEW.size());
+        return;
+    }
+    // Exact counted bytes, terminated, at the address first returned for this index.
+    const std::string& spelling = reference.Spellings[id.Index.Value];
+    REQUIRE(resolved.size() == spelling.size());
+    REQUIRE(resolved == spelling);
+    REQUIRE(resolved.data() == reference.Views[id.Index.Value]);
+    REQUIRE(resolved.data()[resolved.size()] == '\0');
+}
+void CheckIntern(StringTable& table,
+                 const FaultHeap& heap,
+                 const DifferentialScenario& scenario,
+                 ReferenceTable& inoutReference,
+                 uint32 token,
+                 const SequenceSpelling& spelling,
+                 DifferentialCoverage& inoutCoverage)
+{
+    const StringStatus expected = ComputeExpectedValidation(scenario.Config, spelling);
+    const usize attempts = heap.Attempts;
+    const usize count = inoutReference.Spellings.GetSize();
+    NameId id = SENTINEL_ID;
+    const StringStatus status = table.TryIntern(spelling.Bytes, id);
+    if (expected != StringStatus::Ok)
+    {
+        REQUIRE(status == expected);
+        REQUIRE(id == SENTINEL_ID);
+        REQUIRE(heap.Attempts == attempts);
+        ++inoutCoverage.Rejected;
+        return;
+    }
+    const ReferenceIndices::const_iterator match = inoutReference.Indices.find(spelling.Bytes);
+    if (match != inoutReference.Indices.end())
+    {
+        // Duplicates succeed without allocating, even at a limit or with a fault armed.
+        REQUIRE(status == StringStatus::Ok);
+        REQUIRE(id == NameId{token, StringIndex{match->second}});
+        REQUIRE(heap.Attempts == attempts);
+        ++inoutCoverage.Duplicates;
+        return;
+    }
+    if (count == scenario.Config.MaxEntries)
+    {
+        REQUIRE(status == StringStatus::CapacityExceeded);
+        REQUIRE(id == SENTINEL_ID);
+        REQUIRE(heap.Attempts == attempts);
+        ++inoutCoverage.CapacityExceeded;
+        return;
+    }
+    if (status == StringStatus::Ok)
+    {
+        // Success never follows an injected allocation failure.
+        REQUIRE((heap.FailAt == 0 || heap.Attempts < heap.FailAt));
+        REQUIRE(id == NameId{token, StringIndex{static_cast<uint32>(count)}});
+        std::string_view view;
+        REQUIRE(table.TryResolve(id, view) == StringStatus::Ok);
+        REQUIRE(inoutReference.Spellings.TryAdd(spelling.Bytes) == true);
+        inoutReference.Indices.emplace(spelling.Bytes, static_cast<uint32>(count));
+        REQUIRE(inoutReference.Views.TryAdd(view.data()) == true);
+        ++inoutCoverage.Inserted;
+        return;
+    }
+    // A failed insertion preserves the output, consumes no index and stays absent.
+    REQUIRE(id == SENTINEL_ID);
+    if (status == StringStatus::OutOfMemory)
+    {
+        REQUIRE(heap.FailAt != 0);
+        REQUIRE(heap.Attempts == heap.FailAt);
+        ++inoutCoverage.OutOfMemory;
+    }
+    else
+    {
+        REQUIRE(status == StringStatus::CapacityExceeded);
+        REQUIRE(scenario.CanExhaustByteBudget == true);
+        ++inoutCoverage.CapacityExceeded;
+    }
+    NameId found = SENTINEL_ID;
+    REQUIRE(table.TryFind(spelling.Bytes, found) == StringStatus::NotFound);
+    REQUIRE(found == SENTINEL_ID);
+}
+DifferentialCoverage RunDifferentialSequence(const DifferentialScenario& scenario)
+{
+    CAPTURE(scenario.Name, scenario.Seed);
+    const StringTableConfig& config = scenario.Config;
+    uint64 random = scenario.Seed;
+    const Array<SequenceSpelling> spellings = MakeSequenceSpellings(config.MaxSpellingBytes, random);
+    DifferentialCoverage coverage;
+    FaultHeap heap;
+    FaultHeap otherHeap;
+    {
+        StringTable table;
+        REQUIRE(CreateTable(config, heap.Domain, table) == StringStatus::Ok);
+        if (scenario.ShouldForceCollisions == true)
+        {
+            StringTableTestAccess::ForceCollisions(table);
+        }
+        StringTable other;
+        REQUIRE(CreateTable(config, otherHeap.Domain, other) == StringStatus::Ok);
+        NameId empty;
+        REQUIRE(table.TryFind({}, empty) == StringStatus::Ok);
+        NameId otherEmpty;
+        REQUIRE(other.TryFind({}, otherEmpty) == StringStatus::Ok);
+        REQUIRE(empty == NameId{empty.TableToken, StringIndex{0}});
+        REQUIRE(otherEmpty.TableToken != empty.TableToken);
+        const SequenceTokens tokens{empty.TableToken, otherEmpty.TableToken};
+
+        ReferenceTable reference;
+        std::string_view emptyView;
+        REQUIRE(table.TryResolve(empty, emptyView) == StringStatus::Ok);
+        REQUIRE(reference.Views.TryAdd(emptyView.data()) == true);
+        usize slotCapacity = StringTableTestAccess::SlotCapacity(table);
+        for (usize step = 0; step < scenario.Steps; ++step)
+        {
+            CAPTURE(step);
+            const SequenceSpelling& spelling = spellings[PickBelow(random, spellings.GetSize())];
+            const usize operation = PickBelow(random, 100);
+            if (heap.FailAt == 0 && PickBelow(random, 100) < FAULT_ARM_PERCENT)
+            {
+                heap.FailAt = heap.Attempts + 1 + PickBelow(random, INTERN_ALLOCATION_STAGES);
+            }
+            const usize attempts = heap.Attempts;
+            if (operation < INTERN_PERCENT)
+            {
+                CheckIntern(table, heap, scenario, reference, tokens.Table, spelling, coverage);
+                if (heap.FailAt != 0 && heap.Attempts >= heap.FailAt)
+                {
+                    heap.FailAt = 0;
+                }
+            }
+            else if (operation < INTERN_PERCENT + FIND_PERCENT)
+            {
+                CheckFind(table, config, reference, tokens.Table, spelling);
+                REQUIRE(heap.Attempts == attempts);
+            }
+            else
+            {
+                StringStatus expected = StringStatus::Ok;
+                const NameId id = MakeResolveCase(random, reference, tokens, expected);
+                CheckResolve(table, reference, id, expected);
+                coverage.WrongTable += expected == StringStatus::WrongTable ? 1 : 0;
+                REQUIRE(heap.Attempts == attempts);
+            }
+            REQUIRE(StringTableTestAccess::Count(table) == reference.Spellings.GetSize());
+            REQUIRE(StringTableTestAccess::Allocated(table) == heap.LiveBytes);
+            REQUIRE(heap.PeakBytes <= config.MaxAllocatedBytes);
+            const usize capacity = StringTableTestAccess::SlotCapacity(table);
+            if (capacity != slotCapacity)
+            {
+                REQUIRE(capacity == slotCapacity * 2);
+                ++coverage.SlotGrowths;
+                slotCapacity = capacity;
+            }
+        }
+
+        heap.FailAt = 0;
+
+        // Freezing into an occupied owner fails and leaves the table usable.
+        FrozenStringTable occupied;
+        REQUIRE(other.TryFreeze(occupied) == StringStatus::Ok);
+        REQUIRE(table.TryFreeze(occupied) == StringStatus::InvalidArgument);
+        REQUIRE(table.IsValid() == true);
+        CheckFind(table, config, reference, tokens.Table, spellings[1]);
+        FrozenStringTable frozen;
+        REQUIRE(table.TryFreeze(frozen) == StringStatus::Ok);
+        REQUIRE(table.IsValid() == false);
+        NameId closed = SENTINEL_ID;
+        REQUIRE(table.TryIntern("name0", closed) == StringStatus::InvalidHandle);
+        REQUIRE(closed == SENTINEL_ID);
+
+        // Frozen reads agree with the model for every spelling and index, and
+        // keep each view where the mutable table first returned it.
+        const usize attempts = heap.Attempts;
+        const usize liveBytes = heap.LiveBytes;
+        for (const SequenceSpelling& spelling : spellings)
+        {
+            CheckFind(frozen, config, reference, tokens.Table, spelling);
+        }
+        const uint32 count = static_cast<uint32>(reference.Spellings.GetSize());
+        for (uint32 index = 0; index < count; ++index)
+        {
+            CheckResolve(frozen, reference, NameId{tokens.Table, StringIndex{index}}, StringStatus::Ok);
+        }
+        CheckResolve(frozen, reference, NameId{tokens.Table, StringIndex{count}}, StringStatus::InvalidHandle);
+        CheckResolve(frozen, reference, NameId{tokens.Other, StringIndex{0}}, StringStatus::WrongTable);
+        CheckResolve(occupied, reference, NameId{tokens.Table, StringIndex{0}}, StringStatus::WrongTable);
+        REQUIRE(heap.Attempts == attempts);
+        REQUIRE(heap.LiveBytes == liveBytes);
+    }
+    REQUIRE(heap.LiveBytes == 0);
+    REQUIRE(heap.Allocations == heap.Frees);
+    REQUIRE(heap.BadFree == false);
+    REQUIRE(otherHeap.LiveBytes == 0);
+    REQUIRE(otherHeap.BadFree == false);
+    return coverage;
+}
+} // namespace
+
+TEST_CASE("table operation sequences match a reference model", "[strings][intern][allocation]")
+{
+    constexpr uint32 ENTRY_LIMIT = 48;
+    constexpr usize BYTE_LIMIT = usize{96} * 1024;
+    constexpr usize LARGE_SPELLING_BYTES = 40000;
+    StringTableConfig keyed;
+    keyed.HashPolicy = StringHashPolicy::Untrusted;
+    keyed.Key = SipHashKey{0x0706050403020100ULL, 0x0f0e0d0c0b0a0908ULL};
+    keyed.HasSecretKey = true;
+    StringTableConfig opaque;
+    opaque.MaxSpellingBytes = LARGE_SPELLING_BYTES;
+    opaque.RequireUtf8 = false;
+    opaque.RejectEmbeddedZero = false;
+    StringTableConfig entryLimited;
+    entryLimited.MaxEntries = ENTRY_LIMIT;
+    StringTableConfig byteLimited;
+    byteLimited.MaxAllocatedBytes = BYTE_LIMIT;
+    const DifferentialScenario scenarios[]{
+        {"trusted hash", 0x1001U, 3000, {}, false, false, 6},
+        {"forced collisions", 0x2002U, 3000, {}, true, false, 6},
+        {"keyed hash", 0x3003U, 2000, keyed, false, false, 6},
+        {"opaque bytes and large pages", 0x4004U, 2000, opaque, false, false, 6},
+        {"entry limit", 0x5005U, 1000, entryLimited, true, false, 2},
+        {"byte budget", 0x6006U, 1500, byteLimited, false, true, 4},
+    };
+    for (const DifferentialScenario& scenario : scenarios)
+    {
+        const DifferentialCoverage coverage = RunDifferentialSequence(scenario);
+        CAPTURE(scenario.Name,
+                coverage.Inserted,
+                coverage.Duplicates,
+                coverage.Rejected,
+                coverage.OutOfMemory,
+                coverage.CapacityExceeded,
+                coverage.WrongTable,
+                coverage.SlotGrowths);
+        // Each sequence reached the behaviour it exists to compare.
+        REQUIRE(coverage.Duplicates > 0);
+        REQUIRE(coverage.Rejected > 0);
+        REQUIRE(coverage.OutOfMemory > 0);
+        REQUIRE(coverage.WrongTable > 0);
+        REQUIRE(coverage.SlotGrowths >= scenario.MinimumSlotGrowths);
+        const bool isLimited = scenario.Config.MaxEntries == ENTRY_LIMIT || scenario.CanExhaustByteBudget == true;
+        REQUIRE((coverage.CapacityExceeded > 0) == isLimited);
+    }
 }

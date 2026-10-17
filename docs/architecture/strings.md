@@ -1005,7 +1005,16 @@ all Unicode scalar encodings, malformed sequences, the 64 official SipHash
 vectors, XXH3 golden vectors, forced collisions (including wrap-around at the
 load limit and a corrupted full lookup array), table growth, duplicate admission
 at capacity, and concurrent mutation / immutable reads. Reduced-width reference
-count tests exercise saturation without attempting 2^64 copies.
+count tests exercise saturation without attempting 2^64 copies. A reduced-width
+token issuer shows that exhaustion never wraps, and a private seam moves the
+process issuer to its last token so `CreateTable` reports `TokenExhausted` with
+its output preserved and every byte released, without 2^32 creations.
+Deterministic differential sequences compare `TryIntern`, `TryFind`,
+`TryResolve`, `TryFreeze` and frozen lookups with an STL reference model. They mix
+duplicates, empty, long and maximum-length spellings, embedded-zero, invalid
+UTF-8 and oversized rejections, trusted, keyed, opaque-byte and forced-collision
+tables, several rehashes, entry and byte limits, and allocation failures at
+random steps. Every failure must preserve its output and consume no index.
 
 Deferred: content snapshot integration, shared slices, structural hash schema helpers,
 format adapters, SIMD validation, debugger visualizers, and optional suggestion /
@@ -1126,7 +1135,7 @@ not a new build, sanitizer run, or performance result.
 | Mutable and bounded storage | Add explicit shrinking, checked byte-range erase, and named display truncation where required by the initial consumers; enforce their byte limits. Insert/replace and mutable write reservations still require a concrete consumer | [Mutable string storage](#mutable-string-storage) |
 | Text and formatting boundaries | Checked UTF-8 slicing, explicit display repair, counted `char8_t` adapters, strict native UTF-16 conversion at OS boundaries, and exception-free builder/bounded formatting adapters | [Bytes and Unicode](#bytes-and-unicode) and [bounded strings and construction](#bounded-strings-and-construction) |
 | Table completion | Checked resolution from table-local `StringIndex`, reservation for known content counts, and explicit symbol-grammar adapters. Current public resolution accepts `NameId`. Bounded lookup probing is implemented; see [implementation status](#implementation-status) | [Interned names and indexed strings](#interned-names-and-indexed-strings) |
-| Diagnostics and validation | Counted debugger previews, opt-in footprint/probe/retention snapshots, appropriate public Doxygen contracts, reduced-width table-token exhaustion tests, and differential operation sequences; add reader/cooker and boundary tests with their implementation | [Debugging and observation](#debugging-and-observation) and [required correctness evidence](#required-correctness-evidence) |
+| Diagnostics and validation | Counted debugger previews, opt-in footprint/probe/retention snapshots and appropriate public Doxygen contracts; add reader/cooker and boundary tests with their implementation. Table-token exhaustion and differential table operation sequences are implemented; see [implementation status](#implementation-status) | [Debugging and observation](#debugging-and-observation) and [required correctness evidence](#required-correctness-evidence) |
 
 [Static localization catalogs](../../modules/localization/README.md) already
 use shared immutable storage, deterministic offset-based cooking, validation,
