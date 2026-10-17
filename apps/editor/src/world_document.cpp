@@ -2,7 +2,10 @@
 
 #include "internal/editor_identity.h"
 
+#include <ludus/content/identity_records/migration_manifest.h>
+#include <ludus/content/identity_records/world_records.h>
 #include <ludus/foundation/base/parse_number.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/transform.hpp>
@@ -55,6 +58,127 @@ bool Text(const QJsonValue& value, foundation::int64 limit)
     }
     const auto text = value.toString();
     return text.toUtf8().size() <= limit && !text.contains(QChar(0)) && QString::fromUtf8(text.toUtf8()) == text;
+}
+namespace identity_records = content::identity_records;
+/// Longest label minted for a new version-2 entity: it fits the world-demo sample's
+/// 32-byte name field with its terminator, and the 64-character World ID rule.
+constexpr qsizetype MAX_MINTED_LABEL_CHARACTERS = 31;
+/// Root `version` value of a World document of envelope version `version`.
+QJsonValue MakeVersionValue(foundation::uint64 version)
+{
+    return QJsonValue(static_cast<qint64>(version));
+}
+/// Member holding an entity's key: the version-2 `uuid` or the version-1 `id`.
+QString GetKeyMember(bool hasUuidRecords)
+{
+    return hasUuidRecords == true ? QStringLiteral("uuid") : QStringLiteral("id");
+}
+/// Member holding an entity's readable label: the version-2 `label` or the version-1 `id`.
+QString GetLabelMember(bool hasUuidRecords)
+{
+    return hasUuidRecords == true ? QStringLiteral("label") : QStringLiteral("id");
+}
+/// Canonical lowercase text of a nonnil version-4 UUID, as the identity records write it.
+bool IsUuidText(const QJsonValue& value)
+{
+    namespace identity = foundation::identity;
+    if (value.isString() == false)
+    {
+        return false;
+    }
+    const QByteArray text = value.toString().toLatin1();
+    identity::Uuid uuid;
+    if (identity::TryParseUuid(text.constData(),
+                               static_cast<foundation::usize>(text.size()),
+                               identity::UuidPolicy::RequireVersion4,
+                               uuid) != identity::UuidStatus::Success)
+    {
+        return false;
+    }
+    foundation::StaticArray<char, identity::UUID_TEXT_BUFFER_BYTES> canonical{};
+    return identity::FormatUuid(uuid, canonical.GetData(), canonical.GetSize()) == identity::UuidStatus::Success &&
+           text == QByteArray(canonical.GetData(), static_cast<qsizetype>(identity::UUID_TEXT_LENGTH));
+}
+/// Mint a SourceObjectId for a new version-2 entity. Like the migration manifest,
+/// each candidate is checked against every identity of the World and replaced at
+/// most MAX_UUID_GENERATION_ATTEMPTS times in total.
+bool TryMintObjectUuid(const foundation::identity::EntropySource& entropy,
+                       QString& outError,
+                       const QJsonObject& world,
+                       QString& outUuid)
+{
+    QSet<QString> used{world.value(QStringLiteral("document")).toString()};
+    for (const QJsonValue value : world.value(QStringLiteral("entities")).toArray())
+    {
+        used.insert(value.toObject().value(QStringLiteral("uuid")).toString());
+    }
+    for (foundation::usize attempt = 0; attempt < identity_records::MAX_UUID_GENERATION_ATTEMPTS; ++attempt)
+    {
+        QString candidate;
+        if (TryGenerateUuidText(entropy, candidate) == false)
+        {
+            return Fail(outError, DescribeEntropyUnavailable());
+        }
+        if (used.contains(candidate) == false)
+        {
+            outUuid = candidate;
+            return true;
+        }
+    }
+    return Fail(outError,
+                QStringLiteral("Could not generate an identity that is unique in this World. Nothing was changed."));
+}
+/// Remove the trailing separators a truncated label may end with.
+QString TrimLabel(QString label)
+{
+    while (label.endsWith(QLatin1Char('-')) == true)
+    {
+        label.chop(1);
+    }
+    return label;
+}
+/// Derive a readable label for a new version-2 entity from its display name: the
+/// name's ASCII letters (lowercased) and digits, with each other run of characters
+/// replaced by one `-`. `-2`, `-3`, ... make it unique among the World's labels.
+QString MakeUniqueLabel(const QJsonObject& world, const QString& name)
+{
+    QString base;
+    bool isSeparatorPending = false;
+    for (const QChar character : name)
+    {
+        const foundation::uint16 code = character.unicode();
+        const foundation::uint16 lower =
+            code >= 'A' && code <= 'Z' ? static_cast<foundation::uint16>(code - 'A' + 'a') : code;
+        const bool isLabelCharacter = (lower >= 'a' && lower <= 'z') || (lower >= '0' && lower <= '9');
+        if (isLabelCharacter == false)
+        {
+            isSeparatorPending = true;
+            continue;
+        }
+        if (isSeparatorPending == true && base.isEmpty() == false)
+        {
+            base.append(QLatin1Char('-'));
+        }
+        isSeparatorPending = false;
+        base.append(QChar(lower));
+    }
+    base = TrimLabel(base.left(MAX_MINTED_LABEL_CHARACTERS));
+    if (base.isEmpty() == true)
+    {
+        base = QStringLiteral("entity");
+    }
+    QSet<QString> used;
+    for (const QJsonValue value : world.value(QStringLiteral("entities")).toArray())
+    {
+        used.insert(value.toObject().value(QStringLiteral("label")).toString());
+    }
+    QString candidate = base;
+    for (foundation::int32 suffix = 2; used.contains(candidate) == true; ++suffix)
+    {
+        const QString tail = QLatin1Char('-') + QString::number(suffix);
+        candidate = TrimLabel(base.left(MAX_MINTED_LABEL_CHARACTERS - tail.size())) + tail;
+    }
+    return candidate;
 }
 // Mint a fresh entity ID. World-demo IDs keep their legacy `entity-` prefix and
 // the first ENTITY_UUID_CHARACTERS of the UUID text, so that they fit the
@@ -361,12 +485,36 @@ QJsonObject WorldDocument::Component(const QString& id) const
     }
     return {};
 }
+bool WorldDocument::HasUuidRecords() const
+{
+    return Draft_.value(QStringLiteral("version")) == MakeVersionValue(identity_records::WORLD_RECORD_VERSION_2);
+}
+QString WorldDocument::GetEntityKey(const QJsonObject& entity) const
+{
+    return entity.value(GetKeyMember(HasUuidRecords())).toString();
+}
+QString WorldDocument::GetEntityLabel(const QJsonObject& entity) const
+{
+    return entity.value(GetLabelMember(HasUuidRecords())).toString();
+}
+QString WorldDocument::FindEntityKey(const QString& label) const
+{
+    for (const QJsonValue value : Draft_.value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject entity = value.toObject();
+        if (GetEntityLabel(entity) == label)
+        {
+            return GetEntityKey(entity);
+        }
+    }
+    return {};
+}
 QJsonObject WorldDocument::Entity(const QString& id) const
 {
     for (const auto value : Draft_.value(QStringLiteral("entities")).toArray())
     {
         const auto e = value.toObject();
-        if (e.value(QStringLiteral("id")).toString() == id)
+        if (GetEntityKey(e) == id)
         {
             return e;
         }
@@ -375,46 +523,79 @@ QJsonObject WorldDocument::Entity(const QString& id) const
 }
 bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
 {
-    if (!HasSchema() ||
-        !Fields(candidate,
-                {QStringLiteral("version"),
-                 QStringLiteral("schema"),
-                 QStringLiteral("entities"),
-                 QStringLiteral("scene")}) ||
-        candidate.value(QStringLiteral("version")) != QJsonValue(1) ||
+    const QJsonValue version = candidate.value(QStringLiteral("version"));
+    const bool hasUuidRecords = version == MakeVersionValue(identity_records::WORLD_RECORD_VERSION_2);
+    const bool hasScopedIds = version == MakeVersionValue(identity_records::WORLD_RECORD_VERSION_1);
+    if (hasUuidRecords == true && candidate.contains(QStringLiteral("scene")) == true)
+    {
+        return Fail(error, QStringLiteral("Version-2 World records do not support the scene extension yet."));
+    }
+    const QStringList rootFields = hasUuidRecords == true ? QStringList{QStringLiteral("version"),
+                                                                        QStringLiteral("schema"),
+                                                                        QStringLiteral("document"),
+                                                                        QStringLiteral("entities")}
+                                                          : QStringList{QStringLiteral("version"),
+                                                                        QStringLiteral("schema"),
+                                                                        QStringLiteral("entities"),
+                                                                        QStringLiteral("scene")};
+    if (HasSchema() == false || (hasScopedIds == false && hasUuidRecords == false) ||
+        Fields(candidate, rootFields) == false ||
         candidate.value(QStringLiteral("schema")) != Schema_.value(QStringLiteral("id")) ||
-        !candidate.value(QStringLiteral("entities")).isArray())
+        candidate.value(QStringLiteral("entities")).isArray() == false)
     {
         return Fail(error, QStringLiteral("World version/schema does not match this project's authoring contract."));
+    }
+    const QString document = candidate.value(QStringLiteral("document")).toString();
+    if (hasUuidRecords == true && IsUuidText(candidate.value(QStringLiteral("document"))) == false)
+    {
+        return Fail(error, QStringLiteral("A version-2 World needs a nonnil version-4 document UUID."));
     }
     const auto entities = candidate.value(QStringLiteral("entities")).toArray();
     if (entities.size() > 128 || QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MaxBytes)
     {
         return Fail(error, QStringLiteral("World supports at most 128 entities and 512 KiB."));
     }
+    // Entity keys: version-2 UUIDs or version-1 IDs, the values entity-typed properties hold.
     QSet<QString> ids;
+    QSet<QString> labels;
     QSet<QString> assets;
     for (const auto value : Schema_.value(QStringLiteral("assets")).toArray())
     {
         assets.insert(value.toObject().value(QStringLiteral("id")).toString());
     }
-    for (const auto value : entities)
+    for (const QJsonValue value : entities)
     {
-        const auto e = value.toObject();
-        const auto id = e.value(QStringLiteral("id")).toString();
-        if (!value.isObject() ||
-            !Fields(e,
-                    {QStringLiteral("id"),
-                     QStringLiteral("name"),
-                     QStringLiteral("components"),
-                     QStringLiteral("scene")}) ||
-            !Id(id) || ids.contains(id) || !Text(e.value(QStringLiteral("name")), 128) ||
-            e.value(QStringLiteral("name")).toString().trimmed().isEmpty() ||
-            !e.value(QStringLiteral("components")).isObject())
+        const QJsonObject e = value.toObject();
+        const QString id = e.value(GetKeyMember(hasUuidRecords)).toString();
+        const QString label = e.value(GetLabelMember(hasUuidRecords)).toString();
+        // A version-2 entity is named by its UUID; its label stays a unique, valid scoped ID.
+        const bool hasIdentity = hasUuidRecords == true
+                                     ? Fields(e,
+                                              {QStringLiteral("uuid"),
+                                               QStringLiteral("label"),
+                                               QStringLiteral("name"),
+                                               QStringLiteral("components")}) == true &&
+                                           IsUuidText(e.value(QStringLiteral("uuid"))) == true && id != document &&
+                                           Id(label) == true && labels.contains(label) == false
+                                     : Fields(e,
+                                              {QStringLiteral("id"),
+                                               QStringLiteral("name"),
+                                               QStringLiteral("components"),
+                                               QStringLiteral("scene")}) == true &&
+                                           Id(id) == true;
+        if (value.isObject() == false || hasIdentity == false || ids.contains(id) == true ||
+            Text(e.value(QStringLiteral("name")), 128) == false ||
+            e.value(QStringLiteral("name")).toString().trimmed().isEmpty() == true ||
+            e.value(QStringLiteral("components")).isObject() == false)
         {
-            return Fail(error, QStringLiteral("Every entity needs a unique stable ID, name and components object."));
+            return Fail(
+                error,
+                hasUuidRecords == true
+                    ? QStringLiteral("Every entity needs a unique UUID and label, a name and components object.")
+                    : QStringLiteral("Every entity needs a unique stable ID, name and components object."));
         }
         ids.insert(id);
+        labels.insert(label);
     }
     for (const auto value : entities)
     {
@@ -660,6 +841,12 @@ bool WorldDocument::Commit(const QJsonObject& candidate, QString& error)
     {
         return false;
     }
+    // A document keeps the version and AssetId it was opened with; nothing converts it implicitly.
+    if (candidate.value(QStringLiteral("version")) != Draft_.value(QStringLiteral("version")) ||
+        candidate.value(QStringLiteral("document")) != Draft_.value(QStringLiteral("document")))
+    {
+        return Fail(error, QStringLiteral("The candidate changes the World's version or document identity."));
+    }
     if (candidate == Draft_)
     {
         error.clear();
@@ -677,7 +864,7 @@ bool WorldDocument::ReplaceEntity(const QJsonObject& entity, QString& error)
     auto entities = Draft_.value(QStringLiteral("entities")).toArray();
     for (foundation::int32 i = 0; i < entities.size(); ++i)
     {
-        if (entities[i].toObject().value(QStringLiteral("id")) == entity.value(QStringLiteral("id")))
+        if (GetEntityKey(entities[i].toObject()) == GetEntityKey(entity))
         {
             entities[i] = entity;
             auto candidate = Draft_;
@@ -692,9 +879,17 @@ bool WorldDocument::CreateEntity(const foundation::identity::EntropySource& entr
                                  const QString& name,
                                  QString& outId)
 {
+    const bool hasUuidRecords = HasUuidRecords();
     const bool isWorldDemo = Schema_.value(QStringLiteral("id")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
     QString fresh;
-    if (TryGenerateEntityId(entropy, isWorldDemo, fresh) == false)
+    if (hasUuidRecords == true)
+    {
+        if (TryMintObjectUuid(entropy, outError, Draft_, fresh) == false)
+        {
+            return false;
+        }
+    }
+    else if (TryGenerateEntityId(entropy, isWorldDemo, fresh) == false)
     {
         return Fail(outError, DescribeEntropyUnavailable());
     }
@@ -709,9 +904,13 @@ bool WorldDocument::CreateEntity(const foundation::identity::EntropySource& entr
     }
     auto candidate = Draft_;
     auto entities = candidate.value(QStringLiteral("entities")).toArray();
-    entities.append(QJsonObject{{QStringLiteral("id"), fresh},
-                                {QStringLiteral("name"), name},
-                                {QStringLiteral("components"), components}});
+    QJsonObject entity{{QStringLiteral("name"), name}, {QStringLiteral("components"), components}};
+    entity.insert(GetKeyMember(hasUuidRecords), fresh);
+    if (hasUuidRecords == true)
+    {
+        entity.insert(QStringLiteral("label"), MakeUniqueLabel(Draft_, name));
+    }
+    entities.append(entity);
     candidate.insert(QStringLiteral("entities"), entities);
     if (Commit(candidate, outError) == false)
     {
@@ -730,9 +929,17 @@ bool WorldDocument::DuplicateEntity(const foundation::identity::EntropySource& e
     {
         return Fail(outError, QStringLiteral("Select an entity to duplicate."));
     }
+    const bool hasUuidRecords = HasUuidRecords();
     const bool isWorldDemo = Schema_.value(QStringLiteral("id")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
     QString fresh;
-    if (TryGenerateEntityId(entropy, isWorldDemo, fresh) == false)
+    if (hasUuidRecords == true)
+    {
+        if (TryMintObjectUuid(entropy, outError, Draft_, fresh) == false)
+        {
+            return false;
+        }
+    }
+    else if (TryGenerateEntityId(entropy, isWorldDemo, fresh) == false)
     {
         return Fail(outError, DescribeEntropyUnavailable());
     }
@@ -752,13 +959,17 @@ bool WorldDocument::DuplicateEntity(const foundation::identity::EntropySource& e
         }
         c.value() = props;
     }
-    entity.insert(QStringLiteral("id"), fresh);
+    entity.insert(GetKeyMember(hasUuidRecords), fresh);
     auto copyName = entity.value(QStringLiteral("name")).toString();
     while (copyName.toUtf8().size() > 123)
     {
         copyName.chop(copyName.back().isLowSurrogate() ? 2 : 1);
     }
     entity.insert(QStringLiteral("name"), copyName + QStringLiteral(" copy"));
+    if (hasUuidRecords == true)
+    {
+        entity.insert(QStringLiteral("label"), MakeUniqueLabel(Draft_, copyName + QStringLiteral(" copy")));
+    }
     entity.insert(QStringLiteral("components"), components);
     auto candidate = Draft_;
     auto entities = candidate.value(QStringLiteral("entities")).toArray();
@@ -776,7 +987,7 @@ bool WorldDocument::RemoveEntity(const QString& id, QString& error)
     auto entities = Draft_.value(QStringLiteral("entities")).toArray();
     for (foundation::int32 i = 0; i < entities.size(); ++i)
     {
-        if (entities[i].toObject().value(QStringLiteral("id")).toString() == id)
+        if (GetEntityKey(entities[i].toObject()) == id)
         {
             entities.removeAt(i);
             auto candidate = Draft_;
@@ -842,6 +1053,10 @@ bool WorldDocument::Edit(const QString& entity,
 }
 bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
 {
+    if (HasUuidRecords() == true)
+    {
+        return Fail(error, QStringLiteral("Version-2 World records do not support the scene extension yet."));
+    }
     if (!level.value(QStringLiteral("objects")).isArray())
     {
         return Fail(error, QStringLiteral("Missing imported instances."));

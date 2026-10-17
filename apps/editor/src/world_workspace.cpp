@@ -703,6 +703,11 @@ bool WorldWorkspace::StartSceneImport(const QString& source, bool isPreviewed)
         Changed(QStringLiteral("A scene operation is still running; wait for it or cancel it before importing."));
         return false;
     }
+    if (Document_.HasUuidRecords() == true)
+    {
+        Changed(QStringLiteral("Version-2 World records do not support scene import yet; the World was preserved."));
+        return false;
+    }
     auto level = Document_.SceneLevel();
     if (level.isEmpty())
     {
@@ -953,9 +958,10 @@ void WorldWorkspace::Render()
     {
         const auto entity = value.toObject();
         auto* item = new QListWidgetItem(entity.value(QStringLiteral("name")).toString(), Entities_);
-        const auto id = entity.value(QStringLiteral("id")).toString();
+        const QString id = Document_.GetEntityKey(entity);
+        const QString label = Document_.GetEntityLabel(entity);
         item->setData(Qt::UserRole, id);
-        item->setToolTip(id);
+        item->setToolTip(label == id ? id : label + QLatin1Char('\n') + id);
         if (id == Selected_)
         {
             Entities_->setCurrentItem(item);
@@ -980,7 +986,8 @@ void WorldWorkspace::RenderInspector()
     Scene_->SetSelection(Selected_);
     Render_->SetSelection(Selected_, Pending_);
     world_demo::Name selected;
-    const auto selectedBytes = Selected_.toLatin1();
+    // The world-demo runtime names each recipe by its label (the version-1 ID).
+    const QByteArray selectedBytes = Document_.GetEntityLabel(Document_.Entity(Selected_)).toLatin1();
     if (selectedBytes.size() < 32)
     {
         for (foundation::usize i = 0; i < static_cast<foundation::usize>(selectedBytes.size()); ++i)
@@ -1018,7 +1025,9 @@ void WorldWorkspace::RenderInspector()
     nameLayout->addRow(QStringLiteral("Name"), Name_);
     Inspector_->addWidget(form);
     connect(Name_, &QLineEdit::textEdited, this, [this]() { Pending(); });
-    auto* id = new QLabel(QStringLiteral("Stable ID: ") + Selected_);
+    QLabel* id = new QLabel(Document_.HasUuidRecords() == true
+                                ? QStringLiteral("Label: %1\nUUID: %2").arg(Document_.GetEntityLabel(entity), Selected_)
+                                : QStringLiteral("Stable ID: ") + Selected_);
     id->setWordWrap(true);
     id->setTextInteractionFlags(Qt::TextSelectableByMouse);
     Inspector_->addWidget(id);
@@ -1126,12 +1135,16 @@ void WorldWorkspace::RenderInspector()
                         {
                             continue;
                         }
-                        const auto key = entry.value(QStringLiteral("id")).toString();
-                        choices->addItem(entry.value(type == QStringLiteral("entity") ? QStringLiteral("name")
-                                                                                      : QStringLiteral("label"))
-                                                 .toString() +
-                                             QStringLiteral(" — ") + key,
-                                         key);
+                        const bool isEntity = type == QStringLiteral("entity");
+                        // Entity references store the entity key (a version-2 UUID) and show its label.
+                        const QString key = isEntity == true ? Document_.GetEntityKey(entry)
+                                                             : entry.value(QStringLiteral("id")).toString();
+                        const QString shown = isEntity == true ? Document_.GetEntityLabel(entry) : key;
+                        choices->addItem(
+                            entry.value(isEntity == true ? QStringLiteral("name") : QStringLiteral("label"))
+                                    .toString() +
+                                QStringLiteral(" — ") + shown,
+                            key);
                     }
                 }
                 choices->setCurrentIndex(choices->findData(current.toString()));
@@ -1789,7 +1802,8 @@ void WorldWorkspace::WorldDemoChanged()
     {
         return;
     }
-    const auto selected = QString::fromLatin1(DemoPreview_.Selected().Text);
+    // The preview selects by runtime label; the World selects by entity key (a version-2 UUID).
+    const QString selected = Document_.FindEntityKey(QString::fromLatin1(DemoPreview_.Selected().Text));
     if (!DemoDocument_.Previewing() && DemoDocument_.Dirty())
     {
         QString error;

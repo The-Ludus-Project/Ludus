@@ -840,7 +840,8 @@ versions:
   the replay hash are therefore identical for both versions.
 
 `ludus_world_identity_tests` replays the committed manifest against the committed
-rooms. `ludus_content_identity_tests` covers:
+rooms. The Editor's World tests open the replayed first room, edit it and save it
+as version 2. `ludus_content_identity_tests` covers:
 
 - deterministic manifest replay and canonical output;
 - create-once atomic publication;
@@ -849,8 +850,10 @@ rooms. `ludus_content_identity_tests` covers:
 
 **Not yet implemented:**
 
-- The Editor opens and saves only version-1 Worlds. Converting the committed
-  sample levels waits for Editor version-2 support.
+- The committed sample levels are still version 1. The Editor opens and saves
+  both versions without converting either; see
+  [the World workspace](../development/editor-workspace.md). Converting the
+  sample levels also moves their replay test onto version-1 fixtures.
 - A document gains entities after its manifest is committed: replay reports
   `stale-manifest`. Extending a committed manifest needs an explicit operation
   that mints only the missing identities.
