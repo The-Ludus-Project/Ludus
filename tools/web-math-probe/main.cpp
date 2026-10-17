@@ -171,7 +171,7 @@ int main()
     Check(TryAddOutward(MakePointEnclosure(1.0), MakePointEnclosure(2.0), exactSum) == MathStatus::Success &&
               exactSum.Lower == 3.0 && exactSum.Upper == 3.0,
           "exact sum is not widened");
-    Check(ExerciseInstalledGeometry() == true, "geometry path, distance map and track");
+    Check(ExerciseInstalledGeometry() == true, "geometry path, distance map, track and Certified surface mesh");
 
     std::printf("LUDUS_WEB_MATH_RESULT failures=%d\n", gFail);
     return gFail == 0 ? 0 : 1;

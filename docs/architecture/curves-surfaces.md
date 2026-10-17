@@ -1,11 +1,12 @@
 # Curves and surfaces architecture
 
 Status: G0 contracts frozen in [ADR 0024](../decisions/0024-curves-surfaces-contracts.md),
-the G1 fixed-size math kernel and the G2 prepared paths, tracks and distance
-maps implemented; G3-G6 remain proposed.
+the G1 fixed-size math kernel, the G2 prepared paths, tracks and distance
+maps, and the G4 patch topology and CPU surface meshes implemented; G3, G5 and
+G6 remain proposed.
 Design baseline: `52e29ce`, inspected on 2026-10-04. Implementation baselines:
-`95683aa` (G1, 2026-10-05), `5117c8c` (G0, 2026-10-15) and `cb6f02a` (G2,
-2026-10-16). Validation is
+`95683aa` (G1, 2026-10-05), `5117c8c` (G0, 2026-10-15), `cb6f02a` (G2,
+2026-10-16) and `c3de79d` (G4, 2026-10-17). Validation is
 recorded in the [evidence ledger](math-evidence/curves-surfaces.md). Performance
 budgets for prepared assets and integrated consumers remain unmeasured.
 
@@ -19,10 +20,10 @@ them.
 
 This is a production-oriented design judgment, informed by current primary
 sources and the [Gems review](curves-surfaces-gems-review.md). It does not claim
-universal optimality or measured Ludus performance. The fixed-size kernel and
-the G2 path, track and distance owners are implemented; frames, queries,
-surfaces, meshes, codecs and adapters remain proposed. Domains, statuses and
-guarantee classes are frozen.
+universal optimality or measured Ludus performance. The fixed-size kernel, the
+G2 path, track and distance owners and the G4 prepared surfaces and CPU meshes
+are implemented; frames, queries, sweeps, codecs and adapters remain proposed.
+Domains, statuses and guarantee classes are frozen.
 The final section preserves the baseline written before the chapter review.
 
 ## Implementation and research sequence
@@ -99,6 +100,26 @@ implementation boundary, so the existing Wasm math probe can validate it.
 Departures are recorded in the evidence ledger. Path cursors, a Visual-only
 Estimated build and Approximate table lookup are not implemented.
 
+## Implemented surfaces and meshes (G4)
+
+`Ludus::FoundationGeometry` also exports `surface.hpp` and `tessellation.hpp`;
+the [module guide](../modules/foundation/geometry.md#surfaces) documents their
+use. `TryPrepareSurface` narrows bicubic patch controls and builds stable patch,
+edge and corner identities from explicit whole-side joins. Each edge gets one
+canonical control curve, owned by its incidence with the smallest (patch ID,
+side). Each corner joined through edges gets one exact position. The
+preparation rejects partial, nonmanifold and mismatched joins, and it reports
+edge orientation consistency and C1 cross-boundary continuity.
+
+`TryBuildSurfaceMesh` selects a dyadic grid per patch and propagates shared edge
+levels through the patch network until they agree. It emits canonical corner and
+edge samples once, then builds a staging owner. Every cell's control-net plus
+twist bound, including the emitted vertices' rounding error, is Certified with
+FoundationMath's outward enclosures. Normal-angle refinement is a Visual-only
+Estimated sample. Strict profiles fail transactionally when budgets run out.
+Visual profiles may explicitly keep the coarser grid and report its bound.
+Departures and workload observations are recorded in the evidence ledger.
+
 No editor binding is needed for these math values. A useful editable curve
 document needs the G2 prepared owners and G5 authoring/undo/publication contracts;
 those features and their editor adapters remain explicit follow-up phases.
@@ -162,7 +183,7 @@ capabilities.
 | Location and target | Owns | Depends on |
 | --- | --- | --- |
 | Implemented G1/G2 additions to `modules/foundation/math`, `Ludus::FoundationMath` | Fixed-size scalar/vector cubic and bicubic values; evaluate, differentiate, split, Hermite conversion; outward-rounded enclosures (G2) | Base only |
-| `modules/foundation/geometry`, `Ludus::FoundationGeometry` (G2 implemented) | Prepared path owners and views, scalar tracks and distance caches (G2); patch owners, frame/bounds caches, queries and mesh generation (proposed) | Base, Math, Containers |
+| `modules/foundation/geometry`, `Ludus::FoundationGeometry` (G2 and G4 implemented) | Prepared path owners and views, scalar tracks and distance caches (G2); prepared patch surfaces, topology and CPU surface meshes (G4); frame/bounds caches and queries (proposed) | Base, Math, Containers |
 | Proposed `modules/content/geometry_format`, `Ludus::GeometryFormat` | Header-only versioned cooked record layouts, limits and constants shared by cooker and loader | Base only |
 | Proposed `modules/geometry/content`, `Ludus::GeometryContent` | Authoring codecs, source IDs, import/cook validation, loading and publication | Content, FoundationGeometry, GeometryFormat |
 | Editor-private adapters | Document edits, undo, handles, preview, inspection | GeometryContent, editor UI |
@@ -818,7 +839,7 @@ implementing an adapter.
 
 ## Validation and implementation gates
 
-The G0 freeze, the G1 and G2 implementations and their checks are tracked in the
+The G0 freeze, the G1, G2 and G4 implementations and their checks are tracked in the
 [evidence ledger](math-evidence/curves-surfaces.md). Completion of each
 remaining phase below requires its own evidence ledger, numerical limits and
 workload budgets; G0 references and G1 tests do not validate the proposed owners

@@ -17,6 +17,9 @@ target_sources(
         src/conversion.cpp
         src/distance.cpp
         src/track.cpp
+        src/control_box.cpp
+        src/surface.cpp
+        src/tessellation.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -27,6 +30,8 @@ target_sources(
             include/ludus/foundation/geometry/path.hpp
             include/ludus/foundation/geometry/distance.hpp
             include/ludus/foundation/geometry/track.hpp
+            include/ludus/foundation/geometry/surface.hpp
+            include/ludus/foundation/geometry/tessellation.hpp
 )
 target_include_directories(ludus_foundation_geometry PRIVATE src)
 
@@ -67,6 +72,8 @@ if(LUDUS_BUILD_TESTS)
             tests/path_tests.cpp
             tests/distance_tests.cpp
             tests/track_tests.cpp
+            tests/surface_tests.cpp
+            tests/tessellation_tests.cpp
     )
     target_link_libraries(
         ludus_foundation_geometry_tests

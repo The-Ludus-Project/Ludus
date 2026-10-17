@@ -1,5 +1,6 @@
 # The installed-SDK Geometry exercise also runs here so the Wasm toolchain validates
-# FoundationGeometry's Certified distance map with the enclosure helper it relies on.
+# FoundationGeometry's Certified distance map and surface mesh bound with the enclosure
+# helper they rely on.
 add_executable(ludus_web_math_probe main.cpp "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/geometry.cpp")
 target_link_libraries(ludus_web_math_probe PRIVATE Ludus::FoundationMath Ludus::FoundationGeometry)
 # The enclosure oracle is shared with the native FoundationMath tests.

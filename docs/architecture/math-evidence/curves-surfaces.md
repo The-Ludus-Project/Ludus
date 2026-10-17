@@ -1,10 +1,135 @@
-# Curves and surfaces evidence (G0-G2)
+# Curves and surfaces evidence (G0-G2, G4)
 
 This ledger records the G0 contract freeze and reference corpus, the G1 cubic
-and bicubic kernel, and the G2 prepared paths, tracks and distance maps. See the
+and bicubic kernel, the G2 prepared paths, tracks and distance maps, and the G4
+patch topology and CPU surface meshes. See the
 [architecture](../curves-surfaces.md),
 [ADR 0024](../../decisions/0024-curves-surfaces-contracts.md) and the
 [consulted-source review](../curves-surfaces-gems-review.md).
+
+## G4 patch topology and CPU surface meshes
+
+Implementation date: 2026-10-17. Base: `c3de79d` (`develop` after G2; rebased onto `6615a2c` before review). Scope:
+FoundationGeometry `surface.hpp` and `tessellation.hpp`, their implementation
+and tests, a `WorkLimits::MaxPatches` field, and the SDK-consumer and Wasm probe
+exercise. The G2 box helpers moved into a shared private
+`internal/control_box.hpp` without changing their arithmetic. Usage is documented
+in the [module guide](../../modules/foundation/geometry.md#surfaces). No frame,
+projection, sweep, cooked format or editor binding is added, and no corpus
+reference changed.
+
+### Certified cell bound
+
+For a cell with exact corners P00, P10, P01 and P11, the emitted triangle pair
+T' differs from the patch S by at most three terms:
+
+- **Control net.** |S - B|, where B is the bilinear interpolant of the corners.
+  Degree-elevating B to bicubic puts its controls at the bilinear values
+  ((3-i)(3-j) P00 + i(3-j) P10 + (3-i) j P01 + i j P11)/9. S - B is a bicubic
+  with the control differences, so by convexity it is at most their largest
+  length. Corner differences are exactly zero and are skipped.
+- **Twist.** |B - T| for the triangles (00, 10, 11) and (00, 11, 01). On the
+  first triangle (u >= v), B - T = -v(1 - u) w with w = P00 - P10 - P01 + P11.
+  On the second it is -u(1 - v) w. Both factors are at most 1/4, at the centre,
+  so the bound is `Length(w)/4`.
+- **Emitted vertices.** |T - T'|. A triangle point is a convex combination of
+  its vertices, so it moves by at most the largest vertex error.
+
+Subpatch controls are enclosed by restricting each row to [v0, v1], then each
+resulting column to [u0, u1], with the Ramshaw blossoms G2 already uses. Every
+product, sum, square root and the 1/9 weight (enclosed by the neighbours of its
+float64 rounding) uses FoundationMath's outward helpers. Each emitted position
+rounds its enclosure's midpoint to float32. Its error bound is the outward length
+of the largest per-axis distance from that value to the enclosure. The same
+function produces the positions that are emitted, so every cell bound sees the
+exact emitted values. The bound measures the parametric distance between S(u, v)
+and T'(u, v), which is an upper bound of their Hausdorff distance.
+
+### Gate evidence
+
+| Gate | Test evidence |
+| --- | --- |
+| Reversed shared edges | `reversed_shared_edge`: `edge_first` U1 joins `edge_second` U0 with `IsReversed`. `TryMapEdgeParameter` maps every fixture t to (1, FirstV) and (0, SecondV) exactly. Both patches evaluate to the fixture position within 1e-5 (Rounded), and the endpoints match bitwise. The same curve without the declared reversal is `InvalidTopology`, with the 6.08-unit control gap reported as Rounded |
+| Corner identity | The pair has 6 corner records for 8 patch corners. First U1V0 and second U0V1 share the record at (3, 0, 0); first U1V1 and second U0V0 share (3, 3, 0). Stable edge and corner IDs (owner = smallest patch ID and side) and the canonical curve are identical when the patch order is swapped. A side joined to another side of the same patch closes it with 3 edges and 2 corners |
+| UV/normal seams | On the shared edge, both patches' render vertices name the same `PositionIndex` and copy the same position bitwise. Their parameters are (1, v) and (0, 1 - v), and at least one normal pair differs (the pair is not C1, `CrossDerivativeDifference` is sqrt 2 within 1e-12, and its orientation is inconsistent). Two halves of one bilinear saddle are reported C1 with difference 0 and consistent orientation |
+| Twisted bilinear interiors | `saddle` at level 0 has a Certified bound within 1e-12 relative of the exact 9/4. The emitted diagonal passes z = 9/2 at the centre, where the patch is at 9/4, so the bound is attained. A tolerance of 2.24 with `MaxLevel = 0` is `BudgetExceeded`. At 0.01 the grid is (4, 4), the first level sum where (9/4)/2^(LevelU+LevelV) fits |
+| Matching boundary samples | The shared edge's samples are emitted once, 2^L - 1 of them, and the total position count equals corners plus edge plus interior samples. Each fixture edge sample lies within its emitted position's Certified `ErrorBound` of the exact reference. In a three-patch chain, the planar third patch inherits the curved edge's v level through the second patch's opposite side, with its own LevelU staying 0 |
+| Singular patches | `apex`: the whole u = 0 row has `Degenerate` normals and a zero normal; one triangle per cell along it collapses. `Report` emits and counts both; `Reject` fails with `Degenerate` and the offending parameter, keeping the previous mesh. Corpus normals reproduce `Degenerate`, `IllConditioned` and the regular normal through `TryEvaluateSurfaceNormal` |
+| Strict/visual failure | Strict exhaustion of `MaxLevel` is `BudgetExceeded` with the achieved Certified bound (at least 9/16 at level 1). Visual without `IsCoarserMeshAccepted` also fails; with it the mesh keeps the (1, 1) grid and reports `IsWithinPositionError = false`. Strict with a normal bound is `UnsupportedPrecision` (Estimated only), and Strict with a coarser-mesh request is `InvalidArgument`. Cell-test, vertex, triangle and byte budgets, and invalid profiles, fail before output changes |
+
+For every corpus patch, the level-0 bound matches the generator's
+`InteriorBound` within 1e-12 relative. Where an analytic maximum exists, it is at
+most the bound: `bulge` reports 3 against its true 27/16, which the emitted
+triangles reproduce at the centre. Every mesh in the tests is also sampled 25
+times per cell. The sampled distance between the patch and its triangles never
+exceeds the cell bound plus 1e-5 for float32 evaluation. Halving the twist
+factor makes the saddle and certificate checks fail. The allocation probe fails
+every allocation of surface preparation and mesh building in turn. Each returns
+`OutOfMemory` and keeps the active owner, and evaluation and edge mapping
+allocate nothing.
+
+### Numerical limits observed
+
+Strict meshes with `MaxLevel = 12` on the loaded development host (load average
+above 75), as workload observations rather than budgets:
+
+| Fixture | Position error | Levels (u, v) | Vertices | Cell tests | Time |
+| --- | --- | --- | --- | --- | --- |
+| `plane` | 0.001 | (0, 0) | 4 | 1 | < 0.1 ms |
+| `saddle` | 0.1 / 0.01 / 0.001 | (3, 2) / (4, 4) / (6, 6) | 45 / 289 / 4225 | 125 / 1021 / 16381 | 17 ms / 0.32 s / 7.0 s |
+| `bulge` | 0.1 / 0.01 / 0.001 | (4, 3) / (5, 5) / (7, 6) | 153 / 1089 / 8385 | 509 / 4093 / 32765 | 0.14 s / 2.0 s / 11.8 s |
+| `apex` | 0.1 / 0.01 / 0.001 | (0, 5) / (0, 8) / (0, 12) | 66 / 514 / 8194 | 125 / 1021 / 16381 | 8 ms / 0.14 s / 1.4 s |
+| three-patch chain | 0.1 / 0.01 / 0.001 | (0, 5) each / (0, 8) each / (0, 12) each | 198 / 1542 / 24582 | 283 / 2299 / 36859 | 20 ms / 0.17 s / 2.9 s |
+
+The ruled `apex` and `edge_*` patches are linear in u, so only v is refined.
+Halving the tolerance costs about one level in each curved direction, as the
+1/4-per-level twist and second-difference decay predicts. A cell test costs
+roughly 0.1-0.4 ms: every control box is rebuilt with outward arithmetic, and
+both refinement candidates are evaluated. Sharing row restrictions across a
+column and caching vertex errors per grid point are measured follow-ups.
+
+### Departures and limits
+
+- Shared edges must match bitwise after narrowing. The architecture's
+  canonical-boundary adjustment term is therefore exactly zero; joins within a
+  distance threshold are rejected rather than snapped.
+- `IsC1` compares cross-boundary derivative controls with
+  `ContinuityDerivative`. G1 tangent-plane classification across an edge is not
+  provided.
+- Only rectangular dyadic grids are produced, and a direction is refined across
+  a whole patch. Quadtree transitions, camera-dependent targets, displacement
+  and animated controls are not implemented.
+- The normal estimate samples five analytic normals per cell and skips singular
+  ones. It is Estimated and is never accepted by a Strict profile.
+- Collapsed triangles are detected only by bitwise-equal positions, not by area.
+- The Certified claim, like G2's, depends on the CI `ludus_web_math_corpus`
+  passing on the pinned Wasm toolchain. The probe's Geometry exercise now also
+  builds the saddle mesh and checks its bound against 9/4.
+
+### G4 validation record
+
+Host: macOS 26 on arm64 with the pinned host tools (Clang/LLVM 18.1.8), preset
+`macos-clang-development`, heavily loaded (load average 75-88). The local preset
+does not treat warnings as errors; the build reported none, and CI enforces
+warnings as errors.
+
+| Check | Result |
+| --- | --- |
+| `ludus_foundation_geometry` and its tests | Built with no warnings |
+| `ludus_foundation_geometry_tests` | Passed: 41 test cases, 108,899 assertions (18 new surface and tessellation cases) |
+| `ludus_geometry_alloc_tests` | Passed: every surface-preparation and mesh-build allocation failure injected; evaluation allocates nothing |
+| Mutation check | Halving the twist factor fails the tight saddle bound and the sampled certificate |
+| Pinned clang-tidy on every changed translation unit | Passed after removing two swappable-parameter findings and documenting one suppression on `TryMapEdgeParameter` |
+| Format, naming (`check_naming.py`), foundational includes, container policy and changed-line source policy | Passed against `c3de79d` |
+| Docs index, Markdown links, strict MkDocs, docs regressions | Passed |
+| API reference with pinned Doxygen | Passed: no new gaps |
+| ASan/UBSan, full CTest, installed SDK consumer, build-time budget | Not run locally (the documented macOS ASan startup deadlock and host load); CI runs them |
+| Wasm math probe | Not run locally because the host has no Emscripten SDK. The `webgpu-probe` workflow runs `ludus_web_math_corpus`, whose Geometry exercise now builds the saddle mesh; the Certified claim depends on that result |
+
+The repository formatter (`scripts/check --format --fix`) deleted the last
+member of a multiline designated initializer written inside a ternary. The
+affected line was rewritten without a ternary, and the formatter defect is
+tracked separately.
 
 ## G2 prepared paths, tracks and distance maps
 
