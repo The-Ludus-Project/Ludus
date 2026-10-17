@@ -137,6 +137,7 @@ void EditorController::Play()
     }
     PlayState_ = {};
     ScriptRequest_.clear();
+    TimingRequest_.clear();
     SessionUndo_.clear();
     SessionRedo_.clear();
     EditRequest_.clear();
@@ -316,6 +317,24 @@ void EditorController::RefreshSessionDetails()
     }
 }
 
+void EditorController::RefreshTiming()
+{
+    if (TimingRequest_.isEmpty() == false || Play_.Active() == false ||
+        (PlayState_.Phase != PlayPhase::Running && PlayState_.Phase != PlayPhase::Paused))
+    {
+        return;
+    }
+    TimingRequest_ = NextPlayRequest();
+    const QJsonObject status{
+        {QStringLiteral("type"), QStringLiteral("command")},
+        {QStringLiteral("request"), TimingRequest_},
+        {QStringLiteral("command"), QJsonObject{{QStringLiteral("command"), QStringLiteral("Status")}}}};
+    if (Play_.Send(status) == false)
+    {
+        TimingRequest_.clear();
+    }
+}
+
 void EditorController::OnPlayEvent(const QJsonObject& event)
 {
     const auto type = event.value(QStringLiteral("type")).toString();
@@ -327,6 +346,7 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
     }
     else if (type == QStringLiteral("fatal"))
     {
+        TimingRequest_.clear();
         PlayState_.Phase = PlayPhase::CleanupUnknown;
         PlayState_.Message = event.value(QStringLiteral("message")).toString();
     }
@@ -369,6 +389,7 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
         PlayState_.ScriptBusy = false;
         PlayState_.ScriptMessage.clear();
         ScriptRequest_.clear();
+        TimingRequest_.clear();
         PlayState_.Phase =
             event.value(QStringLiteral("cleanup_confirmed")).toBool() ? PlayPhase::Stopped : PlayPhase::CleanupUnknown;
         PlayState_.Message = event.value(QStringLiteral("reason")).toString();
@@ -460,9 +481,17 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
                 }
             }
         }
+        if (request == TimingRequest_)
+        {
+            TimingRequest_.clear();
+        }
         if (host.contains(QStringLiteral("presented_frames")))
         {
             PlayState_.HostStatus = host;
+            // Runtime-computed intervals only; no editor clock reading is involved.
+            QString timingError;
+            PlayState_.HasTiming = ReadTimingSnapshot(host, PlayState_.Timing, timingError);
+            PlayState_.TimingMessage = PlayState_.HasTiming == true ? QString() : timingError;
             if (host.contains(QStringLiteral("script_paused")))
             {
                 PlayState_.ScriptPaused = host.value(QStringLiteral("script_paused")).toBool();

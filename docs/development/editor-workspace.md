@@ -32,6 +32,7 @@ editor package; launching the native editor does not need those files on disk.
 | Audio | Content selection, definitions, save and preview |
 | Configuration | Independent offline configuration preview and preference editing |
 | Live Inspector | Copied runtime state and supported live property operations |
+| Timing | Runtime-reported frame pacing and interval statistics for the running session |
 | Output | Selectable build/tool/runtime diagnostics |
 
 The Configuration workspace retains its explicitly loaded preview/draft across

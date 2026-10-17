@@ -91,6 +91,11 @@ void CheckDefaultPanels(MainWindow& window)
         CHECK_FALSE(dock->isHidden());
         CHECK_FALSE(dock->isFloating());
     }
+    // Timing shares the inspector's area as a background tab.
+    QDockWidget* timing = Dock(window, QStringLiteral("timingDock"));
+    CHECK(window.dockWidgetArea(timing) == Qt::RightDockWidgetArea);
+    CHECK(window.tabifiedDockWidgets(inspector).contains(timing));
+    CHECK_FALSE(timing->isFloating());
 }
 } // namespace
 

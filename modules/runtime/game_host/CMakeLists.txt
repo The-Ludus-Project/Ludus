@@ -48,11 +48,13 @@ target_sources(ludus_runtime_game_host
         src/module_loader.cpp
         src/protocol.cpp
         src/protocol_codec.cpp
+        src/timing_telemetry.cpp
         src/internal/host_services.h
         src/internal/host_session.h
         src/internal/identity.h
         src/internal/module_loader.h
         src/internal/protocol_codec.h
+        src/internal/timing_telemetry.h
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -77,8 +79,10 @@ target_link_libraries(ludus_runtime_game_host
         Ludus::FoundationConfigJson
         Ludus::RuntimeConfiguration
         Ludus::FoundationContainers
+        Ludus::FoundationTime
         Ludus::Input
         Ludus::Platform
+        Ludus::PlatformPacing
         Ludus::GraphicsRhi
         ${CMAKE_DL_LIBS}
 )
@@ -160,10 +164,20 @@ if(LUDUS_BUILD_TESTS)
     add_test(NAME ludus_game_host_protocol_tests COMMAND ludus_game_host_protocol_tests)
     set_tests_properties(ludus_game_host_protocol_tests PROPERTIES TIMEOUT 60 LABELS "unit;runtime;protocol")
 
+    add_executable(ludus_game_host_timing_tests tests/timing_tests.cpp)
+    target_include_directories(ludus_game_host_timing_tests PRIVATE src)
+    target_link_libraries(ludus_game_host_timing_tests PRIVATE
+        Ludus::GameHost Ludus::FoundationContainers Ludus::FoundationTime Ludus::PlatformPacing Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_game_host_timing_tests)
+    ludus_enable_test_exceptions(ludus_game_host_timing_tests)
+    add_test(NAME ludus_game_host_timing_tests COMMAND ludus_game_host_timing_tests)
+    set_tests_properties(ludus_game_host_timing_tests PROPERTIES TIMEOUT 60 LABELS "unit;runtime;timing")
+
     add_executable(ludus_game_host_session_tests tests/session_tests.cpp)
     target_include_directories(ludus_game_host_session_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
     target_link_libraries(ludus_game_host_session_tests PRIVATE
-        Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Catch2::Catch2WithMain Threads::Threads ${CMAKE_DL_LIBS})
+        Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Ludus::FoundationTime
+        Ludus::PlatformPacing Catch2::Catch2WithMain Threads::Threads ${CMAKE_DL_LIBS})
     ludus_apply_project_defaults(ludus_game_host_session_tests)
     ludus_enable_test_exceptions(ludus_game_host_session_tests)
     add_dependencies(ludus_game_host_session_tests ludus_game_fixture_A ludus_game_fixture_B ludus_game_fixture_badid)
@@ -177,7 +191,8 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_game_host_reload_tests tests/reload_tests.cpp)
     target_include_directories(ludus_game_host_reload_tests PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
     target_link_libraries(ludus_game_host_reload_tests PRIVATE
-        Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Catch2::Catch2WithMain ${CMAKE_DL_LIBS})
+        Ludus::GameHost Ludus::GameApi Ludus::FoundationContainers Ludus::FoundationLogging Ludus::FoundationTime
+        Ludus::PlatformPacing Catch2::Catch2WithMain ${CMAKE_DL_LIBS})
     ludus_apply_project_defaults(ludus_game_host_reload_tests)
     ludus_enable_test_exceptions(ludus_game_host_reload_tests)
     add_dependencies(ludus_game_host_reload_tests ludus_game_fixture_A ludus_game_fixture_B)
@@ -232,7 +247,8 @@ if(LUDUS_BUILD_TESTS)
         add_executable(ludus_game_host_debugger_journey tests/debugger_journey.cpp)
         target_include_directories(ludus_game_host_debugger_journey PRIVATE src "${LUDUS_GAME_HOST_GENERATED_INCLUDE_DIR}")
         target_link_libraries(ludus_game_host_debugger_journey PRIVATE
-            Ludus::GameHost Ludus::GameApi Ludus::FoundationLogging Ludus::FoundationContainers ${CMAKE_DL_LIBS})
+            Ludus::GameHost Ludus::GameApi Ludus::FoundationLogging Ludus::FoundationContainers Ludus::FoundationTime
+            Ludus::PlatformPacing ${CMAKE_DL_LIBS})
         ludus_apply_project_defaults(ludus_game_host_debugger_journey)
         add_dependencies(ludus_game_host_debugger_journey ludus_game_fixture_A ludus_game_fixture_B)
 

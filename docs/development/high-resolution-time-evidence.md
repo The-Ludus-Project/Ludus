@@ -421,3 +421,66 @@ Confirmation with the adopted wait (one build, sequential, load 44-58):
 
 The headless replay hash is unchanged by the wait (`7399557020790493750` at 600
 ticks, the same in every arm).
+
+## Runtime timing telemetry
+
+October 17, 2026. Scope: the inspection half of the
+[pacing and inspection stage](../architecture/high-resolution-time.md#implementation-before-research):
+GameHost play-loop pacing, the private `TimingTelemetry` aggregate, the `timing`
+record on `Status`, and the editor Timing panel. See the
+[contract](../architecture/high-resolution-time.md#runtime-timing-telemetry).
+
+### Tests
+
+| Behavior | Evidence |
+| --- | --- |
+| Aggregation over synthetic time | `modules/runtime/game_host/tests/timing_tests.cpp` drives the host's `FramePacer` and 250 ms `FrameClock` with an injected clock whose wait oversleeps 1 ms. Over 200 frames: one baseline, 199 `Waited`, a 120-frame window whose intervals are exactly 16,666,667 ns and whose lateness is exactly 1 ms, and accepted time of 199 intervals plus the first oversleep. |
+| Stalls, regressions and resets | A one-second stall is one `Rescheduled` frame with 59 abandoned targets, 750 ms discarded beyond the clamp and a one-second window maximum; the next frame waits a full interval. A reading below the previous one counts a regression and adds no interval; a frame-clock reset counts a baseline. |
+| Overflow | Totals, window values and the pacing interval saturate at 2^53 - 1 instead of wrapping; the encoder clamps any larger value and the saturated record round-trips. |
+| Wire bounds | The record round-trips through the codec inside a one-record `timing` array. The reader rejects values above 2^53 - 1, strings and negative numbers, unknown and missing fields, unknown outcomes, more than 120 or than recorded window frames, and unordered window statistics, leaving its output unchanged. |
+| Real host loop | `session_tests.cpp` runs `HostSession::RunLoop` over a socketpair, polls `Status` until five frames are measured, and checks one baseline, the 16,666,667 ns interval, `simulation_ticks == sim_ticks` and ordered statistics. |
+| Process boundary | `scripts/python/test_play_host_acceptance.py` reads the record from a `Status` result relayed by the real play supervisor after a committed reload: at least two baselines (startup and reload), ticks equal to `sim_ticks`, a bounded window and no timestamp-like fields. The editor live journey decodes it through `EditorController::RefreshTiming()`. |
+| Editor view model | `apps/editor/tests/timing_view_tests.cpp` decodes a record, accepts 2^53 - 1 exactly, rejects 2^53, fractions, strings, unknown outcomes, an unwrapped or two-record array, inconsistent windows and an extra timestamp field, and checks the formatted rows and the panel status line. The layout test checks that Timing is tabbed with the inspector after a layout reset. |
+
+### Records across the process boundary
+
+Method: the `ludus_game_host_supervisor_acceptance` workload (headless
+`ludus_game_host`, fixture module A reloaded to B, relayed by
+`scripts/python/play_tool.py`), run three times in sequence on the Apple M5 host
+described above at revision `16346bce` plus this change. Each run printed the
+`timing` record of the `Status` result after the committed reload; the scratch
+copy of the script added only that print. The one-minute load average was 32 to
+23, about three times the core count. Each record covers about a quarter-second
+session, so it shows that real values cross the boundary intact, not a rate
+distribution.
+
+| Run | Frames / measured | Interval min / mean / max (ms) | Lateness mean / max (ms) | Outcomes |
+| --- | --- | ---: | ---: | --- |
+| 1 | 16 / 14 | 11.58 / 17.06 / 23.55 | 3.84 / 7.77 | 14 `Waited`, 2 baselines |
+| 2 | 15 / 13 | 11.33 / 17.74 / 24.43 | 5.23 / 8.64 | 13 `Waited`, 2 baselines |
+| 3 | 14 / 12 | 10.17 / 17.73 / 25.00 | 3.57 / 8.33 | 12 `Waited`, 2 baselines |
+
+Every record reports the 16,666,667 ns pacing interval, no discarded time, no
+regressions or skipped targets, and `simulation_ticks` equal to `sim_ticks` (2:
+the paused session advanced one `Step` before and after the reload). The two
+baselines are startup and the committed reload. Intervals shorter than the
+target follow a late wake: the next target stays on the absolute schedule, as
+the pacer contract requires. Mean lateness of 3.6 to 5.2 ms matches the earlier
+headless 60 Hz measurements on this host.
+
+### Validation
+
+| Validation (macOS arm64 host, pinned Clang 18, warnings as errors) | Result |
+| --- | --- |
+| Development full build (`./scripts/build macos-clang-development`, editor and tests enabled) | Passed, warning-clean. The only linker notes are Homebrew Qt's deployment-target warnings, present before this change. |
+| `ctest --test-dir out/build/macos-clang-development --no-tests=error` | 111 of 113 passed, including `ludus_game_host_timing_tests` (5 cases, 116 assertions), the session, reload and supervisor acceptance tests, and `ludus_editor_tests`. The Cocoa window suite fails without `LUDUS_TEST_COCOA=1` in a WindowServer session, as in earlier stages. The header self-sufficiency gate timed out at 120 s at a load average near 100 and passed in 116 s when rerun alone. |
+| `python3 scripts/python/source_policy.py --base 16346bce` | Passed. |
+| `./scripts/check --format` | Passed, including the include boundary, naming scopes (the new files are adopted) and container policy. |
+| clang-tidy 18 on the new and changed sources | No findings in user code (`timing_telemetry.cpp`, `host_session.cpp`, `timing_tests.cpp`, `timing_view.cpp`, `timing_panel.cpp`, `controller_play.cpp`, `main_window_layout.cpp`). |
+| Documentation: `check-docs`, strict MkDocs build, `check-wiki --documentation-only`, `test_docs.py`, `test_wiki.py` | Passed; the index needed no change. |
+| `scripts/build-api --doxygen` (pinned Doxygen 1.18.0) | 173 headers, no new documentation gaps. No public header changed: the telemetry and editor view model are private. |
+| Editor live journey | Not run locally: it needs an installed SDK prefix (`LUDUS_SDK_PREFIX`); CI's editor tier runs it. |
+| ASan/UBSan execution | Not run locally: the Clang 18 ASan runtime hangs at startup on this host. |
+
+The Linux reference profile, sanitizer execution, browser presets, installed SDK
+and build budget are validated by the pull request's CI tiers.

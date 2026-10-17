@@ -24,6 +24,14 @@ modules/foundation/geometry
 apps/editor/src/internal/import_report.h
 apps/editor/src/import_report.cpp
 apps/editor/tests/import_report_tests.cpp
+apps/editor/src/internal/timing_view.h
+apps/editor/src/timing_view.cpp
+apps/editor/src/internal/timing_panel.h
+apps/editor/src/timing_panel.cpp
+apps/editor/tests/timing_view_tests.cpp
+modules/runtime/game_host/src/internal/timing_telemetry.h
+modules/runtime/game_host/src/timing_telemetry.cpp
+modules/runtime/game_host/tests/timing_tests.cpp
 
 modules/content/render_graph_format
 modules/foundation/threading

@@ -297,6 +297,12 @@ TEST_CASE("native editor installed SDK build play edit reload asset and reopen",
                controller.PlayState().HostStatus.value(QStringLiteral("presented_frames")).toInteger() > 0;
     }));
     REQUIRE(controller.PlayState().HostStatus.value(QStringLiteral("windowed")).toBool());
+    // Runtime timing crosses the supervisor unchanged and decodes in the editor.
+    controller.RefreshTiming();
+    REQUIRE(Wait(
+        [&]() { return controller.PlayState().HasTiming == true && controller.PlayState().Timing.WindowFrames > 0; }));
+    CHECK(controller.PlayState().Timing.PacingIntervalNanoseconds == 16'666'667);
+    CHECK(controller.PlayState().TimingMessage.isEmpty());
     const auto session = controller.PlayState().Session;
     controller.Stop();
     REQUIRE(Wait([&]() { return controller.PlayState().Phase == PlayPhase::Stopped && controller.CanPlay(); }));

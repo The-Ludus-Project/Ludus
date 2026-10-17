@@ -8,9 +8,11 @@
 
 #include "internal/host_session.h"
 #include "internal/protocol_codec.h"
+#include "internal/timing_telemetry.h"
 
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/runtime/game_host/host.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -653,6 +655,63 @@ TEST_CASE("duplicate Step is applied once and acknowledged IDs are never replaye
     worker.join();
     ::close(editorEnd);
     ::close(sv[1]);
+}
+
+TEST_CASE("Status reports runtime-computed frame timing", "[session][timing]")
+{
+    ludus::foundation::StaticArray<ludus::foundation::int32, 2> sockets{-1, -1};
+    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets.GetData()) == 0);
+    const ludus::foundation::int32 editorEnd = sockets[0];
+    HostSession session(1, 1, sockets[1]);
+    REQUIRE(session.LoadInitial(LUDUS_FIXTURE_A_PATH));
+    HostWorker worker(editorEnd, [&] { (void)session.RunLoop(0); });
+    FrameReader reader;
+    (void)AwaitEvent(editorEnd, reader, "ModuleReady");
+
+    // Poll until the paced loop has measured a few frames; real time, so only
+    // structural and policy facts are asserted, never host-dependent durations.
+    constexpr ludus::foundation::uint64 MEASURED_FRAMES = 5;
+    TimingReport report;
+    ludus::foundation::uint64 ticks = 0;
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    ludus::foundation::uint64 request = 1;
+    while (report.WindowFrames < MEASURED_FRAMES && std::chrono::steady_clock::now() < deadline)
+    {
+        Message status;
+        status.SetString("command", "Status");
+        status.SetHexId("request", request);
+        SendCommand(editorEnd, status);
+        for (const Message& event : AwaitStatus(editorEnd, reader, request))
+        {
+            uint64 id = 0;
+            Array<Message> records;
+            if (event.GetHexId("request", id) == true && id == request &&
+                event.GetRecords(TIMING_RECORD_KEY, records) == true)
+            {
+                REQUIRE(records.GetSize() == 1);
+                REQUIRE(ReadTimingRecord(records[0], report));
+                REQUIRE(event.GetUint("sim_ticks", ticks));
+            }
+        }
+        ++request;
+    }
+    CHECK(report.WindowFrames >= MEASURED_FRAMES);
+    CHECK(report.WindowFrames <= TIMING_WINDOW_FRAMES);
+    CHECK(report.Frames >= report.WindowFrames);
+    CHECK(report.Baselines == 1);
+    CHECK(report.PacingIntervalNanoseconds == 16'666'667);
+    CHECK(report.SimulationTicks == ticks);
+    CHECK(report.WindowIntervalMinimumNanoseconds <= report.WindowIntervalMeanNanoseconds);
+    CHECK(report.WindowIntervalMeanNanoseconds <= report.WindowIntervalMaximumNanoseconds);
+
+    Message stop;
+    stop.SetString("command", "Stop");
+    stop.SetHexId("request", request);
+    SendCommand(editorEnd, stop);
+    (void)AwaitEvent(editorEnd, reader, "SessionEnded");
+    worker.join();
+    ::close(editorEnd);
+    ::close(sockets[1]);
 }
 
 TEST_CASE("Stop is bounded under output backpressure without corrupting frames", "[session][backpressure]")

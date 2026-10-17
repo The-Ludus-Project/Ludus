@@ -1,5 +1,5 @@
 ---
-description: Measure monotonic intervals, use checked stopwatch, deadline and frame sampling values, and pace native frame loops.
+description: Measure monotonic intervals, use checked stopwatch, deadline and frame sampling values, pace native frame loops, and inspect runtime frame timing in the editor.
 ---
 
 # Use high-resolution time
@@ -235,6 +235,33 @@ can still be late under load; see the
 [measurements](../../development/high-resolution-time-evidence.md#native-frame-pacing).
 Tests pass a `PacingClock` whose wait advances synthetic time instead of sleeping.
 
+## Inspect frame timing in the editor
+
+While a native Play session runs, open the **Timing** tab beside Live Inspector
+(or **View > Timing**). The game host measures its own loop and reports:
+
+| Row | What the host measured |
+| --- | --- |
+| Pacing target | Its frame-start schedule: 60 Hz, a 16.667 ms interval |
+| Frame interval | Minimum, mean and maximum time between frame starts over the last 120 measured frames |
+| Wake lateness | How long after each target the frame actually started |
+| Pacing outcomes | Frames that waited, started late, were rescheduled after a stall, or started early because a wait failed |
+| Skipped targets | Missed targets dropped instead of run back to back, and early operating-system wakes |
+| Frame time | Total accepted frame time and the time beyond the 250 ms clamp |
+| Frames, Clock | Frame and simulation tick counts; frame-clock baselines and clock regressions |
+
+A steady game shows a mean interval at the target and small lateness. A maximum
+far above the mean is a hitch; a `Rescheduled` count means the host abandoned its
+schedule after one. A committed reload counts a new baseline instead of a long frame; a rejected one shows its stall.
+These are whole-session diagnostics for inspection; repeat controlled runs before
+comparing builds.
+
+The panel asks for one report per second only while it is visible. Every value is
+an interval or count computed by the host, so readings from the two processes'
+clocks are never subtracted. The world reference application keeps its own
+`--pacing-report`; it is not an editor-hosted session. See the
+[telemetry contract](../../architecture/high-resolution-time.md#runtime-timing-telemetry).
+
 ## Handle failures and debug surprising readings
 
 | Result or symptom | Meaning and recovery |
@@ -262,7 +289,7 @@ from host samples. Clock epochs are not persistent save/replay identities.
 | Rational integer fixed-step driver | Implemented in the world reference `TickDriver`: checked `uint64` phase, exact tick accounting, separate clamp and catch-up loss |
 | Native frame pacing | Implemented: `Ludus::PlatformPacing` `FramePacer` and system wait; the world reference paces idle frames and an optional cap |
 | Bounded gameplay event queue | Planned separate integration |
-| Editor Timing view and runtime timing telemetry | Proposed; no new timer controls or inspector ship with this slice |
+| Editor Timing view and runtime timing telemetry | Implemented: GameHost paces its play loop and reports bounded intervals/status on `Status`; a read-only Timing panel shows them. No timer controls ship |
 | Time scaling, additional platform/worker domains, GPU/audio/network clock integration | Separate requirements and validation needed |
 
 Existing Qt timers serve editor event-loop scheduling. A measurement API does

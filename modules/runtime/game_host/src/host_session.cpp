@@ -14,7 +14,6 @@
 
 #include <poll.h>
 #include <sys/socket.h>
-#include <time.h>
 #include <unistd.h>
 
 namespace ludus::runtime::game_host
@@ -37,6 +36,21 @@ using protocol::CommandStatus;
 using protocol::EventKind;
 using protocol::Message;
 using protocol::ReloadPhase;
+
+// Host frame pacing: 60 Hz frame starts (16,666,667 ns, whole nanoseconds), a
+// four-interval lateness bound before re-anchoring. The simulation is unaffected: it
+// advances one fixed tick per frame (design 8).
+constexpr uint64 HOST_FRAME_INTERVAL_NANOSECONDS = 16'666'667;
+constexpr uint64 HOST_MAXIMUM_LATE_INTERVALS = 4;
+
+[[nodiscard]] platform::PacingPolicy MakeHostPacingPolicy() noexcept
+{
+    return
+    {
+        .Interval = {HOST_FRAME_INTERVAL_NANOSECONDS},
+        .MaximumLateness = {HOST_FRAME_INTERVAL_NANOSECONDS * HOST_MAXIMUM_LATE_INTERVALS},
+    };
+}
 
 // Checkpoint body cap (design 8): 16 MiB.
 constexpr usize kMaxCheckpointBody = static_cast<usize>(16) * 1024 * 1024;
@@ -433,6 +447,7 @@ void HostSession::StepFrame() noexcept
     if (advancing)
     {
         ++SimTicks_; // simulation ticks only advance when not paused
+        Timing_.RecordTick();
     }
     StepRequested_ = false;
 }
@@ -703,6 +718,10 @@ void HostSession::Dispatch(const Message& command) noexcept
         m.SetString("identity", CurrentHostIdentity());
         m.SetUint("capabilities", Active_.Metadata().Capabilities);
         m.SetUint("schema_version", Active_.Metadata().PropertySchemaVersion);
+        // Runtime-computed intervals and counts only; the editor never compares clocks.
+        Message timing;
+        WriteTimingRecord(Timing_.GetReport(), timing);
+        m.SetRecords(TIMING_RECORD_KEY, {&timing, 1});
         uint64 reconcile = 0;
         if (command.Has("reconcile"))
         {
@@ -1137,6 +1156,7 @@ CommandStatus HostSession::ReloadTo(std::string_view newModulePath, uint64 newGe
     Quiesced_ = true;
     ActiveGeneration_ = newGeneration;
     ++SchemaEpoch_;
+    resetFrameTiming();
 
     // Phase 6 Retire: destroy A with its own code in a retired context, then
     // release A's loader reference (only after its instance is destroyed and its
@@ -1230,8 +1250,18 @@ RunResult RunStaticEntry(const HostConfig& config, StaticEntryFn entry) noexcept
         return started;
     }
     RunResult result = RunResult::Ok;
+    platform::FramePacer pacer;
+    if (pacer.Configure(MakeHostPacingPolicy()) != platform::PacingStatus::Ok)
+    {
+        services.Retire();
+        table.Destroy(instance);
+        return RunResult::Internal;
+    }
+    const platform::PacingClock pacingClock = platform::GetSystemPacingClock();
     for (uint64 i = 0; config.MaxFrames == 0 || i < config.MaxFrames; ++i)
     {
+        // The same 60 Hz absolute schedule as the play session, without telemetry.
+        (void)pacer.Pace(pacingClock);
         if (!presenter.Poll())
         {
             break;
@@ -1254,8 +1284,6 @@ RunResult RunStaticEntry(const HostConfig& config, StaticEntryFn entry) noexcept
         {
             break;
         }
-        const timespec delay = {0, 16000000};
-        (void)::nanosleep(&delay, nullptr);
     }
     services.GateWork();
     if ((table.Quiesce != nullptr && table.Quiesce(instance) != Status::Ok) || services.OutstandingWork() != 0)
@@ -1294,6 +1322,12 @@ usize HostSession::CaptureCheckpoint(ludus::foundation::uint8* buffer, usize cap
     return written;
 }
 
+void HostSession::resetFrameTiming() noexcept
+{
+    Pacer_.Reset();
+    FrameClock_.Reset();
+}
+
 bool HostSession::ModuleHasReload() const noexcept
 {
     return Active_.IsLoaded() && game_api::HasCapability(Active_.Metadata().Capabilities, game_api::Capability::Reload);
@@ -1322,8 +1356,19 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
     }
     Presenter_ = presenter;
     RunResult result = RunResult::Ok;
+    const platform::PacingPolicy pacing = MakeHostPacingPolicy();
+    if (Pacer_.Configure(pacing) == platform::PacingStatus::Ok)
+    {
+        Timing_.SetPacingInterval(pacing.Interval);
+    }
+    FrameClock_.Reset();
     for (;;)
     {
+        // Pace before the frame reads its one timestamp; absolute targets keep
+        // the rate when frame work varies (high-resolution-time.md, "Native
+        // frame pacing"). No busy spin and no pause/reload catch-up.
+        const platform::PaceResult pace = Pacer_.Pace(PacingClock_);
+        Timing_.Record(FrameClock_.Sample(ludus::foundation::time::Now()), pace);
         if ((presenter != nullptr && !presenter->Poll()) || !PumpControl())
         {
             break;
@@ -1353,9 +1398,6 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
                 break;
             }
         }
-        // Fixed simulation ticks, no busy spin and no pause/reload catch-up.
-        const timespec delay = {0, 16000000};
-        (void)::nanosleep(&delay, nullptr);
         if (maxFrames != 0 && FrameIndex_ >= maxFrames)
         {
             break;

@@ -153,6 +153,15 @@ without uploading data. Duplicate mutation requests reconcile retained outcomes;
 old session/schema requests reject. Busy requires draining/acknowledging or
 retrying from refreshed state. CleanupUnknown requires an explicit host restart.
 
+The Timing panel, a tab beside Live Inspector, shows the host's own frame timing
+while it is visible: its 60 Hz pacing target, the last 120 frame intervals and
+wake lateness, pacing outcomes and accepted/discarded frame time. The values are
+intervals and counts computed by the host; the editor does not compare its clock
+with the game's. A committed reload drops the frame baseline, so its stall is
+counted as a baseline rather than as a long frame; a rejected reload resumes the
+old schedule and its stall appears as one long, rescheduled frame. See
+[runtime timing telemetry](../architecture/high-resolution-time.md#runtime-timing-telemetry).
+
 Debug symbols stay with leased generations. Separate GDB launch and attach
 acceptance cases verify A/B source breakpoints and stepping in one inferior,
 with A retained while its frame is stopped. The supervisor observes traced

@@ -4,6 +4,7 @@
 #include "internal/main_window.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/timing_panel.h"
 #include "internal/world_workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -252,6 +253,14 @@ void MainWindow::BuildUi()
     InspectorDock_->setWidget(inspectorScroll);
     addDockWidget(Qt::RightDockWidgetArea, InspectorDock_);
 
+    // Runtime timing telemetry shares the inspector's area: both describe the
+    // running session, and the inspector stays the default tab.
+    TimingDock_->setObjectName(QStringLiteral("timingDock"));
+    TimingDock_->setWidget(Timing_);
+    addDockWidget(Qt::RightDockWidgetArea, TimingDock_);
+    tabifyDockWidget(InspectorDock_, TimingDock_);
+    InspectorDock_->raise();
+
     OutputDock_ = new QDockWidget(QStringLiteral("Output"), this);
     OutputDock_->setObjectName(QStringLiteral("outputDock"));
     Output_ = new QPlainTextEdit(OutputDock_);
@@ -408,11 +417,12 @@ void MainWindow::ResetWorkspaceLayout()
 {
     (void)restoreState(DefaultLayout_, LAYOUT_VERSION);
     // Also recover a pane that was floating when the user requested reset.
-    for (auto* dock : {InspectorDock_, OutputDock_})
+    for (QDockWidget* dock : {InspectorDock_, TimingDock_, OutputDock_})
     {
         dock->setFloating(false);
         dock->show();
     }
+    InspectorDock_->raise();
     GameToolbar_->show();
     resizeDocks({InspectorDock_}, {300}, Qt::Horizontal);
     resizeDocks({OutputDock_}, {180}, Qt::Vertical);

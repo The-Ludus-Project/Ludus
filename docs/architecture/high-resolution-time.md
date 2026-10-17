@@ -1,10 +1,11 @@
 # High-resolution time
 
 Status: FoundationTime implementation slice, frame integration, the integer
-simulation driver and native frame pacing implemented; the scheduling queue,
-runtime timing telemetry and editor Timing view below are proposed. Reviewed
+simulation driver, native frame pacing, runtime timing telemetry and the editor
+Timing view implemented; the scheduling queue below is proposed. Reviewed
 October 4, 2026; frame integration October 15, 2026; integer simulation driver
-and native frame pacing October 16, 2026. See [ADR 0017](../decisions/0017-foundation-time.md).
+and native frame pacing October 16, 2026; inspection October 17, 2026. See
+[ADR 0017](../decisions/0017-foundation-time.md).
 
 ## Goals and independent baseline
 
@@ -249,6 +250,81 @@ variable-refresh display may follow the cap instead. Matching caps to a display 
 timing feedback (presentation timestamps, queue-depth control) remain RHI work;
 see HR-01 below.
 
+## Runtime timing telemetry
+
+The editor and the game run in separate processes: the editor, a Python play
+supervisor and the GameHost, linked by the versioned play-session protocol (see
+[loading projects and editing games during play](project-live-reload.md)). Their
+FoundationTime readings come from different processes and are not one domain, so
+timing crosses that boundary only as intervals and counts the runtime computed
+itself. The editor never subtracts its own clock readings from runtime readings,
+and no absolute runtime timestamp appears in the protocol.
+
+**Owner.** The GameHost play session owns the measurement. `HostSession::RunLoop`
+paces each frame start with a `FramePacer` (60 Hz, 16,666,667 ns, with a
+four-interval lateness bound), then reads `time::Now()` once and samples a
+`FrameClock` with the frame-update 250 ms clamp. This replaces the loop's
+earlier fixed 16 ms sleep after each frame, which added the frame's own work to
+every interval. The static shipping loop, `RunStaticEntry`, uses the same
+schedule without telemetry. The simulation is unchanged: the host still advances
+one fixed tick per running frame and never catches up after pause or reload
+(live-reload design 8), so the frame samples are diagnostics, not simulation
+debt. A committed module reload is a session replacement and drops both the
+pacing schedule and the frame-clock baseline. A rejected reload resumes the old
+instance and schedule, so its stall appears as one long, rescheduled frame.
+
+A private, owner-local `TimingTelemetry` value
+(`modules/runtime/game_host/src/internal/timing_telemetry.h`) records each frame
+start: its `FrameSample` and the `PaceResult` that preceded it. Recording is
+constant time and allocation-free: it updates saturating totals and writes one
+slot of a fixed 120-frame ring (two seconds at 60 Hz). Only measured frames
+enter the window; a baseline or clock regression carries no interval and is
+counted instead. Statistics are computed when the editor asks, not per frame.
+
+| Field | Meaning |
+| --- | --- |
+| `frames`, `baselines`, `clock_regressions` | Frames recorded; frame-clock baselines (startup, reload); samples below the previous reading |
+| `accepted_ns`, `discarded_ns` | Totals of `FrameSample::Elapsed` and of time beyond the 250 ms clamp |
+| `simulation_ticks` | Ticks advanced while recording; equal to the Status `sim_ticks` |
+| `pacing_interval_ns` | The pacer's interval, from which the editor shows the target rate |
+| `pace_waited`, `pace_late`, `pace_rescheduled`, `pace_wait_failed`, `pace_other` | `PaceOutcome` counts; `WaitFailed` and `WaitLimit` share one count, `Baseline` and fault outcomes another |
+| `skipped_targets`, `early_wakes`, `last_outcome` | Sums of `SkippedTargets` and `EarlyWakeCount`; the latest outcome's enumerator name |
+| `window_frames`, `window_interval_{min,mean,max}_ns` | Measured frames in the window and their raw interval (accepted plus discarded) |
+| `window_lateness_{mean,max}_ns` | Pacing lateness (wake minus target) of the same frames |
+
+**Wire record.** The existing `Status` command result carries the report as a
+one-record `timing` array, within the codec's closed flat-record vocabulary and
+32-field limit. The supervisor forwards host results unchanged. Every value is
+an unsigned integer at most 2^53 - 1, the largest integer the editor's Qt JSON
+reader, which uses binary64 numbers, represents exactly; totals saturate there
+instead of wrapping or silently losing precision. Both readers reject missing or
+unknown fields, out-of-range or non-integer values, an unknown outcome name, more
+window frames than the window or than recorded frames, and unordered window
+statistics. No command was added and the protocol version is unchanged: older
+editors ignore the field.
+
+**Editor Timing view.** A Timing dock, tabbed with the Live Inspector, shows the
+latest report for the running session: target rate, window frame interval and
+wake lateness, outcome counts, skipped targets, accepted/discarded frame time,
+simulation ticks and clock events. The editor controller owns the request and
+the decoded snapshot; the panel only renders them. While visible, the panel asks
+for one `Status` per second, with at most one timing request outstanding; a
+hidden panel sends nothing. The derived values are unit conversions and the
+target rate (one second divided by the runtime interval). A rejected record
+leaves the panel's previous report and shows the reason.
+
+The window mean is a labeled presentation metric. It never feeds simulation,
+deadlines or pacing, and minimum and maximum are reported beside it so smoothing
+cannot hide a hitch. Llopis's clock chapter suggests averaging for display, and
+the [profiling literature review](profiling-literature-review.md) keeps diagnostic
+smoothing separate from retained evidence.
+
+Not covered: the world reference application is not an editor-hosted session.
+Its `TickDriver` accepted/clamped/excluded totals and `--pacing-report` remain
+its own inspection path. Browser play sessions, presentation timestamps, GPU
+timing and a persistent timing history are separate work. This view is
+for inspecting a session, not for benchmarking; see HR-02 below.
+
 ## Future scheduling and frame pacing
 
 Most gameplay cooldowns remain checked tick deadlines on their owning component.
@@ -319,8 +395,8 @@ This PR implements Time, checked arithmetic, stopwatch, deadline and frame
 sampling; migrates logging/profiling producers; and adds native unit, installed
 SDK and pinned web semantic/header coverage. Later stages migrated the frame
 loops, replaced the world reference float64 debt with the rational fixed-step
-driver and added native frame pacing. The future queue, timing telemetry, scaling,
-GPU and network clocks remain unimplemented.
+driver, added native frame pacing, and reported runtime timing to the editor. The
+future queue, scaling, GPU and network clocks remain unimplemented.
 
 Boundary tests cover max-value overflow, output preservation, zero/equal/reversed
 samples, one-nanosecond intervals at a large epoch, lifecycle failures, independent
@@ -350,7 +426,7 @@ and [ADR 0017](../decisions/0017-foundation-time.md) as the implementation basel
 | Frame integration (implemented) | Migrate application loops to one explicit frame sample and wire lifecycle resets using the existing frame/simulation contract. | Integration tests for startup, pause/resume, visibility and session replacement, clock regression and accepted/discarded time; no duplicate clamp. See [validation evidence](../development/high-resolution-time-evidence.md#frame-integration). |
 | Integer simulation driver (implemented) | Implement the rational phase accumulator described above, including checked configuration, catch-up bounds, interpolation and exhaustion. | Partition-independent tick/remainder accounting when no time is intentionally discarded, exact 60 Hz accounting over one second, explicit clamp/catch-up loss and failure tests. See [validation evidence](../development/high-resolution-time-evidence.md#integer-simulation-driver). |
 | Pacing (implemented) | Implement the agreed [native pacing policy](#native-frame-pacing) under Platform/application ownership. | Reproducible target/wake/presentation measurements, interruption/lateness and lifecycle tests. See [validation evidence](../development/high-resolution-time-evidence.md#native-frame-pacing). |
-| Inspection | Define runtime timing telemetry and the proposed editor Timing view under their existing owners. | Runtime-reported intervals/status across the editor process boundary. |
+| Inspection (implemented) | Define [runtime timing telemetry](#runtime-timing-telemetry) and the editor Timing view under their existing owners. | Runtime-reported intervals/status across the editor process boundary. See [validation evidence](../development/high-resolution-time-evidence.md#runtime-timing-telemetry). |
 
 The bounded gameplay queue, time scaling and additional clock domains remain
 conditional extensions. Establish their requirements and ownership before

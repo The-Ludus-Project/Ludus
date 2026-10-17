@@ -7,6 +7,7 @@
 #include "internal/project_setup_dialog.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/timing_panel.h"
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
 
@@ -54,7 +55,8 @@ namespace ludus::editor
 {
 
 MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QString& workspaceSettingsFile)
-    : QMainWindow(parent), Controller_(controller), WorkspaceSettingsFile_(workspaceSettingsFile)
+    : QMainWindow(parent), Controller_(controller), WorkspaceSettingsFile_(workspaceSettingsFile),
+      TimingDock_(new QDockWidget(QStringLiteral("Timing"), this)), Timing_(new TimingPanel(controller, TimingDock_))
 {
     setWindowTitle(QStringLiteral("Ludus Editor"));
     setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
@@ -342,6 +344,7 @@ void MainWindow::BuildMenus()
 
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
     viewMenu->addAction(InspectorDock_->toggleViewAction());
+    viewMenu->addAction(TimingDock_->toggleViewAction());
     viewMenu->addAction(OutputDock_->toggleViewAction());
     viewMenu->addAction(GameToolbar_->toggleViewAction());
     viewMenu->addSeparator();
@@ -695,6 +698,7 @@ void MainWindow::OnStateChanged()
     }
     // If a close was requested and the workspace is now closeable, finish.
     RenderProperties();
+    Timing_->Render();
     if (CloseConfirmed_ && Controller_->Caps().CanCloseImmediately)
     {
         close();

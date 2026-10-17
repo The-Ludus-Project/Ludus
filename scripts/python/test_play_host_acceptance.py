@@ -173,6 +173,15 @@ def main():
             status = client.command(11, command="Status")["host"]
             assert status["state"] == "Paused" and status["sim_ticks"] == ticks+1, status
             assert status["generation"] == published[1].name[:16], status
+            # Runtime timing crosses the supervisor unchanged: host-computed
+            # intervals and counts, no absolute timestamps. The committed reload
+            # dropped the frame baseline, so startup and reload are both counted.
+            assert len(status["timing"]) == 1, status
+            timing = status["timing"][0]
+            assert timing["pacing_interval_ns"] == 16_666_667 and timing["frames"] > 0, timing
+            assert timing["baselines"] >= 2 and timing["simulation_ticks"] == status["sim_ticks"], timing
+            assert 0 < timing["window_frames"] <= min(120, timing["frames"]), timing
+            assert not any(key.endswith(("_at", "timestamp", "wake_ns", "target_ns")) for key in timing), timing
             assert client.command(12, command="ReadProperties", expected_generation=status["generation"])["status"] == "Ok"
             assert any(e["type"] == "host" and e["event"]["event"] == "PropertiesChanged" for e in client.events)
             assert client.command(13, command="Resume", expected_generation=status["generation"])["status"] == "Ok"

@@ -13,6 +13,7 @@
 #include "internal/host_services.h"
 #include "internal/module_loader.h"
 #include "internal/protocol_codec.h"
+#include "internal/timing_telemetry.h"
 
 #include <ludus/runtime/game_api/api.h>
 #include <ludus/runtime/game_host/host.h>
@@ -21,6 +22,8 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/time/timers.hpp>
+#include <ludus/platform/frame_pacing.h>
 
 #include <string>
 #include <string_view>
@@ -45,6 +48,9 @@ enum class PlayState : ludus::foundation::uint8
 };
 
 class FramePresenter;
+
+/// Largest frame interval the host's diagnostic frame clock accepts: the frame-update 250 ms clamp.
+inline constexpr uint64 HOST_MAXIMUM_FRAME_DELTA_NANOSECONDS = 250'000'000;
 
 [[nodiscard]] std::string_view PlayStateName(PlayState state) noexcept;
 
@@ -151,6 +157,8 @@ private:
     // the optional Quiesce/Resume/checkpoint/candidate callbacks).
     [[nodiscard]] bool ModuleHasReload() const noexcept;
     [[nodiscard]] bool RetireActive() noexcept;
+    // Drop the frame-clock baseline and pacing schedule after session replacement.
+    void resetFrameTiming() noexcept;
 
     FramePresenter* Presenter_ = nullptr;
     uint64 ProjectId_ = 0;
@@ -175,6 +183,15 @@ private:
     uint64 FrameIndex_ = 0;
     uint64 SimTicks_ = 0;                    // Simulation ticks; advance only when not paused (no catch-up).
     game_api::RenderParams LastRender_ = {}; // Last render params from Update (asset/visible-change checks).
+    // Frame timing (docs/architecture/high-resolution-time.md, "Runtime timing
+    // telemetry"): RunLoop paces each frame start, samples one timestamp per
+    // frame and reports the aggregate on Status. Simulation still advances one
+    // fixed tick per frame; the samples are diagnostics, not simulation debt.
+    platform::FramePacer Pacer_;
+    platform::PacingClock PacingClock_ = platform::GetSystemPacingClock();
+    ludus::foundation::time::FrameClock FrameClock_{
+        ludus::foundation::time::Duration{HOST_MAXIMUM_FRAME_DELTA_NANOSECONDS}};
+    TimingTelemetry Timing_;
     uint64 SessionId_ = 1;
     uint64 ActiveGeneration_ = 0;
     uint64 SchemaEpoch_ = 0;
