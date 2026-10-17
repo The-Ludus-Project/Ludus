@@ -13,6 +13,7 @@
 
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/transform.hpp>
+#include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/platform/entropy.h>
 
 #include <QApplication>
@@ -622,7 +623,7 @@ TEST_CASE("World composes schema meshes into cooked renderer data with bounded f
     };
     RenderScene combined;
     REQUIRE(RenderScene::Merge(fixture.Scene, {}, level, combined, fixture.Error, {}));
-    REQUIRE(combined.Definition);
+    REQUIRE(combined.Definition != nullptr);
     CHECK(combined.Lit);
     CHECK(combined.Objects.size() == fixture.Scene.Objects.size());
     CHECK(combined.Objects[0].Id == fixture.Scene.Objects[0].Id);
@@ -637,20 +638,20 @@ TEST_CASE("World composes schema meshes into cooked renderer data with bounded f
     }
     CHECK_FALSE(RenderScene::Merge(excessive, {}, level, combined, fixture.Error, {}));
     CHECK(combined.Identity == retained);
-    const auto definition = combined.Definition.toWeakRef();
+    const WeakPtr<const ludus::resources::SceneDefinition> definition = combined.Definition;
     {
         RenderPreview preview;
         REQUIRE(preview.SetScene(combined));
         combined = {};
-        CHECK_FALSE(definition.isNull());
+        CHECK(definition.IsExpired() == false);
         REQUIRE(preview.SetScene(fixture.Scene));
-        CHECK(definition.isNull()); // Replacement retires the previous lease and definition.
+        CHECK(definition.IsExpired() == true); // Replacement retires the previous lease and definition.
         REQUIRE(RenderScene::Merge(fixture.Scene, {}, level, combined, fixture.Error, {}));
-        const auto lastDefinition = combined.Definition.toWeakRef();
+        const WeakPtr<const ludus::resources::SceneDefinition> lastDefinition = combined.Definition;
         REQUIRE(preview.SetScene(combined));
         combined = {};
         REQUIRE(preview.SetScene({}));
-        CHECK(lastDefinition.isNull());
+        CHECK(lastDefinition.IsExpired() == true);
     }
 }
 
@@ -913,7 +914,7 @@ TEST_CASE("World light bindings preserve authored photometric terms and reject i
     REQUIRE(RenderScene::Load(fixture.Root, fixture.World, fixture.Scene, fixture.Error));
     CHECK(fixture.Scene.AuthoredLights.Count == 0);
     CHECK(fixture.Scene.Lit == true);
-    REQUIRE(fixture.Scene.Definition.isNull() == false);
+    REQUIRE(fixture.Scene.Definition != nullptr);
     CHECK(fixture.Scene.Definition->Lights.IsEmpty() == true);
 }
 
@@ -1083,7 +1084,7 @@ RenderScene LoadLitStarterScene(Fixture& inoutFixture)
     RenderScene scene;
     REQUIRE(RenderScene::Load(fixture.Root, fixture.World, scene, fixture.Error));
     REQUIRE(scene.Lit == true);
-    REQUIRE(scene.Definition.isNull() == false);
+    REQUIRE(scene.Definition != nullptr);
     return scene;
 }
 } // namespace
@@ -1187,6 +1188,44 @@ TEST_CASE("Static lighting worker interruption and destruction release the share
     StaticLightingJob next(scene, description);
     REQUIRE(next.Start(jobs) == ludus::graphics::rhi::RasterStatus::Pending);
     REQUIRE(next.Wait() == ludus::graphics::rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("Static lighting worker retains its scene definition across scene replacement",
+          "[editor][render-authoring][lighting]")
+{
+    Fixture fixture;
+    RenderScene scene = LoadLitStarterScene(fixture);
+    const WeakPtr<const ludus::resources::SceneDefinition> definition = scene.Definition;
+    const uint64 sourceId = scene.Definition->Objects[0].SourceId;
+    rr::StaticLightingBakeDescription description;
+    description.SamplesPerTriangle = 1;
+    description.MaxDepth = 2;
+    description.SceneRevision = 11;
+    description.DependencyRevision = 22;
+    ludus::foundation::threading::JobSystem jobs;
+    REQUIRE(jobs.Initialize({ .WorkerCount = STATIC_LIGHTING_WORKER_COUNT }) ==
+            ludus::foundation::threading::JobStatus::Ok);
+    {
+        StaticLightingJob worker(scene, description);
+        REQUIRE(worker.Start(jobs) == ludus::graphics::rhi::RasterStatus::Pending);
+        // Replace every other holder while the bake workers read the definition:
+        // the workspace copy and the preview residency release theirs first.
+        RenderPreview preview;
+        REQUIRE(preview.SetScene(scene));
+        scene = {};
+        REQUIRE(preview.SetScene({}));
+        CHECK(definition.IsExpired() == false);
+        REQUIRE(worker.Wait() == ludus::graphics::rhi::RasterStatus::Ready);
+        UniquePtr<rr::StaticLightingBake> bake = worker.TakeBake();
+        REQUIRE(bake.Get() != nullptr);
+        rr::StaticLightingChart chart;
+        REQUIRE(bake->GetChart(0, chart) == ludus::graphics::rhi::RasterStatus::Ready);
+        CHECK(chart.SourceId == sourceId);
+        // The job is now the last holder; destroying it destroys the definition.
+        CHECK(definition.IsExpired() == false);
+    }
+    CHECK(definition.IsExpired() == true);
+    CHECK(definition.Lock() == nullptr);
 }
 
 TEST_CASE("Qt numeric stream preserves full-width light identity bytes across native integer ABIs",

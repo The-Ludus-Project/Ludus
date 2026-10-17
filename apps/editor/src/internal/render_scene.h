@@ -5,6 +5,7 @@
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/gameplay/camera/evaluation.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/views.hpp>
@@ -14,7 +15,6 @@
 
 #include <QImage>
 #include <QJsonObject>
-#include <QSharedPointer>
 #include <QVector>
 
 namespace ludus::editor
@@ -74,7 +74,10 @@ struct PreviewViewOptions final
 };
 struct RenderScene final
 {
-    QSharedPointer<resources::SceneDefinition> Definition;
+    // Immutable decoded snapshot shared by every retained copy of the scene
+    // (workspace, load job, preview residency, GPU generation, static-lighting
+    // bake). The last holder to release it, on any thread, destroys it.
+    foundation::SharedPtr<const resources::SceneDefinition> Definition;
     QString LogicalId;
     bool Lit = false;
     graphics::renderer::LightSelection AuthoredLights{};

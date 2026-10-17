@@ -233,6 +233,7 @@ target_link_libraries(ludus_editor
         Qt6::Gui
         Qt6::Widgets
         Ludus::FoundationBase
+        Ludus::FoundationMemory
         Ludus::FoundationLogging
         Ludus::AudioContent
         Ludus::FoundationConfigJson
@@ -394,6 +395,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Qt6::Widgets
             Qt6::Test
             Ludus::FoundationBase
+            Ludus::FoundationMemory
             Ludus::FoundationLogging
             Ludus::AudioContent
             Ludus::FoundationConfigJson

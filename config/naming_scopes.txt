@@ -21,6 +21,12 @@ modules/foundation/math/src/enclosure.cpp
 modules/foundation/math/tests/enclosure_oracle.hpp
 modules/foundation/math/tests/enclosure_tests.cpp
 modules/foundation/geometry
+modules/foundation/memory/include/ludus/foundation/memory/shared_ptr.hpp
+modules/foundation/memory/include/ludus/foundation/memory/detail/shared_controller.hpp
+modules/foundation/memory/src/shared_controller.cpp
+modules/foundation/memory/src/internal/shared_count.hpp
+modules/foundation/memory/tests/shared_ptr_tests.cpp
+modules/foundation/memory/tests/shared_ptr_compile_failures.cpp
 apps/editor/src/internal/import_report.h
 apps/editor/src/import_report.cpp
 apps/editor/tests/import_report_tests.cpp

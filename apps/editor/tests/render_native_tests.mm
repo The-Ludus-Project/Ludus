@@ -9,6 +9,9 @@
 #include "renderer_flat.h"
 #include <QQuickWindow>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/memory/allocation_domain.hpp>
+#include <ludus/foundation/memory/owned_object.hpp>
+#include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/platform/entropy.h>
 
 #import <Cocoa/Cocoa.h>
@@ -609,17 +612,32 @@ void AddLightingQuad(ludus::resources::SceneMesh& inoutMesh,
         REQUIRE(inoutMesh.Indices.TryAdd(start + order[i + (isFacingDown == true ? 2 : 1)]));
     }
 }
-RenderScene MakeLightingScene()
+// Receiver-mesh defects the bake must handle without retiring the direct snapshot.
+enum class LightingReceiverDefect : uint8
+{
+    None,
+    // GPU raster accepts a zero-area receiver primitive; static transport skips it.
+    ZeroAreaTriangle,
+    // GPU raster rebuilds the receiver's bake atlas UVs from its chart layout, so it
+    // ignores these authored ones; static transport rejects UVs that disagree with
+    // that layout (Unsupported). (0, 0) is never an interior texel centre, so every
+    // corner disagrees.
+    MismatchedBakeTexcoords,
+};
+// Builds the definition privately and publishes it as an immutable snapshot.
+RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDefect::None)
 {
     RenderScene scene;
-    scene.Definition = QSharedPointer<ludus::resources::SceneDefinition>::create();
+    SharedPtr<ludus::resources::SceneDefinition> definition;
+    REQUIRE(TryMakeShared<ludus::resources::SceneDefinition>(GetSystemAllocationDomain(), definition) ==
+            OwnershipStatus::Ok);
     scene.Identity = QByteArrayLiteral("lighting-fixture");
     scene.AssetsIdentity = QByteArrayLiteral("lighting-assets");
     scene.LogicalId = QStringLiteral("level/lighting-fixture");
     scene.Lit = true;
     scene.Center = {0, .5F, 0};
     scene.Radius = 4;
-    ludus::resources::SceneDefinition& data = *scene.Definition;
+    ludus::resources::SceneDefinition& data = *definition;
     REQUIRE(data.Meshes.TryResize(2));
     REQUIRE(data.Materials.TryResize(2));
     REQUIRE(data.Objects.TryResize(2));
@@ -644,6 +662,21 @@ RenderScene MakeLightingScene()
     data.Eye = {0, 2, 4};
     data.Target = {0, 0, 0};
     data.Up = {0, 1, 0};
+    ludus::resources::SceneMesh& receiver = data.Meshes[0];
+    if (defect == LightingReceiverDefect::ZeroAreaTriangle)
+    {
+        const uint32 degenerate[] = {0, 0, 0};
+        REQUIRE(receiver.Indices.TryAddRange(degenerate));
+    }
+    else if (defect == LightingReceiverDefect::MismatchedBakeTexcoords)
+    {
+        REQUIRE(receiver.BakeTexcoords.TryResize(receiver.Positions.GetSize()));
+        for (math::Vector2& textureCoordinateBakeAtlas : receiver.BakeTexcoords)
+        {
+            textureCoordinateBakeAtlas = {0, 0};
+        }
+    }
+    scene.Definition = Move(definition);
     scene.Meshes.resize(2);
     scene.Surfaces.resize(2);
     for (int32 i = 0; i < 2; ++i)
@@ -704,17 +737,7 @@ TEST_CASE("Native Lit viewport publishes thirteen shadowed area patches and per-
 }
 TEST_CASE("Native Lit bake failure retains direct lighting and live camera rendering", "[.render-native][lighting]")
 {
-    RenderScene scene = MakeLightingScene();
-    // GPU raster rebuilds the receiver's bake atlas UVs from its chart layout, so it
-    // ignores these authored ones; static transport rejects UVs that disagree with
-    // that layout (Unsupported) and must not retire the direct snapshot. (0, 0) is
-    // never an interior texel centre, so every corner disagrees.
-    ludus::resources::SceneMesh& receiver = scene.Definition->Meshes[0];
-    REQUIRE(receiver.BakeTexcoords.TryResize(receiver.Positions.GetSize()));
-    for (math::Vector2& textureCoordinateBakeAtlas : receiver.BakeTexcoords)
-    {
-        textureCoordinateBakeAtlas = {0, 0};
-    }
+    RenderScene scene = MakeLightingScene(LightingReceiverDefect::MismatchedBakeTexcoords);
     RenderPreview preview;
     PreviewViewport viewport(&preview);
     viewport.resize(320, 240);
@@ -741,11 +764,9 @@ TEST_CASE("Native Lit bake failure retains direct lighting and live camera rende
 }
 TEST_CASE("Native Lit bake skips a zero-area triangle and reports it", "[.render-native][lighting]")
 {
-    RenderScene scene = MakeLightingScene();
-    // GPU raster accepts a zero-area receiver primitive; static transport skips it,
-    // still publishes the bake and reports the skipped triangle.
-    const uint32 degenerate[] = {0, 0, 0};
-    REQUIRE(scene.Definition->Meshes[0].Indices.TryAddRange(degenerate));
+    // Static transport skips the zero-area triangle, still publishes the bake and
+    // reports the skipped triangle.
+    RenderScene scene = MakeLightingScene(LightingReceiverDefect::ZeroAreaTriangle);
     RenderPreview preview;
     PreviewViewport viewport(&preview);
     viewport.resize(320, 240);

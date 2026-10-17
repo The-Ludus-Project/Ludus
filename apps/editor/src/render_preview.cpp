@@ -9,6 +9,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/memory/shared_ptr.hpp>
 
 #include <ludus/content/scene_format/luscn.h>
 
@@ -60,7 +61,7 @@ rhi::DeviceDescription MakeViewportDeviceDescription() noexcept
 } // namespace
 struct RenderPreview::Residency final
 {
-    QSharedPointer<resources::SceneDefinition> Definition;
+    foundation::SharedPtr<const resources::SceneDefinition> Definition;
     resources::SceneDefinitionAdapter Adapter;
     resources::Manager Manager;
     resources::Lease Lease;
@@ -114,7 +115,7 @@ struct RenderPreview::Residency final
         const void* payload = nullptr;
         return Manager.TakeLease(request, Lease) == resources::Status::Ok &&
                Manager.Borrow(Lease.Token(), content::Kind::CookedScene, payload) == resources::Status::Ok &&
-               payload == Definition.data();
+               payload == Definition.Get();
     }
 };
 RenderPreview::RenderPreview(QObject* parent) : QObject(parent)
@@ -191,7 +192,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     if (scene.Lit)
     {
         residency.Reset(new (std::nothrow) Residency);
-        if (!residency || !scene.Definition || !residency->Initialize(scene))
+        if (residency.Get() == nullptr || scene.Definition == nullptr || residency->Initialize(scene) == false)
         {
             Status_ = QStringLiteral("Resource-manager admission failed; previous scene retained.");
             Q_EMIT Changed();
