@@ -162,6 +162,13 @@ def setup_locked(root: Path, directory: Path, data: dict[str, str], args: Any, e
         if args.no_system_install or not engine.host_supports_apt_install():
             raise engine.EngineError("missing RAD build prerequisites; install them first: " + remedy)
         prefix = engine.sudo_command_prefix()
+        if engine.host_is_ubuntu() and not engine.apt_package_has_candidate(root, f"clang-{major}"):
+            # The Ubuntu archive does not package the pinned LLVM major.
+            import llvm_apt_source
+            try:
+                llvm_apt_source.register(root, llvm_apt_source.os_release_codename(), major, list(prefix))
+            except llvm_apt_source.SourceError as exc:
+                raise engine.EngineError(str(exc)) from exc
         engine.run([*prefix, "apt-get", "update"], cwd=root)
         engine.run([*prefix, "apt-get", "install", "-y", *packages], cwd=root)
         compiler, archiver, libraries_ok = build_tools(root, engine)

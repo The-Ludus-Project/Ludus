@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "source_locale": "en-US",
+  "profiles": [
+    "ludus-icu-mf1-v1"
+  ],
+  "linguistic_data": {
+    "backend": "icu4c",
+    "icu": "78.3",
+    "cldr": "48",
+    "unicode": "17.0"
+  },
+  "locales": [
+    {
+      "locale": "en-US",
+      "parent": null
+    },
+    {
+      "locale": "fr-FR",
+      "parent": "en-US"
+    },
+    {
+      "locale": "fr-CA",
+      "parent": "fr-FR"
+    }
+  ],
+  "domains": [
+    {
+      "domain": "test/l1",
+      "source": "test-l1.source.json",
+      "translations": {
+        "fr-CA": "test-l1.fr-CA.json",
+        "fr-FR": "test-l1.fr-FR.json"
+      },
+      "allow_required_fallback": [
+        "fr-CA"
+      ]
+    }
+  ]
+}

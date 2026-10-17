@@ -1,11 +1,14 @@
 # Ludus::FoundationGeometry
 
-Prepared spatial paths, scalar tracks and bounded distance maps above the
-FoundationMath cubic kernel. This is phase G2 of the
+Prepared spatial paths, scalar tracks, bounded distance maps, rotation-minimizing
+frames, closest-point projection and sweep meshes above the FoundationMath cubic
+kernel. These are phases G2 and G3 of the
 [curves and surfaces architecture](../../architecture/curves-surfaces.md). Names,
 statuses, domains and guarantee classes follow
 [ADR 0024](../../decisions/0024-curves-surfaces-contracts.md). Validation is
-recorded in the [evidence ledger](../../architecture/math-evidence/curves-surfaces.md#g2-prepared-paths-tracks-and-distance-maps).
+recorded in the evidence ledger for
+[G2](../../architecture/math-evidence/curves-surfaces.md#g2-prepared-paths-tracks-and-distance-maps)
+and [G3](../../architecture/math-evidence/curves-surfaces.md#g3-frames-projection-and-sweeps).
 
 The module depends on `Ludus::FoundationBase`, `Ludus::FoundationMath` and
 `Ludus::FoundationContainers`. It is not in `core.h` or the foundational PCH.
@@ -17,9 +20,12 @@ Include the header you use:
 | `path.hpp` | `PathSource`, `TryPreparePath`, `PreparedPath`, `PathView`, sampling, tangents, control bounds, joint continuity, Hermite and centripetal Catmull-Rom conversion |
 | `distance.hpp` | `TryBuildDistanceMap`, `PreparedDistanceMap`, `TryBoundDistance`, `TryResolveDistance` |
 | `track.hpp` | `TrackKey`, `TryPrepareTrack`, `PreparedTrack`, `TryEvaluateTrack` |
+| `frame.hpp` | `FramePreparation`, `TryBuildFrames`, `PreparedFrames`, `TryEvaluateFrame`, seed, singularity, corner and closed-loop policies |
+| `query.hpp` | `ProjectionScratch`, `TryProjectPoint`, `ProjectPointApproximate` |
+| `sweep.hpp` | `SweepRequest`, `TryPlanSweepMesh`, `SweepMeshPlan`, `TryEmitSweepMesh` |
 
-Frames, projection, surfaces and tessellation (`frame.hpp`, `query.hpp`,
-`surface.hpp`, `tessellation.hpp`) belong to later phases and do not exist yet.
+Surfaces and patch tessellation (`surface.hpp`, `tessellation.hpp`) belong to
+G4 and do not exist yet.
 
 ## Contracts
 
@@ -66,6 +72,13 @@ invalidated by moving or destroying the owner.
 | Interior positions, derivatives, tangents, conversions, continuity values | Rounded |
 | Leaf and total length bounds, prefix bounds, inversion residual | Certified |
 | `TotalEstimate`, `PrefixEstimate`, `DistanceBound::Estimate` | Estimated, inside the Certified interval |
+| Frame regularity decision (derivative box versus `MinimumSpeed`) | Certified |
+| Frame vectors and positions | Rounded |
+| `FramesView::AngularErrorEstimate`, residual twist | Estimated |
+| Strict projection `Distance`, `LowerBound` and `Gap` | Certified |
+| `ProjectPointApproximate` result | Approximate |
+| Sweep ring frames and vertices | Rounded |
+| Sweep longitudinal and cross-section error, self-intersection risk | Estimated |
 
 Certified bounds come from FoundationMath's [outward-rounded enclosures](math.md#outward-rounded-enclosures).
 A strict `DistancePreparation` (the default) accepts them; there is no Estimated
@@ -180,9 +193,149 @@ clamps the result. Author a timed hold as equal values over a positive interval.
 `Hold` returns the endpoint value with zero derivative. `Clamp` returns the
 endpoint value with the one-sided derivative from inside the domain.
 
+## Transported frames
+
+```cpp
+#include <ludus/foundation/geometry/frame.hpp>
+
+FramePreparation preparation{
+    .SeedUp = Vector3d{0, 1, 0},
+    .SeedPolicy = FrameSeedPolicy::UseFallbackAxis,
+    .FallbackAxis = Vector3d{0, 0, 1},
+    .SingularityPolicy = FrameSingularityPolicy::SplitRuns,
+    .Limits = limits,
+};
+PreparedFrames frames;
+if (IsSuccess(TryBuildFrames(path.GetView(), map.GetView(), preparation, frames, nullptr)))
+{
+    TransportedFrame frame;
+    TryEvaluateFrame(path.GetView(), frames.GetView(), SegmentParameter{.SpanIndex = 0, .U = 0.4}, roll, frame);
+    // frame.Tangent, frame.Normal and frame.Binormal = Tangent x Normal are right-handed and orthonormal.
+}
+```
+
+`TryBuildFrames` bakes rotation-minimizing frames with the double-reflection
+method of Wang, Juttler, Zheng and Liu. It needs the path's distance map, which
+supplies sample distances and the closed-loop twist distribution. Each span is
+stepped over dyadic intervals. An interval is regular when an outward-rounded
+box of its derivative stays farther than `MinimumSpeed` from zero. A regular
+interval is accepted when one reflection step and two half steps differ by at
+most `TangentAngleError` times its share of the path. The summed differences,
+plus the largest one, form `AngularErrorEstimate`. That value is Estimated, so a
+`Strict` frame preparation returns `UnsupportedPrecision`.
+
+The first run starts from `SeedUp` projected perpendicular to the first tangent.
+When that projection is degenerate (its sine is at or below `MinimumSinAngle`),
+`RejectDegenerateSeed` fails with `DegenerateFrame`. `UseFallbackAxis` projects
+`FallbackAxis` instead and records `FrameRun::IsFallbackSeeded`.
+
+| Case | Policy | Result |
+| --- | --- | --- |
+| Zero speed, cusp or reversal inside a span | `FrameSingularityPolicy::Reject` | `DegenerateFrame` with the offending parameter range |
+| | `SplitRuns` | The run ends before the range; a new run is seeded after it |
+| Joint that is not G1 under `ContinuityAngle` | `FrameCornerPolicy::Reject` | `DegenerateFrame` |
+| | `RotateMinimally` | Rotates about the incoming x outgoing tangent; an exact reversal fails |
+| | `SplitRuns` | A new run is seeded on the outgoing span |
+| Closed path | `ClosedFramePolicy::DistributeTwist` | Adds `-ResidualTwist + 2 pi WindingTurns` of roll in proportion to estimated distance; the seam becomes periodic |
+| | `PreserveHolonomy` | Keeps the transported frames and reports `ResidualTwist` |
+
+A range that cannot be shown regular at the depth limit is 2^-`MaxDepth` wide.
+`TryEvaluateFrame` returns `Degenerate` inside it and never reuses a frame
+across it. Evaluation transports the preceding baked sample of the same run to
+the analytic tangent with one reflection step, so its result depends only on the
+cache and the request, not on earlier queries. It then applies the interpolated
+twist compensation and the caller's roll. A joint has an incoming sample at
+u = 1 and an outgoing sample at u = 0.
+
+## Projection
+
+```cpp
+#include <ludus/foundation/geometry/query.hpp>
+
+usize capacity = 0;
+ComputeProjectionScratchCapacity(path.GetView(), 4096, capacity);
+ProjectionScratch scratch;
+scratch.TryReserve(capacity); // Once; queries never allocate.
+
+ProjectionResult nearest;
+const ProjectionQuery query{.Point = Vector3d{1.5, 0, 0}, .MaxIterations = 4096};
+if (IsSuccess(TryProjectPoint(path.GetView(), query, scratch, nearest)))
+{
+    // Exact distance to nearest.Parameter <= nearest.Distance <= global minimum + ProjectionGap (Certified).
+}
+```
+
+`TryProjectPoint` runs a branch-and-bound over control-hull boxes. Each span
+starts as one interval; span starts and an open path's terminal endpoint are
+candidates. Every iteration splits the interval with the smallest lower bound at
+its midpoint and evaluates the midpoint. The search stops when the best
+candidate minus the smallest live lower bound fits the path's `ProjectionGap`.
+All bounds use outward rounding, and the query point's origin subtraction is
+enclosed too. Any candidate within the gap of the global lower bound is an
+acceptable answer; the result is the earliest by span, then parameter. Symmetric
+minima therefore return the earlier one, and a minimum at a joint is named by
+the outgoing span at u = 0.
+
+Strict projection leaves its result unchanged on `BudgetExceeded` or
+`UnsupportedPrecision`. `ProjectPointApproximate` runs the same search but
+returns its earliest best candidate when work runs out, with `IsGapMet` false and
+`Guarantee` Approximate. Scratch must hold `span count + 1 + MaxIterations`
+entries; a smaller reservation is `CapacityExceeded` before any work.
+
+## Sweeps
+
+```cpp
+#include <ludus/foundation/geometry/sweep.hpp>
+
+const SweepProfileKey profile[] = {{.Distance = PathDistance{0.0}, .Scale = 0.1}};
+SweepRequest request{
+    .Section = SweepSection::Tube,
+    .Profile = BorrowedView<const SweepProfileKey>(profile),
+    .Caps = SweepCaps::Flat,
+    .LongitudinalError = 1e-3,
+    .CrossSectionError = 1e-3,
+    .MaxSectionSegments = 64,
+    .MaxVertexCount = 65536,
+    .MaxIndexCount = 393216,
+    .Limits = limits,
+};
+SweepMeshPlan plan;
+if (IsSuccess(TryPlanSweepMesh(path.GetView(), map.GetView(), frames.GetView(), request, plan, nullptr)))
+{
+    // Size caller storage from plan.GetView().Report, then emit without further failure points.
+    TryEmitSweepMesh(path.GetView(), plan.GetView(), vertices, indices);
+}
+```
+
+Planning chooses rings and validates every count, limit and numeric range
+before emission writes anything. It needs frames with one run over the whole
+path and G1 joints; split a path at singularities or corners and sweep each
+piece. Each span starts a ring and is stepped over dyadic intervals. An interval
+is accepted when its control hull's distance from the chord plus the midpoint
+deviation of every section point fits `LongitudinalError`. A tube uses the
+fewest polygon segments whose error at the largest profile scale fits
+`CrossSectionError`. Both errors are Estimated. The width or radius (`Scale`)
+and roll are linear in estimated path distance between profile keys and clamped
+outside them. A zero or negative scale is rejected, not normalized away.
+
+A ribbon ring emits its -Binormal then +Binormal edge, faces the frame normal and
+has no caps. A tube ring repeats its first vertex with U = 1 as an explicit UV
+seam. `SweepCaps::Flat` closes an open tube with fans whose rim vertices copy
+the ring positions bitwise but carry the cap normal. V is estimated path
+distance in asset units. A closed path needs periodic frames
+(`DistributeTwist`); its last ring copies the first ring's positions and normals
+with V equal to the total length. Triangles are counter-clockwise from the side
+their normals face unless `SweepWinding::Clockwise` is requested.
+
+`TryEmitSweepMesh` checks the pinned path revision (`StaleRevision`) and both
+capacities (`CapacityExceeded`) before writing. The report's
+`SelfIntersectionRiskCount` counts rings whose section half-extent times path
+curvature reaches 1. This sampled local check is Estimated: it can flag a risk
+but never proves the surface simple.
+
 ## Not yet provided
 
-Path cursors for coherent traversal, a Visual-only Estimated build, Approximate
-table lookup, transported frames, projection, sweeps, surfaces, tessellation,
-cooked formats and editor adapters are later phases. Performance and memory
-budgets are unmeasured.
+Path cursors for coherent traversal, a Visual-only Estimated distance build,
+Approximate table lookup, certified frame angular error, mitred or split sweeps,
+surfaces, patch tessellation, cooked formats and editor adapters are later work.
+Performance and memory budgets are unmeasured.

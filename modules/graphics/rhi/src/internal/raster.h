@@ -57,6 +57,8 @@ struct DescriptorArenaUsage final
 };
 struct RasterLayout final
 {
+    // Elements use their default member initializers; the check misreports them as zero enums.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     RasterBinding Entries[RASTER_BINDINGS]{};
     foundation::usize Count = 0;
     foundation::usize DescriptorCount = 0;

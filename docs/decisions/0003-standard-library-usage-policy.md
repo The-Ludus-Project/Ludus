@@ -109,6 +109,15 @@ closed argument set and an implementation-only parser.
   other `<time.h>` operation (calendar, `clock_gettime`, `time`) is approved.
   Browser builds have no wait. See the
   [native frame pacing contract](../architecture/high-resolution-time.md#native-frame-pacing).
+- Darwin `<sys/event.h>` `kqueue(2)`/`kevent64(2)` with one `EVFILT_TIMER`
+  (`EV_ADD | EV_ONESHOT`, `NOTE_NSECONDS | NOTE_CRITICAL`, and `EV_DELETE` after
+  an unsuccessful wait) and `<unistd.h>` `close(2)` for that queue — only in the
+  same macOS pacing wait. Each waiting thread lazily opens one kqueue and closes
+  it at thread exit. `NOTE_CRITICAL` removes the kernel's timer-coalescing leeway,
+  which a measured trial showed delays windowed wakes by about 1 ms; the wait stays
+  relative and is recomputed from FoundationTime `Now()`. No other kqueue filter,
+  absolute or Mach-time timer, or file-descriptor operation is approved. See the
+  [wake leeway trial](../development/high-resolution-time-evidence.md#wake-leeway-trial).
 - `<type_traits>`, `<utility>`, `<concepts>` — compile-time utilities, zero
   runtime cost.
 - `<cstdint>`, `<cstddef>` — allowed **only** inside `types.h`, which aliases

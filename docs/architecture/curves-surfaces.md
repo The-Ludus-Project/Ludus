@@ -1,11 +1,12 @@
 # Curves and surfaces architecture
 
 Status: G0 contracts frozen in [ADR 0024](../decisions/0024-curves-surfaces-contracts.md),
-the G1 fixed-size math kernel and the G2 prepared paths, tracks and distance
-maps implemented; G3-G6 remain proposed.
+the G1 fixed-size math kernel, the G2 prepared paths, tracks and distance maps
+and the G3 frames, projection and sweep meshes implemented; G4-G6 remain
+proposed.
 Design baseline: `52e29ce`, inspected on 2026-10-04. Implementation baselines:
-`95683aa` (G1, 2026-10-05), `5117c8c` (G0, 2026-10-15) and `cb6f02a` (G2,
-2026-10-16). Validation is
+`95683aa` (G1, 2026-10-05), `5117c8c` (G0, 2026-10-15), `cb6f02a` (G2,
+2026-10-16) and `c3de79d` (G3, 2026-10-17). Validation is
 recorded in the [evidence ledger](math-evidence/curves-surfaces.md). Performance
 budgets for prepared assets and integrated consumers remain unmeasured.
 
@@ -19,9 +20,10 @@ them.
 
 This is a production-oriented design judgment, informed by current primary
 sources and the [Gems review](curves-surfaces-gems-review.md). It does not claim
-universal optimality or measured Ludus performance. The fixed-size kernel and
-the G2 path, track and distance owners are implemented; frames, queries,
-surfaces, meshes, codecs and adapters remain proposed. Domains, statuses and
+universal optimality or measured Ludus performance. The fixed-size kernel, the
+G2 path, track and distance owners and the G3 frames, projection and sweep
+meshes are implemented; surfaces, patch meshes, codecs and adapters remain
+proposed. Domains, statuses and
 guarantee classes are frozen.
 The final section preserves the baseline written before the chapter review.
 
@@ -99,6 +101,30 @@ implementation boundary, so the existing Wasm math probe can validate it.
 Departures are recorded in the evidence ledger. Path cursors, a Visual-only
 Estimated build and Approximate table lookup are not implemented.
 
+## Implemented frames, projection and sweeps (G3)
+
+FoundationGeometry adds `frame.hpp`, `query.hpp` and `sweep.hpp`; the
+[module guide](../modules/foundation/geometry.md) documents usage. ADR 0024 was
+amended to give sweeps their own header rather than share `tessellation.hpp`
+with G4 patch meshes. `TryBuildFrames` bakes double-reflection rotation-minimizing
+frames over dyadic intervals. Regularity is a Certified decision from
+outward-rounded derivative boxes; angular error is Estimated from one-step versus
+two-half-step differences, so a strict frame profile is `UnsupportedPrecision`.
+Seed fallback, singular ranges, corners and closed-loop twist follow explicit
+policies, and random access transports the preceding baked sample to the
+analytic tangent. `TryProjectPoint` is a branch-and-bound over outward-rounded
+control-hull boxes with a Certified global gap and a stable earliest-candidate
+tie rule. `ProjectPointApproximate` returns its candidate when work runs out.
+`TryPlanSweepMesh` builds ribbons and tubes under longitudinal and
+cross-section budgets into a validated plan, and `TryEmitSweepMesh` writes
+caller-owned ranges without new failure points.
+
+Departures and limits are in the
+[evidence ledger](math-evidence/curves-surfaces.md#g3-frames-projection-and-sweeps):
+frame error and sweep error remain Estimated, sweeps need one frame run with G1
+joints, and the G0 corpus gained integrated rotation-minimizing references and a
+closed holonomy loop.
+
 No editor binding is needed for these math values. A useful editable curve
 document needs the G2 prepared owners and G5 authoring/undo/publication contracts;
 those features and their editor adapters remain explicit follow-up phases.
@@ -162,7 +188,7 @@ capabilities.
 | Location and target | Owns | Depends on |
 | --- | --- | --- |
 | Implemented G1/G2 additions to `modules/foundation/math`, `Ludus::FoundationMath` | Fixed-size scalar/vector cubic and bicubic values; evaluate, differentiate, split, Hermite conversion; outward-rounded enclosures (G2) | Base only |
-| `modules/foundation/geometry`, `Ludus::FoundationGeometry` (G2 implemented) | Prepared path owners and views, scalar tracks and distance caches (G2); patch owners, frame/bounds caches, queries and mesh generation (proposed) | Base, Math, Containers |
+| `modules/foundation/geometry`, `Ludus::FoundationGeometry` (G2 and G3 implemented) | Prepared path owners and views, scalar tracks and distance caches (G2); frame caches, point projection and sweep meshes (G3); patch owners, bounds caches and surface meshes (proposed) | Base, Math, Containers |
 | Proposed `modules/content/geometry_format`, `Ludus::GeometryFormat` | Header-only versioned cooked record layouts, limits and constants shared by cooker and loader | Base only |
 | Proposed `modules/geometry/content`, `Ludus::GeometryContent` | Authoring codecs, source IDs, import/cook validation, loading and publication | Content, FoundationGeometry, GeometryFormat |
 | Editor-private adapters | Document edits, undo, handles, preview, inspection | GeometryContent, editor UI |
@@ -175,8 +201,8 @@ dependencies stay private and tool-side where possible.
 
 Public kernel headers contain fixed values and small declarations:
 `cubic.hpp` and `patch.hpp`. Geometry separates `status.hpp`, `path.hpp`,
-`track.hpp`, `distance.hpp`, `frame.hpp`, `surface.hpp`, `query.hpp` and
-`tessellation.hpp`. An ordinary path evaluation should not parse surface,
+`track.hpp`, `distance.hpp`, `frame.hpp`, `surface.hpp`, `query.hpp`,
+`sweep.hpp` and `tessellation.hpp`. An ordinary path evaluation should not parse surface,
 content or renderer APIs. Owners use small move-only handles with private
 implementation storage; views contain explicitly borrowed ranges. Larger
 algorithms live in .cpp files. No universal virtual spline class, runtime
@@ -818,7 +844,7 @@ implementing an adapter.
 
 ## Validation and implementation gates
 
-The G0 freeze, the G1 and G2 implementations and their checks are tracked in the
+The G0 freeze, the G1, G2 and G3 implementations and their checks are tracked in the
 [evidence ledger](math-evidence/curves-surfaces.md). Completion of each
 remaining phase below requires its own evidence ledger, numerical limits and
 workload budgets; G0 references and G1 tests do not validate the proposed owners

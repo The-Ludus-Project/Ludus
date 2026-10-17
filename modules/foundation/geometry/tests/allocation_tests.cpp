@@ -7,7 +7,10 @@
 // modules/foundation/containers/tests/allocation_tests.cpp.
 
 #include <ludus/foundation/geometry/distance.hpp>
+#include <ludus/foundation/geometry/frame.hpp>
 #include <ludus/foundation/geometry/path.hpp>
+#include <ludus/foundation/geometry/query.hpp>
+#include <ludus/foundation/geometry/sweep.hpp>
 #include <ludus/foundation/geometry/track.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -26,6 +29,7 @@ namespace
 constexpr usize PROBE_SPAN_COUNT = 2;
 constexpr usize PROBE_KEY_COUNT = 3;
 constexpr usize PROBE_WAYPOINT_COUNT = 4;
+constexpr usize PROBE_PROJECTION_ITERATIONS = 2048;
 
 bool isCountingAllocations = false;
 usize gAllocationCount = 0;
@@ -114,8 +118,48 @@ struct CountingScope final
     spans[1].Control[3] = Vector3d{4.0, 3.0, 0.0};
     return spans;
 }
+
+// A regular twisted cubic followed by a G1 line, so frames have one run and sweeps are valid.
+[[nodiscard]] StaticArray<PathSpanSource, PROBE_SPAN_COUNT> MakeRegularSpans() noexcept
+{
+    StaticArray<PathSpanSource, PROBE_SPAN_COUNT> spans;
+    spans[0].Control = {
+        {Vector3d{0.0, 0.0, 0.0}, Vector3d{1.0, 0.0, 0.0}, Vector3d{1.0, 1.0, 0.0}, Vector3d{1.0, 1.0, 1.0}}};
+    spans[1].Kind = SpanKind::Line;
+    spans[1].Control[0] = Vector3d{1.0, 1.0, 1.0};
+    spans[1].Control[3] = Vector3d{1.0, 1.0, 3.0};
+    return spans;
+}
+
+[[nodiscard]] FramePreparation MakeFramePreparation() noexcept
+{
+    WorkLimits limits = MakeLimits();
+    limits.MaxDepth = 30;
+    return FramePreparation{ .SeedUp = Vector3d{0.0, 1.0, 0.0}, .Limits = limits };
+}
+
+[[nodiscard]] SweepRequest MakeSweepRequest(BorrowedView<const SweepProfileKey> profile) noexcept
+{
+    WorkLimits limits = MakeLimits();
+    limits.MaxDepth = 30;
+    return SweepRequest
+    {
+        .Section = SweepSection::Tube,
+        .Profile = profile,
+        .Caps = SweepCaps::Flat,
+        .LongitudinalError = 1e-3,
+        .CrossSectionError = 1e-3,
+        .MaxSectionSegments = 64,
+        .MaxVertexCount = 1U << 20U,
+        .MaxIndexCount = 1U << 22U,
+        .Limits = limits,
+    };
+}
 } // namespace
 
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(usize bytes)
 {
     (void)ShouldFail();
@@ -160,6 +204,7 @@ void operator delete(void* allocationOrNull, usize, std::align_val_t) noexcept
 {
     std::free(allocationOrNull);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 TEST_CASE("Every preparation allocation failure returns OutOfMemory and preserves the owner", "[geometry][alloc]")
 {
@@ -311,6 +356,153 @@ TEST_CASE("Sampling, inversion and caller-owned conversion never allocate", "[ge
                                             1e-6,
                                             BorrowedView<PathSpanSource>(converted.GetData(), converted.GetSize()),
                                             spanCount) == GeometryStatus::Success;
+        allocations = gAllocationCount;
+    }
+    REQUIRE(isEverySampleOk == true);
+    REQUIRE(allocations == 0);
+}
+
+TEST_CASE("Every frame and sweep plan allocation failure preserves the owners", "[geometry][alloc]")
+{
+    const StaticArray<PathSpanSource, PROBE_SPAN_COUNT> spans = MakeRegularSpans();
+    const PathSource source
+    {
+        .Spans = BorrowedView<const PathSpanSource>(spans.GetData(), spans.GetSize()),
+        .Revision = 1,
+    };
+    PreparedPath path;
+    REQUIRE(
+        TryPreparePath(source, PathPreparation{ .Tolerance = MakeProfile(), .Limits = MakeLimits() }, path, nullptr) ==
+        GeometryStatus::Success);
+    PreparedDistanceMap map;
+    REQUIRE(TryBuildDistanceMap(path.GetView(),
+                                DistancePreparation{ .Precision = PrecisionProfile::Strict, .Limits = MakeLimits() },
+                                map,
+                                nullptr) == GeometryStatus::Success);
+    PreparedFrames frames;
+    REQUIRE(TryBuildFrames(path.GetView(), map.GetView(), MakeFramePreparation(), frames, nullptr) ==
+            GeometryStatus::Success);
+    const usize sampleCount = frames.GetView().Samples.GetSize();
+    usize frameAllocations = 0;
+    {
+        PreparedFrames probe;
+        const CountingScope scope(0);
+        REQUIRE(TryBuildFrames(path.GetView(), map.GetView(), MakeFramePreparation(), probe, nullptr) ==
+                GeometryStatus::Success);
+        frameAllocations = gAllocationCount;
+    }
+    REQUIRE(frameAllocations > 0);
+    for (usize failAt = 1; failAt <= frameAllocations; ++failAt)
+    {
+        GeometryStatus status = GeometryStatus::Success;
+        {
+            const CountingScope scope(failAt);
+            status = TryBuildFrames(path.GetView(), map.GetView(), MakeFramePreparation(), frames, nullptr);
+        }
+        REQUIRE(status == GeometryStatus::OutOfMemory);
+        REQUIRE(frames.GetView().Samples.GetSize() == sampleCount);
+    }
+
+    const SweepProfileKey profile[] = {{ .Distance = PathDistance{}, .Scale = 0.05 }};
+    const SweepRequest request = MakeSweepRequest(BorrowedView<const SweepProfileKey>(profile));
+    SweepMeshPlan plan;
+    REQUIRE(TryPlanSweepMesh(path.GetView(), map.GetView(), frames.GetView(), request, plan, nullptr) ==
+            GeometryStatus::Success);
+    const usize ringCount = plan.GetView().Report.RingCount;
+    usize planAllocations = 0;
+    {
+        SweepMeshPlan probe;
+        const CountingScope scope(0);
+        REQUIRE(TryPlanSweepMesh(path.GetView(), map.GetView(), frames.GetView(), request, probe, nullptr) ==
+                GeometryStatus::Success);
+        planAllocations = gAllocationCount;
+    }
+    REQUIRE(planAllocations > 0);
+    for (usize failAt = 1; failAt <= planAllocations; ++failAt)
+    {
+        GeometryStatus status = GeometryStatus::Success;
+        {
+            const CountingScope scope(failAt);
+            status = TryPlanSweepMesh(path.GetView(), map.GetView(), frames.GetView(), request, plan, nullptr);
+        }
+        REQUIRE(status == GeometryStatus::OutOfMemory);
+        REQUIRE(plan.GetView().Report.RingCount == ringCount);
+    }
+
+    ProjectionScratch scratch;
+    {
+        GeometryStatus status = GeometryStatus::Success;
+        {
+            const CountingScope scope(1);
+            status = scratch.TryReserve(64);
+        }
+        REQUIRE(status == GeometryStatus::OutOfMemory);
+    }
+}
+
+TEST_CASE("Frame evaluation, projection and sweep emission never allocate", "[geometry][alloc]")
+{
+    const StaticArray<PathSpanSource, PROBE_SPAN_COUNT> spans = MakeRegularSpans();
+    const PathSource source{ .Spans = BorrowedView<const PathSpanSource>(spans.GetData(), spans.GetSize()) };
+    PreparedPath path;
+    REQUIRE(
+        TryPreparePath(source, PathPreparation{ .Tolerance = MakeProfile(), .Limits = MakeLimits() }, path, nullptr) ==
+        GeometryStatus::Success);
+    PreparedDistanceMap map;
+    REQUIRE(TryBuildDistanceMap(path.GetView(),
+                                DistancePreparation{ .Precision = PrecisionProfile::Strict, .Limits = MakeLimits() },
+                                map,
+                                nullptr) == GeometryStatus::Success);
+    PreparedFrames frames;
+    REQUIRE(TryBuildFrames(path.GetView(), map.GetView(), MakeFramePreparation(), frames, nullptr) ==
+            GeometryStatus::Success);
+    const SweepProfileKey profile[] = {{ .Distance = PathDistance{}, .Scale = 0.05 }};
+    SweepMeshPlan plan;
+    REQUIRE(TryPlanSweepMesh(path.GetView(),
+                             map.GetView(),
+                             frames.GetView(),
+                             MakeSweepRequest(BorrowedView<const SweepProfileKey>(profile)),
+                             plan,
+                             nullptr) == GeometryStatus::Success);
+    ludus::foundation::core::Array<SweepVertex> vertices;
+    ludus::foundation::core::Array<uint32> indices;
+    REQUIRE(vertices.TryResize(plan.GetView().Report.VertexCount) == true);
+    REQUIRE(indices.TryResize(plan.GetView().Report.IndexCount) == true);
+    usize capacity = 0;
+    REQUIRE(ComputeProjectionScratchCapacity(path.GetView(), PROBE_PROJECTION_ITERATIONS, capacity) ==
+            GeometryStatus::Success);
+    ProjectionScratch scratch;
+    REQUIRE(scratch.TryReserve(capacity) == GeometryStatus::Success);
+
+    bool isEverySampleOk = true;
+    usize allocations = 0;
+    {
+        const CountingScope scope(0);
+        for (usize step = 0; step <= 16; ++step)
+        {
+            const float64 u = static_cast<float64>(step) / 16.0;
+            TransportedFrame frame;
+            isEverySampleOk =
+                isEverySampleOk == true &&
+                TryEvaluateFrame(path.GetView(), frames.GetView(), SegmentParameter{ .U = u }, 0.5, frame) ==
+                    GeometryStatus::Success;
+            ProjectionResult result;
+            const ProjectionQuery query
+            {
+                .Point = Vector3d{u, 2.0 * u, 1.0},
+                .MaxIterations = PROBE_PROJECTION_ITERATIONS,
+            };
+            isEverySampleOk =
+                isEverySampleOk == true &&
+                TryProjectPoint(path.GetView(), query, scratch, result) == GeometryStatus::Success &&
+                ProjectPointApproximate(path.GetView(), query, scratch, result) == GeometryStatus::Success;
+        }
+        isEverySampleOk =
+            isEverySampleOk == true &&
+            TryEmitSweepMesh(path.GetView(),
+                             plan.GetView(),
+                             BorrowedView<SweepVertex>(vertices.GetData(), vertices.GetSize()),
+                             BorrowedView<uint32>(indices.GetData(), indices.GetSize())) == GeometryStatus::Success;
         allocations = gAllocationCount;
     }
     REQUIRE(isEverySampleOk == true);

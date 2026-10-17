@@ -17,6 +17,10 @@ target_sources(
         src/conversion.cpp
         src/distance.cpp
         src/track.cpp
+        src/span_math.cpp
+        src/frame.cpp
+        src/query.cpp
+        src/sweep.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -27,6 +31,9 @@ target_sources(
             include/ludus/foundation/geometry/path.hpp
             include/ludus/foundation/geometry/distance.hpp
             include/ludus/foundation/geometry/track.hpp
+            include/ludus/foundation/geometry/frame.hpp
+            include/ludus/foundation/geometry/query.hpp
+            include/ludus/foundation/geometry/sweep.hpp
 )
 target_include_directories(ludus_foundation_geometry PRIVATE src)
 
@@ -67,6 +74,9 @@ if(LUDUS_BUILD_TESTS)
             tests/path_tests.cpp
             tests/distance_tests.cpp
             tests/track_tests.cpp
+            tests/frame_tests.cpp
+            tests/query_tests.cpp
+            tests/sweep_tests.cpp
     )
     target_link_libraries(
         ludus_foundation_geometry_tests

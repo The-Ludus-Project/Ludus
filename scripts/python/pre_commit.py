@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 
 from engine import EngineError, FORMAT_SUFFIXES, find_system_tool, load_tool_versions, repo_root
-from formatting import format_source
+from formatting import FormattingError, format_source
 
 
 def git(*args: str, input: bytes | None = None) -> bytes:
@@ -41,6 +41,6 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (EngineError, OSError, UnicodeError, subprocess.CalledProcessError) as error:
+    except (EngineError, FormattingError, OSError, UnicodeError, subprocess.CalledProcessError) as error:
         print(f"Pre-commit formatting failed: {error}")
         raise SystemExit(1) from error

@@ -483,7 +483,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install pinned formatter and GUI test dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-18 clang-tidy-18 python3-venv python3-tk xvfb xauth liblz4-1
+        run: |
+          # Reusable definitions stay on main; the captured candidate owns its tool pin.
+          llvm_major="$(python3 -c 'import json; print(int(json.load(open("config/tool_versions.json"))["minimum"]["clang"].split(".")[0]))')"
+          if [[ -f scripts/python/llvm_apt_source.py ]]; then python3 scripts/python/llvm_apt_source.py; fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "clang-format-$llvm_major" "clang-tidy-$llvm_major" python3-venv python3-tk xvfb xauth liblz4-1
+          echo "LUDUS_CI_LLVM_MAJOR=$llvm_major" >> "$GITHUB_ENV"
       - name: Install pinned CMake and Ninja for live project setup tests
         run: |
           python3 - <<'PY'
@@ -542,13 +548,14 @@ jobs:
           SOURCE_POLICY_BASE: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'origin/main' }}
           SOURCE_POLICY_HEAD: ${{ inputs.batch_sha || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: |
-          python3 scripts/python/source_policy.py --base "$SOURCE_POLICY_BASE" --head "$SOURCE_POLICY_HEAD" --clang-format clang-format-18
+          python3 scripts/python/source_policy.py --base "$SOURCE_POLICY_BASE" --head "$SOURCE_POLICY_HEAD" --clang-format "clang-format-$LUDUS_CI_LLVM_MAJOR"
           PYTHONPATH=scripts/python python3 -m unittest test_source_policy test_renderer_shader_recipes -v
       - name: Test S0 Luau source and bytecode integrity contracts
         run: python3 -m unittest discover -s tools/luau-probe -p 'test_*.py' -v
       - name: Test L0 localization document, receipt and manifest contracts
         run: |
           python3 -m unittest discover -s scripts/python -p 'test_localization_corpus.py' -v
+          python3 -m unittest discover -s tools/icu-probe -p 'test_*.py' -v
           ./scripts/localization-corpus validate --manifest modules/localization/corpus/release.json
       - name: Test S1 manifest and cook admission contracts
         run: python3 -m unittest discover -s tools/script-cook -p 'test_*.py' -v
@@ -680,7 +687,7 @@ jobs:
             --benchmark out/build/linux-clang-development/modules/foundation/filesystem/ludus_filesystem_benchmark \
             --output out/filesystem-streaming/results --repetitions 3 --contention 0 \
             --open-modes shared --tracing 0 --cache warm \
-            --compiler-description 'CI pinned Clang 18 Development O2' \
+            --compiler-description "CI $(out/host-tools/bin/clang++ --version | head -n 1) Development O2" \
             --storage-description 'disposable Ubuntu runner, see environment.json mount/df'
           out/host-tools/venv/bin/ctest --preset linux-clang-development -R 'filesystem_streaming_' --no-tests=error
       - name: Preserve filesystem measurements
@@ -707,10 +714,11 @@ jobs:
           cp -a out/install/linux-clang-development "$reloc"
           consumer="$RUNNER_TEMP/relocated-consumer"
           tools="$PWD/out/host-tools/venv/bin"
+          llvm_major="$(python3 -c 'import json; print(int(json.load(open("config/tool_versions.json"))["minimum"]["clang"].split(".")[0]))')"
           env -i PATH="$tools:/usr/bin:/bin" "$tools/cmake" \
             -S tests/sdk_consumer -B "$consumer" -G Ninja \
             -DCMAKE_MAKE_PROGRAM="$tools/ninja" \
-            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-18 \
+            -DCMAKE_CXX_COMPILER="/usr/bin/clang++-$llvm_major" \
             -DCMAKE_PREFIX_PATH="$reloc" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           env -i PATH="$tools:/usr/bin:/bin" "$tools/cmake" --build "$consumer" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
@@ -854,10 +862,12 @@ jobs:
           PYTHONPATH=../../scripts/python python3 - <<'PYFORMAT'
           from pathlib import Path
           from formatting import format_source
+          from engine import find_system_tool, load_tool_versions, repo_root
+          clang_format = find_system_tool(repo_root(), 'clang-format', load_tool_versions(repo_root()))
           sources = [*Path('src').glob('*.cpp'), *Path('src').glob('*.hpp'), *Path('tests').glob('*.cpp')]
           for source in sources:
               source = source.resolve()
-              assert source.read_text() == format_source(source.read_text(), source, 'clang-format-18'), f'Format {source}'
+              assert source.read_text() == format_source(source.read_text(), source, clang_format), f'Format {source}'
           PYFORMAT
           # Exercise the same setup backend as Project > Repair Project Setup.
           # Start without local presets, then prove repeated repair stays usable.

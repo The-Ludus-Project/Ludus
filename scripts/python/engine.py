@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import difflib
 import hashlib
 import json
@@ -18,9 +19,9 @@ import urllib.request
 import venv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Iterator, Sequence
 
-from formatting import format_source
+from formatting import FormattingError, format_source
 from analysis_inventory import compilation_entries, inventory, request_codemodel, SOURCE_ROOTS
 from quality_process import ANALYSIS_SECONDS, LANE_BYTES, LOG_BYTES, LogBudget, run_bounded
 
@@ -44,7 +45,10 @@ BOOTSTRAP_STATE_VERSION = 2
 # ClangBuildAnalyzer aggregates Clang -ftime-trace outputs into a single ranked
 # report. Pinned so the profiling harness is reproducible. It is fetched/built
 # on demand by `profile-build` only, never by init.sh.
-CLANG_BUILD_ANALYZER_VERSION = "1.5.0"
+# Thanks to Aras Pranckevičius and contributors, v1.6.0 updates simdjson for
+# newer compilers and accounts for Clang 19+ header trace events.
+# https://github.com/aras-p/ClangBuildAnalyzer/releases/tag/v1.6.0
+CLANG_BUILD_ANALYZER_VERSION = "1.6.0"
 CLANG_BUILD_ANALYZER_REPO = "https://github.com/aras-p/ClangBuildAnalyzer"
 
 PRESET_BUILD_TYPES: dict[str, str] = {
@@ -303,11 +307,64 @@ def managed_executable(root: Path, name: str) -> Path:
     return venv_bin_dir(root) / f"{name}{suffix}"
 
 
+# Opt-in Conan home shared by every checkout of this repository on the host
+# (for example concurrent agent worktrees), so third-party packages are built
+# once instead of once per checkout. See docs/development/building.md.
+SHARED_CONAN_HOME_VARIABLE = "LUDUS_CONAN_HOME"
+
+
+def shared_conan_root() -> Path | None:
+    value = os.environ.get(SHARED_CONAN_HOME_VARIABLE, "")
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise EngineError(f"{SHARED_CONAN_HOME_VARIABLE} must be an absolute path, not {value!r}")
+    if os.name == "nt":
+        raise EngineError(f"{SHARED_CONAN_HOME_VARIABLE} is supported on macOS and Linux hosts only")
+    return path
+
+
+def conan_home(root: Path) -> Path:
+    shared = shared_conan_root()
+    if shared is None:
+        return root / "out" / "conan" / "home"
+    # One home per pinned Conan version: checkouts on different pins must not
+    # migrate the same cache database back and forth.
+    return shared / ("conan-" + load_tool_versions(root)["managed"]["conan"])
+
+
+@contextlib.contextmanager
+def conan_cache_lock(root: Path) -> Iterator[None]:
+    """Serialize Conan cache writes when the Conan home is shared.
+
+    Conan 2 does not lock its package cache between processes, so exports,
+    lock creation and --build=missing installs from concurrent checkouts must
+    not overlap. A checkout-local home needs no lock."""
+    if shared_conan_root() is None:
+        yield
+        return
+    import fcntl
+
+    home = conan_home(root)
+    home.mkdir(parents=True, exist_ok=True)
+    with (home / ".ludus-cache.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"Waiting for another checkout to finish with the shared Conan cache: {home}", flush=True)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def tool_env(root: Path) -> dict[str, str]:
     env = os.environ.copy()
     path_entries = [host_tools_bin_dir(root), venv_bin_dir(root)]
     env["PATH"] = os.pathsep.join(str(path) for path in path_entries) + os.pathsep + env.get("PATH", "")
-    env["CONAN_HOME"] = str(root / "out" / "conan" / "home")
+    env["CONAN_HOME"] = str(conan_home(root))
     env["CONAN_NON_INTERACTIVE"] = "1"
     return env
 
@@ -455,6 +512,35 @@ def link_or_replace_symlink(link_path: Path, target_path: Path) -> None:
     link_path.symlink_to(target_path)
 
 
+def homebrew_llvm_formulae(llvm_major: int) -> tuple[tuple[str, str], ...]:
+    """Return the Homebrew formulae providing the pinned LLVM and the executable that identifies each.
+
+    Homebrew ships LLD as a separate formula for the pinned LLVM, so both are required.
+    """
+    return ((f"llvm@{llvm_major}", "clang"), (f"lld@{llvm_major}", "ld.lld"))
+
+
+def check_homebrew_llvm_major(root: Path, formula: str, tool: Path, llvm_major: int) -> None:
+    """Reject a Homebrew ``formula`` whose ``tool`` reports an LLVM major other than ``llvm_major``.
+
+    Until Homebrew publishes a versioned formula for the newest LLVM major,
+    ``llvm@<major>`` and ``lld@<major>`` are aliases of the unversioned formulae,
+    so ``brew upgrade`` can silently move them to the next major. A missing
+    ``tool`` is left to the ordinary missing-tool diagnostics.
+    """
+    if not tool.is_file():
+        return
+    parts = version_tuple(executable_version(str(tool), ("--version",), root))
+    if parts and parts[0] != llvm_major:
+        raise EngineError(
+            f"Homebrew {formula} resolves to {tool.parent.parent} with LLVM {'.'.join(map(str, parts))}, "
+            f"but Ludus pins LLVM {llvm_major}.\n"
+            f"Homebrew aliases {formula} to its unversioned formula until a newer LLVM major ships, so "
+            "`brew upgrade` can move it. Install the versioned formulae once they exist "
+            f"(`brew install llvm@{llvm_major} lld@{llvm_major}`) and rerun ./init.sh. While the unversioned "
+            f"formulae still provide LLVM {llvm_major}, `brew pin llvm lld` prevents the move.")
+
+
 def configure_system_tool_shims(root: Path, versions: dict[str, dict[str, str]]) -> None:
     if os.name == "nt":
         return
@@ -464,9 +550,12 @@ def configure_system_tool_shims(root: Path, versions: dict[str, dict[str, str]])
     if platform.system() == "Darwin":
         brew = shutil.which("brew")
         if brew:
-            code, prefix = capture_command_quiet([brew, "--prefix", f"llvm@{clang_major}"], cwd=root)
-            if code == 0:
-                os.environ["PATH"] = str(Path(prefix.strip()) / "bin") + os.pathsep + os.environ.get("PATH", "")
+            for formula, tool in homebrew_llvm_formulae(clang_major):
+                code, prefix = capture_command_quiet([brew, "--prefix", formula], cwd=root)
+                if code == 0:
+                    bin_dir = Path(prefix.strip()) / "bin"
+                    check_homebrew_llvm_major(root, formula, bin_dir / tool, clang_major)
+                    os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
     specs: list[tuple[str, Sequence[str], str]] = [
         ("clang", (f"clang-{clang_major}", "clang"), minimum["clang"]),
         ("clang++", (f"clang++-{clang_major}", "clang++"), minimum["clang"]),
@@ -579,8 +668,8 @@ def configure_macos_sdk(root: Path, llvm_major: int) -> None:
         "Compiler/SDK compile-link validation failed before dependency downloads or HarfBuzz builds.\n"
         + "\n".join(failures) + "\nHow to fix:\n"
         f"  Install a macOS SDK compatible with Clang {llvm_major} "
-        "(macOS 26.5 passes the current math-header probe).\n"
-        "  SDKROOT=/absolute/path/to/MacOSX26.5.sdk ./init.sh\n"
+        "(the current Command Line Tools SDK passes the math-header probe with LLVM 23).\n"
+        "  SDKROOT=/absolute/path/to/MacOSX.sdk ./init.sh\n"
         "  If SDKROOT was set accidentally, unset SDKROOT and rerun ./init.sh to test installed sibling SDKs.\n"
         "Changing only the deployment target does not change the SDK headers.")
 
@@ -680,7 +769,7 @@ def managed_tool_statuses(root: Path, versions: dict[str, dict[str, str]]) -> li
 
 
 def project_state_statuses(root: Path) -> list[ToolStatus]:
-    installed_profile = root / "out" / "conan" / "home" / "profiles" / native_profile_name()
+    installed_profile = conan_profile_path(root)
     source_profile = root / "config" / "conan" / "profiles" / native_profile_name()
     lockfile = root / "conan.lock"
     environment = venv_dir(root)
@@ -756,15 +845,19 @@ def print_missing_tool_help(name: str, version: str, path: str, minimum: str,
     print(f"Minimum required version: {minimum}")
     print("One-command onboarding command:")
     print("  ./init.sh")
-    if name != "Python" and llvm_major is not None:
+    if name != "Python" and llvm_major is not None and platform.system() == "Darwin":
+        formulae = " ".join(formula for formula, _ in homebrew_llvm_formulae(llvm_major))
+        print("Manual Homebrew install or upgrade (refresh first: stale formula metadata can install an older patch):")
+        print(f"  brew update && brew install {formulae} && brew upgrade {formulae}")
+    elif name != "Python" and llvm_major is not None:
         print("Manual Ubuntu fallback, if automatic sudo installation is unavailable:")
         print(
             "  sudo apt-get update && sudo apt-get install -y "
             f"git python3 python3-venv ca-certificates clang-{llvm_major} lld-{llvm_major} "
             f"clang-format-{llvm_major} clang-tidy-{llvm_major}"
         )
-        print("  If apt cannot find those packages, enable Ubuntu universe first:")
-        print("  sudo add-apt-repository -y universe && sudo apt-get update")
+        print("  If apt cannot find those packages, register the pinned apt.llvm.org suite first:")
+        print("  python3 scripts/python/llvm_apt_source.py && sudo apt-get update")
 
 
 def llvm_major_version(versions: dict[str, dict[str, str]]) -> int:
@@ -792,6 +885,10 @@ def host_is_ubuntu() -> bool:
 
 def python_venv_package_candidates() -> tuple[str, ...]:
     return (f"python{sys.version_info.major}.{sys.version_info.minor}-venv", "python3-venv")
+
+
+# Package groups served by apt.llvm.org when the Ubuntu archive lacks the pinned LLVM.
+LLVM_PACKAGE_GROUPS = frozenset(("Clang", "LLD", "clang-format", "clang-tidy"))
 
 
 def required_ubuntu_package_groups(root: Path, versions: dict[str, dict[str, str]]) -> list[AptPackageGroup]:
@@ -1036,6 +1133,16 @@ def install_ubuntu_system_prerequisites(root: Path, versions: dict[str, dict[str
         enable_ubuntu_universe(root, prefix)
         run([*prefix, "apt-get", "update"], cwd=root)
         packages, missing_groups = resolve_apt_package_groups(root, package_groups)
+    if any(group.purpose in LLVM_PACKAGE_GROUPS for group in missing_groups) and host_is_ubuntu():
+        # The Ubuntu archive does not package the pinned LLVM major.
+        import llvm_apt_source
+        try:
+            llvm_apt_source.register(root, llvm_apt_source.os_release_codename(),
+                                     llvm_major_version(versions), list(prefix))
+        except llvm_apt_source.SourceError as error:
+            raise EngineError(str(error)) from error
+        run([*prefix, "apt-get", "update"], cwd=root)
+        packages, missing_groups = resolve_apt_package_groups(root, package_groups)
 
     if missing_groups:
         print_missing_apt_packages(root, missing_groups)
@@ -1067,8 +1174,14 @@ def validate_managed_tools(root: Path, versions: dict[str, dict[str, str]]) -> N
         raise EngineError("project-managed tools are missing or do not match pinned versions")
 
 
+def conan_profile_path(root: Path) -> Path:
+    # The profile names this checkout's compiler, SDK and libc++ links, so it
+    # stays beside the checkout even when the Conan home is shared.
+    return root / "out" / "conan" / "profiles" / native_profile_name()
+
+
 def install_conan_profile(root: Path) -> Path:
-    destination = root / "out" / "conan" / "home" / "profiles" / native_profile_name()
+    destination = conan_profile_path(root)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(native_profile_contents(root), encoding="utf-8")
     print(f"Installed Conan profile: {destination}")
@@ -1098,13 +1211,48 @@ def clang_cxx(root: Path) -> Path:
 LOCAL_CONAN_RECIPES: tuple[str, ...] = ("third_party/harfbuzz", "third_party/catch2")
 
 
-def export_local_recipes(root: Path) -> None:
+def locked_recipe_revisions(root: Path) -> dict[str, set[str]]:
+    lockfile = root / "conan.lock"
+    try:
+        data = json.loads(lockfile.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise EngineError(f"failed to read {lockfile}: {exc}") from exc
+    result: dict[str, set[str]] = {}
+    for section in ("requires", "build_requires", "python_requires"):
+        for entry in data.get(section, []):
+            reference, _, revision = entry.partition("%")[0].partition("#")
+            if revision:
+                result.setdefault(reference, set()).add(revision)
+    return result
+
+
+def export_local_recipes(root: Path, *, locked: bool = False) -> None:
+    # A locked install must use the recipes in this checkout. A cache that
+    # already holds the pinned revision (a shared home, or one used by another
+    # branch) would otherwise hide a recipe edit that conan.lock lacks.
+    pinned = locked_recipe_revisions(root) if locked else {}
     for recipe in LOCAL_CONAN_RECIPES:
         recipe_dir = root / recipe
         if not (recipe_dir / "conanfile.py").is_file():
             continue
         print(f"Exporting local Conan recipe: {recipe}")
-        run([conan(root), "export", str(recipe_dir)], cwd=root, env=tool_env(root))
+        argv = [conan(root), "export", str(recipe_dir), "--format", "json"]
+        print(f"+ {command_line(argv)}", flush=True)
+        # Conan logs to stderr (left on the terminal) and prints the exported
+        # reference as JSON on stdout.
+        try:
+            completed = subprocess.run([str(arg) for arg in argv], cwd=str(root), env=tool_env(root),
+                                       check=False, text=True, stdout=subprocess.PIPE)
+        except OSError as exc:
+            raise EngineError(f"command not found while running: {command_line(argv)}") from exc
+        if completed.returncode != 0:
+            raise EngineError(f"command failed with exit code {completed.returncode}: {command_line(argv)}")
+        reference, _, revision = json.loads(completed.stdout)["reference"].partition("#")
+        expected = pinned.get(reference)
+        if expected is not None and revision not in expected:
+            raise EngineError(
+                f"conan.lock pins {reference}#{', #'.join(sorted(expected))}, but {recipe} exports "
+                f"#{revision}. Run ./init.sh without --locked to update conan.lock.")
 
 
 def prepare_conan_artifacts(
@@ -1125,16 +1273,20 @@ def prepare_conan_artifacts(
     install_managed_tools(root, versions)
     validate_managed_tools(root, versions)
     profile_path = install_conan_profile(root)
-    run(
-        [conan(root), "remote", "update", "conancenter", "--url", "https://center2.conan.io"],
-        cwd=root,
-        env=tool_env(root),
-    )
-    export_local_recipes(root)
-    if not locked:
-        create_conan_lock(root, profile_path)
-    for preset in presets:
-        conan_install_for_preset(root, profile_path, preset, locked=locked)
+    # Exporting makes this checkout's recipe revisions the latest in the cache,
+    # so a shared cache must not interleave another checkout's export before
+    # this one resolves its lock and installs.
+    with conan_cache_lock(root):
+        run(
+            [conan(root), "remote", "update", "conancenter", "--url", "https://center2.conan.io"],
+            cwd=root,
+            env=tool_env(root),
+        )
+        export_local_recipes(root, locked=locked)
+        if not locked:
+            create_conan_lock(root, profile_path)
+        for preset in presets:
+            conan_install_for_preset(root, profile_path, preset, locked=locked)
 
 
 def cmake_cache_value(cache_path: Path, name: str) -> str | None:
@@ -1392,10 +1544,11 @@ def command_init(args: argparse.Namespace) -> int:
             configure_system_tool_shims(root, versions)
             if system_prerequisites_need_install(root, versions):
                 brew = shutil.which("brew")
+                formulae = [formula for formula, _ in homebrew_llvm_formulae(llvm_major_version(versions))]
                 if not brew:
                     raise EngineError("macOS setup requires Homebrew and Xcode Command Line Tools; "
-                                      f"install llvm@{llvm_major_version(versions)} first")
-                run([brew, "install", f"llvm@{llvm_major_version(versions)}"], cwd=root)
+                                      f"install {' '.join(formulae)} first")
+                run([brew, "install", *formulae], cwd=root)
                 configure_system_tool_shims(root, versions)
         else:
             install_ubuntu_system_prerequisites(root, versions)
@@ -1582,6 +1735,8 @@ def run_format_check(root: Path, *, fix: bool) -> None:
             formatted = format_source(source, path, clang_format)
         except subprocess.CalledProcessError as exc:
             raise EngineError(exc.stderr) from exc
+        except FormattingError as exc:
+            raise EngineError(str(exc)) from exc
         if source == formatted:
             continue
         if fix:
@@ -2028,12 +2183,37 @@ def command_install_sdk(args: argparse.Namespace) -> int:
 
 
 def clang_build_analyzer_dir(root: Path) -> Path:
-    return root / "out" / "host-tools" / "clang-build-analyzer"
+    return root / "out" / "host-tools" / f"clang-build-analyzer-{CLANG_BUILD_ANALYZER_VERSION}"
 
 
 def clang_build_analyzer_binary(root: Path) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
     return clang_build_analyzer_dir(root) / "build" / f"ClangBuildAnalyzer{suffix}"
+
+
+def prepare_clang_build_analyzer_includes(source_dir: Path) -> None:
+    """Make the pinned host tool's standard dependencies explicit for libc++ 23.
+
+    Thanks to Doug Binks/enkiTS and LLVM's demangler contributors, as bundled
+    by Aras Pranckevičius in ClangBuildAnalyzer v1.6.0. Preserve their licensed
+    bodies; these marked edits only add the headers declaring existing uses.
+    https://github.com/aras-p/ClangBuildAnalyzer/tree/v1.6.0/src/external
+    """
+    profiles = (
+        ("enkiTS/TaskScheduler.cpp", '#include "TaskScheduler.h"\n', "#include <cstdlib>\n#include <type_traits>\n"),
+        ("llvm-Demangle/include/Utility.h", '#include "StringView.h"\n', "#include <exception>\n"),
+        ("llvm-Demangle/include/ItaniumDemangle.h", '#include "DemangleConfig.h"\n', "#include <type_traits>\n"),
+    )
+    marker = "// Ludus host-tool include profile: explicit standard dependencies.\n"
+    for name, anchor, includes in profiles:
+        path = source_dir / "src/external" / name
+        original = path.read_text()
+        replacement = anchor + marker + includes
+        if original.count(replacement) == 1:
+            continue
+        if original.count(anchor) != 1 or marker in original:
+            raise EngineError(f"ClangBuildAnalyzer include profile no longer matches {name}")
+        path.write_text(original.replace(anchor, replacement))
 
 
 def ensure_clang_build_analyzer(root: Path) -> Path:
@@ -2069,6 +2249,7 @@ def ensure_clang_build_analyzer(root: Path) -> Path:
             shutil.rmtree(source_dir)
         extracted.rename(source_dir)
 
+    prepare_clang_build_analyzer_includes(source_dir)
     build_dir = source_dir / "build"
     build_dir.mkdir(parents=True, exist_ok=True)
     env = tool_env(root)

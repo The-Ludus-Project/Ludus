@@ -88,7 +88,8 @@ Ludus does **not** use C++ exceptions.
 **How this is enforced.** Engine code is compiled with `-fno-exceptions`
 (`/EHs-c-` on MSVC) via `cmake/EngineOptions.cmake`. Any `throw`/`try`/`catch`
 in engine code is therefore a hard compile error, not merely a style nit.
-`.clang-tidy` adds `hicpp-exception-baseclass` as a secondary guard.
+`.clang-tidy` enables `bugprone-std-exception-baseclass` (through `bugprone-*`)
+as a secondary guard.
 
 **Tests are the only exception.** Catch2 reports assertion failures by throwing,
 so test executables re-enable exceptions with `ludus_enable_test_exceptions()`
@@ -105,8 +106,9 @@ engine code. Discuss such cases in the PR before adding them.
 
 - C++23. Standard is required, extensions are off (`-std=c++23`, no GNU
   extensions).
-- Supported reference toolchain: Clang/LLVM 18 with LLD on Ubuntu 24.04. Tool
-  versions are pinned in `config/tool_versions.json`.
+- Supported reference toolchain: Clang/LLVM 23 with LLD on Ubuntu 24.04, installed
+  from the pinned apt.llvm.org suite (ADR 0025). Tool versions are pinned in
+  `config/tool_versions.json`.
 - Browser Foundation modules, Platform, RHI, and the isolated feasibility probe use the Emscripten SDK and WebGPU
   port pinned in `config/web_toolchain.json` (ADR 0009). Its SDK-provided LLVM
   is a separate web toolchain; native builds and formatting/static analysis
@@ -129,13 +131,13 @@ engine code. Discuss such cases in the PR before adding them.
 - Designated initializers may be compact (`value = { .A = 0, .B = 1 };`).
   Multiline initializers put the opening brace on its own line, with one member
   per line and a trailing comma. Never use `value = {` followed by multiline
-  members. Use `scripts/check`, which extends clang-format 18
-  for initializer braces; direct clang-format 18 does not implement this rule.
+  members. Use `scripts/check`, which extends clang-format 23
+  for initializer braces; direct clang-format 23 does not implement this rule.
 - Local `init.sh` installs the staged auto-formatting hook; existing checkouts
   can enable it with `./scripts/install-hooks`.
 - Static analysis must pass: `./scripts/check --tidy` against the project
-  `.clang-tidy`. Use the pinned `clang-format` / `clang-tidy` (18); newer local
-  versions may report checks that do not exist in the pinned version.
+  `.clang-tidy`. Use the pinned `clang-format` / `clang-tidy` (23); other local
+  versions format differently or report checks that the pinned version lacks.
 - `#pragma once` is the header-guard convention across the repo.
 
 ### Naming

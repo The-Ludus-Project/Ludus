@@ -54,7 +54,7 @@ struct Replay final
     {
         std::string_view componentId;
         JsonValue component;
-        const bool isMember = components.MemberAt(i, componentId, component);
+        [[maybe_unused]] const bool isMember = components.MemberAt(i, componentId, component);
         LUDUS_ASSERT(isMember == true);
         inoutWriter.BeginMember(componentId);
         if (component.Object() == false)
@@ -67,7 +67,7 @@ struct Replay final
         {
             std::string_view propertyId;
             JsonValue property;
-            const bool isProperty = component.MemberAt(j, propertyId, property);
+            [[maybe_unused]] const bool isProperty = component.MemberAt(j, propertyId, property);
             LUDUS_ASSERT(isProperty == true);
             inoutWriter.BeginMember(propertyId);
             if (IsReference(replay.References, componentId, propertyId) == false)
@@ -119,7 +119,7 @@ EmitVersion2(const Replay& replay, usize capacity, Bytes& outJson, IdentityRecor
     {
         const JsonValue entity = replay.Entities.At(i);
         std::string_view legacyId;
-        const bool isString = entity.Get("id").String(legacyId);
+        [[maybe_unused]] const bool isString = entity.Get("id").String(legacyId);
         LUDUS_ASSERT(isString == true);
         const MigrationObject* const objectOrNull = replay.Manifest.FindObject(replay.Document, legacyId);
         LUDUS_ASSERT(objectOrNull != nullptr);

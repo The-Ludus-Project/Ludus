@@ -1,7 +1,8 @@
 # ADR 0024: Curves and surfaces domains, statuses and numeric guarantees
 
 Status: Accepted for G0. Later phases implement these contracts; changing one
-requires amending this record.
+requires amending this record. Amended in G3: sweep mesh generation has its own
+public header, `sweep.hpp` (see the boundary table).
 
 ## Context
 
@@ -189,9 +190,13 @@ records the corpus checks and the G1 cross-check.
 | Target | Public headers | May depend on |
 | --- | --- | --- |
 | `Ludus::FoundationMath` (implemented) | `cubic.hpp`, `patch.hpp` | Base only |
-| `Ludus::FoundationGeometry` at `modules/foundation/geometry` (G2) | `status.hpp`, `path.hpp`, `track.hpp`, `distance.hpp`, `frame.hpp`, `surface.hpp`, `query.hpp`, `tessellation.hpp` | Base, Math, Containers |
+| `Ludus::FoundationGeometry` at `modules/foundation/geometry` (G2) | `status.hpp`, `path.hpp`, `track.hpp`, `distance.hpp`, `frame.hpp`, `surface.hpp`, `query.hpp`, `sweep.hpp`, `tessellation.hpp` | Base, Math, Containers |
 | `Ludus::GeometryFormat` at `modules/content/geometry_format` (G5) | Versioned cooked record layouts, limits and constants | Base only (header-only INTERFACE target) |
 | `Ludus::GeometryContent` at `modules/geometry/content` (G5) | Source codecs, validation, cooking, loading, publication | Content, FoundationGeometry, GeometryFormat |
+
+G3 amendment: sweep planning and emission live in `sweep.hpp`, not in
+`tessellation.hpp`. A framed path consumer then parses no mesh API, and the
+patch tessellation header that G4 adds stays independent of path sweeps.
 
 `status.hpp` includes only Base. No Geometry header is added to `core.h` or the
 foundational PCH. No public Geometry header includes Content, RHI, Logging,

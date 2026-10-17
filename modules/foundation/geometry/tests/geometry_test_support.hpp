@@ -4,7 +4,9 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/geometry/distance.hpp>
+#include <ludus/foundation/geometry/frame.hpp>
 #include <ludus/foundation/geometry/path.hpp>
 #include <ludus/foundation/geometry/status.hpp>
 
@@ -104,5 +106,84 @@ PrepareFixture(const fixtures::CubicFixture& fixture, PathSpanSource& outSpan, P
 [[nodiscard]] inline DistancePreparation MakeDistancePreparation() noexcept
 {
     return DistancePreparation{ .Precision = PrecisionProfile::Strict, .Limits = MakeLimits() };
+}
+
+/// Largest span count of the multi-span G3 test paths.
+inline constexpr usize MAX_TEST_SPANS = 8;
+/// Dyadic depth used by frame and sweep tests: singular ranges are 2^-30 wide.
+inline constexpr usize FRAME_TEST_DEPTH = 30;
+
+/// A prepared path and its distance map built from caller-listed source spans.
+struct PreparedFixture final
+{
+    core::StaticArray<PathSpanSource, MAX_TEST_SPANS> Spans{};
+    usize SpanCount = 0;
+    PreparedPath Path;
+    PreparedDistanceMap Map;
+};
+
+/// Prepare spanCount spans already stored in inoutFixture.Spans, then build the distance map.
+[[nodiscard]] inline GeometryStatus
+PrepareStoredSpans(usize spanCount, bool isClosed, PreparedFixture& inoutFixture) noexcept
+{
+    inoutFixture.SpanCount = spanCount;
+    const PathSource source
+    {
+        .Spans = BorrowedView<const PathSpanSource>(inoutFixture.Spans.GetData(), spanCount),
+        .IsClosed = isClosed,
+        .Revision = 1,
+    };
+    GeometryStatus status = TryPreparePath(source, MakePreparation(), inoutFixture.Path, nullptr);
+    if (status == GeometryStatus::Success)
+    {
+        status = TryBuildDistanceMap(inoutFixture.Path.GetView(), MakeDistancePreparation(), inoutFixture.Map, nullptr);
+    }
+    return status;
+}
+
+/// Prepare a single cubic corpus fixture with its distance map.
+[[nodiscard]] inline GeometryStatus PrepareCubic(const fixtures::CubicFixture& fixture,
+                                                 PreparedFixture& outFixture) noexcept
+{
+    outFixture.Spans[0] = MakeSpan(fixture);
+    return PrepareStoredSpans(1, false, outFixture);
+}
+
+/// Prepare a G3 frame corpus fixture (unit-width cubic spans) with its distance map.
+[[nodiscard]] inline GeometryStatus PrepareFrameFixture(const fixtures::FrameFixture& fixture,
+                                                        PreparedFixture& outFixture) noexcept
+{
+    for (usize spanIndex = 0; spanIndex < fixture.Spans.GetSize(); ++spanIndex)
+    {
+        PathSpanSource& span = outFixture.Spans[spanIndex];
+        span.Kind = SpanKind::Cubic;
+        span.SourceElement = spanIndex;
+        for (usize i = 0; i < SPAN_CONTROL_COUNT; ++i)
+        {
+            span.Control[i] = ToVector(fixture.Spans[spanIndex][i]);
+        }
+    }
+    return PrepareStoredSpans(fixture.Spans.GetSize(), fixture.IsClosed, outFixture);
+}
+
+/// Frame fixture by name; the first fixture when the name is unknown.
+[[nodiscard]] inline const fixtures::FrameFixture& FindFrameFixture(const char* name) noexcept
+{
+    for (const fixtures::FrameFixture& fixture : fixtures::FRAME_FIXTURES)
+    {
+        if (std::strcmp(fixture.Name, name) == 0)
+        {
+            return fixture;
+        }
+    }
+    return fixtures::FRAME_FIXTURES[0];
+}
+
+/// Visual frame preparation with the corpus limits and a caller seed.
+[[nodiscard]] inline FramePreparation MakeFramePreparation(const math::Vector3d& seedUp) noexcept
+{
+    WorkLimits limits = MakeLimits();
+    limits.MaxDepth = FRAME_TEST_DEPTH;
+    return FramePreparation{ .SeedUp = seedUp, .Limits = limits };
 }
 } // namespace ludus::foundation::geometry::test_support

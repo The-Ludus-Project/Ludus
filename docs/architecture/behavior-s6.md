@@ -20,8 +20,8 @@ that it has run on a device.
 
 | Target | Admission | Required execution evidence |
 | --- | --- | --- |
-| Linux x86_64 / arm64, Clang 18 | Qualification builds | Native production-provider suite, ASan/UBSan, relocated SDK and extracted player; CI currently exercises x86_64 |
-| macOS x86_64 / arm64, upstream Clang 18 | Qualification builds, one architecture per SDK | Native production-provider suite, ASan/UBSan, relocated SDK and extracted Mach-O player; macOS CI records its actual CPU |
+| Linux x86_64 / arm64, Clang 23 | Qualification builds | Native production-provider suite, ASan/UBSan, relocated SDK and extracted player; CI currently exercises x86_64 |
+| macOS x86_64 / arm64, upstream Clang 23 | Qualification builds, one architecture per SDK | Native production-provider suite, ASan/UBSan, relocated SDK and extracted Mach-O player; macOS CI records its actual CPU |
 | Web wasm32, pinned Emscripten LLVM 22 | Qualification builds | Development/Release Node and headless Chromium execution of the same hashed Wasm; physical browsers/devices and additional browser engines pending |
 | Windows x86_64 / arm64 | Rejected: engine backend pending | Native Foundation/backend build and execution, SDK/player, sanitizer and debugger acceptance pending |
 | Android arm64 | Rejected: engine backend pending | NDK/native engine profile, physical device execution and packaging pending |
@@ -29,7 +29,7 @@ that it has run on a device.
 
 Other systems, compilers, compiler majors, architectures, 32-bit native targets,
 wasm64, and macOS universal SDKs are rejected. The pinned Web SDK remains separate
-from reference Clang 18. A policy update requires both implementation review and
+from reference Clang 23. A policy update requires both implementation review and
 new execution evidence; adding a name to this table is insufficient.
 
 ## Execute the safety suite

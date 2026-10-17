@@ -37,10 +37,23 @@ revision through the last job. Verify changed coordinator behavior with a later
 `develop` candidate after the repair reaches `main`. Dispatching without a new
 candidate skips validation and publication, so it does not exercise the change.
 
+Before changing the compiler pin, prepare the trusted validation workflows to
+read the captured candidate's `config/tool_versions.json`. Install its LLVM major
+and use its configured compiler/formatter paths, including installed-SDK and
+generated-project checks. When the candidate supplies `llvm_apt_source.py`, run
+it before apt so newer pins can use their committed package-source key. Older
+candidates without that helper keep their existing Ubuntu package source.
+Land this compatible workflow preparation before the new pin: changing both
+together in `develop` cannot update the workflow definitions already on `main`.
+If recovery requires landing that preparation directly on `main`, bring its
+history into `develop` through an integration PR using a merge commit. Squashing
+or rebasing that PR discards the ancestry link; promotion rejects a candidate
+that diverges from `main`, even when the files contain the same repair.
+
 Only one batch is active. New `develop` commits do not cancel it or change its input.
 Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
 before `main` advanced skips, letting the next tick use the new stable revision.
-Native, SDK, wiki and browser workflows must all succeed. Filesystem block-prefix
+Native, SDK, wiki, browser and threading-platform workflows must all succeed. Filesystem block-prefix
 recovery additionally runs when its workflow, persistence implementation, recovery
 probe or recovery drivers changed anywhere in the complete batch diff. Invalid
 metadata, failed/cancelled checks and unexpectedly skipped required jobs cannot
@@ -220,12 +233,45 @@ enables warnings as errors without invoking the full `init.sh --ci` validation.
 The profiling job disables compiler caching and retains its existing measurement
 concurrency for comparable uncached profiles.
 
+Ubuntu 24.04 runners do not package the pinned LLVM 23. Before installing
+`clang-23` and its tools, Linux jobs run `scripts/python/llvm_apt_source.py`.
+It registers only the `llvm-toolchain-noble-23` suite from apt.llvm.org, signed
+by the committed and fingerprint-checked `config/apt/apt.llvm.org.asc`
+([ADR 0025](../decisions/0025-llvm-toolchain-pin.md)). That suite serves only
+its newest 23.1.x build. The macOS setup action installs `llvm@23` and `lld@23`
+from Homebrew; init rejects either if `brew upgrade` moved it to another major.
+
 ### macOS runner images
 
 Native jobs use `macos-15` arm64. Host and documentation tooling separately check
 `macos-15-intel`. The SDK deployment target remains `14.0`; a macOS 15 runner does
 not establish macOS 14 runtime qualification. See GitHub's
 [macOS 14 deprecation notice](https://github.com/actions/runner-images/issues/13518).
+
+### Threading platform lanes
+
+`.github/workflows/threading-platforms.yml` runs the only Windows build and the
+macOS ThreadSanitizer run of `Ludus::FoundationThreading`
+([threading milestone T3](../architecture/threading.md#milestones)). Every batch
+calls it, and promotion requires it. Integration PRs run it only when they change
+the threading module, the Windows FoundationBase diagnostics backend, the Windows
+Conan profile or the workflow itself.
+
+The Windows job installs the upstream LLVM 23.1.3 installer on `windows-2022`, after
+checking it against its pinned SHA-256 digest (Chocolatey does not package LLVM 23
+yet), and drives `clang++` against the runner's Microsoft STL and dynamic CRT. It installs the
+pinned CMake/Ninja/Conan versions, exports the local Catch2 recipe and installs
+only that locked package with `config/conan/profiles/windows-clang-x86_64`. Ludus
+configures only the FoundationThreading closure on Windows (Base, Memory,
+Containers, Time, Profiling and Threading); other modules have no Windows backend
+and no SDK is installed. The job runs the threading, startup-seam, profiling-adapter
+and allocation suites once, then repeats the scheduler and startup suites 20 times.
+
+The macOS job prepares `macos-clang-development` without the editor or shader
+tools, proves TSan detection with the sanitizer control, then runs the threading,
+startup-seam and profiling-adapter suites under TSan, repeating the first two.
+The pinned LLVM 23 TSan runtime also starts on local macOS 26 hosts, which LLVM
+before 22.1.3 could not; see [macOS sanitizer runtimes](building.md#macos-sanitizer-runtimes).
 
 ## Dependencies and caches
 
@@ -295,7 +341,7 @@ Registration steps and the trust boundary are in
 `LUDUS_ENABLE_UBSAN=ON` propagates `-fno-sanitize-recover=undefined` through the
 same project options as sanitizer instrumentation. Recoverable UB therefore
 fails the invoking test. Thanks to LLVM's
-[Clang 18 UBSan usage contract](https://releases.llvm.org/18.1.8/tools/clang/docs/UndefinedBehaviorSanitizer.html#usage)
+[Clang 23 UBSan usage contract](https://releases.llvm.org/23.1.0/tools/clang/docs/UndefinedBehaviorSanitizer.html#usage)
 for the fatal recovery policy and signed-overflow control.
 
 Enabled ASan, UBSan and TSan builds register `sanitizer-control` CTest tests.
@@ -315,8 +361,8 @@ out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --label-regex sani
 
 On macOS use `macos-clang-asan-ubsan`. TSan remains a separate build tree;
 its existing CI job now builds and runs `ludus_tsan_control_child` before the
-concurrency acceptance suite. It follows LLVM's [Clang 18.1.8 ThreadSanitizer
-usage example](https://releases.llvm.org/18.1.8/tools/clang/docs/ThreadSanitizer.html#usage):
+concurrency acceptance suite. It follows LLVM's [Clang 23.1.0 ThreadSanitizer
+usage example](https://releases.llvm.org/23.1.0/tools/clang/docs/ThreadSanitizer.html#usage):
 parent and worker write one shared global volatile slot before joining, using
 direct `pthread_create`/`pthread_join` calls with explicit error checks. The
 worker polls a separate relaxed atomic gate set after the parent's write. This
@@ -370,7 +416,7 @@ contracts. Embedded Python/ShellCheck adapters are disabled so optional unpinned
 tools cannot silently change the check. Composite action YAML is not claimed as
 actionlint coverage. ShellCheck remains a separate future rollout.
 
-`config/clang-analyzer.yml` selects stable LLVM 18 `core`, `cplusplus` and `unix`
+`config/clang-analyzer.yml` selects stable LLVM 23 `core`, `cplusplus` and `unix`
 families. Experimental/opt-in checkers are not enabled.
 The released Move check uses `WarnOn=KnownsOnly`: it models known standard types
 without treating Ludus' documented empty/reusable moved-from states as errors.

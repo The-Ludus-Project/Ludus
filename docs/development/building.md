@@ -19,7 +19,8 @@ packages. It checks `NAN` and `INFINITY`, whose header definitions HarfBuzz need
 and that `<cfloat>` still defines `DBL_MAX_10_EXP` after `<cmath>`, which Catch2
 needs. Clang 18 with the macOS 27 SDK fails the first check; libc++ 22 with that
 SDK fails the second ([llvm/llvm-project#175849](https://github.com/llvm/llvm-project/pull/175849)).
-macOS 26.5 passes both on the tested host. Without `SDKROOT`, init tests Clang's default SDK first, then installed
+The pinned LLVM 23 passes both with the macOS 26.5 and 27.0 SDKs on the tested
+host, so the default Command Line Tools SDK needs no override. Without `SDKROOT`, init tests Clang's default SDK first, then installed
 sibling SDKs newest first, selecting the first that passes. It does not download
 an older SDK or change the system's Xcode selection.
 
@@ -29,7 +30,7 @@ added by Apple's Python launcher does not prevent automatic SDK selection. If it
 install/select a compatible SDK, then rerun init, for example:
 
 ```bash
-SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk ./init.sh
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk ./init.sh
 ```
 
 If `SDKROOT` was set accidentally, use `unset SDKROOT` and rerun `./init.sh`.
@@ -192,9 +193,9 @@ future editor and scripting milestones.
 ## macOS support
 
 
-The first macOS slice uses upstream Clang 18 and libc++ with Apple silicon
+The first macOS slice uses upstream Clang 23 and libc++ with Apple silicon
 and Intel profiles, targeting macOS 14 or later. Install Xcode Command Line Tools and
-Homebrew's `llvm@18`, then run:
+Homebrew's `llvm@23` and `lld@23` (Homebrew ships LLD as a separate formula), then run:
 
 ```bash
 ./init.sh --cli macos-clang-development --preset-only --locked --no-system-install
@@ -227,8 +228,8 @@ compiler detection and prints the init command needed to prepare that profile.
 
 Debug, Development, and ASan/UBSan builds are validated on Apple silicon.
 Native Cocoa integration tests require a WindowServer session and opt in with
-`LUDUS_TEST_COCOA=1`; deferred feature cases explicitly skip. The pinned Clang 18
-sanitizer runtimes cannot start on macOS 26 or newer; see
+`LUDUS_TEST_COCOA=1`; deferred feature cases explicitly skip. The pinned LLVM 23
+sanitizer runtimes start on macOS 26; LLVM before 22.1.3 does not, see
 [macOS sanitizer runtimes](#macos-sanitizer-runtimes). The macOS 14 CI job runs the Cocoa lifecycle and keyboard
 tests, Metal lifecycle/rendering tests, native filesystem tests and Content read adapters with ASan/UBSan
 as well as the regular Development build.
@@ -257,10 +258,16 @@ each compiler:
 
 | Compiler | `-fsanitize=address,undefined` | `-fsanitize=thread` |
 | --- | --- | --- |
-| Homebrew LLVM 18.1.8 (pinned) | hangs | `SIGSEGV` |
+| Homebrew LLVM 18.1.8 (pinned before LLVM 23) | hangs | `SIGSEGV` |
 | Homebrew LLVM 21.1.8 | hangs | `SIGSEGV` |
 | Homebrew LLVM 22.1.8 | exits 0; detects a heap overflow | exits 0 |
+| Homebrew LLVM 23.1.3 (pinned) | exits 0 (10 of 10 runs, SDK 26.5 and 27.0) | exits 0 (10 of 10 runs) |
 | Apple Clang 21 (Xcode CLT) | exits 0 | exits 0 |
+
+The pinned LLVM 23 therefore runs `macos-clang-asan-ubsan` locally on macOS 26.
+On the same host its full suite passed 81 of 83 tests; neither remaining failure
+was a sanitizer start-up failure. [ADR 0025](../decisions/0025-llvm-toolchain-pin.md)
+records the measurements behind the pin.
 
 Before a sanitizer configuration adds any target, CMake builds a trivial
 program with the selected `-fsanitize` flags. It runs that program for at most
@@ -269,23 +276,28 @@ or exits nonzero, configuration stops. The diagnostic names the known cause
 when it applies. Running the tests would otherwise hang every test process. A
 passing result is cached for that compiler, flag set and host OS version.
 
-On an affected Mac:
+If the probe still fails, for example with a user-supplied LLVM older than 22.1.3:
 
-- Treat the CI sanitizer jobs as authoritative. The macOS 14 and Linux runners
-  use the pinned LLVM 18 runtimes, which start there.
+- Use the pinned LLVM 23 (`brew install llvm@23 lld@23`, then rerun `./init.sh`).
 - Run local onboarding validation without the sanitizer preset:
   `./init.sh --validate --skip-sanitizers`.
 - `-DLUDUS_SANITIZER_RUNTIME_PROBE=OFF` disables the probe. Use it only to
   investigate a runtime, because affected tests then hang again.
 
 Using a different LLVM for this preset is not supported. The repository pins
-LLVM 18 for compilation, formatting and analysis
-(`config/tool_versions.json`), so a newer toolchain would need to be adopted
+LLVM 23 for compilation, formatting and analysis
+(`config/tool_versions.json`), so another toolchain would need to be adopted
 deliberately across all tools. Repository scripts and CMake compiler gates read
 the major from that file's `minimum.clang`. The ludus-tools wheel constant, Conan
 profiles and example presets cannot read it; `test_ci.ToolchainPinTests` fails
 when they disagree. CI workflows, the devcontainer and Behavior profiles still
-name the version and change with the pin.
+name the version; `test_ci.ToolchainPinTests` also checks the workflow and
+devcontainer package names.
+
+Until Homebrew publishes versioned formulae for LLVM 23, `llvm@23` and `lld@23`
+are aliases of the unversioned `llvm` and `lld`, and `brew upgrade` can move them
+to the next major. Init then stops and names the formula; `brew pin llvm lld`
+prevents the move while those formulae still provide LLVM 23.
 
 Platform now provides [native Cocoa windows and keyboard input](../architecture/macos-platform.md).
 It publishes borrowed native handles and backing-pixel dimensions for the Metal backend. RHI supports Cocoa presentation and headless rendering,
@@ -313,9 +325,15 @@ Prepare only the preset you need, with tests explicitly enabled:
 ```
 
 Use `--no-system-install` when system prerequisites are already available.
-User-owned LLVM 18 installations work when their `bin` directory is on `PATH`
+User-owned LLVM 23 installations work when their `bin` directory is on `PATH`
 and their shared libraries are discoverable by the host loader. Setup resolves
-versioned executables such as `clang++-18` and creates project-local tool shims.
+versioned executables such as `clang++-23` and creates project-local tool shims.
+Ubuntu 24.04 does not package LLVM 23. On Ubuntu, init registers the pinned
+`llvm-toolchain-<codename>-23` suite from [apt.llvm.org](https://apt.llvm.org/)
+when the configured sources lack it, and prints that it adds this third-party
+source. Its archive key is committed as `config/apt/apt.llvm.org.asc` and checked
+against the published fingerprint first; `python3 scripts/python/llvm_apt_source.py`
+performs the same registration manually.
 It validates the host toolchain before creating the build-tool venv or downloading
 Python packages. `--no-system-install` still downloads the pinned managed tools
 and Conan dependencies; `--locked` preserves the committed dependency lock.
@@ -348,7 +366,7 @@ force diagnostic helpers into report-only mode during local headless work, set
 ## Development container
 
 The checked-in `.devcontainer/` configuration supplies the Ubuntu 24.04 reference
-host, LLVM 18 (including formatting, analysis and sanitizer tools), Python venv
+host, LLVM 23 from its pinned apt.llvm.org suite (including formatting, analysis and sanitizer tools), Python venv
 support and native build prerequisites. It omits Wayland and Qt development
 packages so the default configuration uses the headless backend.
 
@@ -385,7 +403,8 @@ The source tree contains only hand-written project files. Generated state belong
 ```text
 out/host-tools/venv/        pinned CMake, Ninja, and Conan Python packages
 out/host-tools/raddebugger/  optional pinned RAD source builds
-out/conan/home/             project-local Conan cache and installed profile
+out/conan/home/             project-local Conan cache (unless LUDUS_CONAN_HOME is set)
+out/conan/profiles/         installed Conan profile for this checkout
 out/conan/<preset>/         Conan CMakeToolchain and CMakeDeps files
 out/build/<preset>/         CMake build trees and compile_commands.json
 out/install/<preset>/       installed SDK prefixes
@@ -414,7 +433,7 @@ Run:
 
 Bootstrap is the exhaustive dependency-preparation step. It uses the system Python to create `out/host-tools/venv/`, then installs the pinned CMake, Ninja, and Conan versions from `config/tool_versions.json`. This is intentional network access.
 
-After tool validation, bootstrap installs the committed Conan profile into the project-local Conan home, creates `conan.lock`, populates the Conan cache, writes Conan generator files under `out/conan/<preset>/`, and runs a minimal CMake configure smoke test.
+After tool validation, bootstrap installs the committed Conan profile into `out/conan/profiles/`, creates `conan.lock`, populates the Conan cache, writes Conan generator files under `out/conan/<preset>/`, and runs a minimal CMake configure smoke test.
 
 ## Conan
 
@@ -425,6 +444,122 @@ separate pins in `config/web_toolchain.json`. The early Milestone 0 dependency
 inventory is historical.
 
 Normal configure, build, test, check, and SDK install commands use the Conan files already generated by bootstrap. They should not require network access unless generated state is removed.
+
+## Sharing caches between checkouts
+
+By default every checkout has its own Conan cache under `out/conan/home/` and
+compiles every translation unit itself. On a host with many checkouts at once,
+such as concurrent agent worktrees, a fresh checkout repeats the same
+HarfBuzz, FreeType and Catch2 builds and the same engine compiles. Three opt-in
+environment variables let checkouts reuse each other's results:
+
+```bash
+export LUDUS_CONAN_HOME="$HOME/Library/Caches/ludus/conan"   # Linux: $HOME/.cache/ludus/conan
+export LUDUS_ENABLE_CCACHE=1
+export LUDUS_CCACHE_SHARE_CHECKOUTS=1
+```
+
+Export them before `./init.sh` and before the first configure of a build tree.
+CI sets none of them. [Fresh worktree setup cost](build-profiling.md#fresh-worktree-setup-cost)
+records what they saved on a shared development host.
+
+### Shared Conan home
+
+`LUDUS_CONAN_HOME` must be an absolute path outside any checkout. The Conan home
+is `<path>/conan-<pinned Conan version>`, so checkouts pinned to different
+Conan versions never migrate the same cache. The first checkout builds the
+third-party packages and Conan's own build tools into it. Later checkouts with
+the same recipe revisions, settings and options reuse those packages instead of
+building them. Each checkout keeps its own installed profile in
+`out/conan/profiles/`, because the profile names that checkout's compiler, SDK
+and libc++ links. Its generated toolchain in `out/conan/<preset>/` and its
+initialization record stay local too.
+
+Conan 2 does not lock its package cache between processes. `./init.sh`
+therefore holds `<home>/.ludus-cache.lock` from the remote update through the
+last `conan install`. A concurrent initialization prints `Waiting for another
+checkout to finish with the shared Conan cache` and continues afterwards,
+usually finding every package already built. Configure and build only read
+installed packages, so they don't take the lock.
+
+`--locked` still installs exactly the revisions that `conan.lock` pins. A
+shared cache may already hold a pinned revision that another checkout
+exported, so a locked initialization fails when this checkout's
+`third_party/harfbuzz` or `third_party/catch2` recipe exports a revision that
+`conan.lock` does not pin. It no longer quietly uses the older recipe. An
+unlocked initialization exports and resolves `conan.lock` under the same lock,
+so the lock records this checkout's recipes.
+
+Generated toolchain files point into the shared cache. Removing packages from
+it with `conan remove`, or deleting the directory, breaks every checkout that
+uses them until it reruns `./init.sh`. Conan leaves each source build's build
+folder in the cache. To reclaim that space and keep the packages, run this with
+the pinned Conan:
+
+```bash
+CONAN_HOME="$LUDUS_CONAN_HOME/conan-2.8.1" out/host-tools/venv/bin/conan cache clean "*" --build --temp
+```
+
+Package reuse follows Conan's package IDs. The SDK, compiler and libc++ paths
+in the profile are configuration, not package-ID inputs, so a checkout-local
+cache already reuses a package after the macOS SDK or Homebrew LLVM changes.
+After such a host toolchain change, point `LUDUS_CONAN_HOME` at a new directory,
+or remove the packages from the shared cache, to rebuild them.
+
+### Compiler cache across checkouts
+
+`LUDUS_ENABLE_CCACHE=1` compiles C and C++ through
+[ccache](https://ccache.dev), which must be installed (`brew install ccache` or
+`sudo apt install ccache`). On its own it reuses results only inside one
+checkout. ccache hashes the compiler command line, which names absolute
+checkout paths, and for `-g` builds it also hashes the build directory.
+`LUDUS_CCACHE_SHARE_CHECKOUTS=1` needs ccache 4.8 or newer. It adds these
+per-compilation settings to the launcher:
+
+- `base_dir=<checkout root>`: ccache passes paths inside the checkout to the
+  compiler relative to the build directory, so every checkout hashes the same
+  command line. Paths outside the checkout stay absolute: Homebrew LLVM, the
+  SDK and a shared Conan home. CMake always spells a checkout under macOS
+  `/private/tmp` as `/tmp`, while the Conan toolchain uses the resolved path.
+  For such a checkout, or any checkout reached through a symlink, the launcher
+  lists both spellings in `base_dir`, which needs ccache 4.12 or newer. It
+  also runs ccache through `env PWD=<build directory>`, because ccache
+  computes relative paths from `$PWD` only when `$PWD` names the working
+  directory. Otherwise every `/tmp` path would be relativized through `/` and
+  the checkout's own name.
+- `hash_dir=false`: Development, Profile and Debug builds compile with `-g`.
+  Without this setting, the build directory would be part of every key.
+- `absolute_paths_in_stderr=true`: warnings and errors keep absolute paths.
+
+Use it together with `LUDUS_CONAN_HOME`. A checkout-local Conan cache installs
+source-built packages under randomly named folders such as `p/b/catch<random>`.
+Translation units that include Catch2, HarfBuzz or FreeType headers then never
+match another checkout's.
+
+Sharing changes these build outputs:
+
+- `__FILE__` and `std::source_location` name sources relative to the build
+  directory (`../../../modules/...`), not by absolute path. Linux's
+  `-fmacro-prefix-map` no longer shortens them.
+- A reused object's debug information names the build directory that compiled
+  it first. LLDB opens that checkout's copy of the source. The copy is
+  identical when the object was reused, until that checkout changes the file or
+  is deleted. Build with `-DLUDUS_CCACHE_SHARE_CHECKOUTS=OFF` when you need
+  exact source paths in the debugger.
+- Translation units with checkout-specific definitions, such as the text tests'
+  absolute fixture directory, still compile in each checkout.
+- `-ftime-trace` compilations bypass ccache, because ccache does not cache that
+  option. `./scripts/profile-build` and `./scripts/check-build-budget` also
+  turn ccache off, so build-time evidence is unaffected.
+
+Both settings are CMake cache options seeded from the environment when a build
+tree is first configured. To change an existing tree, pass
+`-DLUDUS_ENABLE_CCACHE=ON|OFF` or `-DLUDUS_CCACHE_SHARE_CHECKOUTS=ON|OFF`.
+Turning `LUDUS_ENABLE_CCACHE` off also removes the ccache launcher from the
+tree. All checkouts of one user already share ccache's default directory
+(`~/Library/Caches/ccache` on macOS, `~/.cache/ccache` on Linux). One
+development build stores about 52 MB there, well within ccache's default
+5 GiB limit.
 
 ## Presets
 
@@ -469,11 +604,11 @@ After building the native preset you want to edit, select it explicitly:
 ./scripts/setup-editor macos-clang-development # use linux-clang-development on Linux
 ```
 
-Install reference `clangd-18` on Linux (`sudo apt-get install clangd-18`); Homebrew
-`llvm@18` supplies it on macOS. Initialization creates its managed shim when
+Install reference `clangd-23` on Linux (`sudo apt-get install clangd-23` from the pinned apt.llvm.org suite); Homebrew
+`llvm@23` supplies it on macOS. Initialization creates its managed shim when
 available. Existing prepared checkouts can rerun initialization to add the shim.
 Then run **clangd: Restart language server**. The tracked clangd launcher uses
-that selection's database with reference LLVM 18 builtin headers and the preset's
+that selection's database with reference LLVM 23 builtin headers and the preset's
 explicit SDK/libc++ paths. It executes no external query driver. It rejects
 missing/stale setup, moved checkouts, wrong-host presets and incomplete source
 inventories. Opening the editor does not download, configure or repair anything.
@@ -512,11 +647,15 @@ Apply formatting:
 ./scripts/check linux-clang-development --format --fix
 ```
 
-The formatter uses clang-format 18 and preserves compact designated initializers
+The formatter uses clang-format 23 and preserves compact designated initializers
 on one line (`value = { .A = 0, .B = 1 };`). Multiline initializers place the
 opening brace on its own line, with one member per line and a trailing comma.
-Clang-format 18 alone cannot express the opening-brace rule, so run the project
-command for both applying and checking formatting.
+Clang-format 23 alone cannot express the opening-brace rule, so run the project
+command for both applying and checking formatting. The brace normalization
+changes only whitespace: where clang-format keeps a closing brace on the last
+member's line, such as an initializer in a ternary operand, that list keeps
+clang-format's layout. If normalization would change any other token, the
+formatter reports an error and leaves the file unchanged.
 
 Local `./init.sh` enables the pre-commit formatter. To enable it in an existing
 checkout, run `./scripts/install-hooks`. It formats only staged C/C++ in
@@ -548,7 +687,7 @@ application, probe and consumer-fixture sources while excluding pinned vendor im
 Both browser build configurations remain checked.
 
 The native Development CI job also installs and relocates the SDK and links an
-external consumer with Clang 18, without producer dependency paths. This reuses
+external consumer with Clang 23, without producer dependency paths. This reuses
 the existing SDK build and makes relocation a required gate. Debug runtime
 validation covers Debug assertion policies; the separate assertion matrix
 continues to exercise Profile and Release.
@@ -559,6 +698,12 @@ foundational header (`core.h`/`config.h`/`compiler.h`/`types.h`) pulls a
 string/container/heavy STL header, or if any public header pulls a heavy STL or
 private `internal/` header. Header self-sufficiency (every public header
 compiles standalone) is checked by the `ludus_header_self_sufficiency` CTest.
+Its probes run concurrently; `LUDUS_HEADER_CHECK_JOBS` bounds the compiler
+processes (default: the CPUs available to the test). Every header keeps the
+flags reconstructed from `compile_commands.json` and its own failure report.
+The test's 600 s CTest timeout only detects a hung compiler: probe wall time
+follows host load, so heavily shared hosts need the headroom. Header parse cost
+is budgeted by `config/build_budget.json`, not by this timeout.
 See `docs/architecture/foundational-headers.md` and ADR 0007.
 
 ## Foundational header
@@ -630,7 +775,7 @@ regressions to the owning check rather than relying on an isolated PR comment.
 Run the changed-source gate with an explicit comparison:
 
 ```sh
-python3 scripts/python/source_policy.py --base origin/main --clang-format clang-format-18
+python3 scripts/python/source_policy.py --base origin/main --clang-format clang-format-23
 PYTHONPATH=scripts/python python3 -m unittest test_source_policy -v
 ```
 

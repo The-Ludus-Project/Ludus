@@ -310,7 +310,9 @@ void AdapterReady(WGPURequestAdapterStatus status,
     descriptor.requiredLimits = &requiredLimits;
     // Optional timestamps are requested only for an opted-in measurement session.
     constexpr usize OPTIONAL_FEATURE_COUNT = 2;
-    StaticArray<WGPUFeatureName, OPTIONAL_FEATURE_COUNT> features{};
+    StaticArray<WGPUFeatureName, OPTIONAL_FEATURE_COUNT> features{
+        {WGPUFeatureName_TextureCompressionBC, WGPUFeatureName_TimestampQuery},
+    };
     if (wgpuAdapterHasFeature(adapter, WGPUFeatureName_TextureCompressionBC))
     {
         features[descriptor.requiredFeatureCount++] = WGPUFeatureName_TextureCompressionBC;

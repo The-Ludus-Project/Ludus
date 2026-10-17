@@ -108,7 +108,7 @@ def main() -> int:
 
         for target, diagnostic in (
             ("x86_64-unknown-freebsd", "unsupported operating system"),
-            ("wasm32-wasi", "unsupported operating system"),
+            ("wasm32-wasip1", "unsupported operating system"),
             ("i686-linux-gnu", "unsupported CPU architecture"),
             ("arm64-apple-tvos17.0", "unsupported Apple operating system"),
             ("arm64-apple-watchos10.0", "unsupported Apple operating system"),

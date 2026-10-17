@@ -59,6 +59,30 @@ def classify_sanitizer(output: str) -> str | None:
     return None
 
 
+def classify_sanitizer_check(output: str) -> str | None:
+    """Name the check behind the first finding: the ASan kind, or the UBSan check.
+
+    UBSan prints its check name in the summary only with `report_error_type=1`;
+    otherwise the check is the first runtime error's message with operand values,
+    types and addresses removed, such as `reference binding to null pointer`. A
+    report whose check cannot be parsed stays `undefined-behavior`.
+    """
+    finding = classify_sanitizer(output)
+    if finding != "undefined-behavior":
+        return finding
+    summary = re.search(r"SUMMARY: UndefinedBehaviorSanitizer: ([\w-]+)", output)
+    if summary is not None and summary.group(1) != "undefined-behavior":
+        return summary.group(1)
+    message = re.search(r"runtime error: (.*)$", output, re.MULTILINE)
+    check = message.group(1) if message is not None else ""
+    check = re.sub(r"^call to function .+? through pointer", "call through pointer", check)
+    for marker in (" of type ", " for type ", ", which", " which ", ": ", "'"):
+        check = check.split(marker, 1)[0]
+    check = re.sub(r"\b(0x[0-9a-fA-F]+|\d+)\b", "N", check)
+    check = " ".join(check.split())
+    return check if check else "undefined-behavior"
+
+
 def run_point(command: list[str], index: int, fail_at: int) -> dict:
     """Run one fail point in a fresh process; a crash is data, not a verifier error.
 
@@ -78,8 +102,11 @@ def run_point(command: list[str], index: int, fail_at: int) -> dict:
     if finding is None and match is None and has_leak_report is True:
         finding = "leak"
     if finding is not None or match is None or (result.returncode != 0 and has_leak_report is False):
-        outcome = "crash" if finding is None else "sanitizer-report"
-        return {"fail_at": fail_at, "outcome": outcome, "exit": result.returncode, "sanitizer": finding}
+        if finding is None:
+            return {"fail_at": fail_at, "outcome": "crash", "exit": result.returncode, "sanitizer": None}
+        check = "leak" if finding == "leak" else classify_sanitizer_check(result.stdout)
+        return {"fail_at": fail_at, "outcome": "sanitizer-report", "exit": result.returncode, "sanitizer": finding,
+                "sanitizer-check": check}
     fields = dict(pair.split("=", 1) for pair in match.group(1).split())
     fields["fail_at"] = fail_at
     fields["sanitizer-leak"] = has_leak_report
@@ -126,6 +153,8 @@ def sweep(command: list[str], points: dict[str, int]) -> dict:
             summary["crash_points"] = [r["fail_at"] for r in failures if r["outcome"] == "crash"]
             summary["crash_exit_codes"] = sorted({r["exit"] for r in failures if r["outcome"] == "crash"})
             summary["sanitizer_report_points"] = {str(r["fail_at"]): r["sanitizer"] for r in failures
+                                                  if r["outcome"] == "sanitizer-report"}
+            summary["sanitizer_report_checks"] = {str(r["fail_at"]): r["sanitizer-check"] for r in failures
                                                   if r["outcome"] == "sanitizer-report"}
             summary["wrong_output_points"] = [r["fail_at"] for r in failures if r["outcome"] == "wrong-output"]
             assert summary["control"] == 0, f"{name}: allocation count changed between runs"

@@ -178,6 +178,9 @@ summary has exact nearest-rank percentiles and counts dropped records.
 
 ### Host measurements
 
+These measurements used the original `nanosleep(2)` wait; the
+[wake leeway trial](#wake-leeway-trial) below replaced it on macOS.
+
 Method: `ludus_world_demo` Development build (pinned Clang 18, warnings as
 errors) at base revision `8f570f74` plus this change, on an Apple M5 MacBook
 (10 cores: 4 performance, 6 efficiency) running macOS 26.6. The built-in display's
@@ -226,7 +229,7 @@ What the data shows:
   The windowed application woke a nearly constant 1.01 ms late (p90 1.02 ms),
   under similar load. The interval-proportional and constant offsets suggest
   operating-system timer leeway (coalescing) rather than CPU queueing alone. The
-  data does not identify the mechanism.
+  [wake leeway trial](#wake-leeway-trial) later confirmed leeway as the main cause.
 - **A constant offset shifts phase; it does not add jitter.** The windowed 60 Hz
   cap kept frame-start and present-return p90 within 0.3 to 0.6 ms of 16.667 ms.
 - **The lateness policy prevented bursts.** The 418 ms and 998 ms windowed stalls
@@ -249,8 +252,8 @@ intervals) applies before using these numbers for any comparison.
 No spin is implemented. The dominant lateness here is a systematic offset that
 shifts phase evenly. Removing about 1 ms per frame by spinning would keep a core
 busy for roughly 6 percent of each 60 Hz frame and does not change interval
-evenness. That trade is not justified by this data. Reducing timer leeway (thread
-QoS, absolute OS waits) is a candidate experiment, not adopted behavior.
+evenness. That trade is not justified by this data. The
+[wake leeway trial](#wake-leeway-trial) removed the offset without a spin.
 
 ### Validation
 
@@ -266,6 +269,218 @@ QoS, absolute OS waits) is a candidate experiment, not adopted behavior.
 | Documentation: `check-docs`, strict MkDocs build, `test_docs.py`, `test_wiki.py` | Passed. |
 | `scripts/build-api --bootstrap` | 166 headers; no new documentation gaps (the new public header is fully documented). |
 | ASan/UBSan execution | Not run locally: the Clang 18 ASan runtime hangs at startup on this macOS 26.6 host (see above). |
+
+The Linux reference profile, sanitizer execution, browser presets, installed SDK
+and build budget are validated by the pull request's CI tiers.
+
+### Wake leeway trial
+
+October 17, 2026. Scope: whether thread QoS or an absolute operating-system wait
+reduces the macOS wake lateness measured above, and why it occurs. The trial
+record and decision are in the
+[research backlog](../architecture/high-resolution-time.md#trial-native-pacing-wake-leeway-october-17-2026).
+
+**Clock domain.** A probe linked against the system `libc++.1.dylib` (also used
+by the world demo) read `steady_clock`, `clock_gettime_nsec_np`, Mach absolute
+time and Mach continuous time back to back. `steady_clock` equaled
+`CLOCK_MONOTONIC_RAW` exactly and Mach continuous time within 41-250 ns. Mach
+absolute time, the domain of `mach_wait_until`, was 105,294 s behind: it excludes
+the host's accumulated system sleep. An absolute `mach_wait_until` target computed
+from FoundationTime would therefore be wrong by hours, so it was not tested. macOS
+has no `clock_nanosleep`. The domain-matched absolute wait is a `kevent64(2)`
+`EVFILT_TIMER` with `NOTE_MACHTIME | NOTE_ABSOLUTE | NOTE_MACH_CONTINUOUS_TIME`.
+
+**Mechanism.** XNU (`xnu-12377.121.6`) delays an ordinary user timer by up to
+`min(interval >> shift, max)` to coalesce wake-ups. On arm64 macOS, timeshare
+threads get interval / 8 up to 1 ms. Latency-QoS tiers get up to 5, 20 or 75 ms;
+the first tier is interval / 4 up to 5 ms. `NOTE_CRITICAL` selects the
+user-critical tier, which has zero leeway. The earlier 1.01 ms windowed offset
+equals the timeshare cap at 50 and 60 Hz. The headless medians (1.65, 3.3 and
+4.3-4.9 ms at 120, 60 and 30 Hz) sit below the first latency tier's 2.1, 4.2 and
+5 ms bounds. The process's effective tier was not read, so this attribution is
+consistent with the data rather than traced.
+
+**Method.** One Development binary at `16346bce` plus an uncommitted,
+experiment-only environment switch selected each arm, so arms shared one build:
+
+| Arm | Wait | Leeway |
+| --- | --- | --- |
+| `baseline` | `nanosleep(2)` for the remaining interval | Default |
+| `qos-ui` | As baseline, after `pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE)` | Default |
+| `kevent-abs` | Absolute Mach-continuous kevent timer at the target | Default |
+| `kevent-abs-critical` | As `kevent-abs` with `NOTE_CRITICAL` | Zero |
+| `kevent-rel` | Relative `NOTE_NSECONDS` kevent timer for the remaining interval | Default |
+| `kevent-rel-critical` | As `kevent-rel` with `NOTE_CRITICAL` (the adopted wait) | Zero |
+
+Each run was `ludus_world_demo --frames 600 --frame-rate {60,50} --pacing-report`,
+with and without `--headless`. Following HR-02 and HR-06, every
+(arm, mode, rate, repetition) execution was shuffled into one random order per
+block, and each execution is one sample: frames within a run are correlated. The
+one-minute load average was recorded before and after every run, and child CPU
+time and context switches in block 2. Intervals are 95% Student-t intervals of
+the mean of per-run statistics. Ratios to baseline use 10,000 percentile bootstrap
+resamples of runs. Block 1 ran 4 arms x 4 configurations x 10 repetitions (seed
+20261017). Block 2 ran 4 arms x 4 configurations x 8 repetitions (seed 20261018).
+Windowed runs that presented before reaching 500 `Waited` frames were excluded:
+startup frames are presentation-paced. Nine of 160 runs in block 1 and six of 128
+in block 2 were excluded this way.
+
+Host: Apple M5 (10 cores), macOS 26.6, shared with other worktrees' builds. The
+one-minute load average was 54-128 (median 93) in block 1 and 10-157 (median 112)
+in block 2. The main thread already ran at `QOS_CLASS_USER_INTERACTIVE` (0x21) when
+launched from the shell, in every arm.
+
+Block 1 (milliseconds; mean of per-run statistics with 95% interval):
+
+| Configuration | Arm | Runs | Wake p50 | Wake p90 | p50 / baseline | Frame start p90 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Headless 60 Hz | baseline | 10 | 4.31 [3.47, 5.15] | 8.71 [6.77, 10.64] | 1.00 | 22.11 |
+| | qos-ui | 10 | 4.53 [3.65, 5.41] | 10.02 [8.03, 12.00] | 1.05 [0.84, 1.32] | 23.00 |
+| | kevent-abs | 10 | 4.33 [3.26, 5.41] | 9.09 [6.12, 12.06] | 1.01 [0.78, 1.30] | 22.07 |
+| | kevent-abs-critical | 10 | 3.07 [2.11, 4.03] | 9.01 [7.63, 10.39] | 0.71 [0.52, 0.95] | 22.36 |
+| Headless 50 Hz | baseline | 10 | 4.97 [4.42, 5.51] | 10.19 [9.01, 11.38] | 1.00 | 26.24 |
+| | qos-ui | 10 | 5.03 [4.29, 5.77] | 10.26 [7.86, 12.66] | 1.01 [0.87, 1.17] | 26.44 |
+| | kevent-abs | 10 | 4.75 [3.85, 5.65] | 9.62 [7.27, 11.97] | 0.96 [0.79, 1.13] | 25.98 |
+| | kevent-abs-critical | 10 | 2.08 [1.17, 2.99] | 7.27 [5.37, 9.17] | 0.42 [0.27, 0.58] | 24.44 |
+| Window 60 Hz | baseline | 10 | 1.00 [0.97, 1.02] | 1.03 [1.03, 1.03] | 1.00 | 17.30 |
+| | qos-ui | 7 | 0.99 [0.95, 1.03] | 1.03 [1.02, 1.04] | 0.99 [0.95, 1.03] | 17.41 |
+| | kevent-abs | 5 | 0.96 [0.85, 1.08] | 1.04 [1.04, 1.05] | 0.96 [0.88, 1.03] | 17.33 |
+| | kevent-abs-critical | 9 | 0.03 [0.03, 0.03] | 0.05 [0.05, 0.05] | 0.03 [0.03, 0.03] | 16.69 |
+| Window 50 Hz | baseline | 10 | 1.20 [0.92, 1.48] | 1.23 [0.93, 1.53] | 1.00 | 20.85 |
+| | qos-ui | 10 | 1.22 [0.91, 1.52] | 1.23 [0.93, 1.53] | 1.01 [0.77, 1.30] | 20.77 |
+| | kevent-abs | 10 | 1.12 [0.91, 1.34] | 1.24 [0.94, 1.54] | 0.94 [0.74, 1.20] | 20.86 |
+| | kevent-abs-critical | 10 | 0.03 [0.03, 0.03] | 0.05 [0.05, 0.05] | 0.03 [0.02, 0.03] | 20.02 |
+
+Block 2 (same units; CPU is the child process's user plus system time per run):
+
+| Configuration | Arm | Runs | Wake p50 | Wake p90 | p50 / baseline | Frame start p90 | CPU s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Headless 60 Hz | baseline | 8 | 6.42 [5.57, 7.27] | 13.17 [11.14, 15.20] | 1.00 | 24.98 | 0.04 |
+| | kevent-rel | 8 | 6.77 [6.14, 7.39] | 14.79 [13.57, 16.01] | 1.05 [0.94, 1.22] | 26.10 | 0.05 |
+| | kevent-rel-critical | 8 | 2.61 [0.89, 4.34] | 8.46 [5.17, 11.75] | 0.41 [0.21, 0.63] | 22.09 | 0.04 |
+| | kevent-abs-critical | 8 | 3.46 [1.59, 5.32] | 9.43 [5.84, 13.03] | 0.54 [0.30, 0.77] | 22.59 | 0.04 |
+| Headless 50 Hz | baseline | 8 | 6.50 [5.59, 7.40] | 12.01 [10.12, 13.90] | 1.00 | 28.14 | 0.04 |
+| | kevent-rel | 8 | 6.43 [5.37, 7.49] | 12.76 [10.62, 14.91] | 0.99 [0.83, 1.16] | 27.81 | 0.05 |
+| | kevent-rel-critical | 8 | 3.75 [3.03, 4.48] | 10.91 [9.75, 12.07] | 0.58 [0.48, 0.69] | 27.04 | 0.04 |
+| | kevent-abs-critical | 8 | 3.43 [1.92, 4.93] | 9.68 [6.42, 12.93] | 0.53 [0.33, 0.71] | 26.39 | 0.04 |
+| Window 60 Hz | baseline | 5 | 1.40 [0.75, 2.05] | 1.43 [0.75, 2.10] | 1.00 | 17.76 | 0.85 [0.60, 1.09] |
+| | kevent-rel | 8 | 0.72 [0.21, 1.24] | 0.76 [0.22, 1.29] | 0.52 [0.24, 0.91] | 17.06 | 0.97 [0.81, 1.12] |
+| | kevent-rel-critical | 7 | 0.03 [0.03, 0.04] | 0.06 [0.05, 0.06] | 0.02 [0.02, 0.03] | 16.69 | 0.89 [0.73, 1.05] |
+| | kevent-abs-critical | 7 | 0.03 [0.03, 0.03] | 0.05 [0.04, 0.05] | 0.02 [0.02, 0.03] | 16.69 | 0.97 [0.75, 1.18] |
+| Window 50 Hz | baseline | 8 | 1.46 [1.05, 1.87] | 1.53 [1.08, 1.97] | 1.00 | 21.19 | 0.87 [0.70, 1.03] |
+| | kevent-rel | 8 | 1.13 [0.77, 1.49] | 1.40 [0.99, 1.81] | 0.77 [0.56, 1.09] | 20.89 | 1.00 [0.80, 1.19] |
+| | kevent-rel-critical | 7 | 0.03 [0.03, 0.04] | 0.05 [0.04, 0.05] | 0.02 [0.02, 0.03] | 20.02 | 0.98 [0.80, 1.17] |
+| | kevent-abs-critical | 8 | 0.03 [0.03, 0.03] | 0.05 [0.04, 0.05] | 0.02 [0.02, 0.03] | 20.02 | 0.94 [0.71, 1.16] |
+
+What the data shows:
+
+- **Leeway is the windowed offset.** Zero leeway cut windowed median lateness
+  from 1.0-1.5 ms to 0.03 ms (ratio 0.02-0.03) in both blocks, with p90 at
+  0.05-0.06 ms and run-median p99 at 0.12-0.15 ms. Frame-start p90 fell to within
+  0.03 ms of each cap.
+- **Neither QoS nor an absolute wait helps by itself.** `qos-ui` changed nothing
+  measurable (ratios 0.99-1.05), as expected for a thread that already ran at that
+  class. `kevent-abs` and `kevent-rel` with default leeway matched the baseline
+  in every headless configuration and at windowed 50 Hz. Absolute and relative
+  critical timers were indistinguishable, so the interface can stay relative.
+  `kevent-rel` at windowed 60 Hz (0.52 [0.24, 0.91]) is the one interval that
+  excludes 1, from five baseline runs with a wide interval; it was not
+  investigated.
+- **Headless lateness under this load is mostly CPU scheduling.** Zero leeway
+  lowered headless medians by 29-59%, but medians stayed 2-4 ms and p90 7-11 ms
+  at median load averages of 9 to 11 times the core count. A later confirmation run at
+  load 44-58 measured headless medians of 30-36 µs with the adopted wait, with a
+  p90 of 0.6-1.8 ms.
+- **No measurable CPU cost.** Per-run CPU time and involuntary context switches
+  overlapped across arms. Power and energy were not measured
+  (`powermetrics` needs administrator rights); zero leeway forgoes batching one
+  wake per frame with other timers.
+
+What it does not show: behavior on an idle host, on battery or in Low Power
+Mode, for a process launched with a lower QoS class (for example by a launcher
+or a non-interactive service), on Linux, or for presentation (photon) times.
+Block 2's load differed from block 1's, so compare arms within a block only.
+
+**Decision.** macOS `GetSystemPacingClock()` now waits on a relative one-shot
+`kevent64(2)` timer with `NOTE_CRITICAL`, using one lazily opened kqueue per
+waiting thread and falling back to `nanosleep(2)` when the queue cannot be opened.
+The relative interface, absolute targets, recheck after every wake, no-spin and
+browser contracts are unchanged; Linux keeps `nanosleep(2)`. `mach_wait_until` is
+rejected because of its clock domain. QoS changes and Linux absolute waits are
+deferred until measurements show lateness they remove. The new OS facility is
+recorded in [ADR 0003](../decisions/0003-standard-library-usage-policy.md).
+
+Confirmation with the adopted wait (one build, sequential, load 44-58):
+
+| Run | Wake p50 | Wake p90 | Wake p99 | Frame start p50 / p90 |
+| --- | ---: | ---: | ---: | ---: |
+| Window 60 Hz, run 1 | 0.030 | 0.039 | 0.080 | 16.667 / 16.676 |
+| Window 60 Hz, run 2 | 0.028 | 0.040 | 0.079 | 16.667 / 16.678 |
+| Headless 60 Hz, run 1 | 0.036 | 0.570 | 3.08 | 16.667 / 17.07 |
+| Headless 60 Hz, run 2 | 0.030 | 1.80 | 4.72 | 16.667 / 17.21 |
+
+The headless replay hash is unchanged by the wait (`7399557020790493750` at 600
+ticks, the same in every arm).
+
+## Runtime timing telemetry
+
+October 17, 2026. Scope: the inspection half of the
+[pacing and inspection stage](../architecture/high-resolution-time.md#implementation-before-research):
+GameHost play-loop pacing, the private `TimingTelemetry` aggregate, the `timing`
+record on `Status`, and the editor Timing panel. See the
+[contract](../architecture/high-resolution-time.md#runtime-timing-telemetry).
+
+### Tests
+
+| Behavior | Evidence |
+| --- | --- |
+| Aggregation over synthetic time | `modules/runtime/game_host/tests/timing_tests.cpp` drives the host's `FramePacer` and 250 ms `FrameClock` with an injected clock whose wait oversleeps 1 ms. Over 200 frames: one baseline, 199 `Waited`, a 120-frame window whose intervals are exactly 16,666,667 ns and whose lateness is exactly 1 ms, and accepted time of 199 intervals plus the first oversleep. |
+| Stalls, regressions and resets | A one-second stall is one `Rescheduled` frame with 59 abandoned targets, 750 ms discarded beyond the clamp and a one-second window maximum; the next frame waits a full interval. A reading below the previous one counts a regression and adds no interval; a frame-clock reset counts a baseline. |
+| Overflow | Totals, window values and the pacing interval saturate at 2^53 - 1 instead of wrapping; the encoder clamps any larger value and the saturated record round-trips. |
+| Wire bounds | The record round-trips through the codec inside a one-record `timing` array. The reader rejects values above 2^53 - 1, strings and negative numbers, unknown and missing fields, unknown outcomes, more than 120 or than recorded window frames, and unordered window statistics, leaving its output unchanged. |
+| Real host loop | `session_tests.cpp` runs `HostSession::RunLoop` over a socketpair, polls `Status` until five frames are measured, and checks one baseline, the 16,666,667 ns interval, `simulation_ticks == sim_ticks` and ordered statistics. |
+| Process boundary | `scripts/python/test_play_host_acceptance.py` reads the record from a `Status` result relayed by the real play supervisor after a committed reload: at least two baselines (startup and reload), ticks equal to `sim_ticks`, a bounded window and no timestamp-like fields. The editor live journey decodes it through `EditorController::RefreshTiming()`. |
+| Editor view model | `apps/editor/tests/timing_view_tests.cpp` decodes a record, accepts 2^53 - 1 exactly, rejects 2^53, fractions, strings, unknown outcomes, an unwrapped or two-record array, inconsistent windows and an extra timestamp field, and checks the formatted rows and the panel status line. The layout test checks that Timing is tabbed with the inspector after a layout reset. |
+
+### Records across the process boundary
+
+Method: the `ludus_game_host_supervisor_acceptance` workload (headless
+`ludus_game_host`, fixture module A reloaded to B, relayed by
+`scripts/python/play_tool.py`), run three times in sequence on the Apple M5 host
+described above at revision `16346bce` plus this change. Each run printed the
+`timing` record of the `Status` result after the committed reload; the scratch
+copy of the script added only that print. The one-minute load average was 32 to
+23, about three times the core count. Each record covers about a quarter-second
+session, so it shows that real values cross the boundary intact, not a rate
+distribution.
+
+| Run | Frames / measured | Interval min / mean / max (ms) | Lateness mean / max (ms) | Outcomes |
+| --- | --- | ---: | ---: | --- |
+| 1 | 16 / 14 | 11.58 / 17.06 / 23.55 | 3.84 / 7.77 | 14 `Waited`, 2 baselines |
+| 2 | 15 / 13 | 11.33 / 17.74 / 24.43 | 5.23 / 8.64 | 13 `Waited`, 2 baselines |
+| 3 | 14 / 12 | 10.17 / 17.73 / 25.00 | 3.57 / 8.33 | 12 `Waited`, 2 baselines |
+
+Every record reports the 16,666,667 ns pacing interval, no discarded time, no
+regressions or skipped targets, and `simulation_ticks` equal to `sim_ticks` (2:
+the paused session advanced one `Step` before and after the reload). The two
+baselines are startup and the committed reload. Intervals shorter than the
+target follow a late wake: the next target stays on the absolute schedule, as
+the pacer contract requires. Mean lateness of 3.6 to 5.2 ms matches the earlier
+headless 60 Hz measurements on this host.
+
+### Validation
+
+| Validation (macOS arm64 host, pinned Clang 18, warnings as errors) | Result |
+| --- | --- |
+| Development full build (`./scripts/build macos-clang-development`, editor and tests enabled) | Passed, warning-clean. The only linker notes are Homebrew Qt's deployment-target warnings, present before this change. |
+| `ctest --test-dir out/build/macos-clang-development --no-tests=error` | 111 of 113 passed, including `ludus_game_host_timing_tests` (5 cases, 116 assertions), the session, reload and supervisor acceptance tests, and `ludus_editor_tests`. The Cocoa window suite fails without `LUDUS_TEST_COCOA=1` in a WindowServer session, as in earlier stages. The header self-sufficiency gate timed out at 120 s at a load average near 100 and passed in 116 s when rerun alone. |
+| `python3 scripts/python/source_policy.py --base 16346bce` | Passed. |
+| `./scripts/check --format` | Passed, including the include boundary, naming scopes (the new files are adopted) and container policy. |
+| clang-tidy 18 on the new and changed sources | No findings in user code (`timing_telemetry.cpp`, `host_session.cpp`, `timing_tests.cpp`, `timing_view.cpp`, `timing_panel.cpp`, `controller_play.cpp`, `main_window_layout.cpp`). |
+| Documentation: `check-docs`, strict MkDocs build, `check-wiki --documentation-only`, `test_docs.py`, `test_wiki.py` | Passed; the index needed no change. |
+| `scripts/build-api --doxygen` (pinned Doxygen 1.18.0) | 173 headers, no new documentation gaps. No public header changed: the telemetry and editor view model are private. |
+| Editor live journey | Not run locally: it needs an installed SDK prefix (`LUDUS_SDK_PREFIX`); CI's editor tier runs it. |
+| ASan/UBSan execution | Not run locally: the Clang 18 ASan runtime hangs at startup on this host. |
 
 The Linux reference profile, sanitizer execution, browser presets, installed SDK
 and build budget are validated by the pull request's CI tiers.

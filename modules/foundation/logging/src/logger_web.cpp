@@ -89,11 +89,6 @@ BrowserLogger& State() noexcept
     return instance;
 }
 
-int32 BoundedBytes(std::string_view text, usize limit) noexcept
-{
-    return static_cast<int32>(text.size() < limit ? text.size() : limit);
-}
-
 uint64 NowTicks() noexcept
 {
     return time::NowTicks();
@@ -128,19 +123,21 @@ void Dispatch(LogLevel level,
         const std::string_view thread = state.ThreadNameBytes == 0
                                             ? std::string_view{"Main"}
                                             : std::string_view{state.ThreadName.GetData(), state.ThreadNameBytes};
-        const std::string_view file{location.file_name()};
-        const bool delivered = LudusWriteConsole(static_cast<int32>(level),
-                                                 category.Name.data(),
-                                                 BoundedBytes(category.Name, MAX_METADATA_BYTES),
-                                                 message.data(),
-                                                 BoundedBytes(message, MAX_MESSAGE_BYTES),
-                                                 thread.data(),
-                                                 BoundedBytes(thread, MAX_METADATA_BYTES),
-                                                 file.data(),
-                                                 BoundedBytes(file, MAX_METADATA_BYTES),
-                                                 static_cast<int32>(location.line())) != 0;
-        state.Health.ConsoleHealthy = delivered;
-        if (delivered)
+        const std::string_view categoryName = category.Name.substr(0, MAX_METADATA_BYTES);
+        const std::string_view boundedThread = thread.substr(0, MAX_METADATA_BYTES);
+        const std::string_view file = std::string_view{location.file_name()}.substr(0, MAX_METADATA_BYTES);
+        const bool isDelivered = LudusWriteConsole(static_cast<int32>(level),
+                                                   categoryName.data(),
+                                                   static_cast<int32>(categoryName.size()),
+                                                   message.data(),
+                                                   static_cast<int32>(message.size()),
+                                                   boundedThread.data(),
+                                                   static_cast<int32>(boundedThread.size()),
+                                                   file.data(),
+                                                   static_cast<int32>(file.size()),
+                                                   static_cast<int32>(location.line())) != 0;
+        state.Health.ConsoleHealthy = isDelivered;
+        if (isDelivered == true)
         {
             ++state.Statistics.Written;
         }

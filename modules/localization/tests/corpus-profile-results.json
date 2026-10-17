@@ -1,0 +1,256 @@
+{
+  "checker": {
+    "cldr": "48",
+    "data_bytes": 601168,
+    "data_fingerprint": "195d926a31a4989d363596a5e33ea4c2",
+    "icu": "78.3",
+    "protocol": 1,
+    "unicode": "17.0"
+  },
+  "locales": {
+    "ar": "ok",
+    "en-US": "ok",
+    "fr-FR": "ok",
+    "ja-JP": "ok",
+    "ru-RU": "ok"
+  },
+  "profile": "ludus-icu-mf1-v1",
+  "results": [
+    {
+      "item": "004d9711961a68d13230355b755911c1141e08dfa167cc7802ed9c92010b332b",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "0918291fd68968ca2d6c6183dc00ddfedc73834f0a563a4efbbdbdf262b3aef9",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "0e56fc917d76b8c305bb7085a6c2033bf1909f5b7a5f0d67ce76f040357041f1",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "108aa05df0e74dbd878ad676622843fa22341f9a4483e667f4c31d57bda53f06",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "1147cda8517a177002ffd8b18617ddbcee78af84be83143e765267ca90e9d565",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "156d13d68ad1ccf19cf85422a142ffc85e06f885906907c7d194340d0657595b",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "1583b8499263aa6cc8cc1fe5879be5eb40aac188eae4fdc572a3916a4458fa31",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "16e77b9cc72f1523052554c78fa138fe51f72eb5bd40fc275c576e6908b620bf",
+      "text": "Definitive Edition",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "190a0047f0c7175224c5fe4d9dc714e1870c774328cc8cb4cfb2abd25579992e",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "1a9122b1a5a8271de6d2578e8c3daf67e40f762202c511f7bd62910d646cb487",
+      "text": "Édition définitive",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "1b7aad2e78d2bc99d8f0a8db3510cfbcc5e46e579388b41b4bf16ea55eca7406",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "1ce35fbf447a4c21fd9a378785639e3260626afe2c995c0314044b82ec8c78b2",
+      "text": "العب",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "3db410b2cbf921465f5be73909f59e88ee97e4c61b4bee19a9c3bf0defbcd238",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "4179642ae9de7d18dae94559d03c98d6d58927881e8906899e04fe7abb76b015",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "42219e82f69a71f8469a8451ebf4d21ea4eba09f7fbc691768ee43ba70ec7d3e",
+      "text": "Введите {name}, чтобы вставить имя. Не волнуйтесь: это обычный текст.",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "4778da020a18213da1be5d711ed74a96943f9fae4848acd3fc29864f50cce644",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "4b587ed9e16d6aa5851eea7aa8e5dcbae95604287b339ed28b716e810a48406a",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "4c06b9388fe370a7cb472907642122836788574fb69b0872cdf080aa92cb9ee6",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "574eb1dba1fe6d1ac5f013db2f5577a43db84ca47f4c427cb84d74af0144fa44",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "575d5687b847c822ac0b074cc2768770038ae67199e3dfc4463ab9711ec48a90",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "5f261c421469d41393a23bfbca338bccf5f5f8b2b8c00e9268b5d1ad73744e91",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "620faf206bbc8df7e4712f0fd63855b0ce78a6accedc282bc8e73e7ac595d6af",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "6ab913a9ee5697b2699d541e8e99fdb2d104f45894eb8b1eff84097973c3eb15",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "6bf529ae4771c886cbc4034d7ed7c5e6392e0451fdb049d06680e3509d8a70e2",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "701d768f4d61227c79a2a3a8456b54233e8b8fbbeda249bcdaae746150fae65b",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "7d578b365a182577f84fbb500dd612b4cd7e3172d940ae0de2b21cba36118f2d",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "7e58eaa63019ecc11a3932cad886384f1f10a16ab3101393c7f2ff01f255c401",
+      "text": "Play",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "8295d640cafc4d6596897ec62c8af11a09457853e5e1072f4652f983506f4e1e",
+      "text": "Tapez {name} pour insérer un nom. Pas d'inquiétude : c’est littéral.",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "851b5a216490af4bc90e023759b0f6891e68768498c88765ef5a65c5a1db9048",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "9433f565933720f4bea7bd7996f2413022d2b9a2b5941d4a23b07983fa620112",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "9e933f6a341858ff589fc2a2db158da17eaf2100af81d2ddb1fd61f7a3e5e4fb",
+      "text": "Type {name} to insert a name. Don't worry: it's literal.",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "9fd5fbc56d6b6f63e1065b3af63452bcd774c07cc4445b6de24ae10f65a20a6c",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "a33634fbf29e3929156ea1c77149294787a1039358d5cf1bf0d9577dd59bb9ac",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "b0d18595e1b7d9f30314cebbc4d4043d77bd19a644538b95d4c73883a8e3da22",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "b4fb8787db627f8484779ab9ce0727a270e6dbe48c24ba5e1ef41afd7407e685",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "b6e41193d1ecedb3262a729eb1479ceb3a0ef0cbcc61b415be10cdacbe8c7f87",
+      "text": "اكتب {name} لإدراج اسم. لا تقلق: هذا نص حرفي.",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "bc91bce6954aff0defdd64b00494512791ea00cf7dc60d69eecf638dd9853825",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "bce4146bc7510c4b24d526e2b50d95bca7851c8220028fef51bbd6d2c86bb931",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "c4fea8d9c9d623a9875cbf91df1f42662b4b366357f3f4c1b4708560bc49db79",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "c6f915636a5c9a0bffe7c9da043bb0c2d094a3b6009be4442aedf0749309b0ee",
+      "text": "名前を挿入するには {name} と入力します。これはそのまま表示されます。",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "c81522ae783ed7c0ac6ad2c460b229f1b2f001e984458196cff3b52ce6055e70",
+      "text": "Играть",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "cc66f3fa541d991a3a1778f1a3ffacd10bef2ddd5dd86fe66ed897954d8b8152",
+      "text": "プレイ",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "d6c4e539e8cc9d239ba0decbc4b72eade8f0161ae314c84e5a2deed9ff0d7c53",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "de14cc5189eb7a67b9098aaf343e3a73c7e2ec8361201e2116224f2b5a48687d",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "e79717aac33a35cec4632b2063659f3ebf2826daf4640daef4640793f58dae49",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "e8990bc33948c21899919ecc05d3ee30c3966ea15d3afecd733024224c0d3680",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "efd9bdcc1b9ce4b206f7f4e552e2381f06bcdcc33ee7774bbcc37b6c61e589aa",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f02e8a8dc9db4fbafd98e8dd8ef8f3a72894f8d4355115b636c4a3879d05c1ff",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f109ed4b12a6d02c9483f89fd91a08418c97fd27028795c24cd3dec8bbdeda4b",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f3c05e29ad8a51c469530c005d839e7dbd00ffd87468d94b40e57e1318b0ac30",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f417e6ab44996f1bd38f26e5cd68bacb3e7e32794d7fb4ef253398b58cc656a4",
+      "text": "",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f5c3884ef8cd083a81194e66a32c4d581b85818f450792529267d9d4f56f9e44",
+      "text": "Полное издание",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f763622a2cb3429be260e50f03024e240a8d4112c1c7ff6dc8e7d2ae7a380ef3",
+      "text": "Jouer",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f94d32d518d431515bce630db2498ece0ff79da8435697438fdd2db5ae37d8f9",
+      "text": "الإصدار النهائي",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f9e858e8a577f00f914acfea9292db1a5578250204c25de815f0639f22bc3fb7",
+      "verdict": "Accepted"
+    }
+  ],
+  "version": 1
+}

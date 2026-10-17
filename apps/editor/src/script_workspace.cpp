@@ -1,6 +1,6 @@
 #include "internal/script_workspace.h"
 
-#include <ludus/foundation/base/types.h>
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/sort.hpp>
 
 #include <utility>
@@ -631,7 +631,7 @@ void ScriptWorkspace::Highlight()
         Text_->setTextCursor(cursor);
         Text_->ensureCursorVisible();
         QTextEdit::ExtraSelection selection;
-        selection.cursor = cursor;
+        selection.cursor = foundation::Move(cursor);
         selection.format.setBackground(QColor(Qt::yellow));
         selection.format.setProperty(QTextFormat::FullWidthSelection, true);
         Text_->setExtraSelections({selection});

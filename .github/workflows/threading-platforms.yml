@@ -1,0 +1,167 @@
+name: Threading platforms
+# Platform completion for FoundationThreading (docs/architecture/threading.md, T3):
+# the Windows backend's only build and execution, and the macOS ThreadSanitizer
+# run on a hosted image independent of local macOS hosts.
+on:
+  workflow_call:
+    inputs:
+      batch_sha:
+        description: Frozen develop commit selected by the trusted batch coordinator.
+        required: true
+        type: string
+      batch_base_sha:
+        description: Stable main commit captured with this candidate.
+        required: true
+        type: string
+  workflow_dispatch:
+  # Targeted lanes for changes to the backends they alone execute; every batch
+  # also runs them. Other integration PRs keep the inexpensive checks only.
+  pull_request:
+    paths:
+      - '.github/workflows/threading-platforms.yml'
+      - 'config/conan/profiles/windows-clang-x86_64'
+      - 'modules/foundation/threading/**'
+      - 'modules/foundation/base/src/diagnostic_output_windows.cpp'
+      - 'modules/foundation/base/src/diagnostics_windows.cpp'
+permissions:
+  contents: read
+concurrency:
+  group: threading-platforms-${{ inputs.batch_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CI: "true"
+  LUDUS_DIAGNOSTIC_INTERACTIVE: "0"
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+  LUDUS_CI_COMMIT_SHA: ${{ inputs.batch_sha || github.sha }}
+jobs:
+  windows:
+    name: Windows Clang threading
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      CONAN_HOME: ${{ github.workspace }}/out/windows/conan-home
+      CONAN_NON_INTERACTIVE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      # Chocolatey does not package LLVM 23 yet; install the upstream release
+      # installer, pinned by the SHA-256 digest GitHub publishes for the asset.
+      - name: Install pinned LLVM
+        shell: pwsh
+        env:
+          LLVM_WINDOWS_VERSION: 23.1.3
+          LLVM_WINDOWS_SHA256: 5153f848ac87553118340f16f8d3cd4351d729bcba6e4785c6a4a9af29676de9
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP "LLVM-$env:LLVM_WINDOWS_VERSION-win64.msi"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_WINDOWS_VERSION/LLVM-$env:LLVM_WINDOWS_VERSION-win64.msi"
+          Invoke-WebRequest -Uri $url -OutFile $msi
+          $actual = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
+          if ($actual -ne $env:LLVM_WINDOWS_SHA256) { throw "LLVM installer digest $actual does not match the pin" }
+          # The runner image preinstalls another LLVM into the same directory.
+          choco uninstall llvm --yes --no-progress
+          $process = Start-Process -FilePath msiexec.exe -Wait -PassThru -ArgumentList "/i", "`"$msi`"", "/qn", "/norestart"
+          if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) { throw "msiexec exited $($process.ExitCode)" }
+          exit 0
+      - name: Verify pinned LLVM and install host tools
+        run: |
+          llvm="$(python -c "import json; print(json.load(open('config/tool_versions.json'))['minimum']['clang'].split('.')[0])")"
+          mkdir -p out
+          "/c/Program Files/LLVM/bin/clang++.exe" --version | tee out/clang-version.txt
+          grep -q "clang version ${llvm}\." out/clang-version.txt
+          printf '#include <atomic>\n#include <new>\nint main() { return 0; }\n' > out/stl-probe.cpp
+          "/c/Program Files/LLVM/bin/clang++.exe" -std=c++23 -fsyntax-only out/stl-probe.cpp
+          python -m venv out/host-tools/venv
+          versions="$(python -c "import json; m=json.load(open('config/tool_versions.json'))['managed']; print(' '.join(f'{k}=={v}' for k, v in m.items()))")"
+          # shellcheck disable=SC2086
+          out/host-tools/venv/Scripts/python -m pip install --disable-pip-version-check --quiet $versions
+      - name: Build locked Catch2 with the Windows Clang profile
+        run: |
+          export PATH="/c/Program Files/LLVM/bin:$PWD/out/host-tools/venv/Scripts:$PATH"
+          conan export third_party/catch2
+          conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial \
+            --profile:host config/conan/profiles/windows-clang-x86_64 \
+            --profile:build config/conan/profiles/windows-clang-x86_64 \
+            --settings:host build_type=RelWithDebInfo --settings:build build_type=Release \
+            --build=missing -g CMakeDeps -g CMakeToolchain --output-folder out/windows/conan
+      - name: Configure and build the threading closure
+        run: |
+          export PATH="/c/Program Files/LLVM/bin:$PWD/out/host-tools/venv/Scripts:$PATH"
+          cmake -S . -B out/build/windows-clang-development -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/out/windows/conan/conan_toolchain.cmake" \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLUDUS_BUILD_FLAVOR=Development \
+            -DLUDUS_BUILD_TESTS=ON -DLUDUS_WARNINGS_AS_ERRORS=ON -DLUDUS_ENABLE_CCACHE=OFF
+          cmake --build out/build/windows-clang-development --target \
+            ludus_foundation_threading_tests ludus_threading_startup_tests \
+            ludus_threading_profiling_tests ludus_threading_alloc_tests -- -k 0
+      - name: Test the Windows backend
+        run: |
+          export PATH="$PWD/out/host-tools/venv/Scripts:$PATH"
+          ctest --test-dir out/build/windows-clang-development --output-on-failure --no-tests=error \
+            --tests-regex '^ludus_(foundation_threading|threading_startup|threading_profiling|threading_alloc)_tests$'
+          ctest --test-dir out/build/windows-clang-development --output-on-failure --no-tests=error \
+            --tests-regex '^ludus_(foundation_threading|threading_startup)_tests$' --repeat until-fail:20
+          for suite in ludus_foundation_threading_tests ludus_threading_startup_tests ludus_threading_profiling_tests ludus_threading_alloc_tests; do
+            out/build/windows-clang-development/modules/foundation/threading/"$suite".exe | tail -n 2
+          done
+      - name: Preserve Windows test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: threading-windows
+          path: out/build/windows-clang-development/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 14
+
+  macos-races:
+    name: macOS threading race detection
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      - name: Prepare pinned macOS Clang and test dependencies
+        run: |
+          llvm="$(python3 -c "import json; print(json.load(open('config/tool_versions.json'))['minimum']['clang'].split('.')[0])")"
+          # Homebrew ships LLD separately; init requires it on every host.
+          # Refresh stale runner formula metadata so the bottle meets the pinned minimum.
+          brew update --quiet
+          brew install "llvm@$llvm" "lld@$llvm"
+          ./init.sh --cli --preset macos-clang-development --preset-only --locked --with-tests --no-system-install
+          git diff --exit-code -- conan.lock
+      - name: Configure and build the threading kernel with TSan
+        run: |
+          sw_vers
+          out/host-tools/venv/bin/cmake --preset macos-clang-development -B out/build/threading-tsan \
+            -DLUDUS_ENABLE_TSAN=ON -DLUDUS_WARNINGS_AS_ERRORS=ON
+          out/host-tools/venv/bin/cmake --build out/build/threading-tsan --parallel "$CMAKE_BUILD_PARALLEL_LEVEL" \
+            --target ludus_tsan_control_child ludus_foundation_threading_tests ludus_threading_startup_tests \
+            ludus_threading_profiling_tests
+      - name: Prove TSan detection before race acceptance
+        run: out/host-tools/venv/bin/ctest --test-dir out/build/threading-tsan --label-regex sanitizer-control --output-on-failure --no-tests=error --repeat until-fail:16
+      - name: Test dependencies, publication, cancellation and startup with TSan
+        run: |
+          out/host-tools/venv/bin/ctest --test-dir out/build/threading-tsan --output-on-failure --no-tests=error \
+            --tests-regex '^ludus_(foundation_threading|threading_startup|threading_profiling)_tests$'
+          out/host-tools/venv/bin/ctest --test-dir out/build/threading-tsan --output-on-failure --no-tests=error \
+            --tests-regex '^ludus_(foundation_threading|threading_startup)_tests$' --repeat until-fail:10
+          for suite in ludus_foundation_threading_tests ludus_threading_startup_tests ludus_threading_profiling_tests; do
+            out/build/threading-tsan/modules/foundation/threading/"$suite" | tail -n 2
+          done
+      - name: Preserve race-detection diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: threading-macos-tsan
+          path: |
+            out/build/threading-tsan/Testing/Temporary/
+            out/build/threading-tsan/tests/quality/*-evidence/
+          if-no-files-found: warn
+          retention-days: 14

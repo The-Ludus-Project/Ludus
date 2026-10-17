@@ -62,7 +62,10 @@ bool gOwnsApplication = false;
 // physical records when our own pump already normalized the same event.
 NSEvent* gNormalizedEvent = nil;
 LudusCocoaApplicationDelegate* gApplicationDelegate = nil;
-LudusCocoaApplicationObserver* gApplicationObserver = nil;
+// NSNotificationCenter does not retain observers, so this strong ARC reference
+// keeps the registered observer alive. It is written but never read, which
+// Clang 23 reports as -Wunused-but-set-global.
+[[maybe_unused]] LudusCocoaApplicationObserver* gApplicationObserver = nil;
 
 bool MainThread() noexcept
 {

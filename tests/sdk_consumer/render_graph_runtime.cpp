@@ -78,6 +78,8 @@ Step gStep = Step::StartCompiled;
 Capture gCapture = Capture::Render;
 uint64 gRevision = 0;
 uint64 gGeneration = 0;
+/// Generation whose first extraction was accepted; its preparation may complete over later frames.
+uint64 gUpdatedGeneration = 0;
 usize gMismatches = 0;
 rhi::RasterStatus gLastStatus = rhi::RasterStatus::Ready;
 bool gIsDone = false;
@@ -262,14 +264,21 @@ bool AdvanceActivation() noexcept
     }
     renderer::RenderGraph* activeOrNull = gActivation.GetActiveOrNull();
     const bool isTargetActive = report.ActiveGeneration == gGeneration && activeOrNull != nullptr;
-    if (report.Candidate == renderer::RenderGraphCandidateState::NeedsUpdate ||
-        (isTargetActive == true && activeOrNull->GetDrawableSceneRevision() == 0))
+    // Update a newly active generation once, then wait: on WebGPU its scene uploads complete over later
+    // frames, and another Update would replace that pending preparation before it ever becomes drawable.
+    const bool needsFirstScene =
+        isTargetActive == true && activeOrNull->GetDrawableSceneRevision() == 0 && gUpdatedGeneration != gGeneration;
+    if (report.Candidate == renderer::RenderGraphCandidateState::NeedsUpdate || needsFirstScene == true)
     {
         const rhi::RasterStatus updated = UpdateScene(true);
         if (updated != rhi::RasterStatus::NotReady && IsAccepted(updated) == false)
         {
             Fail(updated);
             return false;
+        }
+        if (IsAccepted(updated) == true && isTargetActive == true)
+        {
+            gUpdatedGeneration = gGeneration;
         }
     }
     return isTargetActive == true && activeOrNull->GetDrawableSceneRevision() != 0;

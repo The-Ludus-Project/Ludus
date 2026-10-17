@@ -27,7 +27,17 @@ bool Expect(bool value, const char* label) noexcept
 bool Acceptance() noexcept
 {
     using namespace runtime::scripting;
-    StateRecord record{ .Schema = 1, .Count = 2 };
+    StateRecord record;
+    for (const FieldValue& field : record.Fields)
+    {
+        if (Expect(field.Id == 0 && field.Kind == FieldKind::Uint32 && field.Value == 0,
+                   "default state field initialization") == false)
+        {
+            return false;
+        }
+    }
+    record.Schema = 1;
+    record.Count = 2;
     record.Fields[0] = { .Id = 11, .Kind = FieldKind::Uint32, .Value = 4 };
     record.Fields[1] = { .Id = 12, .Kind = FieldKind::Boolean, .Value = 1 };
     uint8 bytes[168] = {};

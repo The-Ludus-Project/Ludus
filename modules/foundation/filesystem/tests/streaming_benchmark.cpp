@@ -540,9 +540,7 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
         }
     }
 #if defined(LUDUS_PLATFORM_LINUX) || defined(LUDUS_PLATFORM_MACOS)
-    struct rusage usage
-    {
-    };
+    struct rusage usage{};
     if (::getrusage(RUSAGE_SELF, &usage) != 0)
     {
         return 36;

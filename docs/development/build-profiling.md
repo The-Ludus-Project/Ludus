@@ -36,6 +36,16 @@ Flags:
 
 ClangBuildAnalyzer is fetched and built on demand into `out/host-tools/`; it is
 **not** part of `./init.sh`, so normal onboarding is unaffected.
+The pinned 1.6.0 release updates its bundled simdjson for newer compilers and
+recognizes Clang 19 and later header trace events. Thanks to
+[Aras Pranckevičius and the release contributors](https://github.com/aras-p/ClangBuildAnalyzer/releases/tag/v1.6.0).
+Each analyzer version has its own source/build directory, so an older cached
+binary cannot silently satisfy a newer pin. Existing profiling budgets remain
+unchanged.
+Bootstrap also adds the explicit `<cstdlib>`, `<type_traits>` and `<exception>`
+includes required by its bundled enkiTS and LLVM demangler with libc++ 23.
+These marked include edits preserve upstream bodies and licenses, accept an
+already applied profile, and reject changed include anchors.
 
 ## How to improve, quantitatively
 
@@ -68,6 +78,38 @@ aggregate limit remains 120 s; compare future profiles at the same concurrency
 before treating timing changes as include regressions.
 
 ## Baseline
+
+### LLVM 23 reference-toolchain calibration
+
+The compiler migration changes the reference measurement. These uncached
+Ubuntu 24.04 CI runs both used two build jobs and the complete Development
+graph, without PCH, source exclusions or reduced tests:
+
+| Measurement | LLVM 18, [run 39067596315](https://github.com/The-Ludus-Project/Ludus/actions/runs/39067596315) | LLVM 23.1.3, [run 39070823313](https://github.com/The-Ludus-Project/Ludus/actions/runs/39070823313) |
+| --- | ---: | ---: |
+| Ninja edges | 640 | 643 |
+| Build wall time | 263.56 s | 277.37 s |
+| Summed frontend parsing | 307.8 s | 367.2 s |
+| Summed backend/codegen | 175.6 s | 146.3 s |
+
+The build wall time differs by about 5.2%; frontend parsing differs by 19.3%.
+The compiler and analyzer versions differ, so these runs do not isolate a
+source include regression or establish a controlled optimization result.
+ClangBuildAnalyzer 1.6.0 also corrects duplicate frontend-file reporting and
+Clang 19+ header events; its compilation-event count is not directly comparable
+with the old report. Ninja edges identify the nearly unchanged build graph.
+
+Every reported project header passes its existing limit. The LLVM 23 report's
+largest include costs are Catch2's assertion header and standard string/span
+headers; no new heavy public include was introduced by the promotion repairs.
+The old 320-second aggregate had only about 4% headroom over the earlier
+307.8-second run. Recalibrate only that aggregate to 440 seconds, about 20%
+above the measured LLVM 23 baseline, following the existing calibration policy.
+Keep per-header limits, overrides, assertions, tests and profiling inputs
+unchanged. Verify the next complete LLVM 23 run and tighten the aggregate when
+comparable repeated profiles justify it; continue to fix avoidable includes.
+
+### Original small-graph baseline
 
 Captured with the pinned toolchain (Clang 18, libstdc++ 14, Ninja, lld) on the
 `linux-clang-profile` preset (RelWithDebInfo, `-ftime-trace` on, ccache off),
@@ -358,7 +400,7 @@ collation add 8–10% to compile CPU for a clean build and 6–10% after touchin
 `core.h`.
 
 No wall-time improvement is claimed. The host was shared with other builds
-(load average 9–28), and the same 382 compilations summed between 757 s and
+(load average 9–28), and the same 382 compilations summed between 687 s and
 1250 s across runs. Clean-build wall time was 72–108 s with scanning and
 60–108 s without, and the paired differences changed sign. At full local
 parallelism the removed work mostly overlaps compilation; it matters most with
@@ -418,3 +460,88 @@ target's scan and collation sit on the critical path before its first
 compilation. `tests/sdk_consumer` showed no consistent difference (10 of 18
 pairs, differences from −1.7 to +0.9 s). Six pairs at `--parallel 2` pointed
 the same way for the two examples but are too few to quantify.
+
+## Fresh worktree setup cost
+
+A new agent worktree runs
+`./init.sh --cli macos-clang-development --preset-only --locked --with-tests`
+and then a clean `./scripts/build macos-clang-development`. These runs measure
+that cost and the opt-in caches in
+[Sharing caches between checkouts](building.md#sharing-caches-between-checkouts).
+Every run used commit `8f570f74` on a 10-core Apple M5 with 16 GB. Other
+agents' builds shared the host, with load averages from 24 to 109. Wall time
+moved with that load, so the tables report ranges and CPU time (user plus
+system, from `/usr/bin/time`), which moved much less. Runs during which the
+host slept are excluded from wall-time figures.
+
+| Fresh checkout | Checkout-local caches (two runs) | Shared caches, first checkout | Shared caches, later checkouts |
+| --- | ---: | ---: | ---: |
+| `./init.sh` wall time | 219–814 s | 288 s | 11–16 s |
+| `./init.sh` CPU time | 409–491 s | 437 s | 6–14 s |
+| Clean build wall time | 342–512 s | 122–1531 s | 79–195 s |
+| Clean build CPU time | 517–557 s | 472–964 s | 97–110 s |
+| ccache hits | not used | 1 of 392 | 380 of 392 |
+| `out/conan/` size | 667–672 MB | 144 KB | 144 KB |
+| Shared Conan home | none | 673 MB | 673 MB, shared |
+| Shared ccache | none | 52 MB | 61 MB after four builds, shared |
+
+`out/host-tools/` stayed 155 MB in every checkout. The later-checkout init
+times ran at load 24–31; the first-checkout init ran at load 37–58.
+
+### Where a checkout-local init spends its time
+
+A checkout-local init builds five Conan packages from source: Catch2,
+FreeType, HarfBuzz, and Conan's own `ninja` and `pkgconf` build tools. In the
+slower baseline run, at load 60–76, the Conan install took 728 of 814 s.
+HarfBuzz alone took 417 s, including 55 s to unpack its source archive. The
+virtual environment and pinned Python packages took 51 s at that load and
+4 s at load 24. The macOS SDK compile/link probe runs twice per init, at
+0.8–7 s each. Downloads were at most about 15 s. A checkout-local cache also
+keeps 517 MB of build folders in its 672 MB.
+
+### Conan sharing options
+
+| Option | Saved per later checkout | Per-checkout cost | Notes |
+| --- | --- | --- | --- |
+| `core.download:download_cache` | Downloads only, about 15 s | Still builds all five packages, 672 MB | Conan locks it for concurrent use |
+| `conan cache save` / `restore` | The package builds | 60 s wall and 279 MB to restore (4 s CPU) | Saving took 300 s wall at load 70 and must be redone whenever recipes or `conan.lock` change |
+| Shared `LUDUS_CONAN_HOME` | The package builds and downloads | 144 KB | One 673 MB home; `./init.sh` serializes its Conan steps |
+
+The shared home costs nothing extra for the first checkout: its 437 s of
+init CPU falls within the checkout-local range. A second init started while
+the first held the lock printed the waiting message after 29 s. It waited
+226 s, then installed every package from the cache in 9 s, with 12 s of CPU
+for the whole init.
+
+### Compiler cache across checkouts
+
+A clean development build compiles 392 cacheable C and C++ translation
+units. The four Objective-C++ files have no ccache launcher. Three later
+checkouts at different paths reused 380 of them:
+`/private/tmp/ludus-wtcost-d`, `/private/tmp/ludus-wtcost/nested/e` (two
+directories deeper), and a worktree under `/Users/.../.claude/worktrees/` (no
+symlink in its path). Their clean builds used 97–110 s of CPU, about a fifth of
+a checkout-local build, and took 79–195 s at load 70–109. The 12 misses are
+test and sample translation units whose definitions name an absolute checkout
+path: scene goldens, text and game-host fixtures, and the smoke app's font.
+Six more such units hit in ccache's preprocessed mode, because they do not use
+the definition.
+
+Filling an empty cache added no measurable CPU at moderate load: 472 s at load
+24–40. A second fill at a sustained load near 100 used 964 s, 255 s of it
+system time. At that load even CPU time inflates, so that run says more about
+the host than about ccache.
+
+Before the launcher handled symlinked checkout paths, each checkout under
+`/private/tmp` hit only 1 of 392. CMake spelled its paths `/tmp/...`, and
+ccache relativized them from the resolved working directory, through `/` and
+the checkout's own directory name. Listing both spellings in `base_dir` and
+setting `PWD` to the build directory fixed this. The `/Users` checkout above
+then reused objects compiled under `/private/tmp`.
+
+Sharing leaves incremental builds unchanged. After a warm build, touching
+`core.h` dirtied 381 Ninja steps, as in a checkout-local tree, even though the
+depfiles now list relative paths. A reused object records its source as
+`../../../modules/...` and names the build directory of the checkout that
+compiled it first as `DW_AT_comp_dir`. A checkout-local object records the
+absolute source path and its own build directory.

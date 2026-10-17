@@ -267,7 +267,10 @@ bool CreatePass() noexcept
     gDepthFormat = (depthProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0
                        ? VK_FORMAT_D32_SFLOAT
                        : VK_FORMAT_D16_UNORM;
-    VkAttachmentDescription attachments[2]{};
+    VkAttachmentDescription attachments[2]{
+        { .samples = VK_SAMPLE_COUNT_1_BIT },
+        { .samples = VK_SAMPLE_COUNT_1_BIT },
+    };
     auto& color = attachments[0];
     color.format = gFormat;
     color.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -313,7 +316,7 @@ bool CreateTargets() noexcept
     {
         gFormat = VK_FORMAT_R8G8B8A8_UNORM;
         gImageCount = 1;
-        VkImageCreateInfo info{};
+        VkImageCreateInfo info{ .samples = VK_SAMPLE_COUNT_1_BIT };
         info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         info.imageType = VK_IMAGE_TYPE_2D;
         info.format = gFormat;
@@ -337,7 +340,7 @@ bool CreateTargets() noexcept
     }
     else
     {
-        VkSurfaceCapabilitiesKHR caps{};
+        VkSurfaceCapabilitiesKHR caps{ .currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR };
         if (!Check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gPhysical, gSurface, &caps)))
         {
             return false;
@@ -406,7 +409,11 @@ bool CreateTargets() noexcept
         {
             return false;
         }
-        VkSwapchainCreateInfoKHR info{};
+        VkSwapchainCreateInfoKHR info
+        {
+            .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+            .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        };
         info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         info.surface = gSurface;
         info.minImageCount = desired;
@@ -441,7 +448,7 @@ bool CreateTargets() noexcept
     {
         return false;
     }
-    VkImageCreateInfo depthImage{};
+    VkImageCreateInfo depthImage{ .samples = VK_SAMPLE_COUNT_1_BIT };
     depthImage.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     depthImage.imageType = VK_IMAGE_TYPE_2D;
     depthImage.format = gDepthFormat;
@@ -1505,7 +1512,10 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     {
         return ResourceFailure();
     }
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    VkPipelineShaderStageCreateInfo stages[2]{
+        { .stage = VK_SHADER_STAGE_VERTEX_BIT },
+        { .stage = VK_SHADER_STAGE_FRAGMENT_BIT },
+    };
     stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = gShaders[vertex].Module;
@@ -1526,7 +1536,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     raster.lineWidth = 1;
-    VkPipelineMultisampleStateCreateInfo samples{};
+    VkPipelineMultisampleStateCreateInfo samples{ .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
     samples.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendAttachmentState color{};

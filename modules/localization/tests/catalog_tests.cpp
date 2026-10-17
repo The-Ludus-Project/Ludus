@@ -130,7 +130,7 @@ TEST_CASE("bindings reject wrong owners and preserve outputs on failure", "[loca
     REQUIRE(source.BindMessage({"game/other", "menu/play"}, binding) == Status::NotFound);
     REQUIRE(source.BindMessage({"game/ui", "missing"}, binding) == Status::NotFound);
     REQUIRE(source.BindMessage({"game/ui", "MENU/PLAY"}, binding) == Status::Invalid);
-    ResolvedText result{"sentinel", Origin::Translation};
+    ResolvedText result{"sentinel", Origin::Translation, "sentinel"};
     REQUIRE(other.ResolveStatic(binding, result) == Status::WrongCatalog);
     REQUIRE(other.ResolveStatic({}, result) == Status::WrongCatalog);
     REQUIRE(result.Text == "sentinel");

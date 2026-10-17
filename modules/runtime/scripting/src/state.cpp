@@ -107,7 +107,9 @@ bool MigrateState(const StateRecord& source,
     {
         return false;
     }
-    StateRecord result{ .Schema = schema, .Count = static_cast<uint32>(fields.size()) };
+    StateRecord result;
+    result.Schema = schema;
+    result.Count = static_cast<uint32>(fields.size());
     for (usize i = 0; i < fields.size(); ++i)
     {
         const auto spec = fields[i];

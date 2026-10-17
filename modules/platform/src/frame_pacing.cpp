@@ -13,6 +13,12 @@
 #    define LUDUS_PLATFORM_HAS_PACING_WAIT 0
 #endif
 
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+// kqueue(2), kevent64(2) EVFILT_TIMER and close(2) only: the zero-leeway wait (ADR 0003).
+#    include <sys/event.h>
+#    include <unistd.h>
+#endif
+
 // The pacing contract follows docs/architecture/high-resolution-time.md, "Native
 // frame pacing". Advancing each target from the previous target, rather than
 // sleeping a fixed amount after the frame, is the drift-free periodic phase the
@@ -23,6 +29,7 @@ namespace ludus::platform
 {
 namespace
 {
+using foundation::int64;
 using foundation::uint64;
 using foundation::time::Duration;
 using foundation::time::Timestamp;
@@ -33,12 +40,9 @@ foundation::time::Timestamp ReadSystemNow(void* /*contextOrNull*/) noexcept
     return foundation::time::Now();
 }
 
-PacingWaitStatus WaitForSystemInterval(void* /*contextOrNull*/, Duration interval) noexcept
-{
 #if LUDUS_PLATFORM_HAS_PACING_WAIT
-    // A relative sleep for the remaining interval keeps the absolute target in the
-    // FoundationTime domain: the pacer recomputes the remainder from a fresh Now()
-    // after every return, so neither an early nor a late wake accumulates.
+PacingWaitStatus SleepForInterval(Duration interval) noexcept
+{
     timespec request = {};
     if (foundation::core::TryIntegerCast(interval.Nanoseconds / foundation::time::NANOSECONDS_PER_SECOND,
                                          request.tv_sec) == false)
@@ -55,6 +59,102 @@ PacingWaitStatus WaitForSystemInterval(void* /*contextOrNull*/, Duration interva
         return PacingWaitStatus::Completed;
     }
     return errno == EINTR ? PacingWaitStatus::Interrupted : PacingWaitStatus::Failed;
+}
+#endif
+
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+/// One thread's kqueue for pacing timers, created on first use and closed at thread exit.
+class TimerQueue final
+{
+public:
+    TimerQueue() noexcept = default;
+    TimerQueue(const TimerQueue&) = delete;
+    TimerQueue& operator=(const TimerQueue&) = delete;
+    TimerQueue(TimerQueue&&) = delete;
+    TimerQueue& operator=(TimerQueue&&) = delete;
+    ~TimerQueue() noexcept
+    {
+        if (mDescriptor >= 0)
+        {
+            (void)::close(mDescriptor);
+        }
+    }
+
+    /// Return the queue descriptor, creating it on first use. Negative when kqueue(2) failed.
+    [[nodiscard]] int GetDescriptor() noexcept
+    {
+        if (mDescriptor < 0)
+        {
+            mDescriptor = ::kqueue();
+        }
+        return mDescriptor;
+    }
+
+private:
+    int mDescriptor = -1;
+};
+
+thread_local TimerQueue gTimerQueue;
+
+/// The identifier of the one pacing timer registered in each thread's queue.
+constexpr uint64 PACING_TIMER_IDENTIFIER = 1;
+
+// Thanks to Apple's XNU sources (https://github.com/apple-oss-distributions/xnu,
+// tag xnu-12377.121.6): osfmk/kern/timer_call.c timer_call_slop() delays an
+// ordinary user timer by up to min(interval >> shift, max) to coalesce wake-ups,
+// osfmk/arm/arm_timer.c sets those tiers (timeshare: interval / 8, at most 1 ms;
+// latency QoS tiers: up to 5-75 ms), and bsd/kern/kern_event.c maps EVFILT_TIMER
+// NOTE_CRITICAL to the user-critical urgency, whose arm64 tier has no leeway. The
+// measured trial is in docs/development/high-resolution-time-evidence.md,
+// "Wake leeway trial".
+PacingWaitStatus WaitWithCriticalTimer(Duration interval) noexcept
+{
+    int64 nanoseconds = 0;
+    if (foundation::core::TryIntegerCast(interval.Nanoseconds, nanoseconds) == false)
+    {
+        return PacingWaitStatus::Failed;
+    }
+    const int queue = gTimerQueue.GetDescriptor();
+    if (queue < 0)
+    {
+        // Without a queue the ordinary sleep still paces, only with operating-system leeway.
+        return SleepForInterval(interval);
+    }
+    // A one-shot relative timer replaces any earlier registration of the same identifier.
+    struct kevent64_s change = {};
+    EV_SET64(&change,
+             PACING_TIMER_IDENTIFIER,
+             EVFILT_TIMER,
+             EV_ADD | EV_ONESHOT,
+             NOTE_NSECONDS | NOTE_CRITICAL,
+             nanoseconds,
+             0,
+             0,
+             0);
+    struct kevent64_s event = {};
+    const int count = ::kevent64(queue, &change, 1, &event, 1, 0, nullptr);
+    if (count == 1 && (event.flags & EV_ERROR) == 0)
+    {
+        return PacingWaitStatus::Completed;
+    }
+    const bool isInterrupted = count < 0 && errno == EINTR;
+    // Drop a still-armed timer so a stale expiry cannot end the next wait early.
+    struct kevent64_s removal = {};
+    EV_SET64(&removal, PACING_TIMER_IDENTIFIER, EVFILT_TIMER, EV_DELETE, 0, 0, 0, 0, 0);
+    (void)::kevent64(queue, &removal, 1, nullptr, 0, 0, nullptr);
+    return isInterrupted == true ? PacingWaitStatus::Interrupted : PacingWaitStatus::Failed;
+}
+#endif
+
+PacingWaitStatus WaitForSystemInterval(void* /*contextOrNull*/, Duration interval) noexcept
+{
+    // A relative wait for the remaining interval keeps the absolute target in the
+    // FoundationTime domain: the pacer recomputes the remainder from a fresh Now()
+    // after every return, so neither an early nor a late wake accumulates.
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+    return WaitWithCriticalTimer(interval);
+#elif LUDUS_PLATFORM_HAS_PACING_WAIT
+    return SleepForInterval(interval);
 #else
     (void)interval;
     return PacingWaitStatus::Unsupported;

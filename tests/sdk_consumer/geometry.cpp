@@ -1,9 +1,13 @@
 // Installed Ludus::FoundationGeometry: prepare a path and track, build a
-// Certified distance map and invert a distance through public headers only.
+// Certified distance map and invert a distance, then bake frames, project a
+// point and emit a ribbon sweep through public headers only.
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/geometry/distance.hpp>
+#include <ludus/foundation/geometry/frame.hpp>
 #include <ludus/foundation/geometry/path.hpp>
+#include <ludus/foundation/geometry/query.hpp>
+#include <ludus/foundation/geometry/sweep.hpp>
 #include <ludus/foundation/geometry/track.hpp>
 #include <ludus/foundation/math/enclosure.hpp>
 
@@ -68,5 +72,65 @@ bool ExerciseInstalledGeometry() noexcept
                          SpanSide::Outgoing,
                          sample) == GeometryStatus::Success &&
         sample.Value == 2.0F && sample.DerivativePerSecond == 2.0F;
-    return isPathOk == true && isTrackOk == true && IsStrictGuarantee(GuaranteeClass::Certified) == true;
+
+    PreparedFrames frames;
+    TransportedFrame frame;
+    const bool isFrameOk = isPathOk == true &&
+                           TryBuildFrames(path.GetView(),
+                                          map.GetView(),
+                                          FramePreparation{ .SeedUp = Vector3d{0.0, 1.0, 0.0}, .Limits = limits },
+                                          frames,
+                                          nullptr) == GeometryStatus::Success &&
+                           TryEvaluateFrame(path.GetView(),
+                                            frames.GetView(),
+                                            SegmentParameter
+                                            {
+                                                .U = 0.5,
+                                            },
+                                            0.0,
+                                            frame) == GeometryStatus::Success &&
+                           frame.Binormal.Z == 1.0F;
+
+    constexpr ludus::foundation::usize PROJECTION_ITERATIONS = 64;
+    ProjectionScratch scratch;
+    ludus::foundation::usize capacity = 0;
+    ProjectionResult nearest;
+    const bool isProjectionOk =
+        isPathOk == true &&
+        ComputeProjectionScratchCapacity(path.GetView(), PROJECTION_ITERATIONS, capacity) == GeometryStatus::Success &&
+        scratch.TryReserve(capacity) == GeometryStatus::Success &&
+        TryProjectPoint(path.GetView(),
+                        ProjectionQuery{ .Point = Vector3d{2.0, 1.0, 0.0}, .MaxIterations = PROJECTION_ITERATIONS },
+                        scratch,
+                        nearest) == GeometryStatus::Success &&
+        nearest.Guarantee == GuaranteeClass::Certified && nearest.Gap <= tolerance.ProjectionGap;
+
+    constexpr ludus::foundation::usize RIBBON_VERTEX_COUNT = 4;
+    constexpr ludus::foundation::usize RIBBON_INDEX_COUNT = 6;
+    const SweepProfileKey profile[] = {{ .Scale = 1.0 }};
+    SweepMeshPlan plan;
+    ludus::foundation::core::StaticArray<SweepVertex, RIBBON_VERTEX_COUNT> vertices;
+    ludus::foundation::core::StaticArray<uint32, RIBBON_INDEX_COUNT> indices;
+    const bool isSweepOk =
+        isFrameOk == true &&
+        TryPlanSweepMesh(path.GetView(),
+                         map.GetView(),
+                         frames.GetView(),
+                         SweepRequest
+                         {
+                             .Profile = BorrowedView<const SweepProfileKey>(profile),
+                             .LongitudinalError = 1e-3,
+                             .CrossSectionError = 1e-3,
+                             .MaxVertexCount = RIBBON_VERTEX_COUNT,
+                             .MaxIndexCount = RIBBON_INDEX_COUNT,
+                             .Limits = limits,
+                         },
+                         plan,
+                         nullptr) == GeometryStatus::Success &&
+        TryEmitSweepMesh(path.GetView(),
+                         plan.GetView(),
+                         BorrowedView<SweepVertex>(vertices.GetData(), vertices.GetSize()),
+                         BorrowedView<uint32>(indices.GetData(), indices.GetSize())) == GeometryStatus::Success;
+    return isPathOk == true && isTrackOk == true && isFrameOk == true && isProjectionOk == true && isSweepOk == true &&
+           IsStrictGuarantee(GuaranteeClass::Certified) == true;
 }

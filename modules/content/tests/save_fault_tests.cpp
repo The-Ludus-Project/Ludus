@@ -59,6 +59,9 @@ struct Fixture final
         gTemporaryCloses = 0;
         gRoot = Root;
     }
+    // Best-effort temporary-directory cleanup: only std::filesystem::path allocation
+    // can throw, and bad_alloc terminating the test process is acceptable here.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     ~Fixture()
     {
         gFault = Fault::None;

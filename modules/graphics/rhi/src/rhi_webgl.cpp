@@ -40,7 +40,6 @@ uint32 gSession = 0;
 uint32 gMaxDimension = 0;
 FrameTarget gTarget;
 FrameInfo gFrameInfo;
-bool gFrameOpen = false;
 char gSelector[256]{};
 
 // A WebGL context on a canvas is the commitment point: a canvas that already
@@ -198,7 +197,6 @@ void Shutdown() noexcept
     gContext = 0;
     gSession = 0;
     gMaxDimension = 0;
-    gFrameOpen = false;
     gTarget = {};
     gFrameInfo = {};
     gSelector[0] = '\0';
@@ -269,13 +267,11 @@ FrameStatus Begin() noexcept
     glClearDepthf(1);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     gFrameInfo = { .Width = gTarget.Width, .Height = gTarget.Height, .Encoding = SurfaceEncoding::Unorm };
-    gFrameOpen = true;
     return FrameStatus::Ready;
 }
 FrameStatus End() noexcept
 {
     TimingEnd();
-    gFrameOpen = false;
     if (gContext <= 0 || emscripten_is_webgl_context_lost(gContext))
     {
         return FrameStatus::Failed;

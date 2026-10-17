@@ -36,7 +36,7 @@ The sample's selectable configure/build/test profiles are
 `linux-clang-{debug,development,release}` and
 `macos-clang-{debug,development,release}`. Select the profile matching your SDK.
 On macOS, provide `LUDUS_OSX_SYSROOT` and `LUDUS_LIBCXX_INCLUDE` from the prepared
-host tools and put its Clang 18, CMake and Ninja on `PATH`. For unbundled local
+host tools and put its Clang 23, CMake and Ninja on `PATH`. For unbundled local
 SDK installs, supply the matching Conan generator directory through an ignored
 `CMakeUserPresets.json` extending the selected profile's `CMAKE_PREFIX_PATH`.
 Machine paths belong in that local file, never in shared presets. Configuring

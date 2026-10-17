@@ -34,7 +34,8 @@ python3 -m unittest discover -s tools/luau-probe -p 'test_*.py' -v
 ```
 
 Bootstrap is the explicit network action. It verifies the archive, reconstructs
-the pinned source plus the bounded loader edit, and builds upstream `luau-compile`
+the pinned source plus the checked loader, assertion-helper and analyzer-include
+edits, and builds upstream `luau-compile`
 in a separate host build. Upstream compiler/CLI exception handling stays in that
 process; no Ludus code is compiled there. The engine probe links VM and Common
 only, both using the Ludus no-exception and sanitizer policy. No compiler,
@@ -43,9 +44,17 @@ checker, require implementation or native code generator is linked into it.
 Cook generates private bytecode arrays and a manifest under `out/luau-probe`.
 Source, pin and generated header fingerprints invalidate stale inputs. Verify
 compares every extracted upstream file with the verified archive plus the exact
-loader transformation. This detects accidental edits; these local fingerprints
+profile transformations. This detects accidental edits; these local fingerprints
 are not an authenticity boundary against a developer controlling the checkout.
 Only trusted bytecode from the paired compiler enters the VM.
+
+The host analyzer's pinned `Analysis/src/TableLiteralInference.cpp` uses integer
+`std::abs` without including its declaring header. Bootstrap adds `<cstdlib>`
+at one checked include anchor so the analyzer builds with libc++ 23. Thanks to
+[Roblox/Luau's source at the pinned revision](https://github.com/luau-lang/luau/blob/1eca9fda3e4753a1592000f6cfdf659aaa778b7d/Analysis/src/TableLiteralInference.cpp).
+The source body and upstream license are preserved. Changed anchors, an already
+patched upstream file, and extracted bytes differing from the checked transform
+are rejected. This host-tool include correction keeps the v2 VM profile.
 
 For Web, prepare the SDK pinned in `config/web_toolchain.json` using the existing
 browser bootstrap workflow, then run:

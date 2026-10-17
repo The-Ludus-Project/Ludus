@@ -1,6 +1,7 @@
 #include "internal/configuration_workspace.h"
 #include "internal/editor_files.h"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/config/json.hpp>
 #include <ludus/runtime/configuration/host_options.hpp>
 
@@ -354,7 +355,7 @@ bool ConfigurationWorkspace::Load(const QString& path, Layer layer)
     if (layer == Layer::Preference)
     {
         PreferencePath_ = QFileInfo(path).absoluteFilePath();
-        PreferenceStamp_ = bytes;
+        PreferenceStamp_ = foundation::Move(bytes);
         Dirty_ = false;
     }
     Render();

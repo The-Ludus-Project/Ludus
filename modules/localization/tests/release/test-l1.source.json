@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "domain": "test/l1",
+  "source_locale": "en-US",
+  "profile": "ludus-icu-mf1-v1",
+  "messages": [
+    {
+      "key": "escape/braces",
+      "source_revision": 1,
+      "pattern": "Press '{'jump'}' to jump.",
+      "arguments": [],
+      "context": "Tutorial hint; the braces and the word jump are shown literally."
+    },
+    {
+      "key": "escape/apostrophes",
+      "source_revision": 2,
+      "pattern": "It''s literal: '{}' and don't.",
+      "arguments": [],
+      "context": "Doubled and quoting apostrophes decode to one literal apostrophe."
+    },
+    {
+      "key": "escape/unterminated",
+      "source_revision": 2,
+      "pattern": "Open '{to the end",
+      "arguments": [],
+      "context": "A quote that is never closed keeps the rest of the message literal."
+    },
+    {
+      "key": "greeting/name",
+      "source_revision": 1,
+      "pattern": "Hello, {name}!",
+      "arguments": [
+        {
+          "name": "name",
+          "type": "text",
+          "origin": "user",
+          "max_bytes": 64
+        }
+      ],
+      "context": "Lobby greeting; name is typed by the player."
+    },
+    {
+      "key": "hud/lives",
+      "source_revision": 1,
+      "pattern": "{lives, plural, one {# life} other {# lives}}",
+      "arguments": [
+        {
+          "name": "lives",
+          "type": "count",
+          "min": 0,
+          "max": 99
+        }
+      ],
+      "context": "Remaining lives counter in the HUD."
+    },
+    {
+      "key": "menu/credits",
+      "source_revision": 1,
+      "pattern": "Credits",
+      "arguments": [],
+      "context": "Main menu button that opens the credits roll."
+    },
+    {
+      "key": "menu/quit",
+      "source_revision": 1,
+      "pattern": "Quit",
+      "arguments": [],
+      "context": "Main menu button that exits to the desktop.",
+      "required": false
+    },
+    {
+      "key": "menu/start",
+      "source_revision": 1,
+      "pattern": "Start",
+      "arguments": [],
+      "context": "Main menu button that starts a new game."
+    },
+    {
+      "key": "mood/select",
+      "source_revision": 1,
+      "pattern": "{mood, select, calm {All quiet.} tense {Stay alert.} other {Unknown mood.}}",
+      "arguments": [
+        {
+          "name": "mood",
+          "type": "enum",
+          "values": [
+            "calm",
+            "tense"
+          ],
+          "unknown": "other"
+        }
+      ],
+      "context": "Ambient status line; mood is the authored encounter mood."
+    },
+    {
+      "key": "unicode/mixed",
+      "source_revision": 1,
+      "pattern": "العربية 日本語 😀 é",
+      "arguments": [],
+      "context": "Mixed-script literal that must survive cooking unchanged."
+    }
+  ]
+}

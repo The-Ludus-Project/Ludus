@@ -780,6 +780,8 @@ namespace
 struct LitFixture final
 {
     rhi::RasterShaderInput Inputs[16];
+    // The two unlisted entries use RasterBinding's default member initializers.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     rhi::RasterBinding Bindings[8]{{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, 8336},
                                    {1, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
                                    {2, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0},

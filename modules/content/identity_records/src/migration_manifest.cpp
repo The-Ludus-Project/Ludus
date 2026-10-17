@@ -55,12 +55,12 @@ constexpr usize ESCAPED_BYTES_PER_BYTE = 6;
     for (const MigrationDocument& document : documents)
     {
         // Capacity was reserved above, so these additions cannot fail.
-        const bool isAdded = values.TryAdd(document.Document.Value);
+        [[maybe_unused]] const bool isAdded = values.TryAdd(document.Document.Value);
         LUDUS_ASSERT(isAdded == true);
     }
     for (const MigrationObject& object : objects)
     {
-        const bool isAdded = values.TryAdd(object.Object.Value);
+        [[maybe_unused]] const bool isAdded = values.TryAdd(object.Object.Value);
         LUDUS_ASSERT(isAdded == true);
     }
     foundation::Sort(values.GetData(), values.GetSize(), IsUuidLess);
@@ -177,7 +177,7 @@ constexpr usize ESCAPED_BYTES_PER_BYTE = 6;
         {
             return Fail(outError, IdentityRecordStatus::InvalidLegacyId, "invalid entity id", source.Path);
         }
-        const bool isAdded = inoutObjects.TryAdd(object);
+        [[maybe_unused]] const bool isAdded = inoutObjects.TryAdd(object);
         LUDUS_ASSERT(isAdded == true);
     }
     MigrationObject* const begin = inoutObjects.GetData() + first;
@@ -424,10 +424,10 @@ IdentityRecordStatus MigrationManifest::Read(std::string_view json, IdentityReco
                             "object UUID must be a nonnil version-4 UUID",
                             legacyId);
             }
-            const bool isAdded = candidateObjects.TryAdd(object);
+            [[maybe_unused]] const bool isAdded = candidateObjects.TryAdd(object);
             LUDUS_ASSERT(isAdded == true);
         }
-        const bool isAdded = candidateDocuments.TryAdd(record);
+        [[maybe_unused]] const bool isAdded = candidateDocuments.TryAdd(record);
         LUDUS_ASSERT(isAdded == true);
     }
     const IdentityRecordStatus unique = CheckUniqueIdentities(candidateDocuments, candidateObjects, outError);
@@ -502,7 +502,7 @@ IdentityRecordStatus GenerateMigrationManifest(std::span<const MigrationSource> 
         {
             return Fail(outError, IdentityRecordStatus::InvalidLegacyId, "invalid document path", sources[i].Path);
         }
-        const bool isAdded = order.TryAdd(i);
+        [[maybe_unused]] const bool isAdded = order.TryAdd(i);
         LUDUS_ASSERT(isAdded == true);
     }
     foundation::Sort(order.GetData(), order.GetSize(), [sources](usize left, usize right) noexcept {
@@ -528,7 +528,7 @@ IdentityRecordStatus GenerateMigrationManifest(std::span<const MigrationSource> 
     for (const usize index : order)
     {
         MigrationDocument document;
-        const bool isPathSet = document.Path.Set(sources[index].Path);
+        [[maybe_unused]] const bool isPathSet = document.Path.Set(sources[index].Path);
         LUDUS_ASSERT(isPathSet == true);
         document.FirstObject = objects.GetSize();
         const IdentityRecordStatus status = ReadLegacyIds(sources[index], objects, outError);
@@ -537,7 +537,7 @@ IdentityRecordStatus GenerateMigrationManifest(std::span<const MigrationSource> 
             return status;
         }
         document.ObjectCount = objects.GetSize() - document.FirstObject;
-        const bool isAdded = documents.TryAdd(document);
+        [[maybe_unused]] const bool isAdded = documents.TryAdd(document);
         LUDUS_ASSERT(isAdded == true);
     }
 
@@ -556,7 +556,7 @@ IdentityRecordStatus GenerateMigrationManifest(std::span<const MigrationSource> 
             return status;
         }
         document.Document = AssetId{value};
-        bool isAdded = minted.TryAdd(value);
+        [[maybe_unused]] bool isAdded = minted.TryAdd(value);
         LUDUS_ASSERT(isAdded == true);
         for (usize i = 0; i < document.ObjectCount; ++i)
         {

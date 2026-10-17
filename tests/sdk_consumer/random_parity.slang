@@ -96,8 +96,8 @@ uint4 EvaluateCase(uint4 header, uint4 operand)
     }
 }
 
-[shader("compute")][numthreads(LUDUS_RANDOM_PARITY_GROUP_SIZE, 1, 1)] void ComputeMain(uint3 dispatchThreadId
-                                                                                       : SV_DispatchThreadID) {
+[shader("compute")][numthreads(LUDUS_RANDOM_PARITY_GROUP_SIZE, 1, 1)] void
+ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     uint index = dispatchThreadId.x;
     Results[index] = EvaluateCase(Cases[index * LUDUS_RANDOM_PARITY_WORDS_PER_CASE],
                                   Cases[index * LUDUS_RANDOM_PARITY_WORDS_PER_CASE + 1]);

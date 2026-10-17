@@ -190,7 +190,10 @@ RasterVkRenderPass(VkFormat format, bool surface, const RasterPassDescription& s
     {
         return VK_ERROR_TOO_MANY_OBJECTS;
     }
-    VkAttachmentDescription attachments[2]{};
+    VkAttachmentDescription attachments[2]{
+        { .samples = VK_SAMPLE_COUNT_1_BIT },
+        { .samples = VK_SAMPLE_COUNT_1_BIT },
+    };
     auto& color = attachments[0];
     color.format = format;
     color.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -301,12 +304,15 @@ VkResult RasterVkAdvancedPass(const internal::RasterPassInfo& info, VkRenderPass
     {
         return VK_ERROR_TOO_MANY_OBJECTS;
     }
-    VkAttachmentDescription attachments[9]{};
+    // Initialize only the attachment prefix passed to Vulkan; resolve entries
+    // copy complete initialized color descriptions below.
+    VkAttachmentDescription attachments[9];
     VkAttachmentReference colors[4]{}, resolves[4]{};
     const auto count = static_cast<uint32>(info.ColorCount);
     for (uint32 i = 0; i < count; ++i)
     {
-        auto& a = attachments[i];
+        VkAttachmentDescription& a = attachments[i];
+        a = { .samples = static_cast<VkSampleCountFlagBits>(info.SampleCount) };
         const auto& c = info.Colors[i];
         a.format = RasterPixelFormat(c.Format);
         a.samples = static_cast<VkSampleCountFlagBits>(info.SampleCount);
@@ -318,7 +324,8 @@ VkResult RasterVkAdvancedPass(const internal::RasterPassInfo& info, VkRenderPass
         colors[i] = {i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         resolves[i] = {VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     }
-    auto& depth = attachments[count];
+    VkAttachmentDescription& depth = attachments[count];
+    depth = { .samples = static_cast<VkSampleCountFlagBits>(info.SampleCount) };
     depth.format = info.Stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : gDepthFormat;
     depth.samples = static_cast<VkSampleCountFlagBits>(info.SampleCount);
     depth.loadOp = RasterVkLoad(info.Description.DepthLoad);
@@ -940,7 +947,7 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
     {
         return RasterError(result);
     }
-    VkComputePipelineCreateInfo descriptor{};
+    VkComputePipelineCreateInfo descriptor{ .stage = { .stage = VK_SHADER_STAGE_COMPUTE_BIT } };
     descriptor.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     descriptor.layout = pipeline.Layout;
     descriptor.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1070,7 +1077,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     }
     auto& texture = gRasterTextures[slot];
     texture.Info = info;
-    VkImageCreateInfo image{};
+    VkImageCreateInfo image{ .samples = VK_SAMPLE_COUNT_1_BIT };
     image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image.imageType = info.Dimension == TextureDimension::D3 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     image.flags = info.Dimension == TextureDimension::Cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0U;
@@ -1651,7 +1658,10 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     {
         return RasterError(result);
     }
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    VkPipelineShaderStageCreateInfo stages[2]{
+        { .stage = VK_SHADER_STAGE_VERTEX_BIT },
+        { .stage = VK_SHADER_STAGE_FRAGMENT_BIT },
+    };
     stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1694,7 +1704,7 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // Canonical clip-space CCW with the negative-height viewport.
     raster.lineWidth = 1;
-    VkPipelineMultisampleStateCreateInfo samples{};
+    VkPipelineMultisampleStateCreateInfo samples{ .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
     samples.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     samples.rasterizationSamples = static_cast<VkSampleCountFlagBits>(info.SampleCount);
     VkPipelineDepthStencilStateCreateInfo depth{};

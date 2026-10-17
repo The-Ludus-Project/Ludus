@@ -15,7 +15,7 @@ import urllib.request
 
 
 ATTEMPT_BRANCH = "ci/last-batch-attempt"
-VALIDATION_JOBS = ("native", "sdk", "wiki", "browser")
+VALIDATION_JOBS = ("native", "sdk", "wiki", "browser", "threading")
 RECOVERY_PATHS = (
     ".github/workflows/filesystem-recovery.yml",
     "modules/foundation/filesystem/src/persistence_posix.cpp",

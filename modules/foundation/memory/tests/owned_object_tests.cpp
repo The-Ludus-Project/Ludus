@@ -184,6 +184,8 @@ struct ThrowingConstructor
 
 struct ThrowingDestructor
 {
+    // Deliberately potentially-throwing so trait tests can reject it.
+    // NOLINTNEXTLINE(bugprone-unsafe-to-allow-exceptions)
     ~ThrowingDestructor() noexcept(false) {}
 };
 

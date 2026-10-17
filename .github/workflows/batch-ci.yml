@@ -92,6 +92,14 @@ jobs:
       batch_sha: ${{ needs.snapshot.outputs.candidate_sha }}
       batch_base_sha: ${{ needs.snapshot.outputs.base_sha }}
 
+  threading:
+    needs: snapshot
+    if: needs.snapshot.outputs.should_run == 'true'
+    uses: ./.github/workflows/threading-platforms.yml
+    with:
+      batch_sha: ${{ needs.snapshot.outputs.candidate_sha }}
+      batch_base_sha: ${{ needs.snapshot.outputs.base_sha }}
+
   recovery:
     needs: snapshot
     if: needs.snapshot.outputs.should_run == 'true' && needs.snapshot.outputs.recovery_required == 'true'
@@ -102,11 +110,12 @@ jobs:
 
   promote:
     name: Promote validated candidate
-    needs: [snapshot, native, sdk, wiki, browser, recovery]
+    needs: [snapshot, native, sdk, wiki, browser, threading, recovery]
     if: >-
       always() && !cancelled() && needs.snapshot.outputs.should_run == 'true' &&
       needs.native.result == 'success' && needs.sdk.result == 'success' &&
       needs.wiki.result == 'success' && needs.browser.result == 'success' &&
+      needs.threading.result == 'success' &&
       (needs.recovery.result == 'success' || needs.recovery.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 5

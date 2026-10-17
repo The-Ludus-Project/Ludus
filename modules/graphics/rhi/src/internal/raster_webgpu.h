@@ -592,8 +592,12 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     layout.bindGroupLayoutCount = 1;
     layout.bindGroupLayouts = &gRasterLayouts[info.Layout];
     pipeline.Layout = wgpuDeviceCreatePipelineLayout(gDevice, &layout);
-    WGPUVertexAttribute attributes[2][16]{};
-    WGPUVertexBufferLayout buffers[2]{};
+    constexpr usize VERTEX_STREAM_COUNT = sizeof(info.Streams) / sizeof(info.Streams[0]);
+    constexpr usize VERTEX_ATTRIBUTE_COUNT = sizeof(info.Attributes) / sizeof(info.Attributes[0]);
+    // Only initialized attributeCount prefixes reach WebGPU. Value-initializing
+    // every unused slot would also initialize its format to an invalid enum zero.
+    WGPUVertexAttribute attributes[VERTEX_STREAM_COUNT][VERTEX_ATTRIBUTE_COUNT];
+    WGPUVertexBufferLayout buffers[VERTEX_STREAM_COUNT]{};
     for (usize stream = 0; stream < info.StreamCount; ++stream)
     {
         auto& buffer = buffers[stream];

@@ -48,5 +48,33 @@ int main()
             return 6;
         }
     }
+    // Package version 2 (ludus-icu-mf1-v1): ICU-decoded static text, baked
+    // fallback providers and dynamic records that require L2 formatting.
+    Catalog release;
+    if (PrepareCatalog(kReleaseFrCa, domain, release, diagnostic) != Status::Ok ||
+        release.BindMessage(localization_release_fixture::kMenuStart, binding) != Status::Ok ||
+        release.ResolveStatic(binding, text) != Status::Ok || text.Text != "Démarrer" ||
+        text.Provenance != Origin::Fallback || text.ProviderLocale != "fr-FR")
+    {
+        return 7;
+    }
+    if (release.BindMessage(localization_release_fixture::kEscapeUnterminated, binding) != Status::Ok ||
+        release.ResolveStatic(binding, text) != Status::Ok || text.Text != "Ouvrir {jusqu'à la fin")
+    {
+        return 8;
+    }
+    if (release.BindMessage(localization_release_fixture::kHudLives, binding) != Status::Ok ||
+        release.ResolveStatic(binding, text) != Status::RequiresArguments ||
+        release.BindMessage(localization_release_fixture::kHudLives.Key, binding) != Status::SchemaMismatch)
+    {
+        return 9;
+    }
+    for (usize size = 0; size < sizeof(kReleaseFrCa); ++size)
+    {
+        if (PrepareCatalog(std::span{kReleaseFrCa}.first(size), domain, release, diagnostic) == Status::Ok)
+        {
+            return 10;
+        }
+    }
     return 0;
 }

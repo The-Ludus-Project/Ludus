@@ -5,6 +5,7 @@
 #include "internal/preview_shading.h"
 #include "internal/static_lighting_job.h"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -1081,7 +1082,7 @@ void RenderPreview::updateBakeNotice()
         }
     }
     notice.AffectedObjects = names.join(QStringLiteral(", "));
-    resources.BakeNotice = notice;
+    resources.BakeNotice = foundation::Move(notice);
     resources.HasBakeNotice = true;
     markBakeChanged();
 #endif

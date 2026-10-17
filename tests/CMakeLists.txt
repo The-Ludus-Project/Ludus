@@ -53,4 +53,9 @@ if(LUDUS_BUILD_TESTS)
     set_tests_properties(ludus_build_contract_tests ludus_compile_policy ludus_setup_preflight ludus_editor_sample_resources ludus_dependency_diagnostics ludus_assert_policy ludus_assert_headers
         ludus_header_self_sufficiency ludus_pointer_diagnostics ludus_foundational_includes ludus_target_detection
         PROPERTIES LABELS "build-contract" TIMEOUT 120)
+    # One compiler process per public header (~180 on macOS): wall time follows
+    # host contention, not the change under test. On a shared 10-core host at
+    # load 106-151 the parallel probe took 260 s (101 s CPU). This TIMEOUT only
+    # catches a hung compiler; parse-time budgets belong to build_budget.json.
+    set_tests_properties(ludus_header_self_sufficiency PROPERTIES TIMEOUT 600)
 endif()

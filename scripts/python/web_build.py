@@ -43,11 +43,11 @@ def analysis_commands(root: Path, entries: list[dict], tidy: str, sysroot: Path,
                 flags.append(flag)
             index += 1
         # Thanks to LLVM contributors, Clang 19 Release Notes, C++ language
-        # changes (P0522/CWG2398): the pinned newer SDK enables standard relaxed
-        # template matching by default. Enable it explicitly for clang-tidy 18
-        # so Emscripten val.h parses with the same rule, retaining C++23/errors.
+        # changes (P0522/CWG2398): both the pinned SDK and reference analyzer now
+        # enable standard relaxed template matching by default. LLVM 23 removes
+        # the old opt-in flag; keep C++23 and error checks without that override.
         # https://releases.llvm.org/19.1.0/tools/clang/docs/ReleaseNotes.html#c-language-changes
-        flags += ["-frelaxed-template-template-args", "-I" + str(sysroot.parent / "ports/emdawnwebgpu/emdawnwebgpu_pkg/webgpu/include"),
+        flags += ["-I" + str(sysroot.parent / "ports/emdawnwebgpu/emdawnwebgpu_pkg/webgpu/include"),
                   "--target=wasm32-unknown-emscripten", f"--sysroot={sysroot}", "-DEMSCRIPTEN",
                   "-isystem", str(sysroot / "include/c++/v1"),
                   "-isystem", str(sysroot / "include/compat")]

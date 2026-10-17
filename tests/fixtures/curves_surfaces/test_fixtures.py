@@ -185,3 +185,44 @@ class ReferenceCorpusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrameReferenceTests(unittest.TestCase):
+    """Rotation-minimizing frame references: closed forms, invariants and step-halving convergence."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.frames = {spec.name: fixtures.compute_frame(spec) for spec in fixtures.FRAME_SPECS}
+
+    def test_arctangent_matches_closed_forms(self) -> None:
+        pi = fixtures.QUADRATURE.half_pi * 2
+        self.assertLessEqual(abs(fixtures.decimal_atan(Decimal(1)) - pi / 4), Decimal("1e-45"))
+        self.assertLessEqual(abs(fixtures.decimal_atan(Decimal(3).sqrt()) - pi / 3), Decimal("1e-45"))
+        self.assertLessEqual(abs(fixtures.decimal_atan2(Decimal(-1), Decimal(-1)) + 3 * pi / 4), Decimal("1e-45"))
+
+    def test_planar_transport_keeps_the_plane_normal(self) -> None:
+        # In a plane T' stays in the plane, so r' = -(r . T') T vanishes for the out-of-plane normal.
+        for _, _, normal in self.frames["inflection_rmf"]["references"]:
+            self.assertEqual(normal, (Decimal(0), Decimal(0), Decimal(1)))
+
+    def test_references_stay_orthonormal(self) -> None:
+        for name, item in self.frames.items():
+            for index, u, normal in item["references"]:
+                with self.subTest(name=name, span=index, u=u):
+                    tangent, _ = item["models"][index].tangent(fixtures.to_decimal(u))
+                    # Integration error, not rounding: far below one float64 unit at emission.
+                    self.assertLessEqual(abs(fixtures.length(normal) - 1), Decimal("1e-15"))
+                    self.assertLessEqual(abs(fixtures.dot(normal, tangent)), Decimal("1e-15"))
+
+    def test_step_halving_agrees(self) -> None:
+        for name in ("twisted_rmf", "loop_holonomy"):
+            coarse = fixtures.compute_frame(next(s for s in fixtures.FRAME_SPECS if s.name == name),
+                                            fixtures.FRAME_STEPS // 2)
+            for (_, _, fine), (_, _, rough) in zip(self.frames[name]["references"], coarse["references"]):
+                with self.subTest(name=name):
+                    self.assertLessEqual(fixtures.length(fixtures.add(fine, fixtures.scale(rough, -1))),
+                                         Decimal("1e-13"))
+            self.assertLessEqual(abs(self.frames[name]["residual"] - coarse["residual"]), Decimal("1e-13"))
+
+    def test_loop_has_nonzero_holonomy(self) -> None:
+        self.assertGreater(abs(self.frames["loop_holonomy"]["residual"]), Decimal("0.1"))

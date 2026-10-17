@@ -48,6 +48,9 @@ struct Field
 /// Bounded declared record. Only Items[0..Count) are meaningful.
 struct Record
 {
+    // LLVM 23 misreports array value-initialization despite Value::Type's valid
+    // Kind::Uint32 default. Keep that default and its aggregate API contract.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     Field Items[16] = {}; ///< Up to sixteen uniquely identified fields.
     uint32 Count = 0;     ///< Number of fields.
 };
@@ -98,8 +101,10 @@ struct Invocation
 /// Deferred command. Token is scoped to this invocation and never denotes a VM object.
 struct Command
 {
-    uint32 Operation = 0;    ///< Contract operation identity.
-    uint32 Token = 0;        ///< One-based request sequence within this invocation.
+    uint32 Operation = 0; ///< Contract operation identity.
+    uint32 Token = 0;     ///< One-based request sequence within this invocation.
+    // Same LLVM 23 array/default-member-initializer false positive as Record.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     Value Arguments[4] = {}; ///< Copied argument values.
     uint32 Count = 0;        ///< Number of arguments.
 };
@@ -122,7 +127,9 @@ struct CommandResult
 /// Complete unpublished invocation result. The owner publishes state/effects together.
 struct Outcome
 {
-    Record State{};            ///< Candidate declared state.
+    Record State{}; ///< Candidate declared state.
+    // Same LLVM 23 array/default-member-initializer false positive as Record.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     Command Commands[16] = {}; ///< Ordered staged commands.
     uint32 Count = 0;          ///< Number of staged commands.
 };

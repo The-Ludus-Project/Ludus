@@ -655,7 +655,7 @@ ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& 
     const auto kind = backend::Kind();
     const bool validArtifact =
         kind == Backend::Vulkan   ? (description.Spirv.size() >= 5 && description.Spirv[0] == 0x07230203U &&
-                                   ValidEntry(description.SpirvEntry))
+                                     ValidEntry(description.SpirvEntry))
         : kind == Backend::WebGL2 ? (!description.GlslEs.empty() && description.GlslEsEntry == "main")
         : kind == Backend::Metal  ? (!description.Msl.empty() && ValidEntry(description.MslEntry))
                                   : (!description.Wgsl.empty() && ValidEntry(description.WgslEntry));

@@ -133,6 +133,8 @@ class StorageTable final
     static constexpr foundation::usize STORAGE_PAGE_SLOTS = 64;
     struct Page final
     {
+        // Elements use their default member initializers; the check misreports them as zero enums.
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
         T Values[STORAGE_PAGE_SLOTS]{};
     };
 

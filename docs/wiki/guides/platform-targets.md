@@ -81,7 +81,7 @@ and backend inputs belong to the build system, separately from detected facts.
 
 | Target or toolchain | Current scope |
 | --- | --- |
-| Ubuntu 24.04, Linux x64, Clang/LLVM 18 | Native engine reference environment |
+| Ubuntu 24.04, Linux x64, Clang/LLVM 23 | Native engine reference environment |
 | Pinned Emscripten, wasm32 | Browser Foundation, Platform and RHI paths plus smoke samples; browser/device acceptance is separate |
 | Windows, macOS, Android and iOS; ARM64; Emscripten wasm64 | Recognized classifications, not validated engine deployments |
 | GCC and MSVC frontend dispatch | Synthetic dispatch tests, not native engine toolchain support |

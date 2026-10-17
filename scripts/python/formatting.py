@@ -18,6 +18,22 @@ TOKENS = re.compile(
 )
 
 
+class FormattingError(RuntimeError):
+    """Raised when formatting would change a source file's meaningful tokens."""
+
+
+def significant_tokens(source: str) -> list[str]:
+    """Return the token sequence, ignoring whitespace except inside literals."""
+    tokens = []
+    for match in TOKENS.finditer(source):
+        token = match.group()
+        # Reindentation may change whitespace in comments and directives only.
+        if token.lstrip().startswith(("#", "//", "/*")):
+            token = "".join(token.split())
+        tokens.append(token)
+    return tokens
+
+
 def designated_lists(source: str) -> list[tuple[int, int, int]]:
     """Return opening/closing brace and last-token offsets outside disabled regions."""
     tokens = []
@@ -93,6 +109,7 @@ def format_source(source: str, filename: Path, clang_format: str) -> str:
 
     # Clang-format 18 cannot wrap initializer opening braces. Change only the
     # whitespace before those braces after it has formatted the member bodies.
+    expected = significant_tokens(result)
     count = len(designated_lists(result))
     for index in range(count):
         # Recompute offsets after each outer list so nested lists inherit its
@@ -101,6 +118,11 @@ def format_source(source: str, filename: Path, clang_format: str) -> str:
         body = result[opening + 1:closing]
         if "\n" not in body:
             result = result[:opening + 1] + " " + body.strip() + " " + result[closing:]
+            continue
+        if body[body.rfind("\n") + 1:].strip():
+            # Clang-format keeps the closing brace after the last member in some
+            # contexts, such as ternary operands. Keep its layout rather than
+            # rewriting that line, which would drop the member.
             continue
         line_start = result.rfind("\n", 0, opening) + 1
         prefix = result[line_start:opening]
@@ -135,4 +157,7 @@ def format_source(source: str, filename: Path, clang_format: str) -> str:
             result = before + "\n" + indentation + result[opening:]
         else:
             result = result[:line_start] + indentation + result[opening:]
+    if significant_tokens(result) != expected:
+        raise FormattingError(f"{filename}: designated-initializer brace normalization changed "
+                              "non-whitespace tokens; the file was left unformatted")
     return result

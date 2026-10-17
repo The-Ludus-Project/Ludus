@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import engine
-from formatting import format_source
+import formatting
+from formatting import FormattingError, format_source, significant_tokens
 import pre_commit
 
 
@@ -16,10 +17,29 @@ ROOT = Path(__file__).resolve().parents[2]
 CLANG_FORMAT = shutil.which(engine.pinned_llvm_tool(ROOT, "clang-format"))
 
 
-@unittest.skipUnless(CLANG_FORMAT, "requires pinned clang-format 18")
+def comparable_tokens(source):
+    """Return tokens without trailing commas, joining strings clang-format may split."""
+    tokens = []
+    for token in significant_tokens(source):
+        if token.startswith('"') and tokens and tokens[-1].startswith('"'):
+            tokens[-1] = tokens[-1][:-1] + token[1:]
+        else:
+            tokens.append(token)
+    comparable = []
+    for index, token in enumerate(tokens):
+        following = next((other for other in tokens[index + 1:] if not other.startswith(('//', '/*'))), None)
+        if token != ',' or following != '}':
+            comparable.append(token)
+    return comparable
+
+
+@unittest.skipUnless(CLANG_FORMAT, f"requires pinned {engine.pinned_llvm_tool(ROOT, 'clang-format')}")
 class FormattingTests(unittest.TestCase):
     def formatted(self, source):
-        return format_source(source, ROOT / "apps/smoke/main.cpp", CLANG_FORMAT)
+        result = format_source(source, ROOT / "apps/smoke/main.cpp", CLANG_FORMAT)
+        # Formatting may change whitespace and add trailing commas, never other tokens.
+        self.assertEqual(comparable_tokens(result), comparable_tokens(source))
+        return result
 
     def test_designated_initializer_and_idempotence(self):
         source = 'void f() { const Info value = {.Name = "test", .Width = 800}; }\n'
@@ -108,6 +128,29 @@ Info value = {/* {.Fake = 2} */ .Value = 3};
                 result = self.formatted(source)
                 self.assertIn('/* tail */' if '/*' in source else '// tail', result)
                 self.assertEqual(self.formatted(result), result)
+
+    def test_closing_brace_after_last_member_keeps_every_member(self):
+        # Clang-format 18 keeps a ternary operand's closing brace on its last member's line.
+        source = '''struct Pair final { int First = 0; int Second = 0; };
+Pair Choose(bool isFirst, int a, int b) noexcept
+{
+    const Pair other = isFirst == true ? Pair{ .First = a,
+                                               .Second = b }
+                                       : Pair{ .First = b,
+                                               .Second = a };
+    return other;
+}
+'''
+        result = self.formatted(source)
+        for member in ('.First = a', '.Second = b', '.First = b', '.Second = a'):
+            self.assertIn(member, result)
+        self.assertEqual(self.formatted(result), result)
+
+    def test_token_changing_normalization_fails_loudly(self):
+        source = 'Info value = {\n.Name = "test",\n.Width = 800\n};\n'
+        with patch.object(formatting, 'significant_tokens', side_effect=[['before'], ['after']]):
+            with self.assertRaises(FormattingError):
+                self.formatted(source)
 
     def test_hook_formats_index_and_preserves_unstaged_edits(self):
         for partially_staged in (False, True):

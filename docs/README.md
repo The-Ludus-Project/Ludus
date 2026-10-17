@@ -95,7 +95,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [FoundationThreading](modules/foundation/threading.md)
 - [Gameplay world storage](modules/gameplay/world.md)
 - [Graphics RHI](modules/graphics/rhi.md)
-- [Localization: static UTF-8 catalogs](modules/localization.md)
+- [Localization: catalogs and release cooking](modules/localization.md)
 - [Ludus::FoundationGeometry](modules/foundation/geometry.md)
 - [Ludus::FoundationMath](modules/foundation/math.md)
 
@@ -204,6 +204,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [ADR 0022: Bounded parsing foundation and JSON extraction](decisions/0022-bounded-parsing-foundation.md)
 - [ADR 0023: Editor presentation and portable document core](decisions/0023-editor-presentation-and-document-core.md)
 - [ADR 0024: Curves and surfaces domains, statuses and numeric guarantees](decisions/0024-curves-surfaces-contracts.md)
+- [ADR 0025: Pin the native reference toolchain to LLVM 23](decisions/0025-llvm-toolchain-pin.md)
 
 ## Research and reviews
 
@@ -273,7 +274,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Assertion startup / report-delivery — validation record](architecture/assertions-startup-validation.md)
 - [Assertion subsystem: M0 + M1 implementation evidence](architecture/assertions-m0-m1.md)
 - [Audio content implementation evidence](development/audio-content-evidence.md)
-- [Curves and surfaces evidence (G0-G2)](architecture/math-evidence/curves-surfaces.md)
+- [Curves and surfaces evidence (G0-G3)](architecture/math-evidence/curves-surfaces.md)
 - [Evidence for the September 23, 2026 logging review](architecture/logging-review-evidence/README.md)
 - [First container-system increment: evidence](development/container-systems-evidence.md)
 - [FoundationMath evidence ledger](architecture/math-evidence/README.md)

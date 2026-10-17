@@ -22,15 +22,24 @@ non-path flags and unions in the include directories (-I / -isystem / -iquote /
 database, plus public source include roots for optional modules with no compiled
 target in this profile, so every discovered public header can still be checked.
 
+Each probe is an independent compiler process, so the probes run concurrently
+on a bounded worker pool (LUDUS_HEADER_CHECK_JOBS, default: the CPUs available to
+this process). Serial probing spent most of its wall time waiting for a CPU on
+heavily shared hosts; every header still gets the same flags and its own
+pass/fail result, and failures are reported in header order.
+
 Usage: verify_header_self_sufficiency.py <build_dir> [module/submodule]
 The optional module selects only public headers exported by a partial SDK.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verify_compile_policy import compiler_options
@@ -104,6 +113,35 @@ def logical_include(header: Path) -> str:
     return str(header.relative_to(public_include_root(header)))
 
 
+JOBS_VARIABLE = "LUDUS_HEADER_CHECK_JOBS"
+
+
+def available_cpu_count() -> int:
+    # Honour an affinity/cgroup-restricted CPU set where the platform exposes it.
+    if hasattr(os, "sched_getaffinity"):
+        return max(1, len(os.sched_getaffinity(0)))
+    return max(1, os.cpu_count() or 1)
+
+
+def requested_jobs() -> int:
+    """Return the worker bound, or 0 when the override is not a positive integer."""
+    requested = os.environ.get(JOBS_VARIABLE, "")
+    if requested == "":
+        return available_cpu_count()
+    try:
+        jobs = int(requested)
+    except ValueError:
+        return 0
+    return jobs if jobs >= 1 else 0
+
+
+def compile_probe(options: list[str], directory: str, include: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        options + ["-x", "c++", "-fsyntax-only", "-"],
+        input=f"#include <{include}>\n", text=True, capture_output=True, cwd=directory,
+    )
+
+
 def representative_entry(entries):
     # Any engine TU's flags carry the C++ standard, defines, and warning policy.
     for entry in entries:
@@ -113,6 +151,10 @@ def representative_entry(entries):
 
 
 def main() -> int:
+    jobs = requested_jobs()
+    if jobs == 0:
+        print(f"{JOBS_VARIABLE} must be a positive integer, got {os.environ.get(JOBS_VARIABLE)!r}.")
+        return 1
     build = Path(sys.argv[1]).resolve()
     entries = json.loads((build / "compile_commands.json").read_text())
     if not entries:
@@ -158,7 +200,6 @@ def main() -> int:
     options = base_options + aggregated_includes
 
     failures: list[str] = []
-    checked = 0
     skipped: list[str] = []
     if len(sys.argv) > 2:
         module_root = (root / "modules" / sys.argv[2] / "include").resolve()
@@ -166,17 +207,23 @@ def main() -> int:
         if not headers:
             print("No public headers found for selected module")
             return 1
+    includes: list[str] = []
     for header in headers:
         include = logical_include(header)
         if include in KNOWN_NON_STANDALONE:
             skipped.append(include)
             continue
-        source = f"#include <{include}>\n"
-        result = subprocess.run(
-            options + ["-x", "c++", "-fsyntax-only", "-"],
-            input=source, text=True, capture_output=True, cwd=directory,
-        )
-        checked += 1
+        includes.append(include)
+    checked = len(includes)
+
+    jobs = max(1, min(jobs, checked))
+    # Printed before compiling so a CTest timeout still shows the probe scale.
+    print(f"Checking {checked} public headers with {jobs} concurrent compiler process(es).", flush=True)
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        results = list(pool.map(lambda include: compile_probe(options, directory, include), includes))
+    elapsed = time.monotonic() - started
+    for include, result in zip(includes, results):
         if result.returncode != 0:
             failures.append(f"{include}\n{result.stderr.strip()}")
 
@@ -186,7 +233,7 @@ def main() -> int:
             print(failure + "\n")
         return 1
     print(f"Header self-sufficiency OK: {checked} public headers each compile standalone "
-          f"({len(skipped)} build-selected backend header(s) skipped).")
+          f"({len(skipped)} build-selected backend header(s) skipped; {elapsed:.1f} s wall).")
     return 0
 
 

@@ -27,7 +27,9 @@ runs:
       env:
         WITH_EDITOR: ${{ inputs.editor }}
       run: |
-        packages=(gdb clang-18 llvm-18 lld-18 clang-format-18 clang-tidy-18 python3-venv ccache libwayland-dev wayland-protocols libwayland-bin)
+        # Ubuntu 24.04 does not package the pinned LLVM; use its pinned apt.llvm.org suite.
+        python3 scripts/python/llvm_apt_source.py
+        packages=(gdb clang-23 llvm-23 lld-23 clang-format-23 clang-tidy-23 libclang-rt-23-dev python3-venv ccache libwayland-dev wayland-protocols libwayland-bin)
         if [[ "$WITH_EDITOR" == true ]]; then
           # Preview is included in editor setup; offscreen rendering tests
           # still need a Vulkan loader and Mesa's software device.

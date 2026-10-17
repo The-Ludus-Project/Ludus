@@ -82,10 +82,10 @@ and [review/viewport acceptance rules](../../AGENTS.md#review-feedback-and-viewp
 Use the changed-source policy gate; passing CI does not replace reading human
 reviews or validating the selected World's interactive viewport.
 
-- C++23, no compiler extensions; pinned Clang/LLVM 18 toolchain.
+- C++23, no compiler extensions; pinned Clang/LLVM 23 toolchain (ADR 0025).
 - Browser Foundation modules, Platform, RHI, and the WebGPU probe use a separate pinned Emscripten
   toolchain (`config/web_toolchain.json`, ADR 0009); repository formatting and
-  static analysis still use version 18. All other coding rules apply.
+  static analysis still use version 23. All other coding rules apply.
 - Compile warning-clean; CI is warnings-as-errors.
 - Run `./scripts/check --all` (clang-format + clang-tidy) before committing.
 - `#pragma once` for header guards.

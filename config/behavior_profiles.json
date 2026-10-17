@@ -2,11 +2,11 @@
   "version": 1,
   "execution": "interpreter",
   "profiles": [
-    {"system": "Linux", "architectures": ["x86_64", "arm64"], "compiler_major": 18, "admission": "qualification"},
-    {"system": "Darwin", "architectures": ["x86_64", "arm64"], "compiler_major": 18, "admission": "qualification"},
+    {"system": "Linux", "architectures": ["x86_64", "arm64"], "compiler_major": 23, "admission": "qualification"},
+    {"system": "Darwin", "architectures": ["x86_64", "arm64"], "compiler_major": 23, "admission": "qualification"},
     {"system": "Emscripten", "architectures": ["wasm32"], "compiler_major": 22, "admission": "qualification"},
-    {"system": "Windows", "architectures": ["x86_64", "arm64"], "compiler_major": 18, "admission": "pending-engine-backend"},
-    {"system": "Android", "architectures": ["arm64"], "compiler_major": 18, "admission": "pending-engine-backend"},
-    {"system": "iOS", "architectures": ["arm64"], "compiler_major": 18, "admission": "pending-engine-backend"}
+    {"system": "Windows", "architectures": ["x86_64", "arm64"], "compiler_major": 23, "admission": "pending-engine-backend"},
+    {"system": "Android", "architectures": ["arm64"], "compiler_major": 23, "admission": "pending-engine-backend"},
+    {"system": "iOS", "architectures": ["arm64"], "compiler_major": 23, "admission": "pending-engine-backend"}
   ]
 }

@@ -1,14 +1,25 @@
-# Localization: static UTF-8 catalogs
+# Localization: catalogs and release cooking
 
-`Ludus::Localization` builds on native and Emscripten. This first implementation
-delivers literal text, exact authored identities, offline translation validation,
-immutable catalog leases and a portable cooked format. Dynamic ICU messages,
-locale negotiation, schema-preserving language switches and Text paragraph
-integration remain later phases of the [architecture](../architecture/localization.md).
+`Ludus::Localization` builds on native and Emscripten. It delivers exact authored
+identities, offline translation validation, immutable catalog leases and a
+portable cooked format for two profiles:
 
-No formatting grammar is interpreted: `{player}`, apostrophes, combining marks,
-and whitespace remain literal bytes. Passing an ICU-profile source to this cooker
-fails explicitly. UTF-8 validity does not imply font coverage, bidi or rendering.
+- `ludus-static-utf8-v1` (package version 1): literal text cooked from one source
+  and one translation document. No formatting grammar is interpreted: `{player}`,
+  apostrophes, combining marks and whitespace remain literal bytes. Passing an
+  ICU-profile source to this cooker fails explicitly.
+- `ludus-icu-mf1-v1` (package version 2), phase L1 of the
+  [architecture](../architecture/localization.md): a whole release manifest is
+  validated with pinned ICU4C, argument-free messages are cooked as the static
+  text ICU decodes (`'{'name'}'` becomes `{name}`, `''` becomes `'`), messages with
+  arguments keep their pattern and argument schema, fallback is baked per record,
+  and per-domain descriptors bind keys and schemas exactly. See
+  [release cooking](#release-cooking-ludus-icu-mf1-v1).
+
+Typed ICU formatting of messages with arguments (L2), locale negotiation,
+schema-preserving language switches and Text paragraph integration remain later
+phases. The runtime never links ICU. UTF-8 validity does not imply font coverage,
+bidi or rendering.
 
 ## Author and cook
 
@@ -96,8 +107,16 @@ copies may be read concurrently after synchronized publication. Access to the
 same mutable handle requires caller synchronization.
 
 Binding performs an exact domain comparison and binary search over readable keys.
+For a version 2 package it also compares the expected argument schema (see
+[descriptors](#generated-descriptors)); a key-only `MessageKey` bind is the
+empty-schema case, so a message with arguments returns `SchemaMismatch`.
 `ResolveStatic` checks a non-reused process token and accesses one record in O(1),
-with no allocation, hash table, formatting or locks. Keep bindings and leases in
+with no allocation, hash table, formatting or locks. It returns
+`RequiresArguments` for a message that declares arguments, even when one
+translation happens to omit them all; L2 formatting will serve those records.
+`ResolvedText` reports `Origin` (`Source`, `Translation`, `SourceFallback` or, for
+an intermediate catalog on the manifest's fallback path, `Fallback`) and the
+provider's locale label. Keep bindings and leases in
 the consumer and resolve when presentation changes. This is a complexity and
 allocator-tested contract, not a throughput benchmark.
 
@@ -113,6 +132,102 @@ Borrowed strings are counted views and are not NUL-terminated. Keep at least one
 lease alive through consumption. Public view-producing operations reject temporary
 catalogs, but C++ cannot detect a view retained after destruction of the last lease.
 Moved-from catalogs are invalid. Every failing binder/resolver preserves its output.
+
+## Release cooking (`ludus-icu-mf1-v1`)
+
+Documents, receipts and the release manifest follow the
+[L0 specification](../architecture/localization-l0.md#source-document-version-1);
+[`modules/localization/corpus`](../../modules/localization/corpus/release.json) and
+the smaller [fallback fixture](../../modules/localization/tests/release/release.json)
+are complete examples. A release is cooked in one command:
+
+```sh
+./scripts/icu-probe bootstrap      # once; pinned, checksum-verified ICU4C
+./scripts/icu-probe cook
+./scripts/icu-probe run --preset macos-clang-development   # builds ludus_localization_profile
+./scripts/localization cook-release --manifest modules/localization/corpus/release.json \
+    --output out/localization/release \
+    --profile-checker out/build/macos-clang-development/tools/icu-probe/ludus_localization_profile \
+    --bindings game/ui=game::l10n::ui
+./scripts/localization inspect out/localization/release/release.json
+./scripts/localization inspect out/localization/release/packages/game/ui/fr-FR.loc
+```
+
+Use the `linux-clang-*` presets on Ubuntu. The cooker first validates the
+manifest, every document, every review receipt and the fallback graph, then
+resolves each `(locale, key)` to its first approved provider. It never parses
+MessageFormat itself: the `ludus_localization_profile` host tool validates every
+resolved pattern with pinned ICU4C, in the locale that provides it, through the
+same `MessagePattern` profile walk as the [L0 probe](../architecture/localization-l0.md#message-profile-ludus-icu-mf1-v1).
+The tool also rejects a locale whose language has no data in the pinned slice and
+reports its ICU, CLDR and Unicode versions, which must equal the manifest's
+`linguistic_data`. Any rejection lists every failing `(domain, locale, key)` and
+writes nothing.
+
+For an argument-free message, the checker decodes ICU's apostrophe syntax by
+walking ICU's parsed parts and cross-checks the result against ICU
+`MessageFormat` with zero arguments; the package stores that text. A message whose
+source schema declares arguments is stored as its pattern plus the full schema,
+in every locale. ICU stays in the host tool: it is never installed, linked by the
+engine or built for the browser. Following the L0 allocation-failure findings, an
+ICU allocation failure in the checker is fatal rather than reported as a verdict.
+
+### Recorded verdicts
+
+`--record-profile-results FILE` (with `--profile-checker`) writes the checker's
+identity, per-locale data verdicts and each item's verdict and decoded text, keyed
+by the SHA-256 of its canonical `(locale, argument schema, pattern)`.
+`--profile-results FILE` replays such a recording instead of running ICU: an item
+absent from it fails the cook, so a recording can only reproduce verdicts the
+pinned checker gave for identical inputs. Ordinary builds and the wasm tests use
+this to cook their fixtures without ICU; the ICU-enabled
+`ludus_localization_profile` test regenerates the committed recordings
+([corpus](../../modules/localization/tests/corpus-profile-results.json),
+[fixture](../../modules/localization/tests/release/profile-results.json)) and
+requires byte equality. Shipping releases should run the native checker;
+`release.json` records which kind produced the verdicts.
+
+### Outputs
+
+| Path under `--output` | Content |
+| --- | --- |
+| `packages/<domain>/<locale>.loc` | One package version 2 per domain and manifest locale |
+| `bindings/<domain>.hpp` | Descriptors for each `--bindings DOMAIN=NAMESPACE` |
+| `source-map.json` | Per record: provider, document, source and translation revisions, kind |
+| `release.json` | Completion manifest: profile, linguistic data, checker identity and kind, input and cooker SHA-256, every output's size and SHA-256 |
+
+All validation completes in memory before any write. Outputs are deterministic,
+contain no absolute paths or timestamps, are replaced atomically one by one,
+are left untouched when unchanged, and `release.json` is written last. Consumers
+treat `release.json` as the publication boundary and verify package digests
+against it; `inspect release.json` does that and summarizes each package. An I/O
+failure between replacements can leave files that disagree with the previous
+`release.json`, which that verification reports. Stale files from earlier
+releases are not deleted.
+
+### Generated descriptors
+
+Each header contains, per source message in key order, a `MessageDescriptor` with
+its exact key and complete argument schema:
+
+```cpp
+#include "bindings/game/ui.hpp" // generated
+
+ludus::localization::MessageBinding count;
+if (lease.BindMessage(game::l10n::ui::kInventoryItemCount, count) == Status::Ok)
+{
+    // L2 formats through this binding; ResolveStatic returns RequiresArguments.
+}
+```
+
+Symbols derive from keys as in the static profile (`inventory/item-count` becomes
+`kInventoryItemCount`, its arguments `kInventoryItemCountArguments`, an enum's
+tokens `kInventoryItemCount<Argument>Values`), or from a source `symbol`. Any
+symbol collision fails generation. The header depends only on the source keys and
+argument schemas: wording, context, revision and translation edits leave it
+byte-identical. Binding compares the name and type of every argument, plus
+`origin`/`max_bytes` for text, `min`/`max` for count and number, and `unknown` and
+the ordered `values` for enums; any difference returns `SchemaMismatch`.
 
 ## Cooked wire format, v1
 
@@ -148,6 +263,62 @@ receipts belong to the offline workflow and are not a runtime signature. Content
 transport/package integrity remains the acquiring owner's responsibility. Future
 pattern codecs must use a new profile/version and validate their own schema.
 
+## Cooked wire format, v2
+
+Package version 2 carries profile ID 2, `ludus-icu-mf1-v1`. The same reader entry
+point accepts both versions. All fields are unsigned little-endian uint32 unless
+noted; bounds are signed int32 (two's complement).
+
+| Header byte offset | Field |
+| --- | --- |
+| 0, 4, 8, 12 | Magic `LLOC`, version 2, exact total byte count, message count (at most 65,536) |
+| 16, 20, 24 | Domain, locale, source-locale byte lengths, each at most 128 |
+| 28, 32 | Record width 40, profile ID 2 |
+| 36 | Provider count P, 1–8 |
+| 40, 44 | Argument count A (at most 32 per message), argument record width 36 |
+| 48 | Enum value count E (at most 64 per argument) |
+| 52 | Linguistic data label length, 1–128 printable ASCII, for example `icu4c-78.3/cldr-48/unicode-17.0` |
+| 56, 60 | Reserved, zero |
+
+After the 64-byte header come the domain, locale, source-locale and linguistic
+labels, then four directories: P provider slices, the message records, A argument
+records and E enum-value slices. A slice is an absolute offset and a length.
+
+| Record field (40 bytes) | Meaning |
+| --- | --- |
+| 0, 4 | Key slice |
+| 8, 12 | Value slice: static UTF-8 text (at most 64 KiB) or dynamic pattern (at most 16 KiB) |
+| 16 | Kind: 0 static, 1 dynamic |
+| 20 | Provider index into the provider path |
+| 24, 28 | First argument index, argument count; static records have none, dynamic records at least one |
+| 32 | Source revision, nonzero |
+| 36 | Flags: bit 0 required; other bits zero |
+
+| Argument field (36 bytes) | Meaning |
+| --- | --- |
+| 0, 4 | Name slice, `[a-z][a-z0-9_]*` within 64 bytes, unique in its message |
+| 8 | Type: 0 text, 1 count, 2 number, 3 enum |
+| 12 | Policy: text origin (0 game, 1 user) or enum unknown policy (0 other, 1 reject); zero otherwise |
+| 16 | Text `max_bytes` 1–4096; zero otherwise |
+| 20, 24 | Count/number `min` ≤ `max` within ±1,000,000,000; zero otherwise |
+| 28, 32 | First enum value index and count (1–64 unique tokens, never `other`); zero otherwise |
+
+The provider path is the locale's manifest fallback path: it starts at the
+package locale, ends at the source locale, has unique labels and has one entry
+exactly for a source-locale package. Payload strings are packed with no gaps,
+overlap or trailing bytes in this order: provider labels; then for each record,
+its key, its value, and for each argument its name followed by its enum tokens.
+Records are sorted strictly by key bytes; argument and enum indices are
+consecutive. The reader validates all of this, UTF-8 without NUL and every limit
+before its one allocation. Like version 1, a package is structurally validated,
+not authenticated: transport integrity belongs to the acquiring owner (the
+filesystem pack's CRC32, for example), and review receipts stay offline.
+
+The profile checker protocol between the cooker and `ludus_localization_profile`
+is private and versioned (`LPRQ`/`LPRS`, version 1); see
+[`profile_checker.cpp`](../../tools/icu-probe/profile_checker.cpp) and
+[`localization_release.py`](../../scripts/python/localization_release.py).
+
 ## Validation
 
 Native Catch2 tests use production-cooker fixtures: source/translation/fallback,
@@ -159,8 +330,24 @@ limits, generated bindings and CLI failures. The same cooker fixtures and runtim
 execute under wasm32 through the pinned SDK Node emulator. The installed SDK
 consumer checks the public API and static link closure.
 
+Version 2 adds, natively and under wasm32: ICU-decoded static escaping in every
+corpus locale; per-record fallback providers and origins; dynamic records that
+refuse static resolution; exact descriptor binding under every schema-field
+change, prefix and near-collision keys; lease lifetime across replacement,
+transactional failure and OOM; every truncation, targeted field corruption and a
+single-byte mutation sweep. The release-cooker tests cover stale and reused
+receipts, unrecorded inputs, profile rejections, linguistic-data and locale-data
+mismatches, invalid UTF-8 and limits, deterministic machine-independent outputs,
+preserved outputs on failure, descriptor collisions and header stability, the
+package decoder, the checker protocol and the `cook-release`/`inspect` CLI. With
+ICU built, `ludus_localization_profile` additionally regenerates both recordings,
+checks every [profile rejection fixture](../../modules/localization/corpus/profile-rejections.json),
+static decoding, missing locale data and a malformed request.
+
 ```sh
 python3 -m unittest discover -s scripts/python -p test_localization.py -v
+python3 -m unittest discover -s scripts/python -p test_localization_release.py -v
+./scripts/icu-probe run --preset linux-clang-development   # also runs ludus_localization_profile
 ./scripts/test linux-clang-development
 ./scripts/test linux-clang-asan-ubsan
 ./scripts/check linux-clang-development --all

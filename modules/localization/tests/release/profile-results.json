@@ -1,0 +1,117 @@
+{
+  "checker": {
+    "cldr": "48",
+    "data_bytes": 601168,
+    "data_fingerprint": "195d926a31a4989d363596a5e33ea4c2",
+    "icu": "78.3",
+    "protocol": 1,
+    "unicode": "17.0"
+  },
+  "locales": {
+    "en-US": "ok",
+    "fr-CA": "ok",
+    "fr-FR": "ok"
+  },
+  "profile": "ludus-icu-mf1-v1",
+  "results": [
+    {
+      "item": "05398acf1c8ee27400de9608c3fb02258f67ced1594e245b0b5d3b25ae92da58",
+      "text": "C'est littéral : {} et l'apostrophe reste.",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "15d34b40e3a098cabd225cdb77cc3cb8f72e50a6c44b1a7e280980103d398d2d",
+      "text": "Credits",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "26e9e63bf7dd42366bcee84f4c29fb13bf2d4e36bd2d918d813c52d10600c27d",
+      "text": "Ouvrir {jusqu'à la fin",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "2d8aebef4ea189fccb1844c448d10793bb1afffc7b1436b7015760ede2c78123",
+      "text": "العربية 日本語 😀 é",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "35793e28d76c51904f89130fd150e24b91285995263e1798e83947ba958a2743",
+      "text": "",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "3a379520d5e66ddee9c7440cb6308435bbab91aa9d7ef0ac0b745314565dbb55",
+      "text": "It's literal: {} and don't.",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "47cd002c234a94f7dd6b7e1fe05bab80fe640a6035b52d62e393f6433fb7bc9c",
+      "text": "Start",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "4dea5d4a28954944a5ced84e4bc87a7b3104b3db1913c4fef5e2c845d7dd5b5b",
+      "text": "Démarrer",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "627df1c5a11af49f9b9da06865dfd16f19ee77bd258a46edcd5c67beecb3c7a9",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "6a130330141eb755e3906ca3b717abc5e06eebcf7b72ed42f385fc1ac2747e3b",
+      "text": "Crédits",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "6df7d9444053cadf8f4efb4c7bd676959e1c95b17a79ca4bfb7c1a141789cd6a",
+      "text": "Press {jump} to jump.",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "722e26182cf8899a634ca04aee1f693ad6d8c9a1fa522127c8a8ff8128228521",
+      "text": "Appuyez sur {jump} pour sauter.",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "90c3c3745a84b5be20147a14b1962a3d03dd5897ae8791d56d476308396452a7",
+      "text": "Open {to the end",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "bd271c84c7db0e668e78e9bec86ada8703822b0d08e82fb77f2a823440ebce5e",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "d001cd0819fdb17670c3ff694191632055cf877643a7a4d9bd6e783b44bdbe9f",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "d33a52fadd21ff14b19525a5eb7cef8c508cb6e4b8d097d4b422ef052c0e1af0",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "eb5a51523a0fe58d43bd26b627fe7b9e4fab794dbb90b4d550c78b80e8676452",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f0e790dde2d3565c01c5ba3fa0d1fa312e02c4fbdd9669320d90dd76600e7adb",
+      "text": "العربية 日本語 😀 é",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f753d5f6f873e9d36f410d7ddd33548a6caa2fb589cb93c85586d1605f796067",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f7df62b0cb58a1aef591a42ead1cff7875a19340621b5dea55b70103a279c390",
+      "text": "Quit",
+      "verdict": "Accepted"
+    },
+    {
+      "item": "f80def27a157ccf50c7036c59cb81c4fb60bd9f21c00753ec6f302beccca6a34",
+      "verdict": "Accepted"
+    }
+  ],
+  "version": 1
+}

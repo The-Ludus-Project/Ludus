@@ -91,7 +91,7 @@ different layers.
   C++ headers.
 - **Primitives:** use the Ludus aliases; `std::uint32_t`/`std::size_t`/raw
   `float`/`double` spellings are banned outside `types.h`.
-- **No exceptions** (`-fno-exceptions`), C++23, Clang 18 / LLD, `#pragma once`.
+- **No exceptions** (`-fno-exceptions`), C++23, Clang 23 / LLD, `#pragma once`.
 - **Heavy headers** (`<format>`, `<chrono>`, `<filesystem>`, `<regex>`,
   `<iostream>`) are banned from public headers; expensive facilities are
   type-erased/PIMPL'd behind a `.cpp` (ADR 0004). Build time is budgeted per

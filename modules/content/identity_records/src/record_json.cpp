@@ -32,7 +32,7 @@ IdentityRecordStatus Fail(IdentityRecordError& outError,
         }
     }
     // The bounded copy above never exceeds MessageText's capacity.
-    const bool isSet = outError.Message.Set(std::string_view(text, size));
+    [[maybe_unused]] const bool isSet = outError.Message.Set(std::string_view(text, size));
     LUDUS_ASSERT(isSet == true);
     return status;
 }

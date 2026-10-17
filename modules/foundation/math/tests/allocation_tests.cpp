@@ -59,6 +59,9 @@ void CountDelete(void* p) noexcept
 }
 } // namespace
 
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(std::size_t n)
 {
     CountNew();
@@ -104,6 +107,7 @@ void operator delete(void* p, std::size_t, std::align_val_t) noexcept
     CountDelete(p);
     std::free(p);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 using namespace ludus::foundation::math;
 

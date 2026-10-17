@@ -49,18 +49,26 @@ struct PacingClock final
     void* ContextOrNull = nullptr;
 };
 
-/// @brief Return the native pacing clock: FoundationTime Now() and a relative operating-system sleep.
+/// @brief Return the native pacing clock: FoundationTime Now() and a relative operating-system wait.
 ///
-/// macOS and Linux sleep with `nanosleep(2)` for the interval remaining until the
-/// target, computed from a fresh Now() reading on every attempt. The absolute
-/// target therefore stays in the FoundationTime domain and lateness never
-/// accumulates across frames; an individual wake can still be late by the
-/// scheduler's wake-up latency, timer slack or coalescing. A signal returns
-/// Interrupted. Browser builds return a clock whose wait always reports
-/// Unsupported: browsers pace with presentation callbacks and must never block
-/// or busy-wait. Other targets have no adapter and also report Unsupported.
+/// Each wait covers the interval remaining until the target, computed from a
+/// fresh Now() reading on every attempt. The absolute target therefore stays in
+/// the FoundationTime domain and lateness never accumulates across frames. macOS
+/// waits on a one-shot `kevent64(2)` timer marked `NOTE_CRITICAL`, which opts out
+/// of the kernel's timer-coalescing leeway (up to 1 ms for a windowed application
+/// and several milliseconds for a background process on the measured host); if
+/// the thread's queue cannot be created it falls back to `nanosleep(2)`. Linux
+/// sleeps with `nanosleep(2)`. A wake can still be late by scheduler latency, and
+/// on Linux by timer slack. A signal returns Interrupted. Browser builds return a
+/// clock whose wait always reports Unsupported: browsers pace with presentation
+/// callbacks and must never block or busy-wait. Other targets have no adapter and
+/// also report Unsupported.
 ///
-/// The clock carries no state, so it may be copied and used from any thread.
+/// The returned value carries no state, so it may be copied and used from any
+/// thread. On macOS each thread that waits lazily opens one kqueue descriptor,
+/// reused by its later waits and closed when the thread exits.
+/// @note Zero leeway keeps the kernel from batching this wake with other timers.
+/// A loop that should save power while hidden or idle lowers its pacing rate.
 /// @return A clock whose function pointers are never null and whose context is null.
 [[nodiscard]] PacingClock GetSystemPacingClock() noexcept;
 

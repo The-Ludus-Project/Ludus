@@ -28,7 +28,7 @@
         "rhs": "Linux"
       },
       "cacheVariables": {
-        "CMAKE_CXX_COMPILER": "clang++-18",
+        "CMAKE_CXX_COMPILER": "clang++-23",
         "LUDUS_SPIRV_VALIDATOR": "$env{LUDUS_SPIRV_VALIDATOR}"
       }
     },

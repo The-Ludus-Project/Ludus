@@ -65,7 +65,7 @@ a project, work in the editor, and understand the systems behind each workflow.
 ## What to expect
 
 Ludus is an actively developed C++23 engine and toolset. The supported native
-reference environment is **Ubuntu 24.04, Linux x64, Clang/LLVM 18**. The desktop
+reference environment is **Ubuntu 24.04, Linux x64, Clang/LLVM 23**. The desktop
 editor provides project/build/run workflows, audio authoring and an offline
 configuration workspace. Scene authoring and the S2 document-editing milestone
 are still planned. See [current capabilities](getting-started/status.md).

@@ -145,9 +145,7 @@ Result Metadata(int descriptor, struct stat& info) noexcept
 }
 Result CheckRevision(int descriptor, const struct stat& original) noexcept
 {
-    struct stat current
-    {
-    };
+    struct stat current{};
     const auto result = Metadata(descriptor, current);
     if (!result.Succeeded())
     {
@@ -175,9 +173,7 @@ void CopyName(std::string_view text, char* output) noexcept
 struct File::Impl final
 {
     Descriptor Handle;
-    struct stat Original
-    {
-    };
+    struct stat Original{};
     uint64 Length = 0;
 };
 struct Directory::Impl final
@@ -387,9 +383,7 @@ Result Directory::OpenRead(std::string_view relativePath, File& output) const no
     {
         return NativeFailure(errno);
     }
-    struct stat info
-    {
-    };
+    struct stat info{};
     const auto result = Metadata(file.Value, info);
     if (!result.Succeeded())
     {
@@ -445,9 +439,7 @@ Result Directory::Observe(std::string_view relativePath, FileStamp& output) cons
         current = next;
         begin = slash + 1;
     }
-    struct stat info
-    {
-    };
+    struct stat info{};
     int value;
     do
     {

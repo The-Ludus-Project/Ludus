@@ -10,7 +10,7 @@ checked HTML are also available as an [offline bundle](docs/development/wiki.md#
 
 ## Build the engine
 
-The native reference host is Ubuntu 24.04 with Clang/LLVM 18. From a clone:
+The native reference host is Ubuntu 24.04 with Clang/LLVM 23 (from apt.llvm.org). From a clone:
 
 ```bash
 ./init.sh --cli linux-clang-development --preset-only --locked --with-tests

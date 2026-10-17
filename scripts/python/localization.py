@@ -30,6 +30,17 @@ ID = re.compile(r"[a-z0-9-]+(?:/[a-z0-9-]+)*\Z", re.ASCII)
 LOCALE = re.compile(r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*\Z", re.ASCII)
 NAMESPACE = re.compile(r"[a-z][a-z0-9_]*(?:::[a-z][a-z0-9_]*)*\Z", re.ASCII)
 SYMBOL = re.compile(r"[A-Z][A-Za-z0-9]*\Z", re.ASCII)
+# Reject keywords instead of emitting a syntactically invalid C++ namespace.
+CPP_KEYWORDS = frozenset({
+    "alignas", "and", "and_eq", "asm", "auto", "bitand", "bitor", "bool", "break", "case", "catch", "char",
+    "char16_t", "char32_t", "char8_t", "class", "co_await", "co_return", "co_yield", "compl", "concept", "const",
+    "const_cast", "consteval", "constexpr", "constinit", "continue", "decltype", "default", "delete", "do",
+    "double", "dynamic_cast", "else", "enum", "explicit", "export", "extern", "false", "float", "for", "friend",
+    "if", "inline", "int", "long", "mutable", "namespace", "new", "noexcept", "not", "not_eq", "nullptr",
+    "operator", "or", "or_eq", "private", "protected", "public", "register", "reinterpret_cast", "requires",
+    "return", "short", "signed", "sizeof", "static", "static_assert", "static_cast", "struct", "switch", "template",
+    "this", "thread_local", "throw", "true", "try", "typedef", "typeid", "typename", "union", "unsigned", "using",
+    "virtual", "void", "volatile", "wchar_t", "while", "xor", "xor_eq"})
 
 
 class CookError(ValueError):
@@ -255,19 +266,7 @@ def bindings(source: dict, namespace: str) -> str:
     document(source, False)
     if not NAMESPACE.fullmatch(namespace):
         fail("bindings namespace must contain lowercase C++ identifiers")
-    # Reject keywords instead of emitting a syntactically invalid C++ namespace.
-    keywords = {"alignas", "asm", "auto", "bool", "break", "case", "catch", "char", "class", "concept",
-                "const", "constexpr", "continue", "default", "delete", "do", "double", "else", "enum",
-                "explicit", "export", "extern", "false", "float", "for", "friend", "if", "inline", "int",
-                "long", "mutable", "namespace", "new", "noexcept", "nullptr", "operator", "private",
-                "protected", "public", "register", "requires", "return", "short", "signed", "sizeof",
-                "static", "struct", "switch", "template", "this", "thread_local", "throw", "true", "try",
-                "typedef", "typename", "union", "unsigned", "using", "virtual", "void", "volatile", "while",
-                "and", "and_eq", "bitand", "bitor", "compl", "consteval", "constinit", "co_await", "co_return",
-                "co_yield", "decltype", "dynamic_cast", "not", "not_eq", "or", "or_eq", "reinterpret_cast",
-                "static_assert", "static_cast", "typeid", "wchar_t", "xor", "xor_eq", "char8_t", "char16_t",
-                "char32_t", "const_cast"}
-    if any(part in keywords or "__" in part for part in namespace.split("::")):
+    if any(part in CPP_KEYWORDS or "__" in part for part in namespace.split("::")):
         fail("bindings namespace contains a reserved C++ identifier")
     lines = ["#pragma once", "", "// Generated from the source key schema; translation edits do not change this file.",
              "#include <ludus/localization/catalog.hpp>", "", f"namespace {namespace}", "{"]
@@ -302,6 +301,17 @@ def write_atomic(path: Path, data: bytes) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    release = commands.add_parser("cook-release", help="cook a ludus-icu-mf1-v1 release manifest")
+    release.add_argument("--manifest", type=Path, required=True)
+    release.add_argument("--output", type=Path, required=True, help="release directory; release.json is written last")
+    release.add_argument("--profile-checker", type=Path, help="pinned ICU ludus_localization_profile executable")
+    release.add_argument("--profile-results", type=Path, help="verdicts recorded earlier by the native checker")
+    release.add_argument("--record-profile-results", type=Path, help="record the native checker's verdicts")
+    release.add_argument("--bindings", action="append", metavar="DOMAIN=NAMESPACE",
+                         help="generate bindings/<domain>.hpp descriptors in this C++ namespace")
+    inspect = commands.add_parser("inspect", help="dump a cooked package or verify a release.json")
+    inspect.add_argument("path", type=Path)
+    inspect.add_argument("--json", action="store_true")
     for name in ("cook", "export-review"):
         command = commands.add_parser(name)
         command.add_argument("--source", type=Path, required=True)
@@ -314,6 +324,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             command.add_argument("--locale", required=True)
     args = parser.parse_args(argv)
+    if args.command in ("cook-release", "inspect"):
+        # The mf1 release path lives in its own module; it imports this one.
+        import localization_release
+        try:
+            if args.command == "cook-release":
+                return localization_release.run_cook_release(args)
+            return localization_release.run_inspect(args)
+        except (CookError, OSError) as error:
+            print(f"localization: {error}", file=sys.stderr)
+            return 1
     try:
         inputs = [args.source] + ([args.translation] if getattr(args, "translation", None) else [])
         outputs = [args.output] + ([args.header] if getattr(args, "header", None) else [])

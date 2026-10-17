@@ -107,7 +107,7 @@ struct ContentJobs::Impl final
     ContentWorker* Thread = nullptr;
 #endif
 };
-ContentJobs::ContentJobs(QObject* parent) : QObject(parent), Impl_(new(std::nothrow) Impl)
+ContentJobs::ContentJobs(QObject* parent) : QObject(parent), Impl_(new (std::nothrow) Impl)
 {
     PollTimer_.setInterval(20);
     connect(&PollTimer_, &QTimer::timeout, this, &ContentJobs::Poll);

@@ -26,12 +26,14 @@
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/offscreen_frame_reader.h"
 #    include "internal/qt_viewport_device.h"
+#    include <QLibraryInfo>
 #    include <QPainter>
 #    include <QQuickItem>
 #    include <QQuickWindow>
 #    include <QSGSimpleTextureNode>
 #    include <QSGTexture>
 #    include <QThread>
+#    include <QVersionNumber>
 #endif
 
 namespace ludus::editor
@@ -82,6 +84,22 @@ private:
 #    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Service period for frame polling, about one 60 Hz display refresh.
 constexpr int32 SERVICE_INTERVAL_MILLISECONDS = 16;
+/// Reports whether this QtWayland release breaks a hidden then re-shown Vulkan subsurface.
+///
+/// Thanks to The Qt Company and the QtWayland contributors. Before 6.5.1:
+/// - "Client: Cleanup vulkan surfaces on hide" (qtwayland d78e8c0284) is missing, so
+///   QWaylandWindow::reset keeps the VkSurfaceKHR of the destroyed wl_surface. The
+///   swapchain then attaches to a recycled object id and the compositor disconnects us.
+/// - "QWaylandWindow: Init parent wl_surface when creating subsurface" (qtwayland
+///   d06d66fad7) is missing, so a child shown before its parent gets no wl_subsurface
+///   and is never exposed. QWidget shows children before their own window.
+/// https://github.com/qt/qtwayland/commit/d78e8c02846a3634445a808d9845be8613bb1bfe
+/// https://github.com/qt/qtwayland/commit/d06d66fad70d7c61559211b6f489b94d1c3a8a05
+bool IsHiddenSubsurfaceBroken() noexcept
+{
+    return QGuiApplication::platformName().startsWith(QStringLiteral("wayland")) == true &&
+           QLibraryInfo::version() < QVersionNumber(6, 5, 1);
+}
 #    endif
 #    if defined(LUDUS_EDITOR_SOFTWARE_VIEWPORT)
 /// Longest rendered side in pixels; the CPU preview is scaled up to the widget.
@@ -231,6 +249,10 @@ struct PreviewViewport::State final
     bool HasDeviceLease = false;
     bool IsDestroyingWindow = false;
     bool IsRecording = false;
+    /// Destroy the native window on hide and recreate it under a mapped parent (QtWayland < 6.5.1).
+    bool ShouldRecreateHiddenSurface = false;
+    /// The window was shown before its parent had a surface; recreate it once the parent is visible.
+    bool IsSurfaceRecreationPending = false;
     QTimer Service;
     static bool Retain(void* context) noexcept
     {
@@ -445,10 +467,56 @@ private:
         Container = QWidget::createWindowContainer(Window, Widget);
         Container->setFocusPolicy(Qt::NoFocus);
         Container->setAttribute(Qt::WA_TransparentForMouseEvents);
+        ShouldRecreateHiddenSurface = IsHiddenSubsurfaceBroken();
+        if (ShouldRecreateHiddenSurface == true)
+        {
+            // The filter sees Hide before the container hides the embedded window.
+            Container->installEventFilter(Widget);
+        }
         Layout->addWidget(Container);
         Message->hide();
         Container->show();
         Service.start(SERVICE_INTERVAL_MILLISECONDS);
+    }
+    // Destroying the native window releases Qt Quick's swapchain and the VkSurfaceKHR
+    // of the wl_surface QtWayland just unmapped, so the next show builds both afresh.
+    // The scene graph, RHI and frame leases persist; nothing samples while hidden.
+    void releaseHiddenSurface()
+    {
+        if (ShouldRecreateHiddenSurface == false || IsDestroyingWindow == true || Window == nullptr)
+        {
+            return;
+        }
+        LUDUS_REQUIRE(IsRecording == false);
+        IsSurfaceRecreationPending = false;
+        Window->destroy();
+    }
+    void noteWindowShown()
+    {
+        // A parent that is still hidden has no wl_surface to attach a subsurface to.
+        const QWindow* parentOrNull = Window->parent();
+        IsSurfaceRecreationPending =
+            ShouldRecreateHiddenSurface == true && (parentOrNull == nullptr || parentOrNull->isVisible() == false);
+    }
+    void recreatePendingSurface()
+    {
+        if (IsSurfaceRecreationPending == false || Window == nullptr || IsDestroyingWindow == true)
+        {
+            return;
+        }
+        if (Window->isVisible() == false)
+        {
+            // Hidden again; its next show decides afresh.
+            IsSurfaceRecreationPending = false;
+            return;
+        }
+        const QWindow* parentOrNull = Window->parent();
+        if (parentOrNull == nullptr || parentOrNull->isVisible() == false || IsRecording == true)
+        {
+            return;
+        }
+        releaseHiddenSurface();
+        Window->show();
     }
     void releaseRetired()
     {
@@ -733,6 +801,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
         }
     });
     connect(&mState->Service, &QTimer::timeout, this, [this]() {
+        mState->recreatePendingSurface();
         mState->releaseRetired();
         // Always finish an in-flight offscreen copy; otherwise only present when admitted.
         if (mState->CanShowFrames == true || mState->Reader.IsBusy() == true)
@@ -820,9 +889,16 @@ bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
             case QEvent::Wheel:
                 wheelEvent(static_cast<QWheelEvent*>(event));
                 return true;
+            case QEvent::Show:
+                mState->noteWindowShown();
+                break;
             default:
                 break;
         }
+    }
+    if (watched == mState->Container && event->type() == QEvent::Hide)
+    {
+        mState->releaseHiddenSurface();
     }
 #endif
     if (event->type() == QEvent::WindowDeactivate)

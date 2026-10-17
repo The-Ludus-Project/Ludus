@@ -1,6 +1,6 @@
 #include "internal/controller.h"
 
-#include <ludus/foundation/base/types.h>
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/logging/category.hpp>
 #include <ludus/foundation/logging/log.hpp>
 
@@ -341,7 +341,7 @@ void EditorController::Reload()
         result.Kind = Outcome::Failed;
         result.Code = outcome.Parse.Code;
         result.Message = outcome.Parse.Message;
-        State_.Result = result;
+        State_.Result = foundation::Move(result);
         Publish();
         return;
     }
@@ -743,7 +743,7 @@ void EditorController::OnToolEvent(const ProtocolEvent& event)
             }
             else
             {
-                State_.Result = result;
+                State_.Result = foundation::Move(result);
             }
             GenerationJob_ = false;
             if (!Play_.Active() && PlayState_.Phase != PlayPhase::Stopped)

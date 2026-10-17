@@ -18,6 +18,11 @@ enum class DeliveryStatus : uint8
 /// bridge failure explicitly. No pthreads, sockets, signals, or helper startup.
 /// The common wire codec remains available but opens no transport.
 ///
+/// Windows backend: socket/control configuration is likewise unsupported (false /
+/// Failed) and decisions always Terminate. TryWriteEmergencyBytes reports
+/// Unavailable; WriteEmergencyBytes makes bounded blocking attempts on the standard
+/// error handle. CI detection reads the same environment signals as POSIX.
+///
 /// Healthy startup only, once, before threads can report failures. Duplicates a
 /// connected AF_UNIX/SOCK_DGRAM descriptor and retains it until process exit.
 /// macOS also enables SO_NOSIGPIPE on the duplicated socket (shared with its original).

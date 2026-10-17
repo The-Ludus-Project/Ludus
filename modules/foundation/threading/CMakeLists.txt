@@ -7,14 +7,15 @@ target_sources(ludus_foundation_threading PRIVATE src/jobs.cpp
 target_include_directories(ludus_foundation_threading PRIVATE src)
 target_link_libraries(ludus_foundation_threading PUBLIC Ludus::FoundationBase)
 if(EMSCRIPTEN)
-    target_sources(ludus_foundation_threading PRIVATE src/native_serial.cpp)
+    set(LUDUS_THREADING_NATIVE_SOURCE src/native_serial.cpp)
 elseif(WIN32)
-    target_sources(ludus_foundation_threading PRIVATE src/native_windows.cpp)
+    set(LUDUS_THREADING_NATIVE_SOURCE src/native_windows.cpp)
 else()
-    target_sources(ludus_foundation_threading PRIVATE src/native_posix.cpp)
+    set(LUDUS_THREADING_NATIVE_SOURCE src/native_posix.cpp)
     find_package(Threads REQUIRED)
     target_link_libraries(ludus_foundation_threading PUBLIC Threads::Threads)
 endif()
+target_sources(ludus_foundation_threading PRIVATE ${LUDUS_THREADING_NATIVE_SOURCE})
 ludus_apply_project_defaults(ludus_foundation_threading)
 install(TARGETS ludus_foundation_threading EXPORT LudusTargets
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -61,13 +62,29 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_threading_benchmark)
 endif()
 
-if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_executable(ludus_threading_startup_tests tests/startup_tests.cpp)
-    target_link_libraries(ludus_threading_startup_tests PRIVATE
-        Ludus::FoundationThreading Catch2::Catch2WithMain)
-    target_link_options(ludus_threading_startup_tests PRIVATE
-        -Wl,--wrap=pthread_create -Wl,--wrap=pthread_join
-        -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_cond_init)
+if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # GNU --wrap injects startup failures into the unmodified production archive.
+        add_executable(ludus_threading_startup_tests tests/startup_tests.cpp tests/startup_wrap.cpp)
+        target_link_libraries(ludus_threading_startup_tests PRIVATE
+            Ludus::FoundationThreading Catch2::Catch2WithMain)
+        target_link_options(ludus_threading_startup_tests PRIVATE
+            -Wl,--wrap=pthread_create -Wl,--wrap=pthread_join
+            -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_cond_init)
+    else()
+        # Mach-O and PE linkers lack --wrap. Compile the same kernel sources with a
+        # private native seam into an unexported test backend; production code and
+        # the installed SDK contain no hooks.
+        add_library(ludus_threading_fault_backend STATIC src/jobs.cpp ${LUDUS_THREADING_NATIVE_SOURCE})
+        target_include_directories(ludus_threading_fault_backend PUBLIC include PRIVATE src)
+        target_compile_definitions(ludus_threading_fault_backend PRIVATE LUDUS_THREADING_NATIVE_FAULT_TESTING=1)
+        target_link_libraries(ludus_threading_fault_backend PUBLIC Ludus::FoundationBase)
+        ludus_apply_project_defaults(ludus_threading_fault_backend)
+        add_executable(ludus_threading_startup_tests tests/startup_tests.cpp tests/startup_seam.cpp)
+        target_include_directories(ludus_threading_startup_tests PRIVATE src)
+        target_link_libraries(ludus_threading_startup_tests PRIVATE
+            ludus_threading_fault_backend Catch2::Catch2WithMain)
+    endif()
     ludus_apply_project_defaults(ludus_threading_startup_tests)
     ludus_enable_test_exceptions(ludus_threading_startup_tests)
     add_test(NAME ludus_threading_startup_tests COMMAND ludus_threading_startup_tests)

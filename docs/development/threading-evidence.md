@@ -49,8 +49,11 @@ The threading suite exercises graph bounds, cycles, duplicate/stale/foreign
 handles, ordinary non-atomic output publication through fan-in dependencies, wide
 fan-out/fan-in and repeated reuse, serial/worker execution, invalid callback
 outcomes, failure/cancellation propagation, recursive-wait rejection, graph/system
-destruction and draining. Linux linker wrappers inject synchronization initialization
-and partial thread startup failures and verify joins and retry. Allocation injection
+destruction and draining. Startup-failure tests inject synchronization
+initialization and partial thread startup failures and verify joins and retry:
+Linux through GNU `--wrap` on the unmodified archive, macOS and Windows through a
+private compile-time seam in an unexported test backend (see
+[platform completion](#platform-completion-t3)). Allocation injection
 checks initialization cleanup; a separate allocation-counting executable checks
 zero scheduler allocation during repeated Add/Seal/Submit/Wait/Reset cycles.
 
@@ -60,9 +63,8 @@ blocking under the pinned Emscripten toolchain. An installed SDK consumer links
 and executes the public API without private engine headers. CI also exercises the
 normal Debug/Development, sanitizers, PCH, public-header and build-time-budget gates.
 
-Windows uses a private native backend but has not been compiled or executed by
-this Linux validation. It requires validation on a supported Windows toolchain
-before shipping there. The first real engine workload, the static-lighting bake,
+The Windows backend is compiled and executed by a dedicated CI lane, recorded
+[below](#platform-completion-t3). The first real engine workload, the static-lighting bake,
 is recorded [below](#static-lighting-bake-t1). See [the architecture](../architecture/threading.md) for the staged measurement
 and consumer-integration plan.
 
@@ -88,9 +90,8 @@ the one-minute load average was 24.8-25.2.
   `ludus_foundation_threading_tests`; the development job runs every test labelled
   `threading`.
 
-The Linux-only startup-failure tests (`--wrap` linker injection), a completed
-macOS TSan run and any Windows execution remain open under milestone T3 of
-[the architecture](../architecture/threading.md#milestones).
+Milestone T3 later added macOS startup-failure injection, a completed macOS TSan
+run and Windows execution; see [platform completion](#platform-completion-t3).
 
 ## Static-lighting bake (T1)
 
@@ -244,9 +245,6 @@ named `Bake worker` tracks and the helping owner, the dispatch arrows and the
 ready-depth counter. The capture of sweep 1 holds 66 bakes: 66 preparation
 slices, 4,224 range slices and 4,290 `JobDispatch` flow ends, one for every job.
 
-A load-gated sweep (one-minute load below 4) is still pending. When it runs, its
-results will be added here as a separate sweep to narrow these intervals.
-
 Correctness evidence, in the threading suites:
 
 - `[threading][trace]` cases (0, 1 and 4 workers, helping and non-helping `Wait`, 20
@@ -272,3 +270,77 @@ The trace cases passed 300 consecutive runs and the profiler/allocation executab
 passed except `ludus_platform_cocoa_tests`, which skips every case without
 `LUDUS_TEST_COCOA=1` and is unaffected by this change. As in T0 and T1, ASan/UBSan and
 TSan results for these paths come from CI.
+
+## Platform completion (T3)
+
+Recorded on 2026-10-17 from the `Threading platforms` workflow
+(`.github/workflows/threading-platforms.yml`, run 39044027072 on PR #322). Every
+batch runs the same lanes, and promotion requires them. See
+[Continuous integration](continuous-integration.md#threading-platform-lanes).
+
+### macOS startup-failure injection
+
+Apple's linker has no GNU `--wrap`. On macOS and Windows,
+`ludus_threading_startup_tests` links an unexported test backend that compiles
+`jobs.cpp` and the platform's native source with `LUDUS_THREADING_NATIVE_FAULT_TESTING`.
+In that build only, `src/internal/native_test_hooks.hpp` hooks run before
+thread creation, thread join and gate mutex/condition initialization. The test
+executable defines them. Production archives and the installed SDK contain no hooks
+or fault state, and the public API is unchanged. The test cases are shared with
+the Linux `--wrap` variant. A start failing at worker 1, 2 or 4 of 4 must report
+`ThreadCreationFailed`, join exactly the workers already started, and leave a
+system that initializes and shuts down again. Mutex or condition initialization
+failure must leave a reusable system.
+
+On the Apple M5 (macOS 26.6, Clang 18.1.8 Development build, warnings as errors),
+the startup tests (2 cases, 18 assertions) passed in 200 consecutive runs. Local
+ASan/TSan remain unavailable on that host, as recorded for
+[T0](#macos-arm64-validation-t0); the sanitizer result comes from CI below.
+
+### macOS ThreadSanitizer
+
+The hosted `macos-15-arm64` image (macOS 15.7.9, build 24G830) ran Homebrew
+Clang 18.1.8, the pinned major, with `-DLUDUS_ENABLE_TSAN=ON` and warnings as
+errors. The pinned runtime starts there, unlike on macOS 26 hosts.
+
+- `ludus_tsan_control` detected its deliberate race in 16 of 16 runs before
+  any threading result was accepted.
+- `ludus_foundation_threading_tests` (21 cases, 14,303 assertions),
+  `ludus_threading_startup_tests` (2 cases, 18 assertions, through the seam) and
+  `ludus_threading_profiling_tests` (2 cases, 51 assertions) passed under TSan.
+- The scheduler and startup suites then passed 10 further repeated CTest runs each.
+
+This is the completed macOS sanitizer result required by the
+[baseline gate](../architecture/threading.md#baseline-completion-gate). The
+allocation-counting suite is excluded from sanitized builds by design.
+
+### Windows backend
+
+The hosted `windows-2022` image (20261012.333.1, x86_64) ran Chocolatey's
+LLVM 18.1.8 `clang++` targeting `x86_64-pc-windows-msvc`, with Development
+flags and warnings as errors. Catch2 came from the locked local recipe with
+`config/conan/profiles/windows-clang-x86_64`.
+
+Current Microsoft STL releases reject Clang 18. VS 2022 17.13 and newer require
+Clang 19, and the image's VS 2026 STL (14.51) requires Clang 20 (`STL1000`). The
+lane installs the MSVC 14.40 toolset (VS 2022 17.10 LTSC) and selects it through
+`VCToolsInstallDir`. A Windows build with the pinned LLVM therefore needs that
+toolset, or an LLVM pin update, which would be a separate toolchain decision.
+
+On Windows, CMake configures only the FoundationThreading closure (Base, Memory,
+Containers, Time, Profiling and Threading). FoundationBase uses a report-only
+assertion backend: emergency bytes go to the standard error handle, and the
+POSIX report socket and helper control endpoint are unavailable. The Microsoft
+CRT's deprecation of portable ISO C calls is disabled with `_CRT_SECURE_NO_WARNINGS`.
+
+- `ludus_foundation_threading_tests` (21 cases, 14,550 assertions; the count
+  varies with timing-dependent loops), `ludus_threading_startup_tests` (2 cases,
+  18 assertions, through the seam on `_beginthreadex`/`WaitForSingleObject` and
+  gate initialization), `ludus_threading_profiling_tests` (2 cases, 51 assertions)
+  and `ludus_threading_alloc_tests` (3 cases, 104 assertions, zero steady
+  scheduler allocations) passed.
+- The scheduler and startup suites then passed 20 further repeated CTest runs each.
+
+This establishes that the Windows backend compiles, executes and passes the
+threading contracts. It does not provide a Windows SDK, other engine modules on
+Windows, Windows ASan/TSan or Windows performance measurements.

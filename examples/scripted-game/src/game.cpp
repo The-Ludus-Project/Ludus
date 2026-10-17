@@ -541,7 +541,7 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
         std::string_view node;
         uint64 asset = 0;
         std::string_view source(snapshot.Frames[i].Source);
-        if (source.starts_with("@"))
+        if (source.starts_with('@') == true)
         {
             source.remove_prefix(1);
         }

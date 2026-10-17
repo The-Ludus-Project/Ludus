@@ -101,6 +101,42 @@ void Same(const Outcome& a, const Outcome& b)
     }
 }
 } // namespace
+TEST_CASE("S4 aggregate defaults retain valid value kinds in every bounded slot")
+{
+    const auto checkValue = [](const Value& value) {
+        CHECK(value.Type == Kind::Uint32);
+        CHECK(value.Scalar == 0);
+        CHECK(value.Entity.World == 0);
+        CHECK(value.Entity.Session == 0);
+        CHECK(value.Entity.Execution == 0);
+        CHECK(value.Entity.Slot == 0);
+        CHECK(value.Entity.Generation == 0);
+    };
+    const Record record{};
+    CHECK(record.Count == 0);
+    for (const Field& field : record.Items)
+    {
+        CHECK(field.Id == 0);
+        checkValue(field.Data);
+    }
+    const Command command{};
+    CHECK(command.Count == 0);
+    for (const Value& value : command.Arguments)
+    {
+        checkValue(value);
+    }
+    const Outcome outcome{};
+    CHECK(outcome.Count == 0);
+    for (const Command& staged : outcome.Commands)
+    {
+        CHECK(staged.Count == 0);
+        for (const Value& value : staged.Arguments)
+        {
+            checkValue(value);
+        }
+    }
+}
+
 TEST_CASE("S4 native and Luau share copied state and ordered checked commands")
 {
     const auto bytes = Package();

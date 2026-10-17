@@ -14,6 +14,7 @@
 #include "internal/project_store.h"
 #include "internal/recent_projects.h"
 #include "internal/source_watch.h"
+#include "internal/timing_view.h"
 #include "internal/tool_process.h"
 #include "internal/workspace.h"
 
@@ -81,6 +82,12 @@ struct PlaySnapshot
     uint64 SchemaVersion = 0;
     QJsonArray Properties;
     QJsonObject HostStatus;
+    /// Runtime timing from the latest Status result; meaningful while HasTiming.
+    TimingSnapshot Timing;
+    /// Whether Timing holds a validated runtime report for this session.
+    bool HasTiming = false;
+    /// Why the latest timing record was rejected; empty when it was accepted.
+    QString TimingMessage;
     QJsonObject ScriptStatus;
     bool ScriptPaused = false;
     bool ScriptBusy = false;
@@ -165,6 +172,10 @@ public:
     void ScriptCommand(const QJsonObject& command);
     void RefreshProperties();
     void RefreshSessionDetails();
+    /// Request runtime timing (a Status command) while a session runs. At most
+    /// one timing request is outstanding; the Timing panel calls this on its own
+    /// refresh timer only while it is visible.
+    void RefreshTiming();
     [[nodiscard]] bool CanEditProperties() const;
     void EditProperty(int row, const QString& text);
     void UndoSessionEdit();
@@ -231,6 +242,7 @@ private:
     QString PublishedGeneration_;
     QString ScriptRequest_;
     QString PropertyRequest_;
+    QString TimingRequest_;
     QJsonArray PropertyChunks_;
     uint64 PropertyCount_ = 0;
     QString EditRequest_;

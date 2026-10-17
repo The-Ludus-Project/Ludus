@@ -32,6 +32,7 @@ editor package; launching the native editor does not need those files on disk.
 | Audio | Content selection, definitions, save and preview |
 | Configuration | Independent offline configuration preview and preference editing |
 | Live Inspector | Copied runtime state and supported live property operations |
+| Timing | Runtime-reported frame pacing and interval statistics for the running session |
 | Output | Selectable build/tool/runtime diagnostics |
 
 The Configuration workspace retains its explicitly loaded preview/draft across
@@ -111,7 +112,7 @@ sessions with programming and content disciplines remain a usability gate.
 
 The editor needs Qt 6 (6.4-compatible) with the Core/Gui/Widgets modules and a
 native platform plugin (Wayland on Linux, Cocoa on macOS), in addition to the normal reference toolchain
-(`./init.sh` prepares pinned Clang 18 / LLD / managed CMake/Ninja/Conan and the
+(`./init.sh` prepares pinned Clang 23 / LLD / managed CMake/Ninja/Conan and the
 managed Python venv). Qt is not added to Conan or the SDK. Default initialization
 skips editor setup; select **Build Ludus editor** in the setup window or use
 `./init.sh --cli --with-editor` to install missing Ubuntu/Debian Qt packages or
@@ -253,7 +254,7 @@ web presets, so a missing old browser installation cannot block desktop repair.
 Custom presets stay intact. The operation does not change the project engine
 requirement or committed lock.
 
-Repair verifies the managed CMake, Ninja, Clang 18, required SDK components,
+Repair verifies the managed CMake, Ninja, Clang 23, required SDK components,
 dependency prefixes and shader tool paths. It generates marked
 `ludus-local-<profile>` presets in ignored `CMakeUserPresets.json`, keeping custom
 presets and their includes. Machine paths stay in ignored presets and
@@ -898,6 +899,20 @@ Qt 6.4 shares GPU textures without CPU readback. Hardware adapters are preferred
 over software rasterizers. The editor destroys the device only after Qt Quick and
 the RHI have released it.
 
+The viewport keeps presenting on Wayland after it is hidden and shown again, for
+example by switching work tabs or hiding the editor window. QtWayland before 6.5.1
+has two bugs on that path. It keeps the Vulkan surface of the unmapped
+`wl_surface`, so the next present targets a recycled protocol object and the
+compositor disconnects the editor. It also creates no subsurface for a viewport
+shown before its parent window, so that viewport is never exposed again. On those
+releases the editor destroys the viewport's native window when it is hidden, which
+releases Qt Quick's swapchain and Vulkan surface. It recreates the window once the
+parent window is visible, and Qt Quick builds a new swapchain. The shared device,
+scene graph and frame leases persist, so presentation resumes from the same GPU
+textures without readback. Releasing a swapchain makes Qt wait for the device to
+go idle, as it already does on resize. Newer Qt releases and X11 keep Qt's own
+hide/show handling.
+
 Qt 6.4's `grabWindow` interprets every non-BGRA8 swapchain readback as 8-bit RGBA.
 On GNOME Wayland, Mesa offers Intel GPUs an RGBA16F swapchain first, so grabs there
 look striped although the screen is correct. On X11, grabs match `xwd` captures of
@@ -1299,7 +1314,7 @@ See [architecture](../architecture/editor-architecture.md),
 
 ## macOS validation
 
-The macOS CI job builds the Editor with pinned Clang 18 and warnings as errors,
+The macOS CI job builds the Editor with pinned Clang 23 and warnings as errors,
 runs offscreen widget/document tests and real process-adapter regressions, and
 runs those widgets under ASan/UBSan. A separate explicit Cocoa test exercises a
 real native window, creation against an installed SDK, build/run, Stop of a

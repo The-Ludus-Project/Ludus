@@ -4,6 +4,7 @@
 
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/precision.hpp>
 #include <ludus/foundation/math/projection.hpp>
@@ -788,7 +789,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                                 {QStringLiteral("camera"), camera}};
         return Merge(candidate, {}, level, output, error, {});
     }
-    output = candidate;
+    output = foundation::Move(candidate);
     error.clear();
     return true;
 }
@@ -1138,7 +1139,7 @@ bool RenderScene::Merge(const RenderScene& authored,
     candidate.AssetsIdentity =
         QCryptographicHash::hash(candidate.AssetsIdentity + authored.AssetsIdentity, QCryptographicHash::Sha256);
     candidate.Identity = QCryptographicHash::hash(candidate.Identity + authored.Identity, QCryptographicHash::Sha256);
-    output = candidate;
+    output = foundation::Move(candidate);
     return true;
 }
 bool RenderScene::LoadCooked(const QByteArray& bytes,
@@ -1241,7 +1242,7 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
                                            {QStringLiteral("resources"), QJsonArray::fromStringList(resourceIds)}})
                      .toJson(QJsonDocument::Compact));
     candidate.Identity = hash.result();
-    output = candidate;
+    output = foundation::Move(candidate);
     error.clear();
     return true;
 }

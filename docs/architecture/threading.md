@@ -4,8 +4,9 @@ Status: the bounded graph kernel is implemented, and [milestone T0](#milestones)
 closed its documentation, contract-test and macOS validation gaps. Milestone T1
 moved the [first engine consumer](#first-engine-consumer-static-lighting-bake), the
 editor's static-lighting bake, onto an explicit worker budget. Milestone T2 added
-[task identity and execution traces](#task-identity-and-execution-traces). Work
-stealing is a later, measured milestone. This design builds on
+[task identity and execution traces](#task-identity-and-execution-traces), and
+milestone T3 completed [platform validation](../development/threading-evidence.md#platform-completion-t3)
+on Windows and macOS. Work stealing is a later, measured milestone. This design builds on
 [frame ownership](frame-update.md#background-work-and-eventual-jobs) and
 [profiling](profiling-final.md). It does not claim universal optimality or AAA
 scale performance from a small synthetic benchmark.
@@ -316,7 +317,7 @@ and T5 are conditional on measurements and are not scheduled by default.
 | T0 (done) | Public API contracts beside `jobs.hpp` declarations; naming-rule migration of the module; tests for failure-over-cancellation, cancel-after-completion, cancel precedence over Blocked, snapshot counts, concurrent Cancel/Snapshot during Wait, recursive calls into any pool and serial order; macOS runtime tests in CI | Module docs list no undocumented public symbols; macOS development and ASan/UBSan CI run the threading suite; [macOS ARM64 evidence](../development/threading-evidence.md) recorded |
 | T1 (done) | First engine consumer (staged slice 1): move the static-lighting irradiance bake from its dedicated editor thread onto an explicit JobSystem budget, with disjoint output ranges and a stable owner merge | Serial-oracle equality, cancellation and shutdown tests; bake p50/p95/p99, critical path and dispatch overhead against the serial executor, [recorded](../development/threading-evidence.md#static-lighting-bake-t1) |
 | T2 (done) | [Task identity and traces](#task-identity-and-execution-traces) (staged slice 2): optional job names/site IDs, profiler dispatch-to-start and completion flows, queue depth and wait duration | Tracing on/off overhead [measured](../development/threading-evidence.md#execution-traces-t2); scheduling allocation and lock contracts unchanged |
-| T3 | Platform completion: compile and execute the Windows backend, macOS startup-failure injection and a completed macOS TSan run | Evidence recorded for each target; Windows still blocks shipping until this exits |
+| T3 (done) | Platform completion: compile and execute the Windows backend, macOS startup-failure injection and a completed macOS TSan run | [Evidence recorded](../development/threading-evidence.md#platform-completion-t3) for each target; CI lanes run Windows and macOS TSan in every batch |
 | T4 | Conditional (staged slice 3): worker-local queues and work stealing, only for measured contention | The [research plan](#turning-research-into-an-improvement) comparison shows a repeatable benefit |
 | T5 | Conditional (staged slices 4-5): concurrent admission/priority lanes, browser pthreads, render ownership, NUMA or fibers | A separate measured design decision for each |
 
@@ -325,8 +326,8 @@ and T5 are conditional on measurements and are not scheduled by default.
 Finish the initial architecture and its engine integration before changing the
 scheduler in response to the resources below. The bounded kernel is already
 implemented, its public API is documented (T0), its first real consumer is
-integrated (T1) and its execution traces exist (T2); the remaining baseline work
-is platform validation (T3). The existing
+integrated (T1), its execution traces exist (T2) and its Windows and macOS
+platform validation is recorded (T3). The existing
 [staged growth plan](#performance-and-staged-growth) determines implementation
 order. This reading path supplies questions and comparison methods for later
 improvements; it does not select a replacement backend or expand the public API.
@@ -347,7 +348,8 @@ Before starting a scheduler optimization experiment:
   serial-web validation in the [evidence owner](../development/threading-evidence.md).
   Close the macOS CI runtime-test gap and obtain a completed sanitizer result;
   a sanitizer-runtime failure before test entry is not a passing engine test.
-  Windows validation remains required before shipping the existing Windows backend.
+  The Windows backend is validated by its own CI lane; Windows SDK packaging and
+  other engine modules on Windows remain outside this gate.
 - Preserve a reproducible baseline: revision, compiler/build flavor, hardware,
   worker/helping configuration, graph shape, workload inputs, output checks and
   background load. Retain the bounded admission, zero steady scheduler allocation,

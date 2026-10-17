@@ -34,7 +34,9 @@ bool Trusted(const Package& package, std::span<const Package* const> admitted) n
 }
 StateRecord Capture(const s1::State& state, uint32 schema) noexcept
 {
-    StateRecord record{ .Schema = schema, .Count = 2 };
+    StateRecord record;
+    record.Schema = schema;
+    record.Count = 2;
     record.Fields[0] =
     {
         .Id = s1::STATE_INTERACTIONS_FIELD_ID,

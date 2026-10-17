@@ -1,10 +1,11 @@
 # High-resolution time
 
 Status: FoundationTime implementation slice, frame integration, the integer
-simulation driver and native frame pacing implemented; the scheduling queue,
-runtime timing telemetry and editor Timing view below are proposed. Reviewed
+simulation driver, native frame pacing, runtime timing telemetry and the editor
+Timing view implemented; the scheduling queue below is proposed. Reviewed
 October 4, 2026; frame integration October 15, 2026; integer simulation driver
-and native frame pacing October 16, 2026. See [ADR 0017](../decisions/0017-foundation-time.md).
+and native frame pacing October 16, 2026; inspection October 17, 2026. See
+[ADR 0017](../decisions/0017-foundation-time.md).
 
 ## Goals and independent baseline
 
@@ -196,23 +197,36 @@ targets, wait and early-wake counts, and an outcome (`Baseline`, `Waited`, `Late
 `Rescheduled`, `WaitFailed`, `WaitLimit`, `ClockRegression`, `Overflow`,
 `Disabled` or `InvalidClock`).
 
-The native clock reads `time::Now()` and waits with POSIX
-[`nanosleep(2)`](https://man7.org/linux/man-pages/man2/nanosleep.2.html), which
-may return early with `EINTR`. The wait is relative, but each one is recomputed
-from a fresh reading, so the target stays absolute in the FoundationTime domain
-and wake errors do not accumulate. An absolute OS wait (`clock_nanosleep` with
-`TIMER_ABSTIME`, `mach_wait_until`) would need proof that the OS timer uses the
-same clock as the hidden steady-clock backend; that proof is not required here.
-The cost is the gap between the reading and entering the sleep, which the
-measured wake lateness includes. Browser builds return a wait that reports
-`Unsupported`: browsers keep pacing with presentation callbacks
+The native clock reads `time::Now()` and waits for the interval remaining until
+the target, recomputed from a fresh reading before every wait, so the target
+stays absolute in the FoundationTime domain and wake errors do not accumulate.
+Linux sleeps with POSIX
+[`nanosleep(2)`](https://man7.org/linux/man-pages/man2/nanosleep.2.html). macOS
+waits on a one-shot `kevent64(2)` timer with `NOTE_CRITICAL`, which removes the
+kernel's timer-coalescing leeway; it falls back to `nanosleep(2)` if the thread's
+kqueue cannot be created. Both waits may return early with `EINTR`. The cost of a
+relative wait is the gap between the reading and arming the timer, which the
+measured wake lateness includes.
+
+An absolute OS wait needs proof that the OS timer uses the same clock as the
+hidden steady-clock backend. On macOS, libc++'s `steady_clock` was measured equal
+to `CLOCK_MONOTONIC_RAW` and Mach continuous time, while `mach_wait_until` uses
+Mach absolute time, which excludes system sleep and differed by about 29 hours on
+the test host; it is rejected. A Mach-continuous absolute kevent timer matches the
+domain but measured no better than the relative critical timer, so the clock
+interface stays relative. macOS has no `clock_nanosleep`. Browser builds return a
+wait that reports `Unsupported`: browsers keep pacing with presentation callbacks
 (`emscripten_set_main_loop` at the display rate) and never block or busy-wait.
 
-No spin phase exists. On the measured macOS host, the windowed application woke
-a nearly constant 1.0 ms after its target. The windowless process woke later as
-the interval grew, consistent with operating-system timer leeway. A constant
-offset shifts phase without making intervals uneven, so spinning would spend CPU
-time and battery for no interval benefit. See the [measurements](../development/high-resolution-time-evidence.md#native-frame-pacing).
+No spin phase exists. Before the zero-leeway wait, the windowed application on
+the measured macOS host woke a nearly constant 1.0 ms after its target and the
+windowless process woke later as the interval grew. Both matched the kernel's
+leeway tiers. With `NOTE_CRITICAL` the median wake is about 0.03 ms late in both
+modes; the remaining tail under heavy load is CPU scheduling, which a spin would
+compete for rather than remove. The zero-leeway wait gives up the kernel's power
+batching of one wake per frame; a loop that should save power while hidden or idle
+lowers its rate. See the [measurements](../development/high-resolution-time-evidence.md#native-frame-pacing)
+and the [wake leeway trial](../development/high-resolution-time-evidence.md#wake-leeway-trial).
 Adding a spin later requires a strict budget, a power policy and measurements
 showing it removes lateness that the OS wait leaves.
 
@@ -235,6 +249,81 @@ on a 60 Hz display shows alternating one- and two-refresh frames. A
 variable-refresh display may follow the cap instead. Matching caps to a display and frame
 timing feedback (presentation timestamps, queue-depth control) remain RHI work;
 see HR-01 below.
+
+## Runtime timing telemetry
+
+The editor and the game run in separate processes: the editor, a Python play
+supervisor and the GameHost, linked by the versioned play-session protocol (see
+[loading projects and editing games during play](project-live-reload.md)). Their
+FoundationTime readings come from different processes and are not one domain, so
+timing crosses that boundary only as intervals and counts the runtime computed
+itself. The editor never subtracts its own clock readings from runtime readings,
+and no absolute runtime timestamp appears in the protocol.
+
+**Owner.** The GameHost play session owns the measurement. `HostSession::RunLoop`
+paces each frame start with a `FramePacer` (60 Hz, 16,666,667 ns, with a
+four-interval lateness bound), then reads `time::Now()` once and samples a
+`FrameClock` with the frame-update 250 ms clamp. This replaces the loop's
+earlier fixed 16 ms sleep after each frame, which added the frame's own work to
+every interval. The static shipping loop, `RunStaticEntry`, uses the same
+schedule without telemetry. The simulation is unchanged: the host still advances
+one fixed tick per running frame and never catches up after pause or reload
+(live-reload design 8), so the frame samples are diagnostics, not simulation
+debt. A committed module reload is a session replacement and drops both the
+pacing schedule and the frame-clock baseline. A rejected reload resumes the old
+instance and schedule, so its stall appears as one long, rescheduled frame.
+
+A private, owner-local `TimingTelemetry` value
+(`modules/runtime/game_host/src/internal/timing_telemetry.h`) records each frame
+start: its `FrameSample` and the `PaceResult` that preceded it. Recording is
+constant time and allocation-free: it updates saturating totals and writes one
+slot of a fixed 120-frame ring (two seconds at 60 Hz). Only measured frames
+enter the window; a baseline or clock regression carries no interval and is
+counted instead. Statistics are computed when the editor asks, not per frame.
+
+| Field | Meaning |
+| --- | --- |
+| `frames`, `baselines`, `clock_regressions` | Frames recorded; frame-clock baselines (startup, reload); samples below the previous reading |
+| `accepted_ns`, `discarded_ns` | Totals of `FrameSample::Elapsed` and of time beyond the 250 ms clamp |
+| `simulation_ticks` | Ticks advanced while recording; equal to the Status `sim_ticks` |
+| `pacing_interval_ns` | The pacer's interval, from which the editor shows the target rate |
+| `pace_waited`, `pace_late`, `pace_rescheduled`, `pace_wait_failed`, `pace_other` | `PaceOutcome` counts; `WaitFailed` and `WaitLimit` share one count, `Baseline` and fault outcomes another |
+| `skipped_targets`, `early_wakes`, `last_outcome` | Sums of `SkippedTargets` and `EarlyWakeCount`; the latest outcome's enumerator name |
+| `window_frames`, `window_interval_{min,mean,max}_ns` | Measured frames in the window and their raw interval (accepted plus discarded) |
+| `window_lateness_{mean,max}_ns` | Pacing lateness (wake minus target) of the same frames |
+
+**Wire record.** The existing `Status` command result carries the report as a
+one-record `timing` array, within the codec's closed flat-record vocabulary and
+32-field limit. The supervisor forwards host results unchanged. Every value is
+an unsigned integer at most 2^53 - 1, the largest integer the editor's Qt JSON
+reader, which uses binary64 numbers, represents exactly; totals saturate there
+instead of wrapping or silently losing precision. Both readers reject missing or
+unknown fields, out-of-range or non-integer values, an unknown outcome name, more
+window frames than the window or than recorded frames, and unordered window
+statistics. No command was added and the protocol version is unchanged: older
+editors ignore the field.
+
+**Editor Timing view.** A Timing dock, tabbed with the Live Inspector, shows the
+latest report for the running session: target rate, window frame interval and
+wake lateness, outcome counts, skipped targets, accepted/discarded frame time,
+simulation ticks and clock events. The editor controller owns the request and
+the decoded snapshot; the panel only renders them. While visible, the panel asks
+for one `Status` per second, with at most one timing request outstanding; a
+hidden panel sends nothing. The derived values are unit conversions and the
+target rate (one second divided by the runtime interval). A rejected record
+leaves the panel's previous report and shows the reason.
+
+The window mean is a labeled presentation metric. It never feeds simulation,
+deadlines or pacing, and minimum and maximum are reported beside it so smoothing
+cannot hide a hitch. Llopis's clock chapter suggests averaging for display, and
+the [profiling literature review](profiling-literature-review.md) keeps diagnostic
+smoothing separate from retained evidence.
+
+Not covered: the world reference application is not an editor-hosted session.
+Its `TickDriver` accepted/clamped/excluded totals and `--pacing-report` remain
+its own inspection path. Browser play sessions, presentation timestamps, GPU
+timing and a persistent timing history are separate work. This view is
+for inspecting a session, not for benchmarking; see HR-02 below.
 
 ## Future scheduling and frame pacing
 
@@ -306,8 +395,8 @@ This PR implements Time, checked arithmetic, stopwatch, deadline and frame
 sampling; migrates logging/profiling producers; and adds native unit, installed
 SDK and pinned web semantic/header coverage. Later stages migrated the frame
 loops, replaced the world reference float64 debt with the rational fixed-step
-driver and added native frame pacing. The future queue, timing telemetry, scaling,
-GPU and network clocks remain unimplemented.
+driver, added native frame pacing, and reported runtime timing to the editor. The
+future queue, scaling, GPU and network clocks remain unimplemented.
 
 Boundary tests cover max-value overflow, output preservation, zero/equal/reversed
 samples, one-nanosecond intervals at a large epoch, lifecycle failures, independent
@@ -337,7 +426,7 @@ and [ADR 0017](../decisions/0017-foundation-time.md) as the implementation basel
 | Frame integration (implemented) | Migrate application loops to one explicit frame sample and wire lifecycle resets using the existing frame/simulation contract. | Integration tests for startup, pause/resume, visibility and session replacement, clock regression and accepted/discarded time; no duplicate clamp. See [validation evidence](../development/high-resolution-time-evidence.md#frame-integration). |
 | Integer simulation driver (implemented) | Implement the rational phase accumulator described above, including checked configuration, catch-up bounds, interpolation and exhaustion. | Partition-independent tick/remainder accounting when no time is intentionally discarded, exact 60 Hz accounting over one second, explicit clamp/catch-up loss and failure tests. See [validation evidence](../development/high-resolution-time-evidence.md#integer-simulation-driver). |
 | Pacing (implemented) | Implement the agreed [native pacing policy](#native-frame-pacing) under Platform/application ownership. | Reproducible target/wake/presentation measurements, interruption/lateness and lifecycle tests. See [validation evidence](../development/high-resolution-time-evidence.md#native-frame-pacing). |
-| Inspection | Define runtime timing telemetry and the proposed editor Timing view under their existing owners. | Runtime-reported intervals/status across the editor process boundary. |
+| Inspection (implemented) | Define [runtime timing telemetry](#runtime-timing-telemetry) and the editor Timing view under their existing owners. | Runtime-reported intervals/status across the editor process boundary. See [validation evidence](../development/high-resolution-time-evidence.md#runtime-timing-telemetry). |
 
 The bounded gameplay queue, time scaling and additional clock domains remain
 conditional extensions. Establish their requirements and ownership before
@@ -401,6 +490,43 @@ For each completed review or trial, record:
    overflow/regression and determinism checks for the affected behavior.
 6. Adopt/defer/reject decision and rationale, with links to evidence, the PR and
    any architecture/ADR changes. Credit consulted sources near affected code.
+
+#### Trial: native pacing wake leeway (October 17, 2026)
+
+Status: **Adopted** for macOS. The HR-02 and HR-06 sources remain **Queued**: the
+trial applied the methodology stated in their rows, without a full reading.
+
+1. Question (HR-03's, for desktop macOS): what makes native pacing wakes late,
+   and can it be reduced without a spin? Consulted Apple's XNU sources (tag
+   `xnu-12377.121.6`): `osfmk/kern/timer_call.c` (`timer_call_slop`,
+   `timer_compute_leeway`), `osfmk/arm/arm_timer.c` (`tcoal_prio_params_init`) and
+   `bsd/kern/kern_event.c` (`NOTE_CRITICAL` urgency). Ordinary user timers get
+   `min(interval >> shift, max)` leeway: interval / 8 up to 1 ms for timeshare
+   threads and interval / 4 up to 5 ms for the first latency-QoS tier. The
+   user-critical tier has none.
+2. Hypothesis: the measured 1.0 ms windowed and interval-proportional headless
+   offsets are this leeway. Thread QoS or a clock-matched absolute wait might
+   reduce it; zero leeway should remove it. Owner: `Ludus::PlatformPacing`.
+3. Prototype: one world demo binary whose wait and QoS were selected by an
+   experiment-only environment switch (not committed): `nanosleep` (baseline),
+   `QOS_CLASS_USER_INTERACTIVE`, kevent absolute Mach-continuous timer with
+   default leeway or `NOTE_CRITICAL`, and kevent relative timer with default
+   leeway or `NOTE_CRITICAL`.
+4. Baseline `16346bce` (develop), macOS 26.6, Apple M5, pinned Clang 18
+   Development. Two fully randomized blocks (seeds 20261017 and 20261018), 288
+   runs; see the [evidence](../development/high-resolution-time-evidence.md#wake-leeway-trial).
+5. Results: zero leeway cut windowed median lateness from 1.0-1.5 ms to 0.03 ms
+   (ratio 0.02-0.03, 95% CI upper bound 0.03) and frame-start p90 to within
+   0.03 ms of the cap. Headless median fell by 29-59% under one-minute load
+   averages of 10 to 157 on 10 cores. QoS (already user-interactive) and default-leeway
+   kevent timers had no effect. Absolute and relative critical timers were
+   indistinguishable. Process CPU time did not change measurably; power was not
+   measured.
+6. Decision: adopt a relative `NOTE_CRITICAL` kevent wait in macOS
+   `GetSystemPacingClock()` (ADR 0003 entry), keeping the relative clock interface,
+   absolute targets, no spin and the browser contract. Reject `mach_wait_until`
+   (different clock domain). Defer QoS changes and Linux absolute waits until a
+   launch context or Linux host shows lateness that they remove.
 
 Retain exception-free APIs, allocation-free timer values, explicit failure and
 separate CPU/simulation/presentation domains in every trial. Backend replacement,

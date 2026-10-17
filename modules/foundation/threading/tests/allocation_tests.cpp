@@ -106,6 +106,9 @@ uint32 CountSchedulingAllocations(uint32 workers, TracingMode mode)
 }
 } // namespace
 
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(usize bytes)
 {
     void* allocationOrNull = Allocate(bytes);
@@ -151,6 +154,7 @@ void operator delete[](void* allocation, const std::nothrow_t&) noexcept
 {
     std::free(allocation);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 TEST_CASE("Every graph allocation failure cleans up and permits retry", "[threading][alloc]")
 {

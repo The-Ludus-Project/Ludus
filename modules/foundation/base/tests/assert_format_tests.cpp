@@ -126,7 +126,7 @@ TEST_CASE("Formatted macros retain plain evaluation semantics")
         LUDUS_REQUIRE_F(true, "ok");
     else
         ++arguments;
-        // NOLINTEND(readability-braces-around-statements)
+    // NOLINTEND(readability-braces-around-statements)
 #if !LUDUS_ENABLE_ASSERTS
     LUDUS_ASSERT_F(does_not_exist(), missing_format, missing_argument);
 #endif

@@ -269,7 +269,7 @@ it does not require these shell steps too.
 
 Start with a Ludus checkout containing `examples/cornell-box`. Follow
 [Build and initialize](../development/building.md) for platform prerequisites.
-The tutorial uses C++23, upstream Clang 18, CMake 3.29.6, Ninja 1.11.1.3,
+The tutorial uses C++23, upstream Clang 23, CMake 3.29.6, Ninja 1.11.1.3,
 Python 3.10+ and Slang 2026.1.2. Linux also uses the pinned SPIRV-Tools validator.
 The pins live in `config/tool_versions.json` and `config/shader_toolchain.json`.
 
@@ -397,7 +397,7 @@ October 7, 2026 at its default square size.
 ## Validation and recovery
 
 CI builds the independent sample against the freshly installed SDK in the
-existing macOS/Metal and Linux/Vulkan jobs, runs CTest, and runs Clang 18
+existing macOS/Metal and Linux/Vulkan jobs, runs CTest, and runs Clang 23
 static analysis on its source. A separate sample build enables ASan/UBSan.
 The Linux job also starts without local presets and verifies the shared
 CLI/editor Repair backend, its read-only setup check and repeated repair. These

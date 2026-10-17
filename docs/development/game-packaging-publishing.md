@@ -134,7 +134,7 @@ and malformed-image tests do not establish native Intel runtime acceptance.
 Supplying `--tools-ref <immutable-Ludus-commit>` also generates a native GitHub
 workflow (`macos-14` for arm64, `macos-15-intel` for x64) for tags and manual dispatch. Set `LUDUS_RELEASE_SDK_URL` and
 `LUDUS_RELEASE_SDK_SHA256` for a matching Release SDK archive. Its package job
-installs Clang 18 and managed CMake/Ninja, verifies the SDK digest and publishes
+installs Clang 23 and managed CMake/Ninja, verifies the SDK digest and publishes
 the checked package as a GitHub artifact. It has no upload job or account secret.
 The native Editor shares this backend through **Release > Set Up Releases** and
 **Package Release**; signing commands retain owned-process cancellation.

@@ -13,6 +13,7 @@
 #include <QQuickWindow>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QVBoxLayout>
 #include <QWidget>
 #include <QWindow>
 
@@ -33,6 +34,10 @@ constexpr int32 POLL_MILLISECONDS = 20;
 /// Embedded viewport size in device-independent pixels.
 constexpr int32 VIEWPORT_WIDTH = 640;
 constexpr int32 VIEWPORT_HEIGHT = 420;
+/// Time a viewport stays hidden, long enough for the compositor to unmap its surfaces.
+constexpr int32 HIDDEN_MILLISECONDS = 200;
+/// Hide/show round-trips per case; repeats catch state that only one cycle restores.
+constexpr int32 VISIBILITY_CYCLES = 2;
 /// Grabs compared with the reference while the engine keeps replacing leased images.
 constexpr int32 TURNOVER_GRABS = 24;
 /// Pause steps between turnover grabs, cycled so grabs land at varied frame phases.
@@ -86,19 +91,42 @@ QWindow* FindWindow(const QString& name)
     }
     return nullptr;
 }
+/// Waits until the viewport has presented target frames, the preview stops, or the timeout expires.
+bool AwaitPresentedFrames(const PreviewViewport& viewport, const RenderPreview& preview, uint64 target)
+{
+    QElapsedTimer wait;
+    wait.start();
+    while (viewport.PresentedFrames() < target && preview.Running() == true &&
+           wait.elapsed() < SHARED_TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    return viewport.PresentedFrames() >= target;
+}
+/// Returns why shared presentation cannot run on this display, or an empty string when it can.
+QString GetSharedDisplaySkipReason()
+{
+    const QString platform = QGuiApplication::platformName();
+    if (platform != QStringLiteral("xcb") && platform.startsWith(QStringLiteral("wayland")) == false)
+    {
+        return QStringLiteral("Shared presentation needs an X11 or Wayland display (run with QT_QPA_PLATFORM=xcb or "
+                              "wayland)");
+    }
+    if (qEnvironmentVariable("LUDUS_EDITOR_VIEWPORT") == QStringLiteral("offscreen"))
+    {
+        return QStringLiteral("LUDUS_EDITOR_VIEWPORT=offscreen forces readback presentation");
+    }
+    return {};
+}
 } // namespace
 
 TEST_CASE("Linux viewport shares an editor-created Vulkan device with Qt Quick", "[editor][viewport][shared][gpu]")
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
-    const QString platform = QGuiApplication::platformName();
-    if (platform != QStringLiteral("xcb") && platform.startsWith(QStringLiteral("wayland")) == false)
+    const QString skipReason = GetSharedDisplaySkipReason();
+    if (skipReason.isEmpty() == false)
     {
-        SKIP("Shared presentation needs an X11 or Wayland display (run with QT_QPA_PLATFORM=xcb or wayland)");
-    }
-    if (qEnvironmentVariable("LUDUS_EDITOR_VIEWPORT") == QStringLiteral("offscreen"))
-    {
-        SKIP("LUDUS_EDITOR_VIEWPORT=offscreen forces readback presentation");
+        SKIP(skipReason.toStdString());
     }
     rhi::Shutdown();
     struct Guard final
@@ -136,14 +164,7 @@ TEST_CASE("Linux viewport shares an editor-created Vulkan device with Qt Quick",
     REQUIRE(viewport.PresentedFrames() >= PRESENTED_FRAMES);
     CHECK(preview.Status().contains(QStringLiteral("Lit: %1 lights").arg(tests::LAMP_COUNT)) == true);
     const auto awaitFrames = [&viewport, &preview](uint64 target) {
-        QElapsedTimer wait;
-        wait.start();
-        while (viewport.PresentedFrames() < target && preview.Running() == true &&
-               wait.elapsed() < SHARED_TIMEOUT_MILLISECONDS)
-        {
-            QTest::qWait(POLL_MILLISECONDS);
-        }
-        return viewport.PresentedFrames() >= target;
+        return AwaitPresentedFrames(viewport, preview, target);
     };
     // Mode changes and resizes keep presenting through the same adopted device.
     preview.SetShading(PreviewShading::Solid);
@@ -191,6 +212,75 @@ TEST_CASE("Linux viewport shares an editor-created Vulkan device with Qt Quick",
     CHECK(awaitFrames(viewport.PresentedFrames() + PRESENTED_FRAMES) == true);
     CHECK(FindWindow(QStringLiteral("LudusGpuViewport")) != nullptr);
     CHECK(viewport.findChild<QWidget*>(QStringLiteral("LudusOffscreenViewport")) == nullptr);
+    preview.Stop();
+#else
+    SKIP("Editor-created Vulkan device sharing is Linux-only");
+#endif
+}
+
+TEST_CASE("Linux shared viewport keeps presenting after it is hidden and shown", "[editor][viewport][shared][gpu]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    const QString skipReason = GetSharedDisplaySkipReason();
+    if (skipReason.isEmpty() == false)
+    {
+        SKIP(skipReason.toStdString());
+    }
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene);
+    RenderPreview preview;
+    // The host stands in for the editor window: hiding only the viewport is a tab
+    // or page switch, hiding the host also unmaps the parent of the Qt Quick window.
+    QWidget host;
+    QVBoxLayout* layout = new QVBoxLayout(&host);
+    PreviewViewport* viewport = new PreviewViewport(&preview, &host);
+    layout->addWidget(viewport);
+    host.resize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    host.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&host) == true);
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetShading(PreviewShading::Solid);
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(AwaitPresentedFrames(*viewport, preview, PRESENTED_FRAMES) == true);
+    QWindow* window = FindWindow(QStringLiteral("LudusGpuViewport"));
+    REQUIRE(window != nullptr);
+    const auto checkResumes = [&](QWidget& hidden) {
+        for (int32 cycle = 0; cycle < VISIBILITY_CYCLES; ++cycle)
+        {
+            hidden.hide();
+            QTest::qWait(HIDDEN_MILLISECONDS);
+            hidden.show();
+            REQUIRE(QTest::qWaitForWindowExposed(&host) == true);
+            INFO("cycle " << cycle << ": " << preview.Status().toStdString());
+            REQUIRE(preview.Running() == true);
+            // Qt Quick renders only an exposed window; without exposure the view freezes.
+            CHECK(AwaitPresentedFrames(*viewport, preview, viewport->PresentedFrames() + PRESENTED_FRAMES) == true);
+            CHECK(window->isVisible() == true);
+            CHECK(window->isExposed() == true);
+        }
+    };
+    SECTION("viewport page switch")
+    {
+        checkResumes(*viewport);
+    }
+    SECTION("editor window hide")
+    {
+        checkResumes(host);
+    }
+    // Shared presentation stays on the adopted device, never the readback canvas.
+    CHECK(FindWindow(QStringLiteral("LudusGpuViewport")) == window);
+    CHECK(viewport->findChild<QWidget*>(QStringLiteral("LudusOffscreenViewport")) == nullptr);
     preview.Stop();
 #else
     SKIP("Editor-created Vulkan device sharing is Linux-only");

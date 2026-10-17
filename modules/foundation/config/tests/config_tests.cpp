@@ -6,6 +6,9 @@ using namespace ludus::foundation;
 using namespace ludus::foundation::config;
 namespace
 {
+// Test fixture data: its string_view members are built from literals, which
+// cannot fail, although the converting constructor is not declared noexcept.
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 Descriptor Schema[]{
     {
         .Name = "render.width",

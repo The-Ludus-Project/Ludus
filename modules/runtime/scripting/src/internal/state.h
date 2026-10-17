@@ -29,7 +29,7 @@ struct StateRecord
 {
     uint32 Schema = 0;
     uint32 Count = 0;
-    FieldValue Fields[16] = {};
+    FieldValue Fields[16];
 };
 // Versioned LE tagged records: no native layout, pointer, VM object or hidden
 // upvalue. All functions preserve output on failure. Missing new fields use the

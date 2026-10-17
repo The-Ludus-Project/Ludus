@@ -15,6 +15,36 @@ GLOBALS = TOOL["verify"].__globals__
 
 
 class IntegrityTests(unittest.TestCase):
+    def test_analysis_include_profile_preserves_the_body_and_rejects_changed_pins(self):
+        anchor = b'#include "Luau/TableLiteralInference.h"\n'
+        body = b'\nint Distance(int value) { return std::abs(value); }\n'
+        data = b'// upstream license\n' + anchor + body
+        expected = b'// upstream license\n' + anchor + b'\n#include <cstdlib>\n' + body
+        self.assertEqual(TOOL['analysis_include_profile'](data), expected)
+        for changed in (b'unrecognized source', anchor + anchor, expected):
+            with self.subTest(data=changed), self.assertRaisesRegex(RuntimeError, 'no longer matches'):
+                TOOL['analysis_include_profile'](changed)
+
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            name = 'Analysis/src/TableLiteralInference.cpp'
+            archive = work / 'luau.tar.gz'
+            with tarfile.open(archive, 'w:gz') as bundle:
+                entry = tarfile.TarInfo('root/' + name)
+                entry.size = len(data)
+                bundle.addfile(entry, io.BytesIO(data))
+            source = work / 'source'
+            path = source / name
+            path.parent.mkdir(parents=True)
+            path.write_bytes(data)
+            pin = {'archive_sha256': TOOL['sha'](archive.read_bytes())}
+            with patch.dict(GLOBALS, WORK=work, SOURCE=source, PIN=pin):
+                self.assertEqual(TOOL['source_entries']()[name], expected)
+                with self.assertRaisesRegex(RuntimeError, 'Modified Luau source'):
+                    TOOL['verify_sources']()
+                path.write_bytes(expected)
+                TOOL['verify_sources']()
+
     def test_assertion_profile_preserves_the_body_and_rejects_changed_pins(self):
         declaration = b"LUAU_NOINLINE inline int assertCallHandler("
         body = b"const char* expression) { return expression != nullptr; }\n"

@@ -12,6 +12,8 @@ TEST_CASE("Caller-scratch stable sort matches an independent stable oracle", "[c
         bool operator==(const Value&) const = default;
     };
     const auto less = [](const Value& a, const Value& b) noexcept { return a.Key < b.Key; };
+    // A fixed seed keeps the generated test inputs reproducible.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed)
     std::mt19937 random(71);
     for (usize count = 0; count <= 257; ++count)
     {

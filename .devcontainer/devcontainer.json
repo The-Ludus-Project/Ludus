@@ -1,7 +1,8 @@
 {
   "name": "Ludus headless contributor",
   "build": {
-    "dockerfile": "Dockerfile"
+    "dockerfile": "Dockerfile",
+    "context": ".."
   },
   "remoteUser": "vscode",
   "containerEnv": {

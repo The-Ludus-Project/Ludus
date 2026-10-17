@@ -4,6 +4,7 @@
 #include "internal/import_report.h"
 #include "internal/preview_viewport.h"
 #include <QGuiApplication>
+#include <ludus/foundation/base/core.h>
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -154,7 +155,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         auto candidate = Level_;
         objects.removeAt(index);
         candidate.insert(QStringLiteral("objects"), objects);
-        Candidate_ = candidate;
+        Candidate_ = foundation::Move(candidate);
         (void)Start(QStringLiteral("assemble"));
     });
     connect(&Preview_, &RenderPreview::Changed, this, [this]() {
@@ -293,7 +294,7 @@ bool LevelWorkspace::Create(const QString& path)
                                       {QStringLiteral("target"), QJsonArray{0, 0, 0}},
                                       {QStringLiteral("up"), QJsonArray{0, 1, 0}},
                                       {QStringLiteral("fov"), 1.0471975512}}}};
-    Path_ = relative;
+    Path_ = foundation::Move(relative);
     Disk_.clear();
     Dirty_ = true;
     Render();

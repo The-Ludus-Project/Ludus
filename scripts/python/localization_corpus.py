@@ -240,12 +240,14 @@ def load_release(manifest_path: Path) -> dict:
         if type(translations) is not dict or set(translations) != set(paths) - {source_locale}:
             fail(f"{domain}: translations must name one document for every non-source locale")
         catalogs = {source_locale: {m["key"]: (m["pattern"], "approved") for m in source["messages"]}}
+        documents = {source_locale: (entry["source"], source)}
         for tag, relative in sorted(translations.items()):
             document = read_json(resolve_path(root, relative, domain))
             states = validate_translation(document, source, relative)
             if document["locale"] != tag:
                 fail(f"{relative}: locale disagrees with the manifest")
             catalogs[tag] = {m["key"]: (m["pattern"], states[m["key"]]) for m in document["messages"]}
+            documents[tag] = (relative, document)
         resolved = {}
         for tag, path in paths.items():
             for message in source["messages"]:
@@ -256,7 +258,7 @@ def load_release(manifest_path: Path) -> dict:
                 if provider != tag and message.get("required", True) and tag not in allowed:
                     fail(f"{tag} {key}: required message lacks an approved translation")
                 resolved[(tag, key)] = (catalogs[provider][key][0], provider)
-        domains.append({"domain": domain, "source": source, "resolved": resolved})
+        domains.append({"domain": domain, "source": source, "resolved": resolved, "documents": documents})
     return {"manifest": manifest, "paths": paths, "domains": domains}
 
 

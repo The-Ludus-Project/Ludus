@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "domain": "test/l1",
+  "source_locale": "en-US",
+  "profile": "ludus-icu-mf1-v1",
+  "locale": "fr-FR",
+  "messages": [
+    {
+      "key": "escape/braces",
+      "source_revision": 1,
+      "reviewed_source_digest": "d099f0ec9627178ea0a4944e7c39f7732af335c21c8615ff115f66088ceec5bb",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "Appuyez sur '{'jump'}' pour sauter."
+    },
+    {
+      "key": "escape/apostrophes",
+      "source_revision": 2,
+      "reviewed_source_digest": "fcbe206c7697042f49ea139fe0a2ef4d06e87b25406bf9fb3a46be9dd64caf74",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "C''est littéral : '{}' et l'apostrophe reste."
+    },
+    {
+      "key": "escape/unterminated",
+      "source_revision": 2,
+      "reviewed_source_digest": "12eed3534beaa3a2bd0e23854f8de4678473cd762fa89ab887465d3fdf8a39ea",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "Ouvrir '{jusqu''à la fin"
+    },
+    {
+      "key": "greeting/name",
+      "source_revision": 1,
+      "reviewed_source_digest": "56f7ac9301eb379255655a8523fdda7480d8d183955faf0c025783a0c7b8dfc1",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "Bonjour, {name} !"
+    },
+    {
+      "key": "hud/lives",
+      "source_revision": 1,
+      "reviewed_source_digest": "d11e2316a7f9087aea7000a34efea5184ae62ebbc3fe7f18f871d9cab9c278d8",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "{lives, plural, one {# vie} many {# de vies} other {# vies}}"
+    },
+    {
+      "key": "menu/credits",
+      "source_revision": 1,
+      "reviewed_source_digest": "caa6d2aeeb3e572f01bcd937b077108afe662c7d985c5e676c0e7de65b6aaddc",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "Crédits"
+    },
+    {
+      "key": "menu/quit",
+      "source_revision": 1,
+      "reviewed_source_digest": "3e96e768fd57aefb6af0c3a60c5fa89d9ec28b930a8cd637056bbcab00d5bc58",
+      "translation_revision": 1,
+      "status": "draft",
+      "pattern": "Quitter"
+    },
+    {
+      "key": "menu/start",
+      "source_revision": 1,
+      "reviewed_source_digest": "bbbe0f8a489b301289c1a63f82e942d3508c567823163e608ae8f57f5dfcc9d7",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "Démarrer"
+    },
+    {
+      "key": "mood/select",
+      "source_revision": 1,
+      "reviewed_source_digest": "0f7525ccfabcf611a9dee02046e177522f20472777e5dcd218648b1385f1e967",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "{mood, select, calm {Tout est calme.} tense {Restez sur vos gardes.} other {Humeur inconnue.}}"
+    },
+    {
+      "key": "unicode/mixed",
+      "source_revision": 1,
+      "reviewed_source_digest": "1650268a98e1a2c18cd3078162f04888318583bb41e0ed1923b79b61362d92e5",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "العربية 日本語 😀 é"
+    }
+  ]
+}

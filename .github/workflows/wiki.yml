@@ -115,7 +115,11 @@ jobs:
           key: editor-tools-v1-${{ runner.os }}-${{ hashFiles('config/editor_web_toolchain.json', 'config/web_toolchain.json', 'config/tool_versions.json', 'scripts/python/editor_web.py') }}
       - name: Install native tools for precompiled web samples
         if: steps.payload.outputs.cache-hit != 'true'
-        run: sudo apt-get update && sudo apt-get install -y clang-18 lld-18
+        run: |
+          llvm_major="$(python3 -c 'import json; print(int(json.load(open("config/tool_versions.json"))["minimum"]["clang"].split(".")[0]))')"
+          if [[ -f scripts/python/llvm_apt_source.py ]]; then python3 scripts/python/llvm_apt_source.py; fi
+          sudo apt-get update
+          sudo apt-get install -y "clang-$llvm_major" "lld-$llvm_major"
       - name: Compile the Qt editor and playable samples for WebAssembly
         if: steps.payload.outputs.cache-hit != 'true'
         env:

@@ -1,6 +1,6 @@
 # Native gameplay live editing
 
-Supported hosts are Linux x64 and macOS arm64/x64 with pinned Clang 18 and a
+Supported hosts are Linux x64 and macOS arm64/x64 with pinned Clang 23 and a
 matching Debug or Development SDK. CMake resolves the module's actual artifact;
 Linux uses ELF and macOS uses thin Mach-O. Windows DLL loading remains a separate
 backend and is not implemented. macOS requires the pinned compiler's sibling
@@ -152,6 +152,15 @@ exact host argv/cwd, phases and outcomes
 without uploading data. Duplicate mutation requests reconcile retained outcomes;
 old session/schema requests reject. Busy requires draining/acknowledging or
 retrying from refreshed state. CleanupUnknown requires an explicit host restart.
+
+The Timing panel, a tab beside Live Inspector, shows the host's own frame timing
+while it is visible: its 60 Hz pacing target, the last 120 frame intervals and
+wake lateness, pacing outcomes and accepted/discarded frame time. The values are
+intervals and counts computed by the host; the editor does not compare its clock
+with the game's. A committed reload drops the frame baseline, so its stall is
+counted as a baseline rather than as a long frame; a rejected reload resumes the
+old schedule and its stall appears as one long, rescheduled frame. See
+[runtime timing telemetry](../architecture/high-resolution-time.md#runtime-timing-telemetry).
 
 Debug symbols stay with leased generations. Separate GDB launch and attach
 acceptance cases verify A/B source breakpoints and stepping in one inferior,

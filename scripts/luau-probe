@@ -74,6 +74,20 @@ def assertion_profile(data: bytes) -> bytes:
     return data.replace(old.encode(), b"LUAU_NOINLINE static inline int assertCallHandler(")
 
 
+def analysis_include_profile(data: bytes) -> bytes:
+    """Make the pinned host analyzer's std::abs dependency explicit.
+
+    Thanks to Roblox/Luau, Analysis/src/TableLiteralInference.cpp at the pin:
+    https://github.com/luau-lang/luau/blob/1eca9fda3e4753a1592000f6cfdf659aaa778b7d/Analysis/src/TableLiteralInference.cpp
+    Its integer std::abs calls need <cstdlib> with libc++ 23. Preserve the
+    licensed source body and reject an upstream include-layout change.
+    """
+    anchor = b'#include "Luau/TableLiteralInference.h"\n'
+    require(data.count(anchor) == 1 and b"#include <cstdlib>" not in data,
+            "Analysis include profile no longer matches the pinned source")
+    return data.replace(anchor, anchor + b"\n#include <cstdlib>\n")
+
+
 def source_entries() -> dict[str, bytes]:
     archive = WORK / "luau.tar.gz"
     require(archive.is_file() and sha(archive.read_bytes()) == PIN["archive_sha256"],
@@ -93,6 +107,8 @@ def source_entries() -> dict[str, bytes]:
                     data = loader_profile(data)
                 elif relative.as_posix() == "Common/include/Luau/Common.h":
                     data = assertion_profile(data)
+                elif relative.as_posix() == "Analysis/src/TableLiteralInference.cpp":
+                    data = analysis_include_profile(data)
                 entries[relative.as_posix()] = data
     return entries
 

@@ -40,9 +40,7 @@ TEST_CASE("Atomic publication preserves opened revisions and reports requested s
     REQUIRE(bytes[0] == 'o');
     REQUIRE(root.OpenRead("nested/data", current).Succeeded());
     REQUIRE(current.Size() == 12);
-    struct stat info
-    {
-    };
+    struct stat info{};
     REQUIRE(::stat(fixture.Path("nested/data").c_str(), &info) == 0);
     REQUIRE((info.st_mode & 0777) == 0600);
     WriteOptions options;

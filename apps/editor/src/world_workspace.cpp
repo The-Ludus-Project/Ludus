@@ -8,6 +8,7 @@
 #include "internal/render_panel.h"
 #include "internal/world_demo_adapter.h"
 
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <QCheckBox>
@@ -361,7 +362,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
             Changed(error);
             return;
         }
-        Selected_ = id;
+        Selected_ = foundation::Move(id);
         Render();
         Snapshot();
         Changed(QStringLiteral("Entity created. Give it a meaningful name in the inspector."));
@@ -373,7 +374,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
             Changed(error);
             return;
         }
-        Selected_ = id;
+        Selected_ = foundation::Move(id);
         Render();
         Snapshot();
         Changed(QStringLiteral("Duplicate created with a new stable ID."));
@@ -427,9 +428,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         }
     });
 #if defined(Q_OS_WASM)
-    help->setText(QStringLiteral("Browser Worlds live in this session's in-memory project; export the project to keep "
-                                 "them. Import scene… copies a scene folder, .zip or .pbrt with its files into the "
-                                 "session and cooks it here. Play and runtime binding require the native editor."));
+    intro->setText(QStringLiteral("Browser Worlds live in this session's in-memory project; export the project to keep "
+                                  "them. Import scene… copies a scene folder, .zip or .pbrt with its files into the "
+                                  "session and cooks it here. Play and runtime binding require the native editor."));
 #endif
     DraftTimer_.setSingleShot(true);
     DraftTimer_.setInterval(180);
@@ -553,7 +554,7 @@ bool WorldWorkspace::Open(const QString& path)
             return false;
         }
         ConversionPath_ = destination;
-        ConversionSchema_ = schema;
+        ConversionSchema_ = foundation::Move(schema);
         SceneGeneration_ = DocumentGeneration_;
         Importing_ = true;
         Scene_->SetWorldSnapshot(candidate);
@@ -612,10 +613,10 @@ bool WorldWorkspace::Open(const QString& path)
     ValidatedWorld_.clear();
     SceneError_.clear();
     ++DocumentGeneration_;
-    Document_ = candidate;
+    Document_ = foundation::Move(candidate);
     ClearImportState();
     Render_->SetWorld(Root_, &Document_);
-    SchemaDisk_ = schema;
+    SchemaDisk_ = foundation::Move(schema);
     Disk_ = legacy ? QByteArray() : bytes;
     Path_ = QFileInfo(destination).absoluteFilePath();
     Selected_.clear();
@@ -660,10 +661,10 @@ bool WorldWorkspace::Create(const QString& path)
     ValidatedWorld_.clear();
     SceneError_.clear();
     ++DocumentGeneration_;
-    Document_ = candidate;
+    Document_ = foundation::Move(candidate);
     ClearImportState();
     Render_->SetWorld(Root_, &Document_);
-    SchemaDisk_ = schema;
+    SchemaDisk_ = foundation::Move(schema);
     Disk_.clear();
     Path_ = QFileInfo(path).absoluteFilePath();
     Selected_.clear();
@@ -897,7 +898,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
             Changed(error.isEmpty() ? QStringLiteral("Conversion inputs changed; previous World retained.") : error);
             return;
         }
-        Document_ = candidate;
+        Document_ = foundation::Move(candidate);
         SchemaDisk_ = ConversionSchema_;
         Disk_.clear();
         Path_ = conversion;

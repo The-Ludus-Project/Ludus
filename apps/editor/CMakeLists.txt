@@ -106,6 +106,8 @@ add_library(ludus_editor_core STATIC
     src/tool_operation.cpp
     ${editor_process_sources}
     src/log_buffer.cpp
+    src/internal/timing_view.h
+    src/timing_view.cpp
 )
 set_target_properties(ludus_editor_core PROPERTIES AUTOMOC ON)
 target_include_directories(ludus_editor_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -186,6 +188,8 @@ qt_add_executable(ludus_editor
     src/main_window.cpp
     src/document_commands.cpp
     src/main_window_layout.cpp
+    src/internal/timing_panel.h
+    src/timing_panel.cpp
     src/project_setup_dialog.cpp
     src/project_creation_dialog.cpp
     src/workspace_style.cpp
@@ -342,6 +346,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/project_store_v2_tests.cpp
         tests/tool_process_tests.cpp
         tests/log_buffer_tests.cpp
+        tests/timing_view_tests.cpp
         tests/controller_tests.cpp
         tests/document_history_tests.cpp
         tests/document_interaction_tests.cpp
@@ -378,6 +383,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/main_window.cpp
         src/document_commands.cpp
         src/main_window_layout.cpp
+        src/internal/timing_panel.h
+        src/timing_panel.cpp
         src/project_setup_dialog.cpp
         src/project_creation_dialog.cpp
         src/workspace_style.cpp)

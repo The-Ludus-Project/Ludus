@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "domain": "test/l1",
+  "source_locale": "en-US",
+  "profile": "ludus-icu-mf1-v1",
+  "locale": "fr-CA",
+  "messages": [
+    {
+      "key": "escape/braces",
+      "source_revision": 1,
+      "reviewed_source_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "Pesez sur '{'jump'}' pour sauter."
+    },
+    {
+      "key": "greeting/name",
+      "source_revision": 1,
+      "reviewed_source_digest": "56f7ac9301eb379255655a8523fdda7480d8d183955faf0c025783a0c7b8dfc1",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": "Bonjour!"
+    },
+    {
+      "key": "menu/credits",
+      "source_revision": 1,
+      "reviewed_source_digest": "caa6d2aeeb3e572f01bcd937b077108afe662c7d985c5e676c0e7de65b6aaddc",
+      "translation_revision": 1,
+      "status": "approved",
+      "pattern": ""
+    }
+  ]
+}

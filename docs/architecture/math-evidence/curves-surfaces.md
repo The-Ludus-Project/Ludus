@@ -1,10 +1,138 @@
-# Curves and surfaces evidence (G0-G2)
+# Curves and surfaces evidence (G0-G3)
 
 This ledger records the G0 contract freeze and reference corpus, the G1 cubic
-and bicubic kernel, and the G2 prepared paths, tracks and distance maps. See the
+and bicubic kernel, the G2 prepared paths, tracks and distance maps, and the G3
+frames, projection and sweep meshes. See the
 [architecture](../curves-surfaces.md),
 [ADR 0024](../../decisions/0024-curves-surfaces-contracts.md) and the
 [consulted-source review](../curves-surfaces-gems-review.md).
+
+## G3 frames, projection and sweeps
+
+Implementation date: 2026-10-17. Base: `c3de79d` (`develop`). Scope: `frame.hpp`,
+`query.hpp` and `sweep.hpp` in `Ludus::FoundationGeometry`, a private float64
+span and Certified box helper, an ADR 0024 amendment that gives sweeps their own
+header, new frame references in the G0 corpus, tests and the SDK consumer. Usage
+is documented in the [module guide](../../modules/foundation/geometry.md#transported-frames).
+No surface, patch mesh, cursor, cooked format or editor binding is added.
+
+### Reference corpus additions
+
+The generator gained `FRAME_FIXTURES`; no existing reference changed. Each frame
+fixture is a unit-width cubic path whose joints are exactly C1. The generator
+integrates Bishop's rotation-minimizing transport `r' = -(r . T') T` with the
+classical Runge-Kutta rule in 50-digit decimals, at 1024 and 2048 steps per span,
+and combines them by Richardson extrapolation. Its self-tests check
+step-halving agreement within 1e-13, unit length and tangent orthogonality
+within 1e-15, the planar closed form (the out-of-plane normal stays exactly +Z),
+the arctangent against pi/4, pi/3 and -3pi/4, and a nonzero loop holonomy.
+These references are integrated, not closed form; their error is far below the
+1e-3 rad frame tolerance used by the C++ tests.
+
+| Fixture | Exercises |
+| --- | --- |
+| `twisted_rmf` | The G0 `twisted` cubic with seed +Y; normals at u = 1/4, 1/2, 3/4, 1 |
+| `inflection_rmf` | The G0 `inflection` cubic with seed +Z; the normal stays +Z where a Frenet frame flips |
+| `loop_holonomy` | A closed Hermite saddle loop without mirror symmetry; residual twist 0.112407 rad. Two symmetric candidate loops had zero holonomy and were rejected |
+
+### Acceptance gates
+
+| Gate | Test evidence |
+| --- | --- |
+| Straight | `line_uniform` keeps the projected seed at every sample; the Estimated angular error is 0 |
+| Inflected | `inflection_rmf` normals equal +Z within float32 storage; with an in-plane seed the binormal stays +Z through u = 1/2, where a Frenet frame flips |
+| Vertical start | `vertical_start` with a +Y seed is `DegenerateFrame` with the previous frames kept; a parallel fallback also fails; a +Z fallback succeeds and sets `IsFallbackSeeded` |
+| Cusped | `cusp` under `Reject` is `DegenerateFrame` with a 2^-30-wide range within 1e-6 of u = 1/2; `SplitRuns` gives two runs, `Degenerate` at the cusp and +Z normals on both sides. `line_ease` zero-speed endpoints are `Degenerate` and the run lies strictly inside the span |
+| Opposite tangents | `line_backtrack` gives three runs, `Degenerate` at both zero-speed parameters and a reseeded middle run with tangent -X. An exact reversal at a joint fails `RotateMinimally` and `Reject` and splits under `SplitRuns`. A 90 degree corner rotates the +Y normal to -X |
+| Random-access order independence | 64 frames on `loop_holonomy` evaluated forward, backward and in a stride-37 order are bitwise equal; a quarter turn of roll maps the normal onto the binormal |
+| Closed residual twist | `PreserveHolonomy` measures 0.1124056 rad against the 0.1124068 reference and matches the reference normals within 1e-3 rad. `DistributeTwist` closes the seam within 1e-5 rad, also with one authored winding turn. A non-G1 closing joint cannot be periodic |
+| Multi-minimum projection | Every `arch` query (symmetric ties, apex minima, endpoint minimum) and the three-way `line_backtrack` tie return a Certified gap that encloses the exact distance, and the earliest minimum within 1e-2 in u. The endpoint minimum returns the stored endpoint. A tie across two spans and a joint minimum return the earlier span. A far-origin path gives the same answer |
+
+`twisted_rmf` frames differ from the integrated references by at most 3.1e-5
+rad, below the reported Estimated error of 6.5e-4 rad. Strict frame profiles
+return `UnsupportedPrecision`. Other tests cover `MissingCache`,
+`StaleRevision`, invalid preparations and every work limit for frames,
+transactional strict projection failure (`BudgetExceeded` with the result kept),
+the approximate mode's candidate and gap, and scratch capacity. Sweep tests cover
+a straight ribbon's exact positions, UVs and both windings. A capped tube uses
+the fewest segments within the cross-section budget, keeps vertices at its radius
+and its UV seam and cap rims bitwise equal to ring positions, faces outward, and
+stays within twice its Estimated longitudinal budget at seven extra samples per
+ring interval. A closed tube's seam ring copies the first ring. Width and roll
+profiles scale and roll the rings. The arch apex flags self-intersection risk
+for a unit tube. Singular or aperiodic frames, bad profiles, caps on ribbons or
+closed paths, and every budget are rejected without replacing the plan, and
+emission writes nothing on `CapacityExceeded`, `StaleRevision` or
+`MissingCache`. The allocation probe fails every frame and sweep-plan
+allocation in turn, and finds zero allocations during frame evaluation,
+projection with reserved scratch and emission.
+
+### Numerical limits observed
+
+These are workload observations at `TangentAngleError` 1e-3 rad,
+`ProjectionGap` 1e-5 and 1e-3 sweep budgets, not budgets.
+
+| Case | Observation |
+| --- | --- |
+| `twisted_rmf` frames | 7 samples, 11 interval tests, level 3; Estimated error 6.5e-4 rad |
+| `loop_holonomy` frames | 19 samples over four spans, level 3; Estimated error 2.6e-4 rad |
+| `arch` projections | 0 (endpoint), 12-47 (apex) and 2529-2758 (symmetric ties) splits |
+| `line_backtrack` tie | 9 splits |
+| Tube of radius 0.05 | 16 segments; 35 (`twisted`), 51 (`inflection`) and 65 (`arch`) rings |
+
+Symmetric ties are expensive because the tie search refines the earliest
+ambiguous interval down to the acceptance region. Performance and memory budgets
+remain unmeasured.
+
+### Departures and limits
+
+- Frame angular error is Estimated: the summed one-step versus two-half-step
+  differences plus the largest one. The regularity decision is Certified from
+  outward-rounded derivative boxes, but derivative enclosures do not yet bound
+  the angle, as ADR 0024 requires for a strict frame profile.
+- Random access transports the preceding baked sample to the analytic tangent
+  with one reflection step instead of interpolating quaternions. Twist
+  compensation is linear in u between samples, whose distances are estimates.
+- A range that cannot be shown regular is 2^-`MaxDepth` wide, but box
+  overestimation near a simple zero widens the excluded region to about 1e-6
+  in u at depth 30.
+- Projection closes the global gap to half of `ProjectionGap`, then resolves
+  ties: every point within the full gap is acceptable, and the earliest live
+  interval that may hold a point within half the gap is refined until it holds
+  an acceptable candidate. The margin makes that search terminate; it shares
+  `MaxIterations`. The result is the earliest acceptable candidate, not
+  necessarily the exact earliest minimizer. Newton refinement and Bernstein root
+  isolation are not used.
+- Sweeps need one frame run with G1 joints; mitred corners and split sweeps are
+  later work. Longitudinal and cross-section errors and self-intersection risk
+  are Estimated. Ring frames come from float32 frame evaluation.
+- Sweep mesh generation has its own `sweep.hpp`, amending ADR 0024's header
+  list, so G4 patch tessellation keeps `tessellation.hpp`.
+
+### G3 validation record
+
+Host: macOS 26 on arm64 with the pinned host tools (Clang/LLVM 18.1.8), preset
+`macos-clang-development`. The machine was heavily loaded by other agents.
+
+| Check | Result |
+| --- | --- |
+| Full `macos-clang-development` build | Passed with no compiler warnings; the only linker warnings are the existing Homebrew Qt deployment-target notices from editor targets |
+| `ludus_foundation_geometry_tests` | Passed: 45 test cases, 108,122 assertions |
+| `ludus_geometry_alloc_tests` | Passed: 4 test cases; every frame and sweep-plan allocation failure injected |
+| Fixture generator self-tests (`test_fixtures.py`) and committed header | Passed: 17 tests, header current |
+| Pinned clang-tidy on every new translation unit | Passed after documented `bugprone-easily-swappable-parameters` suppressions |
+| Format, naming (`check_naming.py`) and changed-line source policy | Passed against the `c3de79d` branch point |
+| Header self-sufficiency and foundational include gate | Passed: 171 public headers compile standalone; foundational include boundary OK |
+| Docs index, strict MkDocs, `check-wiki --documentation-only`, docs/wiki regressions | Passed |
+| API reference with pinned Doxygen | Not run locally. The first CI run found one gap, the undocumented `ProjectionAccess` friend declaration, which now has a comment |
+| ASan/UBSan | Not run locally: Clang 18 ASan deadlocks at startup on this macOS 26 host (see [building](../../development/building.md)), so the CI sanitizer lanes are required |
+| Wasm math probe, installed SDK consumer, build-time budget | Not run locally (no Emscripten SDK). The SDK consumer now bakes frames, projects a point and emits a ribbon; these run in CI |
+
+The frame code acknowledges Wang, Juttler, Zheng and Liu's double-reflection
+paper and Carl Dougan's Game Programming Gems 2 chapter 2.5. The projection code
+acknowledges Philip J. Schneider's Graphics Gems chapter XI.7. The frame
+references acknowledge Bishop's transport equation and Kutta's Runge-Kutta rule.
+No source code from those works is copied.
 
 ## G2 prepared paths, tracks and distance maps
 

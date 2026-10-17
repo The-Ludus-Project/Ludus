@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .release_model import canonical
 from .templates import TemplateFile
+from .toolchain import PINNED_LLVM_MAJOR
 
 
 def release_files(target: str, itch_target: str | None = None, *, platform: str = "linux-x64") -> list[TemplateFile]:
@@ -70,8 +71,8 @@ not change itch.io project visibility. Account credentials never belong in Git.
 
     if macos:
         result[-1].content = result[-1].content.replace("linux-release", profile).replace("--destination linux", "--destination macos")
-        result[-1].content += """
-macOS: use a matching thin arm64 or x86_64 Release SDK and Clang 18/libc++.
+        result[-1].content += f"""
+macOS: use a matching thin arm64 or x86_64 Release SDK and Clang {PINNED_LLVM_MAJOR}/libc++.
 The generated install component creates an app bundle. Declare assets and
 regular runtime dylibs explicitly; use package-relative @rpath/@loader_path
 install names and search paths. Symlinked framework deployments and universal

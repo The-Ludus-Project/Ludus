@@ -131,9 +131,7 @@ Result Sync(int descriptor) noexcept
 }
 Result Check(int parent, const char* name, const WriteOptions& options) noexcept
 {
-    struct stat info
-    {
-    };
+    struct stat info{};
     int value;
     do
     {

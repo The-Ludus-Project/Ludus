@@ -80,6 +80,17 @@ else()
 endif()
 
 option(LUDUS_ENABLE_CCACHE "Use ccache when available" ${LUDUS_ENABLE_CCACHE_DEFAULT})
+
+# Opt-in reuse of ccache results between checkouts at different paths, such as
+# concurrent agent worktrees (LUDUS_CCACHE_SHARE_CHECKOUTS=1). Off by default:
+# it changes __FILE__ and debug-info paths; see docs/development/building.md.
+if(DEFINED ENV{LUDUS_CCACHE_SHARE_CHECKOUTS} AND NOT "$ENV{LUDUS_CCACHE_SHARE_CHECKOUTS}" STREQUAL "" AND NOT "$ENV{LUDUS_CCACHE_SHARE_CHECKOUTS}" STREQUAL "0")
+    set(LUDUS_CCACHE_SHARE_CHECKOUTS_DEFAULT ON)
+else()
+    set(LUDUS_CCACHE_SHARE_CHECKOUTS_DEFAULT OFF)
+endif()
+
+option(LUDUS_CCACHE_SHARE_CHECKOUTS "Let ccache reuse objects compiled in checkouts at other paths" ${LUDUS_CCACHE_SHARE_CHECKOUTS_DEFAULT})
 option(LUDUS_ENABLE_TIME_TRACE "Emit Clang -ftime-trace per-TU compile profiles" OFF)
 
 if(DEFINED ENV{CI} AND NOT "$ENV{CI}" STREQUAL "")
@@ -101,13 +112,63 @@ if(LUDUS_ENABLE_CCACHE)
     find_program(LUDUS_CCACHE_PROGRAM ccache)
     if(LUDUS_CCACHE_PROGRAM)
         message(STATUS "Using ccache: ${LUDUS_CCACHE_PROGRAM}")
+        set(ludus_ccache_launcher "${LUDUS_CCACHE_PROGRAM}")
+        if(LUDUS_CCACHE_SHARE_CHECKOUTS)
+            # CMake can spell the checkout through a symlink (it always keeps
+            # macOS /tmp for /private/tmp) while init's Conan toolchain uses the
+            # resolved path. base_dir then lists both spellings, and PWD names
+            # the build directory as CMake spells it: ccache relativizes paths
+            # against $PWD when it is the working directory, and otherwise
+            # against the resolved directory, which would route every
+            # /tmp-spelled path through / and this checkout's own name.
+            file(REAL_PATH "${PROJECT_SOURCE_DIR}" ludus_real_source_dir)
+            set(ludus_ccache_base_dir "${PROJECT_SOURCE_DIR}")
+            set(ludus_ccache_minimum_version "4.8")
+            set(ludus_ccache_environment "")
+            if(NOT ludus_real_source_dir STREQUAL PROJECT_SOURCE_DIR)
+                string(APPEND ludus_ccache_base_dir ":${ludus_real_source_dir}")
+                set(ludus_ccache_minimum_version "4.12")
+                find_program(LUDUS_ENV_PROGRAM env)
+                if(LUDUS_ENV_PROGRAM)
+                    set(ludus_ccache_environment "${LUDUS_ENV_PROGRAM}" "PWD=${CMAKE_BINARY_DIR}")
+                endif()
+            endif()
+            execute_process(COMMAND "${LUDUS_CCACHE_PROGRAM}" --version
+                OUTPUT_VARIABLE ludus_ccache_version_text ERROR_QUIET)
+            string(REGEX MATCH "version ([0-9]+\\.[0-9]+)" ludus_ccache_version_match "${ludus_ccache_version_text}")
+            if("${CMAKE_MATCH_1}" VERSION_LESS ludus_ccache_minimum_version)
+                message(WARNING "LUDUS_CCACHE_SHARE_CHECKOUTS needs ccache ${ludus_ccache_minimum_version} or newer "
+                    "for base_dir=${ludus_ccache_base_dir}; found '${ludus_ccache_version_match}', so results stay "
+                    "specific to this checkout")
+            else()
+                # base_dir rewrites paths inside this checkout relative to the
+                # build directory, so other checkouts hash the same command line.
+                # hash_dir=false lets -g objects match too; a reused object's
+                # debug info names the build directory that first compiled it.
+                list(APPEND ludus_ccache_launcher "base_dir=${ludus_ccache_base_dir}" "hash_dir=false"
+                    "absolute_paths_in_stderr=true")
+                list(PREPEND ludus_ccache_launcher ${ludus_ccache_environment})
+                message(STATUS "ccache shares results with other checkouts (base_dir=${ludus_ccache_base_dir})")
+            endif()
+        endif()
         # Wrap compilation only. ccache is a compiler cache, not a linker, so it
         # must not be attached to the link rule (doing so corrupts link commands).
-        set(CMAKE_C_COMPILER_LAUNCHER "${LUDUS_CCACHE_PROGRAM}" CACHE STRING "" FORCE)
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${LUDUS_CCACHE_PROGRAM}" CACHE STRING "" FORCE)
+        set(CMAKE_C_COMPILER_LAUNCHER "${ludus_ccache_launcher}" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${ludus_ccache_launcher}" CACHE STRING "" FORCE)
     else()
         message(WARNING "LUDUS_ENABLE_CCACHE is ON, but ccache was not found")
     endif()
+else()
+    # The launcher above is a forced cache entry. Drop it when ccache is turned
+    # off so an existing build tree stops using ccache without --fresh.
+    foreach(ludus_language IN ITEMS C CXX)
+        if(LUDUS_CCACHE_PROGRAM AND CMAKE_${ludus_language}_COMPILER_LAUNCHER)
+            list(FIND CMAKE_${ludus_language}_COMPILER_LAUNCHER "${LUDUS_CCACHE_PROGRAM}" ludus_ccache_index)
+            if(ludus_ccache_index GREATER_EQUAL 0)
+                unset(CMAKE_${ludus_language}_COMPILER_LAUNCHER CACHE)
+            endif()
+        endif()
+    endforeach()
 endif()
 
 # Gameplay compatibility identity comes from the same actual SDK inputs.
@@ -138,6 +199,14 @@ include(EngineDependencyPreflight)
 include(EngineTestDiagnostics)
 
 add_subdirectory(modules/foundation/base)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # Windows validates only the FoundationThreading closure (threading.md, T3).
+    # Other modules have no Windows backend; the SDK is not installed there yet.
+    foreach(module IN ITEMS memory containers time profiling threading)
+        add_subdirectory(modules/foundation/${module})
+    endforeach()
+    return()
+endif()
 # Portable bounded networking primitives are shared by native and web targets.
 add_subdirectory(modules/network/core)
 add_subdirectory(modules/foundation/memory)

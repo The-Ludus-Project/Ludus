@@ -62,6 +62,18 @@ target_link_libraries(ludus_icu_probe_baseline PRIVATE Ludus::FoundationLogging 
 ludus_apply_project_defaults(ludus_icu_probe_baseline)
 configure_file("${icu_source}/LICENSE" ICU-LICENSE.txt COPYONLY)
 
+# L1 host profile checker for the localization release cooker. It shares the
+# probe's profile walk (profile.hpp), ICU build and embedded data; it runs on
+# the cooking host only and is never installed or built for the browser.
+if(NOT EMSCRIPTEN)
+    add_executable(ludus_localization_profile profile_checker.cpp "${icu_generated}/icu_data.cpp")
+    target_include_directories(ludus_localization_profile PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(ludus_localization_profile PRIVATE "${icu_consumer_configuration}")
+    target_link_libraries(ludus_localization_profile PRIVATE ludus_icu_probe_i18n Ludus::FoundationContainers
+        Ludus::FoundationFilesystem Ludus::FoundationHash Ludus::FoundationLogging Ludus::FoundationStrings)
+    ludus_apply_project_defaults(ludus_localization_profile)
+endif()
+
 if(EMSCRIPTEN)
     foreach(target ludus_icu_probe ludus_icu_probe_baseline)
         target_compile_options(${target} PRIVATE -g0)
@@ -76,3 +88,12 @@ add_test(NAME ludus_icu_probe
         "${CMAKE_CROSSCOMPILING_EMULATOR}" "$<TARGET_FILE:ludus_icu_probe>"
         "$<TARGET_FILE:ludus_icu_probe_baseline>" "${PROJECT_BINARY_DIR}/compile_commands.json")
 set_tests_properties(ludus_icu_probe PROPERTIES LABELS "localization;build-contract" TIMEOUT 600)
+if(NOT EMSCRIPTEN)
+    # Regenerates the recorded corpus verdicts with pinned ICU and requires them
+    # to match the committed file, then runs the cooker tests that need ICU.
+    add_test(NAME ludus_localization_profile
+        COMMAND "${CMAKE_COMMAND}" -E env "LUDUS_LOCALIZATION_PROFILE_CHECKER=$<TARGET_FILE:ludus_localization_profile>"
+            "${Python3_EXECUTABLE}" -m unittest discover -s "${PROJECT_SOURCE_DIR}/scripts/python"
+            -p test_localization_release.py -v)
+    set_tests_properties(ludus_localization_profile PROPERTIES LABELS "localization;build-contract" TIMEOUT 600)
+endif()

@@ -254,6 +254,29 @@ struct PrecisionFixture final
     float64 NaiveNarrowingError = 0; ///< Largest error of float32(source) without the origin.
 };
 
+/// Rotation-minimizing (Bishop) normal at one path parameter, before any closed-loop compensation.
+struct FrameReference final
+{
+    usize SpanIndex = 0;
+    float64 U = 0;
+    ReferencePoint Normal; ///< Unit normal transported from the seed; integrated, not closed form.
+};
+
+/// One cubic span's controls in a frame fixture.
+using SpanControls = StaticArray<ControlPoint, CUBIC_CONTROL_COUNT>;
+
+/// Unit-width cubic path whose joints are exactly C1, with rotation-minimizing frame references.
+struct FrameFixture final
+{
+    const char* Name = "";
+    const char* Purpose = "";
+    BorrowedView<const SpanControls> Spans;
+    bool IsClosed = false;
+    ReferencePoint SeedUp; ///< Projected perpendicular to the first tangent to start the transport.
+    BorrowedView<const FrameReference> Frames;
+    float64 ResidualTwist = 0; ///< Closed paths: signed angle from the start normal to the returned one, radians.
+};
+
 namespace line_uniform
 {
 inline constexpr usize SAMPLE_COUNT = 5;
@@ -1514,6 +1537,90 @@ inline constexpr StaticArray<PrecisionFixture, PRECISION_FIXTURE_COUNT> PRECISIO
         .RelativePositionFloor = 2.384185791015625e-07,
         .AbsolutePositionFloor = 256.0,
         .NaiveNarrowingError = 1.5206906325745548,
+    },
+}};
+
+namespace twisted_rmf
+{
+inline constexpr usize SPAN_COUNT = 1;
+inline constexpr StaticArray<SpanControls, SPAN_COUNT> SPANS{{
+    {{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}},
+}};
+inline constexpr usize FRAME_COUNT = 4;
+inline constexpr StaticArray<FrameReference, FRAME_COUNT> FRAMES{{
+    { .SpanIndex = 0, .U = 0.25, .Normal = {-0.55326800782529, 0.8328193770467902, -0.017504191853132064} },
+    { .SpanIndex = 0, .U = 0.5, .Normal = {-0.8624361609169487, 0.49156548865640093, -0.12069481639585307} },
+    { .SpanIndex = 0, .U = 0.75, .Normal = {-0.8970632039156367, 0.4071548981814881, -0.1717629094636991} },
+    { .SpanIndex = 0, .U = 1.0, .Normal = {-0.8931193467139401, 0.4498197778280373, -2.2424581684062473e-21} },
+}};
+} // namespace twisted_rmf
+
+namespace inflection_rmf
+{
+inline constexpr usize SPAN_COUNT = 1;
+inline constexpr StaticArray<SpanControls, SPAN_COUNT> SPANS{{
+    {{{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {2.0f, -1.0f, 0.0f}, {3.0f, 0.0f, 0.0f}}},
+}};
+inline constexpr usize FRAME_COUNT = 4;
+inline constexpr StaticArray<FrameReference, FRAME_COUNT> FRAMES{{
+    { .SpanIndex = 0, .U = 0.25, .Normal = {0.0, 0.0, 1.0} },
+    { .SpanIndex = 0, .U = 0.5, .Normal = {0.0, 0.0, 1.0} },
+    { .SpanIndex = 0, .U = 0.75, .Normal = {0.0, 0.0, 1.0} },
+    { .SpanIndex = 0, .U = 1.0, .Normal = {0.0, 0.0, 1.0} },
+}};
+} // namespace inflection_rmf
+
+namespace loop_holonomy
+{
+inline constexpr usize SPAN_COUNT = 4;
+inline constexpr StaticArray<SpanControls, SPAN_COUNT> SPANS{{
+    {{{3.0f, 0.0f, 0.0f}, {3.0f, 1.0f, 1.0f}, {1.0f, 3.0f, 3.0f}, {0.0f, 3.0f, 3.0f}}},
+    {{{0.0f, 3.0f, 3.0f}, {-1.0f, 3.0f, 3.0f}, {-3.0f, 1.0f, 0.0f}, {-3.0f, 0.0f, 0.0f}}},
+    {{{-3.0f, 0.0f, 0.0f}, {-3.0f, -1.0f, 0.0f}, {-1.0f, -3.0f, -2.0f}, {0.0f, -3.0f, -3.0f}}},
+    {{{0.0f, -3.0f, -3.0f}, {1.0f, -3.0f, -4.0f}, {3.0f, -1.0f, -1.0f}, {3.0f, 0.0f, 0.0f}}},
+}};
+inline constexpr usize FRAME_COUNT = 5;
+inline constexpr StaticArray<FrameReference, FRAME_COUNT> FRAMES{{
+    { .SpanIndex = 0, .U = 0.5, .Normal = {9.94372675948319e-52, -0.7071067811865476, 0.7071067811865476} },
+    { .SpanIndex = 1, .U = 0.5, .Normal = {-0.10512983293845247, -0.7191266082734252, 0.6868803676765647} },
+    { .SpanIndex = 2, .U = 0.5, .Normal = {0.29876794689023023, -0.5086838691313532, 0.8074518160215834} },
+    { .SpanIndex = 3, .U = 0.5, .Normal = {0.08692311198672088, -0.7997429293866288, 0.5940165144999233} },
+    { .SpanIndex = 3, .U = 1.0, .Normal = {0.11217020340998626, -0.7026442362486731, 0.7026442362486731} },
+}};
+} // namespace loop_holonomy
+
+/// Rotation-minimizing frame and closed-loop holonomy fixtures.
+inline constexpr usize FRAME_FIXTURE_COUNT = 3;
+inline constexpr StaticArray<FrameFixture, FRAME_FIXTURE_COUNT> FRAME_FIXTURES{{
+    {
+        .Name = "twisted_rmf",
+        .Purpose = "G3: the twisted cubic with seed +Y; transported normals at quarter parameters for "
+                   "double-reflection accuracy.",
+        .Spans = {twisted_rmf::SPANS.GetData(), twisted_rmf::SPANS.GetSize()},
+        .IsClosed = false,
+        .SeedUp = {0.0, 1.0, 0.0},
+        .Frames = {twisted_rmf::FRAMES.GetData(), twisted_rmf::FRAMES.GetSize()},
+        .ResidualTwist = 0.0,
+    },
+    {
+        .Name = "inflection_rmf",
+        .Purpose = "G3: the planar inflection cubic with seed +Z; the transported normal stays exactly +Z where a "
+                   "Frenet frame flips.",
+        .Spans = {inflection_rmf::SPANS.GetData(), inflection_rmf::SPANS.GetSize()},
+        .IsClosed = false,
+        .SeedUp = {0.0, 0.0, 1.0},
+        .Frames = {inflection_rmf::FRAMES.GetData(), inflection_rmf::FRAMES.GetSize()},
+        .ResidualTwist = 0.0,
+    },
+    {
+        .Name = "loop_holonomy",
+        .Purpose = "G3: asymmetric closed C1 Hermite saddle loop without mirror symmetry; transport around it returns "
+                   "with a nonzero residual twist.",
+        .Spans = {loop_holonomy::SPANS.GetData(), loop_holonomy::SPANS.GetSize()},
+        .IsClosed = true,
+        .SeedUp = {0.0, 0.0, 1.0},
+        .Frames = {loop_holonomy::FRAMES.GetData(), loop_holonomy::FRAMES.GetSize()},
+        .ResidualTwist = 0.11240676910634753,
     },
 }};
 } // namespace ludus::geometry_fixtures

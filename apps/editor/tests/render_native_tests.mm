@@ -705,10 +705,16 @@ TEST_CASE("Native Lit viewport publishes thirteen shadowed area patches and per-
 TEST_CASE("Native Lit bake failure retains direct lighting and live camera rendering", "[.render-native][lighting]")
 {
     RenderScene scene = MakeLightingScene();
-    // GPU raster accepts a zero-area receiver primitive; static transport must
-    // reject its undefined chart normal without retiring the direct snapshot.
-    const uint32 degenerate[] = {0, 0, 0};
-    REQUIRE(scene.Definition->Meshes[0].Indices.TryAddRange(degenerate));
+    // GPU raster rebuilds the receiver's bake atlas UVs from its chart layout, so it
+    // ignores these authored ones; static transport rejects UVs that disagree with
+    // that layout (Unsupported) and must not retire the direct snapshot. (0, 0) is
+    // never an interior texel centre, so every corner disagrees.
+    ludus::resources::SceneMesh& receiver = scene.Definition->Meshes[0];
+    REQUIRE(receiver.BakeTexcoords.TryResize(receiver.Positions.GetSize()));
+    for (math::Vector2& textureCoordinateBakeAtlas : receiver.BakeTexcoords)
+    {
+        textureCoordinateBakeAtlas = {0, 0};
+    }
     RenderPreview preview;
     PreviewViewport viewport(&preview);
     viewport.resize(320, 240);
@@ -726,6 +732,42 @@ TEST_CASE("Native Lit bake failure retains direct lighting and live camera rende
     }
     INFO(preview.Status().toStdString());
     REQUIRE(preview.Status().contains(QStringLiteral("bake failed; direct lighting retained")));
+    CHECK(preview.GetBakeState() == PreviewBakeState::Failed);
+    const uint64 previous = preview.Frames();
+    preview.Orbit(4, 2);
+    REQUIRE(Frames(preview, previous + 2));
+    CHECK(viewport.PresentedFrames() > 0);
+    preview.Stop();
+}
+TEST_CASE("Native Lit bake skips a zero-area triangle and reports it", "[.render-native][lighting]")
+{
+    RenderScene scene = MakeLightingScene();
+    // GPU raster accepts a zero-area receiver primitive; static transport skips it,
+    // still publishes the bake and reports the skipped triangle.
+    const uint32 degenerate[] = {0, 0, 0};
+    REQUIRE(scene.Definition->Meshes[0].Indices.TryAddRange(degenerate));
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(320, 240);
+    viewport.show();
+    REQUIRE(preview.SetScene(scene));
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start());
+    REQUIRE(Frames(preview, 2));
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 40000 && preview.Status().contains(QStringLiteral("static diffuse baked")) == false)
+    {
+        QTest::qWait(20);
+    }
+    INFO(preview.Status().toStdString());
+    REQUIRE(preview.Status().contains(QStringLiteral("static diffuse baked")));
+    CHECK(preview.Status().contains(QStringLiteral("skipped 1 zero-area triangles in 1 object")));
+    CHECK(preview.GetBakeState() == PreviewBakeState::Baked);
+    PreviewBakeNotice notice;
+    REQUIRE(preview.GetBakeNotice(notice));
+    CHECK(notice.SkippedTriangleCount == 1);
+    CHECK(notice.AffectedObjectCount == 1);
     const uint64 previous = preview.Frames();
     preview.Orbit(4, 2);
     REQUIRE(Frames(preview, previous + 2));

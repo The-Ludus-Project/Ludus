@@ -9,7 +9,7 @@ CMAKE = ROOT / 'out/host-tools/venv/bin/cmake'
 
 
 class Profiles(unittest.TestCase):
-    def gate(self, system, architecture, compiler='Clang', version='18.1.3', pointer=8,
+    def gate(self, system, architecture, compiler='Clang', version='23.1.3', pointer=8,
              emscripten=False, osx=''):
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / 'profile.cmake'
@@ -49,12 +49,13 @@ message(STATUS "PROFILE=${{profile}}")
                 self.assertIn('requires an engine backend', result.stderr)
 
     def test_unknown_profiles_and_compilers_fail_closed(self):
-        cases = [('Linux', 'riscv64', 'Clang', '18.1.3', 8, False),
-                 ('FreeBSD', 'x86_64', 'Clang', '18.1.3', 8, False),
-                 ('Linux', 'x86_64', 'GNU', '18.1.3', 8, False),
-                 ('Darwin', 'arm64', 'AppleClang', '18.1.3', 8, False),
-                 ('Linux', 'x86_64', 'Clang', '19.0.0', 8, False),
-                 ('Linux', 'x86_64', 'Clang', '18.1.3', 4, False),
+        cases = [('Linux', 'riscv64', 'Clang', '23.1.3', 8, False),
+                 ('FreeBSD', 'x86_64', 'Clang', '23.1.3', 8, False),
+                 ('Linux', 'x86_64', 'GNU', '23.1.3', 8, False),
+                 ('Darwin', 'arm64', 'AppleClang', '23.1.3', 8, False),
+                 ('Linux', 'x86_64', 'Clang', '18.1.3', 8, False),
+                 ('Linux', 'x86_64', 'Clang', '24.0.0', 8, False),
+                 ('Linux', 'x86_64', 'Clang', '23.1.3', 4, False),
                  ('Emscripten', 'x86', 'Clang', '22.0.0', 8, True),
                  ('Emscripten', 'wasm32', 'Clang', '22.0.0', 4, False),
                  ('Emscripten', 'x86', 'Clang', '18.1.3', 4, True)]

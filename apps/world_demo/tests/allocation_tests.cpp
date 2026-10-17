@@ -11,6 +11,9 @@ usize gCalls = 0;
 // Containers allocate through this single aligned nothrow seam. Catch2's
 // ordinary allocations remain untouched, and no assertion executes while a
 // failure is armed. Kept in a separate non-sanitized executable.
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(usize bytes, std::align_val_t alignment, const std::nothrow_t&) noexcept
 {
     const auto call = gCalls++;
@@ -22,6 +25,7 @@ void* operator new(usize bytes, std::align_val_t alignment, const std::nothrow_t
     const auto align = static_cast<usize>(alignment);
     return posix_memalign(&memory, align < sizeof(void*) ? sizeof(void*) : align, bytes) == 0 ? memory : nullptr;
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 TEST_CASE("Every candidate allocation failure preserves the active world", "[world-demo][allocation]")
 {
     Session session;

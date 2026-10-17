@@ -1,3 +1,4 @@
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/platform/frame_pacing.h>
@@ -5,8 +6,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
-// Every case drives synthetic time: the injected wait advances a counter instead
-// of sleeping, so pacing policy is exact and independent of host load.
+// Every policy case drives synthetic time: the injected wait advances a counter
+// instead of sleeping, so pacing policy is exact and independent of host load.
+// Only the system-clock case sleeps, and it checks lower bounds alone.
 
 using namespace ludus::foundation;
 using ludus::platform::FramePacer;
@@ -29,6 +31,10 @@ constexpr uint64 INTERVAL_60HZ_NANOSECONDS = 16'666'667;
 constexpr uint64 FRAME_WORK_NANOSECONDS = 5'000'000;
 /// The lateness bound used by most cases: four 60 Hz intervals.
 constexpr uint64 MAXIMUM_LATENESS_NANOSECONDS = 4 * INTERVAL_60HZ_NANOSECONDS;
+/// A short real wait for the system-clock case: 2 ms.
+constexpr uint64 SYSTEM_WAIT_NANOSECONDS = 2'000'000;
+/// Real waits issued in a row, so the native adapter reuses its per-thread state.
+constexpr uint32 SYSTEM_WAIT_ATTEMPTS = 4;
 
 /// Scripted clock. A completed wait advances time by the request plus an
 /// oversleep; interruptions and short wakes advance it by less.
@@ -442,4 +448,25 @@ TEST_CASE("The system clock is a stateless native adapter", "[pacing]")
     const Timestamp first = clock.ReadNowOrNull(nullptr);
     const Timestamp second = clock.ReadNowOrNull(nullptr);
     CHECK(second.Nanoseconds >= first.Nanoseconds);
+}
+
+TEST_CASE("The system wait never completes before its interval", "[pacing]")
+{
+    const PacingClock clock = ludus::platform::GetSystemPacingClock();
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_LINUX
+    // Lower bounds only: a loaded host may wake late, but a completed wait never wakes early.
+    for (uint32 attempt = 0; attempt < SYSTEM_WAIT_ATTEMPTS; ++attempt)
+    {
+        const Timestamp before = clock.ReadNowOrNull(nullptr);
+        const PacingWaitStatus status = clock.WaitForOrNull(nullptr, {SYSTEM_WAIT_NANOSECONDS});
+        const Timestamp after = clock.ReadNowOrNull(nullptr);
+        REQUIRE((status == PacingWaitStatus::Completed || status == PacingWaitStatus::Interrupted));
+        if (status == PacingWaitStatus::Completed)
+        {
+            CHECK(after.Nanoseconds - before.Nanoseconds >= SYSTEM_WAIT_NANOSECONDS);
+        }
+    }
+#else
+    CHECK(clock.WaitForOrNull(nullptr, {SYSTEM_WAIT_NANOSECONDS}) == PacingWaitStatus::Unsupported);
+#endif
 }

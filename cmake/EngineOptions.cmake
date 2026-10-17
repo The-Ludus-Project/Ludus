@@ -36,6 +36,12 @@ function(ludus_configure_project_options target_name)
         # Map diagnostic literals without breaking DWARF's source/comp-dir pair.
         target_compile_options(${target_name} INTERFACE "-fmacro-prefix-map=${PROJECT_SOURCE_DIR}/=")
     endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        # The Microsoft CRT deprecates portable ISO C calls such as fopen in favour
+        # of its non-portable Annex K variants. Ludus bounds and checks those calls
+        # explicitly, so keep the portable spelling warning-clean on Windows.
+        target_compile_definitions(${target_name} INTERFACE _CRT_SECURE_NO_WARNINGS)
+    endif()
     if(EMSCRIPTEN)
         # Keep __FILE__/source_location diagnostics portable in shipped wasm.
         target_compile_options(${target_name} INTERFACE "-fmacro-prefix-map=${PROJECT_SOURCE_DIR}/=")

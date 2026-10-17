@@ -11,7 +11,7 @@ from unittest.mock import patch
 from ludus_tools.create import create_project
 from ludus_tools.errors import ToolingError
 from ludus_tools import project_setup as setup
-from ludus_tools.toolchain import pinned_llvm_tool
+from ludus_tools.toolchain import PINNED_LLVM_MAJOR, pinned_llvm_tool
 from test_ludus_tools import _manifest_json, _write_sdk_prefix
 
 
@@ -188,7 +188,7 @@ class ProjectSetupTests(unittest.TestCase):
         path.write_text("#!/bin/sh\necho clang version 17.0.0\n")
         path.chmod(0o755)
         before = self.snapshot()
-        with self.assertRaisesRegex(ToolingError, "pinned version 18"):
+        with self.assertRaisesRegex(ToolingError, f"pinned version {PINNED_LLVM_MAJOR}"):
             self.repair()
         self.assertEqual(before, self.snapshot())
 

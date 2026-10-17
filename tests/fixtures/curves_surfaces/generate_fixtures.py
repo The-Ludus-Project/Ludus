@@ -27,6 +27,13 @@ Methods and acknowledgements:
   Curves", Computer-Aided Design 43(7), 2011
   (https://www.cemyuksel.com/research/catmullrom_param/).
 - Pi uses the series recipe from the Python ``decimal`` module documentation.
+- Rotation-minimizing frames integrate Bishop's transport equation
+  r' = -(r . T') T (R. L. Bishop, "There is More than One Way to Frame a Curve",
+  American Mathematical Monthly 82(3), 1975, 246-251) with the classical
+  fourth-order Runge-Kutta rule (W. Kutta, Zeitschrift fur Mathematik und
+  Physik 46, 1901), at two step sizes combined by Richardson extrapolation.
+  test_fixtures.py checks step-halving agreement, orthonormality and a planar
+  closed form. The arctangent uses Euler's series after argument halving.
 
 Usage:
   generate_fixtures.py --write   regenerate reference_fixtures.hpp
@@ -55,6 +62,8 @@ ROOT_BITS = 180
 # the corpus are additionally certified by exact polynomial identities.
 TIE_TOLERANCE = Fraction(1, 2**100)
 INVERSION_TOLERANCE = Decimal("1e-38")
+# Runge-Kutta steps per span for frame references; Richardson combines this and twice it.
+FRAME_STEPS = 1024
 # Must match MAX_PROJECTION_MINIMA in the emitted header.
 MAX_PROJECTION_MINIMA = 3
 HEADER = Path(__file__).with_name("reference_fixtures.hpp")
@@ -1057,6 +1066,187 @@ def compute_precision(spec: dict) -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# Rotation-minimizing frame references (G3)
+# --------------------------------------------------------------------------
+def decimal_atan(x: Decimal) -> Decimal:
+    """Arctangent by halving the argument, then Euler's series for atan."""
+    with localcontext() as context:
+        context.prec += 10
+        halvings = 0
+        while abs(x) > Decimal("0.1"):
+            x = x / (1 + (1 + x * x).sqrt())
+            halvings += 1
+        # Euler: atan(x) = sum 2^(2n) (n!)^2 / (2n + 1)! * x^(2n+1) / (1 + x^2)^(n+1)
+        y = x * x / (1 + x * x)
+        term = x / (1 + x * x)
+        total = term
+        n = 0
+        while True:
+            n += 1
+            term = term * y * (2 * n) / (2 * n + 1)
+            if abs(term) < Decimal(10) ** -(context.prec + 2):
+                break
+            total += term
+        result = total * (2**halvings)
+    return +result
+
+
+def decimal_atan2(y: Decimal, x: Decimal) -> Decimal:
+    pi = QUADRATURE.half_pi * 2
+    if x > 0:
+        return decimal_atan(y / x)
+    if x < 0:
+        return decimal_atan(y / x) + (pi if y >= 0 else -pi)
+    if y > 0:
+        return pi / 2
+    if y < 0:
+        return -pi / 2
+    return Decimal(0)
+
+
+def dot(a: Point, b: Point):
+    return sum(a[i] * b[i] for i in range(3))
+
+
+def scale(a: Point, factor) -> Point:
+    return tuple(c * factor for c in a)
+
+
+def add(a: Point, b: Point) -> Point:
+    return tuple(a[i] + b[i] for i in range(3))
+
+
+def normalize_decimal(a: Point) -> Point:
+    return scale(a, 1 / length(a))
+
+
+class FrameModel:
+    """Unit tangent and its parameter derivative of one cubic span, in 50-digit decimals."""
+
+    def __init__(self, controls: list[Point]) -> None:
+        polys = cubic_coordinate_polys(controls)
+        self.first = [[to_decimal(c) for c in poly_derivative(p)] for p in polys]
+        self.second = [[to_decimal(c) for c in poly_derivative(poly_derivative(p))] for p in polys]
+
+    def tangent(self, u: Decimal) -> tuple[Point, Point]:
+        first = tuple(poly_eval_decimal(p, u) for p in self.first)
+        second = tuple(poly_eval_decimal(p, u) for p in self.second)
+        speed = length(first)
+        unit = scale(first, 1 / speed)
+        # dT/du = (C'' - (C'' . T) T) / |C'|
+        turning = scale(add(second, scale(unit, -dot(second, unit))), 1 / speed)
+        return unit, turning
+
+    def rate(self, u: Decimal, normal: Point) -> Point:
+        unit, turning = self.tangent(u)
+        return scale(unit, -dot(normal, turning))
+
+
+def transport(model: FrameModel, normal: Point, start: Fraction, end: Fraction, steps: int) -> Point:
+    """Integrate r' = -(r . T') T from start to end with the classical Runge-Kutta rule."""
+    h = to_decimal(end - start) / steps
+    u = to_decimal(start)
+    for _ in range(steps):
+        k1 = model.rate(u, normal)
+        k2 = model.rate(u + h / 2, add(normal, scale(k1, h / 2)))
+        k3 = model.rate(u + h / 2, add(normal, scale(k2, h / 2)))
+        k4 = model.rate(u + h, add(normal, scale(k3, h)))
+        normal = add(normal, scale(add(add(k1, scale(k2, 2)), add(scale(k3, 2), k4)), h / 6))
+        u += h
+    return normal
+
+
+def transport_extrapolated(model: FrameModel, normal: Point, start: Fraction, end: Fraction, steps: int) -> Point:
+    """Richardson combination of steps and 2 * steps for a fourth-order rule."""
+    coarse = transport(model, normal, start, end, steps)
+    fine = transport(model, normal, start, end, 2 * steps)
+    return add(fine, scale(add(fine, scale(coarse, -1)), Decimal(1) / 15))
+
+
+@dataclass
+class FrameSpec:
+    name: str
+    purpose: str
+    spans: list
+    closed: bool
+    seed: Point
+    parameters: list  # (span index, u) in path order
+
+
+LOOP_WAYPOINTS = [(3, 0, 0), (0, 3, 3), (-3, 0, 0), (0, -3, -3)]
+LOOP_TANGENTS = [(0, 3, 3), (-3, 0, 0), (0, -3, 0), (3, 0, -3)]
+
+
+def hermite_loop(points: list, tangents: list) -> list:
+    """Closed C1 loop with unit-width Hermite spans: B1 = P0 + T0/3, B2 = P1 - T1/3."""
+    spans = []
+    for k in range(len(points)):
+        p0, p1 = as_fraction_point(points[k]), as_fraction_point(points[(k + 1) % len(points)])
+        t0, t1 = as_fraction_point(tangents[k]), as_fraction_point(tangents[(k + 1) % len(points)])
+        spans.append([p0, add(p0, scale(t0, Fraction(1, 3))), add(p1, scale(t1, Fraction(-1, 3))), p1])
+    return spans
+
+
+QUARTERS = [Fraction(1, 4), Fraction(1, 2), Fraction(3, 4), Fraction(1)]
+
+FRAME_SPECS = [
+    FrameSpec(
+        "twisted_rmf",
+        "G3: the twisted cubic with seed +Y; transported normals at quarter parameters for double-reflection "
+        "accuracy.",
+        [[(0, 0, 0), (1, 0, 0), (1, 1, 0), (1, 1, 1)]],
+        False,
+        (0, 1, 0),
+        [(0, u) for u in QUARTERS],
+    ),
+    FrameSpec(
+        "inflection_rmf",
+        "G3: the planar inflection cubic with seed +Z; the transported normal stays exactly +Z where a Frenet "
+        "frame flips.",
+        [[(0, 0, 0), (1, 1, 0), (2, -1, 0), (3, 0, 0)]],
+        False,
+        (0, 0, 1),
+        [(0, u) for u in QUARTERS],
+    ),
+    FrameSpec(
+        "loop_holonomy",
+        "G3: asymmetric closed C1 Hermite saddle loop without mirror symmetry; transport around it returns with a nonzero "
+        "residual twist.",
+        hermite_loop(LOOP_WAYPOINTS, LOOP_TANGENTS),
+        True,
+        (0, 0, 1),
+        [(k, Fraction(1, 2)) for k in range(len(LOOP_WAYPOINTS))] + [(len(LOOP_WAYPOINTS) - 1, Fraction(1))],
+    ),
+]
+
+
+def compute_frame(spec: FrameSpec, steps: int = FRAME_STEPS) -> dict:
+    spans = [[as_fraction_point(p) for p in span] for span in spec.spans]
+    models = [FrameModel(span) for span in spans]
+    start_tangent, _ = models[0].tangent(Decimal(0))
+    seed = tuple(to_decimal(c) for c in spec.seed)
+    normal = normalize_decimal(add(seed, scale(start_tangent, -dot(seed, start_tangent))))
+    start_normal = normal
+    references = []
+    position = (0, Fraction(0))
+    for span_index, u in spec.parameters:
+        while position[0] < span_index:
+            # Joints of these fixtures are exactly C1, so the frame carries over unchanged.
+            normal = transport_extrapolated(models[position[0]], normal, position[1], Fraction(1), steps)
+            position = (position[0] + 1, Fraction(0))
+        normal = transport_extrapolated(models[span_index], normal, position[1], u, steps)
+        position = (span_index, u)
+        references.append((span_index, u, normal))
+    residual = Decimal(0)
+    if spec.closed:
+        if position != (len(spans) - 1, Fraction(1)):
+            raise AssertionError("closed frame fixtures must end at the seam")
+        residual = decimal_atan2(dot(start_tangent, cross(start_normal, normal)), dot(start_normal, normal))
+    return {"spec": spec, "spans": spans, "models": models, "references": references, "residual": residual,
+            "start_normal": start_normal}
+
+
 def compute_all() -> dict:
     patches = {spec.name: spec for spec in PATCH_SPECS}
     return {
@@ -1066,6 +1256,7 @@ def compute_all() -> dict:
         "catmull_rom": [compute_catmull_rom(spec) for spec in CATMULL_ROM_SPECS],
         "tracks": [compute_track(spec) for spec in TRACK_SPECS],
         "precision": [compute_precision(spec) for spec in PRECISION_SPECS],
+        "frames": [compute_frame(spec) for spec in FRAME_SPECS],
     }
 
 
@@ -1327,6 +1518,29 @@ struct PrecisionFixture final
     float64 RelativePositionFloor = 0;
     float64 AbsolutePositionFloor = 0;
     float64 NaiveNarrowingError = 0; ///< Largest error of float32(source) without the origin.
+};
+
+/// Rotation-minimizing (Bishop) normal at one path parameter, before any closed-loop compensation.
+struct FrameReference final
+{
+    usize SpanIndex = 0;
+    float64 U = 0;
+    ReferencePoint Normal; ///< Unit normal transported from the seed; integrated, not closed form.
+};
+
+/// One cubic span's controls in a frame fixture.
+using SpanControls = StaticArray<ControlPoint, CUBIC_CONTROL_COUNT>;
+
+/// Unit-width cubic path whose joints are exactly C1, with rotation-minimizing frame references.
+struct FrameFixture final
+{
+    const char* Name = "";
+    const char* Purpose = "";
+    BorrowedView<const SpanControls> Spans;
+    bool IsClosed = false;
+    ReferencePoint SeedUp; ///< Projected perpendicular to the first tangent to start the transport.
+    BorrowedView<const FrameReference> Frames;
+    float64 ResidualTwist = 0; ///< Closed paths: signed angle from the start normal to the returned one, radians.
 };
 """
 
@@ -1592,6 +1806,38 @@ def emit_precision(out: Emitter, items: list[dict]) -> None:
     out.line("}};")
 
 
+def emit_frames(out: Emitter, items: list[dict]) -> None:
+    for item in items:
+        spec = item["spec"]
+        out.line(f"namespace {spec.name}")
+        out.line("{")
+        spans = ["{{" + ", ".join(control(p) for p in span) + "}}" for span in item["spans"]]
+        emit_array(out, "SpanControls", "SPAN_COUNT", "SPANS", spans)
+        frames = [
+            f"{{.SpanIndex = {index}, .U = {float64_literal(u)}, .Normal = {reference(normal)}}}"
+            for index, u, normal in item["references"]
+        ]
+        emit_array(out, "FrameReference", "FRAME_COUNT", "FRAMES", frames)
+        out.line(f"}} // namespace {spec.name}")
+        out.line()
+    out.line("/// Rotation-minimizing frame and closed-loop holonomy fixtures.")
+    out.line(f"inline constexpr usize FRAME_FIXTURE_COUNT = {len(items)};")
+    out.line("inline constexpr StaticArray<FrameFixture, FRAME_FIXTURE_COUNT> FRAME_FIXTURES{{")
+    for item in items:
+        spec = item["spec"]
+        n = spec.name
+        out.line("    {")
+        out.line(f"        .Name = {quote(n)},")
+        out.line(f"        .Purpose = {quote(spec.purpose)},")
+        out.line(f"        .Spans = {view(n, 'SPANS', len(item['spans']))},")
+        out.line(f"        .IsClosed = {'true' if spec.closed else 'false'},")
+        out.line(f"        .SeedUp = {reference(as_fraction_point(spec.seed))},")
+        out.line(f"        .Frames = {view(n, 'FRAMES', len(item['references']))},")
+        out.line(f"        .ResidualTwist = {float64_literal(item['residual'])},")
+        out.line("    },")
+    out.line("}};")
+
+
 def render(results: dict) -> str:
     out = Emitter()
     out.lines.extend(PRELUDE.rstrip("\n").split("\n"))
@@ -1602,6 +1848,8 @@ def render(results: dict) -> str:
     emit_catmull_rom(out, results["catmull_rom"])
     emit_tracks(out, results["tracks"])
     emit_precision(out, results["precision"])
+    out.line()
+    emit_frames(out, results["frames"])
     out.line("} // namespace ludus::geometry_fixtures")
     return out.text()
 

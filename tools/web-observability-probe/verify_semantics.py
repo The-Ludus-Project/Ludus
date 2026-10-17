@@ -14,7 +14,12 @@ assert "[LUDUS:CHECK]" in output and "W2 logger-independent CHECK" in output, ou
 if enabled == "1":
     trace_text = result.stdout.split("[W2:trace]", 1)[1]
     trace, _ = json.JSONDecoder().raw_decode(trace_text)
-    events = trace["traceEvents"]
+    # Exported thread-name metadata ("M") precedes the recorded timeline events; the probe
+    # records exactly five events on its one registered thread.
+    metadata = [event for event in trace["traceEvents"] if event["ph"] == "M"]
+    events = [event for event in trace["traceEvents"] if event["ph"] != "M"]
+    assert [(event["name"], event["tid"]) for event in metadata] == [("thread_name", 0)], metadata
+    assert metadata[0]["args"]["name"], metadata
     assert len(events) == 5 and events[0]["ph"] == "B" and events[-1]["ph"] == "E", events
     assert {event["tid"] for event in events} == {0}, events
     assert all(a["ts"] <= b["ts"] for a, b in zip(events, events[1:])), events

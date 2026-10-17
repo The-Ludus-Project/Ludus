@@ -76,7 +76,7 @@ scope. Assertion reporting continues to use its independent FoundationBase path.
 | Platform | Current implementation is Wayland/headless windowing; OS classification is in `platform/config.h` | There is no reusable low-level debugger, crash, or stack-capture service yet |
 | Memory and strings | No custom allocator or native general-purpose string/view exists; `UniquePtr` is present | Introduce only a diagnostic pointer/length view, not speculative allocator/string infrastructure |
 | Error handling | Window APIs already return `bool`, use out-parameters, and are `noexcept` | Preserve explicit error paths; assertions diagnose programmer defects |
-| Builds | Clang 18/LLD, C++23, extensions off, exceptions disabled; tests alone re-enable exceptions | Runtime entry points are `noexcept`; compiler intrinsics are narrowly guarded platform implementation details |
+| Builds | Clang 23/LLD, C++23, extensions off, exceptions disabled; tests alone re-enable exceptions | Runtime entry points are `noexcept`; compiler intrinsics are narrowly guarded platform implementation details |
 | Profile | `linux-clang-profile` selects `RelWithDebInfo`; current CMake consequently defines `LUDUS_BUILD_DEVELOPMENT`, not `LUDUS_BUILD_PROFILE` | Use an explicit assertion setting; fix build-flavor identity separately |
 | SDK | Project options are linked privately with `BUILD_INTERFACE` | Export assertion configuration deliberately; it will not automatically reach installed consumers |
 

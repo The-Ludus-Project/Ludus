@@ -13,7 +13,7 @@ exists, init tests installed SDKs automatically. Running `./init.sh` yourself
 continues to honor an explicit shell `SDKROOT` override.
 
 > Scope. Native project tooling supports **Linux x64** (Ubuntu 24.04) and
-> **macOS** with pinned upstream Clang 18, single-config Ninja, and
+> **macOS** with pinned upstream Clang 23, single-config Ninja, and
 > Debug/Development/Release SDK identities. The installed macOS CLI has native
 > Apple silicon acceptance; Intel identity/architecture selection is covered by
 > unit tests and still needs native Intel acceptance. Windows tooling and general
@@ -27,8 +27,8 @@ continues to honor an explicit shell `SDKROOT` override.
 **Host tools** (the `ludus` CLI): Python ≥ 3.10. No Qt, no engine checkout.
 
 **Building a generated game** additionally needs the documented toolchain for a
-Ludus SDK: CMake 3.29.6, Ninja 1.11.1, and upstream Clang 18. Linux uses LLD 18;
-macOS uses the prepared Apple SDK and Clang 18 libc++ headers with the deployment
+Ludus SDK: CMake 3.29.6, Ninja 1.11.1, and upstream Clang 23. Linux uses LLD 23;
+macOS uses the prepared Apple SDK and Clang 23 libc++ headers with the deployment
 baseline recorded in the SDK manifest (currently macOS 14.0). For shaders, use
 the pinned Slang compiler (`config/shader_toolchain.json`): macOS emits Metal
 source; Linux and browser SPIR-V paths also require `spirv-val`. A
@@ -138,7 +138,7 @@ presets. Repairing another flavor preserves those entries and the descriptor
 keeps its original default profile.
 
 Mac setup uses the matching architecture (`arm64` or `x86_64`), manifest deployment
-baseline, prepared SDK sysroot, and Clang 18 libc++ headers. Machine paths live in
+baseline, prepared SDK sysroot, and Clang 23 libc++ headers. Machine paths live in
 ignored user presets. Retargeted tool/SDK symlinks and stale macOS cache flags
 require explicit repair. Native flags are excluded from browser presets. The
 selected compiler's identity is checked before repair writes local settings and

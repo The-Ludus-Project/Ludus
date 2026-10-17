@@ -612,6 +612,9 @@ struct LuauProvider::Impl
         {
             scripting::Reject(state, 1, "operation arity");
         }
+        // Value::Type defaults to Kind::Uint32; LLVM 23 overlooks that initializer
+        // when checking value-initialized arrays. The provider regression checks it.
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
         Value values[4]{};
         for (usize i = 0; i < op.Arguments.size(); ++i)
         {

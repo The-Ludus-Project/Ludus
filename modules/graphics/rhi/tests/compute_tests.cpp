@@ -344,6 +344,8 @@ TEST_CASE("R18c layout entry and per-stage descriptor limits reject before publi
 {
     ComputeSession session;
     constexpr usize ENTRY_COUNT = 16;
+    // Elements use their default member initializers; the check misreports them as zero enums.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     ludus::foundation::StaticArray<RasterBinding, ENTRY_COUNT> bindings{};
     for (usize entry = 0; entry < ENTRY_COUNT; ++entry)
     {
