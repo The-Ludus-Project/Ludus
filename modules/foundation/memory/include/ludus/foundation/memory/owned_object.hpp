@@ -147,7 +147,7 @@ template <typename ElementType, typename... ArgumentTypes>
                                              ArgumentTypes&&... arguments) noexcept
     requires(std::is_object_v<ElementType> && std::is_array_v<ElementType> == false &&
              std::is_same_v<ElementType, std::remove_cv_t<ElementType>> &&
-             std::is_nothrow_constructible_v<ElementType, ArgumentTypes && ...> &&
+             std::is_nothrow_constructible_v<ElementType, ArgumentTypes&&...> &&
              std::is_nothrow_destructible_v<ElementType>)
 {
     if (inoutOwner.Get() != nullptr)

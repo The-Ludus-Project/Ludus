@@ -31,7 +31,8 @@ bool gTrack = false;
 template <typename T>
 inline void doNotOptimize(const T& value)
 {
-    asm volatile("" : : "r,m"(value) : "memory");
+    // An empty asm statement is the benchmark optimization barrier; it emits no instructions.
+    asm volatile("" : : "r,m"(value) : "memory"); // NOLINT(portability-no-assembler)
 }
 
 float64 percentile(Array<float64>& inoutSamples, float64 p)
@@ -89,6 +90,9 @@ Timing measure(Fn&& batch, MeasureConfig config)
 }
 } // namespace
 
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(std::size_t n)
 {
     if (gTrack)
@@ -118,6 +122,7 @@ void operator delete(void* p, std::size_t) noexcept
 {
     std::free(p);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 int main()
 {

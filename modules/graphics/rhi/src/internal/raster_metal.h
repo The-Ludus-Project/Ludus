@@ -281,7 +281,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
                                                : info.Format == RasterFormat::Rgba16Float  ? MTLPixelFormatRGBA16Float
                                                : info.Format == RasterFormat::Rg8Unorm     ? MTLPixelFormatRG8Unorm
                                                : info.Format == RasterFormat::R8Unorm      ? MTLPixelFormatR8Unorm
-                                               : info.Format == RasterFormat::Rgba8Unorm   ? MTLPixelFormatRGBA8Unorm
+                                               : info.Format == RasterFormat::Rgba8Unorm ? MTLPixelFormatRGBA8Unorm
                                                                                          : MTLPixelFormatRGBA8Unorm_sRGB
                                          width:info.Width
                                         height:info.Height

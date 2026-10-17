@@ -51,6 +51,9 @@ struct RejectArrayAllocationScope final
 };
 } // namespace
 
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(std::size_t bytes, std::align_val_t alignment, const std::nothrow_t&) noexcept
 {
     if (gShouldRejectArrayAllocation == true)
@@ -68,6 +71,7 @@ void operator delete(void* pointer, std::size_t, std::align_val_t) noexcept
 {
     std::free(pointer);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 using namespace ludus::text;
 using ludus::foundation::Array;

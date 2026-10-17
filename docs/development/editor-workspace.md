@@ -111,7 +111,7 @@ sessions with programming and content disciplines remain a usability gate.
 
 The editor needs Qt 6 (6.4-compatible) with the Core/Gui/Widgets modules and a
 native platform plugin (Wayland on Linux, Cocoa on macOS), in addition to the normal reference toolchain
-(`./init.sh` prepares pinned Clang 18 / LLD / managed CMake/Ninja/Conan and the
+(`./init.sh` prepares pinned Clang 23 / LLD / managed CMake/Ninja/Conan and the
 managed Python venv). Qt is not added to Conan or the SDK. Default initialization
 skips editor setup; select **Build Ludus editor** in the setup window or use
 `./init.sh --cli --with-editor` to install missing Ubuntu/Debian Qt packages or
@@ -253,7 +253,7 @@ web presets, so a missing old browser installation cannot block desktop repair.
 Custom presets stay intact. The operation does not change the project engine
 requirement or committed lock.
 
-Repair verifies the managed CMake, Ninja, Clang 18, required SDK components,
+Repair verifies the managed CMake, Ninja, Clang 23, required SDK components,
 dependency prefixes and shader tool paths. It generates marked
 `ludus-local-<profile>` presets in ignored `CMakeUserPresets.json`, keeping custom
 presets and their includes. Machine paths stay in ignored presets and
@@ -1299,7 +1299,7 @@ See [architecture](../architecture/editor-architecture.md),
 
 ## macOS validation
 
-The macOS CI job builds the Editor with pinned Clang 18 and warnings as errors,
+The macOS CI job builds the Editor with pinned Clang 23 and warnings as errors,
 runs offscreen widget/document tests and real process-adapter regressions, and
 runs those widgets under ASan/UBSan. A separate explicit Cocoa test exercises a
 real native window, creation against an installed SDK, build/run, Stop of a

@@ -23,6 +23,9 @@ struct Fixture final
     {
         REQUIRE(::mkdtemp(Root) != nullptr);
     }
+    // Best-effort temporary-directory cleanup: only std::filesystem::path allocation
+    // can throw, and bad_alloc terminating the test process is acceptable here.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     ~Fixture()
     {
         std::error_code ignored;
@@ -62,9 +65,7 @@ TEST_CASE("Native saves require absence or the current digest and publish empty 
     REQUIRE(output.Data().empty());
     REQUIRE(SaveFile(fixture.Root, "empty", {}, nullptr) == Status::Ok);
     REQUIRE_FALSE(std::filesystem::exists(fixture.Path("data.ludus-save")));
-    struct stat info
-    {
-    };
+    struct stat info{};
     REQUIRE(::stat(fixture.Path("data").c_str(), &info) == 0);
     REQUIRE((info.st_mode & 0777) == 0600);
 }

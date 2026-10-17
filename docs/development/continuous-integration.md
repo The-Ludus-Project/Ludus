@@ -220,6 +220,14 @@ enables warnings as errors without invoking the full `init.sh --ci` validation.
 The profiling job disables compiler caching and retains its existing measurement
 concurrency for comparable uncached profiles.
 
+Ubuntu 24.04 runners do not package the pinned LLVM 23. Before installing
+`clang-23` and its tools, Linux jobs run `scripts/python/llvm_apt_source.py`.
+It registers only the `llvm-toolchain-noble-23` suite from apt.llvm.org, signed
+by the committed and fingerprint-checked `config/apt/apt.llvm.org.asc`
+([ADR 0025](../decisions/0025-llvm-toolchain-pin.md)). That suite serves only
+its newest 23.1.x build. The macOS setup action installs `llvm@23` and `lld@23`
+from Homebrew; init rejects either if `brew upgrade` moved it to another major.
+
 ### macOS runner images
 
 Native jobs use `macos-15` arm64. Host and documentation tooling separately check
@@ -236,8 +244,9 @@ calls it, and promotion requires it. Integration PRs run it only when they chang
 the threading module, the Windows FoundationBase diagnostics backend, the Windows
 Conan profile or the workflow itself.
 
-The Windows job installs LLVM 18.1.8 from Chocolatey on `windows-2025` and drives
-`clang++` against the runner's Microsoft STL and dynamic CRT. It installs the
+The Windows job installs the upstream LLVM 23.1.3 installer on `windows-2022`, after
+checking it against its pinned SHA-256 digest (Chocolatey does not package LLVM 23
+yet), and drives `clang++` against the runner's Microsoft STL and dynamic CRT. It installs the
 pinned CMake/Ninja/Conan versions, exports the local Catch2 recipe and installs
 only that locked package with `config/conan/profiles/windows-clang-x86_64`. Ludus
 configures only the FoundationThreading closure on Windows (Base, Memory,
@@ -248,8 +257,8 @@ and allocation suites once, then repeats the scheduler and startup suites 20 tim
 The macOS job prepares `macos-clang-development` without the editor or shader
 tools, proves TSan detection with the sanitizer control, then runs the threading,
 startup-seam and profiling-adapter suites under TSan, repeating the first two.
-The pinned LLVM 18 TSan runtime starts on the hosted macOS 15 image but not on
-macOS 26 hosts; see [macOS sanitizer runtimes](building.md#macos-sanitizer-runtimes).
+The pinned LLVM 23 TSan runtime also starts on local macOS 26 hosts, which LLVM
+before 22.1.3 could not; see [macOS sanitizer runtimes](building.md#macos-sanitizer-runtimes).
 
 ## Dependencies and caches
 
@@ -319,7 +328,7 @@ Registration steps and the trust boundary are in
 `LUDUS_ENABLE_UBSAN=ON` propagates `-fno-sanitize-recover=undefined` through the
 same project options as sanitizer instrumentation. Recoverable UB therefore
 fails the invoking test. Thanks to LLVM's
-[Clang 18 UBSan usage contract](https://releases.llvm.org/18.1.8/tools/clang/docs/UndefinedBehaviorSanitizer.html#usage)
+[Clang 23 UBSan usage contract](https://releases.llvm.org/23.1.0/tools/clang/docs/UndefinedBehaviorSanitizer.html#usage)
 for the fatal recovery policy and signed-overflow control.
 
 Enabled ASan, UBSan and TSan builds register `sanitizer-control` CTest tests.
@@ -339,8 +348,8 @@ out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --label-regex sani
 
 On macOS use `macos-clang-asan-ubsan`. TSan remains a separate build tree;
 its existing CI job now builds and runs `ludus_tsan_control_child` before the
-concurrency acceptance suite. It follows LLVM's [Clang 18.1.8 ThreadSanitizer
-usage example](https://releases.llvm.org/18.1.8/tools/clang/docs/ThreadSanitizer.html#usage):
+concurrency acceptance suite. It follows LLVM's [Clang 23.1.0 ThreadSanitizer
+usage example](https://releases.llvm.org/23.1.0/tools/clang/docs/ThreadSanitizer.html#usage):
 parent and worker write one shared global volatile slot before joining, using
 direct `pthread_create`/`pthread_join` calls with explicit error checks. The
 worker polls a separate relaxed atomic gate set after the parent's write. This
@@ -394,7 +403,7 @@ contracts. Embedded Python/ShellCheck adapters are disabled so optional unpinned
 tools cannot silently change the check. Composite action YAML is not claimed as
 actionlint coverage. ShellCheck remains a separate future rollout.
 
-`config/clang-analyzer.yml` selects stable LLVM 18 `core`, `cplusplus` and `unix`
+`config/clang-analyzer.yml` selects stable LLVM 23 `core`, `cplusplus` and `unix`
 families. Experimental/opt-in checkers are not enabled.
 The released Move check uses `WarnOn=KnownsOnly`: it models known standard types
 without treating Ludus' documented empty/reusable moved-from states as errors.

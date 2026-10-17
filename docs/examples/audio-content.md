@@ -20,7 +20,7 @@ polling-based. This sample's adapter exclusively owns resident clips in its Audi
 
 ## Build with an installed SDK
 
-Use the pinned CMake 3.29+, Ninja and Clang 18. Set `LUDUS_SDK_DEBUG` to the
+Use the pinned CMake 3.29+, Ninja and Clang 23. Set `LUDUS_SDK_DEBUG` to the
 installed Debug SDK directory. From the Ludus checkout root, enter the sample:
 
 ```sh

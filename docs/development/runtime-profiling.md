@@ -245,7 +245,7 @@ A repository administrator and the device owner do this once per machine:
 
 1. **Prepare the machine.** Use a dedicated machine with a physical GPU and a
    standard user account that has no other credentials. Install the
-   prerequisites from [Building Ludus](building.md) (Clang 18, Python 3.10 or
+   prerequisites from [Building Ludus](building.md) (Clang 23, Python 3.10 or
    newer, Git), plus the GitHub CLI `gh` for the baseline download. On Linux,
    install the GPU vendor's Vulkan driver and `vulkan-tools`.
 2. **Install the admission hook.** From a reviewed `main` checkout, copy the

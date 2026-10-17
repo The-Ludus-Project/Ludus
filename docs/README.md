@@ -204,6 +204,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [ADR 0022: Bounded parsing foundation and JSON extraction](decisions/0022-bounded-parsing-foundation.md)
 - [ADR 0023: Editor presentation and portable document core](decisions/0023-editor-presentation-and-document-core.md)
 - [ADR 0024: Curves and surfaces domains, statuses and numeric guarantees](decisions/0024-curves-surfaces-contracts.md)
+- [ADR 0025: Pin the native reference toolchain to LLVM 23](decisions/0025-llvm-toolchain-pin.md)
 
 ## Research and reviews
 

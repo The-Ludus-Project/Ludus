@@ -1,6 +1,6 @@
 # Native gameplay live editing
 
-Supported hosts are Linux x64 and macOS arm64/x64 with pinned Clang 18 and a
+Supported hosts are Linux x64 and macOS arm64/x64 with pinned Clang 23 and a
 matching Debug or Development SDK. CMake resolves the module's actual artifact;
 Linux uses ELF and macOS uses thin Mach-O. Windows DLL loading remains a separate
 backend and is not implemented. macOS requires the pinned compiler's sibling

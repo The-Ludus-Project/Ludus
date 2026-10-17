@@ -173,7 +173,7 @@ void AppendEventObject(std::string& out, bool& first, const ChromeEvent& event) 
     out += event.Phase;
     out += "\",\"name\":\"";
     AppendJsonEscaped(out, event.Name.empty() ? std::string_view{"?"} : event.Name);
-    out += "\"";
+    out += '"';
     if (event.Phase == 'i')
     {
         out += ",\"s\":\"t\"";
@@ -191,13 +191,13 @@ void AppendEventObject(std::string& out, bool& first, const ChromeEvent& event) 
     {
         out += ",\"args\":{\"value\":";
         AppendUint(out, event.CounterValue);
-        out += "}";
+        out += '}';
     }
     if (event.Incomplete)
     {
         out += ",\"args\":{\"incomplete\":true}";
     }
-    out += "}";
+    out += '}';
 }
 
 } // namespace

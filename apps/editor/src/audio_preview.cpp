@@ -258,7 +258,7 @@ struct AudioPreview::Impl final
         (void)system.BeginShutdown();
     }
 };
-AudioPreview::AudioPreview(QObject* parent) : QObject(parent), Impl_(new(std::nothrow) Impl(this)) {}
+AudioPreview::AudioPreview(QObject* parent) : QObject(parent), Impl_(new (std::nothrow) Impl(this)) {}
 bool AudioPreview::Start()
 {
     if (Impl_ == nullptr || Impl_->Closing.load(std::memory_order_acquire))

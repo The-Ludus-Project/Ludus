@@ -19,7 +19,8 @@ packages. It checks `NAN` and `INFINITY`, whose header definitions HarfBuzz need
 and that `<cfloat>` still defines `DBL_MAX_10_EXP` after `<cmath>`, which Catch2
 needs. Clang 18 with the macOS 27 SDK fails the first check; libc++ 22 with that
 SDK fails the second ([llvm/llvm-project#175849](https://github.com/llvm/llvm-project/pull/175849)).
-macOS 26.5 passes both on the tested host. Without `SDKROOT`, init tests Clang's default SDK first, then installed
+The pinned LLVM 23 passes both with the macOS 26.5 and 27.0 SDKs on the tested
+host, so the default Command Line Tools SDK needs no override. Without `SDKROOT`, init tests Clang's default SDK first, then installed
 sibling SDKs newest first, selecting the first that passes. It does not download
 an older SDK or change the system's Xcode selection.
 
@@ -29,7 +30,7 @@ added by Apple's Python launcher does not prevent automatic SDK selection. If it
 install/select a compatible SDK, then rerun init, for example:
 
 ```bash
-SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk ./init.sh
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk ./init.sh
 ```
 
 If `SDKROOT` was set accidentally, use `unset SDKROOT` and rerun `./init.sh`.
@@ -192,9 +193,9 @@ future editor and scripting milestones.
 ## macOS support
 
 
-The first macOS slice uses upstream Clang 18 and libc++ with Apple silicon
+The first macOS slice uses upstream Clang 23 and libc++ with Apple silicon
 and Intel profiles, targeting macOS 14 or later. Install Xcode Command Line Tools and
-Homebrew's `llvm@18`, then run:
+Homebrew's `llvm@23` and `lld@23` (Homebrew ships LLD as a separate formula), then run:
 
 ```bash
 ./init.sh --cli macos-clang-development --preset-only --locked --no-system-install
@@ -227,8 +228,8 @@ compiler detection and prints the init command needed to prepare that profile.
 
 Debug, Development, and ASan/UBSan builds are validated on Apple silicon.
 Native Cocoa integration tests require a WindowServer session and opt in with
-`LUDUS_TEST_COCOA=1`; deferred feature cases explicitly skip. The pinned Clang 18
-sanitizer runtimes cannot start on macOS 26 or newer; see
+`LUDUS_TEST_COCOA=1`; deferred feature cases explicitly skip. The pinned LLVM 23
+sanitizer runtimes start on macOS 26; LLVM before 22.1.3 does not, see
 [macOS sanitizer runtimes](#macos-sanitizer-runtimes). The macOS 14 CI job runs the Cocoa lifecycle and keyboard
 tests, Metal lifecycle/rendering tests, native filesystem tests and Content read adapters with ASan/UBSan
 as well as the regular Development build.
@@ -257,10 +258,16 @@ each compiler:
 
 | Compiler | `-fsanitize=address,undefined` | `-fsanitize=thread` |
 | --- | --- | --- |
-| Homebrew LLVM 18.1.8 (pinned) | hangs | `SIGSEGV` |
+| Homebrew LLVM 18.1.8 (pinned before LLVM 23) | hangs | `SIGSEGV` |
 | Homebrew LLVM 21.1.8 | hangs | `SIGSEGV` |
 | Homebrew LLVM 22.1.8 | exits 0; detects a heap overflow | exits 0 |
+| Homebrew LLVM 23.1.3 (pinned) | exits 0 (10 of 10 runs, SDK 26.5 and 27.0) | exits 0 (10 of 10 runs) |
 | Apple Clang 21 (Xcode CLT) | exits 0 | exits 0 |
+
+The pinned LLVM 23 therefore runs `macos-clang-asan-ubsan` locally on macOS 26.
+On the same host its full suite passed 81 of 83 tests; neither remaining failure
+was a sanitizer start-up failure. [ADR 0025](../decisions/0025-llvm-toolchain-pin.md)
+records the measurements behind the pin.
 
 Before a sanitizer configuration adds any target, CMake builds a trivial
 program with the selected `-fsanitize` flags. It runs that program for at most
@@ -269,23 +276,28 @@ or exits nonzero, configuration stops. The diagnostic names the known cause
 when it applies. Running the tests would otherwise hang every test process. A
 passing result is cached for that compiler, flag set and host OS version.
 
-On an affected Mac:
+If the probe still fails, for example with a user-supplied LLVM older than 22.1.3:
 
-- Treat the CI sanitizer jobs as authoritative. The macOS 14 and Linux runners
-  use the pinned LLVM 18 runtimes, which start there.
+- Use the pinned LLVM 23 (`brew install llvm@23 lld@23`, then rerun `./init.sh`).
 - Run local onboarding validation without the sanitizer preset:
   `./init.sh --validate --skip-sanitizers`.
 - `-DLUDUS_SANITIZER_RUNTIME_PROBE=OFF` disables the probe. Use it only to
   investigate a runtime, because affected tests then hang again.
 
 Using a different LLVM for this preset is not supported. The repository pins
-LLVM 18 for compilation, formatting and analysis
-(`config/tool_versions.json`), so a newer toolchain would need to be adopted
+LLVM 23 for compilation, formatting and analysis
+(`config/tool_versions.json`), so another toolchain would need to be adopted
 deliberately across all tools. Repository scripts and CMake compiler gates read
 the major from that file's `minimum.clang`. The ludus-tools wheel constant, Conan
 profiles and example presets cannot read it; `test_ci.ToolchainPinTests` fails
 when they disagree. CI workflows, the devcontainer and Behavior profiles still
-name the version and change with the pin.
+name the version; `test_ci.ToolchainPinTests` also checks the workflow and
+devcontainer package names.
+
+Until Homebrew publishes versioned formulae for LLVM 23, `llvm@23` and `lld@23`
+are aliases of the unversioned `llvm` and `lld`, and `brew upgrade` can move them
+to the next major. Init then stops and names the formula; `brew pin llvm lld`
+prevents the move while those formulae still provide LLVM 23.
 
 Platform now provides [native Cocoa windows and keyboard input](../architecture/macos-platform.md).
 It publishes borrowed native handles and backing-pixel dimensions for the Metal backend. RHI supports Cocoa presentation and headless rendering,
@@ -313,9 +325,15 @@ Prepare only the preset you need, with tests explicitly enabled:
 ```
 
 Use `--no-system-install` when system prerequisites are already available.
-User-owned LLVM 18 installations work when their `bin` directory is on `PATH`
+User-owned LLVM 23 installations work when their `bin` directory is on `PATH`
 and their shared libraries are discoverable by the host loader. Setup resolves
-versioned executables such as `clang++-18` and creates project-local tool shims.
+versioned executables such as `clang++-23` and creates project-local tool shims.
+Ubuntu 24.04 does not package LLVM 23. On Ubuntu, init registers the pinned
+`llvm-toolchain-<codename>-23` suite from [apt.llvm.org](https://apt.llvm.org/)
+when the configured sources lack it, and prints that it adds this third-party
+source. Its archive key is committed as `config/apt/apt.llvm.org.asc` and checked
+against the published fingerprint first; `python3 scripts/python/llvm_apt_source.py`
+performs the same registration manually.
 It validates the host toolchain before creating the build-tool venv or downloading
 Python packages. `--no-system-install` still downloads the pinned managed tools
 and Conan dependencies; `--locked` preserves the committed dependency lock.
@@ -348,7 +366,7 @@ force diagnostic helpers into report-only mode during local headless work, set
 ## Development container
 
 The checked-in `.devcontainer/` configuration supplies the Ubuntu 24.04 reference
-host, LLVM 18 (including formatting, analysis and sanitizer tools), Python venv
+host, LLVM 23 from its pinned apt.llvm.org suite (including formatting, analysis and sanitizer tools), Python venv
 support and native build prerequisites. It omits Wayland and Qt development
 packages so the default configuration uses the headless backend.
 
@@ -586,11 +604,11 @@ After building the native preset you want to edit, select it explicitly:
 ./scripts/setup-editor macos-clang-development # use linux-clang-development on Linux
 ```
 
-Install reference `clangd-18` on Linux (`sudo apt-get install clangd-18`); Homebrew
-`llvm@18` supplies it on macOS. Initialization creates its managed shim when
+Install reference `clangd-23` on Linux (`sudo apt-get install clangd-23` from the pinned apt.llvm.org suite); Homebrew
+`llvm@23` supplies it on macOS. Initialization creates its managed shim when
 available. Existing prepared checkouts can rerun initialization to add the shim.
 Then run **clangd: Restart language server**. The tracked clangd launcher uses
-that selection's database with reference LLVM 18 builtin headers and the preset's
+that selection's database with reference LLVM 23 builtin headers and the preset's
 explicit SDK/libc++ paths. It executes no external query driver. It rejects
 missing/stale setup, moved checkouts, wrong-host presets and incomplete source
 inventories. Opening the editor does not download, configure or repair anything.
@@ -629,10 +647,10 @@ Apply formatting:
 ./scripts/check linux-clang-development --format --fix
 ```
 
-The formatter uses clang-format 18 and preserves compact designated initializers
+The formatter uses clang-format 23 and preserves compact designated initializers
 on one line (`value = { .A = 0, .B = 1 };`). Multiline initializers place the
 opening brace on its own line, with one member per line and a trailing comma.
-Clang-format 18 alone cannot express the opening-brace rule, so run the project
+Clang-format 23 alone cannot express the opening-brace rule, so run the project
 command for both applying and checking formatting. The brace normalization
 changes only whitespace: where clang-format keeps a closing brace on the last
 member's line, such as an initializer in a ternary operand, that list keeps
@@ -669,7 +687,7 @@ application, probe and consumer-fixture sources while excluding pinned vendor im
 Both browser build configurations remain checked.
 
 The native Development CI job also installs and relocates the SDK and links an
-external consumer with Clang 18, without producer dependency paths. This reuses
+external consumer with Clang 23, without producer dependency paths. This reuses
 the existing SDK build and makes relocation a required gate. Debug runtime
 validation covers Debug assertion policies; the separate assertion matrix
 continues to exercise Profile and Release.
@@ -757,7 +775,7 @@ regressions to the owning check rather than relying on an isolated PR comment.
 Run the changed-source gate with an explicit comparison:
 
 ```sh
-python3 scripts/python/source_policy.py --base origin/main --clang-format clang-format-18
+python3 scripts/python/source_policy.py --base origin/main --clang-format clang-format-23
 PYTHONPATH=scripts/python python3 -m unittest test_source_policy -v
 ```
 

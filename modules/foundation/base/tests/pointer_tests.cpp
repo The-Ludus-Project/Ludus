@@ -293,6 +293,8 @@ struct ThrowingDestructorDeleter
     ThrowingDestructorDeleter() noexcept = default;
     ThrowingDestructorDeleter(const ThrowingDestructorDeleter&) noexcept = default;
     ThrowingDestructorDeleter& operator=(const ThrowingDestructorDeleter&) noexcept = default;
+    // Deliberately potentially-throwing so trait tests can reject it.
+    // NOLINTNEXTLINE(bugprone-unsafe-to-allow-exceptions)
     ~ThrowingDestructorDeleter() noexcept(false) {}
 
     void operator()(int32* object) const noexcept
@@ -316,7 +318,11 @@ struct NonDefaultDeleter
 struct ThrowingMoveDeleter
 {
     ThrowingMoveDeleter() noexcept = default;
+    // Deliberately potentially-throwing so trait tests can reject it.
+    // NOLINTNEXTLINE(bugprone-unsafe-to-allow-exceptions)
     ThrowingMoveDeleter(ThrowingMoveDeleter&&) noexcept(false) {}
+    // Deliberately potentially-throwing so trait tests can reject it.
+    // NOLINTNEXTLINE(bugprone-unsafe-to-allow-exceptions)
     ThrowingMoveDeleter& operator=(ThrowingMoveDeleter&&) noexcept(false)
     {
         return *this;

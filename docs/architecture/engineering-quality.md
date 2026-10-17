@@ -19,7 +19,7 @@ contributors can understand and reproduce. Optimize developer waiting time,
 runner minutes, actionable findings and time to reproduce a failure together.
 Tool count, a clean dashboard and a coverage percentage are not quality goals.
 
-Retain C++23, Clang/LLVM 18, no engine exceptions, explicit errors, dependency
+Retain C++23, Clang/LLVM 23, no engine exceptions, explicit errors, dependency
 direction, public API documentation, lightweight headers and the reference
 Ubuntu 24.04 toolchain. Native macOS and pinned Emscripten/browser toolchains
 remain distinct capabilities. PowerShell wrappers do not imply Windows support.

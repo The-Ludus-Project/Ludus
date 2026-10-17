@@ -24,7 +24,7 @@ no exceptions, private OS implementation, and no heavy public-header includes.
 Pin RAD v0.9.29-alpha, commit
 `cd41ba199bbe091d348a9b2be5a3528cb8acbff0`. Its Linux x64 support is preliminary;
 upstream supplies source rather than Linux release binaries. Build it on the
-developer's host with the reference Clang 18, using upstream's build script.
+developer's host with the reference Clang 23, using upstream's build script.
 Keep its source, artifacts, and build stamp under ignored `out/host-tools/`.
 Changes to the pin require another compatibility acceptance pass.
 
@@ -72,7 +72,7 @@ version. `scripts/doctor` reports availability as optional, not compatibility.
 `scripts/setup-rad-debugger` for existing checkouts. Only those commands may
 download RAD or install its build prerequisites. `--no-system-install` applies
 to RAD too: check existing packages and print the missing dependency remedy.
-The optional build requires Git, Clang/LLVM 18, pkg-config, FreeType, X11/Xext/
+The optional build requires Git, Clang/LLVM 23, pkg-config, FreeType, X11/Xext/
 Xfixes, GL, and EGL development libraries. On Wayland, the initial RAD UI needs
 XWayland; Ludus's game window backend remains independent.
 

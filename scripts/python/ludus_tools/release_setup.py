@@ -12,7 +12,7 @@ from .package_verify import file_digest
 from .release_model import canonical, fail, json_bytes, load_release
 from .release_template import release_files
 from .templates import TemplateFile
-from .toolchain import PINNED_LLVM_MAJOR
+from .toolchain import LLVM_APT_KEY_FINGERPRINT, PINNED_LLVM_MAJOR
 
 WORKFLOW = r'''name: itch.io release
 on:
@@ -41,6 +41,13 @@ jobs:
           persist-credentials: false
       - name: Install build prerequisites
         run: |
+          # Ubuntu 24.04 does not package the pinned LLVM; trust only apt.llvm.org's published key.
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/apt.llvm.org.asc"
+          fingerprint="$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt.llvm.org.asc" | awk -F: '/^fpr:/ { print $10; exit }')"
+          [[ "$fingerprint" == LLVM_APT_KEY_TOKEN ]]
+          sudo install -D -m 0644 "$RUNNER_TEMP/apt.llvm.org.asc" /etc/apt/keyrings/ludus-apt.llvm.org.asc
+          printf 'Types: deb\nURIs: https://apt.llvm.org/noble/\nSuites: llvm-toolchain-noble-LLVM_MAJOR_TOKEN\nComponents: main\nSigned-By: /etc/apt/keyrings/ludus-apt.llvm.org.asc\n' \
+            | sudo tee /etc/apt/sources.list.d/ludus-apt.llvm.org.sources > /dev/null
           sudo apt-get update -qq
           sudo apt-get install -y -qq python3-venv clang-LLVM_MAJOR_TOKEN lld-LLVM_MAJOR_TOKEN binutils libwayland-dev wayland-protocols
           python3 -m venv /tmp/ludus-release-tools
@@ -168,7 +175,7 @@ def workflow_text(profile: str, destination: str, platform: str) -> str:
         # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
         runner = "macos-14" if platform == "macos-arm64" else "macos-15-intel"
         text = text.split("  upload:\n", 1)[0].replace("name: itch.io release", "name: macOS release package").replace("runs-on: ubuntu-24.04", "runs-on: " + runner)
-        start = text.index("          sudo apt-get update -qq")
+        start = text.index("          # Ubuntu 24.04 does not package the pinned LLVM")
         end = text.index("          ref=$(cat", start)
         text = text[:start] + """          brew install python@3.12 llvm@LLVM_MAJOR_TOKEN
           python_bin="$(brew --prefix python@3.12)/bin/python3.12"
@@ -178,7 +185,7 @@ def workflow_text(profile: str, destination: str, platform: str) -> str:
           echo 'MACOSX_DEPLOYMENT_TARGET=14.0' >> "$GITHUB_ENV"
           echo "CXXFLAGS=-stdlib=libc++ -nostdinc++ -isystem $llvm_prefix/include/c++/v1" >> "$GITHUB_ENV"
 """ + text[end:]
-    text = text.replace('LLVM_MAJOR_TOKEN', str(PINNED_LLVM_MAJOR))
+    text = text.replace('LLVM_MAJOR_TOKEN', str(PINNED_LLVM_MAJOR)).replace('LLVM_APT_KEY_TOKEN', LLVM_APT_KEY_FINGERPRINT)
     return text.replace('PROFILE_TOKEN', profile).replace('DESTINATION_TOKEN', destination).replace('NATIVE_SDK_STEP', NATIVE_SDK_STEP.rstrip() if platform != 'web' else '')
 
 

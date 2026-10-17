@@ -151,9 +151,7 @@ Status ReadAt(int directory, const char* path, usize cap, Bytes& output) noexcep
     {
         return errno == ENOENT ? Status::NotFound : Status::IoError;
     }
-    struct stat info
-    {
-    };
+    struct stat info{};
     if (fstat(fd.Value, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 0)
     {
         return Status::IoError;

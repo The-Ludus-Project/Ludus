@@ -136,8 +136,9 @@ jobs:
           key: web-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/web_toolchain.json', 'config/shader_toolchain.json', 'config/spirv_cross_toolchain.json') }}
       - name: Prepare host tools and pinned SDK
         run: |
+          python3 scripts/python/llvm_apt_source.py
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 clang-format-18 clang-tidy-18 python3-venv
+          sudo apt-get install -y -qq clang-23 clang-format-23 clang-tidy-23 python3-venv
           python3 - <<'PY'
           import hashlib
           import json
@@ -462,8 +463,9 @@ jobs:
           key: web-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/web_toolchain.json', 'config/shader_toolchain.json', 'config/spirv_cross_toolchain.json') }}
       - name: Prepare host tools and pinned SDK
         run: |
+          python3 scripts/python/llvm_apt_source.py
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 clang-format-18 clang-tidy-18 python3-venv
+          sudo apt-get install -y -qq clang-23 clang-format-23 clang-tidy-23 python3-venv
           python3 - <<'PY'
           import hashlib
           import json

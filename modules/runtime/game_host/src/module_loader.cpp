@@ -26,7 +26,7 @@ constexpr usize kMinTableSize = offsetof(GameApiTable, Quiesce);
 // covers all of its bytes. A capability callback beyond StructSize is treated
 // as absent even if the host struct would place a pointer there.
 template <typename FieldPtr>
-[[nodiscard]] bool FieldWithin(uint32 structSize, FieldPtr GameApiTable::*member) noexcept
+[[nodiscard]] bool FieldWithin(uint32 structSize, FieldPtr GameApiTable::* member) noexcept
 {
     const GameApiTable probe{};
     const auto* base = reinterpret_cast<const uint8*>(&probe);

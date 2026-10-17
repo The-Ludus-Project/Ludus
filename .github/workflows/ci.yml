@@ -483,7 +483,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install pinned formatter and GUI test dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-18 clang-tidy-18 python3-venv python3-tk xvfb xauth liblz4-1
+        run: python3 scripts/python/llvm_apt_source.py && sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-23 clang-tidy-23 python3-venv python3-tk xvfb xauth liblz4-1
       - name: Install pinned CMake and Ninja for live project setup tests
         run: |
           python3 - <<'PY'
@@ -542,7 +542,7 @@ jobs:
           SOURCE_POLICY_BASE: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'origin/main' }}
           SOURCE_POLICY_HEAD: ${{ inputs.batch_sha || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: |
-          python3 scripts/python/source_policy.py --base "$SOURCE_POLICY_BASE" --head "$SOURCE_POLICY_HEAD" --clang-format clang-format-18
+          python3 scripts/python/source_policy.py --base "$SOURCE_POLICY_BASE" --head "$SOURCE_POLICY_HEAD" --clang-format clang-format-23
           PYTHONPATH=scripts/python python3 -m unittest test_source_policy test_renderer_shader_recipes -v
       - name: Test S0 Luau source and bytecode integrity contracts
         run: python3 -m unittest discover -s tools/luau-probe -p 'test_*.py' -v
@@ -681,7 +681,7 @@ jobs:
             --benchmark out/build/linux-clang-development/modules/foundation/filesystem/ludus_filesystem_benchmark \
             --output out/filesystem-streaming/results --repetitions 3 --contention 0 \
             --open-modes shared --tracing 0 --cache warm \
-            --compiler-description 'CI pinned Clang 18 Development O2' \
+            --compiler-description 'CI pinned Clang 23 Development O2' \
             --storage-description 'disposable Ubuntu runner, see environment.json mount/df'
           out/host-tools/venv/bin/ctest --preset linux-clang-development -R 'filesystem_streaming_' --no-tests=error
       - name: Preserve filesystem measurements
@@ -711,7 +711,7 @@ jobs:
           env -i PATH="$tools:/usr/bin:/bin" "$tools/cmake" \
             -S tests/sdk_consumer -B "$consumer" -G Ninja \
             -DCMAKE_MAKE_PROGRAM="$tools/ninja" \
-            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-18 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-23 \
             -DCMAKE_PREFIX_PATH="$reloc" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           env -i PATH="$tools:/usr/bin:/bin" "$tools/cmake" --build "$consumer" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
@@ -858,7 +858,7 @@ jobs:
           sources = [*Path('src').glob('*.cpp'), *Path('src').glob('*.hpp'), *Path('tests').glob('*.cpp')]
           for source in sources:
               source = source.resolve()
-              assert source.read_text() == format_source(source.read_text(), source, 'clang-format-18'), f'Format {source}'
+              assert source.read_text() == format_source(source.read_text(), source, 'clang-format-23'), f'Format {source}'
           PYFORMAT
           # Exercise the same setup backend as Project > Repair Project Setup.
           # Start without local presets, then prove repeated repair stays usable.

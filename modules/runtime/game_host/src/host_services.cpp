@@ -228,7 +228,7 @@ bool ReleaseWorkCallback(HostContext* ctx) noexcept
 }
 } // namespace
 
-HostServiceProvider::HostServiceProvider() noexcept : Context_(new(std::nothrow) Context())
+HostServiceProvider::HostServiceProvider() noexcept : Context_(new (std::nothrow) Context())
 {
     if (Context_ != nullptr)
     {

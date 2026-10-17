@@ -118,13 +118,17 @@ struct Fixture final
         const auto wav = audio::test::MakeSineWav(48000, 1, 4800);
         REQUIRE(content::SaveFile(Root, "hit.wav", wav, nullptr) == content::Status::Ok);
     }
+    // Best-effort temporary-directory cleanup: only std::filesystem::path allocation
+    // can throw, and bad_alloc terminating the test process is acceptable here.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     ~Fixture()
     {
         std::error_code error;
         std::filesystem::remove_all(Root, error);
     }
 };
-const std::string_view BUSES[] = {"master"}, GROUPS[] = {"default"};
+constexpr std::string_view BUSES[] = {"master"};
+constexpr std::string_view GROUPS[] = {"default"};
 const audio::content::Routing ROUTING{BUSES, GROUPS};
 } // namespace
 namespace r = ludus::resources;

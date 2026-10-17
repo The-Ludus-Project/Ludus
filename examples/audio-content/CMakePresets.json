@@ -2,7 +2,7 @@
   "version": 6,
   "configurePresets": [
     {"name": "native-debug", "generator": "Ninja", "binaryDir": "${sourceDir}/out/debug",
-     "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "clang++-18", "CMAKE_PREFIX_PATH": "$env{LUDUS_SDK_DEBUG}"}},
+     "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "clang++-23", "CMAKE_PREFIX_PATH": "$env{LUDUS_SDK_DEBUG}"}},
     {"name": "native-development", "inherits": "native-debug", "binaryDir": "${sourceDir}/out/development",
      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "CMAKE_PREFIX_PATH": "$env{LUDUS_SDK_DEVELOPMENT}"}},
     {"name": "native-release", "inherits": "native-debug", "binaryDir": "${sourceDir}/out/release",

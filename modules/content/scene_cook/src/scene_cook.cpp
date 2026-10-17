@@ -1689,12 +1689,17 @@ struct AtlasPiece final
     {
         return inoutErrors.FailInvalid("wallpaper repeat clipping limit");
     }
-    for (float64 cellX = 0.0; cellX < cellsX; cellX += 1.0)
+    // The limit above bounds both whole-cell counts to [1, 256]; a NaN count
+    // fails every comparison and, as before, admits no cells.
+    const usize countX = cellsX >= 1.0 && cellsX <= 256.0 ? static_cast<usize>(cellsX) : 0;
+    const usize countY = cellsY >= 1.0 && cellsY <= 256.0 ? static_cast<usize>(cellsY) : 0;
+    for (usize cellX = 0; cellX < countX; ++cellX)
     {
-        for (float64 cellY = 0.0; cellY < cellsY; cellY += 1.0)
+        for (usize cellY = 0; cellY < countY; ++cellY)
         {
-            if (BuildAtlasCell(inoutErrors, vertices, lowX + cellX, lowY + cellY, atlasWidth, atlasHeight, outPieces) ==
-                false)
+            const float64 originX = lowX + static_cast<float64>(cellX);
+            const float64 originY = lowY + static_cast<float64>(cellY);
+            if (BuildAtlasCell(inoutErrors, vertices, originX, originY, atlasWidth, atlasHeight, outPieces) == false)
             {
                 return false;
             }

@@ -62,7 +62,7 @@ before reading, and Qt owns the suspend/resume dispatch. This is an intentional
 version coupling: editor upgrades must verify this adapter in a browser. Browser
 downloads use a separate JavaScript bridge with copied bytes and explicit names.
 
-Static analysis still uses Clang 18. `web_build.analysis_commands` enables
+Static analysis still uses Clang 23. `web_build.analysis_commands` enables
 `-frelaxed-template-template-args` for the standard template-matching rule that
 is already the default in the newer SDK compiler; this is required to parse
 Emscripten's `val.h`. The language mode remains C++23 and diagnostics remain errors.

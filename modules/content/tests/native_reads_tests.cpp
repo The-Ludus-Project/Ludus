@@ -20,6 +20,9 @@ struct Fixture final
         Write("data", "abc");
         Write("empty", "");
     }
+    // Best-effort temporary-directory cleanup: only std::filesystem::path allocation
+    // can throw, and bad_alloc terminating the test process is acceptable here.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     ~Fixture()
     {
         std::error_code ignored;

@@ -19,6 +19,9 @@ std::atomic<bool> gTrackAllocs{false};
 std::atomic<ludus::foundation::uint64> gAllocCount{0};
 } // namespace
 
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(std::size_t size)
 {
     if (gTrackAllocs.load(std::memory_order_relaxed))
@@ -63,6 +66,7 @@ void operator delete[](void* p, std::size_t) noexcept
 {
     std::free(p);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 using namespace ludus::audio;
 using ludus::foundation::Array;

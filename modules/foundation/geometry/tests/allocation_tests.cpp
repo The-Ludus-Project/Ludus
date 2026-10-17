@@ -157,6 +157,9 @@ struct CountingScope final
 }
 } // namespace
 
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(usize bytes)
 {
     (void)ShouldFail();
@@ -201,6 +204,7 @@ void operator delete(void* allocationOrNull, usize, std::align_val_t) noexcept
 {
     std::free(allocationOrNull);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 TEST_CASE("Every preparation allocation failure returns OutOfMemory and preserves the owner", "[geometry][alloc]")
 {

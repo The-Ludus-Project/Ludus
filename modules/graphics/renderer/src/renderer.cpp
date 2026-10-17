@@ -3662,7 +3662,9 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     }
     // Explicit vec4 packing is independently verified for every cooked target.
     LitMaterialParameters& parameters = s.LitScratch->Parameters;
-    std::memset(&parameters, 0, sizeof(parameters));
+    // Every member defaults to zero and the size assertion above rules out padding,
+    // so value-initialization yields the same bytes as clearing the storage.
+    parameters = LitMaterialParameters{};
     parameters.Tint = description.Surface.Tint;
     parameters.UvTransform = description.Surface.UvTransform;
     parameters.Options = {description.Surface.AlphaCutoff,

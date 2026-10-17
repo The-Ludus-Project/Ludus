@@ -457,6 +457,8 @@ TEST_CASE("R11 GDI rejects a missing reachable array texture before native execu
         REQUIRE(CreateOrderedGraph(session.Device, graph) == RasterStatus::Ready);
         REQUIRE(ImportGraphBuffer(session.Device, graph, scene.Vertices, vertices) == RasterStatus::Ready);
         REQUIRE(ImportGraphBuffer(session.Device, graph, scene.Indices, indices) == RasterStatus::Ready);
+        // Elements use their default member initializers; the check misreports them as zero enums.
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
         GraphUse uses[TEXTURE_COUNT + 2]{};
         uses[0] = { .Resource = vertices, .Access = GraphAccessMode::Vertex, .Size = 36 };
         uses[1] = { .Resource = indices, .Access = GraphAccessMode::Index, .Size = 6 };

@@ -2,7 +2,7 @@
 
 Prepare the desktop editor once, then use it to open, build and run projects.
 The supported native editor host is **Ubuntu 24.04, Linux x64**. The engine uses
-C++23 with Clang/LLVM 18 and LLD; Qt stays outside the engine SDK.
+C++23 with Clang/LLVM 23 and LLD; Qt stays outside the engine SDK.
 
 ## 1. Get the source
 

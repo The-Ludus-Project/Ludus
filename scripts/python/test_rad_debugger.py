@@ -235,6 +235,23 @@ class RadTests(unittest.TestCase):
             rad.setup_locked(self.root, self.root, self.data, argparse.Namespace(no_system_install=True), engine)
         run.assert_not_called()
 
+    def test_ubuntu_setup_registers_the_pinned_llvm_source_before_apt(self) -> None:
+        import llvm_apt_source
+
+        major = engine.llvm_major_version(engine.load_tool_versions(self.root))
+        with patch.object(rad, "build_tools", return_value=(None, None, False)), \
+                patch.object(engine, "host_supports_apt_install", return_value=True), \
+                patch.object(engine, "host_is_ubuntu", return_value=True), \
+                patch.object(engine, "apt_package_has_candidate", return_value=False), \
+                patch.object(engine, "sudo_command_prefix", return_value=["sudo"]), \
+                patch.object(llvm_apt_source, "os_release_codename", return_value="noble"), \
+                patch.object(llvm_apt_source, "register") as register, \
+                patch.object(engine, "run") as run, \
+                self.assertRaisesRegex(engine.EngineError, "still unavailable"):
+            rad.setup_locked(self.root, self.root, self.data, argparse.Namespace(no_system_install=False), engine)
+        register.assert_called_once_with(self.root, "noble", major, ["sudo"])
+        self.assertIn(f"clang-{major}", run.call_args_list[-1].args[0])
+
     def setup_fixture(self) -> Path:
         source = rad.install_dir(self.root, self.data) / "source"
         (source / ".git").mkdir(parents=True)

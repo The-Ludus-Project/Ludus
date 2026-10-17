@@ -33,7 +33,7 @@ def comparable_tokens(source):
     return comparable
 
 
-@unittest.skipUnless(CLANG_FORMAT, "requires pinned clang-format 18")
+@unittest.skipUnless(CLANG_FORMAT, f"requires pinned {engine.pinned_llvm_tool(ROOT, 'clang-format')}")
 class FormattingTests(unittest.TestCase):
     def formatted(self, source):
         result = format_source(source, ROOT / "apps/smoke/main.cpp", CLANG_FORMAT)

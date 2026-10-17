@@ -101,6 +101,9 @@ void* Allocate(usize bytes) noexcept
     return std::malloc(bytes == 0 ? 1 : bytes);
 }
 } // namespace
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(usize bytes)
 {
     if (auto* allocation = Allocate(bytes))
@@ -145,6 +148,7 @@ void operator delete[](void* allocation, const std::nothrow_t&) noexcept
 {
     std::free(allocation);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 TEST_CASE("Warm async submission cancellation delivery tracing and metrics allocate nothing")
 {

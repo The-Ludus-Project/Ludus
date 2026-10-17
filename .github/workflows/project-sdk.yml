@@ -63,7 +63,7 @@ jobs:
           /tmp/ludus-venv/bin/pip install cmake==3.29.6 ninja==1.11.1.3
       - name: Install native package inspection tools
         if: steps.scope.outputs.native_required == 'true'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-18 binutils
+        run: python3 scripts/python/llvm_apt_source.py && sudo apt-get update -qq && sudo apt-get install -y -qq clang-23 binutils
       - name: Prove the installed CLI runs with no checkout/Qt on the path
         if: steps.scope.outputs.native_required == 'true'
         run: |

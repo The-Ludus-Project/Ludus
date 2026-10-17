@@ -3,7 +3,7 @@ os=Macos
 os.version=14.0
 arch=armv8
 compiler=clang
-compiler.version=18
+compiler.version=23
 compiler.cppstd=23
 compiler.libcxx=libc++
 

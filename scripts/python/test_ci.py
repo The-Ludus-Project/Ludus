@@ -59,6 +59,10 @@ class ToolchainPinTests(unittest.TestCase):
             rendered = templates.render_files(templates.get_template("minimal"),
                                               templates.ProjectInputs("Game", "game", "1", []))
         self.assertIn("clang-23 lld-23", linux)
+        self.assertIn("Suites: llvm-toolchain-noble-23\\n", linux)
+        self.assertIn(f'[[ "$fingerprint" == {toolchain.LLVM_APT_KEY_FINGERPRINT} ]]', linux)
+        self.assertNotIn("apt.llvm.org", macos)
+        self.assertNotIn("LLVM_APT_KEY_TOKEN", linux)
         self.assertIn("brew install python@3.12 llvm@23\n", macos)
         self.assertIn('"$(brew --prefix llvm@23)"', macos)
         presets = next(item.content for item in rendered if item.relpath == "CMakePresets.json")
@@ -80,6 +84,90 @@ class ToolchainPinTests(unittest.TestCase):
             with self.assertRaisesRegex(ToolingError, "pinned version 23"):
                 project_setup.verify_tool_versions(configured, root, runner("18.1.8"), {})
 
+    def test_ci_and_devcontainer_install_the_pinned_llvm_from_its_apt_source(self):
+        import re
+
+        files = [*sorted((self.ROOT / ".github").rglob("*.yml")), self.ROOT / ".devcontainer/Dockerfile"]
+        tools = r"(?:clang|clang\+\+|clang-format|clang-tidy|clang-tools|lld|llvm|libclang-rt)"
+        versioned = re.compile(rf"\b{tools}[-@](\d+)\b")
+        apt_package = re.compile(rf"(?<![/\w-]){tools}-\d+\b")
+        for path in files:
+            text = path.read_text()
+            with self.subTest(path=path.relative_to(self.ROOT)):
+                self.assertLessEqual({int(major) for major in versioned.findall(text)}, {LLVM_MAJOR})
+                # Ubuntu 24.04 does not package the pinned LLVM.
+                if "apt-get" in text and apt_package.search(text):
+                    self.assertIn("llvm_apt_source.py", text)
+
+    def test_windows_threading_lane_installs_the_pinned_llvm_major(self):
+        import re
+
+        workflow = (self.ROOT / ".github/workflows/threading-platforms.yml").read_text()
+        version = re.search(r"LLVM_WINDOWS_VERSION: (\d+)\.(\d+)\.(\d+)\n", workflow)
+        self.assertIsNotNone(version)
+        self.assertEqual(int(version.group(1)), LLVM_MAJOR)
+        self.assertRegex(workflow, r"LLVM_WINDOWS_SHA256: [0-9a-f]{64}\n")
+        self.assertIn("Get-FileHash -Algorithm SHA256", workflow)
+
+    def test_committed_llvm_apt_key_matches_the_published_fingerprint(self):
+        import llvm_apt_source
+
+        from ludus_tools import toolchain
+
+        key = (self.ROOT / llvm_apt_source.KEY_SOURCE).read_text(encoding="ascii")
+        self.assertEqual(llvm_apt_source.openpgp_fingerprint(key), llvm_apt_source.KEY_FINGERPRINT)
+        self.assertEqual(toolchain.LLVM_APT_KEY_FINGERPRINT, llvm_apt_source.KEY_FINGERPRINT)
+        tampered = key.replace(key.splitlines()[3], key.splitlines()[4], 1)
+        self.assertNotEqual(llvm_apt_source.openpgp_fingerprint(tampered), llvm_apt_source.KEY_FINGERPRINT)
+
+    def test_llvm_apt_source_registers_only_the_pinned_suite_with_the_committed_key(self):
+        import llvm_apt_source
+
+        staged = {}
+
+        def record(command, **_):
+            if command[-1] == str(llvm_apt_source.SOURCE_LIST):
+                staged["source"] = Path(command[-2]).read_text()
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(llvm_apt_source.subprocess, "run", side_effect=record) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            llvm_apt_source.register(self.ROOT, "noble", LLVM_MAJOR, ["sudo"])
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertTrue(all(command[0] == "sudo" for command in commands))
+        self.assertIn(["sudo", "install", "-m", "0644", str(self.ROOT / llvm_apt_source.KEY_SOURCE),
+                       str(llvm_apt_source.KEYRING)], commands)
+        self.assertIn(f"Suites: llvm-toolchain-noble-{LLVM_MAJOR}\n", staged["source"])
+        self.assertIn(f"Signed-By: {llvm_apt_source.KEYRING}\n", staged["source"])
+        with self.assertRaisesRegex(llvm_apt_source.SourceError, "codename"):
+            llvm_apt_source.register(self.ROOT, "", LLVM_MAJOR, [])
+
+    def test_ubuntu_setup_adds_the_llvm_source_only_when_the_archive_lacks_llvm(self):
+        import llvm_apt_source
+
+        clang = engine.AptPackageGroup("Clang", (f"clang-{LLVM_MAJOR}",))
+        git = engine.AptPackageGroup("Git", ("git",))
+        for missing, registered in (([clang], True), ([git], False)):
+            with self.subTest(missing=missing[0].purpose), \
+                    patch.object(engine, "configure_system_tool_shims"), \
+                    patch.object(engine, "system_prerequisites_need_install", return_value=True), \
+                    patch.object(engine, "host_supports_apt_install", return_value=True), \
+                    patch.object(engine, "host_is_ubuntu", return_value=True), \
+                    patch.object(engine, "sudo_command_prefix", return_value=["sudo"]), \
+                    patch.object(engine, "required_ubuntu_package_groups", return_value=missing), \
+                    patch.object(engine, "enable_ubuntu_universe"), \
+                    patch.object(engine, "run"), \
+                    patch.object(engine, "print_missing_apt_packages"), \
+                    patch.object(engine, "resolve_apt_package_groups", return_value=([], missing)), \
+                    patch.object(llvm_apt_source, "os_release_codename", return_value="noble"), \
+                    patch.object(llvm_apt_source, "register") as register, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(engine.EngineError):
+                    engine.install_ubuntu_system_prerequisites(self.ROOT, engine.load_tool_versions(self.ROOT))
+                self.assertEqual(register.called, registered)
+                if registered:
+                    register.assert_called_once_with(self.ROOT, "noble", LLVM_MAJOR, ["sudo"])
+
     def test_missing_clang_pin_is_an_explicit_error(self):
         with self.assertRaisesRegex(engine.EngineError, "minimum.clang"):
             engine.llvm_major_version({"minimum": {"clang": ""}})
@@ -94,7 +182,7 @@ class NativePrerequisiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for name, body in (("timeout", 'shift 3; exec "$@"'), ("sudo", 'exec "$@"'),
-                               ("apt-get", 'printf "%s\n" "$@"')):
+                               ("apt-get", 'printf "%s\n" "$@"'), ("python3", 'printf "python3 %s\n" "$*"')):
                 tool = root / name
                 tool.write_text("#!/bin/sh\n" + body + "\n")
                 tool.chmod(0o755)
@@ -103,6 +191,9 @@ class NativePrerequisiteTests(unittest.TestCase):
                 result = subprocess.run(["/bin/bash", "-e", "-c", command], env=environment,
                                         capture_output=True, text=True, check=True)
                 arguments = result.stdout.splitlines()
+                # The pinned LLVM suite is registered before apt resolves clang-<major>.
+                self.assertEqual(arguments[0], "python3 scripts/python/llvm_apt_source.py")
+                self.assertIn(f"clang-{LLVM_MAJOR}", arguments)
                 for package in ("qt6-base-dev", "qt6-declarative-dev", "qt6-wayland", "libvulkan1", "mesa-vulkan-drivers"):
                     self.assertEqual(package in arguments, editor == "true", package)
 

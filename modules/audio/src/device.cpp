@@ -18,6 +18,8 @@ namespace
 struct NativeDevice final
 {
     ma_context Context{};
+    // miniaudio initializes these C structs itself and expects them zeroed first.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     ma_device Device{};
     bool ContextReady = false;
     bool DeviceReady = false;

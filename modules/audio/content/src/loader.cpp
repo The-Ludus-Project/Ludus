@@ -280,7 +280,7 @@ struct Loader::Impl final
         }
     }
 };
-Loader::Loader(AudioSystem& audio) noexcept : mImpl(new(std::nothrow) Impl(audio)) {}
+Loader::Loader(AudioSystem& audio) noexcept : mImpl(new (std::nothrow) Impl(audio)) {}
 Loader::~Loader() noexcept
 {
     Cancel();

@@ -39,7 +39,7 @@ inline bool CookFixture(std::string_view source,
     }
     stream << quint32(0xffffffffU) << 0.0F << 0.5F << 1.0F << 1.0F << 1.0F << quint32(3) << quint32(3);
     const float corners[3][2] = {{0.0F, 0.0F}, {1.0F, 0.0F}, {0.0F, 1.0F}};
-    for (const float(&corner)[2] : corners)
+    for (const float (&corner)[2] : corners)
     {
         stream << corner[0] << corner[1] << 0.0F << 0.0F << 0.0F << 1.0F << 0.0F << 0.0F;
     }

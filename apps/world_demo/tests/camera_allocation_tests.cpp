@@ -40,6 +40,9 @@ void CountDelete(void* p) noexcept
 }
 } // namespace
 
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(ludus::foundation::usize n)
 {
     CountNew();
@@ -85,6 +88,7 @@ void operator delete(void* p, ludus::foundation::usize, std::align_val_t) noexce
     CountDelete(p);
     std::free(p);
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 TEST_CASE("Camera evaluation traces and renderer extraction allocate nothing", "[camera][allocation]")
 {
@@ -99,6 +103,7 @@ TEST_CASE("Camera evaluation traces and renderer extraction allocate nothing", "
     PlanarCameraView planar;
     bool passed = true;
     gNews = 0;
+    gDeletes = 0;
     gTracking = true;
     for (ludus::foundation::uint64 frame = 0; frame < 10000; ++frame)
     {
@@ -115,4 +120,5 @@ TEST_CASE("Camera evaluation traces and renderer extraction allocate nothing", "
     gTracking = false;
     REQUIRE(passed);
     REQUIRE(gNews == 0);
+    REQUIRE(gDeletes == 0);
 }

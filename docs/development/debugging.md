@@ -19,13 +19,13 @@ The architecture and future editor/scripting milestones are in
 ```
 
 The installer fetches the exact official RAD commit pinned in
-`config/rad_debugger.json` and builds its release configuration with Clang 18.
+`config/rad_debugger.json` and builds its release configuration with Clang 23.
 Source and executable stay under `out/host-tools/raddebugger/<revision>/`.
 Rerunning setup reuses a completed installation. Failures can be retried; setup
 refuses to overwrite unexpected source revisions or edits. Ordinary `init.sh`,
 builds, tests, and CI do not install or require RAD.
 
-On Ubuntu/Debian, explicit RAD setup can install Git, Clang/LLVM 18, pkg-config,
+On Ubuntu/Debian, explicit RAD setup can install Git, Clang/LLVM 23, pkg-config,
 and the FreeType, X11, Xext, Xfixes, GL, and EGL development packages if missing.
 On other Linux x64 distributions, install equivalent packages yourself and use
 `--no-system-install`. RAD currently uses X11; a Wayland desktop needs XWayland

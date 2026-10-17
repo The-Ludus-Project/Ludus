@@ -147,5 +147,5 @@ stop/restart while producers keep emitting, concurrent drain/recycle and
 concurrent registration; run them under ASan/UBSan and TSan. An export test
 checks integration slices, matched caller flows, counter samples and thread-name
 records. The pinned toolchain
-(Clang 18 + Conan + Catch2) runs the authoritative warnings-as-errors, ASan/UBSan
+(Clang 23 + Conan + Catch2) runs the authoritative warnings-as-errors, ASan/UBSan
 and build-budget checks in CI.

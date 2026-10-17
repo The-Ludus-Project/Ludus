@@ -13,6 +13,9 @@ bool gFailBackendAllocation = false;
 
 // Injection applies only to the private backend's nothrow allocation. Other
 // test/runtime allocations retain the standard allocator and matching delete.
+// libc++ names the replaceable allocation functions' parameters with reserved
+// identifiers (`__sz`), so these replacements cannot match its declarations.
+// NOLINTBEGIN(readability-inconsistent-declaration-parameter-name)
 void* operator new(ludus::foundation::usize size, const std::nothrow_t&) noexcept
 {
     if (gFailBackendAllocation && size == sizeof(ludus::foundation::logging::internal::AsyncBackend))
@@ -44,6 +47,7 @@ void* operator new(ludus::foundation::usize size, std::align_val_t alignment, co
         return nullptr;
     }
 }
+// NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
 TEST_CASE("Async owner allocation failure preserves synchronous logging", "[logging][allocation]")
 {

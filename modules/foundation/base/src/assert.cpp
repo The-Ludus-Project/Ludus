@@ -9,6 +9,7 @@
 #include "internal/diagnostic_text.hpp"
 
 #include <atomic>
+#include <string_view>
 
 namespace ludus::foundation::diagnostics::internal
 {
@@ -85,7 +86,10 @@ usize CompleteReport(char* buffer, usize capacity, const char* message, const Di
 {
     TextWriter writer(buffer, capacity);
     writer.Raw("[LUDUS assertion report v1] revision=");
-    writer.Text(build_metadata::git_revision.data(), 64);
+    // The revision is a string_view, so bound it by size rather than a terminator.
+    constexpr usize REVISION_QUOTA = 64;
+    const std::string_view revision = build_metadata::git_revision.substr(0, REVISION_QUOTA);
+    writer.Counted(revision.data(), revision.size());
     writer.Raw(" flavor=");
     writer.Raw(FlavorName());
     writer.Raw(" asserts=");

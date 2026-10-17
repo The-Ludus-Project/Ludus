@@ -13,12 +13,14 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install upstream Clang 18 and native prerequisites
+    - name: Install upstream Clang 23 and native prerequisites
       shell: bash
       env:
         WITH_EDITOR: ${{ inputs.editor }}
       run: |
-        packages=(llvm@18 ccache)
+        # llvm@23/lld@23 alias the unversioned formulae until Homebrew versions
+        # them; ./init.sh rejects an alias that has moved to another major.
+        packages=(llvm@23 lld@23 ccache)
         if [[ "$WITH_EDITOR" == true ]]; then packages+=(qtbase qtdeclarative); fi
         brew install "${packages[@]}"
     # Match Linux cache policy: locked dependency identities and rolling compiler
