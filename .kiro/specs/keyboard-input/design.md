@@ -162,8 +162,10 @@ Raw keys have reset status rather than fabricated Released flags.
 Physical Down after synchronization may be true, but mark every baseline-held
 key suppressed for actions until a genuine Up then Down. Raw snapshot queries
 describe the synchronized physical state; gameplay should use actions if it
-needs this safety policy. Suppression is tracked in both live and simulation
-state and is applied in record order. An Up for a suppressed key clears
+needs this safety policy. Suppression is simulation state, installed by the
+reset step and applied in record order. Live state needs no suppression mask:
+admission depends only on validity, focus, repeat and live Down, and
+`GetLiveDown` reports physical state. An Up for a suppressed key clears
 suppression without a gameplay action release. Fresh Down admits activation.
 
 - **Focus leave/close/disconnect/capability loss:** baseline empty, focus false;

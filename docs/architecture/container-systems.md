@@ -245,8 +245,8 @@ Delight*, 2nd edition, sections 5-1 and 5-4. Neither `<bit>` nor compiler
 intrinsics are used, because ADR 0003 does not list them. An intrinsic path
 needs that policy change and a measured benefit first.
 
-The M5 consumers are the Input reducer's private live-down, live-suppressed and
-reset-baseline key masks, and the Resources manager's dependency-closure
+The M5 consumers are the Input reducer's private live-down and reset-baseline
+key masks, and the Resources manager's dependency-closure
 `Wanted` set and catalog-duplicate `seen` set. The public `KeyboardSnapshot`
 and `FocusBaseline` bool arrays are unchanged, because packing them would change
 the SDK's API and ABI. A dynamically sized `BitSet` with fallible growth is

@@ -388,3 +388,63 @@ TEST_CASE("Invalid action id query returns InvalidAction", "[input][action]")
     REQUIRE(system.GetAction(0, state) == ActionStatus::Ok); // in-domain, neutral
     REQUIRE(state.Value == 0.0F);
 }
+
+TEST_CASE("Baseline-held key released and repressed before the reset step activates in that step",
+          "[input][action][suppression]")
+{
+    // Suppression is simulation state applied in record order (design section 4):
+    // an Up and Down ingested between RequestReset and the next ConsumeStep queue
+    // behind the baseline, so that step installs suppression, clears it on Up and
+    // admits the fresh Down as an activation.
+    InputSystem system;
+    focus(system);
+    REQUIRE(system.ConsumeStep(1) == StepStatus::Ok);
+    const Binding bindings[] = {
+        Binding{ .Action = JUMP, .Kind = ActionKind::Button, .PhysicalKey = Key::KeyW },
+    };
+    REQUIRE(system.ReplaceBindings(BindingMap{ .Bindings = bindings }) == BindingStatus::Ok);
+    REQUIRE(system.ConsumeStep(2) == StepStatus::Ok);
+
+    FocusBaseline baseline;
+    baseline.Focused = true;
+    baseline.Keys[KeyIndex(Key::KeyW)] = true;
+    system.RequestReset(ResetReason::FocusEntered, baseline);
+    REQUIRE(system.Ingest(up(Key::KeyW)) == AdmissionStatus::Accepted);
+    REQUIRE(system.Ingest(down(Key::KeyW)) == AdmissionStatus::Accepted);
+    REQUIRE(system.ConsumeStep(3) == StepStatus::Ok);
+
+    const KeyboardSnapshot& snapshot = system.GetKeyboardSnapshot();
+    REQUIRE(snapshot.LastReset == ResetReason::FocusEntered);
+    REQUIRE(snapshot.Suppressed[KeyIndex(Key::KeyW)] == false);
+    REQUIRE(snapshot.Down[KeyIndex(Key::KeyW)] == true);
+    const ActionState jump = action(system, JUMP);
+    REQUIRE(jump.Pressed == true);
+    REQUIRE(jump.Value == 1.0F);
+}
+
+TEST_CASE("Baseline-held key without a release stays suppressed across steps", "[input][action][suppression]")
+{
+    InputSystem system;
+    focus(system);
+    REQUIRE(system.ConsumeStep(1) == StepStatus::Ok);
+    const Binding bindings[] = {
+        Binding{ .Action = JUMP, .Kind = ActionKind::Button, .PhysicalKey = Key::KeyW },
+    };
+    REQUIRE(system.ReplaceBindings(BindingMap{ .Bindings = bindings }) == BindingStatus::Ok);
+    REQUIRE(system.ConsumeStep(2) == StepStatus::Ok);
+
+    FocusBaseline baseline;
+    baseline.Focused = true;
+    baseline.Keys[KeyIndex(Key::KeyW)] = true;
+    system.RequestReset(ResetReason::FocusEntered, baseline);
+    // The key is already live-down, so a Down without a release is a duplicate.
+    REQUIRE(system.Ingest(down(Key::KeyW)) == AdmissionStatus::Ignored);
+    REQUIRE(system.GetLiveDown(Key::KeyW) == true);
+    REQUIRE(system.ConsumeStep(3) == StepStatus::Ok);
+    REQUIRE(system.ConsumeStep(4) == StepStatus::Ok);
+
+    REQUIRE(system.GetKeyboardSnapshot().Suppressed[KeyIndex(Key::KeyW)] == true);
+    const ActionState jump = action(system, JUMP);
+    REQUIRE(jump.Pressed == false);
+    REQUIRE(jump.Value == 0.0F);
+}
