@@ -358,7 +358,7 @@ collation add 8–10% to compile CPU for a clean build and 6–10% after touchin
 `core.h`.
 
 No wall-time improvement is claimed. The host was shared with other builds
-(load average 9–28), and the same 382 compilations summed between 757 s and
+(load average 9–28), and the same 382 compilations summed between 687 s and
 1250 s across runs. Clean-build wall time was 72–108 s with scanning and
 60–108 s without, and the paired differences changed sign. At full local
 parallelism the removed work mostly overlaps compilation; it matters most with
