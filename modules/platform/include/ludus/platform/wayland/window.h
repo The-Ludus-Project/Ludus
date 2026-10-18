@@ -47,6 +47,18 @@ class WindowWayland;
 bool InitializeWayland(const WindowManager::InitializeInfo& info) noexcept;
 UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept;
 
+/// @brief Map the states of an xdg_toplevel.configure event to a visibility.
+///
+/// @param states The event's `states` argument: packed 32-bit `xdg_toplevel_state` values.
+/// @return Occluded when the array carries `XDG_TOPLEVEL_STATE_SUSPENDED`, which xdg-shell
+/// (xdg_wm_base version 6) sends while "the surface is currently not ordinarily being
+/// repainted; for example because its content is occluded by another window, or its outputs
+/// are switched off due to screen locking", and which compositors also set for a minimized
+/// window; otherwise Visible. The protocol does not distinguish minimization, so Minimized is
+/// never returned. A build against wayland-protocols older than 1.32 has no suspended state
+/// and always returns Visible.
+[[nodiscard]] WindowVisibility ComputeToplevelVisibility(const wl_array& states) noexcept;
+
 class WindowWayland final : public WindowBase
 {
 public:
@@ -63,6 +75,12 @@ public:
     void SetClosed(bool value) noexcept
     {
         mIsClosed = value;
+    }
+    /// Record the visibility derived from the latest xdg_toplevel configure or close event.
+    /// Called by the protocol listeners on the thread that pumps HandleEvent().
+    void SetVisibility(WindowVisibility visibility) noexcept
+    {
+        mVisibility = visibility;
     }
 
 private:
