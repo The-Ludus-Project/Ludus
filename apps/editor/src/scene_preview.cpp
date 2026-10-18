@@ -11,19 +11,32 @@ namespace
 {
 namespace rhi = graphics::rhi;
 using namespace foundation;
-// Same independently checked layout as the world-demo shader: std140 vector
-// stride 16, offsets 0/16/32/1056/2080, total 3104 bytes. No GPU readback path.
-struct alignas(16) SceneUniforms final
+/// Record arrays declared by apps/world_demo/shaders/world_scene.slang (the world demo's MAX_RENDER_DRAWS).
+/// The editor draws at most every collision box, every entity, one selection outline and the cursor.
+constexpr usize SCENE_SHADER_RECORDS = 192;
+constexpr usize SCENE_UNIFORM_VECTOR_LANES = 4;
+constexpr usize SCENE_UNIFORM_VECTOR_BYTES = SCENE_UNIFORM_VECTOR_LANES * sizeof(float32);
+constexpr usize SCENE_UNIFORM_GEOMETRY_OFFSET = 2 * SCENE_UNIFORM_VECTOR_BYTES;
+constexpr usize SCENE_UNIFORM_COLOR_OFFSET =
+    SCENE_UNIFORM_GEOMETRY_OFFSET + SCENE_SHADER_RECORDS * SCENE_UNIFORM_VECTOR_BYTES;
+constexpr usize SCENE_UNIFORM_ROTATION_OFFSET =
+    SCENE_UNIFORM_COLOR_OFFSET + SCENE_SHADER_RECORDS * SCENE_UNIFORM_VECTOR_BYTES;
+constexpr usize SCENE_UNIFORM_BYTES = SCENE_UNIFORM_ROTATION_OFFSET + SCENE_SHADER_RECORDS * SCENE_UNIFORM_VECTOR_BYTES;
+// Same layout as the world-demo shader, which checks the literal values: std140
+// vector stride 16, offsets 0/16/32/3104/6176, total 9248 bytes. No GPU readback path.
+struct alignas(SCENE_UNIFORM_VECTOR_BYTES) SceneUniforms final
 {
-    float32 View[4]{};
-    float32 Settings[4]{};
-    float32 Geometry[64][4]{};
-    float32 Color[64][4]{};
-    float32 Rotation[64][4]{};
+    float32 View[SCENE_UNIFORM_VECTOR_LANES]{};
+    float32 Settings[SCENE_UNIFORM_VECTOR_LANES]{};
+    float32 Geometry[SCENE_SHADER_RECORDS][SCENE_UNIFORM_VECTOR_LANES]{};
+    float32 Color[SCENE_SHADER_RECORDS][SCENE_UNIFORM_VECTOR_LANES]{};
+    float32 Rotation[SCENE_SHADER_RECORDS][SCENE_UNIFORM_VECTOR_LANES]{};
 };
-static_assert(std::is_standard_layout_v<SceneUniforms> && sizeof(SceneUniforms) == 3104);
-static_assert(offsetof(SceneUniforms, Geometry) == 32 && offsetof(SceneUniforms, Color) == 1056 &&
-              offsetof(SceneUniforms, Rotation) == 2080);
+static_assert(std::is_standard_layout_v<SceneUniforms> && sizeof(SceneUniforms) == SCENE_UNIFORM_BYTES);
+static_assert(offsetof(SceneUniforms, Settings) == SCENE_UNIFORM_VECTOR_BYTES &&
+              offsetof(SceneUniforms, Geometry) == SCENE_UNIFORM_GEOMETRY_OFFSET &&
+              offsetof(SceneUniforms, Color) == SCENE_UNIFORM_COLOR_OFFSET &&
+              offsetof(SceneUniforms, Rotation) == SCENE_UNIFORM_ROTATION_OFFSET);
 bool Accepted(rhi::ResourceStatus status) noexcept
 {
     return status == rhi::ResourceStatus::Ready || status == rhi::ResourceStatus::Pending;

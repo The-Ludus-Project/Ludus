@@ -367,6 +367,10 @@ endif()
 # Editor-OFF builds never discover Qt; browser and native shells share widgets.
 if(LUDUS_BUILD_EDITOR)
     add_subdirectory(apps/editor)
+elseif(NOT EMSCRIPTEN)
+    # The Qt-free scene document still builds, so its size budgets and tests run
+    # in every default native build, not only in the optional Editor job.
+    include(apps/editor/scene_document.cmake)
 endif()
 
 if(LUDUS_BUILD_SHADER_PROBE)

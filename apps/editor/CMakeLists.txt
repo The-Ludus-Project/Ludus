@@ -122,11 +122,8 @@ target_link_libraries(ludus_editor_core
 )
 ludus_apply_project_defaults(ludus_editor_core)
 
-# Private portable scene document; deliberately no Qt, Platform, RHI or game runtime.
-add_library(ludus_editor_scene STATIC src/scene_document.cpp)
-target_include_directories(ludus_editor_scene PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(ludus_editor_scene PUBLIC ludus_world_level PRIVATE Ludus::FoundationMath)
-ludus_apply_project_defaults(ludus_editor_scene)
+# Private portable scene document and its tests (also built by Editor-OFF configures).
+include("${CMAKE_CURRENT_SOURCE_DIR}/scene_document.cmake")
 
 # --- Editor application ------------------------------------------------------
 qt_add_executable(ludus_editor
@@ -267,7 +264,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
         renderer_clustered_authored renderer_clustered_authored_shadow)
-    ludus_compile_shader(TARGET ludus_editor NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX vertexMain FRAGMENT fragmentMain)
+    ludus_compile_shader(TARGET ludus_editor NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
     ludus_editor_compile_render_graph_host(ludus_editor)
 endif()
 
@@ -433,7 +430,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_lit_shadow renderer_clustered renderer_clustered_shadow
             renderer_clustered_authored renderer_clustered_authored_shadow)
-        ludus_compile_shader(TARGET ludus_editor_tests NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX vertexMain FRAGMENT fragmentMain)
+        ludus_compile_shader(TARGET ludus_editor_tests NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
         ludus_editor_compile_render_graph_host(ludus_editor_tests)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
@@ -449,12 +446,6 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/src")
         target_link_libraries(ludus_editor_tests PRIVATE "-framework Cocoa")
     endif()
-    add_executable(ludus_editor_scene_tests tests/scene_document_tests.cpp)
-    target_link_libraries(ludus_editor_scene_tests PRIVATE ludus_editor_scene Ludus::FoundationMath Catch2::Catch2WithMain)
-    ludus_apply_project_defaults(ludus_editor_scene_tests)
-    ludus_enable_test_exceptions(ludus_editor_scene_tests)
-    add_test(NAME ludus_editor_scene_tests COMMAND ludus_editor_scene_tests)
-    set_tests_properties(ludus_editor_scene_tests PROPERTIES LABELS "unit;editor;scene")
     # Catch2 reports assertion failures by throwing; test targets (only) re-enable
     # exceptions. Engine/app targets above stay exception-free (-fno-exceptions).
     ludus_enable_test_exceptions(ludus_editor_tests)
