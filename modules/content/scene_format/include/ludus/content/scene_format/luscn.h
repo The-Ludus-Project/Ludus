@@ -23,7 +23,10 @@
 /// Header::MeshCount x (MeshRecord + MeshRecord::VertexCount x VertexRecord +
 /// MeshRecord::IndexCount x uint32); Header::ObjectCount x versioned ObjectRecord.
 /// Version 3 uses VertexRecordV3 and ends with LightingRecord, analytic lights
-/// and its optional float32 RGB environment payload.
+/// and its optional float32 RGB environment payload. Version 4 keeps every
+/// version 3 record except the vertices, which are VertexRecord again: bake
+/// chart coordinates are implicit (see TryGetBakeChartUv), so meshes stay
+/// indexed instead of storing one vertex per triangle corner.
 ///
 /// The record structs document the exact wire layout and are checked with
 /// static_asserts; serialise them field by field in little-endian order rather
@@ -43,6 +46,9 @@ inline constexpr uint32 VERSION_1 = 1;
 inline constexpr uint32 VERSION_2 = 2;
 /// Version 3: sided emission, source IDs, bake coordinates and authored lighting.
 inline constexpr uint32 VERSION_3 = 3;
+/// Version 4: version 3 records with indexed VertexRecord meshes. Bake chart
+/// coordinates are not stored; consumers derive them per triangle corner.
+inline constexpr uint32 VERSION_4 = 4;
 /// Linear Rec.709 RGB photometric proxy; not a spectral PBRT representation.
 inline constexpr uint32 LIGHTING_PROFILE_REC709_PHOTOMETRIC = 1;
 /// Largest analytic light list; selection must never silently discard sources.
@@ -85,7 +91,7 @@ inline constexpr float32 MAX_EMISSION = 10000.0F;
 struct Header final
 {
     char Magic[8];        ///< MAGIC.
-    uint32 Version;       ///< VERSION_1, VERSION_2 or VERSION_3.
+    uint32 Version;       ///< VERSION_1 through VERSION_4.
     uint32 MeshCount;     ///< 1..MAX_MESHES.
     uint32 MaterialCount; ///< 1..MAX_MATERIALS.
     uint32 TextureCount;  ///< 0..MAX_TEXTURES.
@@ -119,7 +125,7 @@ struct MaterialRecordV2 final
     float32 Roughness;   ///< [MIN_ROUGHNESS, 1].
     float32 Emission[3]; ///< Linear RGB radiance, [0, MAX_EMISSION].
 };
-/// Version 3 material. Power is resolved independently for each placed emitter;
+/// Version 3 and 4 material. Power is resolved independently for each placed emitter;
 /// otherwise Emission is already resolved RGB luminance in nits (cd/m²).
 /// Source IDs identify authored equivalence groups, not individual triangles.
 struct MaterialRecordV3 final
@@ -134,13 +140,15 @@ struct MaterialRecordV3 final
     float32 EmissionPower; ///< Lumens after authoring scale; zero without HAS_POWER.
     uint32 Reserved;       ///< Must be zero.
 };
+/// Indices per triangle in a mesh's triangle list; MeshRecord::IndexCount is a multiple.
+inline constexpr uint32 TRIANGLE_CORNERS = 3;
 /// Per-mesh header, followed by its vertices and uint32 triangle-list indices.
 struct MeshRecord final
 {
     uint32 VertexCount; ///< 1..MAX_VERTICES.
     uint32 IndexCount;  ///< 1..MAX_INDICES, a multiple of three.
 };
-/// Interleaved mesh vertex.
+/// Interleaved mesh vertex (versions 1, 2 and 4).
 struct VertexRecord final
 {
     float32 Position[3]; ///< Mesh-local position.
@@ -166,7 +174,7 @@ struct ObjectRecord final
     float32 Linear[9];      ///< Column-major 3x3 linear part (X, Y, Z columns).
     float32 Translation[3]; ///< World translation.
 };
-/// Version 3 placed instance, adding a stable nonzero scene-local identity.
+/// Version 3 and 4 placed instance, adding a stable nonzero scene-local identity.
 struct ObjectRecordV3 final
 {
     uint32 Mesh;            ///< Mesh index.
@@ -175,7 +183,7 @@ struct ObjectRecordV3 final
     float32 Translation[3]; ///< World translation.
     uint64 SourceId;        ///< Unique among placed objects; stable across recooking.
 };
-/// Version 3 trailer followed by LightCount LightRecords, then optional HDR RGB.
+/// Version 3 and 4 trailer followed by LightCount LightRecords, then optional HDR RGB.
 /// Environment pixels are equirectangular, rows north to south, with linear RGB
 /// radiance in nits multiplied by EnvironmentRgb. Zero dimensions select the
 /// constant EnvironmentRgb radiance; zero RGB means no authored environment.
@@ -187,7 +195,7 @@ struct LightingRecord final
     uint32 EnvironmentHeight;  ///< Same dimension contract as EnvironmentWidth.
     float32 EnvironmentRgb[3]; ///< Nonnegative finite RGB scale or constant nits.
 };
-/// Version 3 analytic light. Scene world distances are metres.
+/// Version 3 and 4 analytic light. Scene world distances are metres.
 /// RGB values are a fixed Rec.709 luminance-normalized proxy, rather than PBRT
 /// spectral power. Spot inner cosine is strictly greater than outer cosine.
 struct LightRecord final
@@ -210,9 +218,12 @@ inline constexpr uint32 BAKE_CHART_TILE_PIXELS = 4;
 /// Largest bake atlas width/height; the producer must also budget its payload.
 inline constexpr uint32 MAX_BAKE_CHART_DIMENSION = 4096;
 /// Allocation-free chart layout shared by tools and runtime baking.
-/// Each indexed triangle receives its own tile; producers duplicate vertices
-/// before assigning chart coordinates. Different placements need independent
-/// irradiance payloads because world transforms and visibility differ.
+/// Each indexed triangle receives its own tile, so a triangle corner's chart
+/// coordinate depends only on its triangle and corner number. Version 3
+/// producers duplicate vertices and store the coordinates; version 4 consumers
+/// duplicate vertices when they need charts and assign the same coordinates.
+/// Different placements need independent irradiance payloads because world
+/// transforms and visibility differ.
 struct BakeChartLayout final
 {
     uint32 Width = 0;         ///< Power-of-two atlas width in texels.
@@ -292,4 +303,26 @@ static_assert(sizeof(LightRecord) == 64 && offsetof(LightRecord, IntensityRgb) =
               offsetof(LightRecord, PositionWorld) == 28 && offsetof(LightRecord, DirectionWorld) == 40 &&
               offsetof(LightRecord, Range) == 52);
 static_assert(MAGIC.size() == sizeof(Header::Magic));
+
+/// True for a version this header describes.
+[[nodiscard]] constexpr bool IsSupportedVersion(uint32 version) noexcept
+{
+    return version >= VERSION_1 && version <= VERSION_4;
+}
+/// True when the version carries version 3 materials, object source IDs and the
+/// lighting trailer (versions 3 and 4).
+[[nodiscard]] constexpr bool HasLightingRecords(uint32 version) noexcept
+{
+    return version >= VERSION_3;
+}
+/// True when each vertex stores its bake chart coordinate (VertexRecordV3).
+[[nodiscard]] constexpr bool HasStoredBakeCoordinates(uint32 version) noexcept
+{
+    return version == VERSION_3;
+}
+/// Bytes of one serialized vertex for a supported version.
+[[nodiscard]] constexpr usize GetVertexRecordBytes(uint32 version) noexcept
+{
+    return HasStoredBakeCoordinates(version) == true ? sizeof(VertexRecordV3) : sizeof(VertexRecord);
+}
 } // namespace ludus::content::scene_format

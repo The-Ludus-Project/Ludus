@@ -1005,7 +1005,7 @@ Status WavefrontReader::finishMaterial(const MtlTerms& terms, uint32 line) noexc
     }
     if (material.NormalTexture != IR_NONE)
     {
-        warn(codes::NORMALMAP_DROPPED, line, "MTL bump/normal map not stored by LUSCN v3");
+        warn(codes::NORMALMAP_DROPPED, line, "MTL bump/normal map not stored by LUSCN v4");
     }
     if (material.SpecularTexture != IR_NONE || material.SpecularExponentTexture != IR_NONE)
     {

@@ -272,9 +272,11 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
                 description.Texcoords = source.Texcoords.GetData();
                 description.Normals = source.Normals.GetData();
 #    else
+                // Expand every triangle corner and derive its bake chart coordinate, so
+                // indexed (LUSCN v4) and stored-chart (v3) meshes share one layout.
                 const usize count = source.Indices.GetSize();
                 content::scene_format::BakeChartLayout layout;
-                if (count > content::scene_format::MAX_VERTICES ||
+                if (count > content::scene_format::MAX_INDICES ||
                     content::scene_format::TryMakeBakeChartLayout(static_cast<uint32>(count / 3), layout) == false ||
                     positionsMesh.TryResize(count) == false || normalsMesh.TryResize(count) == false ||
                     textureCoordinatesMaterial.TryResize(count) == false ||

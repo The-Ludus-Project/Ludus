@@ -53,6 +53,9 @@ constexpr usize MATERIAL_RECORD_BYTES = 24;
 constexpr usize MATERIAL_RECORD_V2_BYTES = 28;
 constexpr usize MATERIAL_RECORD_V3_BYTES = sizeof(format::MaterialRecordV3);
 constexpr std::string_view LIGHTING_BUILD_TARGET = "portable-rgba8-f32-le-v3";
+/// Parts split from a LUSCN version 4 bundle: version 3 lighting records with
+/// indexed VertexRecord meshes whose bake charts are implicit.
+constexpr std::string_view INDEXED_LIGHTING_BUILD_TARGET = "portable-rgba8-f32-le-v4";
 constexpr float64 MAX_AUTHORED_MAGNITUDE = 1e12;
 constexpr float64 MAX_WORLD_MAGNITUDE = 3e38;
 constexpr float64 MIN_DIRECTION_SQUARED = 1e-12;
@@ -1422,7 +1425,7 @@ struct BundleParts final
         {
             return inoutFailure.FailInvalid("Invalid cooked material");
         }
-        if (version == format::VERSION_3)
+        if (format::HasLightingRecords(version) == true)
         {
             std::span<const uint8> extra;
             if (inoutReader.Take(MATERIAL_RECORD_V3_BYTES - MATERIAL_RECORD_V2_BYTES, extra, inoutFailure) == false)
@@ -1459,9 +1462,9 @@ struct BundleParts final
                               Failure& inoutFailure) noexcept
 {
     const uint32 version = outParts.Version;
-    const usize vertexBytes =
-        version == format::VERSION_3 ? sizeof(format::VertexRecordV3) : sizeof(format::VertexRecord);
+    const usize vertexBytes = format::GetVertexRecordBytes(version);
     usize vertices = 0;
+    usize indices = 0;
     for (uint32 i = 0; i < meshCount; ++i)
     {
         const usize start = inoutReader.GetOffset();
@@ -1473,8 +1476,10 @@ struct BundleParts final
         const uint32 vertexCount = counts[0];
         const uint32 indexCount = counts[1];
         vertices += vertexCount;
+        indices += indexCount;
         if (vertexCount == 0 || vertexCount > format::MAX_VERTICES || vertices > format::MAX_VERTICES ||
-            indexCount == 0 || indexCount > format::MAX_INDICES || indexCount % 3 != 0)
+            indexCount == 0 || indexCount > format::MAX_INDICES || indexCount % format::TRIANGLE_CORNERS != 0 ||
+            (version == format::VERSION_4 && indices > format::MAX_TOTAL_INDICES))
         {
             return inoutFailure.FailInvalid("Cooked geometry budget");
         }
@@ -1497,7 +1502,7 @@ struct BundleParts final
                     length.Add(MakeNumber(value * value));
                 }
             }
-            if (version == format::VERSION_3)
+            if (format::HasStoredBakeCoordinates(version) == true)
             {
                 const float64 u = DecodeFloat(base + sizeof(format::VertexRecord));
                 const float64 v = DecodeFloat(base + sizeof(format::VertexRecord) + sizeof(float32));
@@ -1557,9 +1562,9 @@ struct BundleParts final
     const uint32 materialCount = header[2];
     const uint32 textureCount = header[3];
     const uint32 objectCount = header[4];
-    if ((version != format::VERSION_1 && version != format::VERSION_2 && version != format::VERSION_3) ||
-        meshCount < 1 || meshCount > format::MAX_MESHES || materialCount < 1 || materialCount > format::MAX_MATERIALS ||
-        textureCount > format::MAX_TEXTURES || objectCount < 1 || objectCount > format::MAX_OBJECTS)
+    if (format::IsSupportedVersion(version) == false || meshCount < 1 || meshCount > format::MAX_MESHES ||
+        materialCount < 1 || materialCount > format::MAX_MATERIALS || textureCount > format::MAX_TEXTURES ||
+        objectCount < 1 || objectCount > format::MAX_OBJECTS)
     {
         return inoutFailure.FailInvalid("Cooked scene exceeds resident reference profile");
     }
@@ -1583,7 +1588,7 @@ struct BundleParts final
         {
             return false;
         }
-        if (version == format::VERSION_3)
+        if (format::HasLightingRecords(version) == true)
         {
             std::span<const uint8> source;
             if (reader.Take(sizeof(uint64), source, inoutFailure) == false ||
@@ -1592,7 +1597,7 @@ struct BundleParts final
                 return inoutFailure.FailInvalid("Invalid placed source identity");
             }
         }
-        if (version == format::VERSION_3)
+        if (format::HasLightingRecords(version) == true)
         {
             const uint8* identity = data.data() + reader.GetOffset() - sizeof(uint64);
             object.SourceId = uint64{DecodeUint32(identity)} | (uint64{DecodeUint32(identity + sizeof(uint32))} << 32);
@@ -1615,7 +1620,7 @@ struct BundleParts final
             return inoutFailure.FailOutOfMemory();
         }
     }
-    if (version == format::VERSION_3)
+    if (format::HasLightingRecords(version) == true)
     {
         const usize start = reader.GetOffset();
         const std::span<const uint8> lighting = data.subspan(start);
@@ -1847,12 +1852,38 @@ struct LightingPart final
     std::string_view Identity;
 };
 
-[[nodiscard]] bool IsLightingBuild(const Document& closure, std::string_view identity) noexcept
+/// Catalog part layout, recorded by its build target.
+enum class PartLayout : uint8
+{
+    /// Version 1/2 records: VertexRecord meshes without lighting fields.
+    Legacy,
+    /// Version 3 records: VertexRecordV3 meshes with stored bake coordinates.
+    StoredBakeCoordinates,
+    /// Version 4 records: indexed VertexRecord meshes with implicit bake charts.
+    Indexed,
+};
+
+[[nodiscard]] PartLayout GetPartLayout(const Document& closure, std::string_view identity) noexcept
 {
     const JsonIndex record = closure.Tree.GetMember(closure.Root, identity);
     const JsonIndex build = closure.Tree.GetMember(record, "build");
-    return build != NO_JSON_NODE &&
-           closure.Tree.IsString(closure.Tree.GetMember(build, "target"), LIGHTING_BUILD_TARGET) == true;
+    if (build == NO_JSON_NODE)
+    {
+        return PartLayout::Legacy;
+    }
+    const JsonIndex target = closure.Tree.GetMember(build, "target");
+    if (closure.Tree.IsString(target, LIGHTING_BUILD_TARGET) == true)
+    {
+        return PartLayout::StoredBakeCoordinates;
+    }
+    return closure.Tree.IsString(target, INDEXED_LIGHTING_BUILD_TARGET) == true ? PartLayout::Indexed
+                                                                                : PartLayout::Legacy;
+}
+
+/// True for parts that carry version 3 lighting fields (versions 3 and 4).
+[[nodiscard]] bool IsLightingBuild(const Document& closure, std::string_view identity) noexcept
+{
+    return GetPartLayout(closure, identity) != PartLayout::Legacy;
 }
 
 // Scope equivalence groups by the owning imported scene, not by material index:
@@ -2102,9 +2133,13 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
         return false;
     }
     bool isVersion3 = lighting.IsEmpty() == false;
+    // Any indexed (version 4) mesh selects version 4: version 3 meshes then drop
+    // their stored bake coordinates, which version 4 consumers derive instead.
+    bool isVersion4 = false;
     for (const std::string_view identity : meshes)
     {
         isVersion3 = isVersion3 == true || IsLightingBuild(closure, identity) == true;
+        isVersion4 = isVersion4 == true || GetPartLayout(closure, identity) == PartLayout::Indexed;
     }
     for (const Document& description : descriptions)
     {
@@ -2126,24 +2161,43 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
         const JsonIndex record = closure.Tree.GetMember(closure.Root, identity);
         bundleBytes += static_cast<uint64>(GetNumberMember(closure.Tree, record, "bytes").ToFloat());
     }
+    uint64 indexTotal = 0;
     for (const std::string_view identity : meshes)
     {
         const JsonIndex record = closure.Tree.GetMember(closure.Root, identity);
         bundleBytes += static_cast<uint64>(GetNumberMember(closure.Tree, record, "bytes").ToFloat());
-        if (isVersion3 == true && IsLightingBuild(closure, identity) == false)
+        const PartLayout layout = GetPartLayout(closure, identity);
+        const bool isAddingBakeCoordinates = isVersion4 == false && isVersion3 == true && layout == PartLayout::Legacy;
+        const bool isDroppingBakeCoordinates = isVersion4 == true && layout == PartLayout::StoredBakeCoordinates;
+        if (isAddingBakeCoordinates == true || isDroppingBakeCoordinates == true || isVersion4 == true)
         {
             Array<uint8> data;
             if (ReadArtifact(root, closure, identity, MAX_ASSET_BYTES, data, inoutFailure) == false)
             {
                 return false;
             }
-            const uint32 vertices = data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData()) : 0;
+            const bool hasHeader = data.GetSize() >= sizeof(format::MeshRecord);
+            const uint32 vertices = hasHeader == true ? DecodeUint32(data.GetData()) : 0;
+            const uint32 indices = hasHeader == true ? DecodeUint32(data.GetData() + sizeof(uint32)) : 0;
             if (vertices == 0 || vertices > format::MAX_VERTICES)
             {
-                return inoutFailure.FailInvalid("Invalid legacy mesh conversion vertex count");
+                return inoutFailure.FailInvalid("Invalid mesh conversion vertex count");
             }
-            bundleBytes += uint64{vertices} * (sizeof(format::VertexRecordV3) - sizeof(format::VertexRecord));
+            const uint64 bakeBytes = uint64{vertices} * (sizeof(format::VertexRecordV3) - sizeof(format::VertexRecord));
+            if (isAddingBakeCoordinates == true)
+            {
+                bundleBytes += bakeBytes;
+            }
+            if (isDroppingBakeCoordinates == true)
+            {
+                bundleBytes -= bakeBytes;
+            }
+            indexTotal += indices;
         }
+    }
+    if (isVersion4 == true && indexTotal > format::MAX_TOTAL_INDICES)
+    {
+        return inoutFailure.FailInvalid("Assembled scene index capacity exceeded");
     }
     if (bundleBytes > format::MAX_BUNDLE_BYTES)
     {
@@ -2151,7 +2205,10 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     ByteWriter writer(outBundle);
     writer.Append(format::MAGIC);
-    writer.AppendUint32(isVersion3 == true ? format::VERSION_3 : format::VERSION_2);
+    const uint32 version = isVersion4 == true   ? format::VERSION_4
+                           : isVersion3 == true ? format::VERSION_3
+                                                : format::VERSION_2;
+    writer.AppendUint32(version);
     writer.AppendUint32(static_cast<uint32>(meshes.GetSize()));
     writer.AppendUint32(static_cast<uint32>(materials.GetSize()));
     writer.AppendUint32(static_cast<uint32>(textures.GetSize()));
@@ -2231,8 +2288,30 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
         {
             return false;
         }
-        const bool isMeshV3 = IsLightingBuild(closure, identity);
-        if (isVersion3 == true && isMeshV3 == false)
+        const PartLayout layout = GetPartLayout(closure, identity);
+        if (version == format::VERSION_4 && layout == PartLayout::StoredBakeCoordinates)
+        {
+            const uint32 vertexCount = data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData()) : 0;
+            const uint32 indexCount =
+                data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData() + sizeof(uint32)) : 0;
+            const usize expected = sizeof(format::MeshRecord) + usize{vertexCount} * sizeof(format::VertexRecordV3) +
+                                   usize{indexCount} * sizeof(uint32);
+            if (data.GetSize() != expected || vertexCount > format::MAX_VERTICES)
+            {
+                return inoutFailure.FailInvalid("Invalid version 3 mesh conversion length");
+            }
+            writer.AppendBytes({data.GetData(), sizeof(format::MeshRecord)});
+            for (usize vertex = 0; vertex < vertexCount; ++vertex)
+            {
+                writer.AppendBytes(
+                    {data.GetData() + sizeof(format::MeshRecord) + vertex * sizeof(format::VertexRecordV3),
+                     sizeof(format::VertexRecord)});
+            }
+            writer.AppendBytes(
+                {data.GetData() + sizeof(format::MeshRecord) + usize{vertexCount} * sizeof(format::VertexRecordV3),
+                 usize{indexCount} * sizeof(uint32)});
+        }
+        else if (version == format::VERSION_3 && layout == PartLayout::Legacy)
         {
             const uint32 vertexCount = data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData()) : 0;
             const uint32 indexCount =
@@ -2851,7 +2930,7 @@ struct StoredParts final
     {
         return false;
     }
-    if (parts.Version == format::VERSION_3)
+    if (format::HasLightingRecords(parts.Version) == true)
     {
         if (MakeLogicalId(space, "lighting", 0, outStored.Lighting) == false)
         {
@@ -2885,7 +2964,7 @@ struct StoredParts final
     manifest.SetMember(templateRoot, "objects", templateObjects);
     manifest.SetMember(templateRoot, "camera", AddCamera(manifest, parts.Camera));
     manifest.SetMember(inoutManifest.Root, "template", templateRoot);
-    if (parts.Version == format::VERSION_3)
+    if (format::HasLightingRecords(parts.Version) == true)
     {
         manifest.SetMember(inoutManifest.Root, "lighting", manifest.AddString(outStored.Lighting.GetView()));
     }
@@ -2897,7 +2976,7 @@ struct StoredParts final
     // sorted(set(meshes + materials + [license_id])).
     Array<std::string_view> sceneDependencies;
     bool isOk = AddSortedUnique(sceneDependencies, outStored.License.GetView());
-    if (parts.Version == format::VERSION_3)
+    if (format::HasLightingRecords(parts.Version) == true)
     {
         isOk = isOk == true && AddSortedUnique(sceneDependencies, outStored.Lighting.GetView()) == true;
     }
@@ -3227,7 +3306,9 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
     buildTree.SetMember(build.Root, "schema", buildTree.AddInteger(1));
     buildTree.SetMember(build.Root,
                         "target",
-                        buildTree.AddString(parts.Version == format::VERSION_3 ? LIGHTING_BUILD_TARGET : BUILD_TARGET));
+                        buildTree.AddString(parts.Version == format::VERSION_4   ? INDEXED_LIGHTING_BUILD_TARGET
+                                            : parts.Version == format::VERSION_3 ? LIGHTING_BUILD_TARGET
+                                                                                 : BUILD_TARGET));
     if (buildTree.IsOk() == false)
     {
         return inoutFailure.FailOutOfMemory();
