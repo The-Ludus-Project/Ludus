@@ -32,6 +32,7 @@ Initial dependency setup needs internet; prepared builds use the local cache.
 - [Edit native gameplay live](docs/development/project-live-reload.md)
 - [Package and publish a game](docs/wiki/guides/releases.md)
 - [Review current capabilities](docs/wiki/getting-started/status.md)
+- [Read what Ludus stands for](docs/architecture/engine-identity.md)
 - [Explore architecture and module ownership](docs/wiki/architecture/index.md)
 
 ## Contribute

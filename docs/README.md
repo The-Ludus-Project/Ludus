@@ -142,6 +142,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Ludus editor interaction design](architecture/editor-interaction-design.md)
 - [Ludus game packaging and itch.io publishing](architecture/game-packaging-publishing.md)
 - [Ludus game projects and shared engine SDKs](architecture/project-sdk-workflow.md)
+- [Ludus identity and direction](architecture/engine-identity.md)
 - [Ludus Localization Architecture](architecture/localization.md)
 - [Ludus Memory Management Architecture](architecture/memory-management.md)
 - [Ludus Memory Profiling Architecture](architecture/memory-profiling.md)

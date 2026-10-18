@@ -109,6 +109,7 @@ nav:
       - Your first rendered scene: examples/cornell-box.md
       - Cook and capture staircase2: examples/reference-scene.md
   - Learn:
+      - Ludus identity and direction: architecture/engine-identity.md
       - How Ludus fits together: wiki/learn/architecture.md
       - Reference reading paths: wiki/learn/references.md
       - Glossary: wiki/learn/glossary.md

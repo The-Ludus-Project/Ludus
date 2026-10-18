@@ -2,6 +2,7 @@
 
 | Term | Meaning in Ludus |
 | --- | --- |
+| Ludus | Latin for play, a game and a school; the engine's name and the source of its [identity](../../architecture/engine-identity.md): serious play with dependable, teachable tools |
 | Engine checkout | The source repository used to develop Ludus and run its trusted tools |
 | Build host | Machine running the Editor/compiler/build tools; it can differ from the game target |
 | Compiled target | OS, CPU and data model selected by the compiler for a translation unit; see [platform targets](../guides/platform-targets.md) |

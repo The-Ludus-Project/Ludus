@@ -42,6 +42,12 @@ a project, work in the editor, and understand the systems behind each workflow.
 
     [Build and debug →](guides/build-and-debug.md)
 
+- **Know what Ludus stands for**
+
+    Read the identity and the five commitments that decide creative, art, technical and UX direction.
+
+    [Identity and direction →](../architecture/engine-identity.md)
+
 - **Learn the reasoning**
 
     Explore engine boundaries, terminology and a focused reference reading path.

@@ -5,7 +5,9 @@ identity.** The approved logo is a mint, extruded capital **L** on a rounded
 charcoal tile. Its clear silhouette, solid construction and restrained depth
 set the visual direction for the editor, default project icon, documentation
 and eventual website. It does not prescribe the art style of games made with
-Ludus.
+Ludus. This page applies the [engine identity](engine-identity.md): it owns the
+mark, palette and theme tokens through which the Quiet commitment and the
+Quiet Studio visual language reach the editor and documentation.
 
 The artwork is wired into the editor's Qt resources, Welcome and recent-project
 views, macOS app bundle, wiki branding and browser editor package. The production

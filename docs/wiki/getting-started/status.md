@@ -30,6 +30,7 @@ embedded play and a full online editor are separate later work.
 
 ## Evidence and design
 
+- [Ludus identity and direction](../../architecture/engine-identity.md)
 - [Editor architecture and milestones](../../architecture/editor-architecture.md)
 - [Audio implementation and remaining acceptance](../../development/audio-content-evidence.md)
 - [Integrated browser smoke evidence](../../development/webgpu-w6-evidence.md)

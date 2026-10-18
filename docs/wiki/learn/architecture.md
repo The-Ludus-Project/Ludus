@@ -2,7 +2,9 @@
 
 Understanding ownership makes a workflow easier to predict and debug. Start with
 the boundaries you use every day, then follow the source references when you
-need implementation detail.
+need implementation detail. The [identity and direction](../../architecture/engine-identity.md)
+page explains why these boundaries exist: the commitments below are its
+technical consequences.
 
 ## Four useful boundaries
 
