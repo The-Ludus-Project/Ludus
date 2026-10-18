@@ -69,6 +69,16 @@ enum class RenderGraphCandidateState : foundation::uint8
     Failed,          ///< Setup, coverage or device rejection; the active generation and its pixels remain.
     RestartRequired, ///< The CPU interface differs from the host's compiled interface; nothing was staged.
 };
+/// RG4 attachment allocation of every generation staged through one activation.
+enum class RenderGraphAllocation : foundation::uint8
+{
+    /// Reuse transient attachments across generations through one owned RenderGraphAttachmentPool:
+    /// an exact descriptor match whose last frame use has completed. Exports are never pooled.
+    ExactPool,
+    /// Diagnostic serial control: every generation creates and destroys all of its attachments,
+    /// exactly as before RG4. Encodes the same commands as ExactPool.
+    SerialControl,
+};
 /// Copied activation status, independent of the active graph's scene reports.
 struct RenderGraphActivationReport final
 {
@@ -100,11 +110,16 @@ public:
     /// @param interfaceIdentity IDENTITY_BYTES digest from the host's generated header; copied.
     /// @param compositeVertex Installed renderer_composite vertex recipe; its artifact storage outlives this object.
     /// @param compositeFragment Installed renderer_composite fragment recipe; same lifetime as compositeVertex.
-    /// @return InvalidState when already initialized; InvalidDescription for a wrong identity width.
-    [[nodiscard]] rhi::RasterStatus Initialize(rhi::DeviceHandle device,
-                                               foundation::BorrowedView<const foundation::uint8> interfaceIdentity,
-                                               const rhi::RasterShaderDescription& compositeVertex,
-                                               const rhi::RasterShaderDescription& compositeFragment) noexcept;
+    /// @param allocation ExactPool (default) shares one attachment pool across generations;
+    /// SerialControl is the non-pooled diagnostic control.
+    /// @return InvalidState when already initialized; InvalidDescription for a wrong identity width
+    /// or an unknown allocation; the pool's device admission status when it cannot be bound.
+    [[nodiscard]] rhi::RasterStatus
+    Initialize(rhi::DeviceHandle device,
+               foundation::BorrowedView<const foundation::uint8> interfaceIdentity,
+               const rhi::RasterShaderDescription& compositeVertex,
+               const rhi::RasterShaderDescription& compositeFragment,
+               RenderGraphAllocation allocation = RenderGraphAllocation::ExactPool) noexcept;
     /// Take ownership of a decoded package and begin preparing it as the candidate.
     /// An earlier unactivated candidate is discarded. A CPU interface mismatch
     /// returns Unsupported with RestartRequired; setup failure returns its status
@@ -128,6 +143,11 @@ public:
     [[nodiscard]] RenderGraph* GetActiveOrNull() noexcept;
     /// Copy the activation status.
     [[nodiscard]] RenderGraphActivationReport GetReport() const noexcept;
+    /// Copy the owned pool's counters; SerialControl and an uninitialized activation report zeros.
+    [[nodiscard]] RenderGraphPoolReport GetPoolReport() const noexcept;
+    /// Destroy idle pooled attachments between frames, for example under memory pressure.
+    /// Attachments of the active and candidate generations are unaffected.
+    void TrimPool() noexcept;
     /// Release every generation; no open frame or outstanding export consumer is permitted.
     void Reset() noexcept;
 

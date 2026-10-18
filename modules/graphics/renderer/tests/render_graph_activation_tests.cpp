@@ -1,5 +1,6 @@
 #include "internal/lifecycle.h"
 #include "reference_raster.h"
+#include "render_graph_scratch.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -256,6 +257,27 @@ core::UniquePtr<renderer::RenderGraphPackage> MakePackage(const PackageOptions& 
     REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
     return package;
 }
+/// RG4 workload: the single-export generation with two unexported scratch backings.
+constexpr uint32 SCRATCH_COUNT = 2;
+constexpr usize TEXTURE = static_cast<usize>(rhi::internal::RasterKind::Texture);
+core::UniquePtr<renderer::RenderGraphPackage>
+MakeScratchPackage(uint8 generation, uint32 width = WIDTH, uint32 height = HEIGHT)
+{
+    PackageOptions options;
+    options.Generation = generation;
+    const Array<uint8> offscreen = MakePackageBytes(options);
+    Array<uint8> bytes;
+    REQUIRE(ludus::render_graph_scratch::WriteScratchGeneration({offscreen.GetData(), offscreen.GetSize()},
+                                                                SCRATCH_COUNT,
+                                                                width,
+                                                                height,
+                                                                bytes) == true);
+    renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+    core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+    REQUIRE(package.Get() != nullptr);
+    REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    return package;
+}
 renderer::RenderGraphPackageStatus DecodeBytes(const Array<uint8>& bytes)
 {
     renderer::RenderGraphPackage package;
@@ -278,7 +300,7 @@ struct ActivationFixture final
     StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
     StaticArray<renderer::RenderGraphItem, 1> Items{};
     StaticArray<renderer::ViewDescription, 1> Cameras{};
-    ActivationFixture()
+    explicit ActivationFixture(renderer::RenderGraphAllocation allocation = renderer::RenderGraphAllocation::ExactPool)
     {
         rhi::Shutdown();
         rhi::reference::Reset();
@@ -312,7 +334,8 @@ struct ActivationFixture final
         REQUIRE(Activation.Initialize(Device,
                                       {Interface.GetData(), Interface.GetSize()},
                                       compositeVertex,
-                                      compositeFragment) == rhi::RasterStatus::Ready);
+                                      compositeFragment,
+                                      allocation) == rhi::RasterStatus::Ready);
     }
     ~ActivationFixture()
     {
@@ -346,6 +369,17 @@ struct ActivationFixture final
         REQUIRE(graphOrNull != nullptr);
         rhi::SubmissionToken completion;
         REQUIRE(graphOrNull->Render(Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+    }
+    /// Stage a generation, prepare it with the next extraction and activate it at a frame boundary.
+    void Reload(core::UniquePtr<renderer::RenderGraphPackage> package, uint64 revision)
+    {
+        const uint64 serial = Activation.GetReport().CandidateGeneration + 1;
+        REQUIRE(Activation.Stage(Move(package)) == rhi::RasterStatus::Ready);
+        static_cast<void>(Activation.Poll());
+        renderer::RenderGraphReport report;
+        REQUIRE(Update(report, revision) == rhi::RasterStatus::Ready);
+        static_cast<void>(Activation.Poll());
+        REQUIRE(Activation.GetReport().ActiveGeneration == serial);
     }
     static void CompletePending(rhi::RasterStatus status)
     {
@@ -745,4 +779,111 @@ TEST_CASE("RG3 a bound generation compiled against another uniform interface req
     CHECK(fixture.Activation.Stage(MakePackage(bound)) == rhi::RasterStatus::Unsupported);
     CHECK(fixture.Activation.GetReport().Candidate == renderer::RenderGraphCandidateState::RestartRequired);
     CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+}
+
+TEST_CASE("RG4 the scratch generation rewrites extents and adds approved unexported backings", "[render-graph][pool]")
+{
+    const core::UniquePtr<renderer::RenderGraphPackage> package = MakeScratchPackage(1, HEIGHT, WIDTH);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(plan.Resources.GetSize() == 2 + 2 * SCRATCH_COUNT);
+    REQUIRE(plan.Passes.GetSize() == 1 + SCRATCH_COUNT);
+    for (usize i = 0; i < plan.Resources.GetSize(); ++i)
+    {
+        CHECK(plan.Resources[i].Width == HEIGHT);
+        CHECK(plan.Resources[i].Height == WIDTH);
+        CHECK(plan.Resources[i].IsExported == (i == 0 ? 1U : 0U));
+    }
+    for (usize i = 0; i < plan.Passes.GetSize(); ++i)
+    {
+        CHECK(plan.Passes[i].AllowsRepeatedCoverage == 1);
+    }
+    CHECK(plan.Resources[3].Backing == 2);
+}
+
+TEST_CASE("RG4 generation reloads reuse the retired generation's transients after completion", "[render-graph][pool]")
+{
+    ActivationFixture fixture;
+    constexpr usize RELOADS = 5;
+    for (usize generation = 1; generation <= RELOADS; ++generation)
+    {
+        const usize creates = rhi::reference::Creates[TEXTURE];
+        fixture.Reload(MakeScratchPackage(static_cast<uint8>(generation)), generation);
+        // The first two generations overlap the active one; later ones reuse the retired set.
+        const usize transientCreates = generation <= 2 ? SCRATCH_COUNT : 0;
+        CHECK(rhi::reference::Creates[TEXTURE] == creates + 1 + transientCreates);
+        CHECK(fixture.Activation.GetActiveOrNull()->GetAllocationReport().ReusedAllocations ==
+              SCRATCH_COUNT - transientCreates);
+        fixture.Render();
+        rhi::reference::Completed = rhi::reference::Submitted;
+        CHECK(fixture.Activation.GetActiveOrNull()->GetOutputSceneRevision() == generation);
+    }
+    const renderer::RenderGraphPoolReport report = fixture.Activation.GetPoolReport();
+    CHECK(report.CreatedAllocations == 2 * SCRATCH_COUNT);
+    CHECK(report.ReusedAllocations == (RELOADS - 2) * SCRATCH_COUNT);
+    CHECK(report.LeasedAllocations == SCRATCH_COUNT);
+    CHECK(report.IdleAllocations == SCRATCH_COUNT);
+    fixture.Activation.TrimPool();
+    CHECK(fixture.Activation.GetPoolReport().IdleAllocations == 0);
+}
+
+TEST_CASE("RG4 reload defers reuse while the retired generation's frame is in flight", "[render-graph][pool]")
+{
+    ActivationFixture fixture;
+    fixture.Reload(MakeScratchPackage(1), 1);
+    // Submitted and still in flight when the generation is retired.
+    fixture.Render();
+    fixture.Reload(MakeScratchPackage(2), 2);
+    REQUIRE(fixture.Activation.GetPoolReport().IdleAllocations == SCRATCH_COUNT);
+    const usize creates = rhi::reference::Creates[TEXTURE];
+    REQUIRE(fixture.Activation.Stage(MakeScratchPackage(3)) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Creates[TEXTURE] == creates + 1 + SCRATCH_COUNT);
+    CHECK(fixture.Activation.GetPoolReport().DeferredAcquisitions == SCRATCH_COUNT);
+    CHECK(fixture.Activation.GetPoolReport().ReusedAllocations == 0);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    // Superseding the unactivated candidate returns its never-submitted transients too.
+    fixture.Reload(MakeScratchPackage(4), 3);
+    CHECK(fixture.Activation.GetActiveOrNull()->GetAllocationReport().ReusedAllocations == SCRATCH_COUNT);
+    CHECK(fixture.Activation.GetPoolReport().IdleAllocations == 2 * SCRATCH_COUNT);
+    fixture.Render();
+    rhi::reference::Completed = rhi::reference::Submitted;
+    CHECK(fixture.Activation.GetActiveOrNull()->GetOutputSceneRevision() == 3);
+}
+
+TEST_CASE("RG4 alternating-extent reloads reuse each extent's own transients", "[render-graph][pool]")
+{
+    ActivationFixture fixture;
+    constexpr usize RELOADS = 6;
+    for (usize generation = 1; generation <= RELOADS; ++generation)
+    {
+        const bool isWide = generation % 2 == 1;
+        fixture.Reload(MakeScratchPackage(static_cast<uint8>(generation),
+                                          isWide == true ? WIDTH : HEIGHT,
+                                          isWide == true ? HEIGHT : WIDTH),
+                       generation);
+        fixture.Render();
+        rhi::reference::Completed = rhi::reference::Submitted;
+    }
+    const renderer::RenderGraphPoolReport report = fixture.Activation.GetPoolReport();
+    // Generation n reuses generation n - 2's set, which has the same extent.
+    CHECK(report.CreatedAllocations == 2 * SCRATCH_COUNT);
+    CHECK(report.ReusedAllocations == (RELOADS - 2) * SCRATCH_COUNT);
+    CHECK(report.DeferredAcquisitions == 0);
+}
+
+TEST_CASE("RG4 serial-control activation creates every generation's attachments", "[render-graph][pool]")
+{
+    ActivationFixture fixture{renderer::RenderGraphAllocation::SerialControl};
+    constexpr usize RELOADS = 4;
+    for (usize generation = 1; generation <= RELOADS; ++generation)
+    {
+        const usize creates = rhi::reference::Creates[TEXTURE];
+        fixture.Reload(MakeScratchPackage(static_cast<uint8>(generation)), generation);
+        CHECK(rhi::reference::Creates[TEXTURE] == creates + 1 + SCRATCH_COUNT);
+        CHECK(fixture.Activation.GetActiveOrNull()->GetAllocationReport().IsPooled == false);
+        fixture.Render();
+        rhi::reference::Completed = rhi::reference::Submitted;
+    }
+    const renderer::RenderGraphPoolReport report = fixture.Activation.GetPoolReport();
+    CHECK(report.CreatedAllocations == 0);
+    CHECK(report.IdleAllocations == 0);
 }
