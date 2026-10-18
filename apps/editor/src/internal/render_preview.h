@@ -5,7 +5,6 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/math/vector.hpp>
-#include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -15,7 +14,6 @@
 #include <ludus/platform/native_window.h>
 
 #include "internal/editor_camera_controller.h"
-#include "internal/preview_bake.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
 
@@ -131,16 +129,6 @@ public:
         return mDeviceSerial;
     }
     [[nodiscard]] graphics::rhi::RasterStatus PinDevice(graphics::rhi::NativeDeviceLease& outLease) noexcept;
-    /// Current bake lifecycle; Idle outside Lit shading of a lit scene.
-    [[nodiscard]] PreviewBakeState GetBakeState() const noexcept;
-    /// Copies what the bake tolerated once its preparation completed.
-    /// @return True when the notice holds at least one skipped triangle.
-    [[nodiscard]] bool GetBakeNotice(PreviewBakeNotice& outNotice) const;
-    /// Stops a Running bake cooperatively; direct lighting and the camera stay as they are.
-    void CancelBake() noexcept;
-    /// Starts the bake again after CancelBake.
-    /// @return False unless the bake is Cancelled.
-    [[nodiscard]] bool RestartBake() noexcept;
     [[nodiscard]] LUDUS_INLINE bool HasPendingFrame() const noexcept
     {
         return mHasPendingFrame;
@@ -155,8 +143,6 @@ Q_SIGNALS:
     void DeviceStopping();
     void Stopped();
     void Failed(const QString& error);
-    /// Emitted when GetBakeState or GetBakeNotice changes.
-    void BakeChanged();
 
 private:
     [[nodiscard]] bool beginNavigation();
@@ -168,14 +154,6 @@ private:
         return Scene_.Lit == true && mShading != PreviewShading::Albedo;
     }
     PreviewShading mShading = PreviewShading::Solid;
-    // Explicit static-lighting budget, started on the first bake. Declared before
-    // the resources so it outlives every bake that references it.
-    foundation::threading::JobSystem mBakeJobs;
-    bool mHasBakeJobs = false;
-    // Collects the bake's tolerated-input notice once preparation completes.
-    void updateBakeNotice();
-    // Refreshes the status line and tells observers the bake state or notice changed.
-    void markBakeChanged();
     foundation::UniquePtr<PreviewGpuGeneration> mResources;
     foundation::UniquePtr<PreviewGpuGeneration> mRetiredResources;
     bool mNeedsResourceRestart = false;
@@ -193,8 +171,6 @@ private:
     bool mHasPreparedView = false;
     bool mIsAwaitingProducer = false;
     [[nodiscard]] bool prepare();
-    void serviceStaticLighting();
-    [[nodiscard]] graphics::rhi::RasterStatus pollViewport();
     void restartResources() noexcept;
     RenderScene Scene_;
     foundation::uint32 RequestedWidth_ = 640, RequestedHeight_ = 480;

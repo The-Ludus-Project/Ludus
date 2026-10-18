@@ -524,7 +524,7 @@ TEST_CASE("World menu Save and history own the active document and Close Project
     REQUIRE(world->Open(path));
     auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
     REQUIRE(tabs != nullptr);
-    tabs->setCurrentWidget(world);
+    world->setFocus();
     world->findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
     Type(Field(*world, QStringLiteral("transform/x")), QStringLiteral("4"));
     auto* save = window.findChild<QAction*>(QStringLiteral("document.save"));
@@ -754,7 +754,7 @@ TEST_CASE("World provides scene authoring without a project component schema", "
     unsafe.SetProject(root, 3);
     CHECK_FALSE(unsafe.Create(QDir(root).filePath(QStringLiteral("unsafe.world.json"))));
 }
-TEST_CASE("Editor exposes a single World tab for scene and component authoring", "[editor][world][unified]")
+TEST_CASE("Editor keeps the unified World workspace outside tool tabs", "[editor][world][unified]")
 {
     QTemporaryDir directory;
     ToolingPaths tools;
@@ -771,7 +771,8 @@ TEST_CASE("Editor exposes a single World tab for scene and component authoring",
         CHECK(text != QStringLiteral("3D Levels"));
         CHECK(text != QStringLiteral("Scene"));
     }
-    CHECK(worlds == 1);
+    CHECK(worlds == 0);
+    CHECK(window.centralWidget() == window.findChild<WorldWorkspace*>());
 }
 
 TEST_CASE("Converted cooked levels edit placement and gameplay in World and survive reopening",

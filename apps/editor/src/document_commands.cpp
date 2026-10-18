@@ -18,6 +18,11 @@
 
 namespace ludus::editor
 {
+QWidget* MainWindow::getActiveWorkspace() const noexcept
+{
+    return mActiveWorkspaceOrNull != nullptr ? mActiveWorkspaceOrNull : WorkTabs_->currentWidget();
+}
+
 void MainWindow::CommitProjectFields()
 {
     if (Controller_->Caps().CanEdit == false)
@@ -41,7 +46,7 @@ void MainWindow::RenderDocumentActions()
     {
         return;
     }
-    auto* area = WorkTabs_->currentWidget();
+    QWidget* area = getActiveWorkspace();
     const bool project = area == ProjectSettings_;
     const bool audio = area != nullptr && area->isAncestorOf(Audio_);
     const bool configuration = area == Configuration_;
@@ -118,19 +123,19 @@ void MainWindow::OnUndoRequested()
     {
         plain->undo();
     }
-    else if (WorkTabs_->currentWidget() == World_)
+    else if (getActiveWorkspace() == World_)
     {
         World_->Undo();
     }
-    else if (WorkTabs_->currentWidget() == Scripts_)
+    else if (getActiveWorkspace() == Scripts_)
     {
         Scripts_->Undo();
     }
-    else if (WorkTabs_->currentWidget() == Renderer_)
+    else if (getActiveWorkspace() == Renderer_)
     {
         Renderer_->Undo();
     }
-    else if (WorkTabs_->currentWidget() == ProjectSettings_ && UndoAction_->isEnabled())
+    else if (getActiveWorkspace() == ProjectSettings_ && UndoAction_->isEnabled())
     {
         Controller_->UndoProjectEdit();
     }
@@ -152,19 +157,19 @@ void MainWindow::OnRedoRequested()
     {
         plain->redo();
     }
-    else if (WorkTabs_->currentWidget() == World_)
+    else if (getActiveWorkspace() == World_)
     {
         World_->Redo();
     }
-    else if (WorkTabs_->currentWidget() == Scripts_)
+    else if (getActiveWorkspace() == Scripts_)
     {
         Scripts_->Redo();
     }
-    else if (WorkTabs_->currentWidget() == Renderer_)
+    else if (getActiveWorkspace() == Renderer_)
     {
         Renderer_->Redo();
     }
-    else if (WorkTabs_->currentWidget() == ProjectSettings_ && RedoAction_->isEnabled())
+    else if (getActiveWorkspace() == ProjectSettings_ && RedoAction_->isEnabled())
     {
         Controller_->RedoProjectEdit();
     }

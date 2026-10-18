@@ -177,7 +177,7 @@ TEST_CASE("Linux viewport shares an editor-created Vulkan device with Qt Quick",
     // lease timing: the scene graph samples only the active, still-leased image, and
     // RHI and Qt submit on one serialized queue, so even a premature release could
     // show only a newer frame, never torn pixels. Lit is not compared because its
-    // static bake keeps changing the image.
+    // viewport keeps presenting the authored lighting.
     QQuickWindow* quickWindow = static_cast<QQuickWindow*>(window);
     const QImage reference = quickWindow->grabWindow();
     REQUIRE(reference.isNull() == false);

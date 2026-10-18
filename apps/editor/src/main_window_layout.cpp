@@ -51,7 +51,8 @@ namespace ludus::editor
 {
 namespace
 {
-constexpr foundation::int32 LAYOUT_VERSION = 2;
+constexpr foundation::int32 LAYOUT_VERSION = 3;
+constexpr foundation::int32 DEFAULT_TOOLS_WIDTH_PIXELS = 300;
 constexpr foundation::int64 MAX_SETTINGS_BYTES = foundation::int64{64} * 1024;
 constexpr foundation::int32 MAX_STATE_BYTES = 32 * 1024;
 LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR_LAYOUT, "Editor.Layout");
@@ -64,10 +65,13 @@ void MainWindow::BuildUi()
     WorkTabs_->setAccessibleName(QStringLiteral("Authoring work areas"));
     // Tab labels must not force the whole workspace wider than its container.
     WorkTabs_->setUsesScrollButtons(true);
-    WorkTabs_->setElideMode(Qt::ElideRight);
+    WorkTabs_->setElideMode(Qt::ElideNone);
     // The central area can shrink; scrollable work areas own content overflow.
     WorkTabs_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    setCentralWidget(WorkTabs_);
+    mToolsDockOrNull = new QDockWidget(QStringLiteral("Authoring Tools"), this);
+    mToolsDockOrNull->setObjectName(QStringLiteral("authoringToolsDock"));
+    mToolsDockOrNull->setWidget(WorkTabs_);
+    addDockWidget(Qt::RightDockWidgetArea, mToolsDockOrNull);
     auto* projectScroll = new QScrollArea(WorkTabs_);
     ProjectSettings_ = projectScroll;
     projectScroll->setObjectName(QStringLiteral("projectSettingsScroll"));
@@ -201,8 +205,9 @@ void MainWindow::BuildUi()
     Audio_ = new AudioWorkspace(audioScroll);
     audioScroll->setWidget(Audio_);
     WorkTabs_->addTab(audioScroll, QStringLiteral("&Audio"));
-    World_ = new WorldWorkspace(Controller_->Tooling(), WorkTabs_);
-    WorkTabs_->addTab(World_, QStringLiteral("&World"));
+    World_ = new WorldWorkspace(Controller_->Tooling(), this);
+    World_->setFocusPolicy(Qt::StrongFocus);
+    setCentralWidget(World_);
     Scripts_ = new ScriptWorkspace(Controller_, WorkTabs_);
     WorkTabs_->addTab(Scripts_, QStringLiteral("&Scripts"));
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), WorkTabs_);
@@ -218,6 +223,7 @@ void MainWindow::BuildUi()
     inspectorScroll->setObjectName(QStringLiteral("liveInspectorScroll"));
     inspectorScroll->setWidgetResizable(true);
     inspectorScroll->setFrameShape(QFrame::NoFrame);
+    inspectorScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     auto* inspector = new QWidget(inspectorScroll);
     auto* inspectorLayout = new QVBoxLayout(inspector);
     // --- Runtime status area (describes the running app; not a framebuffer) ---
@@ -260,13 +266,14 @@ void MainWindow::BuildUi()
     InspectorDock_->setWidget(inspectorScroll);
     addDockWidget(Qt::RightDockWidgetArea, InspectorDock_);
 
-    // Runtime timing telemetry shares the inspector's area: both describe the
-    // running session, and the inspector stays the default tab.
+    // Runtime panels share the tools dock area, leaving the central World visible.
     TimingDock_->setObjectName(QStringLiteral("timingDock"));
+    Timing_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     TimingDock_->setWidget(Timing_);
     addDockWidget(Qt::RightDockWidgetArea, TimingDock_);
-    tabifyDockWidget(InspectorDock_, TimingDock_);
-    InspectorDock_->raise();
+    tabifyDockWidget(mToolsDockOrNull, InspectorDock_);
+    tabifyDockWidget(mToolsDockOrNull, TimingDock_);
+    mToolsDockOrNull->raise();
 
     OutputDock_ = new QDockWidget(QStringLiteral("Output"), this);
     OutputDock_->setObjectName(QStringLiteral("outputDock"));
@@ -277,6 +284,7 @@ void MainWindow::BuildUi()
     Output_->setMaximumBlockCount(5000);
     OutputDock_->setWidget(Output_);
     addDockWidget(Qt::BottomDockWidgetArea, OutputDock_);
+    OutputDock_->hide();
 
     StatusLabel_ = new QLabel(this);
     StatusLabel_->setObjectName(QStringLiteral("workspaceStatus"));
@@ -370,7 +378,7 @@ void MainWindow::BuildUi()
 void MainWindow::InitializeWorkspace()
 {
     resize(1100, 760);
-    resizeDocks({InspectorDock_}, {300}, Qt::Horizontal);
+    resizeToolsDock();
     resizeDocks({OutputDock_}, {180}, Qt::Vertical);
     DefaultLayout_ = saveState(LAYOUT_VERSION);
     if (WorkspaceSettingsFile_.isEmpty())
@@ -420,18 +428,25 @@ void MainWindow::InitializeWorkspace()
     }
 }
 
+void MainWindow::resizeToolsDock()
+{
+    resizeDocks({mToolsDockOrNull}, {DEFAULT_TOOLS_WIDTH_PIXELS}, Qt::Horizontal);
+}
+
 void MainWindow::ResetWorkspaceLayout()
 {
     (void)restoreState(DefaultLayout_, LAYOUT_VERSION);
     // Also recover a pane that was floating when the user requested reset.
-    for (QDockWidget* dock : {InspectorDock_, TimingDock_, OutputDock_})
+    for (QDockWidget* dock : {mToolsDockOrNull, InspectorDock_, TimingDock_})
     {
         dock->setFloating(false);
         dock->show();
     }
-    InspectorDock_->raise();
+    OutputDock_->setFloating(false);
+    OutputDock_->hide();
+    mToolsDockOrNull->raise();
     GameToolbar_->show();
-    resizeDocks({InspectorDock_}, {300}, Qt::Horizontal);
+    resizeToolsDock();
     resizeDocks({OutputDock_}, {180}, Qt::Vertical);
 }
 
