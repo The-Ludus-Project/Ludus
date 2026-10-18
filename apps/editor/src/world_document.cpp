@@ -122,7 +122,7 @@ bool TryMintObjectUuid(const foundation::identity::EntropySource& entropy,
         }
         if (used.contains(candidate) == false)
         {
-            outUuid = candidate;
+            outUuid = foundation::Move(candidate);
             return true;
         }
     }
