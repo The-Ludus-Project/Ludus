@@ -11,6 +11,7 @@
 #include <ludus/foundation/geometry/query.hpp>
 
 #include "internal/arc_length.hpp"
+#include "internal/control_box.hpp"
 #include "internal/span_math.hpp"
 
 #include <ludus/foundation/math/enclosure.hpp>
@@ -153,7 +154,7 @@ struct Search final
     Enclosure distance;
     if (status == GeometryStatus::Success)
     {
-        status = internal::TryBoundBoxDistance(inoutSearch.Query, point, distance);
+        status = internal::ToGeometryStatus(internal::TryEncloseDistance(inoutSearch.Query, point, distance));
     }
     if (status != GeometryStatus::Success)
     {
@@ -181,7 +182,7 @@ struct Search final
     Enclosure distance;
     if (status == GeometryStatus::Success)
     {
-        status = internal::TryBoundBoxDistance(inoutSearch.Query, hull, distance);
+        status = internal::ToGeometryStatus(internal::TryEncloseDistance(inoutSearch.Query, hull, distance));
     }
     if (status != GeometryStatus::Success)
     {
@@ -312,23 +313,8 @@ IsInside(const SegmentParameter& parameter, const ProjectionInterval& interval, 
 [[nodiscard]] GeometryStatus
 TryEncloseQuery(const PathView& path, const Vector3d& point, internal::EnclosureBox& outBox) noexcept
 {
-    internal::EnclosureBox box;
-    math::MathStatus status =
-        math::TrySubtractOutward(MakePointEnclosure(point.X), MakePointEnclosure(path.Origin.X), box.X);
-    if (status == math::MathStatus::Success)
-    {
-        status = math::TrySubtractOutward(MakePointEnclosure(point.Y), MakePointEnclosure(path.Origin.Y), box.Y);
-    }
-    if (status == math::MathStatus::Success)
-    {
-        status = math::TrySubtractOutward(MakePointEnclosure(point.Z), MakePointEnclosure(path.Origin.Z), box.Z);
-    }
-    if (status != math::MathStatus::Success)
-    {
-        return internal::ToGeometryStatus(status);
-    }
-    outBox = box;
-    return GeometryStatus::Success;
+    return internal::ToGeometryStatus(
+        internal::TrySubtractBoxes(internal::MakePointBox(point), internal::MakePointBox(path.Origin), outBox));
 }
 
 [[nodiscard]] GeometryStatus RunProjection(const PathView& path,

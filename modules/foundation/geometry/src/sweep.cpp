@@ -3,6 +3,7 @@
 #include <ludus/foundation/geometry/sweep.hpp>
 
 #include "internal/arc_length.hpp"
+#include "internal/control_box.hpp"
 #include "internal/span_math.hpp"
 
 #include <ludus/foundation/containers/static_array.hpp>
@@ -340,7 +341,7 @@ struct Planner final
     return math::Length(point - (start + direction * t));
 }
 
-[[nodiscard]] Vector3d GetMidpoint(const internal::ControlBox& box) noexcept
+[[nodiscard]] Vector3d GetMidpoint(const internal::EnclosureBox& box) noexcept
 {
     return Vector3d{(box.X.Lower + box.X.Upper) * 0.5,
                     (box.Y.Lower + box.Y.Upper) * 0.5,
@@ -356,7 +357,7 @@ struct Planner final
                                                       const SweepRing& end,
                                                       float64& outError) noexcept
 {
-    core::StaticArray<internal::ControlBox, SPAN_CONTROL_COUNT> controls;
+    core::StaticArray<internal::EnclosureBox, SPAN_CONTROL_COUNT> controls;
     const GeometryStatus status =
         internal::TryEncloseSubspanControls(inoutPlanner.Path.Spans[spanIndex], a, b, controls);
     if (status != GeometryStatus::Success)
