@@ -51,6 +51,7 @@ on:
       - 'modules/foundation/base/**'
       - 'modules/foundation/math/**'
       - 'modules/foundation/geometry/**'
+      - 'modules/content/procedural/**'
       - 'tools/web-math-probe/**'
       - 'modules/localization/**'
       - 'tools/web-localization-probe/**'

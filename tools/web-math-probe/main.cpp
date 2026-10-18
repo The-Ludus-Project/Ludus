@@ -22,6 +22,7 @@
 #include <ludus/foundation/math/transform.hpp>
 
 #include "enclosure_oracle.hpp"
+#include "scatter_golden.h"
 
 #include <cmath>
 #include <cstdio>
@@ -172,6 +173,21 @@ int main()
               exactSum.Lower == 3.0 && exactSum.Upper == 3.0,
           "exact sum is not widened");
     Check(ExerciseInstalledGeometry() == true, "geometry path, distance map, track and Certified surface mesh");
+
+    // Procedural scatter golden digest: the same fixture and pinned answer as the native scatter tests,
+    // so native and wasm builds must accept identical placements.
+    {
+        namespace golden = ludus::content::procedural::golden;
+        static golden::GoldenScatter scatter;
+        static ludus::content::procedural::ScatterPlacement placements[golden::STORAGE_PLACEMENTS];
+        const bool isInitialized = golden::InitializeGoldenScatter(scatter);
+        const golden::GoldenDigest digest = golden::ComputeGoldenDigest(
+            scatter,
+            ludus::foundation::BorrowedView<ludus::content::procedural::ScatterPlacement>(placements));
+        Check(isInitialized == true && digest.Status == ludus::content::procedural::ScatterStatus::Success &&
+                  digest.Count == golden::PLACEMENT_COUNT && digest.Value == golden::PLACEMENT_DIGEST,
+              "procedural scatter golden v1");
+    }
 
     std::printf("LUDUS_WEB_MATH_RESULT failures=%d\n", gFail);
     return gFail == 0 ? 0 : 1;

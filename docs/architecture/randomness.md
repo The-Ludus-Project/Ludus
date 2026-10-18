@@ -10,10 +10,13 @@ worker-order, installed-SDK, and pinned WebAssembly corpus checks. FoundationMat
 shader source `math.slang` carries a bit-exact port of the addressed raw, float
 and bounded samplers for kernels; the renderer's GPU preview path tracer uses it,
 and a GPU test checks it against the pinned known answers and the CPU reference
-(see [GPU addressed sampling](#gpu-addressed-sampling)). It makes no throughput
+(see [GPU addressed sampling](#gpu-addressed-sampling)). `random_domains.hpp`
+checks domain manifests against the game and engine ID ranges at compile time,
+and the headless procedural scatter kernel is the first consumer outside the
+renderer ([milestone 1](#milestone-1-procedural-placement)). It makes no throughput
 or statistical certification claim. Sequential seed factories, wire state codecs,
-probability/weighted distributions, world registries/manifests, designer
-policies, and security entropy remain future work.
+probability/weighted distributions, game-world integration, designer policies,
+and security entropy remain future work.
 
 The specification below describes the complete target architecture. Code uses
 `TryMakeRandomKey`, `TryMakeRandomAddress`, `SampleUInt32`, `SampleFloat01`,
@@ -161,6 +164,15 @@ unique within the manifest, and never recycled. Labels are tooling metadata.
 Rename a label without changing the ID. Validate duplicates when building content
 or loading the manifest; draw calls do no string hashing or registry lookup.
 Different games may maintain different manifests.
+
+Game and engine domains use separate ranges so that neither needs a shared
+registry. Game manifests assign IDs in `[1, 0x00FFFFFF]`. Engine-owned domains use
+IDs from `0x01000000`, conventionally four ASCII characters such as the renderer's
+`BAKE` (`0x42414B45`) and `RT01` (`0x52543031`). FoundationMath's
+`random_domains.hpp` provides `CheckRandomDomains`, a `constexpr` check that every
+entry of a manifest is nonzero, inside its owner's range and unique. A checked-in
+manifest asserts it with `static_assert`, so a duplicate or out-of-range ID fails
+the build rather than a draw.
 
 The proposed derivation v1 is deliberately small:
 
@@ -662,6 +674,68 @@ Deliver this work in the following order:
    Include Doxygen contracts, canonical usage documentation and native/web
    evidence in each feature change. Record deliberate deferrals explicitly;
    unused optional samplers are not prerequisites for the first consumer.
+
+### Milestone 1: procedural placement
+
+The first addressed consumer outside the renderer is room-scoped scatter of
+static placements in `apps/world_demo`. It is also the P0 slice of the
+[procedural content generation architecture](procedural-content-generation.md#p0-room-scoped-scatter),
+which owns the recipe, placement identity, thinning rule and kernel. This
+section owns the randomness contracts that consumer exercises: domains, root
+seed, event rules and isolation. Weighted selection, the state codec and seed
+acquisition stay in later milestones; the scatter chooses among equally likely
+variants with `TrySampleBounded`.
+
+**Root seed.** The game session takes an explicit `uint64` world seed, with a fixed
+default, and records it with the session. Every room derives its scatter keys
+from that seed and a manifest domain. The room's identity enters through the
+address scope, so two rooms never repeat each other's scatter. Each level keeps
+its authored `Seed` as content data; the scatter does not use it, because levels
+that shared a value would generate identical placements.
+
+**Domains.** The game manifest assigns one domain per property, so a new draw for
+one property cannot shift another: placement (position and thinning priority),
+variant, transform, regrow and cosmetic. Base generation uses event zero in the
+placement, variant and transform domains; the procedural document lists their
+dimensions. Rendering samples only the cosmetic domain.
+
+**Event rules.** Harvesting a placement records a tombstone for its identity. A
+tombstone is a world mutation, not a random event, and survives leaving and
+re-entering the room, because regeneration reapplies it. Regrowing a harvested
+placement draws its new variant at `(regrow domain, placement scope, ordinal, 0)`:
+
+- The per-placement regrow ordinal starts at one and advances exactly once, in
+  the commit phase of the tick that commits the regrow.
+- Rebuilding a candidate world, retrying a step or faulting a tick neither
+  advances nor publishes an ordinal. A retried evaluation reuses the same ordinal.
+- An ordinal that would pass `UINT32_MAX` fails the regrow with an explicit status,
+  and the placement stays harvested. It never wraps or narrows.
+- Tombstones and ordinals enter the world replay hash in milestone 1 and the
+  checkpoint in milestone 2. Cosmetic samples enter neither.
+
+**Isolation regressions.** The milestone is accepted when tests show that:
+
+| Change | Must not change |
+| --- | --- |
+| Worker count, chunk size, traversal order, or building one cell alone instead of with its neighbours | Accepted placements, positions, variants and transforms |
+| Adding a domain or dimension, changing the transform ranges | Candidate positions, priorities and acceptance |
+| Disabling rendering, changing frame pacing or interpolation, extra cosmetic draws | The world replay hash |
+| Editing another room's recipe, adding a layer | Existing rooms and layers |
+| Rebuilding, retrying or faulting a tick | Regrow ordinals and tombstones |
+
+The same fixed seed and recipe produce a checked-in placement digest on native
+and Emscripten builds. Scope overflow, duplicate IDs and capacity overruns are
+rejected before generation, with nothing published.
+
+**Delivery.** Three pull requests deliver it, each with its tests and documentation:
+
+1. The domain manifest check in FoundationMath and the headless scatter kernel in
+   `Ludus::ProceduralEnvironment`, with the golden, ordering, property-isolation
+   and rejection tests.
+2. World demo integration: the room catalog, scatter recipes in level files, the
+   session world seed, drawing with the cosmetic domain, and the replay hash.
+3. Harvesting and regrowth with the event rules above, and status updates here,
+   in the procedural document and in the world demo guide.
 
 ### Research after the initial implementation
 

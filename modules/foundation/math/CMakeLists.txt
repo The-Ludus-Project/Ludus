@@ -48,6 +48,7 @@ target_sources(
             include/ludus/foundation/math/precision.hpp
             include/ludus/foundation/math/random.hpp
             include/ludus/foundation/math/addressed_random.hpp
+            include/ludus/foundation/math/random_domains.hpp
             include/ludus/foundation/math/batch.hpp
             include/ludus/foundation/math/dynamics.hpp
             include/ludus/foundation/math/cubic.hpp
@@ -101,6 +102,7 @@ if(LUDUS_BUILD_TESTS)
             tests/precision_tests.cpp
             tests/random_tests.cpp
             tests/addressed_random_tests.cpp
+            tests/random_domains_tests.cpp
             tests/batch_tests.cpp
             tests/layout_tests.cpp
             tests/dynamics_tests.cpp

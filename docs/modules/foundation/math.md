@@ -109,6 +109,23 @@ if (TryMakeRandomKey(/*worldSeed=*/42, /*persistentLootDomain=*/7, lootKey) == M
 }
 ```
 
+### Domain manifests
+
+Keep a game's domain IDs in one checked-in table and let the compiler check it.
+Game IDs use `[1, 0x00FFFFFF]`; engine modules use IDs from `0x01000000`. An ID is
+never reused, and renaming a label leaves derived keys unchanged. See
+[stable keys and domains](../../architecture/randomness.md#stable-keys-domains-and-identities).
+
+```cpp
+#include <ludus/foundation/math/random_domains.hpp>
+
+constexpr RandomDomain GAME_DOMAINS[] = {
+    {1, "loot selection"},
+    {2, "combat spread"},
+};
+static_assert(CheckRandomDomains(GAME_DOMAINS, RandomDomainOwner::Game).Status == MathStatus::Success);
+```
+
 Persist the root seed, stable domain/address assignments, generator identity
 `Philox4x32-10`, and all three v1 contract IDs with the owner's replay/content
 version. Use `TryMakeRandomAddress` before narrowing external counters. Reusing
