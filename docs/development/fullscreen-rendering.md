@@ -360,7 +360,26 @@ Only Ready or Pending publishes ownership. WebGPU creation returns Pending while
 both validation and out-of-memory scopes drain; poll the typed `GetStatus`
 once per tick. A dependency that is still pending returns NotReady without
 publishing an output. A published failed resource must still be destroyed.
-All operations are serialized on the device's owner thread.
+All public operations are serialized on the device's owner thread.
+
+For native live development, set `RasterShaderDescription::ShouldPrepareAsynchronously`
+before creation. The backend consumes/copies the source and metadata before
+returning Pending and prepares it on one dedicated driver worker. Graphics and
+compute pipelines inherit that policy from their shader inputs; their description
+can also explicitly select it. Pending owns a handle: poll `GetStatus`, retain the
+active replacement target, and never bind a candidate before Ready. One-shot
+callers retain synchronous native creation by default; WebGPU keeps its existing
+asynchronous API and WebGL its context-thread policy.
+
+Native preparation admits at most `MAX_WORKER_QUEUE_TASKS` jobs, including
+uncollected completions. Queue/startup/allocation failure is explicit and never
+falls back to blocking driver compilation. Captured shader bytes and task storage
+are charged to RHI host storage. The worker never mutates facade records, resource
+tables or render-pass caches. Owner-thread polling publishes results; pending
+callbacks retain dependencies even after public handles are detached. Shutdown
+joins the preparation lane before releasing the device, shaders, layouts or pass
+cache. Vulkan pipeline work uses no shared `VkPipelineCache`. See the
+[development reload transaction](render-graph-authoring.md#native-shader-worker-and-live-development-builds).
 
 The historical R1 profile below is deliberately bounded. L1 adds targets/depth,
 L2 adds R8 coverage, and [L3 material/content versions](../architecture/renderer-systems.md#implemented-l3-material-and-content-versions)

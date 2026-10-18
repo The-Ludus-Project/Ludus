@@ -32,6 +32,9 @@ target_link_libraries(ludus_graphics_rhi
     PRIVATE
         Ludus::FoundationLogging
 )
+if(NOT EMSCRIPTEN)
+    target_link_libraries(ludus_graphics_rhi PRIVATE Ludus::FoundationThreading)
+endif()
 if(EMSCRIPTEN)
     # Browser Auto build: both web sub-backends plus the dispatcher are linked
     # into one artifact, each sub-backend in its own leaf namespace, and the

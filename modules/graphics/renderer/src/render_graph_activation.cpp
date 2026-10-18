@@ -486,13 +486,15 @@ RenderGraphPlan RenderGraphPackage::GetPlan() const noexcept
             {state.UniformBlocks.GetData(), state.Header.UniformBlockCount},
             {state.UniformFields.GetData(), state.Header.UniformFieldCount}};
 }
-RenderGraphPrograms
-RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVertex,
-                                const rhi::RasterShaderDescription& compositeFragment) const noexcept
+RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVertex,
+                                                    const rhi::RasterShaderDescription& compositeFragment,
+                                                    bool shouldPrepareAsynchronously) const noexcept
 {
     RenderGraphPrograms result;
     result.CompositeVertex = compositeVertex;
     result.CompositeFragment = compositeFragment;
+    result.CompositeVertex.ShouldPrepareAsynchronously = shouldPrepareAsynchronously;
+    result.CompositeFragment.ShouldPrepareAsynchronously = shouldPrepareAsynchronously;
     if (mState.Get() == nullptr)
     {
         return result;
@@ -509,6 +511,7 @@ RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVer
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description = *members[role];
+        description.ShouldPrepareAsynchronously = shouldPrepareAsynchronously;
         const StaticArray<State::StageView, format::SHADER_TARGET_COUNT>& views = state.Stages[role];
         bool hasArtifact = false;
         for (const State::StageView& view : views)
@@ -707,11 +710,11 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     }
     generation->Package.Swap(package);
     generation->Serial = state.Report.CandidateGeneration;
-    const Status status =
-        generation->Graph.Initialize(state.Device,
-                                     generation->Package->GetPlan(),
-                                     generation->Package->GetPrograms(state.CompositeVertex, state.CompositeFragment),
-                                     state.IsPooled == true ? &state.Pool : nullptr);
+    const Status status = generation->Graph.Initialize(
+        state.Device,
+        generation->Package->GetPlan(),
+        generation->Package->GetPrograms(state.CompositeVertex, state.CompositeFragment, true),
+        state.IsPooled == true ? &state.Pool : nullptr);
     if (IsAccepted(status) == false)
     {
         state.FailCandidate(status);

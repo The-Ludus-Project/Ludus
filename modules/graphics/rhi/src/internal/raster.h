@@ -118,6 +118,7 @@ struct RasterShaderInfo final
     char UniformBlocks[RASTER_BINDINGS][64]{};
     char TextureNames[RASTER_BINDINGS][64]{};
     foundation::uint32 TextureSamplers[RASTER_BINDINGS]{};
+    bool ShouldPrepareAsynchronously = false;
 };
 struct RasterViewSource final
 {
@@ -175,12 +176,14 @@ struct RasterPipelineInfo final
     bool Stencil = false;
     RasterStencilFace StencilFront{}, StencilBack{};
     foundation::uint32 StencilReadMask = 255, StencilWriteMask = 255, StencilReference = 0;
+    bool ShouldPrepareAsynchronously = false;
 };
 struct ComputePipelineInfo final
 {
     foundation::usize Shader = 0;
     foundation::usize Layout = 0;
     foundation::uint32 WorkgroupSize[3]{1, 1, 1};
+    bool ShouldPrepareAsynchronously = false;
 };
 struct ComputePacket final
 {
@@ -316,6 +319,7 @@ enum class RasterCallbacks : foundation::uint8
     Three = 3
 };
 void RasterExpect(foundation::uint32 request, RasterCallbacks callbacks) noexcept;
+bool IsRasterRequestCurrent(RasterKind kind, foundation::usize slot, foundation::uint32 request) noexcept;
 void RasterComplete(foundation::uint32 request, RasterStatus status) noexcept;
 void RasterFail(foundation::uint32 request, RasterStatus status) noexcept;
 void ResetLifetimeRecords() noexcept;

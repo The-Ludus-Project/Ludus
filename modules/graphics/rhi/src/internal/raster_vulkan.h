@@ -937,26 +937,167 @@ ComputeCapabilities ComputeLimits() noexcept
     }
     return result;
 }
-RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineInfo& info, uint32) noexcept
+// Thanks to Khronos Group, Vulkan Specification, "Pipelines" and
+// vkCreateGraphicsPipelines host-synchronization rules:
+// https://docs.vulkan.org/spec/latest/chapters/pipelines.html.
+// A dedicated lane builds pipelines without a shared VkPipelineCache. Captured
+// shader/layout/render-pass handles stay retained by the resource ledger until
+// owner-thread completion (including detached candidates and device shutdown).
+bool hasPreparationDeviceLoss = false;
+RasterStatus GetPreparationStatus(VkResult result) noexcept
 {
-    auto& pipeline = gComputePipelines[slot];
-    VkPipelineLayoutCreateInfo layout{};
-    layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout.setLayoutCount = 1;
-    layout.pSetLayouts = &gRasterLayouts[info.Layout];
-    auto result = vkCreatePipelineLayout(gDevice, &layout, nullptr, &pipeline.Layout);
-    if (result != VK_SUCCESS)
+    if (result == VK_SUCCESS)
     {
-        return RasterError(result);
+        return RasterStatus::Ready;
     }
-    VkComputePipelineCreateInfo descriptor{ .stage = { .stage = VK_SHADER_STAGE_COMPUTE_BIT } };
-    descriptor.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    descriptor.layout = pipeline.Layout;
-    descriptor.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    descriptor.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    descriptor.stage.module = gRasterShaders[info.Shader].Object;
-    descriptor.stage.pName = gRasterShaders[info.Shader].Entry;
-    return RasterError(vkCreateComputePipelines(gDevice, VK_NULL_HANDLE, 1, &descriptor, nullptr, &pipeline.Object));
+    static_cast<void>(Check(result)); // Owner-thread diagnostics; failure publication stays outside the worker.
+    if (result == VK_ERROR_DEVICE_LOST)
+    {
+        if (isPreparationDraining == false)
+        {
+            hasPreparationDeviceLoss = true;
+        }
+        return RasterStatus::DeviceLost;
+    }
+    return result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY ? RasterStatus::OutOfMemory
+                                                                                            : RasterStatus::Failed;
+}
+struct VulkanComputePreparation final : NativePreparationTask
+{
+    VkDevice Device = VK_NULL_HANDLE;
+    VkDescriptorSetLayout Bindings = VK_NULL_HANDLE;
+    RasterVulkanShader Shader;
+    ComputeVulkanPipeline Pipeline;
+    ~VulkanComputePreparation() noexcept override
+    {
+        if (Pipeline.Object != VK_NULL_HANDLE)
+        {
+            vkDestroyPipeline(Device, Pipeline.Object, nullptr);
+        }
+        if (Pipeline.Layout != VK_NULL_HANDLE)
+        {
+            vkDestroyPipelineLayout(Device, Pipeline.Layout, nullptr);
+        }
+    }
+    VkResult Outcome = VK_NOT_READY;
+    void Execute() noexcept override
+    {
+        const VkPipelineLayoutCreateInfo layout
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &Bindings,
+        };
+        Outcome = vkCreatePipelineLayout(Device, &layout, nullptr, &Pipeline.Layout);
+        if (Outcome != VK_SUCCESS)
+        {
+            return;
+        }
+        const VkComputePipelineCreateInfo descriptor
+        {
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage =
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = Shader.Object,
+                .pName = Shader.Entry,
+            },
+            .layout = Pipeline.Layout,
+        };
+        Outcome = vkCreateComputePipelines(Device, VK_NULL_HANDLE, 1, &descriptor, nullptr, &Pipeline.Object);
+    }
+    RasterStatus Complete(bool) noexcept override
+    {
+        gComputePipelines[ResourceSlot] = Pipeline;
+        Pipeline = {};
+        const RasterStatus status = GetPreparationStatus(Outcome);
+        internal::RasterComplete(Request, status);
+        return status;
+    }
+};
+struct VulkanRasterPreparation final : NativePreparationTask
+{
+    VkDevice Device = VK_NULL_HANDLE;
+    VkDescriptorSetLayout Bindings = VK_NULL_HANDLE;
+    VkRenderPass Pass = VK_NULL_HANDLE;
+    RasterVulkanShader Vertex;
+    RasterVulkanShader Fragment;
+    internal::RasterPipelineInfo Info;
+    RasterVulkanPipeline Pipeline;
+    ~VulkanRasterPreparation() noexcept override
+    {
+        if (Pipeline.Object != VK_NULL_HANDLE)
+        {
+            vkDestroyPipeline(Device, Pipeline.Object, nullptr);
+        }
+        if (Pipeline.Layout != VK_NULL_HANDLE)
+        {
+            vkDestroyPipelineLayout(Device, Pipeline.Layout, nullptr);
+        }
+    }
+    VkResult Outcome = VK_NOT_READY;
+    VkResult Build() noexcept;
+    void Execute() noexcept override
+    {
+        Outcome = Build();
+    }
+    RasterStatus Complete(bool) noexcept override
+    {
+        gRasterPipelines[ResourceSlot] = Pipeline;
+        Pipeline = {};
+        const RasterStatus status = GetPreparationStatus(Outcome);
+        internal::RasterComplete(Request, status);
+        return status;
+    }
+};
+struct VulkanShaderPreparation final : NativePreparationTask
+{
+    VkDevice Device = VK_NULL_HANDLE;
+    RasterVulkanShader Shader;
+    internal::StorageArray<uint32> Code;
+    ~VulkanShaderPreparation() noexcept override
+    {
+        if (Shader.Object != VK_NULL_HANDLE)
+        {
+            vkDestroyShaderModule(Device, Shader.Object, nullptr);
+        }
+    }
+    VkResult Outcome = VK_NOT_READY;
+    void Execute() noexcept override
+    {
+        const VkShaderModuleCreateInfo create
+        {
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = Code.GetSize() * sizeof(uint32),
+            .pCode = Code.GetData(),
+        };
+        Outcome = vkCreateShaderModule(Device, &create, nullptr, &Shader.Object);
+    }
+    RasterStatus Complete(bool) noexcept override
+    {
+        gRasterShaders[ResourceSlot] = Shader;
+        Shader.Object = VK_NULL_HANDLE;
+        const RasterStatus status = GetPreparationStatus(Outcome);
+        internal::RasterComplete(Request, status);
+        return status;
+    }
+};
+RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineInfo& info, uint32 request) noexcept
+{
+    UniquePtr<VulkanComputePreparation> task = MakePreparationTask<VulkanComputePreparation>();
+    if (task.Get() == nullptr)
+    {
+        return internal::StorageFailure();
+    }
+    task->IsPipelinePreparation = true;
+    task->Kind = internal::RasterKind::ComputePipeline;
+    task->Device = gDevice;
+    task->Bindings = gRasterLayouts[info.Layout];
+    task->Shader = gRasterShaders[info.Shader];
+    task->ResourceSlot = slot;
+    task->Request = request;
+    return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
 }
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
@@ -1344,7 +1485,7 @@ RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& info, uin
 RasterStatus RasterCreateShader(usize slot,
                                 const ShaderDescription& info,
                                 const internal::RasterShaderInfo& reflected,
-                                uint32) noexcept
+                                uint32 request) noexcept
 {
     bool found = false;
     uint32 entryId = 0;
@@ -1383,13 +1524,21 @@ RasterStatus RasterCreateShader(usize slot,
     {
         return RasterStatus::InvalidDescription;
     }
-    auto& shader = gRasterShaders[slot];
-    std::memcpy(shader.Entry, info.SpirvEntry.data(), info.SpirvEntry.size());
-    VkShaderModuleCreateInfo create{};
-    create.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    create.codeSize = info.Spirv.size_bytes();
-    create.pCode = info.Spirv.data();
-    return RasterError(vkCreateShaderModule(gDevice, &create, nullptr, &shader.Object));
+    UniquePtr<VulkanShaderPreparation> task = MakePreparationTask<VulkanShaderPreparation>();
+    if (task.Get() == nullptr)
+    {
+        return internal::StorageFailure();
+    }
+    if (task->Code.TryResize(info.Spirv.size()) == false)
+    {
+        return internal::StorageFailure();
+    }
+    std::memcpy(task->Code.GetData(), info.Spirv.data(), info.Spirv.size_bytes());
+    std::memcpy(task->Shader.Entry, info.SpirvEntry.data(), info.SpirvEntry.size());
+    task->Device = gDevice;
+    task->ResourceSlot = slot;
+    task->Request = request;
+    return SubmitNativePreparation(foundation::Move(task), reflected.ShouldPrepareAsynchronously);
 }
 RasterStatus RasterCreateLayout(usize slot, const internal::RasterLayout& info, uint32) noexcept
 {
@@ -1647,18 +1796,19 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
     vkUpdateDescriptorSets(gDevice, static_cast<uint32>(layout.DescriptorCount), writes.GetData(), 0, nullptr);
     return RasterStatus::Ready;
 }
-RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo& info, uint32) noexcept
+VkResult VulkanRasterPreparation::Build() noexcept
 {
-    auto& pipeline = gRasterPipelines[slot];
+    RasterVulkanPipeline& pipeline = Pipeline;
+    const internal::RasterPipelineInfo& info = Info;
     pipeline.Info = info;
     VkPipelineLayoutCreateInfo layout{};
     layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout.setLayoutCount = 1;
-    layout.pSetLayouts = &gRasterLayouts[info.Layout];
-    auto result = vkCreatePipelineLayout(gDevice, &layout, nullptr, &pipeline.Layout);
+    layout.pSetLayouts = &Bindings;
+    VkResult result = vkCreatePipelineLayout(Device, &layout, nullptr, &pipeline.Layout);
     if (result != VK_SUCCESS)
     {
-        return RasterError(result);
+        return result;
     }
     VkPipelineShaderStageCreateInfo stages[2]{
         { .stage = VK_SHADER_STAGE_VERTEX_BIT },
@@ -1667,10 +1817,10 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[0].module = gRasterShaders[info.Vertex].Object;
-    stages[1].module = gRasterShaders[info.Fragment].Object;
-    stages[0].pName = gRasterShaders[info.Vertex].Entry;
-    stages[1].pName = gRasterShaders[info.Fragment].Entry;
+    stages[0].module = Vertex.Object;
+    stages[1].module = Fragment.Object;
+    stages[0].pName = Vertex.Entry;
+    stages[1].pName = Fragment.Entry;
     VkVertexInputBindingDescription bindings[2]{};
     VkVertexInputAttributeDescription attributes[16]{};
     for (usize i = 0; i < info.StreamCount; ++i)
@@ -1780,21 +1930,26 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     create.pColorBlendState = &blend;
     create.pDynamicState = &dynamic;
     create.layout = pipeline.Layout;
-    create.renderPass = gPass;
-    if (info.Target != RasterTarget::Surface)
+    create.renderPass = Pass;
+    return vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &create, nullptr, &pipeline.Object);
+}
+RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo& info, uint32 request) noexcept
+{
+    UniquePtr<VulkanRasterPreparation> task = MakePreparationTask<VulkanRasterPreparation>();
+    if (task.Get() == nullptr)
     {
-        result = RasterVkRenderPass(info.Target == RasterTarget::Rgba16Float  ? VK_FORMAT_R16G16B16A16_SFLOAT
-                                    : info.Target == RasterTarget::Rgba8Unorm ? VK_FORMAT_R8G8B8A8_UNORM
-                                                                              : VK_FORMAT_R8G8B8A8_SRGB,
-                                    false,
-                                    {},
-                                    create.renderPass);
-        if (result != VK_SUCCESS)
-        {
-            return RasterError(result);
-        }
+        return internal::StorageFailure();
     }
-    if (info.ColorCount != 0)
+    VkResult result = VK_SUCCESS;
+    if (info.ColorCount == 0)
+    {
+        const VkFormat format = info.Target == RasterTarget::Surface       ? gFormat
+                                : info.Target == RasterTarget::Rgba16Float ? VK_FORMAT_R16G16B16A16_SFLOAT
+                                : info.Target == RasterTarget::Rgba8Unorm  ? VK_FORMAT_R8G8B8A8_UNORM
+                                                                           : VK_FORMAT_R8G8B8A8_SRGB;
+        result = RasterVkRenderPass(format, info.Target == RasterTarget::Surface, {}, task->Pass);
+    }
+    else
     {
         internal::RasterPassInfo pass;
         pass.ColorCount = info.ColorCount;
@@ -1804,13 +1959,22 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
         {
             pass.Colors[i].Format = info.ColorFormats[i];
         }
-        result = RasterVkAdvancedPass(pass, create.renderPass);
-        if (result != VK_SUCCESS)
-        {
-            return RasterError(result);
-        }
+        result = RasterVkAdvancedPass(pass, task->Pass);
     }
-    return RasterError(vkCreateGraphicsPipelines(gDevice, VK_NULL_HANDLE, 1, &create, nullptr, &pipeline.Object));
+    if (result != VK_SUCCESS)
+    {
+        return RasterError(result);
+    }
+    task->IsPipelinePreparation = true;
+    task->Kind = internal::RasterKind::Pipeline;
+    task->Device = gDevice;
+    task->Bindings = gRasterLayouts[info.Layout];
+    task->Vertex = gRasterShaders[info.Vertex];
+    task->Fragment = gRasterShaders[info.Fragment];
+    task->Info = info;
+    task->ResourceSlot = slot;
+    task->Request = request;
+    return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
 }
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 {
@@ -2222,6 +2386,12 @@ void RasterSubmit(uint64 ordinal) noexcept
 }
 uint64 RasterCompleted() noexcept
 {
+    PollNativePreparation();
+    if (hasPreparationDeviceLoss == true)
+    {
+        hasPreparationDeviceLoss = false;
+        internal::Fail(gSession, StartupError::DeviceLost);
+    }
     if (gDevice == VK_NULL_HANDLE)
     {
         return gRasterCompleted;
@@ -2285,6 +2455,8 @@ void WaitRasterSubmissions() noexcept
 }
 void RasterReset() noexcept
 {
+    DrainNativePreparation();
+    hasPreparationDeviceLoss = false;
     gRasterHdrProbed = gRasterHdr = false;
     WaitIdle();
     for (auto& frame : gRasterAdvancedFrames)

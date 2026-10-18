@@ -1234,6 +1234,7 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
         return admission;
     }
     RasterShaderInfo info;
+    info.ShouldPrepareAsynchronously = description.ShouldPrepareAsynchronously;
     info.Stage = description.Artifact.Stage;
     if ((info.Stage != ShaderStage::Vertex && info.Stage != ShaderStage::Fragment &&
          info.Stage != ShaderStage::Compute) ||
@@ -1849,6 +1850,9 @@ ValidatePipeline(DeviceHandle device, const RasterPipelineDescription& descripti
             return RasterStatus::InvalidDescription;
         }
     }
+    info.ShouldPrepareAsynchronously = description.ShouldPrepareAsynchronously == true ||
+                                       vertex->Shader.ShouldPrepareAsynchronously == true ||
+                                       fragment->Shader.ShouldPrepareAsynchronously == true;
     info.Vertex = RasterAccess::Slot(description.Vertex);
     info.Fragment = RasterAccess::Slot(description.Fragment);
     info.Layout = RasterAccess::Slot(description.Layout);
@@ -2194,6 +2198,16 @@ void RasterExpect(uint32 request, RasterCallbacks callbacks) noexcept
             }
         }
     }
+}
+bool IsRasterRequestCurrent(RasterKind kind, usize slot, uint32 request) noexcept
+{
+    const StorageTable<Record>& records = gRecords[static_cast<usize>(kind)];
+    if (slot >= records.GetSize())
+    {
+        return false;
+    }
+    const Record& record = records[slot];
+    return record.Owner != 0 && record.Request == request && record.Callbacks != 0;
 }
 void RasterComplete(uint32 request, RasterStatus status) noexcept
 {

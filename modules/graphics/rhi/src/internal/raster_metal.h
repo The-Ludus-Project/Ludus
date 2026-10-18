@@ -214,27 +214,151 @@ ComputeCapabilities ComputeLimits() noexcept
             {65535, 65535, 65535},
             static_cast<uint32>(internal::RASTER_BINDINGS)};
 }
-RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineInfo& info, uint32) noexcept
+// Thanks to Apple, Metal Programming Guide, "Resource Fundamentals"
+// (https://developer.apple.com/library/archive/documentation/Miscellaneous/MetalProgrammingGuide/ResourceFundamentals/ResourceFundamentals.html).
+// Retain immutable device/function inputs on a dedicated preparation lane;
+// publish results and retire resources exclusively on the RHI owner thread.
+struct MetalShaderPreparation final : NativePreparationTask
 {
+    id<MTLDevice> DeviceOrNull = nil;
+    NSString* SourceOrNull = nil;
+    NSString* EntryOrNull = nil;
+    NSError* ErrorOrNull = nil;
+    RasterMetalShader Shader;
+    RasterStatus Outcome = RasterStatus::Failed;
+    void Execute() noexcept override
+    {
+        @autoreleasepool
+        {
+            MTLCompileOptions* options = [MTLCompileOptions new];
+            options.languageVersion = MTLLanguageVersion2_3;
+            NSError* errorOrNull = nil;
+            id<MTLLibrary> libraryOrNull = [DeviceOrNull newLibraryWithSource:SourceOrNull
+                                                                      options:options
+                                                                        error:&errorOrNull];
+            ErrorOrNull = errorOrNull;
+            id<MTLFunction> functionOrNull = [libraryOrNull newFunctionWithName:EntryOrNull];
+            const MTLFunctionType expected = Shader.Info.Stage == ShaderStage::Vertex     ? MTLFunctionTypeVertex
+                                             : Shader.Info.Stage == ShaderStage::Fragment ? MTLFunctionTypeFragment
+                                                                                          : MTLFunctionTypeKernel;
+            if (functionOrNull != nil && functionOrNull.functionType == expected)
+            {
+                Shader.Function = functionOrNull;
+                Outcome = RasterStatus::Ready;
+            }
+        }
+    }
+    RasterStatus Complete(bool) noexcept override
+    {
+        if (Outcome == RasterStatus::Ready)
+        {
+            gRasterShaders[ResourceSlot] = Shader;
+        }
+        else
+        {
+            LogError(ErrorOrNull);
+        }
+        internal::RasterComplete(Request, Outcome);
+        return Outcome;
+    }
+};
+struct MetalComputePreparation final : NativePreparationTask
+{
+    id<MTLDevice> DeviceOrNull = nil;
+    RasterMetalShader Shader;
+    internal::ComputePipelineInfo Info;
+    id<MTLComputePipelineState> ObjectOrNull = nil;
+    NSError* ErrorOrNull = nil;
+    RasterStatus Outcome = RasterStatus::Failed;
+    RasterStatus Build() noexcept;
+    void Execute() noexcept override
+    {
+        Outcome = Build();
+    }
+    RasterStatus Complete(bool) noexcept override
+    {
+        if (Outcome == RasterStatus::Ready)
+        {
+            gComputePipelines[ResourceSlot] = ObjectOrNull;
+            gComputeInfos[ResourceSlot] = Info;
+        }
+        else
+        {
+            LogError(ErrorOrNull);
+        }
+        internal::RasterComplete(Request, Outcome);
+        return Outcome;
+    }
+};
+struct MetalRasterPreparation final : NativePreparationTask
+{
+    id<MTLDevice> DeviceOrNull = nil;
+    RasterMetalShader Vertex;
+    RasterMetalShader Fragment;
+    internal::RasterPipelineInfo Info;
+    RasterMetalPipeline Pipeline;
+    NSError* ErrorOrNull = nil;
+    RasterStatus Outcome = RasterStatus::Failed;
+    RasterStatus Build() noexcept;
+    void Execute() noexcept override
+    {
+        Outcome = Build();
+    }
+    RasterStatus Complete(bool) noexcept override
+    {
+        if (Outcome == RasterStatus::Ready)
+        {
+            gRasterPipelines[ResourceSlot] = Pipeline;
+        }
+        else
+        {
+            LogError(ErrorOrNull);
+        }
+        internal::RasterComplete(Request, Outcome);
+        return Outcome;
+    }
+};
+RasterStatus MetalComputePreparation::Build() noexcept
+{
+    const internal::ComputePipelineInfo& info = Info;
     @autoreleasepool
     {
-        NSError* error = nil;
-        MTLComputePipelineReflection* reflection = nil;
-        auto pipeline = [gDevice newComputePipelineStateWithFunction:gRasterShaders[info.Shader].Function
-                                                             options:BINDING_INFO | MTLPipelineOptionBufferTypeInfo
-                                                          reflection:&reflection
-                                                               error:&error];
+
+        MTLComputePipelineReflection* reflectionOrNull = nil;
+        NSError* errorOrNull = nil;
+        id<MTLComputePipelineState> pipelineOrNull =
+            [DeviceOrNull newComputePipelineStateWithFunction:Shader.Function
+                                                      options:BINDING_INFO | MTLPipelineOptionBufferTypeInfo
+                                                   reflection:&reflectionOrNull
+                                                        error:&errorOrNull];
+        ErrorOrNull = errorOrNull;
         const uint32 threads = info.WorkgroupSize[0] * info.WorkgroupSize[1] * info.WorkgroupSize[2];
-        if (pipeline == nil || reflection == nil || threads > pipeline.maxTotalThreadsPerThreadgroup ||
-            RasterMetalBindings(reflection.bindings, gRasterShaders[info.Shader].Info, {}) == false)
+        if (pipelineOrNull == nil || reflectionOrNull == nil ||
+            threads > pipelineOrNull.maxTotalThreadsPerThreadgroup ||
+            RasterMetalBindings(reflectionOrNull.bindings, Shader.Info, {}) == false)
         {
-            LogError(error);
+
             return RasterStatus::Failed;
         }
-        gComputePipelines[slot] = pipeline;
-        gComputeInfos[slot] = info;
+        ObjectOrNull = pipelineOrNull;
         return RasterStatus::Ready;
     }
+}
+RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineInfo& info, uint32 request) noexcept
+{
+    UniquePtr<MetalComputePreparation> task = MakePreparationTask<MetalComputePreparation>();
+    if (task.Get() == nullptr)
+    {
+        return internal::StorageFailure();
+    }
+    task->IsPipelinePreparation = true;
+    task->Kind = internal::RasterKind::ComputePipeline;
+    task->DeviceOrNull = gDevice;
+    task->Shader = gRasterShaders[info.Shader];
+    task->Info = info;
+    task->ResourceSlot = slot;
+    task->Request = request;
+    return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
 }
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
@@ -417,30 +541,37 @@ RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& info, uin
 RasterStatus RasterCreateShader(usize slot,
                                 const ShaderDescription& artifact,
                                 const internal::RasterShaderInfo& info,
-                                uint32) noexcept
+                                uint32 request) noexcept
 {
     @autoreleasepool
     {
-        NSString* source = [[NSString alloc] initWithBytes:artifact.Msl.data()
-                                                    length:artifact.Msl.size()
-                                                  encoding:NSUTF8StringEncoding];
-        NSString* name = [[NSString alloc] initWithBytes:artifact.MslEntry.data()
-                                                  length:artifact.MslEntry.size()
-                                                encoding:NSUTF8StringEncoding];
-        NSError* error = nil;
-        MTLCompileOptions* options = [MTLCompileOptions new];
-        options.languageVersion = MTLLanguageVersion2_3;
-        id<MTLLibrary> library = [gDevice newLibraryWithSource:source options:options error:&error];
-        id<MTLFunction> function = [library newFunctionWithName:name];
-        if (function == nil || function.functionType != (info.Stage == ShaderStage::Vertex     ? MTLFunctionTypeVertex
-                                                         : info.Stage == ShaderStage::Fragment ? MTLFunctionTypeFragment
-                                                                                               : MTLFunctionTypeKernel))
+        UniquePtr<MetalShaderPreparation> task = MakePreparationTask<MetalShaderPreparation>();
+        if (task.Get() == nullptr)
         {
-            LogError(error);
-            return RasterStatus::Failed;
+            return internal::StorageFailure();
         }
-        gRasterShaders[slot] = {function, info};
-        return RasterStatus::Ready;
+        usize sourceBytes = 0;
+        if (foundation::TryAdd(artifact.Msl.size(), artifact.MslEntry.size(), sourceBytes) == false ||
+            internal::ReserveHostStorage(sourceBytes) == false)
+        {
+            return internal::StorageFailure();
+        }
+        task->AllocationBytes += sourceBytes;
+        task->DeviceOrNull = gDevice;
+        task->SourceOrNull = [[NSString alloc] initWithBytes:artifact.Msl.data()
+                                                      length:artifact.Msl.size()
+                                                    encoding:NSUTF8StringEncoding];
+        task->EntryOrNull = [[NSString alloc] initWithBytes:artifact.MslEntry.data()
+                                                     length:artifact.MslEntry.size()
+                                                   encoding:NSUTF8StringEncoding];
+        if (task->SourceOrNull == nil || task->EntryOrNull == nil)
+        {
+            return RasterStatus::InvalidDescription;
+        }
+        task->Shader.Info = info;
+        task->ResourceSlot = slot;
+        task->Request = request;
+        return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
     }
 }
 RasterStatus RasterCreateLayout(usize slot, const internal::RasterLayout& info, uint32) noexcept
@@ -453,13 +584,14 @@ RasterCreateSet(usize slot, const internal::RasterLayout&, const internal::Raste
 {
     return gRasterSets[slot].TryCopyFrom(info) == true ? RasterStatus::Ready : internal::StorageFailure();
 }
-RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo& info, uint32) noexcept
+RasterStatus MetalRasterPreparation::Build() noexcept
 {
+    const internal::RasterPipelineInfo& info = Info;
     @autoreleasepool
     {
         MTLRenderPipelineDescriptor* descriptor = [MTLRenderPipelineDescriptor new];
-        descriptor.vertexFunction = gRasterShaders[info.Vertex].Function;
-        descriptor.fragmentFunction = gRasterShaders[info.Fragment].Function;
+        descriptor.vertexFunction = Vertex.Function;
+        descriptor.fragmentFunction = Fragment.Function;
         descriptor.colorAttachments[0].pixelFormat =
             info.Target == RasterTarget::Rgba16Float  ? MTLPixelFormatRGBA16Float
             : info.Target == RasterTarget::Surface    ? MTLPixelFormatBGRA8Unorm
@@ -467,8 +599,8 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
                                                       : MTLPixelFormatRGBA8Unorm_sRGB;
         descriptor.rasterSampleCount = info.SampleCount;
         descriptor.depthAttachmentPixelFormat =
-            info.Stencil ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatDepth32Float;
-        if (info.Stencil)
+            info.Stencil == true ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatDepth32Float;
+        if (info.Stencil == true)
         {
             descriptor.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
         }
@@ -481,7 +613,7 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
         }
         for (usize i = 0; i < (info.ColorCount == 0 ? 1 : info.ColorCount); ++i)
         {
-            auto color = descriptor.colorAttachments[i];
+            MTLRenderPipelineColorAttachmentDescriptor* color = descriptor.colorAttachments[i];
             color.blendingEnabled = info.Blend;
             color.sourceRGBBlendFactor = color.sourceAlphaBlendFactor = MTLBlendFactorOne;
             color.destinationRGBBlendFactor = color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
@@ -492,12 +624,12 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
             const usize binding = internal::RASTER_BINDINGS + i;
             vertex.layouts[binding].stride = info.Streams[i].Stride;
             vertex.layouts[binding].stepFunction =
-                info.Streams[i].PerInstance ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
+                info.Streams[i].PerInstance == true ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
             vertex.layouts[binding].stepRate = 1;
         }
         for (usize i = 0; i < info.AttributeCount; ++i)
         {
-            const auto& attribute = info.Attributes[i];
+            const RasterVertexAttribute& attribute = info.Attributes[i];
             vertex.attributes[attribute.Location].format =
                 attribute.Format == RasterVertexFormat::Float2   ? MTLVertexFormatFloat2
                 : attribute.Format == RasterVertexFormat::Float3 ? MTLVertexFormatFloat3
@@ -506,17 +638,20 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
             vertex.attributes[attribute.Location].bufferIndex = internal::RASTER_BINDINGS + attribute.Stream;
         }
         descriptor.vertexDescriptor = vertex;
-        NSError* error = nil;
-        MTLRenderPipelineReflection* reflection = nil;
-        auto pipeline = [gDevice newRenderPipelineStateWithDescriptor:descriptor
-                                                              options:BINDING_INFO | MTLPipelineOptionBufferTypeInfo
-                                                           reflection:&reflection
-                                                                error:&error];
-        if (pipeline == nil || reflection == nil ||
-            RasterMetalBindings(reflection.vertexBindings, gRasterShaders[info.Vertex].Info, info) == false ||
-            RasterMetalBindings(reflection.fragmentBindings, gRasterShaders[info.Fragment].Info, info) == false)
+
+        MTLRenderPipelineReflection* reflectionOrNull = nil;
+        NSError* errorOrNull = nil;
+        id<MTLRenderPipelineState> pipelineOrNull =
+            [DeviceOrNull newRenderPipelineStateWithDescriptor:descriptor
+                                                       options:BINDING_INFO | MTLPipelineOptionBufferTypeInfo
+                                                    reflection:&reflectionOrNull
+                                                         error:&errorOrNull];
+        ErrorOrNull = errorOrNull;
+        if (pipelineOrNull == nil || reflectionOrNull == nil ||
+            RasterMetalBindings(reflectionOrNull.vertexBindings, Vertex.Info, info) == false ||
+            RasterMetalBindings(reflectionOrNull.fragmentBindings, Fragment.Info, info) == false)
         {
-            LogError(error);
+
             return RasterStatus::Failed;
         }
         MTLDepthStencilDescriptor* depth = [MTLDepthStencilDescriptor new];
@@ -526,9 +661,9 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
                                                MTLCompareFunctionGreaterEqual,
                                                MTLCompareFunctionAlways};
         depth.depthCompareFunction =
-            info.Depth ? comparisons[static_cast<usize>(info.DepthCompare)] : MTLCompareFunctionAlways;
-        depth.depthWriteEnabled = info.Depth && info.DepthWrite;
-        if (info.Stencil)
+            info.Depth == true ? comparisons[static_cast<usize>(info.DepthCompare)] : MTLCompareFunctionAlways;
+        depth.depthWriteEnabled = info.Depth == true && info.DepthWrite == true;
+        if (info.Stencil == true)
         {
             const MTLCompareFunction compare[]{MTLCompareFunctionNever,
                                                MTLCompareFunctionLess,
@@ -546,13 +681,13 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
                                                    MTLStencilOperationInvert,
                                                    MTLStencilOperationIncrementWrap,
                                                    MTLStencilOperationDecrementWrap};
-            auto front = [MTLStencilDescriptor new];
-            auto back = [MTLStencilDescriptor new];
+            MTLStencilDescriptor* front = [MTLStencilDescriptor new];
+            MTLStencilDescriptor* back = [MTLStencilDescriptor new];
             const RasterStencilFace faces[]{info.StencilFront, info.StencilBack};
             for (usize i = 0; i < 2; ++i)
             {
-                auto face = i == 0 ? front : back;
-                const auto& input = faces[i];
+                MTLStencilDescriptor* face = i == 0 ? front : back;
+                const RasterStencilFace& input = faces[i];
                 face.stencilCompareFunction = compare[static_cast<usize>(input.Compare)];
                 face.stencilFailureOperation = operations[static_cast<usize>(input.Fail)];
                 face.depthFailureOperation = operations[static_cast<usize>(input.DepthFail)];
@@ -563,14 +698,31 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
             depth.frontFaceStencil = front;
             depth.backFaceStencil = back;
         }
-        auto state = [gDevice newDepthStencilStateWithDescriptor:depth];
-        if (state == nil)
+        id<MTLDepthStencilState> stateOrNull = [DeviceOrNull newDepthStencilStateWithDescriptor:depth];
+        if (stateOrNull == nil)
         {
             return RasterStatus::OutOfMemory;
         }
-        gRasterPipelines[slot] = {pipeline, state, info};
+        Pipeline = {pipelineOrNull, stateOrNull, info};
         return RasterStatus::Ready;
     }
+}
+RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo& info, uint32 request) noexcept
+{
+    UniquePtr<MetalRasterPreparation> task = MakePreparationTask<MetalRasterPreparation>();
+    if (task.Get() == nullptr)
+    {
+        return internal::StorageFailure();
+    }
+    task->IsPipelinePreparation = true;
+    task->Kind = internal::RasterKind::Pipeline;
+    task->DeviceOrNull = gDevice;
+    task->Vertex = gRasterShaders[info.Vertex];
+    task->Fragment = gRasterShaders[info.Fragment];
+    task->Info = info;
+    task->ResourceSlot = slot;
+    task->Request = request;
+    return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
 }
 void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 {
@@ -812,6 +964,7 @@ void RasterSubmit(uint64 ordinal) noexcept
 }
 uint64 RasterCompleted() noexcept
 {
+    PollNativePreparation();
     for (usize i = 0; i < FRAMES; ++i)
     {
         if (gSubmitted[i] != nil && CheckCommand(gSubmitted[i]) == false)
@@ -828,6 +981,7 @@ uint64 RasterCompleted() noexcept
 }
 void RasterReset() noexcept
 {
+    DrainNativePreparation();
     for (auto command : gSubmitted)
     {
         [command waitUntilCompleted];
