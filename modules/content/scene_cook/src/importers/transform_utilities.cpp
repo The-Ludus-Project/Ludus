@@ -6,26 +6,42 @@ namespace ludus::content::scene_cook::importers
 {
 namespace
 {
+/// Rows and columns of math::Matrix4d (column-major, Elements[4 * column + row]).
+constexpr int MATRIX_DIMENSION = 4;
+/// Rows and columns of the linear (rotation/scale) block of an affine matrix.
+constexpr int LINEAR_DIMENSION = 3;
+/// Column that holds an affine matrix's translation.
+constexpr int TRANSLATION_COLUMN = 3;
+/// Values of a pbrt LookAt directive: eye, look and up points, three components each.
+constexpr foundation::core::usize LOOK_AT_EYE_OFFSET = 0;
+constexpr foundation::core::usize LOOK_AT_TARGET_OFFSET = 3;
+constexpr foundation::core::usize LOOK_AT_UP_OFFSET = 6;
+constexpr foundation::core::usize LOOK_AT_VALUE_COUNT = 9;
+
 [[nodiscard]] float64 GetElement(const math::Matrix4d& matrix, int row, int column) noexcept
 {
-    return matrix.Elements[4 * column + row];
+    return matrix.Elements[MATRIX_DIMENSION * column + row];
 }
 
 void SetElement(math::Matrix4d& inoutMatrix, int row, int column, float64 value) noexcept
 {
-    inoutMatrix.Elements[4 * column + row] = value;
+    inoutMatrix.Elements[MATRIX_DIMENSION * column + row] = value;
+}
+[[nodiscard]] math::Vector3d ReadPoint(std::span<const float64> values, foundation::core::usize offset) noexcept
+{
+    return math::Vector3d{values[offset], values[offset + 1], values[offset + 2]};
 }
 } // namespace
 
 math::Matrix4d MultiplyMatrices(const math::Matrix4d& left, const math::Matrix4d& right) noexcept
 {
     math::Matrix4d result;
-    for (int row = 0; row < 4; ++row)
+    for (int row = 0; row < MATRIX_DIMENSION; ++row)
     {
-        for (int column = 0; column < 4; ++column)
+        for (int column = 0; column < MATRIX_DIMENSION; ++column)
         {
             float64 sum = 0.0;
-            for (int k = 0; k < 4; ++k)
+            for (int k = 0; k < MATRIX_DIMENSION; ++k)
             {
                 sum += GetElement(left, row, k) * GetElement(right, k, column);
             }
@@ -38,18 +54,18 @@ math::Matrix4d MultiplyMatrices(const math::Matrix4d& left, const math::Matrix4d
 math::Matrix4d MakeTranslation(const math::Vector3d& offset) noexcept
 {
     math::Matrix4d result = math::Matrix4d::Identity();
-    result.Elements[12] = offset.X;
-    result.Elements[13] = offset.Y;
-    result.Elements[14] = offset.Z;
+    SetElement(result, 0, TRANSLATION_COLUMN, offset.X);
+    SetElement(result, 1, TRANSLATION_COLUMN, offset.Y);
+    SetElement(result, 2, TRANSLATION_COLUMN, offset.Z);
     return result;
 }
 
 math::Matrix4d MakeScale(const math::Vector3d& factors) noexcept
 {
     math::Matrix4d result = math::Matrix4d::Identity();
-    result.Elements[0] = factors.X;
-    result.Elements[5] = factors.Y;
-    result.Elements[10] = factors.Z;
+    SetElement(result, 0, 0, factors.X);
+    SetElement(result, 1, 1, factors.Y);
+    SetElement(result, 2, 2, factors.Z);
     return result;
 }
 
@@ -66,15 +82,15 @@ bool MakeRotation(float64 angleDegrees, const math::Vector3d& axis, math::Matrix
     const float64 radians = math::DegreesToRadians(angleDegrees);
     const float64 sine = math::Sin(radians);
     const float64 cosine = math::Cos(radians);
-    const float64 rows[3][3] = {
+    const float64 rows[LINEAR_DIMENSION][LINEAR_DIMENSION] = {
         {x * x + (1 - x * x) * cosine, x * y * (1 - cosine) - z * sine, x * z * (1 - cosine) + y * sine},
         {x * y * (1 - cosine) + z * sine, y * y + (1 - y * y) * cosine, y * z * (1 - cosine) - x * sine},
         {x * z * (1 - cosine) - y * sine, y * z * (1 - cosine) + x * sine, z * z + (1 - z * z) * cosine},
     };
     outMatrix = math::Matrix4d::Identity();
-    for (int row = 0; row < 3; ++row)
+    for (int row = 0; row < LINEAR_DIMENSION; ++row)
     {
-        for (int column = 0; column < 3; ++column)
+        for (int column = 0; column < LINEAR_DIMENSION; ++column)
         {
             SetElement(outMatrix, row, column, rows[row][column]);
         }
@@ -84,13 +100,13 @@ bool MakeRotation(float64 angleDegrees, const math::Vector3d& axis, math::Matrix
 
 bool MakeLookAt(std::span<const float64> values, math::Matrix4d& outMatrix) noexcept
 {
-    if (values.size() < 9)
+    if (values.size() < LOOK_AT_VALUE_COUNT)
     {
         return false;
     }
-    const math::Vector3d eye{values[0], values[1], values[2]};
-    const math::Vector3d look{values[3], values[4], values[5]};
-    const math::Vector3d up{values[6], values[7], values[8]};
+    const math::Vector3d eye = ReadPoint(values, LOOK_AT_EYE_OFFSET);
+    const math::Vector3d look = ReadPoint(values, LOOK_AT_TARGET_OFFSET);
+    const math::Vector3d up = ReadPoint(values, LOOK_AT_UP_OFFSET);
     const math::Vector3d forward = look - eye;
     const float64 forwardLength = math::Length(forward);
     if (forwardLength == 0.0)
@@ -113,8 +129,8 @@ bool MakeLookAt(std::span<const float64> values, math::Matrix4d& outMatrix) noex
     const math::Vector3d newUp = math::Cross(direction, right);
     // World-from-camera has columns right, newUp, direction, eye; pbrt stores its inverse.
     math::Matrix4d worldFromCamera = math::Matrix4d::Identity();
-    const math::Vector3d columns[4] = {right, newUp, direction, eye};
-    for (int column = 0; column < 4; ++column)
+    const math::Vector3d columns[MATRIX_DIMENSION] = {right, newUp, direction, eye};
+    for (int column = 0; column < MATRIX_DIMENSION; ++column)
     {
         SetElement(worldFromCamera, 0, column, columns[column].X);
         SetElement(worldFromCamera, 1, column, columns[column].Y);
@@ -141,9 +157,9 @@ bool TryInvertAffine(const math::Matrix4d& matrix, math::Matrix4d& outInverse) n
     const auto at = [&](int row, int column) noexcept { return GetElement(matrix, row, column); };
     const float64 inverseDeterminant = 1.0 / determinant;
     math::Matrix4d result = math::Matrix4d::Identity();
-    for (int row = 0; row < 3; ++row)
+    for (int row = 0; row < LINEAR_DIMENSION; ++row)
     {
-        for (int column = 0; column < 3; ++column)
+        for (int column = 0; column < LINEAR_DIMENSION; ++column)
         {
             // Cofactor of (column, row) for the adjugate.
             const int r0 = column == 0 ? 1 : 0;
@@ -155,14 +171,14 @@ bool TryInvertAffine(const math::Matrix4d& matrix, math::Matrix4d& outInverse) n
             SetElement(result, row, column, sign * minor * inverseDeterminant);
         }
     }
-    for (int row = 0; row < 3; ++row)
+    for (int row = 0; row < LINEAR_DIMENSION; ++row)
     {
         float64 sum = 0.0;
-        for (int k = 0; k < 3; ++k)
+        for (int k = 0; k < LINEAR_DIMENSION; ++k)
         {
-            sum += GetElement(result, row, k) * at(k, 3);
+            sum += GetElement(result, row, k) * at(k, TRANSLATION_COLUMN);
         }
-        SetElement(result, row, 3, -sum);
+        SetElement(result, row, TRANSLATION_COLUMN, -sum);
     }
     for (const float64 value : result.Elements)
     {
@@ -178,18 +194,18 @@ bool TryInvertAffine(const math::Matrix4d& matrix, math::Matrix4d& outInverse) n
 math::Vector3d TransformPoint(const math::Matrix4d& matrix, math::Vector3d point) noexcept
 {
     const math::Vector3d direction = TransformDirection(matrix, point);
-    return math::Vector3d{direction.X + matrix.Elements[12],
-                          direction.Y + matrix.Elements[13],
-                          direction.Z + matrix.Elements[14]};
+    return math::Vector3d{direction.X + GetElement(matrix, 0, TRANSLATION_COLUMN),
+                          direction.Y + GetElement(matrix, 1, TRANSLATION_COLUMN),
+                          direction.Z + GetElement(matrix, 2, TRANSLATION_COLUMN)};
 }
 
 math::Vector3d TransformDirection(const math::Matrix4d& matrix, math::Vector3d direction) noexcept
 {
-    const float64 input[3] = {direction.X, direction.Y, direction.Z};
-    float64 output[3] = {0.0, 0.0, 0.0};
-    for (int row = 0; row < 3; ++row)
+    const float64 input[LINEAR_DIMENSION] = {direction.X, direction.Y, direction.Z};
+    float64 output[LINEAR_DIMENSION] = {0.0, 0.0, 0.0};
+    for (int row = 0; row < LINEAR_DIMENSION; ++row)
     {
-        for (int k = 0; k < 3; ++k)
+        for (int k = 0; k < LINEAR_DIMENSION; ++k)
         {
             output[row] += GetElement(matrix, row, k) * input[k];
         }

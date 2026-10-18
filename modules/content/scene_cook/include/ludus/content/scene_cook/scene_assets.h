@@ -96,11 +96,12 @@ struct AssetOptions final
     /// Provenance recorded as `source_origin` and used to reuse logical
     /// identities on reimport; empty selects realpath(source).
     std::string_view SourceOrigin;
-    /// pbrt entry file name inside the source directory. Empty keeps the
+    /// Scene entry file name inside the source directory. Empty keeps the
     /// pbrt-reference-v1 cooker on scene-v4.pbrt. `scene-v4.pbrt` tries the reference
     /// profile first and falls back to pbrt-best-effort-v1 when the profile rejects
-    /// the scene; any other name uses pbrt-best-effort-v1. A plain file name: no
-    /// directory separators.
+    /// the scene; any other name uses the best-effort importer that
+    /// ImportSceneBestEffort detects from the file's content (pbrt-v4, glTF 2.0/GLB
+    /// or Wavefront OBJ). A plain file name: no directory separators.
     std::string_view SourceEntry;
     /// `source_digest` of an approved PreviewImport response. When nonempty, Import
     /// fails with Conflict unless the sources still produce that digest, so a
@@ -369,7 +370,7 @@ struct EditorSceneResult final
 {
     /// Canonical JSON matching scene_editor.py's success response: schema, ok,
     /// level, committed, artifacts, catalog_expected, resident_bytes, warnings
-    /// and, for Open and Save, disk. When an imported scene used pbrt-best-effort-v1,
+    /// and, for Open and Save, disk. When an imported scene used a best-effort profile,
     /// import_reports maps its import id to the stored import report.
     foundation::Array<uint8> Response;
     /// Assembled LUSCN bundle; empty for CommitImport or a level without objects.

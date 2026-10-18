@@ -33,8 +33,9 @@ void OpenEditorDocument(QWidget* owner,
 // Copy a bundled sample to a new writable project; preserve the output on failure.
 [[nodiscard]] bool CopyEditorSample(const QString& id, QString& descriptor, const QString& destinationRoot = {});
 #if defined(Q_OS_WASM)
-/// Copy a selected PBRT scene into MEMFS and report its .pbrt entry path (lifetime-guarded).
-/// isFolder picks a whole scene folder; otherwise one .zip, or a .pbrt with its companion files.
+/// Copy a selected scene into MEMFS and report its entry path (.pbrt, .gltf, .glb or .obj;
+/// lifetime-guarded). isFolder picks a whole scene folder; otherwise one .zip, or an entry
+/// file with its companion files.
 /// The browser editor's 32 MiB session import budget applies; refused selections write nothing.
 void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<void(const QString&)>& loaded);
 // Starts a browser download, which cannot confirm the user's destination/save.

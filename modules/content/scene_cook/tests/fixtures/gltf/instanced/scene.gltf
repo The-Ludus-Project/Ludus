@@ -1,0 +1,461 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "Ludus fixture generator"
+ },
+ "extensionsUsed": [
+  "KHR_lights_punctual",
+  "KHR_materials_emissive_strength",
+  "EXT_ludus_fixture_note"
+ ],
+ "extensionsRequired": [
+  "KHR_lights_punctual"
+ ],
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "Root",
+   "matrix": [
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1
+   ],
+   "children": [
+    1,
+    2,
+    3,
+    5,
+    6,
+    7,
+    8
+   ]
+  },
+  {
+   "name": "Floor",
+   "mesh": 0
+  },
+  {
+   "name": "CubeA",
+   "mesh": 1,
+   "translation": [
+    -1,
+    0.5,
+    0
+   ]
+  },
+  {
+   "name": "Group",
+   "rotation": [
+    0,
+    0.7071067811865476,
+    0,
+    0.7071067811865476
+   ],
+   "children": [
+    4
+   ]
+  },
+  {
+   "name": "CubeMirrored",
+   "mesh": 1,
+   "translation": [
+    1,
+    0.5,
+    0
+   ],
+   "scale": [
+    -1,
+    1,
+    1
+   ]
+  },
+  {
+   "name": "Camera",
+   "camera": 0,
+   "translation": [
+    0,
+    1.5,
+    6
+   ]
+  },
+  {
+   "name": "Spot",
+   "translation": [
+    0,
+    3,
+    0
+   ],
+   "rotation": [
+    -0.7071067811865476,
+    0,
+    0,
+    0.7071067811865476
+   ],
+   "extensions": {
+    "KHR_lights_punctual": {
+     "light": 0
+    }
+   }
+  },
+  {
+   "name": "Lamp",
+   "mesh": 2,
+   "extensions": {
+    "KHR_lights_punctual": {
+     "light": 1
+    }
+   }
+  },
+  {
+   "name": "Strip",
+   "mesh": 3
+  }
+ ],
+ "cameras": [
+  {
+   "type": "perspective",
+   "perspective": {
+    "yfov": 0.8,
+    "aspectRatio": 1.5,
+    "znear": 0.1,
+    "zfar": 100
+   }
+  }
+ ],
+ "extensions": {
+  "KHR_lights_punctual": {
+   "lights": [
+    {
+     "type": "spot",
+     "color": [
+      1,
+      1,
+      1
+     ],
+     "intensity": 50,
+     "spot": {
+      "innerConeAngle": 0.3,
+      "outerConeAngle": 0.6
+     }
+    },
+    {
+     "type": "directional",
+     "color": [
+      1,
+      0.9,
+      0.8
+     ],
+     "intensity": 3
+    }
+   ]
+  }
+ },
+ "meshes": [
+  {
+   "name": "Floor",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 3,
+     "material": 0
+    }
+   ]
+  },
+  {
+   "name": "Cube",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 4,
+      "NORMAL": 5,
+      "TEXCOORD_0": 6
+     },
+     "indices": 7,
+     "material": 1
+    }
+   ]
+  },
+  {
+   "name": "Lamp",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 8
+     },
+     "material": 2
+    }
+   ]
+  },
+  {
+   "name": "Strip",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 9
+     },
+     "mode": 5
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "Floor",
+   "pbrMetallicRoughness": {
+    "baseColorTexture": {
+     "index": 0
+    },
+    "metallicFactor": 0,
+    "roughnessFactor": 0.8
+   }
+  },
+  {
+   "name": "Metal",
+   "doubleSided": true,
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.9,
+     0.6,
+     0.3,
+     1
+    ],
+    "metallicRoughnessTexture": {
+     "index": 1
+    }
+   },
+   "normalTexture": {
+    "index": 2,
+    "scale": 1
+   }
+  },
+  {
+   "name": "Glow",
+   "alphaMode": "MASK",
+   "emissiveFactor": [
+    1,
+    0.5,
+    0.25
+   ],
+   "extensions": {
+    "KHR_materials_emissive_strength": {
+     "emissiveStrength": 4
+    }
+   },
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.1,
+     0.1,
+     0.1,
+     1
+    ],
+    "metallicFactor": 0
+   }
+  }
+ ],
+ "textures": [
+  {
+   "source": 0,
+   "sampler": 0
+  },
+  {
+   "source": 1
+  },
+  {
+   "source": 2
+  }
+ ],
+ "samplers": [
+  {
+   "wrapS": 10497,
+   "wrapT": 10497
+  }
+ ],
+ "images": [
+  {
+   "uri": "textures/base.png"
+  },
+  {
+   "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGNkaPj/n4GBgYGJAQoAJRkCgp9o0gYAAAAASUVORK5CYII="
+  },
+  {
+   "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGNsaPj/n4GBgYGJAQoALZkDAqlaHJYAAAAASUVORK5CYII="
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 4,
+   "type": "VEC3",
+   "min": [
+    -3,
+    0,
+    -3
+   ],
+   "max": [
+    3,
+    0,
+    3
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 4,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 4,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5123,
+   "count": 6,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 24,
+   "type": "VEC3",
+   "min": [
+    -0.5,
+    -0.5,
+    -0.5
+   ],
+   "max": [
+    0.5,
+    0.5,
+    0.5
+   ]
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 24,
+   "type": "VEC3",
+   "byteOffset": 12
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 24,
+   "type": "VEC2",
+   "byteOffset": 24
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5121,
+   "count": 36,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 6,
+   "componentType": 5126,
+   "count": 3,
+   "type": "VEC3",
+   "min": [
+    -0.2,
+    2,
+    0
+   ],
+   "max": [
+    0.2,
+    2.3,
+    0
+   ]
+  },
+  {
+   "bufferView": 7,
+   "componentType": 5126,
+   "count": 4,
+   "type": "VEC3",
+   "min": [
+    2,
+    0,
+    0
+   ],
+   "max": [
+    2.5,
+    1,
+    0
+   ]
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 48
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 48,
+   "byteLength": 48
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 96,
+   "byteLength": 32
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 128,
+   "byteLength": 12
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 140,
+   "byteLength": 768,
+   "byteStride": 32
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 908,
+   "byteLength": 36
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 944,
+   "byteLength": 36
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 980,
+   "byteLength": 48
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "scene.bin",
+   "byteLength": 1028
+  }
+ ]
+}

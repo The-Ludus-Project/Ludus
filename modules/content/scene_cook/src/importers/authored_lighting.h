@@ -1,8 +1,8 @@
 #pragma once
 
 #include "image/image_reader.h"
-#include "pbrt/import_diagnostics.h"
-#include "pbrt/scene_ir.h"
+#include "import_diagnostics.h"
+#include "scene_ir.h"
 
 #include <ludus/content/content.h>
 #include <ludus/content/scene_format/luscn.h>

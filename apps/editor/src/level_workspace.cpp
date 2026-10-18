@@ -103,10 +103,12 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         }
     });
     connect(Import_, &QPushButton::clicked, this, [this]() {
-        const QString file = QFileDialog::getOpenFileName(this,
-                                                          QStringLiteral("Import PBRT scene"),
-                                                          {},
-                                                          QStringLiteral("PBRT scenes (*.pbrt)"));
+        const QString file =
+            QFileDialog::getOpenFileName(this,
+                                         QStringLiteral("Import scene"),
+                                         {},
+                                         QStringLiteral("Scenes (*.pbrt *.gltf *.glb *.obj);;PBRT v4 (*.pbrt);;glTF "
+                                                        "2.0 (*.gltf *.glb);;Wavefront OBJ (*.obj)"));
         if (file.isEmpty() == false)
         {
             PreviewSource_ = file;

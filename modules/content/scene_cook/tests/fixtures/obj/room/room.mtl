@@ -1,0 +1,26 @@
+# Materials for room.obj (CC0).
+newmtl Checker
+Kd 1 1 1
+Ks 0.04 0.04 0.04
+Ns 10
+illum 2
+map_Kd -clamp off textures\checker.png
+
+newmtl Mirror
+Kd 0 0 0
+Ks 0.9 0.9 0.9
+Ns 1000
+illum 3
+
+newmtl Light
+Kd 0.8 0.8 0.8
+Ke 17 12 4
+illum 1
+
+newmtl BoxPbr
+Kd 0.2 0.4 0.8
+Pr 0.5
+Pm 0
+map_Pr -imfchan g textures/rough.png
+norm textures/normal.png
+d 0.5

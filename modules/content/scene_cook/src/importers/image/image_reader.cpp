@@ -1,11 +1,15 @@
 // TGA layout: Truevision Inc., "Truevision TGA File Format Specification",
 // version 2.0 (1991). PFM layout: Paul Debevec's Portable Float Map notes,
-// https://www.pauldebevec.com/Research/HDR/PFM/. PNG decoding uses stb_image
-// by Sean Barrett (vendored in third_party/stb).
+// https://www.pauldebevec.com/Research/HDR/PFM/. PNG, JPEG (baseline and
+// progressive) and Radiance RGBE decoding use stb_image by Sean Barrett
+// (vendored in third_party/stb, behind its bounded allocator); OpenEXR uses
+// the private subset reader in exr_reader.cpp.
 
 #include "image_reader.h"
 
-#include "../pbrt/pbrt_tokenizer.h"
+#include "exr_reader.h"
+
+#include "../decimal_number.h"
 
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -27,6 +31,25 @@ namespace math = foundation::math;
 using foundation::core::float32;
 using foundation::core::float64;
 using foundation::core::uint16;
+
+/// Index of the alpha channel in an RGBA8 texel.
+constexpr usize ALPHA_CHANNEL_INDEX = 3;
+constexpr uint8 OPAQUE_ALPHA = 255;
+/// Bytes inspected for a Radiance "#?RADIANCE"/"#?RGBE" program-type signature.
+constexpr usize RADIANCE_SIGNATURE_SCAN_BYTES = 16;
+/// JPEG start-of-image marker (FF D8) followed by the next marker's FF prefix.
+constexpr usize JPEG_SIGNATURE_BYTES = 3;
+constexpr foundation::StaticArray<uint8, JPEG_SIGNATURE_BYTES> JPEG_SIGNATURE{0xff, 0xd8, 0xff};
+/// stb_image takes the input length as an int.
+constexpr usize MAX_STB_INPUT_BYTES = 0x7fffffff;
+/// Each 2x2 box-filter tap weighs one quarter.
+constexpr float64 BOX_FILTER_TAP_WEIGHT = 0.25;
+/// PFM header words: identifier ("PF" or "Pf"), width, height and scale.
+constexpr usize PFM_IDENTIFIER_WORD = 0;
+constexpr usize PFM_WIDTH_WORD = 1;
+constexpr usize PFM_HEIGHT_WORD = 2;
+constexpr usize PFM_SCALE_WORD = 3;
+constexpr usize PFM_HEADER_WORD_COUNT = 4;
 
 [[nodiscard]] bool HasExtension(std::string_view name, std::string_view extension) noexcept
 {
@@ -212,43 +235,229 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
     return ImageResult::Ok;
 }
 
-[[nodiscard]] ImageResult
-DecodePng(std::span<const uint8> data, DecodedImage& outImage, std::string_view& outMessage) noexcept
+/// stb_image reports allocation failure (including its bounded allocator) as "outofmem".
+[[nodiscard]] bool HasStbRunOutOfMemory() noexcept
 {
-    if (data.size() > 0x7fffffffU)
+    const char* reasonOrNull = stbi_failure_reason();
+    return reasonOrNull != nullptr && std::string_view(reasonOrNull) == "outofmem";
+}
+
+/// Decode a PNG or JPEG through stb_image into RGBA8.
+[[nodiscard]] ImageResult DecodeWithStb(std::span<const uint8> data,
+                                        std::string_view failure,
+                                        DecodedImage& outImage,
+                                        std::string_view& outMessage) noexcept
+{
+    if (data.size() > MAX_STB_INPUT_BYTES)
     {
-        outMessage = "PNG is too large";
+        outMessage = "image file is too large for the decoder";
         return ImageResult::Invalid;
     }
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_uc* pixels = stbi_load_from_memory(data.data(), static_cast<int>(data.size()), &width, &height, &channels, 4);
-    if (pixels == nullptr)
+    // Check the declared raster before decoding: a few bytes can declare a huge image.
+    if (stbi_info_from_memory(data.data(), static_cast<int>(data.size()), &width, &height, &channels) == 0)
     {
-        outMessage = "PNG decoding failed";
+        outMessage = failure;
         return ImageResult::Invalid;
     }
+    if (width <= 0 || height <= 0 || static_cast<usize>(width) * static_cast<usize>(height) > MAX_DECODED_IMAGE_PIXELS)
+    {
+        outMessage = "image dimensions exceed the decoded pixel limit";
+        return ImageResult::Invalid;
+    }
+    stbi_uc* pixelsOrNull = stbi_load_from_memory(data.data(),
+                                                  static_cast<int>(data.size()),
+                                                  &width,
+                                                  &height,
+                                                  &channels,
+                                                  static_cast<int>(DECODED_IMAGE_CHANNEL_COUNT));
+    if (pixelsOrNull == nullptr)
+    {
+        if (HasStbRunOutOfMemory() == true)
+        {
+            return ImageResult::OutOfMemory;
+        }
+        outMessage = failure;
+        return ImageResult::Invalid;
+    }
+    stbi_uc* pixels = pixelsOrNull;
     ImageResult result = ImageResult::Ok;
     if (width <= 0 || height <= 0 || static_cast<uint32>(width) > MAX_IMAGE_DIMENSION ||
         static_cast<uint32>(height) > MAX_IMAGE_DIMENSION)
     {
-        outMessage = "PNG dimensions out of range";
+        outMessage = "image dimensions out of range";
         result = ImageResult::Invalid;
-    }
-    else if (AllocateImage(static_cast<uint32>(width), static_cast<uint32>(height), outImage) == false)
-    {
-        result = ImageResult::OutOfMemory;
     }
     else
     {
-        for (usize i = 0; i < outImage.Texels.GetSize(); ++i)
+        outImage.Width = static_cast<uint32>(width);
+        outImage.Height = static_cast<uint32>(height);
+        outImage.Texels.Clear();
+        const usize byteCount = static_cast<usize>(width) * static_cast<usize>(height) * DECODED_IMAGE_CHANNEL_COUNT;
+        if (outImage.Texels.TryAddRange(std::span<const uint8>(pixels, byteCount)) == false)
         {
-            outImage.Texels[i] = pixels[i];
+            result = ImageResult::OutOfMemory;
         }
     }
     stbi_image_free(pixels);
     return result;
+}
+
+[[nodiscard]] bool HasRadianceSignature(std::span<const uint8> data) noexcept
+{
+    constexpr usize SIGNATURE_COUNT = 2;
+    constexpr foundation::StaticArray<std::string_view, SIGNATURE_COUNT> SIGNATURES{"#?RADIANCE", "#?RGBE"};
+    const std::string_view text(reinterpret_cast<const char*>(data.data()),
+                                data.size() < RADIANCE_SIGNATURE_SCAN_BYTES ? data.size()
+                                                                            : RADIANCE_SIGNATURE_SCAN_BYTES);
+    for (const std::string_view signature : SIGNATURES)
+    {
+        if (text.substr(0, signature.size()) == signature)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] bool HasJpegSignature(std::span<const uint8> data) noexcept
+{
+    if (data.size() < JPEG_SIGNATURE_BYTES)
+    {
+        return false;
+    }
+    for (usize i = 0; i < JPEG_SIGNATURE_BYTES; ++i)
+    {
+        if (data[i] != JPEG_SIGNATURE[i])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Decode a Radiance RGBE (.hdr) image into linear float RGB, top row first.
+[[nodiscard]] ImageResult
+DecodeRadiance(std::span<const uint8> data, DecodedLightingImage& outImage, std::string_view& outMessage) noexcept
+{
+    if (data.size() > MAX_STB_INPUT_BYTES)
+    {
+        outMessage = "Radiance HDR file is too large for the decoder";
+        return ImageResult::Invalid;
+    }
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (stbi_info_from_memory(data.data(), static_cast<int>(data.size()), &width, &height, &channels) == 0 ||
+        width <= 0 || height <= 0 || static_cast<uint32>(width) > MAX_IMAGE_DIMENSION ||
+        static_cast<uint32>(height) > MAX_IMAGE_DIMENSION ||
+        static_cast<usize>(width) * static_cast<usize>(height) > MAX_DECODED_IMAGE_PIXELS)
+    {
+        outMessage = "Radiance HDR header is malformed or exceeds the image limits";
+        return ImageResult::Invalid;
+    }
+    float* samplesOrNull = stbi_loadf_from_memory(data.data(),
+                                                  static_cast<int>(data.size()),
+                                                  &width,
+                                                  &height,
+                                                  &channels,
+                                                  static_cast<int>(LIGHTING_IMAGE_CHANNEL_COUNT));
+    if (samplesOrNull == nullptr)
+    {
+        if (HasStbRunOutOfMemory() == true)
+        {
+            return ImageResult::OutOfMemory;
+        }
+        outMessage = "Radiance HDR decoding failed";
+        return ImageResult::Invalid;
+    }
+    float* samples = samplesOrNull;
+    DecodedLightingImage candidate;
+    candidate.Width = static_cast<uint32>(width);
+    candidate.Height = static_cast<uint32>(height);
+    const bool isAllocated =
+        candidate.Rgb.TryResize(usize{candidate.Width} * candidate.Height * LIGHTING_IMAGE_CHANNEL_COUNT);
+    for (usize i = 0; isAllocated == true && i < candidate.Rgb.GetSize(); ++i)
+    {
+        candidate.Rgb[i] = samples[i];
+    }
+    stbi_image_free(samples);
+    if (isAllocated == false)
+    {
+        return ImageResult::OutOfMemory;
+    }
+    outImage = static_cast<DecodedLightingImage&&>(candidate);
+    return ImageResult::Ok;
+}
+
+/// Decode a float HDR container (Radiance or OpenEXR) chosen by magic bytes.
+[[nodiscard]] ImageResult
+DecodeFloatImage(std::span<const uint8> data, DecodedLightingImage& outImage, std::string_view& outMessage) noexcept
+{
+    return HasExrMagic(data) == true ? DecodeExr(data, outImage, outMessage)
+                                     : DecodeRadiance(data, outImage, outMessage);
+}
+
+/// Display encoding of float RGB for colour textures: clamp to [0, 1], then sRGB.
+[[nodiscard]] ImageResult EncodeFloatImage(const DecodedLightingImage& source, DecodedImage& outImage) noexcept
+{
+    if (AllocateImage(source.Width, source.Height, outImage) == false)
+    {
+        return ImageResult::OutOfMemory;
+    }
+    outImage.WasHighDynamicRange = true;
+    for (usize i = 0; i < usize{source.Width} * source.Height; ++i)
+    {
+        for (usize k = 0; k < LIGHTING_IMAGE_CHANNEL_COUNT; ++k)
+        {
+            float32 value = source.Rgb[i * LIGHTING_IMAGE_CHANNEL_COUNT + k];
+            value = math::IsFinite(value) == true ? math::Clamp(value, 0.0F, 1.0F) : 0.0F;
+            outImage.Texels[i * DECODED_IMAGE_CHANNEL_COUNT + k] = static_cast<uint8>(
+                math::Floor(static_cast<float64>(math::EncodeSrgb(value)) * DECODED_IMAGE_CHANNEL_MAXIMUM + 0.5));
+        }
+        outImage.Texels[i * DECODED_IMAGE_CHANNEL_COUNT + ALPHA_CHANNEL_INDEX] = OPAQUE_ALPHA;
+    }
+    return ImageResult::Ok;
+}
+
+/// Halve float RGB with a 2x2 box filter (odd edges clamp); preserves mean radiance.
+[[nodiscard]] bool HalveLightingImage(DecodedLightingImage& inoutImage) noexcept
+{
+    const uint32 width = inoutImage.Width > 1 ? inoutImage.Width / 2 : 1;
+    const uint32 height = inoutImage.Height > 1 ? inoutImage.Height / 2 : 1;
+    Array<float32> rgb;
+    if (rgb.TryResize(usize{width} * height * LIGHTING_IMAGE_CHANNEL_COUNT) == false)
+    {
+        return false;
+    }
+    for (uint32 y = 0; y < height; ++y)
+    {
+        for (uint32 x = 0; x < width; ++x)
+        {
+            for (usize k = 0; k < LIGHTING_IMAGE_CHANNEL_COUNT; ++k)
+            {
+                float64 sum = 0.0;
+                for (uint32 dy = 0; dy < 2; ++dy)
+                {
+                    for (uint32 dx = 0; dx < 2; ++dx)
+                    {
+                        const uint32 sx = math::Min(x * 2 + dx, inoutImage.Width - 1);
+                        const uint32 sy = math::Min(y * 2 + dy, inoutImage.Height - 1);
+                        sum += static_cast<float64>(
+                            inoutImage.Rgb[(usize{sy} * inoutImage.Width + sx) * LIGHTING_IMAGE_CHANNEL_COUNT + k]);
+                    }
+                }
+                rgb[(usize{y} * width + x) * LIGHTING_IMAGE_CHANNEL_COUNT + k] =
+                    static_cast<float32>(sum * BOX_FILTER_TAP_WEIGHT);
+            }
+        }
+    }
+    inoutImage.Rgb.Swap(rgb);
+    inoutImage.Width = width;
+    inoutImage.Height = height;
+    return true;
 }
 
 [[nodiscard]] ImageResult
@@ -257,7 +466,7 @@ DecodePfm(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
     // Header: "PF" or "Pf", width height, scale (negative = little-endian), each
     // followed by whitespace; rows run bottom to top.
     const std::string_view text(reinterpret_cast<const char*>(data.data()), data.size() < 256 ? data.size() : 256);
-    std::string_view words[4];
+    std::string_view words[PFM_HEADER_WORD_COUNT];
     usize at = 0;
     for (std::string_view& word : words)
     {
@@ -276,10 +485,11 @@ DecodePfm(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
     float64 width = 0.0;
     float64 height = 0.0;
     float64 scale = 0.0;
-    const bool isColour = words[0] == "PF";
-    if ((isColour == false && words[0] != "Pf") || pbrt::ParseNumber(words[1], width) == false ||
-        pbrt::ParseNumber(words[2], height) == false || pbrt::ParseNumber(words[3], scale) == false || width < 1.0 ||
-        height < 1.0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION || scale == 0.0)
+    const bool isColour = words[PFM_IDENTIFIER_WORD] == "PF";
+    if ((isColour == false && words[PFM_IDENTIFIER_WORD] != "Pf") ||
+        ParseNumber(words[PFM_WIDTH_WORD], width) == false || ParseNumber(words[PFM_HEIGHT_WORD], height) == false ||
+        ParseNumber(words[PFM_SCALE_WORD], scale) == false || width < 1.0 || height < 1.0 ||
+        width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION || scale == 0.0)
     {
         outMessage = "malformed PFM header";
         return ImageResult::Invalid;
@@ -342,7 +552,17 @@ ImageResult DecodeImage(std::string_view fileName,
     }
     if (isPng == true)
     {
-        return DecodePng(data, outImage, outMessage);
+        return DecodeWithStb(data, "PNG decoding failed", outImage, outMessage);
+    }
+    if (HasJpegSignature(data) == true)
+    {
+        return DecodeWithStb(data, "JPEG decoding failed", outImage, outMessage);
+    }
+    if (HasExrMagic(data) == true || HasRadianceSignature(data) == true)
+    {
+        DecodedLightingImage linear;
+        const ImageResult decoded = DecodeFloatImage(data, linear, outMessage);
+        return decoded == ImageResult::Ok ? EncodeFloatImage(linear, outImage) : decoded;
     }
     if (HasExtension(fileName, ".tga") == true)
     {
@@ -366,7 +586,38 @@ ImageResult DecodeLightingImage(std::string_view fileName,
         return ImageResult::Invalid;
     }
     DecodedLightingImage candidate;
-    if (HasExtension(fileName, ".pfm") == false)
+    const std::span<const uint8> bytes(data.GetDataOrNull(), data.GetSize());
+    if (HasExrMagic(bytes) == true || HasRadianceSignature(bytes) == true)
+    {
+        // Radiance and OpenEXR maps keep their linear energy. Larger maps are box-halved
+        // (mean radiance preserved) until they fit the bounded environment profile.
+        const ImageResult decoded = DecodeFloatImage(bytes, candidate, outMessage);
+        if (decoded != ImageResult::Ok)
+        {
+            return decoded;
+        }
+        while (candidate.Width > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
+               candidate.Height > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
+               usize{candidate.Width} * candidate.Height >
+                   content::scene_format::MAX_BUNDLE_BYTES / (LIGHTING_IMAGE_CHANNEL_COUNT * sizeof(float32)))
+        {
+            if (HalveLightingImage(candidate) == false)
+            {
+                return ImageResult::OutOfMemory;
+            }
+        }
+        for (const float32 sample : candidate.Rgb)
+        {
+            const float64 value = static_cast<float64>(sample);
+            if (math::IsFinite(value) == false || value < 0 ||
+                value > static_cast<float64>(content::scene_format::MAX_EMISSION))
+            {
+                outMessage = "HDR lighting contains unsupported negative/nonfinite or over-range energy";
+                return ImageResult::Invalid;
+            }
+        }
+    }
+    else if (HasExtension(fileName, ".pfm") == false)
     {
         DecodedImage encoded;
         const ImageResult status = DecodeImage(fileName, {data.GetDataOrNull(), data.GetSize()}, encoded, outMessage);
@@ -430,10 +681,12 @@ ImageResult DecodeLightingImage(std::string_view fileName,
         float64 width = 0;
         float64 height = 0;
         float64 scale = 0;
-        const bool isColour = words[0] == "PF";
-        if ((isColour == false && words[0] != "Pf") || pbrt::ParseNumber(words[1], width) == false ||
-            pbrt::ParseNumber(words[2], height) == false || pbrt::ParseNumber(words[3], scale) == false || width < 1 ||
-            height < 1 || width > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
+        const bool isColour = words[PFM_IDENTIFIER_WORD] == "PF";
+        if ((isColour == false && words[PFM_IDENTIFIER_WORD] != "Pf") ||
+            ParseNumber(words[PFM_WIDTH_WORD], width) == false ||
+            ParseNumber(words[PFM_HEIGHT_WORD], height) == false ||
+            ParseNumber(words[PFM_SCALE_WORD], scale) == false || width < 1 || height < 1 ||
+            width > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
             height > content::scene_format::MAX_ENVIRONMENT_DIMENSION || math::Floor(width) != width ||
             math::Floor(height) != height || scale == 0)
         {

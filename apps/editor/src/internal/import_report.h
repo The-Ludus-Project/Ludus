@@ -14,12 +14,13 @@ struct ImportSource final
 {
     /// Absolute source directory.
     QString Directory;
-    /// pbrt entry file name inside Directory; empty selects the reference profile.
+    /// Scene entry file name inside Directory; empty selects the reference profile.
     QString Entry;
 };
 
-/// Split a picked path: a directory keeps pbrt-reference-v1 (empty entry); a .pbrt
-/// file selects its directory and file name, routed by AssetOptions::SourceEntry.
+/// Split a picked path: a directory keeps pbrt-reference-v1 (empty entry); a scene
+/// file (.pbrt, .gltf, .glb or .obj) selects its directory and file name, routed by
+/// AssetOptions::SourceEntry to the importer its content selects.
 [[nodiscard]] ImportSource SplitImportSource(const QString& path);
 
 /// Multi-line preview of a PreviewImport response: profile, source and cooked

@@ -39,8 +39,9 @@ constexpr foundation::int64 MAX_BUNDLE_BYTES = foundation::int64{64} * 1024 * 10
         otherLights += lights.value(key).toInteger();
     }
     QStringList lines;
-    lines.append(
-        QStringLiteral("Importer: pbrt-best-effort-v1 (%1)").arg(report.value(QStringLiteral("entry")).toString()));
+    lines.append(QStringLiteral("Importer: %1 (%2)")
+                     .arg(report.value(QStringLiteral("importer")).toString(),
+                          report.value(QStringLiteral("entry")).toString()));
     lines.append(QStringLiteral("Source: %1 files, %2 placements, %3 vertices, %4 materials, %5 textures")
                      .arg(FormatCount(source, QStringLiteral("files")),
                           FormatCount(source, QStringLiteral("placements")),
@@ -128,7 +129,8 @@ ImportSource SplitImportSource(const QString& path)
 
 QString DescribeImportReport(const QJsonObject& report)
 {
-    return report.value(QStringLiteral("importer")).toString() == QStringLiteral("pbrt-best-effort-v1")
+    // pbrt-best-effort-v1, gltf-best-effort-v1 and obj-best-effort-v1 share one report schema.
+    return report.value(QStringLiteral("importer")).toString().endsWith(QStringLiteral("-best-effort-v1"))
                ? DescribeBestEffortReport(report)
                : DescribeReferenceReport(report);
 }

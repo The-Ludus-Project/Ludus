@@ -275,7 +275,7 @@ TEST_CASE("pbrt tokenizer is locale-free and tracks lines", "[scene_cook][pbrt]"
     {
         REQUIRE(tokens.Advance() == pbrt::TokenizerStatus::Ok);
         float64 parsed = 99.0;
-        REQUIRE(pbrt::ParseNumber(tokens.GetCurrent().Text.GetView(), parsed) == true);
+        REQUIRE(ParseNumber(tokens.GetCurrent().Text.GetView(), parsed) == true);
         CHECK(parsed == value);
     }
     REQUIRE(tokens.Advance() == pbrt::TokenizerStatus::Ok);
@@ -286,9 +286,9 @@ TEST_CASE("pbrt tokenizer is locale-free and tracks lines", "[scene_cook][pbrt]"
     CHECK(tokens.GetCurrent().Kind == pbrt::TokenKind::End);
 
     float64 ignored = 0.0;
-    CHECK(pbrt::ParseNumber("1e999", ignored) == false);
-    CHECK(pbrt::ParseNumber("1.2.3", ignored) == false);
-    CHECK(pbrt::ParseNumber("-", ignored) == false);
+    CHECK(ParseNumber("1e999", ignored) == false);
+    CHECK(ParseNumber("1.2.3", ignored) == false);
+    CHECK(ParseNumber("-", ignored) == false);
 
     MemoryByteSource unterminated(AsBytes("Shape \"open"));
     pbrt::Tokenizer broken(unterminated);
@@ -327,7 +327,7 @@ TEST_CASE("PLY reader handles ascii and both binary byte orders", "[scene_cook][
     CHECK(ReadPly(AsBytes(badIndex), mesh, summary, message) == false);
 }
 
-TEST_CASE("image decoders cover TGA RLE and PFM, with EXR as a fallback", "[scene_cook][pbrt]")
+TEST_CASE("image decoders cover TGA RLE and PFM, with unknown containers unsupported", "[scene_cook][pbrt]")
 {
     DecodedImage image;
     std::string_view message;
@@ -341,7 +341,9 @@ TEST_CASE("image decoders cover TGA RLE and PFM, with EXR as a fallback", "[scen
     CHECK(image.Width == 2);
     CHECK(image.Texels[0] == 255);
     CHECK(image.Texels[4 + 2] == 255); // Clamped HDR blue.
-    CHECK(DecodeImage("sky.exr", AsBytes("v/1\x01"), image, message) == ImageResult::Unsupported);
+    // A truncated OpenEXR header is malformed; containers without a decoder are unsupported.
+    CHECK(DecodeImage("sky.exr", AsBytes("v/1\x01"), image, message) == ImageResult::Invalid);
+    CHECK(DecodeImage("sky.tif", AsBytes("II*\x00\x08\x00\x00\x00"), image, message) == ImageResult::Unsupported);
     CHECK(DecodeImage("x.png", AsBytes("\x89PNG\r\n\x1a\nbroken"), image, message) == ImageResult::Invalid);
 }
 

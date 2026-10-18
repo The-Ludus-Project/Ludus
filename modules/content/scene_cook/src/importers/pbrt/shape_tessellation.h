@@ -3,7 +3,7 @@
 // Inline pbrt shapes to IR meshes: trianglemesh, bilinearmesh, loopsubdiv
 // (base cage), and tessellated disk and sphere.
 
-#include "scene_ir.h"
+#include "../scene_ir.h"
 
 #include <string_view>
 

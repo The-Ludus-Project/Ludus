@@ -1,16 +1,23 @@
-// Best-effort pbrt-v4 import: SceneIR -> budget plan -> LUSCN v3 bundle and a
-// deterministic import report. See docs/development/best-effort-scene-import.md.
+// Best-effort scene import: a front-end (pbrt-v4, glTF 2.0/GLB or Wavefront
+// OBJ/MTL) builds SceneIR -> budget plan -> LUSCN v3 bundle and a deterministic
+// import report. See docs/development/best-effort-scene-import.md.
 
 #include <ludus/content/scene_cook/best_effort_import.h>
+#include <ludus/content/scene_cook/limits.h>
 #include <ludus/content/scene_format/luscn.h>
 
 #include "../native_files.h"
 #include "../python_compat.h"
 #include "authored_lighting.h"
 #include "budget_planner.h"
+#include "front_end_support.h"
+#include "gltf/gltf_reader.h"
 #include "image/image_reader.h"
+#include "obj/obj_reader.h"
 #include "pbrt/pbrt_parser.h"
-#include "pbrt/transform_utilities.h"
+#include "source_resolver.h"
+#include "tangent_generation.h"
+#include "transform_utilities.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -26,7 +33,7 @@ namespace format = content::scene_format;
 namespace math = foundation::math;
 
 /// Largest image file read for a texture.
-constexpr usize MAX_IMAGE_FILE_BYTES = usize{256} * 1024 * 1024;
+constexpr usize MAX_IMAGE_FILE_BYTES = MAX_SOURCE_IMAGE_BYTES;
 /// Side of the solid-colour swatch cooked for untextured slots.
 constexpr uint32 SWATCH_SIZE = 4;
 /// Bytes reserved for headers and records when budgeting texture bytes.
@@ -169,6 +176,145 @@ struct CookedMesh final
     Array<uint32> Indices;
 };
 
+/// True when the texture names image bytes (a file or an embedded image).
+[[nodiscard]] bool HasImage(const IrTexture& texture) noexcept
+{
+    return texture.File.IsEmpty() == false || texture.EmbeddedImage != IR_NONE;
+}
+
+/// Report name of an image texture: its root-relative file or embedded label.
+[[nodiscard]] std::string_view GetImageName(const SceneIr& scene, const IrTexture& texture) noexcept
+{
+    return texture.EmbeddedImage != IR_NONE ? scene.EmbeddedImages[texture.EmbeddedImage].Label.GetView()
+                                            : texture.File.GetView();
+}
+
+/// Encoded bytes of an image texture: borrowed from the IR for embedded images,
+/// otherwise read from root into inoutStorage. outIsFileRead reports a file read.
+[[nodiscard]] Status LoadImageBytes(const SceneIr& scene,
+                                    std::string_view root,
+                                    const IrTexture& texture,
+                                    Array<uint8>& inoutStorage,
+                                    std::span<const uint8>& outBytes,
+                                    std::string_view& outDecoderName,
+                                    bool& outIsFileRead) noexcept
+{
+    outIsFileRead = false;
+    if (texture.EmbeddedImage != IR_NONE)
+    {
+        const IrEmbeddedImage& image = scene.EmbeddedImages[texture.EmbeddedImage];
+        outBytes = image.Bytes.AsSpan();
+        outDecoderName = image.DecoderName.GetView();
+        return Status::Ok;
+    }
+    String path;
+    const std::string_view parts[] = {root, std::string_view("/"), texture.File.GetView()};
+    if (path.TryAppendMany(parts) != StringStatus::Ok)
+    {
+        return Status::OutOfMemory;
+    }
+    const Status read = detail::ReadFileBounded(path.GetView(), MAX_IMAGE_FILE_BYTES, inoutStorage);
+    if (read == Status::Ok)
+    {
+        outIsFileRead = true;
+        outBytes = inoutStorage.AsSpan();
+        outDecoderName = texture.File.GetView();
+    }
+    return read;
+}
+
+/// Mean of one channel of a data texture in [0, 1] (alpha for channel 3).
+[[nodiscard]] Status AverageTextureChannel(const SceneIr& scene,
+                                           std::string_view root,
+                                           const IrTexture& texture,
+                                           uint8 channel,
+                                           float64& outMean,
+                                           std::string_view& outMessage) noexcept
+{
+    Array<uint8> storage;
+    std::span<const uint8> bytes;
+    std::string_view decoderName;
+    bool isFileRead = false;
+    const Status loaded = LoadImageBytes(scene, root, texture, storage, bytes, decoderName, isFileRead);
+    if (loaded != Status::Ok)
+    {
+        outMessage = "cannot read the image file";
+        return loaded == Status::OutOfMemory ? loaded : Status::Invalid;
+    }
+    DecodedImage image;
+    const ImageResult decoded = DecodeImage(decoderName, bytes, image, outMessage);
+    if (decoded != ImageResult::Ok)
+    {
+        return decoded == ImageResult::OutOfMemory ? Status::OutOfMemory : Status::Invalid;
+    }
+    const usize component = channel < DECODED_IMAGE_CHANNEL_COUNT ? channel : 0;
+    uint64 sum = 0;
+    for (usize i = component; i < image.Texels.GetSize(); i += DECODED_IMAGE_CHANNEL_COUNT)
+    {
+        sum += image.Texels[i];
+    }
+    const usize count = image.Texels.GetSize() / DECODED_IMAGE_CHANNEL_COUNT;
+    outMean =
+        count != 0 ? static_cast<float64>(sum) / (DECODED_IMAGE_CHANNEL_MAXIMUM * static_cast<float64>(count)) : 1.0;
+    return Status::Ok;
+}
+
+/// Fold metallic/roughness data textures of each slot's representative material into
+/// its scalar terms (LUSCN v3 materials carry scalars only).
+[[nodiscard]] Status
+ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inoutPlan, DiagnosticLog& inoutLog) noexcept
+{
+    constexpr usize SCALAR_TERMS = 2;
+    for (PlannedMaterial& planned : inoutPlan.Materials)
+    {
+        if (planned.IsEmissive == true || planned.Representative == IR_NONE)
+        {
+            continue;
+        }
+        const IrMaterial& material = scene.Materials[planned.Representative];
+        const foundation::StaticArray<uint32, SCALAR_TERMS> textures{material.MetallicTexture,
+                                                                     material.RoughnessTexture};
+        const foundation::StaticArray<uint8, SCALAR_TERMS> channels{material.MetallicChannel,
+                                                                    material.RoughnessChannel};
+        for (usize term = 0; term < SCALAR_TERMS; ++term)
+        {
+            if (textures[term] == IR_NONE || HasImage(scene.Textures[textures[term]]) == false)
+            {
+                continue;
+            }
+            float64 mean = 1.0;
+            std::string_view message;
+            const Status averaged =
+                AverageTextureChannel(scene, root, scene.Textures[textures[term]], channels[term], mean, message);
+            if (averaged == Status::OutOfMemory)
+            {
+                return averaged;
+            }
+            const std::string_view name = GetImageName(scene, scene.Textures[textures[term]]);
+            if (averaged != Status::Ok)
+            {
+                (void)inoutLog.Add(DiagnosticSeverity::Warning, codes::TEXTURE_UNREADABLE, name, 0, message);
+                continue;
+            }
+            if (term == 0)
+            {
+                planned.Metallic = math::Clamp(planned.Metallic * mean, 0.0, 1.0);
+            }
+            else
+            {
+                planned.Roughness =
+                    math::Clamp(planned.Roughness * mean, static_cast<float64>(format::MIN_ROUGHNESS), 1.0);
+            }
+            (void)inoutLog.Add(DiagnosticSeverity::Info,
+                               codes::TEXTURE_APPROXIMATED,
+                               name,
+                               0,
+                               "metallic/roughness texture averaged into the scalar material term");
+        }
+    }
+    return Status::Ok;
+}
+
 /// Decode or synthesise the texture of every slot, then downscale to the byte budget.
 [[nodiscard]] Status CookTextures(const SceneIr& scene,
                                   std::string_view root,
@@ -186,18 +332,15 @@ struct CookedMesh final
             return Status::OutOfMemory;
         }
         bool isDecoded = false;
-        if (planned.Texture != IR_NONE && scene.Textures[planned.Texture].File.IsEmpty() == false)
+        if (planned.Texture != IR_NONE && HasImage(scene.Textures[planned.Texture]) == true)
         {
             const IrTexture& texture = scene.Textures[planned.Texture];
-            String path;
-            const std::string_view parts[] = {root, std::string_view("/"), texture.File.GetView()};
-            Array<uint8> bytes;
+            Array<uint8> storage;
+            std::span<const uint8> bytes;
+            std::string_view decoderName;
+            bool isFileRead = false;
             std::string_view message = "cannot read the image file";
-            if (path.TryAppendMany(parts) != StringStatus::Ok)
-            {
-                return Status::OutOfMemory;
-            }
-            const Status read = detail::ReadFileBounded(path.GetView(), MAX_IMAGE_FILE_BYTES, bytes);
+            const Status read = LoadImageBytes(scene, root, texture, storage, bytes, decoderName, isFileRead);
             if (read == Status::OutOfMemory)
             {
                 return read;
@@ -205,9 +348,12 @@ struct CookedMesh final
             ImageResult decoded = ImageResult::Invalid;
             if (read == Status::Ok)
             {
-                cooked->ReadSource = planned.Texture;
-                cooked->ReadDigest = Hash(bytes.AsSpan());
-                decoded = DecodeImage(texture.File.GetView(), bytes.AsSpan(), cooked->Image, message);
+                if (isFileRead == true)
+                {
+                    cooked->ReadSource = planned.Texture;
+                    cooked->ReadDigest = Hash(bytes);
+                }
+                decoded = DecodeImage(decoderName, bytes, cooked->Image, message);
             }
             if (decoded == ImageResult::OutOfMemory)
             {
@@ -298,7 +444,7 @@ struct CookedMesh final
                                codes::TEXTURE_DOWNSCALED,
                                {},
                                0,
-                               scene.Textures[cooked.Source].File.GetView());
+                               GetImageName(scene, scene.Textures[cooked.Source]));
         }
     }
     return Status::Ok;
@@ -632,6 +778,7 @@ void PackBundle(const IrCamera& camera,
 
 struct ReportFacts final
 {
+    std::string_view Profile;
     std::string_view EntryName;
     bool IsDryRun = false;
     bool IsCameraFramed = false;
@@ -659,7 +806,7 @@ void WriteReport(const SceneIr& scene,
     json.BeginObject();
     writeCount("schema", IMPORT_REPORT_SCHEMA);
     json.WriteKey("importer");
-    json.WriteString(BEST_EFFORT_PROFILE);
+    json.WriteString(facts.Profile);
     json.WriteKey("entry");
     json.WriteString(facts.EntryName);
     json.WriteKey("dry_run");
@@ -781,9 +928,9 @@ void WriteReport(const SceneIr& scene,
         }
         json.EndArray();
         json.WriteKey("texture");
-        if (planned.Texture != IR_NONE && scene.Textures[planned.Texture].File.IsEmpty() == false)
+        if (planned.Texture != IR_NONE && HasImage(scene.Textures[planned.Texture]) == true)
         {
-            json.WriteString(scene.Textures[planned.Texture].File.GetView());
+            json.WriteString(GetImageName(scene, scene.Textures[planned.Texture]));
         }
         else
         {
@@ -1021,11 +1168,10 @@ void CountDiagnostics(const DiagnosticLog& log, ImportSummary& inoutSummary) noe
 }
 } // namespace
 
-bool ImportPbrtBestEffort(std::string_view entryFile,
-                          const BestEffortOptions& options,
-                          BestEffortResult& outResult,
-                          CookError& outError,
-                          const Cancellation* cancelOrNull) noexcept
+namespace
+{
+/// Clear every output of a best-effort import.
+void ResetResult(BestEffortResult& outResult) noexcept
 {
     outResult.Bundle.Clear();
     outResult.Report.Clear();
@@ -1033,11 +1179,30 @@ bool ImportPbrtBestEffort(std::string_view entryFile,
     outResult.Inputs.Clear();
     outResult.InputDigests.Clear();
     outResult.Summary = ImportSummary{};
-    SceneIr scene;
-    DiagnosticLog log;
-    String root;
-    Status status = pbrt::ReadScene(entryFile, scene, log, root, cancelOrNull);
+    outResult.Format = SceneSourceFormat::Unknown;
+    outResult.Profile = {};
+}
+
+/// Plan, bake, pack and report a SceneIR produced by any front-end. status is the
+/// front-end's outcome; NotFound/IoError skip the report like an unreadable entry.
+[[nodiscard]] bool CookImportedScene(std::string_view profile,
+                                     SceneIr& inoutScene,
+                                     DiagnosticLog& inoutLog,
+                                     const String& root,
+                                     Status status,
+                                     std::string_view entryFile,
+                                     const BestEffortOptions& options,
+                                     BestEffortResult& outResult,
+                                     CookError& outError,
+                                     const Cancellation* cancelOrNull) noexcept
+{
+    SceneIr& scene = inoutScene;
+    DiagnosticLog& log = inoutLog;
     CookPlan plan;
+    if (status == Status::Ok)
+    {
+        status = GenerateMissingTangents(scene, log, cancelOrNull);
+    }
     if (status == Status::Ok)
     {
         status = PlanBudget(scene, log, plan, cancelOrNull);
@@ -1103,7 +1268,11 @@ bool ImportPbrtBestEffort(std::string_view entryFile,
         const usize reserved = geometryBytes + RECORD_RESERVE_BYTES + lightingBytes;
         const usize remaining = format::MAX_BUNDLE_BYTES > reserved ? format::MAX_BUNDLE_BYTES - reserved : 0;
         const usize budget = math::Min(remaining, format::MAX_TOTAL_TEXTURE_BYTES);
-        status = CookTextures(scene, root.GetView(), plan, budget, log, textures);
+        status = ApplyScalarTextures(scene, root.GetView(), plan, log);
+        if (status == Status::Ok)
+        {
+            status = CookTextures(scene, root.GetView(), plan, budget, log, textures);
+        }
     }
     if (status == Status::Ok)
     {
@@ -1146,6 +1315,7 @@ bool ImportPbrtBestEffort(std::string_view entryFile,
     const std::string_view path = entryFile;
     const usize slash = path.rfind('/');
     ReportFacts facts;
+    facts.Profile = profile;
     facts.EntryName = slash == std::string_view::npos ? path : path.substr(slash + 1);
     facts.IsDryRun = options.IsDryRun;
     facts.IsCameraFramed = isFramed;
@@ -1184,6 +1354,296 @@ bool ImportPbrtBestEffort(std::string_view entryFile,
                                            licenseName,
                                            outResult);
     return collected == Status::Ok ? true : FailWith(outError, collected, DescribeStatus(collected));
+}
+
+/// Resolve an entry file to its native path and import root (its directory).
+/// An entry file's native path and its import root (the entry's directory).
+struct ResolvedEntry final
+{
+    String Native;
+    String Root;
+};
+
+[[nodiscard]] Status ResolveEntry(std::string_view entryFile, ResolvedEntry& outEntry) noexcept
+{
+    const Status resolved = detail::ResolvePath(entryFile, outEntry.Native);
+    if (resolved != Status::Ok)
+    {
+        return resolved;
+    }
+    const std::string_view path = outEntry.Native.GetView();
+    const usize slash = path.rfind('/');
+    if (slash == std::string_view::npos || slash == 0)
+    {
+        return Status::Invalid;
+    }
+    return outEntry.Root.TryAssign(path.substr(0, slash)) == StringStatus::Ok ? Status::Ok : Status::OutOfMemory;
+}
+
+/// Bytes examined by DetectSceneSourceFile.
+constexpr usize DETECTION_PREFIX_BYTES = 4096;
+
+[[nodiscard]] bool StartsWith(std::string_view text, std::string_view prefix) noexcept
+{
+    return text.substr(0, prefix.size()) == prefix;
+}
+
+[[nodiscard]] bool HasExtension(std::string_view name, std::string_view extension) noexcept
+{
+    if (name.size() < extension.size())
+    {
+        return false;
+    }
+    const std::string_view tail = name.substr(name.size() - extension.size());
+    for (usize i = 0; i < extension.size(); ++i)
+    {
+        const char value = tail[i] >= 'A' && tail[i] <= 'Z' ? static_cast<char>(tail[i] - 'A' + 'a') : tail[i];
+        if (value != extension[i])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+SceneSourceFormat DetectSceneSourceFormat(std::span<const uint8> prefix, std::string_view fileName) noexcept
+{
+    std::string_view text(reinterpret_cast<const char*>(prefix.data()), prefix.size());
+    // GLB header magic (glTF 2.0 section 4.4.3.1).
+    if (StartsWith(text, "glTF") == true)
+    {
+        return SceneSourceFormat::Gltf;
+    }
+    constexpr std::string_view UTF8_BYTE_ORDER_MARK = "\xEF\xBB\xBF";
+    if (StartsWith(text, UTF8_BYTE_ORDER_MARK) == true)
+    {
+        text.remove_prefix(UTF8_BYTE_ORDER_MARK.size());
+    }
+    // The first meaningful token decides: '{' opens glTF JSON, OBJ records are
+    // lower-case keywords, pbrt directives are capitalised words.
+    usize at = 0;
+    while (at < text.size())
+    {
+        const char value = text[at];
+        if (value == ' ' || value == '\t' || value == '\r' || value == '\n')
+        {
+            ++at;
+            continue;
+        }
+        if (value == '#')
+        {
+            while (at < text.size() && text[at] != '\n')
+            {
+                ++at;
+            }
+            continue;
+        }
+        if (value == '{')
+        {
+            return SceneSourceFormat::Gltf;
+        }
+        usize end = at;
+        while (end < text.size() && text[end] != ' ' && text[end] != '\t' && text[end] != '\r' && text[end] != '\n')
+        {
+            ++end;
+        }
+        const std::string_view word = text.substr(at, end - at);
+        constexpr usize WAVEFRONT_KEYWORD_COUNT = 11;
+        constexpr foundation::StaticArray<std::string_view, WAVEFRONT_KEYWORD_COUNT>
+            WAVEFRONT_KEYWORDS{"v", "vt", "vn", "vp", "f", "o", "g", "s", "mtllib", "usemtl", "l"};
+        for (const std::string_view keyword : WAVEFRONT_KEYWORDS)
+        {
+            if (word == keyword)
+            {
+                return SceneSourceFormat::Obj;
+            }
+        }
+        if (word.empty() == false && word.front() >= 'A' && word.front() <= 'Z')
+        {
+            return SceneSourceFormat::Pbrt;
+        }
+        break;
+    }
+    // Nothing decisive (for example a comment-only prefix): fall back to the extension.
+    if (HasExtension(fileName, ".pbrt") == true)
+    {
+        return SceneSourceFormat::Pbrt;
+    }
+    if (HasExtension(fileName, ".obj") == true)
+    {
+        return SceneSourceFormat::Obj;
+    }
+    if (HasExtension(fileName, ".gltf") == true || HasExtension(fileName, ".glb") == true)
+    {
+        return SceneSourceFormat::Gltf;
+    }
+    return SceneSourceFormat::Unknown;
+}
+
+Status DetectSceneSourceFile(std::string_view entryFile, SceneSourceFormat& outFormat) noexcept
+{
+    detail::SequentialFile file;
+    const Status opened = file.Open(entryFile);
+    if (opened != Status::Ok)
+    {
+        return opened;
+    }
+    foundation::StaticArray<uint8, DETECTION_PREFIX_BYTES> prefix{};
+    usize size = 0;
+    while (size < DETECTION_PREFIX_BYTES)
+    {
+        usize count = 0;
+        const Status read = file.Read(std::span<uint8>(prefix.GetData() + size, DETECTION_PREFIX_BYTES - size), count);
+        if (read != Status::Ok)
+        {
+            return read;
+        }
+        if (count == 0)
+        {
+            break;
+        }
+        size += count;
+    }
+    outFormat = DetectSceneSourceFormat(std::span<const uint8>(prefix.GetData(), size), entryFile);
+    return Status::Ok;
+}
+
+bool ImportPbrtBestEffort(std::string_view entryFile,
+                          const BestEffortOptions& options,
+                          BestEffortResult& outResult,
+                          CookError& outError,
+                          const Cancellation* cancelOrNull) noexcept
+{
+    ResetResult(outResult);
+    SceneIr scene;
+    DiagnosticLog log;
+    String root;
+    const Status status = pbrt::ReadScene(entryFile, scene, log, root, cancelOrNull);
+    outResult.Format = SceneSourceFormat::Pbrt;
+    outResult.Profile = BEST_EFFORT_PROFILE;
+    return CookImportedScene(BEST_EFFORT_PROFILE,
+                             scene,
+                             log,
+                             root,
+                             status,
+                             entryFile,
+                             options,
+                             outResult,
+                             outError,
+                             cancelOrNull);
+}
+
+bool ImportObjBestEffort(std::string_view entryFile, // ludus-style: abbreviation OBJ names the Wavefront file format
+                         const BestEffortOptions& options,
+                         BestEffortResult& outResult,
+                         CookError& outError,
+                         const Cancellation* cancelOrNull) noexcept
+{
+    ResetResult(outResult);
+    outResult.Format = SceneSourceFormat::Obj;
+    outResult.Profile = OBJ_BEST_EFFORT_PROFILE;
+    SceneIr scene;
+    DiagnosticLog log;
+    ResolvedEntry resolved;
+    Status status = ResolveEntry(entryFile, resolved);
+    const String& root = resolved.Root;
+    const std::string_view native = resolved.Native.GetView();
+    detail::SequentialFile file;
+    if (status == Status::Ok)
+    {
+        status = file.Open(native);
+    }
+    if (status == Status::Ok)
+    {
+        FileByteSource source(file);
+        NativeSourceResolver resolver(root.GetView());
+        status = obj::ReadScene(source, detail::GetBaseName(native), resolver, scene, log, cancelOrNull);
+    }
+    return CookImportedScene(OBJ_BEST_EFFORT_PROFILE,
+                             scene,
+                             log,
+                             root,
+                             status,
+                             entryFile,
+                             options,
+                             outResult,
+                             outError,
+                             cancelOrNull);
+}
+
+bool ImportGltfBestEffort(std::string_view entryFile,
+                          const BestEffortOptions& options,
+                          BestEffortResult& outResult,
+                          CookError& outError,
+                          const Cancellation* cancelOrNull) noexcept
+{
+    ResetResult(outResult);
+    outResult.Format = SceneSourceFormat::Gltf;
+    outResult.Profile = GLTF_BEST_EFFORT_PROFILE;
+    SceneIr scene;
+    DiagnosticLog log;
+    Array<uint8> bytes;
+    ResolvedEntry resolved;
+    Status status = ResolveEntry(entryFile, resolved);
+    const String& root = resolved.Root;
+    const std::string_view native = resolved.Native.GetView();
+    if (status == Status::Ok)
+    {
+        status = detail::ReadFileBounded(native, gltf::MAX_ENTRY_BYTES, bytes);
+        if (status == Status::Limit)
+        {
+            (void)log.Add(DiagnosticSeverity::Error,
+                          codes::LIMIT_EXCEEDED,
+                          detail::GetBaseName(native),
+                          0,
+                          "glTF entry file exceeds the size limit");
+            status = Status::Invalid;
+        }
+    }
+    if (status == Status::Ok)
+    {
+        NativeSourceResolver resolver(root.GetView());
+        status = gltf::ReadScene(bytes.AsSpan(), detail::GetBaseName(native), resolver, scene, log, cancelOrNull);
+    }
+    return CookImportedScene(GLTF_BEST_EFFORT_PROFILE,
+                             scene,
+                             log,
+                             root,
+                             status,
+                             entryFile,
+                             options,
+                             outResult,
+                             outError,
+                             cancelOrNull);
+}
+
+bool ImportSceneBestEffort(std::string_view entryFile,
+                           const BestEffortOptions& options,
+                           BestEffortResult& outResult,
+                           CookError& outError,
+                           const Cancellation* cancelOrNull) noexcept
+{
+    SceneSourceFormat format = SceneSourceFormat::Unknown;
+    const Status detected = DetectSceneSourceFile(entryFile, format);
+    if (detected != Status::Ok)
+    {
+        ResetResult(outResult);
+        return FailWith(outError, detected, DescribeStatus(detected));
+    }
+    switch (format)
+    {
+        case SceneSourceFormat::Pbrt:
+            return ImportPbrtBestEffort(entryFile, options, outResult, outError, cancelOrNull);
+        case SceneSourceFormat::Gltf:
+            return ImportGltfBestEffort(entryFile, options, outResult, outError, cancelOrNull);
+        case SceneSourceFormat::Obj:
+            return ImportObjBestEffort(entryFile, options, outResult, outError, cancelOrNull);
+        case SceneSourceFormat::Unknown:
+            break;
+    }
+    ResetResult(outResult);
+    return FailWith(outError, Status::Unsupported, "the entry file is not a pbrt-v4, glTF 2.0/GLB or OBJ scene");
 }
 
 bool WriteBestEffortImport(std::string_view output, const BestEffortResult& result, CookError& outError) noexcept

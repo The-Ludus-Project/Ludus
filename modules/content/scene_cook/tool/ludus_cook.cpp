@@ -4,6 +4,9 @@
 //   ludus-cook cook SOURCE OUTPUT
 //   ludus-cook pbrt ENTRY.pbrt OUTPUT     (best-effort pbrt-v4 import)
 //   ludus-cook pbrt ENTRY.pbrt --dry-run
+//   ludus-cook gltf ENTRY.{gltf,glb} {OUTPUT|--dry-run}  (best-effort glTF 2.0)
+//   ludus-cook obj ENTRY.obj {OUTPUT|--dry-run}          (best-effort OBJ/MTL)
+//   ludus-cook import ENTRY {OUTPUT|--dry-run}  (format detected from content)
 //   ludus-cook scene new      PROJECT LEVEL [--name NAME] [--json]
 //   ludus-cook scene open     PROJECT LEVEL [--json]
 //   ludus-cook scene import   PROJECT LEVEL SOURCE [--json]
@@ -14,18 +17,16 @@
 //   ludus-cook identity apply   ROOT MANIFEST SCHEMA WORLD OUTPUT
 //
 // `cook` writes OUTPUT/scene.luscn, OUTPUT/manifest.json and OUTPUT/LICENSE.txt
-// and prints the manifest. `pbrt` writes OUTPUT/scene.luscn,
-// OUTPUT/import-report.json and OUTPUT/LICENSE.txt and prints the report;
-// --dry-run only parses and plans and prints the report. Every `scene` command prints the level's dump (the
-// level, its exact resident closure and byte total); --json prints it on one
-// line with "schema": 1, or the error as {"schema": 1, "error": {...}}.
-// `identity migrate` mints UUIDs once for version-1 World documents and atomically
-// creates MANIFEST; it never replaces an existing manifest or edits a World.
-// `identity apply` replays MANIFEST to create the version-2 World record OUTPUT,
-// minting nothing; it never replaces an existing file. Paths are relative to ROOT
-// (docs/architecture/object-handles-uuid.md#stage-3-uuid-authoring-records).
-// Exit status: 0 success, 1 failure, 2 usage, 3 missing host facilities,
-// 130 cancelled.
+// and prints the manifest. `pbrt`, `gltf`, `obj` and `import` write
+// OUTPUT/scene.luscn, OUTPUT/import-report.json and OUTPUT/LICENSE.txt and print
+// the report; --dry-run only parses and plans and prints the report. `import`
+// picks the importer from the entry's bytes, falling back to its extension. Every `scene` command prints the level's
+// dump (the level, its exact resident closure and byte total); --json prints it on one line with "schema": 1, or the
+// error as {"schema": 1, "error": {...}}. `identity migrate` mints UUIDs once for version-1 World documents and
+// atomically creates MANIFEST; it never replaces an existing manifest or edits a World. `identity apply` replays
+// MANIFEST to create the version-2 World record OUTPUT, minting nothing; it never replaces an existing file. Paths are
+// relative to ROOT (docs/architecture/object-handles-uuid.md#stage-3-uuid-authoring-records). Exit status: 0 success, 1
+// failure, 2 usage, 3 missing host facilities, 130 cancelled.
 
 #include <ludus/content/identity_records/migration_manifest.h>
 #include <ludus/content/identity_records/world_records.h>
@@ -79,6 +80,9 @@ int PrintUsage() noexcept
     WriteAll(2,
              "usage: ludus-cook cook SOURCE OUTPUT\n"
              "       ludus-cook pbrt ENTRY.pbrt {OUTPUT|--dry-run}\n"
+             "       ludus-cook gltf ENTRY.{gltf,glb} {OUTPUT|--dry-run}\n"
+             "       ludus-cook obj ENTRY.obj {OUTPUT|--dry-run}\n"
+             "       ludus-cook import ENTRY {OUTPUT|--dry-run}\n"
              "       ludus-cook scene new PROJECT LEVEL [--name NAME] [--json]\n"
              "       ludus-cook scene {open|dump} PROJECT LEVEL [--json]\n"
              "       ludus-cook scene import PROJECT LEVEL SOURCE [--json]\n"
@@ -158,7 +162,14 @@ int RunCook(int argc, char** argv) noexcept
     return EXIT_OK;
 }
 
-int RunPbrt(int argc, char** argv) noexcept
+/// Signature shared by the best-effort importers.
+using BestEffortImporter = bool (*)(std::string_view entryFile,
+                                    const BestEffortOptions& options,
+                                    BestEffortResult& outResult,
+                                    CookError& outError,
+                                    const Cancellation* cancelOrNull) noexcept;
+
+int RunBestEffort(int argc, char** argv, BestEffortImporter importer) noexcept
 {
     if (argc != 4)
     {
@@ -168,7 +179,7 @@ int RunPbrt(int argc, char** argv) noexcept
     options.IsDryRun = std::string_view(argv[3]) == "--dry-run";
     BestEffortResult result;
     CookError error;
-    const bool isImported = ImportPbrtBestEffort(argv[2], options, result, error);
+    const bool isImported = importer(argv[2], options, result, error, nullptr);
     WriteAll(1, GetView(result.Report));
     if (isImported == false || (options.IsDryRun == false && WriteBestEffortImport(argv[3], result, error) == false))
     {
@@ -435,7 +446,19 @@ int main(int argc, char** argv)
     }
     if (argc >= 2 && std::string_view(argv[1]) == "pbrt")
     {
-        return RunPbrt(argc, argv);
+        return RunBestEffort(argc, argv, ImportPbrtBestEffort);
+    }
+    if (argc >= 2 && std::string_view(argv[1]) == "gltf")
+    {
+        return RunBestEffort(argc, argv, ImportGltfBestEffort);
+    }
+    if (argc >= 2 && std::string_view(argv[1]) == "obj")
+    {
+        return RunBestEffort(argc, argv, ImportObjBestEffort);
+    }
+    if (argc >= 2 && std::string_view(argv[1]) == "import")
+    {
+        return RunBestEffort(argc, argv, ImportSceneBestEffort);
     }
     if (argc >= 2 && std::string_view(argv[1]) == "scene")
     {

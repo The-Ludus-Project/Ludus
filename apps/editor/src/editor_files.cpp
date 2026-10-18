@@ -47,6 +47,21 @@ bool IsGeneratedProjectPath(const QString& relative)
     }
     return false;
 }
+
+/// A file Ludus::SceneCook can import as a best-effort scene entry; the importer
+/// itself is chosen from the file's content.
+[[maybe_unused]] bool IsSceneEntryName(const QString& name)
+{
+    for (const QString& extension :
+         {QStringLiteral(".pbrt"), QStringLiteral(".gltf"), QStringLiteral(".glb"), QStringLiteral(".obj")})
+    {
+        if (name.endsWith(extension, Qt::CaseInsensitive) == true)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 } // namespace
 #if defined(Q_OS_WASM)
 namespace
@@ -292,6 +307,19 @@ namespace
     QSet<QString> unique;
     QString root;
     QString entry;
+    // A .pbrt entry wins; glTF/OBJ files are entries only for scenes without one,
+    // because pbrt scenes may ship .obj companions.
+    QString otherEntry;
+    const auto consider = [&entry, &otherEntry](const QString& name, const QString& path) {
+        if (name.endsWith(QStringLiteral(".pbrt"), Qt::CaseInsensitive) == true)
+        {
+            entry = entry.isEmpty() == true ? path : entry;
+        }
+        else if (IsSceneEntryName(name) == true && otherEntry.isEmpty() == true)
+        {
+            otherEntry = path;
+        }
+    };
     for (const QString& path : paths)
     {
         const QStringList parts = path.split(QLatin1Char('/'));
@@ -315,10 +343,7 @@ namespace
                 return false;
             }
             root = parts.first();
-            if (parts.back().endsWith(QStringLiteral(".pbrt"), Qt::CaseInsensitive) == true && entry.isEmpty() == true)
-            {
-                entry = path;
-            }
+            consider(parts.back(), path);
         }
         else if (parts.size() != 1)
         {
@@ -332,12 +357,13 @@ namespace
             }
             entry = path;
         }
-        else if (path.endsWith(QStringLiteral(".pbrt"), Qt::CaseInsensitive) == true && entry.isEmpty() == true)
+        else
         {
-            entry = path;
+            consider(path, path);
         }
         unique.insert(path);
     }
+    entry = entry.isEmpty() == true ? otherEntry : entry;
     if (entry.isEmpty() == true)
     {
         return false;
@@ -364,13 +390,15 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
     state->Input.set("multiple", true);
     if (isFolder == true)
     {
-        // A scene folder keeps the relative textures/ and models/ paths that the .pbrt references.
+        // A scene folder keeps the relative textures/ and models/ paths that the entry references.
         state->Input.set("webkitdirectory", true);
     }
     else
     {
-        // One .zip archive, or a .pbrt plus its companion files picked together (flat).
-        state->Input.set("accept", emscripten::val(".pbrt,.zip,application/zip,image/*,.ply,.obj,.spd,.exr"));
+        // One .zip archive, or a scene entry plus its companion files picked together (flat).
+        state->Input.set("accept",
+                         emscripten::val(".pbrt,.gltf,.glb,.bin,.obj,.mtl,.zip,application/zip,image/*,.ply,.spd,"
+                                         ".exr,.hdr"));
     }
     state->Input.set("hidden", true);
     auto finish = [weak]() {
@@ -408,7 +436,8 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
             const foundation::uint32 count = files["length"].as<foundation::uint32>();
             if (count == 0 || count > 100000)
             {
-                Report(state->Owner, QStringLiteral("Choose a PBRT scene folder, one .pbrt file, or a .zip archive."));
+                Report(state->Owner,
+                       QStringLiteral("Choose a scene folder, one .pbrt/.gltf/.glb/.obj file, or a .zip archive."));
                 finish();
                 return;
             }
@@ -437,10 +466,10 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
             }
             if (ValidateSceneImportPaths(state->Paths, state->Folder, state->Descriptor) == false)
             {
-                // Fall back to a single-file picker if the directory selection had no .pbrt.
+                // Fall back to a single-file picker if the directory selection had no scene entry.
                 Report(state->Owner,
-                       QStringLiteral("Choose a folder containing a .pbrt entry (and its textures/models), "
-                                      "or a single .pbrt / .zip file."));
+                       QStringLiteral("Choose a folder containing a .pbrt, .gltf, .glb or .obj entry (and its "
+                                      "textures/models), or a single entry / .zip file."));
                 finish();
                 return;
             }
@@ -497,13 +526,21 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
                     ImportedBytes += static_cast<foundation::int64>(expanded) - state->ChargedBytes;
                     state->ChargedBytes = static_cast<foundation::int64>(expanded);
                     QString entry;
-                    QDirIterator files(state->Directory,
-                                       QStringList{QStringLiteral("*.pbrt")},
-                                       QDir::Files,
-                                       QDirIterator::Subdirectories);
+                    // Prefer a .pbrt entry; otherwise the first glTF/OBJ entry.
+                    QDirIterator pbrtFiles(state->Directory,
+                                           QStringList{QStringLiteral("*.pbrt")},
+                                           QDir::Files,
+                                           QDirIterator::Subdirectories);
+                    QDirIterator otherFiles(
+                        state->Directory,
+                        QStringList{QStringLiteral("*.gltf"), QStringLiteral("*.glb"), QStringLiteral("*.obj")},
+                        QDir::Files,
+                        QDirIterator::Subdirectories);
+                    QDirIterator& files = pbrtFiles.hasNext() == true ? pbrtFiles : otherFiles;
                     if (files.hasNext() == false)
                     {
-                        Report(state->Owner, QStringLiteral("The .zip archive contains no .pbrt entry."));
+                        Report(state->Owner,
+                               QStringLiteral("The .zip archive contains no .pbrt, .gltf, .glb or .obj entry."));
                         finish();
                         return;
                     }

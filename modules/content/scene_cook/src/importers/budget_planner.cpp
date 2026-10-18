@@ -1,6 +1,6 @@
 #include "budget_planner.h"
 
-#include "pbrt/transform_utilities.h"
+#include "transform_utilities.h"
 
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/containers/sort.hpp>
@@ -96,6 +96,9 @@ struct EmitterUse final
     math::Vector3 Emission{};
     bool IsTwoSided = false;
     bool HasPower = false;
+    /// Every member is decorative (IrShape::IsEmissionOptional); the group may be demoted.
+    bool IsOptional = false;
+    bool IsDemoted = false;
     float64 PowerLumens = 0.0;
     float64 Area = 0.0;
     Array<uint32> Sources;
@@ -215,6 +218,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
     // 3. Material usage by area (emissive surfaces are tracked separately).
     Array<MaterialUse> uses;
     Array<EmitterUse> emitters;
+    uint32 droppedEmitters = 0;
     for (Placement& placement : plan.Placements)
     {
         const IrShape& shape = scene.Shapes[placement.Shape];
@@ -223,6 +227,17 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             math::Vector3 emission;
             if (ResolveEmission(shape, placement.Area, emission) == false)
             {
+                if (shape.IsEmissionOptional == true)
+                {
+                    ++droppedEmitters;
+                    (void)inoutLog.Add(
+                        DiagnosticSeverity::Warning,
+                        codes::EMISSION_DROPPED,
+                        {},
+                        shape.Line,
+                        "decorative emission exceeds the finite RGB-nits profile; cooked as a non-emitter");
+                    continue;
+                }
                 (void)inoutLog.Add(DiagnosticSeverity::Error,
                                    codes::LIMIT_EXCEEDED,
                                    {},
@@ -233,7 +248,8 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             for (usize i = 0; i < emitters.GetSize(); ++i)
             {
                 if (emitters[i].Emission == emission && emitters[i].IsTwoSided == shape.IsEmissionTwoSided &&
-                    emitters[i].HasPower == shape.HasEmissionPower)
+                    emitters[i].HasPower == shape.HasEmissionPower &&
+                    emitters[i].IsOptional == shape.IsEmissionOptional)
                 {
                     placement.EmitterGroup = static_cast<uint32>(i);
                     break;
@@ -250,6 +266,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
                 emitterOrNull->Emission = emission;
                 emitterOrNull->IsTwoSided = shape.IsEmissionTwoSided;
                 emitterOrNull->HasPower = shape.HasEmissionPower;
+                emitterOrNull->IsOptional = shape.IsEmissionOptional;
             }
             EmitterUse& emitter = emitters[placement.EmitterGroup];
             emitter.Area += placement.Area;
@@ -259,8 +276,84 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             {
                 return Status::OutOfMemory;
             }
+        }
+    }
+    // Each cooked mesh carries exactly one material, so the slot count is bounded by MAX_MESHES.
+    const usize slotLimit = format::MAX_MESHES < format::MAX_MATERIALS ? format::MAX_MESHES : format::MAX_MATERIALS;
+    // Decorative emitter groups beyond the slots left by required emitters (and one slot
+    // for non-emissive surfaces) are demoted, smallest area first.
+    usize requiredEmitters = 0;
+    usize optionalEmitters = 0;
+    bool hasNonEmitters = false;
+    for (const EmitterUse& emitter : emitters)
+    {
+        requiredEmitters += emitter.IsOptional == true ? 0 : 1;
+        optionalEmitters += emitter.IsOptional == true ? 1 : 0;
+    }
+    for (const Placement& placement : plan.Placements)
+    {
+        hasNonEmitters = hasNonEmitters == true || placement.EmitterGroup == IR_NONE;
+    }
+    if (optionalEmitters != 0 && requiredEmitters + optionalEmitters + (hasNonEmitters == true ? 1 : 0) > slotLimit)
+    {
+        const usize reserved = requiredEmitters + 1;
+        usize keep = slotLimit > reserved ? slotLimit - reserved : 0;
+        Array<uint32> optionalOrder;
+        for (usize i = 0; i < emitters.GetSize(); ++i)
+        {
+            if (emitters[i].IsOptional == true && optionalOrder.TryAdd(static_cast<uint32>(i)) == false)
+            {
+                return Status::OutOfMemory;
+            }
+        }
+        foundation::Sort(optionalOrder.GetData(), optionalOrder.GetSize(), [&](uint32 left, uint32 right) noexcept {
+            const float64 a = emitters[left].Area;
+            const float64 b = emitters[right].Area;
+            return a > b || (a == b && left < right);
+        });
+        for (const uint32 index : optionalOrder)
+        {
+            if (keep > 0)
+            {
+                --keep;
+                continue;
+            }
+            emitters[index].IsDemoted = true;
+        }
+    }
+    // Compact the surviving groups and return demoted placements to their materials.
+    Array<uint32> groupRemap;
+    if (groupRemap.TryResize(emitters.GetSize(), IR_NONE) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    uint32 keptGroups = 0;
+    for (usize i = 0; i < emitters.GetSize(); ++i)
+    {
+        if (emitters[i].IsDemoted == false)
+        {
+            groupRemap[i] = keptGroups++;
+        }
+    }
+    for (usize i = emitters.GetSize(); i > 0; --i)
+    {
+        if (emitters[i - 1].IsDemoted == true)
+        {
+            droppedEmitters += static_cast<uint32>(emitters[i - 1].Sources.GetSize());
+            emitters.RemoveAt(i - 1);
+        }
+    }
+    for (Placement& placement : plan.Placements)
+    {
+        if (placement.EmitterGroup != IR_NONE)
+        {
+            placement.EmitterGroup = groupRemap[placement.EmitterGroup];
+        }
+        if (placement.EmitterGroup != IR_NONE)
+        {
             continue;
         }
+        const IrShape& shape = scene.Shapes[placement.Shape];
         MaterialUse* useOrNull = nullptr;
         for (MaterialUse& existing : uses)
         {
@@ -281,6 +374,14 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         }
         useOrNull->Area += placement.Area;
     }
+    if (droppedEmitters != 0)
+    {
+        (void)inoutLog.Add(DiagnosticSeverity::Warning,
+                           codes::EMISSION_DROPPED,
+                           {},
+                           0,
+                           "decorative emitter placements cooked as non-emitters (emitter slots exhausted)");
+    }
     Array<uint32> useOrder;
     if (useOrder.TryResize(uses.GetSize()) == false)
     {
@@ -295,8 +396,6 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         const float64 b = uses[right].Area;
         return a > b || (a == b && left < right);
     });
-    // Each cooked mesh carries exactly one material, so the slot count is bounded by MAX_MESHES.
-    const usize slotLimit = format::MAX_MESHES < format::MAX_MATERIALS ? format::MAX_MESHES : format::MAX_MATERIALS;
     if (emitters.GetSize() > slotLimit || (emitters.GetSize() == slotLimit && uses.IsEmpty() == false))
     {
         (void)inoutLog.Add(DiagnosticSeverity::Error,
@@ -415,8 +514,9 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         Placement& placement = plan.Placements[index];
         const IrShape& shape = scene.Shapes[placement.Shape];
         const IrMesh& mesh = scene.Meshes[shape.Mesh];
-        uint32 slot = placement.EmitterGroup == IR_NONE ? IR_NONE : firstEmitterSlot + placement.EmitterGroup;
-        if (IsEmissive(shape) == false)
+        const bool isEmitting = placement.EmitterGroup != IR_NONE;
+        uint32 slot = isEmitting == false ? IR_NONE : firstEmitterSlot + placement.EmitterGroup;
+        if (isEmitting == false)
         {
             for (const MaterialUse& use : uses)
             {
@@ -432,7 +532,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         const usize indices = mesh.Indices.GetSize();
         if (totalVertices + vertices > format::MAX_VERTICES || planned.IndexCount + indices > format::MAX_INDICES)
         {
-            if (IsEmissive(shape) == true)
+            if (isEmitting == true && shape.IsEmissionOptional == false)
             {
                 (void)inoutLog.Add(DiagnosticSeverity::Error,
                                    codes::LIMIT_EXCEEDED,

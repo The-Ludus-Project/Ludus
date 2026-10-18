@@ -437,8 +437,8 @@ private:
         {
             return false;
         }
-        return pbrt::ParseNumber(std::string_view(reinterpret_cast<const char*>(mBody.data() + start), mOffset - start),
-                                 outValue);
+        return ParseNumber(std::string_view(reinterpret_cast<const char*>(mBody.data() + start), mOffset - start),
+                           outValue);
     }
 
     std::span<const uint8> mBody;

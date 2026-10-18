@@ -139,10 +139,12 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     Import_->setMenu(importChoices);
 #else
     connect(Import_, &QPushButton::clicked, this, [this]() {
-        const QString source = QFileDialog::getOpenFileName(this,
-                                                            QStringLiteral("Import PBRT scene"),
-                                                            {},
-                                                            QStringLiteral("PBRT scenes (*.pbrt)"));
+        const QString source =
+            QFileDialog::getOpenFileName(this,
+                                         QStringLiteral("Import scene"),
+                                         {},
+                                         QStringLiteral("Scenes (*.pbrt *.gltf *.glb *.obj);;PBRT v4 (*.pbrt);;glTF "
+                                                        "2.0 (*.gltf *.glb);;Wavefront OBJ (*.obj)"));
         if (source.isEmpty() == false)
         {
             (void)PreviewImportScene(source);

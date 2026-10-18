@@ -8,9 +8,10 @@
 // instancing, shape, material and light semantics mapped here. This is an
 // original converter, not a pbrt renderer or copied parser.
 
-#include "import_diagnostics.h"
-#include "scene_ir.h"
+#include "../import_diagnostics.h"
+#include "../scene_ir.h"
 
+#include <ludus/content/scene_cook/limits.h>
 #include <ludus/content/scene_cook/scene_cook.h>
 
 #include <string_view>
@@ -21,8 +22,8 @@ namespace ludus::content::scene_cook::importers::pbrt
 inline constexpr uint32 MAX_INCLUDE_DEPTH = 32;
 /// Most ObjectInstance placements kept in the IR before INSTANCES_TRUNCATED.
 inline constexpr uint32 MAX_INSTANCES = 1000000;
-/// Largest admitted PLY file.
-inline constexpr usize MAX_PLY_BYTES = usize{1024} * 1024 * 1024;
+/// Largest admitted PLY file: the binary scene data policy.
+inline constexpr usize MAX_PLY_BYTES = MAX_SOURCE_DATA_BYTES;
 
 /// Read entryFile (and everything it includes) into outScene.
 /// Paths are resolved relative to the entry file's directory, which is the import root;

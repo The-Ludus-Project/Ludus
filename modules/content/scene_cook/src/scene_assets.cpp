@@ -2979,7 +2979,7 @@ constexpr std::string_view MISSING_LICENSE_TEXT = "No LICENSE.txt or LICENSE.md 
 struct RoutedCook final
 {
     CookResult Cooked;
-    /// Importer profile: pbrt-reference-v1 or pbrt-best-effort-v1.
+    /// Importer profile: pbrt-reference-v1 or a best-effort profile (pbrt, glTF or OBJ).
     std::string_view Profile = IMPORTER_NAME;
     /// Best-effort import report; empty for the reference profile.
     Array<uint8> Report;
@@ -3013,8 +3013,25 @@ struct RoutedCook final
     return approximations;
 }
 
-/// Cook source/entry with pbrt-best-effort-v1 into reference-shaped outputs: the
-/// manifest carries the input digests, approximations and the full import report.
+/// Human-readable source format recorded in a best-effort manifest.
+[[nodiscard]] std::string_view DescribeSourceFormat(SceneSourceFormat format) noexcept
+{
+    switch (format)
+    {
+        case SceneSourceFormat::Gltf:
+            return "glTF 2.0 (best effort)";
+        case SceneSourceFormat::Obj:
+            return "Wavefront OBJ (best effort)";
+        case SceneSourceFormat::Pbrt:
+        case SceneSourceFormat::Unknown:
+            break;
+    }
+    return "PBRT v4 (best effort)";
+}
+
+/// Cook source/entry with the best-effort importer its content selects (pbrt-v4,
+/// glTF/GLB or OBJ) into reference-shaped outputs: the manifest carries the input
+/// digests, approximations and the full import report.
 [[nodiscard]] bool CookBestEffortSource(std::string_view source,
                                         std::string_view entry,
                                         bool isDryRun,
@@ -3026,7 +3043,7 @@ struct RoutedCook final
         entry.find('\\') != std::string_view::npos || entry == "." || entry == "..")
     {
         return inoutFailure.Fail(AssetErrorCode::UnsupportedScene,
-                                 "pbrt entry must be a file name in the source directory");
+                                 "scene entry must be a file name in the source directory");
     }
     String entryPath;
     if (Concatenate(entryPath, {source, "/", entry}) == false)
@@ -3037,11 +3054,11 @@ struct RoutedCook final
     importOptions.IsDryRun = isDryRun;
     BestEffortResult imported;
     CookError cookError;
-    if (ImportPbrtBestEffort(entryPath.GetView(), importOptions, imported, cookError, options.CancelOrNull) == false)
+    if (ImportSceneBestEffort(entryPath.GetView(), importOptions, imported, cookError, options.CancelOrNull) == false)
     {
         return MapCookFailure(cookError, inoutFailure);
     }
-    inoutCook.Profile = BEST_EFFORT_PROFILE;
+    inoutCook.Profile = imported.Profile;
     Document report;
     if (ParseDocument(GetSpan(imported.Report), AssetErrorCode::UnsupportedScene, report, inoutFailure) == false)
     {
@@ -3053,8 +3070,8 @@ struct RoutedCook final
     tree.SetMember(root, "source", tree.AddString(entry));
     tree.SetMember(root, "author", tree.AddString("See retained LICENSE.txt"));
     tree.SetMember(root, "license", tree.AddString("See retained LICENSE.txt"));
-    tree.SetMember(root, "source_format", tree.AddString("PBRT v4 (best effort)"));
-    tree.SetMember(root, "importer", tree.AddString(BEST_EFFORT_PROFILE));
+    tree.SetMember(root, "source_format", tree.AddString(DescribeSourceFormat(imported.Format)));
+    tree.SetMember(root, "importer", tree.AddString(imported.Profile));
     const JsonIndex inputs = tree.AddObject();
     // Digests come from the importer's own reads, so they describe exactly the
     // bytes that produced the bundle even if a source changes mid-import.
