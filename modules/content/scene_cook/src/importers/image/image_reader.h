@@ -24,6 +24,9 @@ using foundation::core::usize;
 
 /// Largest decoded image side.
 inline constexpr uint32 MAX_IMAGE_DIMENSION = 16384;
+/// Largest decoded raster in pixels (8192 x 8192), checked from the header before any
+/// decoding so a small file cannot declare a huge image (JPEG, PNG, Radiance, OpenEXR).
+inline constexpr usize MAX_DECODED_IMAGE_PIXELS = usize{8192} * 8192;
 
 /// Decoded RGBA8 image.
 struct DecodedImage final

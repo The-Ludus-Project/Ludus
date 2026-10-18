@@ -99,20 +99,24 @@ TEST_CASE("glTF fixture keeps hierarchy, instancing, cameras and punctual lights
     CHECK(cube.Uvs.GetSize() == 48);
     CHECK(cube.Normals[2] == 1.0F); // First face points +Z.
 
-    // The four-vertex strip becomes two triangles with consistent winding.
+    // The four-vertex strip becomes two triangles (0 1 2) (2 1 3) with consistent
+    // winding; without NORMAL every corner gets its own vertex for flat normals.
     bool hasStrip = false;
     for (const uint32 shape : scene.WorldShapes)
     {
         const IrMesh& mesh = scene.Meshes[scene.Shapes[shape].Mesh];
-        if (mesh.GetVertexCount() == 4 && mesh.Indices.GetSize() == 6 && mesh.Normals.IsEmpty())
+        if (mesh.GetVertexCount() == 6 && mesh.Indices.GetSize() == 6 && mesh.Positions[0] == 2.0F)
         {
             hasStrip = true;
-            CHECK(mesh.Indices[0] == 0);
-            CHECK(mesh.Indices[1] == 1);
-            CHECK(mesh.Indices[2] == 2);
-            CHECK(mesh.Indices[3] == 2);
-            CHECK(mesh.Indices[4] == 1);
-            CHECK(mesh.Indices[5] == 3);
+            CHECK(mesh.Normals.IsEmpty());
+            const float32 expectedX[6] = {2.0F, 2.0F, 2.5F, 2.5F, 2.0F, 2.5F};
+            const float32 expectedY[6] = {0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F};
+            for (usize corner = 0; corner < 6; ++corner)
+            {
+                CHECK(mesh.Indices[corner] == corner);
+                CHECK(mesh.Positions[corner * 3] == expectedX[corner]);
+                CHECK(mesh.Positions[corner * 3 + 1] == expectedY[corner]);
+            }
         }
     }
     CHECK(hasStrip);
@@ -294,6 +298,11 @@ TEST_CASE("glTF malformed containers, JSON and references fail without partial o
          codes::MALFORMED_INPUT},
         // Material index out of range (found by the import fuzzer): reported, never indexed.
         {MakeTriangle({}, {}, R"(,"material":5)"), codes::MALFORMED_INPUT},
+        // A zero-filled accessor (no bufferView) is bounded like buffer data (review finding).
+        {R"({"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],)"
+         R"("meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],)"
+         R"("accessors":[{"componentType":5126,"count":1000000000,"type":"VEC3"}]})",
+         codes::MALFORMED_INPUT},
         // Nothing drawable.
         {R"({"asset":{"version":"2.0"}})", codes::LIMIT_EXCEEDED},
     };

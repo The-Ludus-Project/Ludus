@@ -16,6 +16,12 @@ bool ParseNumber(std::string_view text, float64& outValue) noexcept
 {
     // Normalise to the JSON number grammar accepted by ParseFloat32:
     // drop '+', drop redundant leading zeros, add '0' around a bare '.'.
+    // The bound is checked first: callers pass words of any length, and every
+    // byte below is copied into the fixed buffer.
+    if (text.size() > MAX_DECIMAL_TEXT_BYTES)
+    {
+        return false;
+    }
     char normalised[MAX_DECIMAL_TEXT_BYTES + 8];
     usize length = 0;
     usize at = 0;

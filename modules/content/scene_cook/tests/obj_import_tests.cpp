@@ -401,3 +401,50 @@ TEST_CASE("scene format detection uses content before extensions", "[scene_cook]
     CHECK(ImportSceneBestEffort((scratch.Path / "missing.obj").string(), {}, result, error) == false);
     CHECK(error.Result == Status::NotFound);
 }
+
+TEST_CASE("OBJ review regressions: overlong numbers, huge illum, map_Pm, many groups", "[scene_cook][obj]")
+{
+    SECTION("a decimal word longer than the parser bound is malformed, not an overflow")
+    {
+        SceneIr scene;
+        DiagnosticLog log;
+        CHECK(ReadObj("v " + std::string(20000, '1') + " 0 0\n", scene, log) == Status::Invalid);
+        CHECK(HasCode(log, codes::MALFORMED_INPUT));
+    }
+    SECTION("illum outside the int range is clamped")
+    {
+        const std::string_view mtl = "newmtl A\nillum 1e10\nnewmtl B\nillum -1e10\n";
+        const MemorySourceFile files[] = {{"a.mtl", AsBytes(mtl)}};
+        SceneIr scene;
+        DiagnosticLog log;
+        CHECK(ReadObj("mtllib a.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl A\nf 1 2 3\n", scene, log, files) == Status::Ok);
+    }
+    SECTION("map_Pm without Pm carries the metalness itself")
+    {
+        const std::string_view mtl = "newmtl Metal\nmap_Pm metal.png\nnewmtl Scaled\nPm 0.25\nmap_Pm metal.png\n";
+        const MemorySourceFile files[] = {{"a.mtl", AsBytes(mtl)}};
+        SceneIr scene;
+        DiagnosticLog log;
+        REQUIRE(ReadObj("mtllib a.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Metal\nf 1 2 3\n", scene, log, files) ==
+                Status::Ok);
+        REQUIRE(scene.Materials.GetSize() == 2);
+        CHECK(scene.Materials[0].Metallic == 1.0);
+        CHECK(scene.Materials[0].MetallicTexture != IR_NONE);
+        CHECK(scene.Materials[1].Metallic == 0.25);
+    }
+    SECTION("alternating groups resolve through the name index")
+    {
+        std::string text = "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
+        for (int i = 0; i < 20000; ++i)
+        {
+            text += "g g";
+            text += std::to_string(i % 5000);
+            text += "\nf 1 2 3\n";
+        }
+        SceneIr scene;
+        DiagnosticLog log;
+        REQUIRE(ReadObj(text, scene, log) == Status::Ok);
+        CHECK(scene.Meshes.GetSize() == 5000);
+        CHECK(scene.Meshes[0].Indices.GetSize() == 12); // Four faces of g0, welded into one mesh.
+    }
+}

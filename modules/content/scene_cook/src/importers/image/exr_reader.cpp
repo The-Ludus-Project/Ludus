@@ -473,7 +473,7 @@ DecodeExr(std::span<const uint8> data, DecodedLightingImage& outImage, std::stri
     const int64 width64 = static_cast<int64>(header.MaximumX) - header.MinimumX + 1;
     const int64 height64 = static_cast<int64>(header.MaximumY) - header.MinimumY + 1;
     if (width64 < 1 || height64 < 1 || width64 > MAX_IMAGE_DIMENSION || height64 > MAX_IMAGE_DIMENSION ||
-        static_cast<usize>(width64) * static_cast<usize>(height64) > MAX_HDR_IMAGE_PIXELS)
+        static_cast<usize>(width64) * static_cast<usize>(height64) > MAX_DECODED_IMAGE_PIXELS)
     {
         outMessage = "EXR data window is empty or exceeds the image limits";
         return ImageResult::Invalid;

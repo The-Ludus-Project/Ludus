@@ -2,6 +2,7 @@
 
 #include "../decimal_number.h"
 #include "../front_end_support.h"
+#include "../name_index.h"
 
 #include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/containers/sort.hpp>
@@ -250,13 +251,7 @@ struct MtlTerms final
     bool HasTransparency = false;
     bool HasPbrRoughness = false;
     bool HasPbrMetallic = false;
-};
-
-/// Material name to IR material index.
-struct NamedMaterial final
-{
-    String Name;
-    uint32 Index = IR_NONE;
+    bool HasPbrMetallicFactor = false;
 };
 
 /// Texture-map statement options that the reader understands.
@@ -339,6 +334,8 @@ private:
     Array<float32> mUvs;
     Array<float32> mNormals;
     Array<MeshBuilder> mBuilders;
+    /// "group\nmaterial" to an index into mBuilders.
+    NameIndex mBuilderIndex;
     uint32 mCurrentBuilder = IR_NONE;
     String mGroup;
     String mMaterial;
@@ -346,7 +343,8 @@ private:
     uint32 mFaceCount = 0;
     uint64 mTotalCorners = 0;
 
-    Array<NamedMaterial> mMaterials;
+    /// Material name to IR material index.
+    NameIndex mMaterials;
     Array<String> mLibraries;
     /// Material being read from an MTL library; IR_NONE outside newmtl blocks.
     uint32 mOpenMaterial = IR_NONE;
@@ -458,17 +456,28 @@ Status ObjReader::selectBuilder(uint32 lineNumber) noexcept
     {
         return Status::Ok;
     }
-    for (usize i = 0; i < mBuilders.GetSize(); ++i)
+    // A newline never occurs inside a logical line, so it separates the two names.
+    String key;
+    const std::string_view parts[] = {mGroup.GetView(), std::string_view("\n"), mMaterial.GetView()};
+    if (key.TryAppendMany(parts) != StringStatus::Ok)
     {
-        if (mBuilders[i].Group.GetView() == mGroup.GetView() && mBuilders[i].Material.GetView() == mMaterial.GetView())
-        {
-            mCurrentBuilder = static_cast<uint32>(i);
-            return Status::Ok;
-        }
+        return Status::OutOfMemory;
+    }
+    const uint32 existing = mBuilderIndex.Find(key.GetView());
+    if (existing != NameIndex::NOT_FOUND)
+    {
+        mCurrentBuilder = existing;
+        return Status::Ok;
+    }
+    if (mBuilders.GetSize() >= MAX_MESH_GROUPS)
+    {
+        fail(codes::LIMIT_EXCEEDED, lineNumber, "distinct group/material pairs exceed the OBJ profile limit");
+        return Status::Ok;
     }
     MeshBuilder* builderOrNull = mBuilders.TryAddInPlace();
     if (builderOrNull == nullptr || builderOrNull->Group.TryAssign(mGroup.GetView()) != StringStatus::Ok ||
-        builderOrNull->Material.TryAssign(mMaterial.GetView()) != StringStatus::Ok)
+        builderOrNull->Material.TryAssign(mMaterial.GetView()) != StringStatus::Ok ||
+        mBuilderIndex.TryAdd(key.GetView(), static_cast<uint32>(mBuilders.GetSize() - 1)) == false)
     {
         return Status::OutOfMemory;
     }
@@ -694,14 +703,8 @@ Status ObjReader::loadLibrary(std::string_view name, uint32 lineNumber) noexcept
 
 uint32 ObjReader::findMaterial(std::string_view name) const noexcept
 {
-    for (const NamedMaterial& material : mMaterials)
-    {
-        if (material.Name.GetView() == name)
-        {
-            return material.Index;
-        }
-    }
-    return IR_NONE;
+    const uint32 index = mMaterials.Find(name);
+    return index == NameIndex::NOT_FOUND ? IR_NONE : index;
 }
 
 Status ObjReader::registerTexture(std::string_view raw,
@@ -872,6 +875,11 @@ Status ObjReader::readMap(WordCursor& inoutWords,
     {
         material.MetallicTexture = texture;
         material.MetallicChannel = options.HasChannel == true ? options.Channel : 0;
+        // The map carries the metalness itself unless a Pm factor scales it.
+        if (mOpenTerms.HasPbrMetallicFactor == false)
+        {
+            mOpenTerms.PbrMetallic = 1.0;
+        }
         mOpenTerms.HasPbrMetallic = true;
     }
     else if (AreNamesEqual(keyword, "map_Ks") == true)
@@ -1036,11 +1044,9 @@ Status ObjReader::readLibrary(std::span<const uint8> bytes, std::string_view dir
             IrMaterial material;
             material.SourceFile = mCurrentFile;
             material.Line = lineNumber;
-            NamedMaterial named;
-            named.Index = static_cast<uint32>(mScene.Materials.GetSize());
-            if (material.Name.TryAssign(name) != StringStatus::Ok || named.Name.TryAssign(name) != StringStatus::Ok ||
-                mScene.Materials.TryAdd(static_cast<IrMaterial&&>(material)) == false ||
-                mMaterials.TryAdd(static_cast<NamedMaterial&&>(named)) == false)
+            if (material.Name.TryAssign(name) != StringStatus::Ok ||
+                mMaterials.TryAdd(name, static_cast<uint32>(mScene.Materials.GetSize())) == false ||
+                mScene.Materials.TryAdd(static_cast<IrMaterial&&>(material)) == false)
             {
                 return Status::OutOfMemory;
             }
@@ -1187,10 +1193,12 @@ Status ObjReader::readLibrary(std::span<const uint8> bytes, std::string_view dir
             {
                 mOpenTerms.PbrMetallic = values[0];
                 mOpenTerms.HasPbrMetallic = true;
+                mOpenTerms.HasPbrMetallicFactor = true;
             }
             else
             {
-                mOpenTerms.Illumination = static_cast<int32>(values[0]);
+                // Illumination models are small integers; anything else is out of range.
+                mOpenTerms.Illumination = static_cast<int32>(math::Clamp(values[0], -1.0, 100.0));
             }
             continue;
         }
@@ -1464,15 +1472,18 @@ Status ObjReader::Finish() noexcept
         }
     }
     // Emissive materials in use count as area-light sources in the report.
-    for (usize m = 0; m < mScene.Materials.GetSize(); ++m)
+    Array<uint8> isUsed;
+    if (isUsed.TryResize(mScene.Materials.GetSize(), uint8{0}) == false)
     {
-        for (const IrShape& shape : mScene.Shapes)
+        return Status::OutOfMemory;
+    }
+    for (const IrShape& shape : mScene.Shapes)
+    {
+        if (shape.Material != IR_NONE && isUsed[shape.Material] == 0 &&
+            ComputeRec709Luminance(mScene.Materials[shape.Material].Emission) > 0.0)
         {
-            if (shape.Material == m && ComputeRec709Luminance(mScene.Materials[m].Emission) > 0.0)
-            {
-                ++mScene.Lights.Area;
-                break;
-            }
+            isUsed[shape.Material] = 1;
+            ++mScene.Lights.Area;
         }
     }
     if (mScene.Shapes.IsEmpty() == true && mLog.HasErrors() == false)

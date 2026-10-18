@@ -237,6 +237,17 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
     int width = 0;
     int height = 0;
     int channels = 0;
+    // Check the declared raster before decoding: a few bytes can declare a huge image.
+    if (stbi_info_from_memory(data.data(), static_cast<int>(data.size()), &width, &height, &channels) == 0)
+    {
+        outMessage = failure;
+        return ImageResult::Invalid;
+    }
+    if (width <= 0 || height <= 0 || static_cast<usize>(width) * static_cast<usize>(height) > MAX_DECODED_IMAGE_PIXELS)
+    {
+        outMessage = "image dimensions exceed the decoded pixel limit";
+        return ImageResult::Invalid;
+    }
     stbi_uc* pixelsOrNull =
         stbi_load_from_memory(data.data(), static_cast<int>(data.size()), &width, &height, &channels, 4);
     if (pixelsOrNull == nullptr)
@@ -256,15 +267,15 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
         outMessage = "image dimensions out of range";
         result = ImageResult::Invalid;
     }
-    else if (AllocateImage(static_cast<uint32>(width), static_cast<uint32>(height), outImage) == false)
-    {
-        result = ImageResult::OutOfMemory;
-    }
     else
     {
-        for (usize i = 0; i < outImage.Texels.GetSize(); ++i)
+        outImage.Width = static_cast<uint32>(width);
+        outImage.Height = static_cast<uint32>(height);
+        outImage.Texels.Clear();
+        const usize byteCount = static_cast<usize>(width) * static_cast<usize>(height) * 4;
+        if (outImage.Texels.TryAddRange(std::span<const uint8>(pixels, byteCount)) == false)
         {
-            outImage.Texels[i] = pixels[i];
+            result = ImageResult::OutOfMemory;
         }
     }
     stbi_image_free(pixels);
@@ -306,7 +317,7 @@ DecodeRadiance(std::span<const uint8> data, DecodedLightingImage& outImage, std:
     if (stbi_info_from_memory(data.data(), static_cast<int>(data.size()), &width, &height, &channels) == 0 ||
         width <= 0 || height <= 0 || static_cast<uint32>(width) > MAX_IMAGE_DIMENSION ||
         static_cast<uint32>(height) > MAX_IMAGE_DIMENSION ||
-        static_cast<usize>(width) * static_cast<usize>(height) > MAX_HDR_IMAGE_PIXELS)
+        static_cast<usize>(width) * static_cast<usize>(height) > MAX_DECODED_IMAGE_PIXELS)
     {
         outMessage = "Radiance HDR header is malformed or exceeds the image limits";
         return ImageResult::Invalid;

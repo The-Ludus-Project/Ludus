@@ -50,8 +50,10 @@ constexpr usize RGB_COMPONENTS = 3;
 constexpr usize RGBA_COMPONENTS = 4;
 /// Default spot outer cone (pi / 4) from KHR_lights_punctual.
 constexpr float64 DEFAULT_OUTER_CONE_RADIANS = 0.7853981633974483;
-/// Smallest separation kept between spot cone angles (LUSCN needs inner < outer).
-constexpr float64 MIN_CONE_SEPARATION_DEGREES = 1e-3;
+/// Smallest spot outer cone and separation from the inner cone. LUSCN needs the
+/// float32 cosines to stay strictly ordered, which these keep distinct.
+constexpr float64 MIN_OUTER_CONE_DEGREES = 0.1;
+constexpr float64 MIN_CONE_SEPARATION_DEGREES = 0.05;
 
 /// Extensions whose semantics the profile implements; others may only be optional.
 constexpr usize SUPPORTED_EXTENSION_COUNT = 3;
@@ -407,6 +409,40 @@ ComposeTransform(const float64 (&translation)[3], const float64 (&rotation)[4], 
         }
     }
     return true;
+}
+
+/// Give every index its own vertex (positions, uvs and tangents are copied).
+[[nodiscard]] Status SplitCorners(IrMesh& inoutMesh) noexcept
+{
+    IrMesh split;
+    const usize corners = inoutMesh.Indices.GetSize();
+    const bool hasUvs = inoutMesh.Uvs.IsEmpty() == false;
+    const bool hasTangents = inoutMesh.Tangents.IsEmpty() == false;
+    if (split.Positions.TryResize(corners * 3) == false || split.Indices.TryResize(corners) == false ||
+        (hasUvs == true && split.Uvs.TryResize(corners * 2) == false) ||
+        (hasTangents == true && split.Tangents.TryResize(corners * 4) == false))
+    {
+        return Status::OutOfMemory;
+    }
+    for (usize corner = 0; corner < corners; ++corner)
+    {
+        const usize vertex = inoutMesh.Indices[corner];
+        for (usize k = 0; k < 3; ++k)
+        {
+            split.Positions[corner * 3 + k] = inoutMesh.Positions[vertex * 3 + k];
+        }
+        for (usize k = 0; hasUvs == true && k < 2; ++k)
+        {
+            split.Uvs[corner * 2 + k] = inoutMesh.Uvs[vertex * 2 + k];
+        }
+        for (usize k = 0; hasTangents == true && k < 4; ++k)
+        {
+            split.Tangents[corner * 4 + k] = inoutMesh.Tangents[vertex * 4 + k];
+        }
+        split.Indices[corner] = static_cast<uint32>(corner);
+    }
+    inoutMesh = static_cast<IrMesh&&>(split);
+    return Status::Ok;
 }
 
 /// A buffer's bytes once loaded: the GLB BIN chunk, a decoded data URI or a file.
@@ -866,6 +902,13 @@ Status GltfReader::getAccessor(usize index, AccessorView& outView, bool& outIsUs
     }
     if (hasView == Field::Missing)
     {
+        // Zero-filled accessors have no data to bound them: admit them as if they
+        // occupied a buffer of the binary data policy.
+        if (outView.Count > MAX_BUFFER_BYTES / elementBytes)
+        {
+            failAt("accessors", index, "count without a bufferView exceeds the buffer limit");
+            return Status::Ok;
+        }
         outView.IsZero = true;
         outIsUsable = true;
         return Status::Ok;
@@ -1542,6 +1585,16 @@ Status GltfReader::loadPrimitive(JsonValue primitive) noexcept
         warn(codes::PRIMITIVE_SKIPPED, "primitive without a complete triangle skipped");
         return Status::Ok;
     }
+    // Without NORMAL, glTF 2.0 section 3.7.2.1 asks for flat normals: give every
+    // triangle corner its own vertex so the generated normals cannot be shared.
+    if (mesh.Normals.IsEmpty() == true)
+    {
+        status = SplitCorners(mesh);
+        if (status != Status::Ok)
+        {
+            return status;
+        }
+    }
     LoadedPrimitive loaded;
     status = getMaterial(primitive.Get("material"), loaded.Material);
     if (status != Status::Ok || loaded.Material == IR_NONE)
@@ -1728,7 +1781,7 @@ Status GltfReader::readLight(JsonValue lightIndex, const math::Matrix4d& world) 
             (void)GetNumber(spot, "innerConeAngle", inner);
             (void)GetNumber(spot, "outerConeAngle", outer);
         }
-        analytic.OuterAngleDegrees = math::Clamp(math::RadiansToDegrees(outer), MIN_CONE_SEPARATION_DEGREES, 90.0);
+        analytic.OuterAngleDegrees = math::Clamp(math::RadiansToDegrees(outer), MIN_OUTER_CONE_DEGREES, 90.0);
         analytic.InnerAngleDegrees = math::Clamp(math::RadiansToDegrees(inner), 0.0, analytic.OuterAngleDegrees);
         if (analytic.InnerAngleDegrees >= analytic.OuterAngleDegrees - MIN_CONE_SEPARATION_DEGREES)
         {
@@ -2013,10 +2066,18 @@ Status GltfReader::placeMeshes() noexcept
     {
         warn(codes::INSTANCES_TRUNCATED, "mesh placements beyond the placement limit dropped");
     }
-    for (usize m = 0; m < mScene.Materials.GetSize(); ++m)
+    // Emissive materials in use count as area-light sources in the report.
+    Array<uint8> isCounted;
+    if (isCounted.TryResize(mScene.Materials.GetSize(), uint8{0}) == false)
     {
-        if (ComputeRec709Luminance(mScene.Materials[m].Emission) > 0.0)
+        return Status::OutOfMemory;
+    }
+    for (const IrShape& shape : mScene.Shapes)
+    {
+        if (shape.Material != IR_NONE && isCounted[shape.Material] == 0 &&
+            ComputeRec709Luminance(mScene.Materials[shape.Material].Emission) > 0.0)
         {
+            isCounted[shape.Material] = 1;
             ++mScene.Lights.Area;
         }
     }

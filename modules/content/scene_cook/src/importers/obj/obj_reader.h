@@ -33,6 +33,10 @@ inline constexpr uint32 MAX_POOL_ENTRIES = uint32{1} << 28;
 inline constexpr uint64 MAX_TOTAL_CORNERS = uint64{1} << 30;
 /// Largest admitted material library: the text source policy.
 inline constexpr usize MAX_MTL_BYTES = MAX_SOURCE_BYTES;
+/// Most distinct (object/group, material) pairs, each of which becomes one IR mesh and
+/// placement. The cooked format keeps six meshes, so 2^18 groups is far beyond any real
+/// scene while bounding per-group bookkeeping.
+inline constexpr uint32 MAX_MESH_GROUPS = uint32{1} << 18;
 /// Most material libraries read for one scene.
 inline constexpr uint32 MAX_MATERIAL_LIBRARIES = 256;
 

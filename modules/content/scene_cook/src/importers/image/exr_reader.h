@@ -16,9 +16,6 @@
 
 namespace ludus::content::scene_cook::importers
 {
-/// Largest decoded HDR image in pixels (8192 x 8192), bounding float output memory.
-inline constexpr usize MAX_HDR_IMAGE_PIXELS = usize{8192} * 8192;
-
 /// Decode an OpenEXR image into linear float RGB, top row first.
 /// @param data Complete file bytes.
 /// @param outImage Replaced only on Ok.

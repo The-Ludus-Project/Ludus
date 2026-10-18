@@ -82,7 +82,7 @@ names only, because JSON values carry no line numbers.
 | Buffers | GLB BIN chunk, base64 `data:` URIs, external files (percent-decoded, inside the import root) |
 | Buffer views and accessors | offsets, interleaved `byteStride`, every component type, `normalized`, accessors without a buffer view (zeros); bounds checked before any allocation |
 | Primitives | `TRIANGLES`; `TRIANGLE_STRIP`/`TRIANGLE_FAN` converted to lists; indexed (`uint8/16/32`) and non-indexed; points/lines skipped (`PRIMITIVE_SKIPPED`) |
-| Attributes | `POSITION`, `NORMAL`, `TEXCOORD_0`, `TANGENT`; others (`TEXCOORD_1+`, `COLOR_0`, joints, weights) reported (`ATTRIBUTE_IGNORED`) |
+| Attributes | `POSITION`, `NORMAL`, `TEXCOORD_0`, `TANGENT`; others (`TEXCOORD_1+`, `COLOR_0`, joints, weights) reported (`ATTRIBUTE_IGNORED`). Without `NORMAL` every triangle corner gets its own vertex so generated normals are flat, as the specification requires |
 | Nodes | hierarchy of `matrix` or TRS (unit quaternion) transforms, default `scene` (or all root nodes without scenes); cycles, multiple parents and non-finite transforms fail |
 | Instancing | a mesh placed by several nodes stays one IR object with one instance per node; mirrored placements flip winding |
 | Materials | `baseColorFactor`/`baseColorTexture`, metallic/roughness factors and `metallicRoughnessTexture` (blue/green, averaged into scalars), `emissiveFactor` (+ `KHR_materials_emissive_strength`), `normalTexture`, `occlusionTexture`, `emissiveTexture`, `alphaMode`, `alphaCutoff`, `doubleSided`; the glTF default material (white, metallic 1, roughness 1) |
@@ -108,7 +108,7 @@ streamed; every diagnostic carries `file:line`.
 | Records | `v` (extra colour components reported), `vt` (v flipped to the top-down convention), `vn`, `f`, `o`, `g`, `s`, `usemtl`, `mtllib`; `\` line continuations |
 | Indices | positive one-based and negative relative indices for `v`, `vt`, `vn`; zero, malformed or out-of-range indices fail with `MALFORMED_INPUT` |
 | Faces | polygons up to 64 corners fan-triangulated (exact for convex polygons); larger polygons skipped; degenerate triangles removed (`GEOMETRY_REPAIRED`) |
-| Grouping | one IR mesh per (object/group, material) pair; equal corner tuples are welded |
+| Grouping | one IR mesh per (object/group, material) pair (at most 2^18 pairs); equal corner tuples are welded |
 | Smoothing | `s off`/`s 0` faces keep their own corners, so generated normals stay flat; numbered groups share them |
 | Missing data | missing `vn` → area-weighted normals; a group mixing faces with and without `vt`/`vn` is made uniform with `ATTRIBUTE_IGNORED` |
 | Not imported (reported) | `l`/`p`, free-form curves and surfaces, display attributes |
@@ -142,7 +142,9 @@ the engine's right-handed, +Y-up convention.
 | OpenEXR | private subset reader | single-part scanline or tiled (level 0), HALF/FLOAT/UINT channels, NONE/RLE/ZIPS/ZIP; R/G/B or Y. PIZ, PXR24, B44(A), DWAA/DWAB, deep and multi-part files are `Unsupported` |
 | TGA, PFM | private readers | unchanged |
 
-Formats are detected from magic bytes before the extension. The stb
+Formats are detected from magic bytes before the extension. Every decoder checks
+the declared raster from the header first and rejects images above 8192 × 8192
+pixels (sides up to 16384), so a few bytes cannot declare an enormous decode. The stb
 configuration is private (`third_party/stb/stb_image_config.h`); every stb heap
 allocation goes through a bounded per-thread allocator, so an oversized decode
 reports out-of-memory instead of exhausting the process. Radiance and OpenEXR

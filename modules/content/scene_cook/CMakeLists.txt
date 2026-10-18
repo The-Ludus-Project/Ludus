@@ -6,7 +6,7 @@ add_library(ludus_scene_cook STATIC
     src/importers/budget_planner.cpp src/importers/best_effort_import.cpp src/importers/authored_lighting.cpp
     src/importers/image/image_reader.cpp src/importers/image/exr_reader.cpp src/importers/source_resolver.cpp
     src/importers/front_end_support.cpp src/importers/obj/obj_reader.cpp src/importers/tangent_generation.cpp
-    src/importers/gltf/gltf_reader.cpp)
+    src/importers/name_index.cpp src/importers/gltf/gltf_reader.cpp)
 add_library(Ludus::SceneCook ALIAS ludus_scene_cook)
 set_target_properties(ludus_scene_cook PROPERTIES EXPORT_NAME SceneCook)
 target_sources(ludus_scene_cook PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
@@ -14,7 +14,7 @@ target_sources(ludus_scene_cook PUBLIC FILE_SET public_headers TYPE HEADERS BASE
     include/ludus/content/scene_cook/best_effort_import.h include/ludus/content/scene_cook/limits.h)
 target_link_libraries(ludus_scene_cook
     PUBLIC Ludus::Content Ludus::FoundationContainers Ludus::FoundationIdentity Ludus::FoundationStrings
-    PRIVATE Ludus::SceneFormat Ludus::FoundationMath Ludus::FoundationParsingJson ludus_stb_image ludus_mikktspace)
+    PRIVATE Ludus::SceneFormat Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationHash ludus_stb_image ludus_mikktspace)
 # Byte identity with the float64 reference requires unfused IEEE arithmetic.
 target_compile_options(ludus_scene_cook PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_scene_cook)
