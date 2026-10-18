@@ -150,7 +150,7 @@ private:
     graphics::renderer::Snapshot mSnapshot{};
 
     PreparationStage mStage = PreparationStage::Renderer;
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     bool mIsLightingInitialized = false;
     bool mAreAssetsCreated = false;
 #endif

@@ -1,5 +1,6 @@
 #include <ludus/graphics/renderer/viewport.hpp>
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 
@@ -26,6 +27,10 @@ struct RasterViewport::State final
     rhi::TextureHandle Images[2]{};
     rhi::SubmissionToken Producers[2]{};
     Presentation Display{};
+    static constexpr usize DISPLAY_IMAGE_COUNT = 2;
+    StaticArray<Presentation, DISPLAY_IMAGE_COUNT> SurfaceDisplays{};
+    StaticArray<bool, DISPLAY_IMAGE_COUNT> HasSurfaceDisplay{};
+    bool ShouldPresentToSurface = false;
     ViewMapping Mapping;
     PreparedView View{};
     PreparedView PendingView{};
@@ -75,6 +80,10 @@ struct RasterViewport::State final
         static_cast<void>(SceneRenderer->Release(PendingView));
         static_cast<void>(SceneRenderer->Release(View));
         static_cast<void>(SceneRenderer->Release(Display));
+        for (Presentation& display : SurfaceDisplays)
+        {
+            static_cast<void>(SceneRenderer->Release(display));
+        }
         static_cast<void>(rhi::Destroy(Device, SceneColor));
         for (rhi::TextureHandle image : Images)
         {
@@ -93,7 +102,8 @@ Status RasterViewport::Initialize(Renderer& renderer,
                                   uint32 width,
                                   uint32 height,
                                   float32 exposure,
-                                  ViewportColorMode colorMode) noexcept
+                                  ViewportColorMode colorMode,
+                                  bool shouldPresentToSurface) noexcept
 {
     if (mState)
     {
@@ -159,6 +169,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
     }
     // Store exposure before asynchronous presentation preparation using an explicit field below.
     candidate->Mapping = mapping;
+    candidate->ShouldPresentToSurface = shouldPresentToSurface;
     candidate->Exposure = exposure;
     mState = Move(candidate);
     const Status setup = Poll();
@@ -201,6 +212,29 @@ Status RasterViewport::Poll() noexcept
     if (display != Status::Ready)
     {
         return display;
+    }
+    if (state.ShouldPresentToSurface == true)
+    {
+        for (usize index = 0; index < State::DISPLAY_IMAGE_COUNT; ++index)
+        {
+            // Preparation is outside frames; each presentation retains its display texture.
+            if (state.HasSurfaceDisplay[index] == false)
+            {
+                const Status created = state.SceneRenderer->PreparePresentation(state.Images[index],
+                                                                                state.Mapping,
+                                                                                state.SurfaceDisplays[index]);
+                if (Accepted(created) == false)
+                {
+                    return created;
+                }
+                state.HasSurfaceDisplay[index] = true;
+            }
+            const Status ready = state.SceneRenderer->GetStatus(state.SurfaceDisplays[index]);
+            if (ready != Status::Ready)
+            {
+                return ready;
+            }
+        }
     }
     for (uint32 slot = 0; slot < 2; ++slot)
     {
@@ -329,6 +363,10 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
     {
         state.RecordingStatus =
             state.SceneRenderer->DrawLightingPresentation(state.Display, { .Color = state.Images[index] });
+    }
+    if (state.RecordingStatus == Status::Ready && state.ShouldPresentToSurface == true)
+    {
+        state.RecordingStatus = state.SceneRenderer->DrawPresentation(state.SurfaceDisplays[index]);
     }
     return state.Finish(completion);
 }

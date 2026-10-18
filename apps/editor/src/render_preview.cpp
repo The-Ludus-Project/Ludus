@@ -32,7 +32,7 @@ using namespace foundation;
 namespace rhi = graphics::rhi;
 namespace rr = graphics::renderer;
 constexpr int32 NAVIGATION_STATE_VERSION = 2;
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
 bool Accepted(rhi::RasterStatus s) noexcept
 {
     return s == rhi::RasterStatus::Ready || s == rhi::RasterStatus::Pending;
@@ -291,7 +291,7 @@ bool RenderPreview::beginResourceRestart() noexcept
 }
 bool RenderPreview::Start()
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     if (Scene_.Identity.isEmpty())
     {
         Status_ = QStringLiteral("Load and validate a World preview first.");
@@ -390,6 +390,51 @@ bool RenderPreview::AdmitOffscreenDevice()
     Timer_.start();
     return true;
 #else
+    return false;
+#endif
+}
+bool RenderPreview::AdmitBrowserDevice(const char* canvasSelector)
+{
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    if (mIsStarting == false || OwnsDevice_ == true || canvasSelector == nullptr)
+    {
+        return false;
+    }
+    rhi::DeviceDescription description = MakeViewportDeviceDescription();
+    // Keep Qt's widget canvas independent, without changing the current GL context.
+    description.Selection = rhi::BackendSelection::WebGPU;
+    const platform::NativeWindowInfo window
+    {
+        .System = platform::WindowSystem::WebCanvas,
+        .Width = RequestedWidth_,
+        .Height = RequestedHeight_,
+        .CanvasSelector = canvasSelector,
+    };
+    const rhi::DeviceStatus started = rhi::CreateDevice({ .Name = "Ludus browser editor viewport", .Version = 1 },
+                                                        window,
+                                                        description,
+                                                        Device_,
+                                                        Surface_);
+    if (started != rhi::DeviceStatus::Ready && started != rhi::DeviceStatus::Pending)
+    {
+        mIsStarting = false;
+        Status_ = QStringLiteral(
+            "WebGPU viewport unavailable. Use a browser with WebGPU enabled. World edits remain available.");
+        Q_EMIT Changed();
+        Q_EMIT Failed(Status_);
+        return false;
+    }
+    mIsStarting = false;
+    OwnsDevice_ = true;
+    ++mDeviceSerial;
+    Width_ = 0;
+    Height_ = 0;
+    Frames_ = 0;
+    restartResources();
+    Timer_.start();
+    return true;
+#else
+    static_cast<void>(canvasSelector);
     return false;
 #endif
 }
@@ -524,6 +569,10 @@ void RenderPreview::Navigate(int32 camera, math::Vector2 orbitDegrees, float32 z
     CameraId_ = camera >= 0 ? Scene_.Cameras[camera].Id : QString();
     Reference_ = isReference;
     navigationChanged();
+}
+void RenderPreview::SetPresentationVisible(bool isVisible) noexcept
+{
+    mIsPresentationVisible = isVisible;
 }
 void RenderPreview::Resize(int32 width, int32 height)
 {
@@ -832,7 +881,7 @@ void RenderPreview::fail(const QString& message)
 }
 bool RenderPreview::prepare()
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     const PreviewPreparationStatus status = mResources->Prepare(Surface_, mPreparationFailure);
     if (status == PreviewPreparationStatus::Failed)
     {
@@ -845,6 +894,16 @@ bool RenderPreview::prepare()
     if (Width_ == 0 || Height_ == 0 || mHasViewport == false)
     {
         return true;
+    }
+    const rhi::RasterStatus viewportStatus = pollViewport();
+    if (viewportStatus == rhi::RasterStatus::Pending)
+    {
+        return true;
+    }
+    if (viewportStatus != rhi::RasterStatus::Ready)
+    {
+        mPreparationFailure = QStringLiteral("GPU viewport image preparation failed.");
+        return false;
     }
     if (ViewDirty_ == true)
     {
@@ -1187,7 +1246,7 @@ rhi::RasterStatus RenderPreview::pollViewport()
 
 void RenderPreview::Tick()
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     if (OwnsDevice_ == false || mHasPreparationFailed == true)
     {
         return;
@@ -1271,6 +1330,14 @@ void RenderPreview::Tick()
             return;
         }
     }
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    if (rhi::SetFrameTarget(Device_, Surface_, { .Width = RequestedWidth_, .Height = RequestedHeight_ }) !=
+        rhi::DeviceStatus::Ready)
+    {
+        fail(QStringLiteral("WebGPU viewport resize failed. World edits are preserved."));
+        return;
+    }
+#    endif
     if (mNeedsResourceRestart == true && beginResourceRestart() == false)
     {
         return;
@@ -1290,7 +1357,13 @@ void RenderPreview::Tick()
             Width_,
             Height_,
             1,
-            usesLitMaterials() == true ? rr::ViewportColorMode::PreferHdr : rr::ViewportColorMode::Linear8);
+            usesLitMaterials() == true ? rr::ViewportColorMode::PreferHdr : rr::ViewportColorMode::Linear8,
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+            true
+#    else
+            false
+#    endif
+        );
         if (Accepted(created) == false)
         {
             fail(QStringLiteral("GPU viewport allocation failed. World edits are preserved."));
@@ -1324,6 +1397,10 @@ void RenderPreview::Tick()
     if (configured != rhi::RasterStatus::Ready)
     {
         fail(QStringLiteral("GPU viewport setup failed. World edits are preserved."));
+        return;
+    }
+    if (mIsPresentationVisible == false && Frames_ != 0)
+    {
         return;
     }
     mProducer = {};
@@ -1379,6 +1456,17 @@ void RenderPreview::Tick()
                                        : QStringLiteral(" · Albedo: unlit surface colors")))
                          : (mShading == PreviewShading::Solid ? QStringLiteral(" · Solid: neutral preview shading")
                                                               : QStringLiteral(" · Albedo: unlit surface colors")));
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+        if (Scene_.Lit == true && mShading == PreviewShading::Lit)
+        {
+            Status_ = QStringLiteral("WebGPU raster viewport · %1×%2 · visible %3 · draws %4 · direct lighting; "
+                                     "shadows and static bake unavailable in browser")
+                          .arg(Width_)
+                          .arg(Height_)
+                          .arg(Report_.Visible)
+                          .arg(Report_.Draws);
+        }
+#    endif
         Q_EMIT Changed();
     }
 #endif

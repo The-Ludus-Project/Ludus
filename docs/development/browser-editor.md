@@ -74,16 +74,36 @@ scene…** offers a scene folder, or one `.zip` (stored or deflated entries, no
 ZIP64) or a `.pbrt` with its companion files. The selection is copied into
 MEMFS, then the linked SceneCook importer cooks it to LUSCN in process, exactly
 as on the desktop; MEMFS has no `flock`, so the cook lock is skipped there
-(one thread owns the file system). The build is single-threaded, so the cook
+(one thread owns the file system). MEMFS also has no hard links: immutable
+artifacts use an existence check followed by rename without yielding. Existing
+identical artifacts are reused, while conflicting contents reject publication.
+These writes publish session memory and promise no disk durability. Native cooks
+retain their atomic hard-link publication. The build is single-threaded, so the cook
 runs on the UI thread after the status text has painted; large scenes block
 input until the cook finishes.
 
-The browser has no Qt Quick GPU interop, so the viewport draws a CPU
-navigation preview (`RenderSoftwareView`): depth-tested, textured, tinted and
-emissive triangles with fixed editor shading, at most 640 pixels on the long
-side. It supports the same orbit, pan, zoom and double-click focus as the
-native viewport. It is not the reference path tracer, and a WebGPU/WebGL
-viewport remains future work.
+The interactive viewport renders imported scenes through the engine's GPU raster
+renderer on a separate **WebGPU** canvas. Qt retains its own canvas for widgets. Scene meshes, textures and materials use the same GPU generation and
+camera path as the native editor; the renderer tone-maps its display image and
+composites it to the browser surface in one submission, without CPU pixel
+readback or image upload. Orbit, pan, zoom, focus, shading and resize update the
+current scene. Output is bounded to 1024 physical pixels on its longest side.
+
+**Solid** is the neutral navigation visualization; **Albedo** shows unlit surface
+colors; **Lit** uses admitted authored direct lights, emission and environment.
+The browser profile does not submit shadow maps or run the native worker-based
+static lighting bake. Emissive geometry does not imply real-time indirect lighting.
+Pending resource preparation retains the last presented view; rejected candidates
+report a failure without replacing it. A completed image is required before an
+import is published.
+
+WebGPU requires a supported browser/device and a secure context (HTTPS or
+localhost). If device admission fails, the viewport explains that WebGPU is
+unavailable and document editing remains usable; it does not silently rasterize
+on the CPU. Device loss stops the GPU session and preserves documents. Reopen the
+scene or restart the preview to request a fresh device. The separate canvas
+follows the Qt viewport rectangle and hides with its tab, popups and modal dialogs;
+mouse and keyboard navigation continue through Qt.
 
 ## Preview the complete website
 

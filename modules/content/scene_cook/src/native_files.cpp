@@ -500,6 +500,31 @@ Status SequentialFile::Read(std::span<uint8> outBuffer, usize& outCount) noexcep
     }
 }
 
+namespace
+{
+/// Publish without replacing an immutable artifact. MEMFS has no hard links; the
+/// single-threaded browser cooker performs no yield between this check and rename.
+/// This is session-memory publication, with no cross-process or disk durability claim.
+int PublishImmutableTemporary(const char* temporary, const char* target) noexcept
+{
+#    if LUDUS_TARGET_OS == LUDUS_OS_WEB
+    struct stat fileStatus = {};
+    if (stat(target, &fileStatus) == 0)
+    {
+        errno = EEXIST;
+        return -1;
+    }
+    if (errno != ENOENT)
+    {
+        return -1;
+    }
+    return rename(temporary, target);
+#    else
+    return link(temporary, target);
+#    endif
+}
+} // namespace
+
 PublishResult PublishFile(std::string_view path,
                           std::span<const uint8> data,
                           PublishMode mode,
@@ -546,7 +571,7 @@ PublishResult PublishFile(std::string_view path,
     }
     else if (mode == PublishMode::Immutable)
     {
-        if (link(temporary.GetData(), target.GetData()) != 0)
+        if (PublishImmutableTemporary(temporary.GetData(), target.GetData()) != 0)
         {
             if (errno != EEXIST)
             {

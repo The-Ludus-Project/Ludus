@@ -41,6 +41,9 @@ public:
     /// Frames are then copied to the CPU by the viewport (see OffscreenFrameReader).
     /// @return False when no preview start is pending or the device cannot start.
     [[nodiscard]] bool AdmitOffscreenDevice();
+    /// Start an engine WebGPU device for a connected, separately owned browser canvas.
+    /// The selector and DOM canvas must outlive Stop; Pending startup is serviced by Tick.
+    [[nodiscard]] bool AdmitBrowserDevice(const char* canvasSelector);
     void Stop() noexcept;
     /// Select a view; orbitDegrees contains yaw/pitch in degrees and zoom is the legacy radius scale.
     void Navigate(foundation::int32 camera,
@@ -59,6 +62,9 @@ public:
         return mShading;
     }
     void Resize(foundation::int32 width, foundation::int32 height);
+    /// Suppress repeated GPU submissions for hidden browser surfaces; allow the first
+    /// candidate frame so import validation can complete while its tab is hidden.
+    void SetPresentationVisible(bool isVisible) noexcept;
     void Orbit(foundation::float32 deltaX, foundation::float32 deltaY);
     void Pan(foundation::float32 deltaX, foundation::float32 deltaY, foundation::float32 heightLogical = 480);
     void Zoom(foundation::float32 steps);
@@ -182,6 +188,7 @@ private:
     graphics::rhi::SubmissionToken mProducer;
     bool mHasPendingFrame = false;
     bool mHasFrame = false;
+    bool mIsPresentationVisible = true;
     bool mHasViewport = false;
     bool mHasPreparedView = false;
     bool mIsAwaitingProducer = false;

@@ -26,7 +26,7 @@
 #include <QImage>
 #include <QString>
 
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
 #    include "renderer_clustered_authored.h"
 #    include "renderer_clustered_authored_shadow.h"
 #    include "renderer_composite.h"
@@ -45,7 +45,7 @@ namespace
 using namespace foundation;
 namespace rhi = graphics::rhi;
 namespace renderer = graphics::renderer;
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
 bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
@@ -84,6 +84,29 @@ PreviewPreparationStatus PreviewGpuGeneration::Prepare(rhi::SurfaceHandle surfac
     if (prepareResources(surface, outError) == false)
     {
         mHasFailed = true;
+        if (outError.isEmpty() == true)
+        {
+            switch (mStage)
+            {
+                case PreparationStage::Renderer:
+                    outError = QStringLiteral("GPU renderer initialization failed.");
+                    break;
+                case PreparationStage::Views:
+                    outError = QStringLiteral("GPU viewport composition setup failed.");
+                    break;
+                case PreparationStage::Materials:
+                    outError = QStringLiteral("GPU material pipeline preparation failed.");
+                    break;
+                case PreparationStage::Assets:
+                    outError = QStringLiteral("GPU scene mesh, texture or material upload failed.");
+                    break;
+                case PreparationStage::Snapshot:
+                    outError = QStringLiteral("GPU scene snapshot preparation failed.");
+                    break;
+                case PreparationStage::Ready:
+                    break;
+            }
+        }
         return PreviewPreparationStatus::Failed;
     }
     return IsPrepared() == true ? PreviewPreparationStatus::Ready : PreviewPreparationStatus::Pending;
@@ -128,7 +151,7 @@ bool PreviewGpuGeneration::prepareResources(rhi::SurfaceHandle surface, QString&
 
 bool PreviewGpuGeneration::prepareRenderer() noexcept
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     renderer::Limits limits;
     limits.Views = renderer::SHADOW_REGION_CAPACITY * 2 + 8;
     limits.Materials = content::scene_format::MAX_OBJECTS * 3;
@@ -146,7 +169,7 @@ bool PreviewGpuGeneration::prepareRenderer() noexcept
 
 bool PreviewGpuGeneration::prepareViews() noexcept
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     const rhi::RasterStatus status = Renderer.Poll();
     return status == rhi::RasterStatus::Pending ||
            (status == rhi::RasterStatus::Ready &&
@@ -160,7 +183,7 @@ bool PreviewGpuGeneration::prepareViews() noexcept
 
 bool PreviewGpuGeneration::prepareMaterials() noexcept
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     const rhi::RasterStatus status = Renderer.PollViews();
     if (status == rhi::RasterStatus::Ready)
     {
@@ -216,7 +239,7 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
 
 bool PreviewGpuGeneration::prepareAssets() noexcept
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     const rhi::RasterStatus programStatus = Renderer.GetStatus(mProgram);
     if (programStatus == rhi::RasterStatus::Pending)
     {
@@ -240,6 +263,15 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
             if (Source.Lit == true)
             {
                 const resources::SceneMesh& source = Source.Definition->Meshes[static_cast<usize>(i)];
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+                // Browser direct lighting does not need the native bake's expanded chart vertices.
+                description.Positions = source.Positions.GetData();
+                description.VertexCount = source.Positions.GetSize();
+                description.Indices = source.Indices.GetData();
+                description.IndexCount = source.Indices.GetSize();
+                description.Texcoords = source.Texcoords.GetData();
+                description.Normals = source.Normals.GetData();
+#    else
                 const usize count = source.Indices.GetSize();
                 content::scene_format::BakeChartLayout layout;
                 if (count > content::scene_format::MAX_VERTICES ||
@@ -273,6 +305,7 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
                 description.Texcoords = textureCoordinatesMaterial.GetData();
                 description.Normals = normalsMesh.GetData();
                 description.BakeTexcoords = textureCoordinatesBakeAtlas.GetData();
+#    endif
             }
             else
             {
@@ -394,7 +427,7 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
 
 bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& outError) noexcept
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     if (Source.Lit == true && Shading == PreviewShading::Lit)
     {
         return prepareLighting(surface, outError);
@@ -440,7 +473,7 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
                                                                bool hasShadows,
                                                                renderer::MaterialVersion& outMaterial) noexcept
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     PreviewGpuGeneration& resources = *this;
     const renderer::StaticLightingSurfaceDescription& surface = resources.Lighting.Surfaces[objectIndex];
     renderer::LitMaterialDescription material;
@@ -461,10 +494,10 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
     material.IsEmissionTwoSided = surface.IsEmissionTwoSided;
     material.AreAuthoredInputsEnabled = true;
     material.Clusters = &resources.Lighting.Clusters;
-    if (hasShadows == true)
+    material.Lights = resources.Lighting.Lights.Lights;
+    material.LightCount = resources.Lighting.Lights.Count;
+    if (hasShadows == true && resources.Lighting.ShadowCount != 0)
     {
-        material.Lights = resources.Lighting.Lights.Lights;
-        material.LightCount = resources.Lighting.Lights.Count;
         material.Shadows = resources.Shadows;
     }
     if (resources.HasEnvironment == true)
@@ -494,13 +527,20 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
 
 bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& outError) noexcept
 {
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     PreviewGpuGeneration& resources = *this;
     const usize count = resources.Source.Definition->Objects.GetSize();
     if (resources.LightingStage == PreviewLightingStage::Inputs)
     {
-        const rhi::RasterStatus status =
-            preview_lighting::BuildInputs(resources.Source, resources.LightingKey, resources.Lighting);
+        const rhi::RasterStatus status = preview_lighting::BuildInputs(resources.Source,
+                                                                       resources.LightingKey,
+                                                                       resources.Lighting,
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+                                                                       false
+#    else
+                                                                       true
+#    endif
+        );
         if (status != rhi::RasterStatus::Ready)
         {
             outError = QStringLiteral("Authored lighting admission failed (%1); no lights were dropped.")
@@ -535,7 +575,13 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             }
             resources.HasEnvironment = true;
         }
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+        // No shadow submission may clear the browser surface during candidate preparation.
+        resources.Lighting.ShadowCount = 0;
+        resources.LightingStage = PreviewLightingStage::Materials;
+#    else
         resources.LightingStage = PreviewLightingStage::Casters;
+#    endif
     }
     if (resources.HasEnvironment == true)
     {
