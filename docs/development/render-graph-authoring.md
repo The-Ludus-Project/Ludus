@@ -1355,12 +1355,32 @@ occupied endpoints and worker exit. The dedicated `ludus_shader_reload_gpu` test
 passes worker-produced generations through the native game loader, driver
 pipeline preparation and real pixel readback; it checks changed pixels, failed
 publication preservation, superseded reads and interface-mismatch preservation.
-On the first local Metal run, changed-generation read/preparation/activation
-took 65.3 ms; the largest delivery-service call, including initial driver
-preparation, took 251.3 ms. Native RHI driver preparation is currently synchronous
-on its owner thread. Thus source compilation is asynchronous, but this change
-does not establish hitch-free GPU pipeline preparation. These figures are single
-observations, not percentile estimates or shader-compiler timings. The test
-reports delivery/pipeline timing separately from the source benchmark and
-refuses a skipped GPU case. Linux, browser and physical-device qualification
-remain distinct from any local macOS result.
+Before asynchronous driver preparation, the first local Metal run's
+changed-generation read/preparation/activation took 65.3 ms, and its largest
+delivery-service call, including initial driver preparation, took 251.3 ms.
+
+Activation now explicitly queues native shader compilation, reflection checks and
+graphics/compute pipeline creation on a dedicated preparation lane. The owner
+thread consumes completions through normal RHI polling; it never waits for a
+replacement's driver compilation. The old generation stays active until every
+replacement pipeline is Ready and the latest accepted scene extraction is ready.
+Superseding a candidate detaches it immediately; its native dependencies remain
+retained until late completions can be retired safely. CPU interface mismatch,
+queue exhaustion, allocation failure and native compile failure leave the active
+view intact. RHI shutdown drains preparation before releasing device resources.
+Browser backend policy is preserved; see the
+[native RHI preparation contract](fullscreen-rendering.md#portable-raster-r1).
+
+The strengthened Metal regression pauses actual pipeline work on its worker,
+draws eight frames from the previous generation, supersedes that blocked
+candidate, and then admits the successful replacement. It also corrupts a valid
+MSL artifact to trigger a native asynchronous compiler failure and verifies the
+active green image survives. In the first local run of that regression, the
+largest delivery-service call took 0.371 ms, and replacement processing took
+24.67 ms including deliberately paused frames and supersession. These are single
+observations with different workloads, not percentile estimates or a comparable
+end-to-end speedup against the earlier synchronous run. Owner-side file observation,
+validation, allocation, completion collection and scene updates still have costs;
+no universal frame-time bound is claimed. The test reports service/pipeline timing
+separately from source compilation and refuses a skipped GPU case. Linux, browser
+and physical-device qualification remain distinct from any local macOS result.

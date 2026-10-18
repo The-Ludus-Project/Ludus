@@ -546,3 +546,78 @@ TEST_CASE("Native upload and readback rings preserve bytes across source destruc
         REQUIRE(rhi::Release(device, readback) == rhi::RasterStatus::Ready);
     }
 }
+
+TEST_CASE("Native asynchronous compute preparation retains detached dependencies and drains on shutdown",
+          "[rhi][gpu][async-preparation]")
+{
+    struct SessionGuard final
+    {
+        ~SessionGuard()
+        {
+            rhi::Shutdown();
+        }
+    } session;
+    rhi::Shutdown();
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Required.Compute = true;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 16, .Height = 16 }, description, device, surface, &failure);
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No native GPU adapter on this host");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RasterShaderDescription kernel = ludus::shaders::cull::Compute();
+    kernel.ShouldPrepareAsynchronously = true;
+    rhi::RasterShaderHandle shader;
+    REQUIRE(rhi::CreateRasterShader(device, kernel, shader) == rhi::RasterStatus::Pending);
+    const auto awaitReady = [&]<typename Handle>(const Handle& handle) {
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        rhi::RasterStatus status = rhi::GetStatus(device, handle);
+        while (status == rhi::RasterStatus::Pending && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            status = rhi::GetStatus(device, handle);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    awaitReady(shader);
+    rhi::BindingLayoutHandle layout;
+    REQUIRE(rhi::CreateBindingLayout(device, kernel.Bindings, layout) == rhi::RasterStatus::Ready);
+    rhi::ComputePipelineHandle pipeline;
+    struct PipelinePause final
+    {
+        PipelinePause()
+        {
+            rhi::backend::SetNativePipelinePreparationPaused(true);
+        }
+        ~PipelinePause()
+        {
+            rhi::backend::SetNativePipelinePreparationPaused(false);
+        }
+    };
+    {
+        PipelinePause pause;
+        REQUIRE(rhi::CreateComputePipeline(device, {shader, layout}, pipeline) == rhi::RasterStatus::Pending);
+        REQUIRE(rhi::Destroy(device, shader) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, layout) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::GetStatus(device, pipeline) == rhi::RasterStatus::Pending);
+    }
+    awaitReady(pipeline);
+    REQUIRE(rhi::Destroy(device, pipeline) == rhi::RasterStatus::Ready);
+    // Shutdown must drain accepted native work before freeing a borrowed input/device.
+    REQUIRE(rhi::CreateRasterShader(device, kernel, shader) == rhi::RasterStatus::Pending);
+    awaitReady(shader);
+    REQUIRE(rhi::CreateBindingLayout(device, kernel.Bindings, layout) == rhi::RasterStatus::Ready);
+    {
+        PipelinePause pause;
+        REQUIRE(rhi::CreateComputePipeline(device, {shader, layout}, pipeline) == rhi::RasterStatus::Pending);
+        rhi::Shutdown();
+    }
+    REQUIRE(rhi::GetStatus(device, pipeline) == rhi::RasterStatus::InvalidHandle);
+}

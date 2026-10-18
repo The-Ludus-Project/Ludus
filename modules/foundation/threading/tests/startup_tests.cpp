@@ -1,4 +1,5 @@
 #include <ludus/foundation/threading/jobs.hpp>
+#include <ludus/foundation/threading/worker_queue.hpp>
 
 #include "startup_injection.hpp"
 
@@ -48,4 +49,27 @@ TEST_CASE("Native synchronization initialization failure leaves a reusable syste
     shouldFailCondition = false;
     REQUIRE(conditionStatus == JobStatus::ThreadCreationFailed);
     REQUIRE(system.Initialize({1}) == JobStatus::Ok);
+}
+
+TEST_CASE("Dedicated preparation queue fails native startup explicitly and can retry", "[threading][worker]")
+{
+    WorkerQueue queue;
+    shouldFailMutex = true;
+    const WorkerQueueStatus mutexStatus = queue.Initialize();
+    shouldFailMutex = false;
+    REQUIRE(mutexStatus == WorkerQueueStatus::Unavailable);
+    shouldFailCondition = true;
+    const WorkerQueueStatus conditionStatus = queue.Initialize();
+    shouldFailCondition = false;
+    REQUIRE(conditionStatus == WorkerQueueStatus::Unavailable);
+    gStarts = 0;
+    gJoins = 0;
+    gFailStart = 1;
+    const WorkerQueueStatus threadStatus = queue.Initialize();
+    gFailStart = 0;
+    REQUIRE(threadStatus == WorkerQueueStatus::Unavailable);
+    REQUIRE(gJoins == 0);
+    REQUIRE(queue.Initialize() == WorkerQueueStatus::Ready);
+    REQUIRE(queue.Shutdown() == WorkerQueueStatus::Ready);
+    REQUIRE(gJoins == 1);
 }

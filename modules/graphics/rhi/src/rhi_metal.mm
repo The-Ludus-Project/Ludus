@@ -2,6 +2,7 @@
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
+#include "internal/native_preparation.h"
 #include "internal/raster.h"
 #include "internal/ray_backend.h"
 #include "internal/resources.h"

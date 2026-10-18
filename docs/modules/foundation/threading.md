@@ -110,3 +110,21 @@ site once and never allocates. A capture contains:
 
 Jobs skipped as Blocked or Cancelled have no slice. A dependent with several
 prerequisites receives the arrow of the prerequisite that released it.
+
+## Dedicated worker and owner completions
+
+`<ludus/foundation/threading/worker_queue.hpp>` provides `WorkerQueue` for native
+blocking preparation that belongs outside the CPU dependency scheduler, including
+driver pipeline creation. `Initialize` allocates fixed storage and starts one
+thread. `Submit(execute, complete, context)` admits at most
+`MAX_WORKER_QUEUE_TASKS` tasks, including running and uncollected completions.
+It returns an explicit status when unavailable or full; it never executes work
+on the caller. Browser initialization returns Unavailable without a serial fallback.
+
+The execution callback runs on that worker. Call `Poll` between frames to deliver
+at most one completed callback on the owner thread, with the execution writes
+visible. Keep context storage alive through completion. Neither callback may
+reenter its queue. Submission and polling allocate nothing and never wait for
+execution; their internal gate protects only bounded bookkeeping, never a driver
+call. `Shutdown` joins the worker and delivers remaining completions on the owner;
+use it during orderly shutdown, outside frame-critical work.

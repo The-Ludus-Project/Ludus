@@ -1,11 +1,11 @@
 add_library(ludus_foundation_threading STATIC)
 add_library(Ludus::FoundationThreading ALIAS ludus_foundation_threading)
 set_target_properties(ludus_foundation_threading PROPERTIES EXPORT_NAME FoundationThreading)
-target_sources(ludus_foundation_threading PRIVATE src/jobs.cpp
+target_sources(ludus_foundation_threading PRIVATE src/jobs.cpp src/worker_queue.cpp
     PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
-    FILES include/ludus/foundation/threading/jobs.hpp)
+    FILES include/ludus/foundation/threading/jobs.hpp include/ludus/foundation/threading/worker_queue.hpp)
 target_include_directories(ludus_foundation_threading PRIVATE src)
-target_link_libraries(ludus_foundation_threading PUBLIC Ludus::FoundationBase)
+target_link_libraries(ludus_foundation_threading PUBLIC Ludus::FoundationBase PRIVATE Ludus::FoundationContainers)
 if(EMSCRIPTEN)
     set(LUDUS_THREADING_NATIVE_SOURCE src/native_serial.cpp)
 elseif(WIN32)
@@ -37,7 +37,7 @@ install(TARGETS ludus_foundation_threading_profiling EXPORT LudusTargets
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_foundation_threading_tests tests/jobs_tests.cpp tests/trace_tests.cpp)
+    add_executable(ludus_foundation_threading_tests tests/jobs_tests.cpp tests/trace_tests.cpp tests/worker_queue_tests.cpp)
     target_link_libraries(ludus_foundation_threading_tests PRIVATE
         Ludus::FoundationThreading Ludus::FoundationContainers Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_foundation_threading_tests)
@@ -75,10 +75,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         # Mach-O and PE linkers lack --wrap. Compile the same kernel sources with a
         # private native seam into an unexported test backend; production code and
         # the installed SDK contain no hooks.
-        add_library(ludus_threading_fault_backend STATIC src/jobs.cpp ${LUDUS_THREADING_NATIVE_SOURCE})
+        add_library(ludus_threading_fault_backend STATIC src/jobs.cpp src/worker_queue.cpp ${LUDUS_THREADING_NATIVE_SOURCE})
         target_include_directories(ludus_threading_fault_backend PUBLIC include PRIVATE src)
         target_compile_definitions(ludus_threading_fault_backend PRIVATE LUDUS_THREADING_NATIVE_FAULT_TESTING=1)
-        target_link_libraries(ludus_threading_fault_backend PUBLIC Ludus::FoundationBase)
+        target_link_libraries(ludus_threading_fault_backend PUBLIC Ludus::FoundationBase PRIVATE Ludus::FoundationContainers)
         ludus_apply_project_defaults(ludus_threading_fault_backend)
         add_executable(ludus_threading_startup_tests tests/startup_tests.cpp tests/startup_seam.cpp)
         target_include_directories(ludus_threading_startup_tests PRIVATE src)

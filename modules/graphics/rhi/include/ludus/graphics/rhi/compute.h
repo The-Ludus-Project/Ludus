@@ -25,6 +25,8 @@ struct ComputePipelineDescription final
     RasterShaderHandle Shader{};
     /// Immutable layout with Compute-only visibility and buffer entries.
     BindingLayoutHandle Layout{};
+    /// Queue native driver creation; also enabled by an asynchronous shader input.
+    bool ShouldPrepareAsynchronously = false;
 };
 /// One logical compute pass contains exactly one dispatch. Dependent dispatches
 /// need separate ordered graph passes. Shader-local races remain kernel obligations.
