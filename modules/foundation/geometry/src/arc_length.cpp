@@ -10,7 +10,7 @@ using math::MakePointEnclosure;
 using math::MathStatus;
 
 // Chord lower bound and control-polygon upper bound of one piece.
-[[nodiscard]] MathStatus TryEnclosePieceLength(const StaticArray<ControlBox, SPAN_CONTROL_COUNT>& control,
+[[nodiscard]] MathStatus TryEnclosePieceLength(const StaticArray<EnclosureBox, SPAN_CONTROL_COUNT>& control,
                                                Enclosure& outLength) noexcept
 {
     Enclosure chord;
@@ -37,9 +37,9 @@ using math::MathStatus;
 GeometryStatus TryEncloseSubspanControls(const PreparedSpan& span,
                                          float64 a,
                                          float64 b,
-                                         StaticArray<ControlBox, SPAN_CONTROL_COUNT>& outControls) noexcept
+                                         StaticArray<EnclosureBox, SPAN_CONTROL_COUNT>& outControls) noexcept
 {
-    StaticArray<ControlBox, SPAN_CONTROL_COUNT> exact;
+    StaticArray<EnclosureBox, SPAN_CONTROL_COUNT> exact;
     for (usize i = 0; i < SPAN_CONTROL_COUNT; ++i)
     {
         exact[i] = MakePointBox(span.Control[i]);
@@ -49,7 +49,7 @@ GeometryStatus TryEncloseSubspanControls(const PreparedSpan& span,
         outControls = exact;
         return GeometryStatus::Success;
     }
-    StaticArray<ControlBox, SPAN_CONTROL_COUNT> result;
+    StaticArray<EnclosureBox, SPAN_CONTROL_COUNT> result;
     MathStatus status = MathStatus::Success;
     if (span.Kind == SpanKind::Line)
     {
@@ -87,7 +87,7 @@ TryEncloseArcLength(const PreparedSpan& span, float64 a, float64 b, usize pieceC
         const float64 pieceEnd = piece + 1 == pieceCount
                                      ? b
                                      : a + width * (static_cast<float64>(piece + 1) / static_cast<float64>(pieceCount));
-        StaticArray<ControlBox, SPAN_CONTROL_COUNT> control;
+        StaticArray<EnclosureBox, SPAN_CONTROL_COUNT> control;
         GeometryStatus status = TryEncloseSubspanControls(span, pieceStart, pieceEnd, control);
         Enclosure length;
         if (status == GeometryStatus::Success)

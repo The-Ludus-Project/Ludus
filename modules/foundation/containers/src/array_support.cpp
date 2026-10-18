@@ -7,36 +7,30 @@
 
 #include <ludus/foundation/base/core.h>
 
-#include <new> // sized/aligned nothrow operator new / delete
+#include <ludus/foundation/memory/allocation_domain.hpp>
 
 namespace ludus::foundation::core::detail
 {
+// The Array storage seam allocates through the process-lifetime Containers
+// allocation domain (memory profiling phase 1; docs/development/memory-phase-1.md).
+// Its system backend is the same aligned nothrow operator new/delete family the
+// seam called directly before, so blocks, failure behavior and Array's layout
+// are unchanged. The domain adds checked requested-byte accounting: Array
+// charges capacity bytes, including the old and new buffers during growth.
+// A null result still reports failure, so the container decides fatal versus
+// fallible handling; a zero-byte request returns null without a block.
 [[nodiscard]] void* AllocateBytes(usize bytes, usize alignment) noexcept
 {
-    if (bytes == 0)
-    {
-        return nullptr;
-    }
-    // Nothrow, alignment-aware. Returns nullptr on failure (never throws, never
-    // terminates here) so the container decides fatal-vs-fallible. This is the
-    // single seam a future Ludus allocator replaces.
-    return ::operator new(bytes, std::align_val_t{alignment}, std::nothrow);
+    return GetContainerAllocationDomain().TryAllocate(bytes, alignment);
 }
 
 void FreeBytes(void* ptr,
                usize bytes, // NOLINT(bugprone-easily-swappable-parameters): byte-size / alignment seam signature
                usize alignment) noexcept
 {
-    if (ptr == nullptr)
-    {
-        return;
-    }
-    // Aligned delete matching the aligned nothrow new above. (The sized+aligned
-    // overload is not portably available as a callable ::operator delete on all
-    // standard libraries, so we use the aligned form; free() underneath ignores
-    // size anyway. A future Ludus allocator seam can use the size.)
-    (void)bytes;
-    ::operator delete(ptr, std::align_val_t{alignment});
+    // A null pointer is ignored; otherwise the domain subtracts the requested
+    // bytes before releasing the block with the original size and alignment.
+    GetContainerAllocationDomain().Free(ptr, bytes, alignment);
 }
 
 // Geometric 2x growth: newCap = max(requested, currentCapacity * 2), with a

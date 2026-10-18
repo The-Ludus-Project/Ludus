@@ -46,8 +46,8 @@ using math::Vector3d;
 
 namespace
 {
-using internal::ControlBox;
 using internal::CubicControlBoxes;
+using internal::EnclosureBox;
 using internal::Fail;
 using internal::MakePointBox;
 using internal::ToGeometryStatus;
@@ -142,11 +142,11 @@ void SetAlongLevel(GridLevels& inoutLevels, PatchSide side, usize level) noexcep
 }
 
 // Round an enclosed point to float32 and bound the distance from the rounded point to every point in the box.
-[[nodiscard]] GeometryStatus TryRoundEnclosedPoint(const ControlBox& box, EmittedSample& outSample) noexcept
+[[nodiscard]] GeometryStatus TryRoundEnclosedPoint(const EnclosureBox& box, EmittedSample& outSample) noexcept
 {
     const StaticArray<Enclosure, AXIS_COUNT> axes{{box.X, box.Y, box.Z}};
     StaticArray<float64, AXIS_COUNT> rounded{};
-    ControlBox distance;
+    EnclosureBox distance;
     const StaticArray<Enclosure*, AXIS_COUNT> distanceAxes{{&distance.X, &distance.Y, &distance.Z}};
     for (usize axis = 0; axis < axes.GetSize(); ++axis)
     {
@@ -216,7 +216,7 @@ void SetAlongLevel(GridLevels& inoutLevels, PatchSide side, usize level) noexcep
 // Interior sample of an edge on its canonical curve at canonical parameter t.
 [[nodiscard]] GeometryStatus TryComputeEdgeSample(const SurfaceEdge& edge, float64 t, EmittedSample& outSample) noexcept
 {
-    ControlBox point;
+    EnclosureBox point;
     const MathStatus status = internal::TryEvaluateBlossom(MakeCurveBoxes(edge.Control), t, t, t, point);
     if (status != MathStatus::Success)
     {
@@ -238,7 +238,7 @@ TryComputeInteriorSample(const PreparedPatch& patch, float64 u, float64 v, Emitt
             return ToGeometryStatus(status);
         }
     }
-    ControlBox point;
+    EnclosureBox point;
     const MathStatus status = internal::TryEvaluateBlossom(column, u, u, u, point);
     if (status != MathStatus::Success)
     {
@@ -320,10 +320,10 @@ TryComputeInteriorSample(const PreparedPatch& patch, float64 u, float64 v, Emitt
             sub[i][j] = restricted[i];
         }
     }
-    const ControlBox& c00 = sub[0][0];
-    const ControlBox& c10 = sub[LAST_CONTROL][0];
-    const ControlBox& c01 = sub[0][LAST_CONTROL];
-    const ControlBox& c11 = sub[LAST_CONTROL][LAST_CONTROL];
+    const EnclosureBox& c00 = sub[0][0];
+    const EnclosureBox& c10 = sub[LAST_CONTROL][0];
+    const EnclosureBox& c01 = sub[0][LAST_CONTROL];
+    const EnclosureBox& c11 = sub[LAST_CONTROL][LAST_CONTROL];
 
     // Control i, j of the degree-elevated bilinear corner interpolant is
     // ((3-i)(3-j) C00 + i(3-j) C10 + (3-i) j C01 + i j C11) / 9. Corners coincide exactly and are skipped.
@@ -343,19 +343,19 @@ TryComputeInteriorSample(const PreparedPatch& patch, float64 u, float64 v, Emitt
                 static_cast<float64>((DEGREE - i) * j),
                 static_cast<float64>(i * j),
             }};
-            const StaticArray<const ControlBox*, PATCH_CORNER_COUNT> corners{{&c00, &c10, &c01, &c11}};
-            ControlBox weighted = MakePointBox(Vector3{});
+            const StaticArray<const EnclosureBox*, PATCH_CORNER_COUNT> corners{{&c00, &c10, &c01, &c11}};
+            EnclosureBox weighted = MakePointBox(Vector3{});
             for (usize corner = 0; corner < PATCH_CORNER_COUNT && status == MathStatus::Success; ++corner)
             {
-                ControlBox term;
+                EnclosureBox term;
                 status = internal::TryScaleBox(*corners[corner], MakePointEnclosure(weights[corner]), term);
                 if (status == MathStatus::Success)
                 {
                     status = internal::TryAddBoxes(weighted, term, weighted);
                 }
             }
-            ControlBox bilinear;
-            ControlBox difference;
+            EnclosureBox bilinear;
+            EnclosureBox difference;
             Enclosure length;
             if (status == MathStatus::Success)
             {
@@ -377,7 +377,7 @@ TryComputeInteriorSample(const PreparedPatch& patch, float64 u, float64 v, Emitt
     }
 
     // Twist vector P00 - P10 - P01 + P11 of the cell's exact corners.
-    ControlBox twist;
+    EnclosureBox twist;
     Enclosure twistLength;
     Enclosure twistBound;
     Enclosure total;

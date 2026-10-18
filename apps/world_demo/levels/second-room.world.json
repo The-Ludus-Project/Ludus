@@ -70,6 +70,91 @@
       }
     },
     {
+      "id": "scatter",
+      "name": "scatter",
+      "components": {
+        "scatter": {
+          "units_per_metre": 100,
+          "min_x": -11,
+          "min_y": -6,
+          "max_x": 11,
+          "max_y": 6,
+          "keep_out_margin": 0.5
+        }
+      }
+    },
+    {
+      "id": "grass",
+      "name": "grass",
+      "components": {
+        "scatter_layer": {
+          "layer": 1,
+          "cell_size": 200,
+          "candidates": 2,
+          "min_scale": 600,
+          "max_scale": 1100
+        }
+      }
+    },
+    {
+      "id": "grass-tuft",
+      "name": "grass-tuft",
+      "components": {
+        "scatter_variant": {
+          "layer": 1,
+          "exclusion_radius": 40,
+          "half_x": 0.2,
+          "half_y": 0.18,
+          "red": 0.3,
+          "green": 0.55,
+          "blue": 0.22
+        }
+      }
+    },
+    {
+      "id": "grass-clump",
+      "name": "grass-clump",
+      "components": {
+        "scatter_variant": {
+          "layer": 1,
+          "exclusion_radius": 60,
+          "half_x": 0.3,
+          "half_y": 0.25,
+          "red": 0.26,
+          "green": 0.5,
+          "blue": 0.2
+        }
+      }
+    },
+    {
+      "id": "boulders",
+      "name": "boulders",
+      "components": {
+        "scatter_layer": {
+          "layer": 3,
+          "cell_size": 400,
+          "candidates": 1,
+          "min_scale": 900,
+          "max_scale": 1400
+        }
+      }
+    },
+    {
+      "id": "boulder",
+      "name": "boulder",
+      "components": {
+        "scatter_variant": {
+          "layer": 3,
+          "exclusion_radius": 120,
+          "half_x": 0.4,
+          "half_y": 0.3,
+          "red": 0.42,
+          "green": 0.4,
+          "blue": 0.44
+        }
+      }
+    },
+    {
       "id": "level-settings",
       "name": "Level settings",
       "components": {

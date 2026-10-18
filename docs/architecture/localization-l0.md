@@ -39,7 +39,11 @@ python3 -m unittest discover -s scripts/python -p test_localization_corpus.py -v
 ./scripts/icu-probe run --preset web-emscripten-release
 ```
 
-Use the `linux-clang-*` presets on Ubuntu. `bootstrap` verifies the pinned source
+Use the `linux-clang-*` presets on Ubuntu. The same bootstrapped tree now backs
+the opt-in [`Ludus::Unicode`](../modules/foundation/unicode.md) owner and L2
+formatting: [`cmake/IcuProfile.cmake`](../../cmake/IcuProfile.cmake) compiles it
+once for the probe, the L1 checker and `Ludus::Unicode`, and `run` also builds and
+tests those. `bootstrap` verifies the pinned source
 and data archives in [`config/icu_toolchain.json`](../../config/icu_toolchain.json),
 builds upstream's data tools in a separate host process, and slices the data with
 [`tools/icu-probe/data-filter.json`](../../tools/icu-probe/data-filter.json).

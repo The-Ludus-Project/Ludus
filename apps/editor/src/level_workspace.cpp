@@ -175,10 +175,14 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     connect(&Preview_, &RenderPreview::Stopped, this, [this]() {
         // A viewport that stops before its first frame (no GPU sharing, hidden or
         // failed surface) must not leave the operation waiting forever.
-        if (AwaitingViewport_ == true)
-        {
-            Rollback(QStringLiteral("The viewport stopped before rendering the candidate scene."));
-        }
+        // A failure emits Stopped during teardown before its specific Failed signal.
+        // Defer the generic stop fallback so the failure keeps its diagnostic.
+        QTimer::singleShot(0, this, [this]() {
+            if (AwaitingViewport_ == true && Preview_.Running() == false)
+            {
+                Rollback(QStringLiteral("The viewport stopped before rendering the candidate scene."));
+            }
+        });
     });
     connect(&Preview_, &RenderPreview::FrameReady, this, [this]() {
         if (PublishingCatalog_)
@@ -879,7 +883,7 @@ void LevelWorkspace::Publish()
         }
         return;
     }
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
     if (PreviewViewport::CanPresent() == false)
     {
         // Commit without a rendered frame, but say why the viewport stays empty
@@ -907,19 +911,6 @@ void LevelWorkspace::Publish()
     Status_->setText(
         QStringLiteral("Preparing candidate viewport; the current level stays active until its first rendered frame."));
 #else
-#    if defined(LUDUS_EDITOR_SOFTWARE_VIEWPORT)
-    // The browser viewport rasterizes the decoded scene on the CPU once the candidate is committed.
-    Status_->setText(QStringLiteral("Scene ready. The browser Editor shows a CPU preview (orbit, pan, zoom)."));
-    if (Operation_ == QStringLiteral("import"))
-    {
-        CommitImport(); // Publication calls ShowFrame after the catalog commits.
-    }
-    else
-    {
-        CommitCandidate();
-        Viewport_->ShowFrame();
-    }
-#    else
     if (Operation_ == QStringLiteral("import"))
     {
         CommitImport();
@@ -931,7 +922,6 @@ void LevelWorkspace::Publish()
     Viewport_->ClearFrame(QStringLiteral("Scene ready. This Editor build has no native rendered viewport "
                                          "(configure with LUDUS_EDITOR_RENDER_PREVIEW)."));
     Status_->setText(QStringLiteral("Scene ready. This Editor build has no native rendered viewport."));
-#    endif
 #endif
 }
 void LevelWorkspace::ApplyPendingProject()

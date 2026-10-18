@@ -24,6 +24,12 @@ modules/foundation/math/tests/enclosure_tests.cpp
 modules/foundation/math/include/ludus/foundation/math/random_domains.hpp
 modules/foundation/math/tests/random_domains_tests.cpp
 modules/foundation/geometry
+modules/foundation/memory/include/ludus/foundation/memory/shared_ptr.hpp
+modules/foundation/memory/include/ludus/foundation/memory/detail/shared_controller.hpp
+modules/foundation/memory/src/shared_controller.cpp
+modules/foundation/memory/src/internal/shared_count.hpp
+modules/foundation/memory/tests/shared_ptr_tests.cpp
+modules/foundation/memory/tests/shared_ptr_compile_failures.cpp
 apps/editor/src/internal/import_report.h
 apps/editor/src/import_report.cpp
 apps/editor/tests/import_report_tests.cpp
@@ -38,3 +44,21 @@ modules/runtime/game_host/tests/timing_tests.cpp
 
 modules/content/render_graph_format
 modules/foundation/threading
+modules/foundation/unicode
+modules/localization/include/ludus/localization/formatter.hpp
+modules/localization/src/formatter.cpp
+modules/localization/src/formatter_icu.cpp
+modules/localization/src/formatter_unavailable.cpp
+modules/localization/src/internal/catalog_access.hpp
+modules/localization/src/internal/formatter_backend.hpp
+modules/localization/tests/formatter_tests.cpp
+modules/localization/tests/format_probe.cpp
+modules/foundation/memory/include/ludus/foundation/memory/allocation_statistics.hpp
+modules/foundation/memory/src/accounting.cpp
+modules/foundation/memory/src/internal/accounting.hpp
+modules/foundation/memory/tests/accounting_tests.cpp
+modules/foundation/containers/tests/array_accounting_tests.cpp
+modules/foundation/profiling/include/ludus/foundation/profiling/memory_gauges.hpp
+modules/foundation/profiling/src/memory_gauges.cpp
+modules/foundation/profiling/src/internal/memory_gauge.hpp
+modules/foundation/profiling/tests/memory_gauge_tests.cpp

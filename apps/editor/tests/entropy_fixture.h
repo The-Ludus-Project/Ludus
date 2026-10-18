@@ -32,4 +32,33 @@ inline foundation::identity::EntropySource MakeFixedEntropySource() noexcept
     };
     return source;
 }
+
+/// State of MakeSequentialEntropySource(): the byte value of its next request.
+struct SequentialEntropy final
+{
+    /// Value written to every byte of the next request; incremented after each request.
+    foundation::uint8 NextByte = 1;
+};
+
+/// Deterministic source that fills each request with one byte value, then increments it,
+/// so successive UUIDs differ. `state` must outlive every use of the returned source.
+inline foundation::identity::EntropySource MakeSequentialEntropySource(SequentialEntropy& state) noexcept
+{
+    foundation::identity::EntropySource source;
+    source.ContextOrNull = &state;
+    source.FillBytesOrNull = [](void* contextOrNull, foundation::uint8* outBytes, foundation::usize size) noexcept {
+        if (contextOrNull == nullptr)
+        {
+            return false;
+        }
+        SequentialEntropy& sequence = *static_cast<SequentialEntropy*>(contextOrNull);
+        for (foundation::usize i = 0; i < size; ++i)
+        {
+            outBytes[i] = sequence.NextByte;
+        }
+        ++sequence.NextByte;
+        return true;
+    };
+    return source;
+}
 } // namespace ludus::editor::tests

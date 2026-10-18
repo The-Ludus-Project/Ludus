@@ -1973,6 +1973,39 @@ TEST_CASE("Raster viewport works without compute and retries an exhausted frame 
     REQUIRE(session.Renderer.Release(earlierView) == rhi::RasterStatus::Ready);
 }
 
+TEST_CASE("Raster viewport presents its encoded GPU image in the producer submission", "[renderer][viewport]")
+{
+    Session session(false);
+    LitFixture lighting;
+    lighting.Enable(session);
+    REQUIRE(rhi::SetFrameTarget(session.Device, session.Surface, { .Width = 96, .Height = 64 }) ==
+            rhi::DeviceStatus::Ready);
+    rr::Snapshot snapshot;
+    const rr::SceneItem item = session.Item(1);
+    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+    rr::RasterViewport viewport;
+    REQUIRE(viewport.Initialize(session.Renderer, session.Device, 96, 64, 1, rr::ViewportColorMode::Linear8, true) ==
+            rhi::RasterStatus::Ready);
+    rr::ViewReport report;
+    REQUIRE(viewport.Update(snapshot, {}, report) == rhi::RasterStatus::Ready);
+    const usize draws = rhi::reference::Draws;
+    rhi::SubmissionToken completion;
+    REQUIRE(viewport.Render(session.Surface, completion) == rhi::RasterStatus::Ready);
+    // Scene, tone mapping, then a plain composite to the acquired surface.
+    CHECK(rhi::reference::Draws == draws + 3);
+    CHECK(rhi::reference::Pass.Texture == rhi::internal::RASTER_INVALID);
+    CHECK(rhi::reference::Copies == 0);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    rr::ViewportFrame frame;
+    rr::ViewportImage image;
+    REQUIRE(viewport.Acquire(frame, image) == rhi::RasterStatus::Ready);
+    CHECK(image.Width == 96);
+    CHECK(image.Height == 64);
+    REQUIRE(viewport.Release(frame) == rhi::RasterStatus::Ready);
+    viewport.Reset();
+    REQUIRE(session.Renderer.Release(snapshot) == rhi::RasterStatus::Ready);
+}
+
 TEST_CASE("Linear surface-map decoding preserves contracts and handles the normal disk", "[renderer][fidelity]")
 {
     rr::SurfaceParameters parameters;

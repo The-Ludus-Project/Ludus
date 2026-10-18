@@ -32,7 +32,7 @@ using math::Enclosure;
 TryEncloseSubspanControls(const PreparedSpan& span,
                           float64 a,
                           float64 b,
-                          StaticArray<ControlBox, SPAN_CONTROL_COUNT>& outControls) noexcept;
+                          StaticArray<EnclosureBox, SPAN_CONTROL_COUNT>& outControls) noexcept;
 
 /// Enclosure of the exact arc length of span over [a, b], from pieceCount equal chord/polygon pieces.
 ///

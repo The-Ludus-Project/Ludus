@@ -44,6 +44,7 @@ option(LUDUS_BUILD_WORLD_DEMO "Build the graphical game world reference (require
 option(LUDUS_BUILD_SHADER_PROBE "Build the isolated offline shader feasibility probe" OFF)
 option(LUDUS_BUILD_LUAU_PROBE "Build the private S0 Luau feasibility probe (requires scripts/luau-probe bootstrap)" OFF)
 option(LUDUS_BUILD_ICU_PROBE "Build the private L0 ICU4C localization backend probe (requires scripts/icu-probe bootstrap)" OFF)
+option(LUDUS_BUILD_UNICODE "Build Ludus::Unicode and ICU-backed localization formatting (requires scripts/icu-probe bootstrap)" OFF)
 option(LUDUS_BUILD_SCRIPT_SESSION "Build the experimental S2 Luau debug/replacement session" OFF)
 option(LUDUS_BUILD_VISUAL_SEQUENCE "Build the private S3 visual sequence authoring bridge" OFF)
 option(LUDUS_BUILD_BEHAVIOR "Build and install the opt-in S4 C++/Luau behavior provider" OFF)
@@ -186,6 +187,23 @@ if(Git_FOUND)
     if(LUDUS_GIT_REVISION_OUTPUT)
         set(LUDUS_GIT_REVISION "${LUDUS_GIT_REVISION_OUTPUT}")
     endif()
+    # The installed manifest, build metadata and Editor setup checks compare this
+    # revision. Re-run configure when HEAD moves (commit, pull, checkout) so a
+    # plain `cmake --build` or IDE build after a pull cannot install an engine
+    # labelled with the previous revision. Worktrees keep HEAD in their own
+    # git directory, so ask git for each path instead of assuming `.git/`.
+    foreach(LUDUS_GIT_HEAD_RELATIVE_PATH IN ITEMS HEAD logs/HEAD packed-refs)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${PROJECT_SOURCE_DIR}" rev-parse --path-format=absolute --git-path
+                    "${LUDUS_GIT_HEAD_RELATIVE_PATH}"
+            OUTPUT_VARIABLE LUDUS_GIT_HEAD_PATH
+            ERROR_QUIET
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(LUDUS_GIT_HEAD_PATH AND EXISTS "${LUDUS_GIT_HEAD_PATH}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${LUDUS_GIT_HEAD_PATH}")
+        endif()
+    endforeach()
 endif()
 
 set(LUDUS_GAME_COMPATIBILITY_IDENTITY
@@ -214,6 +232,10 @@ add_subdirectory(modules/foundation/hash)
 # FoundationIdentity depends only on FoundationBase and builds for native and web.
 add_subdirectory(modules/foundation/identity)
 add_subdirectory(modules/foundation/strings)
+# Opt-in pinned ICU4C owner; ordinary configure/build/install stay offline and ICU-free.
+if(LUDUS_BUILD_UNICODE)
+    add_subdirectory(modules/foundation/unicode)
+endif()
 add_subdirectory(modules/localization)
 add_subdirectory(modules/foundation/containers)
 add_subdirectory(modules/foundation/filesystem)
@@ -422,6 +444,12 @@ if(LUDUS_BUILD_BEHAVIOR)
     ludus_sdk_register_component(Behavior)
     ludus_sdk_register_feature(Behavior)
     ludus_sdk_register_dependency(Luau "1eca9fda3e4753a1592000f6cfdf659aaa778b7d-reviewed-loader-v1" "MIT" bundled)
+endif()
+if(LUDUS_BUILD_UNICODE)
+    # Opt-in pinned ICU4C closure behind Ludus::Unicode (docs/modules/foundation/unicode.md).
+    ludus_sdk_register_component(Unicode)
+    ludus_sdk_register_feature(Unicode)
+    ludus_sdk_register_dependency(ICU4C "78.3" "Unicode-3.0" bundled)
 endif()
 if(NOT EMSCRIPTEN)
     foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text GameHost)

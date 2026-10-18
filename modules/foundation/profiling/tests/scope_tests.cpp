@@ -41,6 +41,7 @@ struct Drained
     uint64 flowOut = 0;
     uint64 flowIn = 0;
     uint64 counterCount = 0;
+    uint64 memoryGaugeCount = 0;
 };
 
 Drained drainAll()
@@ -78,6 +79,9 @@ Drained drainAll()
                     break;
                 case internal::TraceEventKind::Counter:
                     ++result.counterCount;
+                    break;
+                case internal::TraceEventKind::MemoryGauge:
+                    ++result.memoryGaugeCount;
                     break;
             }
         }

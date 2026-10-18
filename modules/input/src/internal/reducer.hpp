@@ -156,14 +156,6 @@ public:
         // transition (K07: overflow must not corrupt live Down).
         mLiveDown.Assign(index, down);
 
-        // An Up for a suppressed key clears suppression without a gameplay
-        // release (K05/K06). The reducer applies suppression at step time, but
-        // live suppression is cleared here so a later Down is a genuine press.
-        if (down == false)
-        {
-            mLiveSuppressed.Reset(index);
-        }
-
         const uint64 sequence = nextSequence();
         if (sequence == kSequenceExhausted)
         {
@@ -226,10 +218,10 @@ public:
         }
 
         // Live state follows the baseline immediately so GetLiveDown reflects the
-        // synchronized physical set even before the next step. Held keys are
-        // suppressed.
+        // synchronized physical set even before the next step. Suppression is
+        // simulation state only: applyReset installs it from the baseline and
+        // applyTransition clears it in record order (K05/K06).
         mLiveDown = mMailbox.Baseline;
-        mLiveSuppressed = mMailbox.Baseline;
         mFocused = focused;
     }
 
@@ -361,7 +353,6 @@ public:
     void reset() noexcept
     {
         mLiveDown.ResetAll();
-        mLiveSuppressed.ResetAll();
         mPending.Clear();
         mMailbox = ResetMailbox{};
         mFocused = false;
@@ -474,7 +465,6 @@ private:
             mSnapshot.Down[i] = mMailbox.Baseline.IsSet(i);
             mSnapshot.Suppressed[i] = mMailbox.Baseline.IsSet(i);
         }
-        mLiveSuppressed = mMailbox.Baseline;
         // Live down is already the baseline (set in requestReset), keep it.
 
         // Record the reset boundary in the step-event stream (K02, K13).
@@ -523,7 +513,6 @@ private:
             mSnapshot.Released[index] = true;
             // An Up clears suppression (release); a later Down is a genuine press.
             mSnapshot.Suppressed[index] = false;
-            mLiveSuppressed.Reset(index);
         }
 
         // Action evaluation uses the EFFECTIVE down state: a suppressed key does
@@ -691,7 +680,6 @@ private:
 
     // --- Live (callback-visible) state ----------------------------------
     foundation::StaticBitSet<KEY_COUNT> mLiveDown;
-    foundation::StaticBitSet<KEY_COUNT> mLiveSuppressed;
     bool mFocused;
 
     // --- Pending ring ---------------------------------------------------

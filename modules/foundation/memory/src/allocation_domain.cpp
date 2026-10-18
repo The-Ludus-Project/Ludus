@@ -1,41 +1,57 @@
 #include <ludus/foundation/memory/allocation_domain.hpp>
 
-#include <new>
+#include "internal/accounting.hpp"
 
 namespace ludus::foundation
 {
 namespace
 {
-void* SystemAllocate(void*, usize bytes, usize alignment) noexcept
+[[nodiscard]] LUDUS_INLINE bool IsValidAlignment(usize alignment) noexcept
 {
-    return ::operator new(bytes, std::align_val_t{alignment}, std::nothrow);
+    return alignment != 0 && (alignment & (alignment - 1)) == 0;
 }
-void SystemFree(void*, void* pointer, usize, usize alignment) noexcept
-{
-    ::operator delete(pointer, std::align_val_t{alignment});
-}
-constexpr AllocationDomain kSystemDomain{nullptr, SystemAllocate, SystemFree};
 } // namespace
 
 void* AllocationDomain::TryAllocate(usize bytes, usize alignment) const noexcept
 {
-    if (bytes == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0 || mAllocate == nullptr || mFree == nullptr)
+    AllocationAccounting::Counters& counters = AllocationAccounting::GetCounters(*this);
+    if (IsValidAlignment(alignment) == false || mAllocate == nullptr || mFree == nullptr)
     {
+        memory_internal::RecordRejection(counters);
         return nullptr;
     }
-    return mAllocate(mContext, bytes, alignment);
+    if (bytes == 0)
+    {
+        // An empty request succeeds without a block or a lifetime.
+        return nullptr;
+    }
+    void* pointerOrNull = mAllocate(mContext, bytes, alignment);
+    if (LUDUS_UNLIKELY(pointerOrNull == nullptr))
+    {
+        memory_internal::RecordFailure(counters);
+        return nullptr;
+    }
+    memory_internal::RecordAllocation(counters, bytes);
+    return pointerOrNull;
 }
 
 void AllocationDomain::Free(void* pointer, usize bytes, usize alignment) const noexcept
 {
-    if (pointer != nullptr)
+    if (pointer == nullptr)
     {
-        mFree(mContext, pointer, bytes, alignment);
+        return;
     }
-}
-
-const AllocationDomain& GetSystemAllocationDomain() noexcept
-{
-    return kSystemDomain;
+    AllocationAccounting::Counters& counters = AllocationAccounting::GetCounters(*this);
+    if (LUDUS_UNLIKELY(bytes == 0 || IsValidAlignment(alignment) == false))
+    {
+        // No successful allocation has this layout. Keep the previous release
+        // behavior, but stop presenting the counters as exact.
+        memory_internal::MarkAccountingError(counters);
+    }
+    else
+    {
+        memory_internal::RecordFree(counters, bytes);
+    }
+    mFree(mContext, pointer, bytes, alignment);
 }
 } // namespace ludus::foundation

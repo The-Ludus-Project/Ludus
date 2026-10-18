@@ -176,7 +176,8 @@ TEST_CASE("World demo actors colliders settings and duplication share one inspec
     CHECK(runtime.Collision[0].HalfExtent.X == 8);
     Select(view, QStringLiteral("guard-a"));
     view.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->click();
-    CHECK(view.Document().Draft().value(QStringLiteral("entities")).toArray().size() == 6);
+    // Five gameplay entities, six scatter entities and the duplicate.
+    CHECK(view.Document().Draft().value(QStringLiteral("entities")).toArray().size() == 12);
     REQUIRE(view.Save());
     REQUIRE(ProjectWorldDemo(view.Document(), runtime, error));
     CHECK(runtime.EntityCount == 4);

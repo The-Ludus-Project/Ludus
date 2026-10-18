@@ -1,7 +1,12 @@
 #include "internal/world.h"
+#include "internal/random_domains.h"
+#include "internal/room_catalog.h"
 
+#include <ludus/content/procedural/environment/scatter.h>
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 
@@ -13,9 +18,62 @@ namespace ludus::world_demo
 {
 namespace
 {
+namespace procedural = content::procedural;
+using foundation::BorrowedView;
+using foundation::math::RandomAddress;
+using foundation::math::RandomKey;
+// The room's authored limits must stay within the kernel's and the render frame's.
+static_assert(MAX_ROOM_SCATTER_CANDIDATES_PER_CELL == procedural::MAX_SCATTER_CANDIDATES_PER_CELL);
+static_assert(MAX_ROOM_SCATTER_LAYERS <= procedural::MAX_SCATTER_LAYERS);
+static_assert(MAX_ROOM_SCATTER_VARIANTS <= procedural::MAX_SCATTER_VARIANTS);
+static_assert(sizeof(Level::Entities) / sizeof(Recipe) + MAX_WORLD_COLLISION <= procedural::MAX_SCATTER_KEEP_OUTS);
+static_assert(sizeof(Level::Collision) / sizeof(Box) == MAX_WORLD_COLLISION);
+/// Event of every presentation sample; cosmetic draws never advance an event.
+constexpr uint32 COSMETIC_EVENT = 0;
+/// Cosmetic-domain dimension of the brightness tint applied to a drawn placement.
+constexpr uint16 COSMETIC_TINT_DIMENSION = 0;
+/// Darkest cosmetic tint; the tint lies in [COSMETIC_TINT_FLOOR, 1].
+constexpr float32 COSMETIC_TINT_FLOOR = 0.8F;
+/// Rotation units per turn of a generated placement (1/65536 turns).
+constexpr float64 ROTATION_UNITS_PER_TURN = 65536.0;
+/// FNV-1a parameters shared with the replay hash and the scatter golden digest.
+constexpr uint64 FNV_OFFSET_BASIS = 14695981039346656037ULL;
+constexpr uint64 FNV_PRIME = 1099511628211ULL;
+constexpr usize BITS_PER_BYTE = 8;
+constexpr uint64 BYTE_MASK = 0xffu;
 bool Finite(Vec2 value) noexcept
 {
     return std::isfinite(value.X) && std::isfinite(value.Y);
+}
+/// Half-open lattice rectangle around a box, expanded by the keep-out margin; never empty.
+bool TryMakeKeepOut(Vec2 center,
+                    Vec2 half,
+                    float32 margin,
+                    uint32 units,
+                    procedural::ScatterRectangle& outRectangle) noexcept
+{
+    procedural::ScatterRectangle rectangle;
+    if (TryScaleToLattice(center.X - half.X - margin, units, rectangle.MinimumX) == false ||
+        TryScaleToLattice(center.Y - half.Y - margin, units, rectangle.MinimumY) == false ||
+        TryScaleToLattice(center.X + half.X + margin, units, rectangle.MaximumX) == false ||
+        TryScaleToLattice(center.Y + half.Y + margin, units, rectangle.MaximumY) == false)
+    {
+        return false;
+    }
+    rectangle.MaximumX = foundation::math::Max(rectangle.MaximumX, rectangle.MinimumX + 1);
+    rectangle.MaximumY = foundation::math::Max(rectangle.MaximumY, rectangle.MinimumY + 1);
+    outRectangle = rectangle;
+    return true;
+}
+/// Fold the low ByteCount little-endian bytes of `value` into an FNV-1a hash.
+template <usize ByteCount>
+void MixBytes(uint64& inoutHash, uint64 value) noexcept
+{
+    for (usize byte = 0; byte < ByteCount; ++byte)
+    {
+        inoutHash ^= (value >> (byte * BITS_PER_BYTE)) & BYTE_MASK;
+        inoutHash *= FNV_PRIME;
+    }
 }
 float32 Distance(Vec2 first, Vec2 second) noexcept
 {
@@ -60,9 +118,9 @@ TickInput InputBridge::Consume() noexcept
     mPending.Cancelled = false;
     return result;
 }
-Status GameWorld::Prepare(const Level& level, uint32 capacity) noexcept
+Status GameWorld::Prepare(const Level& level, uint32 capacity, WorldSeed worldSeed) noexcept
 {
-    if (ValidateLevel(level) != LevelError::None || capacity < level.EntityCount || capacity > 48)
+    if (ValidateLevel(level) != LevelError::None || capacity < level.EntityCount || capacity > MAX_WORLD_ENTITIES)
     {
         return Status::InvalidConfiguration;
     }
@@ -115,6 +173,180 @@ Status GameWorld::Prepare(const Level& level, uint32 capacity) noexcept
     foundation::Sort(mLevel.Entities, mLevel.EntityCount, [](const Recipe& first, const Recipe& second) {
         return first.Id.View() < second.Id.View();
     });
+    return prepareScatter(worldSeed);
+}
+Status GameWorld::prepareScatter(WorldSeed worldSeed) noexcept
+{
+    // Headless room scatter (docs/architecture/procedural-content-generation.md#p0-room-scoped-scatter): the
+    // recipe borrows this frame's arrays, the kernel writes every layer into one scratch allocation, and only
+    // the accepted placements are kept. Nothing here runs again on the tick or extraction path.
+    mWorldSeed = worldSeed;
+    mPlacements.Clear();
+    mPlacementDigest = 0;
+    mRoom = 0;
+    if (mLevel.HasScatter == false)
+    {
+        return Status::Success;
+    }
+    const RoomScatter& scatter = mLevel.Scatter;
+    const uint16 room = FindCatalogRoom(mLevel.Document, mLevel.Id.View());
+    if (room == 0)
+    {
+        return Status::InvalidConfiguration;
+    }
+    procedural::ScatterKeys keys;
+    RandomKey cosmeticKey;
+    if (procedural::TryMakeScatterKeys(worldSeed.Value,
+                                       {
+                                           .Placement = RANDOM_DOMAIN_SCATTER_PLACEMENT,
+                                           .Variant = RANDOM_DOMAIN_SCATTER_VARIANT,
+                                           .Transform = RANDOM_DOMAIN_SCATTER_TRANSFORM,
+                                       },
+                                       keys) != procedural::ScatterStatus::Success ||
+        foundation::math::TryMakeRandomKey(worldSeed.Value, RANDOM_DOMAIN_SCATTER_COSMETIC, cosmeticKey) !=
+            foundation::math::MathStatus::Success)
+    {
+        return Status::InvalidConfiguration;
+    }
+    procedural::ScatterRecipe recipe;
+    recipe.Room = room;
+    if (TryScaleToLattice(scatter.Minimum.X, scatter.UnitsPerMetre, recipe.Region.MinimumX) == false ||
+        TryScaleToLattice(scatter.Minimum.Y, scatter.UnitsPerMetre, recipe.Region.MinimumY) == false ||
+        TryScaleToLattice(scatter.Maximum.X, scatter.UnitsPerMetre, recipe.Region.MaximumX) == false ||
+        TryScaleToLattice(scatter.Maximum.Y, scatter.UnitsPerMetre, recipe.Region.MaximumY) == false)
+    {
+        return Status::InvalidConfiguration;
+    }
+    // Keep-outs: every authored spawn point and exit, then every collision box, each with the margin.
+    procedural::ScatterRectangle keepOuts[procedural::MAX_SCATTER_KEEP_OUTS] = {};
+    usize keepOutCount = 0;
+    for (usize index = 0; index < mLevel.EntityCount; ++index)
+    {
+        const Recipe& entity = mLevel.Entities[index];
+        const Vec2 half{entity.HalfExtent.X * entity.Scale.X, entity.HalfExtent.Y * entity.Scale.Y};
+        if (TryMakeKeepOut(entity.Position,
+                           half,
+                           scatter.KeepOutMargin,
+                           scatter.UnitsPerMetre,
+                           keepOuts[keepOutCount]) == false)
+        {
+            return Status::InvalidConfiguration;
+        }
+        ++keepOutCount;
+    }
+    for (usize index = 0; index < mLevel.CollisionCount; ++index)
+    {
+        const Box& box = mLevel.Collision[index];
+        if (TryMakeKeepOut(box.Center,
+                           box.HalfExtent,
+                           scatter.KeepOutMargin,
+                           scatter.UnitsPerMetre,
+                           keepOuts[keepOutCount]) == false)
+        {
+            return Status::InvalidConfiguration;
+        }
+        ++keepOutCount;
+    }
+    recipe.KeepOuts = BorrowedView<const procedural::ScatterRectangle>(keepOuts, keepOutCount);
+    procedural::ScatterVariant variants[MAX_ROOM_SCATTER_LAYERS][MAX_ROOM_SCATTER_VARIANTS] = {};
+    procedural::ScatterLayer layers[MAX_ROOM_SCATTER_LAYERS] = {};
+    for (usize index = 0; index < scatter.LayerCount; ++index)
+    {
+        const ScatterLayerRecipe& authored = scatter.Layers[index];
+        for (usize variant = 0; variant < authored.VariantCount; ++variant)
+        {
+            variants[index][variant].ExclusionRadius = authored.Variants[variant].ExclusionRadius;
+        }
+        layers[index] =
+        {
+            .Id = authored.Layer,
+            .CellSize = authored.CellSize,
+            .CandidatesPerCell = authored.Candidates,
+            .Variants = BorrowedView<const procedural::ScatterVariant>(variants[index], authored.VariantCount),
+            .MinimumScale = authored.MinimumScale,
+            .MaximumScale = authored.MaximumScale,
+        };
+    }
+    recipe.Layers = BorrowedView<const procedural::ScatterLayer>(layers, scatter.LayerCount);
+    if (procedural::ValidateScatterRecipe(recipe).Status != procedural::ScatterStatus::Success)
+    {
+        return Status::InvalidConfiguration;
+    }
+    procedural::ScatterCellRange cells[MAX_ROOM_SCATTER_LAYERS] = {};
+    usize candidateOffsets[MAX_ROOM_SCATTER_LAYERS + 1] = {};
+    for (usize index = 0; index < scatter.LayerCount; ++index)
+    {
+        usize count = 0;
+        if (procedural::TryGetScatterCells(recipe, index, cells[index]) != procedural::ScatterStatus::Success ||
+            procedural::TryCountScatterCandidates(recipe, index, cells[index], count) !=
+                procedural::ScatterStatus::Success)
+        {
+            return Status::InvalidConfiguration;
+        }
+        candidateOffsets[index + 1] = candidateOffsets[index] + count;
+        if (candidateOffsets[index + 1] > MAX_ROOM_SCATTER_CANDIDATES)
+        {
+            return Status::CapacityExceeded;
+        }
+    }
+    foundation::Array<procedural::ScatterPlacement> scratch;
+    if (scratch.TryResize(candidateOffsets[scatter.LayerCount]) == false)
+    {
+        return Status::AllocationFailure;
+    }
+    usize accepted[MAX_ROOM_SCATTER_LAYERS] = {};
+    usize total = 0;
+    for (usize index = 0; index < scatter.LayerCount; ++index)
+    {
+        const BorrowedView<procedural::ScatterPlacement> storage(scratch.GetData() + candidateOffsets[index],
+                                                                 candidateOffsets[index + 1] - candidateOffsets[index]);
+        if (procedural::TryGenerateScatter(recipe, keys, index, cells[index], storage, accepted[index]) !=
+            procedural::ScatterStatus::Success)
+        {
+            return Status::InvalidConfiguration;
+        }
+        total += accepted[index];
+    }
+    if (total > MAX_ROOM_PLACEMENTS)
+    {
+        return Status::CapacityExceeded;
+    }
+    if (mPlacements.TryEnsureCapacity(total) == false)
+    {
+        return Status::AllocationFailure;
+    }
+    uint64 digest = FNV_OFFSET_BASIS;
+    for (usize index = 0; index < scatter.LayerCount; ++index)
+    {
+        for (usize i = 0; i < accepted[index]; ++i)
+        {
+            const procedural::ScatterPlacement& generated = scratch[candidateOffsets[index] + i];
+            const Placement placement
+            {
+                .Scope = procedural::PackScatterScope(generated.Identity),
+                .LatticeX = generated.LatticeX,
+                .LatticeY = generated.LatticeY,
+                .Rotation = generated.Rotation,
+                .Scale = generated.Scale,
+                .Layer = static_cast<uint8>(index),
+                .Variant = static_cast<uint8>(generated.Variant),
+            };
+            // Capacity was reserved above, so this append cannot allocate.
+            if (mPlacements.TryAdd(placement) == false)
+            {
+                return Status::AllocationFailure;
+            }
+            MixBytes<sizeof(uint64)>(digest, placement.Scope);
+            MixBytes<sizeof(int32)>(digest, static_cast<uint32>(placement.LatticeX));
+            MixBytes<sizeof(int32)>(digest, static_cast<uint32>(placement.LatticeY));
+            MixBytes<sizeof(uint32)>(digest, generated.Variant);
+            MixBytes<sizeof(uint16)>(digest, placement.Rotation);
+            MixBytes<sizeof(uint16)>(digest, placement.Scale);
+        }
+    }
+    mPlacementDigest = digest;
+    mCosmeticKey = cosmeticKey.Value;
+    mRoom = room;
     return Status::Success;
 }
 Status GameWorld::Spawn(const Recipe& recipe, EntityId& output) noexcept
@@ -887,7 +1119,7 @@ bool GameWorld::Extract(float32 alpha,
         return false;
     }
     const auto add = [&](Draw draw) {
-        if (candidate.Count == 64)
+        if (candidate.Count == MAX_RENDER_DRAWS)
         {
             return false;
         }
@@ -906,7 +1138,34 @@ bool GameWorld::Extract(float32 alpha,
             return false;
         }
     }
-    EntityId entities[64] = {};
+    // Placements draw behind entities. The cosmetic tint is the only draw-time sample: it reads the
+    // presentation-only cosmetic domain at event zero and never enters simulation state or the replay hash.
+    const float32 units = static_cast<float32>(mLevel.Scatter.UnitsPerMetre);
+    const RandomKey cosmeticKey{mCosmeticKey};
+    for (const Placement& placement : GetPlacements())
+    {
+        const ScatterVariantRecipe& variant = mLevel.Scatter.Layers[placement.Layer].Variants[placement.Variant];
+        const float32 scale = static_cast<float32>(placement.Scale) / static_cast<float32>(SCATTER_SCALE_UNIT);
+        const float32 tint =
+            COSMETIC_TINT_FLOOR +
+            (1.0F - COSMETIC_TINT_FLOOR) * foundation::math::SampleFloat01(
+                                               cosmeticKey,
+                                               RandomAddress{placement.Scope, COSMETIC_EVENT, COSMETIC_TINT_DIMENSION});
+        Draw draw
+        {
+            .Position = {static_cast<float32>(placement.LatticeX) / units,
+                         static_cast<float32>(placement.LatticeY) / units},
+            .HalfExtent = {variant.HalfExtent.X * scale, variant.HalfExtent.Y * scale},
+            .Rotation = static_cast<float32>(static_cast<float64>(placement.Rotation) *
+                                             (2.0 * foundation::math::kPi / ROTATION_UNITS_PER_TURN)),
+            .Color = {variant.Color[0] * tint, variant.Color[1] * tint, variant.Color[2] * tint, 1},
+        };
+        if (add(draw) == false)
+        {
+            return false;
+        }
+    }
+    EntityId entities[MAX_WORLD_ENTITIES] = {};
     usize count = 0;
     for (auto entity : mVisuals.GetOwners())
     {
@@ -948,17 +1207,13 @@ uint64 GameWorld::GetReplayHash() const noexcept
     {
         return 0;
     }
-    uint64 hash = 14695981039346656037ULL;
-    const auto mix = [&](uint64 value) {
-        for (usize byte = 0; byte < 8; ++byte)
-        {
-            hash ^= (value >> (byte * 8)) & 255;
-            hash *= 1099511628211ULL;
-        }
-    };
+    uint64 hash = FNV_OFFSET_BASIS;
+    const auto mix = [&](uint64 value) { MixBytes<sizeof(uint64)>(hash, value); };
     const auto number = [&](float32 value) { mix(std::bit_cast<uint32>(value)); };
     mix(mTick);
     mix(mLevel.Seed);
+    mix(mWorldSeed.Value);
+    mix(mRoom);
     mix(mNextRequest);
     mix(mRegistry.GetCapacity());
     mix(mRegistry.GetAvailable());
@@ -1022,8 +1277,53 @@ uint64 GameWorld::GetReplayHash() const noexcept
         pair(recipe.HalfExtent);
         name(recipe.NextLevel);
     }
+    // Scatter content and the accepted placements are simulation state; cosmetic tints are not.
+    mix(mLevel.HasScatter);
+    if (mLevel.HasScatter == true)
+    {
+        const RoomScatter& scatter = mLevel.Scatter;
+        name(scatter.Id);
+        mix(scatter.UnitsPerMetre);
+        pair(scatter.Minimum);
+        pair(scatter.Maximum);
+        number(scatter.KeepOutMargin);
+        mix(scatter.LayerCount);
+        for (usize index = 0; index < scatter.LayerCount; ++index)
+        {
+            const ScatterLayerRecipe& layer = scatter.Layers[index];
+            name(layer.Id);
+            mix(layer.Layer);
+            mix(layer.CellSize);
+            mix(layer.Candidates);
+            mix(layer.MinimumScale);
+            mix(layer.MaximumScale);
+            mix(layer.VariantCount);
+            for (usize variant = 0; variant < layer.VariantCount; ++variant)
+            {
+                const ScatterVariantRecipe& recipe = layer.Variants[variant];
+                name(recipe.Id);
+                mix(recipe.ExclusionRadius);
+                pair(recipe.HalfExtent);
+                for (const float32 channel : recipe.Color)
+                {
+                    number(channel);
+                }
+            }
+        }
+    }
+    mix(mPlacements.GetSize());
+    for (const Placement& placement : GetPlacements())
+    {
+        mix(placement.Scope);
+        mix(static_cast<uint32>(placement.LatticeX));
+        mix(static_cast<uint32>(placement.LatticeY));
+        mix(placement.Rotation);
+        mix(placement.Scale);
+        mix(placement.Layer);
+        mix(placement.Variant);
+    }
     name(mNextLevel);
-    EntityId entities[64] = {};
+    EntityId entities[MAX_WORLD_ENTITIES] = {};
     usize count = 0;
     for (auto entity : mTransforms.GetOwners())
     {
@@ -1261,7 +1561,7 @@ Status Session::PollLoad() noexcept
     Status status = Status::Success;
     if (mStage == LoadStage::Preparing)
     {
-        status = mCandidate.Prepare(mDefinition);
+        status = mCandidate.Prepare(mDefinition, MAX_WORLD_ENTITIES, Seed);
         if (status == Status::Success)
         {
             mStage = LoadStage::Building;

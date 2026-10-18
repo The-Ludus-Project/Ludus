@@ -4,7 +4,9 @@ This small game demonstrates the first implementation of the
 [world architecture](../architecture/game-world.md). Move the orange player
 with WASD, attack nearby red guards with Space, and reach the green exit to load
 the other room. P pauses, N advances one neutral tick while paused, and R restarts.
-Click or focus the browser canvas before using keyboard controls.
+Click or focus the browser canvas before using keyboard controls. The green and
+grey rectangles behind the actors are [scatter placements](#scatter-placements)
+generated for each room from the session's world seed.
 
 The reusable engine module contains only identity and component storage. This
 application owns the level schema, component roster, simulation policies, input
@@ -106,6 +108,62 @@ Use the [World workflow](../development/editor-workspace.md#s4-scene-authoring)
 for transforms, player/enemy/exit fields, collision boxes, camera/bounds and seed.
 The same saved World feeds both trusted preview and the sample player.
 
+### Scatter placements
+
+Each room may author a room-scoped scatter of static placements, the first
+consumer of the [addressed randomness](../architecture/randomness.md#milestone-1-procedural-placement)
+outside the renderer and slice P0 of the
+[procedural content generation architecture](../architecture/procedural-content-generation.md#p0-room-scoped-scatter).
+The recipe is ordinary World content, so the Editor inspects it with the same
+schema-driven fields as every other component:
+
+| Component | Entity count | Properties |
+| --- | --- | --- |
+| `scatter` | one per world | `units_per_metre` (1 to 1000 lattice units per metre), the region `min_x`/`min_y`/`max_x`/`max_y` in metres inside the level bounds, and `keep_out_margin` in metres |
+| `scatter_layer` | one to four | `layer` (stable ID 0 to 255, unique in the room), `cell_size` and `candidates` per cell (1 to 64) in lattice units, `min_scale`/`max_scale` in thousandths |
+| `scatter_variant` | one to four per layer, in document order | `layer` it joins, `exclusion_radius` in lattice units (at most the cell size), drawn `half_x`/`half_y` in metres at scale 1000, and `red`/`green`/`blue` |
+
+The kernel works on an integer lattice; `units_per_metre` converts authored
+metres (rounded to the nearest unit) and converts generated positions back for
+drawing. Keep-outs are not authored separately: every player and enemy spawn
+point, every exit and every collision box, each expanded by `keep_out_margin`,
+excludes candidates from all layers. Layer IDs are persistent: a retired ID is
+never reused, because it is part of every placement identity together with the
+room ordinal, cell and candidate index.
+
+The room ordinal comes from the checked-in catalog in
+[room_catalog.h](../../apps/world_demo/internal/room_catalog.h), which maps each
+level's document UUID (the committed values in `identity-migration.json`) and,
+for version-1 records without a UUID, its settings `id` to a nonzero `uint16`
+that is never reused. The random domains (placement, variant, transform, regrow
+and cosmetic) are the checked-in manifest in
+[random_domains.h](../../apps/world_demo/internal/random_domains.h); both tables
+assert their uniqueness at compile time. The session owns an explicit
+`WorldSeed` with a fixed default and records the value each world was prepared
+with (`GetWorldSeed`); the level's authored `seed` stays content data and does
+not influence placements, so two rooms never repeat each other's scatter.
+
+Placements are generated once, when a room's candidate world is prepared, and
+stored as compact records (`GetPlacements`), never as entities. Preparation
+performs the only allocations: one scratch buffer for every candidate of every
+layer and the room's placement storage. The tick and extraction paths allocate
+nothing. Extraction draws every placement behind the entities, scaled and
+rotated from the generated transform, and samples only the cosmetic domain at
+event zero for a per-placement tint. Placements, the scatter recipe, the room
+ordinal and the world seed enter the replay hash; cosmetic tints enter nothing,
+so rendering, frame pacing, interpolation and extra extractions never change it.
+
+Loading rejects an unusable recipe with nothing published: a repeated layer ID or
+name, a variant naming no layer, an empty region or one outside the level
+bounds, an exclusion radius above its cell size, an inverted scale range, more
+than 4096 candidates (`MAX_ROOM_SCATTER_CANDIDATES`) or more than 128 accepted
+placements (`MAX_ROOM_PLACEMENTS`). A level with a scatter whose room is not in
+the catalog fails preparation with `InvalidConfiguration`; the active world is
+preserved. Levels without a `scatter` component need no catalog entry and draw
+nothing extra. The legacy v1 writer has no scatter representation, so
+`WriteLevel` omits it. Harvesting and regrowth are the next milestone step and
+are not implemented yet.
+
 `Level` is also directly constructible in code. `Prepare` and `BuildNext` use the
 same world semantics for compiled definitions and decoded JSON. `WriteLevel`
 produces the legacy v1 interchange JSON into fallible owned storage, preserving the output on
@@ -149,9 +207,11 @@ the previous render frame until restart and never publishes that tick's presenta
 ## Ownership and limits
 
 The reference world reserves 48 entities, 32 commands/outcomes, 64 optional
-presentation records, 16 outstanding completion tickets and 64 render records.
-Content permits 32 initial entities and 16 static boxes. These limits leave room
-for every active entity plus static geometry in the render frame. Queue overflow
+presentation records, 16 outstanding completion tickets and 192 render records
+(`MAX_RENDER_DRAWS`: 48 entities, 16 collision boxes and 128 placements).
+Content permits 32 initial entities, 16 static boxes and 128 scatter placements.
+These limits leave room for every active entity, static geometry and placement
+in the render frame. Queue overflow
 and commit preflight return explicit errors; optional presentation overflow counts
 drops. Runtime spawning currently accepts guards targeting the existing player.
 
@@ -194,8 +254,8 @@ cross-platform floating-point determinism are future work.
 
 ## Rendering and validation
 
-The game-owned renderer draws up to 64 procedural rectangles through the existing
-public fullscreen RHI API. Its 3104-byte uniform block uses fixed vector arrays;
+The game-owned renderer draws up to 192 procedural rectangles through the existing
+public fullscreen RHI API. Its 9248-byte uniform block uses fixed vector arrays;
 C++ offsets are asserted and independently checked against SPIR-V, WGSL and GLSL
 ES reflection. Collider boxes are axis-aligned; visual rotation affects drawing. Narrow windows
 expand the camera height to keep the authored horizontal bounds visible.
@@ -204,9 +264,14 @@ meshes or a general sprite renderer to the RHI.
 
 Native tests cover identity retirement, stale/foreign handles, sparse removal,
 compiled and JSON definitions, canonical round trips, candidate ownership,
-input/catch-up/pause, commands, combat/contacts, completions and replay. A separate
-non-sanitized allocator test injects every candidate storage allocation failure
-and proves prepared simulation/extraction paths allocate no storage.
+input/catch-up/pause, commands, combat/contacts, completions and replay. The
+scatter tests pin the first room's placement digest, and check presentation
+isolation (rendering, pacing, interpolation and extra cosmetic draws leave the
+replay hash), content isolation (another room's recipe, a new layer and changed
+transform ranges leave existing placements), catalog and manifest rejection, and
+load failures that publish nothing. A separate non-sanitized allocator test
+injects every candidate storage allocation failure, including the two scatter
+allocations, and proves prepared simulation/extraction paths allocate no storage.
 
 The contributor workflow also checks native ASan/UBSan, format/tidy, header/include
 boundaries and installed SDK consumption. Browser QA uses the repository's pinned
@@ -217,7 +282,8 @@ node apps/world_demo/tests/browser-test.mjs   out/build/web-emscripten-developme
 ```
 
 Set `LUDUS_WORLD_WEBGL=1` to exercise the Auto fallback without WebGPU. The harness
-verifies the selected backend and player/guard/exit pixels, captures canvas and
+verifies the selected backend and player/guard/exit pixels, compares the page's
+scatter placement digest with the pinned native value, captures canvas and
 narrow-layout screenshots, and checks movement, pause, step,
 restart and focus cancellation. Its Chromium/SwiftShader run is software GPU
 acceptance; it does not establish hardware performance or public hosted acceptance.

@@ -238,6 +238,210 @@
       ]
     },
     {
+      "id": "scatter",
+      "label": "Scatter",
+      "help": "Room-scoped scatter of static placements; one per world, with scatter_layer and scatter_variant entities.",
+      "required": false,
+      "properties": [
+        {
+          "id": "units_per_metre",
+          "label": "Lattice units per metre",
+          "type": "integer",
+          "default": 100,
+          "min": 1,
+          "max": 1000,
+          "help": "Converts authored metres to the integer scatter lattice.",
+          "unit": ""
+        },
+        {
+          "id": "min_x",
+          "label": "Region minimum X",
+          "type": "number",
+          "default": -11,
+          "min": -100000,
+          "max": 100000,
+          "help": "Inside the level bounds.",
+          "unit": "metres"
+        },
+        {
+          "id": "min_y",
+          "label": "Region minimum Y",
+          "type": "number",
+          "default": -6,
+          "min": -100000,
+          "max": 100000,
+          "help": "Inside the level bounds.",
+          "unit": "metres"
+        },
+        {
+          "id": "max_x",
+          "label": "Region maximum X",
+          "type": "number",
+          "default": 11,
+          "min": -100000,
+          "max": 100000,
+          "help": "Inside the level bounds.",
+          "unit": "metres"
+        },
+        {
+          "id": "max_y",
+          "label": "Region maximum Y",
+          "type": "number",
+          "default": 6,
+          "min": -100000,
+          "max": 100000,
+          "help": "Inside the level bounds.",
+          "unit": "metres"
+        },
+        {
+          "id": "keep_out_margin",
+          "label": "Keep-out margin",
+          "type": "number",
+          "default": 0.5,
+          "min": 0,
+          "max": 10,
+          "help": "Added around every spawn point, exit and collision box.",
+          "unit": "metres"
+        }
+      ]
+    },
+    {
+      "id": "scatter_layer",
+      "label": "Scatter layer",
+      "help": "One independently thinned layer; the layer ID is stable and part of every placement identity.",
+      "required": false,
+      "properties": [
+        {
+          "id": "layer",
+          "label": "Layer ID",
+          "type": "integer",
+          "default": 1,
+          "min": 0,
+          "max": 255,
+          "help": "Stable, unique in the room; never reuse a retired ID.",
+          "unit": ""
+        },
+        {
+          "id": "cell_size",
+          "label": "Cell size",
+          "type": "integer",
+          "default": 250,
+          "min": 1,
+          "max": 65535,
+          "help": "",
+          "unit": "lattice units"
+        },
+        {
+          "id": "candidates",
+          "label": "Candidates per cell",
+          "type": "integer",
+          "default": 2,
+          "min": 1,
+          "max": 64,
+          "help": "",
+          "unit": ""
+        },
+        {
+          "id": "min_scale",
+          "label": "Minimum scale",
+          "type": "integer",
+          "default": 1000,
+          "min": 1,
+          "max": 65535,
+          "help": "Thousandths of the variant's authored size.",
+          "unit": ""
+        },
+        {
+          "id": "max_scale",
+          "label": "Maximum scale",
+          "type": "integer",
+          "default": 1000,
+          "min": 1,
+          "max": 65535,
+          "help": "At least the minimum scale.",
+          "unit": ""
+        }
+      ]
+    },
+    {
+      "id": "scatter_variant",
+      "label": "Scatter variant",
+      "help": "One equally likely choice of a scatter layer, in document order.",
+      "required": false,
+      "properties": [
+        {
+          "id": "layer",
+          "label": "Layer ID",
+          "type": "integer",
+          "default": 1,
+          "min": 0,
+          "max": 255,
+          "help": "The scatter_layer this variant joins.",
+          "unit": ""
+        },
+        {
+          "id": "exclusion_radius",
+          "label": "Exclusion radius",
+          "type": "integer",
+          "default": 60,
+          "min": 0,
+          "max": 65535,
+          "help": "At most the layer's cell size; zero never conflicts.",
+          "unit": "lattice units"
+        },
+        {
+          "id": "half_x",
+          "label": "Half width",
+          "type": "number",
+          "default": 0.3,
+          "min": 0,
+          "max": 100000,
+          "help": "At scale 1000.",
+          "unit": "metres"
+        },
+        {
+          "id": "half_y",
+          "label": "Half height",
+          "type": "number",
+          "default": 0.3,
+          "min": 0,
+          "max": 100000,
+          "help": "At scale 1000.",
+          "unit": "metres"
+        },
+        {
+          "id": "red",
+          "label": "Red",
+          "type": "number",
+          "default": 0.3,
+          "min": 0,
+          "max": 1,
+          "help": "",
+          "unit": ""
+        },
+        {
+          "id": "green",
+          "label": "Green",
+          "type": "number",
+          "default": 0.5,
+          "min": 0,
+          "max": 1,
+          "help": "",
+          "unit": ""
+        },
+        {
+          "id": "blue",
+          "label": "Blue",
+          "type": "number",
+          "default": 0.25,
+          "min": 0,
+          "max": 1,
+          "help": "",
+          "unit": ""
+        }
+      ]
+    },
+    {
       "id": "settings",
       "label": "Level settings",
       "help": "",

@@ -15,6 +15,9 @@ namespace
 {
 LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR, "Editor");
 
+// Combined UTF-8 text of one engine_pin report (editor_tool.ENGINE_PIN_MAX_BYTES).
+constexpr usize MAX_ENGINE_PIN_TEXT_BYTES = usize{8} * 1024u;
+
 // A protocol job id is a 16-character lowercase hex string so JSON number
 // representation can never lose an integer (design section 6).
 QString EncodeJob(uint64 job)
@@ -371,6 +374,32 @@ bool ToolProcess::DispatchFrame(const QByteArray& line)
             return false;
         }
         event.Kind = ProtocolEvent::Type::SetupDetails;
+        Q_EMIT Event(event);
+        return true;
+    }
+    if (type == QStringLiteral("engine_pin"))
+    {
+        // The selected engine install versus this editor's checkout; only a
+        // setup check may report it, and only before its terminal result.
+        const std::optional<EnginePinState> state =
+            ParseEnginePinState(object.value(QStringLiteral("state")).toString());
+        event.Pin.Installation = object.value(QStringLiteral("installation")).toString();
+        event.Pin.PinnedRevision = object.value(QStringLiteral("pinned_revision")).toString();
+        event.Pin.EditorRevision = object.value(QStringLiteral("editor_revision")).toString();
+        event.Pin.Message = object.value(QStringLiteral("message")).toString();
+        event.Pin.IsEditorOwned = object.value(QStringLiteral("editor_owned")).toBool();
+        const usize textBytes = static_cast<usize>(event.Pin.Installation.toUtf8().size()) +
+                                static_cast<usize>(event.Pin.PinnedRevision.toUtf8().size()) +
+                                static_cast<usize>(event.Pin.EditorRevision.toUtf8().size()) +
+                                static_cast<usize>(event.Pin.Message.toUtf8().size());
+        if (Launch_.Operation != ToolOperation::ProjectCheck || state.has_value() == false ||
+            event.Pin.Message.isEmpty() || textBytes > MAX_ENGINE_PIN_TEXT_BYTES || TerminalDelivered_)
+        {
+            FailProtocol(QStringLiteral("invalid engine pin report"));
+            return false;
+        }
+        event.Pin.State = state.value();
+        event.Kind = ProtocolEvent::Type::EnginePin;
         Q_EMIT Event(event);
         return true;
     }

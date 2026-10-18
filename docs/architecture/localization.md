@@ -14,9 +14,15 @@ implemented for `ludus-icu-mf1-v1` ([release cooking](../modules/localization.md
 a pinned-ICU host profile checker sharing the L0 walk, a release cooker writing
 package version 2 with ICU-decoded static text, dynamic patterns with argument
 schemas and baked fallback providers, exact descriptor binding, generated
-per-domain descriptors and an offline inspector. Typed helpers that erase
-arguments await L2 `Format`. ICU formatting, locale negotiation, context
-switching and paragraph integration below describe subsequent phases. No throughput or complete language-support
+per-domain descriptors and an offline inspector. L2 is implemented for typed
+formatting ([formatting](../modules/localization.md#formatting-messages-with-arguments)):
+the opt-in private [`Ludus::Unicode`](../modules/foundation/unicode.md) owner
+builds the pinned ICU4C for native and wasm32 and owns the host service (hooks,
+embedded data, warm-up, fail-stop on ICU allocation failure, teardown cleanup);
+`PrepareFormatterContext` and `Format` validate the full schema before ICU and
+copy complete output, and generated descriptors gain typed helpers. Consumer
+presentation caches (`LocalizedText`), locale negotiation, context switching and
+paragraph integration below describe subsequent phases. No throughput or complete language-support
 claim is made. Original design baseline: `52e29ce`; initial implementation base:
 `afe3b78`, with FoundationMemory/Strings now available.
 
@@ -689,7 +695,7 @@ architecture-only change does not configure, repair, or build such a project.
 | --- | --- | --- |
 | L0 | Schema/manifest/profile specification, ICU dependency probe, representative corpus | Native/wasm exception-free backend proof, sizes, failure behavior and confirmed CAT profile; report unsupported targets. [Implemented](localization-l0.md) except the CAT confirmation |
 | L1 | Source validation, static cooker/reader, exact bindings and generated descriptors | Static escaping/UTF-8, corruption/collision/lifetime tests, reproducible packages and CLI inspection. [Implemented](../modules/localization.md#release-cooking-ludus-icu-mf1-v1); typed helpers wait for L2 `Format` |
-| L2 | Typed ICU formatting, context preparation and consumer caches | Grammar corpus, failure injection, native/wasm formatting parity and measured dynamic cost |
+| L2 | Typed ICU formatting, context preparation and consumer caches | Grammar corpus, failure injection, native/wasm formatting parity and measured dynamic cost. [Implemented](../modules/localization.md#formatting-messages-with-arguments) except consumer caches (`LocalizedText`), which move to L3 visible-view work; ICU allocation failure is fail-stop, not recoverable |
 | L3 | Candidate loading, visible-view readiness and generation publication | Cancellation, old-plus-new budgets, consistent visible switch, hot reload and multi-context tests |
 | L4 | Text paragraph/locale-transfer extension and font policy | Conformance tests and real rendered language coverage; actual web Text integration |
 | L5 | Editor/XLIFF workflow, localized assets, dialogue coordination | Translator round trips, stale-import conflicts, full package and cue/playback validation |

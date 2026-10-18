@@ -147,7 +147,8 @@ bool CommitWorldDemoGesture(WorldDocument& document, const SceneSnapshot& projec
         for (foundation::int32 row = 0; row < entities.size(); ++row)
         {
             auto entity = entities[row].toObject();
-            if (entity.value(QStringLiteral("id")) == QJsonValue(Text(recipe.Id)))
+            // A recipe's Id is the entity's label in both World versions, unique within the World.
+            if (document.GetEntityLabel(entity) == Text(recipe.Id))
             {
                 auto components = entity.value(QStringLiteral("components")).toObject();
                 auto transform = components.value(QStringLiteral("transform")).toObject();

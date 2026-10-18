@@ -143,6 +143,7 @@ private:
     QPushButton* ProjectRunButton_ = nullptr;
     QPushButton* ProjectSaveButton_ = nullptr;
     QPushButton* ProjectStopButton_ = nullptr;
+    QPushButton* mUseEditorEngineButtonOrNull = nullptr; // shown when the pinned engine is stale or unusable
 
     // Settings form controls.
     QLineEdit* NameEdit_ = nullptr;

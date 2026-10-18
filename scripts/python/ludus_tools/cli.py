@@ -19,6 +19,8 @@ Commands:
     ludus project run       <project> [--profile <preset>] [--sdk <prefix>]
     ludus project engine    <project> (--sdk <prefix> | --clear-override)
                                        [--profile <preset>]
+    ludus project engine    <project> --status --tools <checkout> [--profile <preset>]
+    ludus project engine    <project> --list   --tools <checkout> [--profile <preset>]
     ludus project migrate   <project> --engine <release>
 """
 
@@ -244,11 +246,15 @@ def cmd_project_engine(args) -> int:
             print("Cleared override" if changed else "No override to clear")
         _emit(args, {"cleared": changed})
         return EXIT_OK
+    if args.status or args.list:
+        return _report_engine_pin(args, paths, profile, target, flavor)
     if not args.sdk:
-        raise ToolingError("InvalidProject", "engine requires --sdk <prefix> or --clear-override")
-    from .identity import load_prefix_manifest, require_compatible
+        raise ToolingError("InvalidProject", "engine requires --sdk <prefix>, --clear-override, --status or --list")
+    from .engine_pin import validate_install_prefix
+    from .identity import require_compatible
 
-    identity = load_prefix_manifest(Path(args.sdk))
+    # Rejects build folders and folders without an installed manifest by name.
+    identity = validate_install_prefix(Path(args.sdk).resolve())
     require_compatible(identity, required_flavor=flavor)
     validate_target(identity, profile)
     descriptor = parse_descriptor_file(paths.descriptor_path)
@@ -261,6 +267,47 @@ def cmd_project_engine(args) -> int:
         print(f"Set local override for {flavor}: {Path(args.sdk).resolve()}")
         print("The committed lock is unchanged.")
     _emit(args, {"override": str(Path(args.sdk).resolve()), "flavor": flavor})
+    return EXIT_OK
+
+
+def _report_engine_pin(args, paths, profile: str, target: str, flavor: str) -> int:
+    """Show the selected install versus the tooling checkout, or list this checkout's installs."""
+    from .engine_pin import (are_revisions_equal, checkout_revision, diagnose_engine_pin, editor_install_root,
+                             is_known_revision)
+    from .identity import load_prefix_manifest
+    if not args.tools:
+        raise ToolingError("InvalidProject", "--status and --list require --tools <Ludus checkout>")
+    tools = Path(args.tools).resolve()
+    revision = checkout_revision(tools)
+    if args.status:
+        pin = diagnose_engine_pin(paths.descriptor_path, tooling_root=tools, profile=profile, editor_revision=revision)
+        payload = pin.to_json() if pin is not None else {"state": "none", "editor_revision": revision,
+                                                         "message": "No local engine install is selected."}
+        _emit(args, {"engine_pin": payload})
+        if not getattr(args, "json", False):
+            print(payload["message"])
+            if pin is not None:
+                print(f"Installation: {pin.installation}")
+        return EXIT_OK
+    installs = []
+    root = editor_install_root(tools)
+    for candidate in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
+        try:
+            identity = load_prefix_manifest(candidate)
+        except ToolingError:
+            continue
+        if identity.target_triple != target or identity.flavor != flavor:
+            continue
+        installs.append({"prefix": str(candidate), "revision": identity.source_revision,
+                         "version": identity.engine_version,
+                         "current": is_known_revision(revision) and are_revisions_equal(identity.source_revision, revision)})
+    _emit(args, {"installs": installs, "editor_revision": revision})
+    if not getattr(args, "json", False):
+        if not installs:
+            print(f"No {flavor} engine installs for {target} under {root}")
+        for item in installs:
+            marker = "current" if item["current"] else "older"
+            print(f"{item['revision'][:7] or 'unknown':8} {marker:8} {item['prefix']}")
     return EXIT_OK
 
 
@@ -550,6 +597,9 @@ def build_parser() -> argparse.ArgumentParser:
     eng.add_argument("project")
     eng.add_argument("--sdk")
     eng.add_argument("--clear-override", action="store_true")
+    eng.add_argument("--status", action="store_true", help="compare the selected install with --tools' revision")
+    eng.add_argument("--list", action="store_true", help="list engine installs owned by the --tools checkout")
+    eng.add_argument("--tools", help="trusted Ludus tooling checkout (for --status and --list)")
     eng.add_argument("--profile")
     eng.set_defaults(func=cmd_project_engine)
 

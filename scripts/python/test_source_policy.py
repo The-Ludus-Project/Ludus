@@ -26,7 +26,9 @@ class SourcePolicyTests(unittest.TestCase):
                     self.assertTrue(violations(path, f"if (count > {expression}) {{}}", {1}))
             for expression in ["format::MAX_VERTICES", "MAX_SAVE_BYTES", "MAX_CATALOG_BYTES",
                                "usize{256} * 1024 * 1024", "128 * 1024 * 1024"]:
-                self.assertFalse(violations(path, f"if (count > {expression}) {{}}", {1}))
+                # Unnamed products are still magic numbers; they are not duplicated admission policies.
+                messages = [message for _, message in violations(path, f"if (count > {expression}) {{}}", {1})]
+                self.assertFalse([message for message in messages if "admission-limit" in message], expression)
         self.assertFalse(violations(paths[0], '// 500000\nconst char* text = "1048576";\n#define CAP 4194304\n', {1, 2, 3}))
         self.assertFalse(violations(paths[0], "if (count > 500000) {}\n", {2}))
         for path in ["modules/content/scene_format/include/ludus/content/scene_format/limits.h",
@@ -41,6 +43,40 @@ class SourcePolicyTests(unittest.TestCase):
                        "void Read(const Thing& input);", "Thing* value = GetRequired();"]:
             self.assertFalse(self.diagnose(source), source)
         self.assertFalse(self.diagnose('// Thing* value = nullptr;\nconst char* text = "Thing&& inoutOther";'))
+
+    def test_magic_numbers_need_a_named_owner(self):
+        for source in ["int count = 42;", "Text<255> name;", "if (size > 0x400) {}",
+                       "float scale = 1e-6f;", "return Size{640, 480};", "char first[64] = {};",
+                       "x = 3.5;", "void F() { if (x) { y(); } int z = 7; }"]:
+            with self.subTest(source=source):
+                self.assertTrue(self.diagnose(source), source)
+        for source in ["int count = 0;", "x = y * 2 + 1;", "x = -1;", "float h = 0.5f * w;",
+                       "x = 1.0 - t;", "constexpr usize MAX_COUNT = 64;",
+                       "static const float32 SCALE{0.25f};", "inline constexpr usize B = usize{16} * 1024;",
+                       "constexpr uint64 MAX = uint64{1} << 32U;", "enum class Mode { A = 3, B = 7 };",
+                       "static_assert(sizeof(Thing) == 16);", "constexpr Table T = { {3, 4}, {5, 6} };",
+                       "x = data[3]; // ludus-style: magic-number glTF vec4 alpha lane",
+                       '// 42 in a comment\nconst char* text = "1080";\n#define CAP 4096\n',
+                       "int vertex2 = value; Thing3D thing;"]:
+            with self.subTest(source=source):
+                self.assertFalse(self.diagnose(source), source)
+        for path in ["modules/example/tests/thing_tests.cpp", "apps/editor/tests/a.cpp",
+                     "modules/foundation/math/benchmarks/sum_bench.cpp", "tools/probe/main.cpp"]:
+            self.assertFalse(violations(path, "int count = 42;", {1}), path)
+
+    def test_changed_references_booleans_and_abbreviations(self):
+        for source in ["void F(Thing& thing);", "bool ready = true;", "void F(bool enabled);",
+                       "int numVertices = 0;", "void Copy(const Buffer& src);", "Context* ctxOrNull = nullptr;"]:
+            with self.subTest(source=source):
+                self.assertTrue(self.diagnose(source), source)
+        for source in ["void F(Thing& outThing, Other& inoutOther, const Thing& thing);",
+                       "bool isReady = true; bool mHasItems = false;", "void F(bool& outIsDegenerate);",
+                       "int main(int argc, char** argv) { return 0; }", "UniquePtr<Thing> owner;",
+                       "QString parameterText; Source source; usize count = 0;",
+                       "for (Thing& thing : things) {}",
+                       "int vkArgs = 0; // ludus-style: abbreviation mirrors the Vulkan field name"]:
+            with self.subTest(source=source):
+                self.assertFalse(self.diagnose(source), source)
 
     def test_pointee_assignment_does_not_make_the_pointer_nullable(self):
         self.assertFalse(self.diagnose("void Clear(Thing** required) { *required = nullptr; }"))

@@ -1,11 +1,14 @@
 #include <ludus/foundation/profiling/trace_system.hpp>
 
+#include "internal/memory_gauge.hpp"
 #include "internal/recorder.hpp"
 #include "internal/trace_chunk.hpp"
 #include "internal/trace_event.hpp"
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/stable_sort.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/memory/allocation_statistics.hpp>
 
 #include <cstdio>
 #include <string>
@@ -39,6 +42,9 @@
 //   FrameMark -> phase "i" on a synthetic "Frames" name (a frame boundary; D7)
 //   FlowOut/FlowIn -> phases "s"/"f" with a shared id (cross-context links; C5)
 //   Counter -> phase "C" with args {"value": N} (timeline counter sample)
+//   MemoryGauge -> one phase "C" event per domain sample, named "Memory/<domain>",
+//              whose args are that sample's metrics; the coverage manifest goes
+//              in the top-level "metadata" object (memory profiling phase 1)
 //   registered thread names -> metadata "M" thread_name records
 //
 // Incomplete scopes (a Begin with no End when the capture ends, or a dropped
@@ -200,6 +206,139 @@ void AppendEventObject(std::string& out, bool& first, const ChromeEvent& event) 
     out += '}';
 }
 
+// One domain sample being written as a single counter event. Its metric events
+// are consecutive in a thread's ordered stream, share one timestamp and are
+// emitted in increasing metric order, so a repeated or lower metric starts the
+// next sample even when a coarse clock gives two samples the same tick.
+struct GaugeGroup
+{
+    bool IsOpen = false;
+    bool HasArgument = false;
+    uint32 ThreadId = 0;
+    uint32 DomainId = 0;
+    uint32 LastMetric = 0;
+    uint64 Ticks = 0;
+};
+
+using SeenDomains = foundation::StaticArray<bool, MAX_ALLOCATION_DOMAINS + 1>;
+
+void CloseGaugeGroup(std::string& inoutJson, GaugeGroup& inoutGroup) noexcept
+{
+    if (inoutGroup.IsOpen == true)
+    {
+        inoutJson += "}}";
+        inoutGroup.IsOpen = false;
+    }
+}
+
+void AppendDomainName(std::string& inoutJson, uint32 domainId) noexcept
+{
+    RegisteredAllocationDomain entry;
+    if (domainId != 0 && TryGetRegisteredAllocationDomain(domainId - 1, entry) == true && entry.NameOrNull != nullptr)
+    {
+        AppendJsonEscaped(inoutJson, entry.NameOrNull);
+        return;
+    }
+    inoutJson += "domain-";
+    AppendUint(inoutJson, domainId);
+}
+
+void AppendGaugeMetric(std::string& inoutJson,
+                       bool& inoutIsFirst,
+                       GaugeGroup& inoutGroup,
+                       SeenDomains& inoutSeenDomains,
+                       const FlatEvent& event) noexcept
+{
+    const uint32 domainId = internal::DecodeMemoryGaugeDomain(event.SiteId);
+    const uint32 metric = internal::DecodeMemoryGaugeMetric(event.SiteId);
+    const bool isSameSample = inoutGroup.IsOpen == true && inoutGroup.ThreadId == event.ThreadId &&
+                              inoutGroup.Ticks == event.Ticks && inoutGroup.DomainId == domainId &&
+                              metric > inoutGroup.LastMetric;
+    if (isSameSample == false)
+    {
+        CloseGaugeGroup(inoutJson, inoutGroup);
+        if (inoutIsFirst == false)
+        {
+            inoutJson += ",\n";
+        }
+        inoutIsFirst = false;
+        inoutJson += "  {\"pid\":1,\"tid\":";
+        AppendUint(inoutJson, event.ThreadId);
+        inoutJson += ",\"ts\":";
+        AppendMicros(inoutJson, event.Ticks);
+        inoutJson += ",\"ph\":\"C\",\"name\":\"Memory/";
+        AppendDomainName(inoutJson, domainId);
+        inoutJson += "\",\"args\":{";
+        inoutGroup.IsOpen = true;
+        inoutGroup.HasArgument = false;
+        inoutGroup.ThreadId = event.ThreadId;
+        inoutGroup.DomainId = domainId;
+        inoutGroup.Ticks = event.Ticks;
+        if (domainId < inoutSeenDomains.GetSize())
+        {
+            inoutSeenDomains[domainId] = true;
+        }
+    }
+    if (inoutGroup.HasArgument == true)
+    {
+        inoutJson += ',';
+    }
+    inoutGroup.HasArgument = true;
+    inoutGroup.LastMetric = metric;
+    inoutJson += '"';
+    inoutJson += internal::GetMemoryGaugeMetricName(metric);
+    inoutJson += "\":";
+    AppendUint(inoutJson, event.Aux);
+}
+
+// Coverage manifest for exported gauges: what the samples include, what they
+// cannot include, and how to read them. Registry names are restricted to a
+// JSON-safe character set; they are escaped anyway.
+void AppendMemoryGaugeMetadata(std::string& inoutJson, const SeenDomains& seenDomains) noexcept
+{
+    inoutJson += ",\"metadata\":{\"ludus-memory-gauges\":{\"schema\":";
+    AppendUint(inoutJson, internal::MEMORY_GAUGE_SCHEMA_VERSION);
+    inoutJson += ",\"metric\":\"requested-bytes\"";
+    inoutJson += ",\"sampling\":\"relaxed per-field samples; exact only at a caller-established quiescent boundary\"";
+    inoutJson += ",\"peaks\":\"per-domain high-water marks; never sum them into a process peak\"";
+    inoutJson += ",\"validity\":{\"0\":\"valid\",\"1\":\"saturated\",\"2\":\"accounting-error\"}";
+    inoutJson += ",\"coverage\":\"registered allocation domains only; no measured whole-process denominator\"";
+    inoutJson += ",\"includedDomains\":[";
+    bool isFirstDomain = true;
+    for (usize domainId = 1; domainId < seenDomains.GetSize(); ++domainId)
+    {
+        if (seenDomains[domainId] == false)
+        {
+            continue;
+        }
+        if (isFirstDomain == false)
+        {
+            inoutJson += ',';
+        }
+        isFirstDomain = false;
+        inoutJson += "{\"id\":";
+        AppendUint(inoutJson, domainId);
+        inoutJson += ",\"name\":\"";
+        AppendDomainName(inoutJson, static_cast<uint32>(domainId));
+        inoutJson += "\"}";
+    }
+    inoutJson += "],\"excludedPaths\":[";
+    for (usize index = 0; index < GetAllocationCoverageExclusionCount(); ++index)
+    {
+        const AllocationCoverageExclusion& exclusion = GetAllocationCoverageExclusion(index);
+        if (index != 0)
+        {
+            inoutJson += ',';
+        }
+        inoutJson += "{\"name\":\"";
+        AppendJsonEscaped(inoutJson, exclusion.Name);
+        inoutJson += "\",\"reason\":\"";
+        AppendJsonEscaped(inoutJson, exclusion.Reason);
+        inoutJson += "\"}";
+    }
+    inoutJson += "]}}";
+}
+
 } // namespace
 
 bool ExportPerfettoTrace(std::string_view path) noexcept
@@ -284,6 +423,9 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
     // removes the std::string dependency entirely).
     usize openDepth = 0;
     uint32 currentThread = events.GetFirst().ThreadId;
+    GaugeGroup gaugeGroup;
+    SeenDomains seenDomains{};
+    bool hasMemoryGauges = false;
 
     uint64 lastTicks = events.GetFirst().Ticks;
 
@@ -305,6 +447,10 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
 
     for (const FlatEvent& e : events)
     {
+        if (static_cast<TraceEventKind>(e.Kind) != TraceEventKind::MemoryGauge || e.ThreadId != currentThread)
+        {
+            CloseGaugeGroup(out, gaugeGroup);
+        }
         if (e.ThreadId != currentThread)
         {
             flushOpen(currentThread);
@@ -358,12 +504,22 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
                 ce.CounterValue = e.Aux;
                 AppendEventObject(out, first, ce);
                 break;
+            case TraceEventKind::MemoryGauge:
+                AppendGaugeMetric(out, first, gaugeGroup, seenDomains, e);
+                hasMemoryGauges = true;
+                break;
         }
     }
+    CloseGaugeGroup(out, gaugeGroup);
     flushOpen(currentThread);
     (void)lastTicks;
 
-    out += "\n],\"displayTimeUnit\":\"ns\"}\n";
+    out += "\n]";
+    if (hasMemoryGauges == true)
+    {
+        AppendMemoryGaugeMetadata(out, seenDomains);
+    }
+    out += ",\"displayTimeUnit\":\"ns\"}\n";
 
     std::FILE* file = std::fopen(std::string(path).c_str(), "wb");
     if (file == nullptr)

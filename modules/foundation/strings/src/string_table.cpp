@@ -4,6 +4,7 @@
 #include <ludus/foundation/strings/utf8.hpp>
 
 #include "internal/string_table_state.hpp"
+#include "internal/table_token.hpp"
 
 #include <atomic>
 #include <cstring>
@@ -22,20 +23,12 @@ namespace
 {
 constexpr usize kPageCapacity = usize{32} * 1024;
 std::atomic<uint32> gNextTableToken{1};
-StringStatus IssueToken(uint32& outToken) noexcept
-{
-    uint32 token = gNextTableToken.load(std::memory_order_relaxed);
-    while (token != 0)
-    {
-        if (gNextTableToken.compare_exchange_weak(token, token + 1, std::memory_order_relaxed))
-        {
-            outToken = token;
-            return StringStatus::Ok;
-        }
-    }
-    return StringStatus::TokenExhausted;
-}
 } // namespace
+
+std::atomic<uint32>& detail::GetTableTokenIssuer() noexcept
+{
+    return gNextTableToken;
+}
 
 void* StringTable::State::Allocate(usize bytes, usize alignment) noexcept
 {
@@ -359,7 +352,7 @@ CreateTable(const StringTableConfig& config, const AllocationDomain& domain, Str
     StringStatus status = state->Intern({}, empty);
     if (status == StringStatus::Ok)
     {
-        status = IssueToken(state->Token);
+        status = detail::IssueTableToken(gNextTableToken, state->Token);
     }
     if (status != StringStatus::Ok)
     {

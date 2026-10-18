@@ -37,21 +37,6 @@ using protocol::EventKind;
 using protocol::Message;
 using protocol::ReloadPhase;
 
-// Host frame pacing: 60 Hz frame starts (16,666,667 ns, whole nanoseconds), a
-// four-interval lateness bound before re-anchoring. The simulation is unaffected: it
-// advances one fixed tick per frame (design 8).
-constexpr uint64 HOST_FRAME_INTERVAL_NANOSECONDS = 16'666'667;
-constexpr uint64 HOST_MAXIMUM_LATE_INTERVALS = 4;
-
-[[nodiscard]] platform::PacingPolicy MakeHostPacingPolicy() noexcept
-{
-    return
-    {
-        .Interval = {HOST_FRAME_INTERVAL_NANOSECONDS},
-        .MaximumLateness = {HOST_FRAME_INTERVAL_NANOSECONDS * HOST_MAXIMUM_LATE_INTERVALS},
-    };
-}
-
 // Checkpoint body cap (design 8): 16 MiB.
 constexpr usize kMaxCheckpointBody = static_cast<usize>(16) * 1024 * 1024;
 
@@ -1253,22 +1238,17 @@ RunResult RunStaticEntry(const HostConfig& config, StaticEntryFn entry) noexcept
         return started;
     }
     RunResult result = RunResult::Ok;
-    platform::FramePacer pacer;
-    if (pacer.Configure(MakeHostPacingPolicy()) != platform::PacingStatus::Ok)
-    {
-        services.Retire();
-        table.Destroy(instance);
-        return RunResult::Internal;
-    }
+    HostPacing pacing;
     const platform::PacingClock pacingClock = platform::GetSystemPacingClock();
     for (uint64 i = 0; config.MaxFrames == 0 || i < config.MaxFrames; ++i)
     {
-        // The same 60 Hz absolute schedule as the play session, without telemetry.
-        (void)pacer.Pace(pacingClock);
+        // The same absolute schedule and hidden rate as the play session, without telemetry.
+        (void)pacing.Pace(pacingClock);
         if (presenter.Poll() == false)
         {
             break;
         }
+        pacing.SetVisible(presenter.IsWindowVisible());
         FrameInput input = {};
         input.FrameIndex = i;
         input.DeltaSeconds = 1.0 / 60.0;
@@ -1327,7 +1307,7 @@ usize HostSession::CaptureCheckpoint(ludus::foundation::uint8* buffer, usize cap
 
 void HostSession::resetFrameTiming() noexcept
 {
-    Pacer_.Reset();
+    Pacing_.Reset();
     FrameClock_.Reset();
 }
 
@@ -1360,22 +1340,27 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
     }
     Presenter_ = presenter;
     RunResult result = RunResult::Ok;
-    const platform::PacingPolicy pacing = MakeHostPacingPolicy();
-    if (Pacer_.Configure(pacing) == platform::PacingStatus::Ok)
-    {
-        Timing_.SetPacingInterval(pacing.Interval);
-    }
+    Pacing_.Reset();
+    Timing_.SetPacingInterval(Pacing_.GetInterval());
     FrameClock_.Reset();
     for (;;)
     {
         // Pace before the frame reads its one timestamp; absolute targets keep
         // the rate when frame work varies (high-resolution-time.md, "Native
         // frame pacing"). No busy spin and no pause/reload catch-up.
-        const platform::PaceResult pace = Pacer_.Pace(PacingClock_);
+        const platform::PaceResult pace = Pacing_.Pace(PacingClock_);
         Timing_.Record(FrameClock_.Sample(ludus::foundation::time::Now()), pace);
         if ((presenter != nullptr && presenter->Poll() == false) || PumpControl() == false)
         {
             break;
+        }
+        if (presenter != nullptr)
+        {
+            // A minimized or occluded window lowers the frame rate from the next
+            // frame on, and the change drops the schedule. Ticks still follow
+            // frames: the editor's Pause remains the only pause.
+            Pacing_.SetVisible(presenter->IsWindowVisible());
+            Timing_.SetPacingInterval(Pacing_.GetInterval());
         }
         StepFrame();
         if (StopLatched_)

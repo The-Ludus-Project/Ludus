@@ -339,8 +339,14 @@ void onGlobalRegistry([[maybe_unused]] void* data,
     }
     if (std::strcmp(interface, xdg_wm_base_interface.name) == 0)
     {
+        // Bind the newest version both sides implement. The generated protocol code
+        // only has handlers and state values up to its own version, and a compositor
+        // sends an event or toplevel state only when the bound version defines it:
+        // the suspended state needs version 6 (xdg-shell.xml, xdg_toplevel.state).
+        const uint32_t supportedVersion = static_cast<uint32_t>(xdg_wm_base_interface.version);
+        const uint32_t boundVersion = version < supportedVersion ? version : supportedVersion;
         xdg_wm_base* xdgWmBase =
-            static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, version));
+            static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, boundVersion));
         if (xdgWmBase == nullptr)
         {
             LUDUS_LOG_ERROR(LOG_PLATFORM, "Failed to bind XDG WM Base");
@@ -348,6 +354,7 @@ void onGlobalRegistry([[maybe_unused]] void* data,
         }
         xdg_wm_base_add_listener(xdgWmBase, &gXdgWmBaseListener, nullptr);
         gXdgWmBase = UniquePtr<xdg_wm_base>(xdgWmBase);
+        LUDUS_LOG_INFO(LOG_PLATFORM, "Bound xdg_wm_base: name={}, version={}", name, boundVersion);
     }
     if (std::strcmp(interface, wl_seat_interface.name) == 0 && gSeatSelected == false)
     {
@@ -651,7 +658,7 @@ void onXdgToplevelConfigure(void* data,
                             [[maybe_unused]] xdg_toplevel* xdgToplevel,
                             [[maybe_unused]] int32_t width, // NOLINT(bugprone-easily-swappable-parameters)
                             [[maybe_unused]] int32_t height,
-                            [[maybe_unused]] wl_array* states) noexcept
+                            wl_array* statesOrNull) noexcept
 {
     WindowWayland* window = static_cast<WindowWayland*>(data);
     if (window == nullptr)
@@ -660,6 +667,17 @@ void onXdgToplevelConfigure(void* data,
     }
 
     window->SetClosed(false);
+    // Thanks to the xdg-shell authors (Kristian Høgsberg, Rafael Antognolli, Jasper
+    // St. Pierre, Jonas Ådahl and contributors), wayland-protocols,
+    // stable/xdg-shell/xdg-shell.xml, xdg_toplevel.configure: "The states listed in
+    // the event specify how the width/height arguments should be interpreted, and
+    // possibly how it should be drawn." Every configure carries the complete state
+    // set, so a configure without the suspended state is the window becoming
+    // visible again. https://gitlab.freedesktop.org/wayland/wayland-protocols
+    if (statesOrNull != nullptr)
+    {
+        window->SetVisibility(ComputeToplevelVisibility(*statesOrNull));
+    }
 }
 
 void onXdgToplevelClose(void* data, [[maybe_unused]] xdg_toplevel* xdgToplevel) noexcept
@@ -671,6 +689,31 @@ void onXdgToplevelClose(void* data, [[maybe_unused]] xdg_toplevel* xdgToplevel) 
     }
 
     window->SetClosed(true);
+    // A closed window reports Occluded, as the Cocoa backend does.
+    window->SetVisibility(WindowVisibility::Occluded);
+}
+
+WindowVisibility ComputeToplevelVisibility(const wl_array& states) noexcept
+{
+#if defined(XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION)
+    // xdg-shell.xml, xdg_toplevel.state entry "suspended" (value 9, since version 6):
+    // "The surface is currently not ordinarily being repainted; for example because
+    // its content is occluded by another window, or its outputs are switched off
+    // due to screen locking." The array packs one 32-bit state value per entry.
+    const uint32_t* entries = static_cast<const uint32_t*>(states.data);
+    const ludus::foundation::usize count = states.size / sizeof(uint32_t);
+    for (ludus::foundation::usize index = 0; index < count; ++index)
+    {
+        if (entries[index] == XDG_TOPLEVEL_STATE_SUSPENDED)
+        {
+            return WindowVisibility::Occluded;
+        }
+    }
+#else
+    // wayland-protocols before 1.32 has no suspended state: never hidden.
+    (void)states;
+#endif
+    return WindowVisibility::Visible;
 }
 
 // Signature is dictated by the Wayland xdg_toplevel listener; the adjacent

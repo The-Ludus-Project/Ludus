@@ -51,6 +51,15 @@ public:
     /// the consumer preserves the display values without a second encoding. Ready/Pending owns setup.
     /// Color mode chooses the linear scene target; PreferHdr cannot draw unlit textured
     /// material programs into an HDR attachment. Use Linear8 for those snapshots.
+    /// @param renderer Borrowed initialized renderer, which must outlive this viewport.
+    /// @param device Borrowed device used by renderer, on its owner thread.
+    /// @param width Positive output width in physical pixels.
+    /// @param height Positive output height in physical pixels.
+    /// @param exposure Finite exposure multiplier admitted by LightingOutput.
+    /// @param colorMode Linear attachment policy for the selected material programs.
+    /// @param shouldPresentToSurface Also composite the encoded display image to the acquired
+    /// surface in the same submission, without CPU transfer or a second color encoding.
+    /// The surface extent must equal width/height; default false leaves surface presentation to the consumer.
     /// Failure leaves this empty. Resize by preparing a separate candidate, then
     /// retiring this instance after its producers/consumers finish.
     [[nodiscard]] rhi::RasterStatus Initialize(Renderer& renderer,
@@ -58,7 +67,8 @@ public:
                                                ludus::foundation::uint32 width,
                                                ludus::foundation::uint32 height,
                                                ludus::foundation::float32 exposure = 1,
-                                               ViewportColorMode colorMode = ViewportColorMode::PreferHdr) noexcept;
+                                               ViewportColorMode colorMode = ViewportColorMode::PreferHdr,
+                                               bool shouldPresentToSurface = false) noexcept;
     /// Poll setup/producer completion and publish a pending view only when Ready.
     /// A failed candidate is discarded, preserving the prior drawable view.
     /// Returns that failure once; a later poll may use the preserved view.

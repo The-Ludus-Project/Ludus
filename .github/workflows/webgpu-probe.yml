@@ -63,6 +63,8 @@ on:
       - 'scripts/python/localization_corpus.py'
       - 'tools/icu-probe/**'
       - 'config/icu_toolchain.json'
+      - 'modules/foundation/unicode/**'
+      - 'scripts/python/localization_release.py'
       - 'modules/physics/fluid/**'
       - 'tools/web-fluid-probe/**'
       - 'modules/foundation/containers/**'
@@ -243,6 +245,9 @@ jobs:
             out/build/renderer-web-sdk/render-graph-runtime.js
             out/build/renderer-web-sdk/render-graph-runtime.wasm
             out/build/renderer-web-sdk/render-graph-runtime.html
+            out/build/renderer-web-sdk/render-graph-pooling.js
+            out/build/renderer-web-sdk/render-graph-pooling.wasm
+            out/build/renderer-web-sdk/render-graph-pooling.html
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
@@ -510,7 +515,7 @@ jobs:
             out/icu-probe/host-build
             out/icu-probe/data
           key: icu-probe-v1-${{ runner.os }}-${{ hashFiles('config/icu_toolchain.json', 'tools/icu-probe/data-filter.json', 'scripts/icu-probe') }}
-      - name: Validate L0 ICU backend, corpus and allocation-failure sweep in wasm
+      - name: Validate L0 ICU backend, L2 formatting and allocation-failure sweeps in wasm
         run: |
           ./scripts/icu-probe bootstrap
           ./scripts/icu-probe cook
@@ -524,6 +529,8 @@ jobs:
             out/build/web-emscripten-development/tools/icu-probe/evidence.json
             out/build/web-emscripten-release/tools/icu-probe/evidence.json
             out/build/web-emscripten-release/tools/icu-probe/ICU-LICENSE.txt
+            out/build/web-emscripten-development/modules/localization/format-evidence.json
+            out/build/web-emscripten-release/modules/localization/format-evidence.json
           if-no-files-found: error
 
   browser-software-gpu:
@@ -610,7 +617,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [baseline, scaling]
+        suite: [baseline, scaling, pooling]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -639,6 +646,9 @@ jobs:
       - name: Verify L5 renderer scaling browser pixels
         if: matrix.suite == 'scaling'
         run: node tests/sdk_consumer/renderer-scaling-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/renderer-l5
+      - name: Measure RG4 transient pooling against the serial control on WebGPU
+        if: matrix.suite == 'pooling'
+        run: node tests/sdk_consumer/render-graph-pooling-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/render-graph-pooling
       - uses: actions/upload-artifact@v4
         if: always()
         with:

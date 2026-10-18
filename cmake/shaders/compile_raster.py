@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import struct
 
+from compile_shader import relative_line_directives
+
 # Thanks to the Slang team, "Using the Reflection API", User Guide,
 # https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-reflection.html
 # Reflect each target independently. No cross-target CPU packing is inferred.
@@ -563,6 +565,7 @@ def compile_raster(args, lock):
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     extra = [part for path in args.include for part in ('-I', path)] + ['-D' + value for value in args.define]
+    roots = [Path(args.source).parent, *args.include]
     commands, dependencies, artifacts, interfaces = [], [], {}, {}
     stages = [('compute', args.compute)] if getattr(args, 'compute', None) else [('vertex', args.vertex), ('fragment', args.fragment)]
     compute = stages[0][0] == 'compute'
@@ -602,7 +605,8 @@ def compile_raster(args, lock):
             emitted = output / f'{args.name}.{stage}.metal'
             command = [args.spirv_cross, str(artifact), '--msl', '--msl-version', '24000', '--msl-decoration-binding', '--output', str(emitted)]
             commands.append(command); run(command)
-            code = emitted.read_text()
+            code = relative_line_directives(emitted.read_text(), roots)
+            emitted.write_text(code)
             interface = interfaces[(target, stage)]
             verify_native_metal_arrays(code, interface)
             names = re.findall(r'\b' + stage + r'\s+\w+\s+(\w+)\s*\(', code)
@@ -611,7 +615,7 @@ def compile_raster(args, lock):
             artifacts[('metal', stage)] = (code, names[0])
             interfaces[('metal', stage)] = interface
         elif args.metal:
-            code = artifact.read_text()
+            code = relative_line_directives(artifact.read_text(), roots)
             for binding in interfaces[(target, stage)]['entries']:
                 if binding['kind'] in ('TextureDepth2D', 'TextureStencil2D'):
                     variable = re.escape(binding['name']) + r'(?:_\d+)?'
@@ -630,7 +634,7 @@ def compile_raster(args, lock):
                     code, count = re.subn(pattern, lambda match: 'const ' + match[0], code)
                     if count < 1:
                         raise RuntimeError('Metal emitted read-only storage parameter is missing')
-                artifact.write_text(code)
+            artifact.write_text(code)
             names = re.findall(r'\[\[' + ('kernel' if compute else stage) + r'\]\]\s+\w+\s+(\w+)\s*\(', code)
             if len(names) != 1:
                 raise RuntimeError('Expected one emitted Metal raster entry')

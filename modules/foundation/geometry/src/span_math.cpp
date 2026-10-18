@@ -1,10 +1,11 @@
-// Float64 span evaluation and Certified box bounds (see internal/span_math.hpp).
+// Float64 span evaluation and Certified span boxes (see internal/span_math.hpp).
 
 #include "internal/span_math.hpp"
 
 #include "internal/arc_length.hpp"
 
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/enclosure.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::foundation::geometry::internal
@@ -20,8 +21,6 @@ namespace
 constexpr usize HODOGRAPH_CONTROL_COUNT = SPAN_CONTROL_COUNT - 1;
 // Degree of a cubic span, the factor in its hodograph controls.
 constexpr float64 CUBIC_DEGREE = 3.0;
-// Spatial axes of a point.
-constexpr usize AXIS_COUNT = 3;
 
 [[nodiscard]] Vector3d Interpolate(const Vector3d& start, const Vector3d& end, float64 t) noexcept
 {
@@ -30,83 +29,15 @@ constexpr usize AXIS_COUNT = 3;
     return Vector3d{oneMinusT * start.X + t * end.X, oneMinusT * start.Y + t * end.Y, oneMinusT * start.Z + t * end.Z};
 }
 
-[[nodiscard]] Enclosure Hull(Enclosure left, Enclosure right) noexcept
-{
-    return Enclosure{ .Lower = math::Min(left.Lower, right.Lower), .Upper = math::Max(left.Upper, right.Upper) };
-}
-
-[[nodiscard]] EnclosureBox Hull(const EnclosureBox& left, const EnclosureBox& right) noexcept
-{
-    return EnclosureBox{ .X = Hull(left.X, right.X), .Y = Hull(left.Y, right.Y), .Z = Hull(left.Z, right.Z) };
-}
-
-[[nodiscard]] EnclosureBox ToBox(const ControlBox& control) noexcept
-{
-    return EnclosureBox{ .X = control.X, .Y = control.Y, .Z = control.Z };
-}
-
-// factor * (end - start) for one axis, enclosing the exact value.
+// factor * (end - start): the enclosed difference scaled by the enclosed factor.
 [[nodiscard]] MathStatus
-TryScaleDifference(Enclosure start, Enclosure end, Enclosure factor, Enclosure& outValue) noexcept
+TryScaleDifference(const EnclosureBox& start, const EnclosureBox& end, Enclosure factor, EnclosureBox& outBox) noexcept
 {
-    Enclosure difference;
-    MathStatus status = math::TrySubtractOutward(end, start, difference);
+    EnclosureBox difference;
+    MathStatus status = TrySubtractBoxes(end, start, difference);
     if (status == MathStatus::Success)
     {
-        status = math::TryMultiplyOutward(difference, factor, outValue);
-    }
-    return status;
-}
-
-[[nodiscard]] MathStatus
-TryScaleDifference(const ControlBox& start, const ControlBox& end, Enclosure factor, EnclosureBox& outBox) noexcept
-{
-    EnclosureBox result;
-    MathStatus status = TryScaleDifference(start.X, end.X, factor, result.X);
-    if (status == MathStatus::Success)
-    {
-        status = TryScaleDifference(start.Y, end.Y, factor, result.Y);
-    }
-    if (status == MathStatus::Success)
-    {
-        status = TryScaleDifference(start.Z, end.Z, factor, result.Z);
-    }
-    if (status == MathStatus::Success)
-    {
-        outBox = result;
-    }
-    return status;
-}
-
-// Smallest and largest |x - y| over x in left and y in right, for one axis.
-// NOLINTBEGIN(bugprone-easily-swappable-parameters): axis enclosures share one type.
-[[nodiscard]] MathStatus
-TryBoundAxisDistance(Enclosure left, Enclosure right, float64& outSmallest, float64& outLargest) noexcept
-// NOLINTEND(bugprone-easily-swappable-parameters)
-{
-    Enclosure leftBelow;
-    MathStatus status =
-        math::TrySubtractOutward(MakePointEnclosure(right.Lower), MakePointEnclosure(left.Upper), leftBelow);
-    Enclosure rightBelow;
-    if (status == MathStatus::Success)
-    {
-        status = math::TrySubtractOutward(MakePointEnclosure(left.Lower), MakePointEnclosure(right.Upper), rightBelow);
-    }
-    Enclosure leftSpread;
-    if (status == MathStatus::Success)
-    {
-        status = math::TrySubtractOutward(MakePointEnclosure(left.Upper), MakePointEnclosure(right.Lower), leftSpread);
-    }
-    Enclosure rightSpread;
-    if (status == MathStatus::Success)
-    {
-        status = math::TrySubtractOutward(MakePointEnclosure(right.Upper), MakePointEnclosure(left.Lower), rightSpread);
-    }
-    if (status == MathStatus::Success)
-    {
-        // The gap is positive only when the intervals are disjoint; the spread is never negative in total.
-        outSmallest = math::Max(0.0, math::Max(leftBelow.Lower, rightBelow.Lower));
-        outLargest = math::Max(0.0, math::Max(leftSpread.Upper, rightSpread.Upper));
+        status = TryScaleBox(difference, factor, outBox);
     }
     return status;
 }
@@ -174,28 +105,18 @@ float64 ComputeSignedAngle(const Vector3d& from, const Vector3d& to, const Vecto
     return math::Atan2(math::Dot(axis, math::Cross(from, to)), math::Dot(from, to));
 }
 
-EnclosureBox MakePointBox(const Vector3d& point) noexcept
-{
-    return EnclosureBox
-    {
-        .X = MakePointEnclosure(point.X),
-        .Y = MakePointEnclosure(point.Y),
-        .Z = MakePointEnclosure(point.Z),
-    };
-}
-
 GeometryStatus TryEncloseSubspanHull(const PreparedSpan& span, float64 a, float64 b, EnclosureBox& outBox) noexcept
 {
-    core::StaticArray<ControlBox, SPAN_CONTROL_COUNT> controls;
+    core::StaticArray<EnclosureBox, SPAN_CONTROL_COUNT> controls;
     const GeometryStatus status = TryEncloseSubspanControls(span, a, b, controls);
     if (status != GeometryStatus::Success)
     {
         return status;
     }
-    EnclosureBox box = ToBox(controls[0]);
+    EnclosureBox box = controls[0];
     for (usize i = 1; i < SPAN_CONTROL_COUNT; ++i)
     {
-        box = Hull(box, ToBox(controls[i]));
+        box = MakeBoxHull(box, controls[i]);
     }
     outBox = box;
     return GeometryStatus::Success;
@@ -203,19 +124,19 @@ GeometryStatus TryEncloseSubspanHull(const PreparedSpan& span, float64 a, float6
 
 GeometryStatus TryEnclosePoint(const PreparedSpan& span, float64 u, EnclosureBox& outBox) noexcept
 {
-    core::StaticArray<ControlBox, SPAN_CONTROL_COUNT> controls;
+    core::StaticArray<EnclosureBox, SPAN_CONTROL_COUNT> controls;
     const GeometryStatus status = TryEncloseSubspanControls(span, u, u, controls);
     if (status == GeometryStatus::Success)
     {
         // Every control of the degenerate subspan [u, u] is the blossom f(u, u, u), the point itself.
-        outBox = ToBox(controls[0]);
+        outBox = controls[0];
     }
     return status;
 }
 
 GeometryStatus TryEncloseHodograph(const PreparedSpan& span, float64 a, float64 b, EnclosureBox& outBox) noexcept
 {
-    core::StaticArray<ControlBox, SPAN_CONTROL_COUNT> controls;
+    core::StaticArray<EnclosureBox, SPAN_CONTROL_COUNT> controls;
     if (span.Kind == SpanKind::Line)
     {
         // A line's derivative is the constant Control[3] - Control[0], whatever the subinterval.
@@ -263,56 +184,7 @@ GeometryStatus TryEncloseHodograph(const PreparedSpan& span, float64 a, float64 
     {
         return status;
     }
-    outBox = Hull(Hull(hodograph[0], hodograph[1]), hodograph[2]);
-    return GeometryStatus::Success;
-}
-
-GeometryStatus TryBoundBoxDistance(const EnclosureBox& left, const EnclosureBox& right, Enclosure& outDistance) noexcept
-{
-    const core::StaticArray<Enclosure, AXIS_COUNT> leftAxes{{left.X, left.Y, left.Z}};
-    const core::StaticArray<Enclosure, AXIS_COUNT> rightAxes{{right.X, right.Y, right.Z}};
-    Enclosure smallestSquare = MakePointEnclosure(0.0);
-    Enclosure largestSquare = MakePointEnclosure(0.0);
-    MathStatus status = MathStatus::Success;
-    for (usize axis = 0; axis < leftAxes.GetSize() && status == MathStatus::Success; ++axis)
-    {
-        float64 smallest = 0.0;
-        float64 largest = 0.0;
-        status = TryBoundAxisDistance(leftAxes[axis], rightAxes[axis], smallest, largest);
-        Enclosure smallestTerm;
-        Enclosure largestTerm;
-        if (status == MathStatus::Success)
-        {
-            status = math::TrySquareOutward(MakePointEnclosure(smallest), smallestTerm);
-        }
-        if (status == MathStatus::Success)
-        {
-            status = math::TrySquareOutward(MakePointEnclosure(largest), largestTerm);
-        }
-        if (status == MathStatus::Success)
-        {
-            status = math::TryAddOutward(smallestSquare, smallestTerm, smallestSquare);
-        }
-        if (status == MathStatus::Success)
-        {
-            status = math::TryAddOutward(largestSquare, largestTerm, largestSquare);
-        }
-    }
-    Enclosure smallestRoot;
-    Enclosure largestRoot;
-    if (status == MathStatus::Success)
-    {
-        status = math::TrySquareRootOutward(smallestSquare, smallestRoot);
-    }
-    if (status == MathStatus::Success)
-    {
-        status = math::TrySquareRootOutward(largestSquare, largestRoot);
-    }
-    if (status != MathStatus::Success)
-    {
-        return ToGeometryStatus(status);
-    }
-    outDistance = Enclosure{ .Lower = smallestRoot.Lower, .Upper = largestRoot.Upper };
+    outBox = MakeBoxHull(MakeBoxHull(hodograph[0], hodograph[1]), hodograph[2]);
     return GeometryStatus::Success;
 }
 } // namespace ludus::foundation::geometry::internal

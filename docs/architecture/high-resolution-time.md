@@ -245,13 +245,23 @@ While the window is not visible, every frame waits at 10 Hz instead, or at a
 lower `--frame-rate` cap. Platform reports `WindowVisibility` from each window:
 Cocoa reports `Minimized` for a miniaturized window and `Occluded` while AppKit's
 occlusion state has no visible part; browser canvases mirror
-`WindowState::Visible`; Wayland and headless report `Visible` because they do not
-observe occlusion. The hidden rate also applies to presented frames, because an
-occluded window's presents need not block. Each visibility change drops the
-schedule, so the first frame after showing the window starts at once and never
-waits out the hidden phase. Like a hidden browser page, a hidden native window
-drops simulation time instead of ticking. The loop still pumps window events at
-10 Hz, so it notices being shown within 100 ms. `--frame-rate N` caps every frame (1 to 1000) with a
+`WindowState::Visible`; Wayland reports `Occluded` while the compositor's latest
+`xdg_toplevel.configure` carries the `suspended` state, which xdg-shell
+(`xdg_wm_base` version 6) sends while the surface "is currently not ordinarily
+being repainted", for a minimized, fully covered or screen-locked window, and
+`Visible` again when a configure clears it; the protocol does not distinguish
+minimization, so Wayland never reports `Minimized`. The backend binds the newest
+`xdg_wm_base` version both the compositor and the generated protocol code
+implement, and a compositor below version 6 never suspends. Headless reports
+`Visible` because it does not observe occlusion. The hidden rate also applies to
+presented frames, because an occluded window's presents need not block. Each
+visibility change drops the schedule, so the first frame after showing the
+window starts at once and never waits out the hidden phase. Like a hidden
+browser page, a hidden native window drops simulation time instead of ticking.
+The loop still pumps window events at 10 Hz, so it notices being shown within
+100 ms. The GameHost loops apply the same hidden rate to their 60 Hz schedule
+(see [runtime timing telemetry](#runtime-timing-telemetry) below).
+`--frame-rate N` caps every frame (1 to 1000) with a
 four-interval lateness bound. Intervals are whole nanoseconds, so a 60 Hz cap is
 16,666,667 ns, about 20 ns per second slower than exact; the simulation's
 rational phase is unaffected. A cap that does not divide the display refresh rate
@@ -272,12 +282,31 @@ itself. The editor never subtracts its own clock readings from runtime readings,
 and no absolute runtime timestamp appears in the protocol.
 
 **Owner.** The GameHost play session owns the measurement. `HostSession::RunLoop`
-paces each frame start with a `FramePacer` (60 Hz, 16,666,667 ns, with a
-four-interval lateness bound), then reads `time::Now()` once and samples a
+paces each frame start with the private, owner-local `HostPacing` policy
+(`modules/runtime/game_host/src/internal/host_pacing.h`), a `FramePacer` at
+60 Hz (16,666,667 ns, with a four-interval lateness bound) while the host's window
+can be seen or it runs headless, then reads `time::Now()` once and samples a
 `FrameClock` with the frame-update 250 ms clamp. This replaces the loop's
 earlier fixed 16 ms sleep after each frame, which added the frame's own work to
 every interval. The static shipping loop, `RunStaticEntry`, uses the same
-schedule without telemetry. The simulation is unchanged: the host still advances
+policy without telemetry.
+
+While the presenter's window reports `Minimized` or `Occluded`, both loops wait
+at 10 Hz instead, with the same rule as the world reference: absolute targets, no
+spin, and a dropped schedule on every visibility change, so the first frame after
+the window is shown starts at once. The frame that pumps the window events
+applies the visibility it observed, so the rate changes from the next frame on.
+The loop still pumps the control channel at 10 Hz, so a `Stop`, `Pause` or reload
+is dispatched within 100 ms. Unlike the world reference, the host does not pause
+the simulation while hidden: the editor's `Pause` command owns the play state,
+and a second, implicit pause would make `Status` report `Running` while
+`sim_ticks` stood still. The host keeps its one-tick-per-running-frame contract,
+so a hidden game advances at the hidden rate, with no catch-up when shown.
+`pacing_interval_ns` reports the active interval, so the editor's Timing panel
+shows 100 ms while the game window is hidden, and the 120-frame window then
+spans twelve seconds.
+
+The simulation is otherwise unchanged: the host still advances
 one fixed tick per running frame and never catches up after pause or reload
 (live-reload design 8), so the frame samples are diagnostics, not simulation
 debt. A committed module reload is a session replacement and drops both the

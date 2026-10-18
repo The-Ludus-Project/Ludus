@@ -1,18 +1,20 @@
 #pragma once
 
-// Private float64 span evaluation, vector helpers and Certified box bounds shared
+// Private float64 span evaluation, vector helpers and Certified span boxes shared
 // by transported frames, projection and sweeps (phase G3).
 //
 // Float64 evaluation is a Rounded reference for preparation and transport; it
 // keeps sub-step directions accurate where float32 positions would quantize.
-// The box helpers use FoundationMath's outward-rounded enclosures, so their
-// distance and speed bounds are Certified for the stored float32 controls.
+// The span boxes are built from the outward-rounded box arithmetic of
+// internal/control_box.hpp, so their bounds are Certified for the stored
+// float32 controls.
 
 #include <ludus/foundation/base/core.h>
 
+#include "internal/control_box.hpp"
+
 #include <ludus/foundation/geometry/path.hpp>
 #include <ludus/foundation/geometry/status.hpp>
-#include <ludus/foundation/math/enclosure.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
 namespace ludus::foundation::geometry::internal
@@ -48,17 +50,6 @@ RotateAboutAxis(const math::Vector3d& value, const math::Vector3d& unitAxis, flo
 [[nodiscard]] float64
 ComputeSignedAngle(const math::Vector3d& from, const math::Vector3d& to, const math::Vector3d& axis) noexcept;
 
-/// Axis-aligned box whose axis enclosures contain an exact point set.
-struct EnclosureBox final
-{
-    math::Enclosure X;
-    math::Enclosure Y;
-    math::Enclosure Z;
-};
-
-/// Box of one exactly known float64 point.
-[[nodiscard]] EnclosureBox MakePointBox(const math::Vector3d& point) noexcept;
-
 /// Box containing the exact span restricted to [a, b]: the hull of its enclosed subspan controls.
 [[nodiscard]] GeometryStatus
 TryEncloseSubspanHull(const PreparedSpan& span, float64 a, float64 b, EnclosureBox& outBox) noexcept;
@@ -69,8 +60,4 @@ TryEncloseSubspanHull(const PreparedSpan& span, float64 a, float64 b, EnclosureB
 /// Box containing dC/du (per the span's normalized u) for every u in [a, b], 0 <= a < b <= 1.
 [[nodiscard]] GeometryStatus
 TryEncloseHodograph(const PreparedSpan& span, float64 a, float64 b, EnclosureBox& outBox) noexcept;
-
-/// Enclosure [smallest, largest] of the distance between any point of left and any point of right.
-[[nodiscard]] GeometryStatus
-TryBoundBoxDistance(const EnclosureBox& left, const EnclosureBox& right, math::Enclosure& outDistance) noexcept;
 } // namespace ludus::foundation::geometry::internal

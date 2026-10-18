@@ -30,16 +30,22 @@ inline constexpr usize MAX_FALLBACK_PROVIDERS = 8;
 /// Outcome of every fallible localization operation; failures preserve outputs.
 enum class Status : uint8
 {
-    Ok,                ///< The operation succeeded and wrote its output.
-    Invalid,           ///< Malformed bytes, an invalid handle or a key outside the ID grammar.
-    Unsupported,       ///< A package version, record width or profile this reader does not implement.
-    Limit,             ///< A size or count exceeds the documented ceiling.
-    OutOfMemory,       ///< The allocation domain could not provide the catalog copy.
-    NotFound,          ///< The domain or key is absent from this catalog.
-    WrongCatalog,      ///< The binding belongs to another prepared catalog.
-    TokenExhausted,    ///< The process-local catalog token space is exhausted.
-    SchemaMismatch,    ///< The key exists, but its argument schema differs from the descriptor.
-    RequiresArguments, ///< The message has arguments; it must be formatted, not resolved statically.
+    Ok,                     ///< The operation succeeded and wrote its output.
+    Invalid,                ///< Malformed bytes, an invalid handle or a key outside the ID grammar.
+    Unsupported,            ///< A package version, record width or profile this reader does not implement.
+    Limit,                  ///< A size or count exceeds the documented ceiling.
+    OutOfMemory,            ///< The allocation domain could not provide the catalog copy.
+    NotFound,               ///< The domain or key is absent from this catalog.
+    WrongCatalog,           ///< The binding belongs to another prepared catalog.
+    TokenExhausted,         ///< The process-local catalog token space is exhausted.
+    SchemaMismatch,         ///< The key exists, but its argument schema differs from the descriptor.
+    RequiresArguments,      ///< The message has arguments; it must be formatted, not resolved statically.
+    InvalidArguments,       ///< Format: an argument is missing, duplicate, undeclared, of the wrong kind or invalid.
+    BufferTooSmall,         ///< Format: the output span is shorter than FormatResult::RequiredBytes.
+    NotPrepared,            ///< Format: the dynamic message was not prepared in this formatter context.
+    BackendUnavailable,     ///< No running Unicode host, or a build without LUDUS_BUILD_UNICODE.
+    LinguisticDataMismatch, ///< The package was cooked with different ICU/CLDR/Unicode data than the runtime's.
+    BackendFailure,         ///< ICU rejected a pattern or format that cooking had accepted.
 };
 
 /// Bounded failure report of PrepareCatalog.
@@ -116,6 +122,12 @@ struct MessageDescriptor final
     std::span<const ArgumentDescriptor> Arguments; ///< Ordered argument schema, possibly empty.
 };
 
+namespace detail
+{
+/// Private reader access for the formatter; defined in src/internal/catalog_access.hpp.
+struct CatalogAccess;
+} // namespace detail
+
 /// @brief Process-local handle to one message of one prepared catalog.
 ///
 /// Valid only with the catalog (or a copy of it) that produced it; it is not a
@@ -126,6 +138,8 @@ private:
     uint64 mToken{};
     uint32 mIndex{};
     friend class Catalog;
+    /// The formatter reads the token and index through the private catalog accessor.
+    friend struct detail::CatalogAccess;
 };
 
 /// Which catalog provided a resolved message for the requested locale.
@@ -227,6 +241,9 @@ private:
     [[nodiscard]] std::string_view getSliceAt(usize directoryEntry) const noexcept;
     [[nodiscard]] Status findKey(std::string_view domain, std::string_view key, uint32& outIndex) const noexcept;
     [[nodiscard]] bool isSchemaEqual(uint32 index, std::span<const ArgumentDescriptor> arguments) const noexcept;
+    [[nodiscard]] Origin getOrigin(uint32 provider) const noexcept;
+    /// The formatter decodes validated records through the private catalog accessor.
+    friend struct detail::CatalogAccess;
     friend Status
     PrepareCatalog(std::span<const uint8>, const foundation::AllocationDomain&, Catalog&, Diagnostic&) noexcept;
 };

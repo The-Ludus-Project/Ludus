@@ -36,6 +36,38 @@ class CheckNamingTests(unittest.TestCase):
         )
         self.assertEqual(self.findings(source), [])
 
+    def test_negation_is_checked_outside_adopted_scopes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "modules" / "legacy" / "src" / "a.cpp"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "#if !defined(X)\n#endif\nvoid G() { if (!x || not y) {} if (a != b) {} }\n"
+                "// !comment\nconst char* s = \"!text\";\n"
+            )
+            (root / "third_party" / "lib").mkdir(parents=True)
+            (root / "third_party" / "lib" / "b.cpp").write_text("bool b = !a;\n")
+            (root / "tests" / "support").mkdir(parents=True)
+            (root / "tests" / "support" / "catch_stream.hpp").write_text("bool b = !a;\n")
+            self.assertEqual(check_naming.negation_files(root), [source])
+            findings = check_naming.check_negation(root, source)
+            self.assertEqual(len(findings), 2)
+            self.assertTrue(all(":3: [N1]" in finding for finding in findings))
+
+    def test_negation_exemptions_keep_line_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "a.cpp"
+            source.write_text(
+                "EM_JS(int, Probe, (), {\n  return !Module.ready;\n});\n"
+                "bool operator!(const A& a);\n"
+                "char c = '\\n'; int z = 1'000;\n"
+                "bool b = !a;\n"
+            )
+            findings = check_naming.check_negation(root, source)
+            self.assertEqual(len(findings), 1)
+            self.assertIn("a.cpp:6: [N1]", findings[0])
+
 
 if __name__ == "__main__":
     unittest.main()

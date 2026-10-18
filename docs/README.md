@@ -68,6 +68,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Ludus Wiki: development and publication](development/wiki.md)
 - [ludus-tools](development/host-tools.md)
 - [Memory Phase 0: Trace Prerequisites and Baselines](development/memory-phase-0.md)
+- [Memory Phase 1: Domain Counters, Registry and Gauges](development/memory-phase-1.md)
 - [Mobile support implementation plan](development/mobile-support-plan.md)
 - [Native debugging with RAD on Linux](development/debugging.md)
 - [Native diagnostics and assertion policies](development/diagnostics.md)
@@ -95,9 +96,10 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [FoundationThreading](modules/foundation/threading.md)
 - [Gameplay world storage](modules/gameplay/world.md)
 - [Graphics RHI](modules/graphics/rhi.md)
-- [Localization: catalogs and release cooking](modules/localization.md)
+- [Localization: catalogs, release cooking and formatting](modules/localization.md)
 - [Ludus::FoundationGeometry](modules/foundation/geometry.md)
 - [Ludus::FoundationMath](modules/foundation/math.md)
+- [Unicode: pinned ICU4C host service](modules/foundation/unicode.md)
 
 ## Examples and probes
 

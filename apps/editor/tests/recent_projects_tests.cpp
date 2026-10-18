@@ -2,6 +2,8 @@
 #include "internal/main_window.h"
 #include "internal/recent_projects.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
@@ -24,6 +26,10 @@ using namespace ludus::editor;
 
 namespace
 {
+// Upper bound for a recent-project open to publish its descriptor (QTRY_COMPARE's
+// former default); the wait returns as soon as the state changes.
+constexpr ludus::foundation::int32 OPEN_WAIT_MILLISECONDS = 5000;
+
 QString WriteProject(QTemporaryDir& directory, const QString& filename, const QByteArray& name)
 {
     const QString path = directory.filePath(filename);
@@ -172,7 +178,10 @@ TEST_CASE("Only successful project opens enter history and saved names refresh i
     REQUIRE(menu != nullptr);
     REQUIRE(menu->actions().size() == 2);
     menu->actions().last()->trigger();
-    QTRY_COMPARE(restarted.State().DescriptorPath, first);
+    // A QtTest QTRY_* macro returns silently on failure inside a Catch2 case;
+    // report the wait through Catch2 instead.
+    REQUIRE(QTest::qWaitFor([&restarted, &first] { return restarted.State().DescriptorPath == first; },
+                            OPEN_WAIT_MILLISECONDS));
     CHECK(restarted.RecentProjects().first().DescriptorPath == first);
     CHECK(restarted.State().SetupStatus.contains(QStringLiteral("tooling is missing")));
 }
