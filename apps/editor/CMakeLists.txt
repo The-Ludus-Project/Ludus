@@ -459,9 +459,17 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_editor_tests COMMAND ludus_editor_tests --durations yes)
     # Run the offscreen Qt platform plugin so these logic/widget tests need no
     # display. This is for display-free tests only, never native acceptance.
+    #
+    # The suite's wall time follows host contention, not the change under test:
+    # 221 cases (MainWindow show/close cycles, Python adapter processes running
+    # CMake preset inspection, a 100,000-row content projection) need about
+    # 17 s of CPU but 42 s on the Linux CI runner and, on a shared 10-core macOS
+    # host, 53 s at load 33-45, 66 s at load 26-31, 156 s at load 46-48 and
+    # 203 s at load 33-63 (the former 120 s TIMEOUT failed there). This TIMEOUT
+    # only catches a hung case; --durations yes names the completed ones.
     set_tests_properties(ludus_editor_tests PROPERTIES
         LABELS "unit;editor"
-        TIMEOUT 120
+        TIMEOUT 600
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
