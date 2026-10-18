@@ -516,26 +516,46 @@ record on `Status`, and the editor Timing panel. See the
 Method: the `ludus_game_host_supervisor_acceptance` workload (headless
 `ludus_game_host`, fixture module A reloaded to B, relayed by
 `scripts/python/play_tool.py`), run three times in sequence on the Apple M5 host
-described above at revision `16346bce` plus this change. Each run printed the
-`timing` record of the `Status` result after the committed reload; the scratch
-copy of the script added only that print. The one-minute load average was 32 to
-23, about three times the core count. Each record covers about a quarter-second
-session, so it shows that real values cross the boundary intact, not a rate
-distribution.
+described above. Each run printed the `timing` record of the `Status` result
+after the committed reload; the scratch copy of the script added only that
+print. Each record covers a quarter- to half-second session, so it shows that
+real values cross the boundary intact, not a rate distribution.
 
-| Run | Frames / measured | Interval min / mean / max (ms) | Lateness mean / max (ms) | Outcomes |
+The first block was measured at revision `16346bce` plus this change, before
+the [wake leeway trial](#wake-leeway-trial) replaced the macOS pacing wait
+(`nanosleep(2)`, pull request 344 not yet merged). The one-minute load average
+was 32 to 23, about three times the core count.
+
+| Run (pre-344 wait) | Frames / measured | Interval min / mean / max (ms) | Lateness mean / max (ms) | Outcomes |
 | --- | --- | ---: | ---: | --- |
 | 1 | 16 / 14 | 11.58 / 17.06 / 23.55 | 3.84 / 7.77 | 14 `Waited`, 2 baselines |
 | 2 | 15 / 13 | 11.33 / 17.74 / 24.43 | 5.23 / 8.64 | 13 `Waited`, 2 baselines |
 | 3 | 14 / 12 | 10.17 / 17.73 / 25.00 | 3.57 / 8.33 | 12 `Waited`, 2 baselines |
 
-Every record reports the 16,666,667 ns pacing interval, no discarded time, no
-regressions or skipped targets, and `simulation_ticks` equal to `sim_ticks` (2:
-the paused session advanced one `Step` before and after the reload). The two
-baselines are startup and the committed reload. Intervals shorter than the
-target follow a late wake: the next target stays on the absolute schedule, as
-the pacer contract requires. Mean lateness of 3.6 to 5.2 ms matches the earlier
-headless 60 Hz measurements on this host.
+The second block repeated the workload on `develop` at `a641cd60` (this change
+merged after the zero-leeway `kevent64(2)` wait), built with the pinned LLVM
+23.1.3. The one-minute load average was 44 to 33, three to four times the core
+count.
+
+| Run (zero-leeway wait) | Frames / measured | Interval min / mean / max (ms) | Lateness mean / max (ms) | Outcomes |
+| --- | --- | ---: | ---: | --- |
+| 1 | 25 / 23 | 13.49 / 16.85 / 18.85 | 1.23 / 3.35 | 23 `Waited`, 2 baselines |
+| 2 | 23 / 21 | 9.39 / 17.40 / 24.41 | 2.63 / 10.91 | 20 `Waited`, 1 `Late`, 2 baselines |
+| 3 | 16 / 14 | 15.74 / 17.15 / 20.68 | 0.91 / 4.01 | 14 `Waited`, 2 baselines |
+
+Every record in both blocks reports the 16,666,667 ns pacing interval, no
+discarded time, no regressions, early wakes or skipped targets, and
+`simulation_ticks` equal to `sim_ticks` (2 to 4: the ticks the session ran
+before `Pause` plus the one `Step` before the reload). The two baselines are
+startup and the committed reload. Intervals shorter than the target follow a
+late wake: the next target stays on the absolute schedule, as the pacer contract
+requires. The pre-344 mean lateness of 3.6 to 5.2 ms matched the earlier
+headless 60 Hz `nanosleep(2)` measurements on this host. With the zero-leeway
+wait the mean fell to 0.9 to 2.6 ms at a similar load; the remaining lateness,
+including the one 10.9 ms `Late` frame, is CPU scheduling under a load average of
+three to four times the core count, as the headless arms of the leeway trial
+showed. With 14 to 23 measured frames per record, these are spot checks of the
+boundary, not a lateness distribution.
 
 ### Validation
 
@@ -549,6 +569,7 @@ headless 60 Hz measurements on this host.
 | Documentation: `check-docs`, strict MkDocs build, `check-wiki --documentation-only`, `test_docs.py`, `test_wiki.py` | Passed; the index needed no change. |
 | `scripts/build-api --doxygen` (pinned Doxygen 1.18.0) | 173 headers, no new documentation gaps. No public header changed: the telemetry and editor view model are private. |
 | Editor live journey | Not run locally: it needs an installed SDK prefix (`LUDUS_SDK_PREFIX`); CI's editor tier runs it. |
+| `ludus_editor_tests` in full on `develop` at `a641cd60` (follow-up) | The binary run directly with `QT_QPA_PLATFORM=offscreen` passed 212 of 221 cases with 9 skipped (five Linux-only RAD session cases, three Linux native preview gates and one installed-SDK gate) and no failure, including the Timing view and layout cases; 5,027 assertions. Its cases summed to 203 s at a load average of 33 to 63, so the same run through `ctest` stopped at the suite's fixed 120 s timeout (reported as `Timeout`, repeated at a load average of 31 to 50). The one failed pre-merge `ctest -R ludus_editor_tests` run matches that timeout, not a Timing dock regression. |
 | ASan/UBSan execution | Not run locally: the Clang 18 ASan runtime hangs at startup on this host. |
 
 The Linux reference profile, sanitizer execution, browser presets, installed SDK
