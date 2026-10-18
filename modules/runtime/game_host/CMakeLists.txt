@@ -41,6 +41,7 @@ target_sources(ludus_runtime_game_host
         src/entry.cpp
         src/frame_presenter.cpp
         src/internal/frame_presenter.h
+        src/host_pacing.cpp
         src/host_services.cpp
         src/host_session.cpp
         src/property_exchange.cpp
@@ -49,6 +50,7 @@ target_sources(ludus_runtime_game_host
         src/protocol.cpp
         src/protocol_codec.cpp
         src/timing_telemetry.cpp
+        src/internal/host_pacing.h
         src/internal/host_services.h
         src/internal/host_session.h
         src/internal/identity.h

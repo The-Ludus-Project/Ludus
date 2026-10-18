@@ -10,6 +10,7 @@
 // property/asset commands are implemented here so one owner serializes reload
 // against property/pause/step commands and Stop supersedes queued work.
 
+#include "internal/host_pacing.h"
 #include "internal/host_services.h"
 #include "internal/module_loader.h"
 #include "internal/protocol_codec.h"
@@ -184,10 +185,11 @@ private:
     uint64 SimTicks_ = 0;                    // Simulation ticks; advance only when not paused (no catch-up).
     game_api::RenderParams LastRender_ = {}; // Last render params from Update (asset/visible-change checks).
     // Frame timing (docs/architecture/high-resolution-time.md, "Runtime timing
-    // telemetry"): RunLoop paces each frame start, samples one timestamp per
-    // frame and reports the aggregate on Status. Simulation still advances one
-    // fixed tick per frame; the samples are diagnostics, not simulation debt.
-    platform::FramePacer Pacer_;
+    // telemetry"): RunLoop paces each frame start, at the hidden rate while the
+    // presenter's window cannot be seen, samples one timestamp per frame and
+    // reports the aggregate on Status. Simulation still advances one fixed tick
+    // per frame; the samples are diagnostics, not simulation debt.
+    HostPacing Pacing_;
     platform::PacingClock PacingClock_ = platform::GetSystemPacingClock();
     ludus::foundation::time::FrameClock FrameClock_{
         ludus::foundation::time::Duration{HOST_MAXIMUM_FRAME_DELTA_NANOSECONDS}};

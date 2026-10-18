@@ -477,9 +477,10 @@ What the data shows:
 
 What it does not show: power or energy (`powermetrics` needs administrator
 rights), an idle host, battery or Low Power Mode, partial occlusion, Linux
-(Wayland reports `Visible` and keeps the 60 Hz idle rate), or the latency from
-`deminiaturize:` to the first new frame beyond the 100 ms hidden interval bound.
-Two runs per arm on a loaded host support only the coarse rates above.
+(at the time of this measurement Wayland reported `Visible` and kept the 60 Hz
+idle rate; see the follow-up below), or the latency from `deminiaturize:` to the
+first new frame beyond the 100 ms hidden interval bound. Two runs per arm on a
+loaded host support only the coarse rates above.
 
 | Validation (macOS arm64 host, pinned Clang 23.1.3 after merging `develop`, warnings as errors) | Result |
 | --- | --- |
@@ -490,6 +491,37 @@ Two runs per arm on a loaded host support only the coarse rates above.
 | clang-tidy on the changed native sources | No findings. The browser `window_web.cpp` change is compiled by the browser presets in CI. |
 | Documentation: `check-docs`, strict MkDocs build, `test_docs.py`, `test_wiki.py`, `check-wiki --documentation-only` | Passed. |
 | `scripts/build-api` | 185 headers; no new documentation gaps. |
+
+### Wayland suspension and GameHost follow-up
+
+October 17, 2026. Scope: the two loops the hidden-window policy left out. The
+Wayland backend now maps the xdg-shell `suspended` toplevel state to `Occluded`,
+and the GameHost play and static loops wait at 10 Hz while their window is
+minimized or occluded (see
+[runtime timing telemetry](../architecture/high-resolution-time.md#runtime-timing-telemetry)).
+
+**Tests**:
+
+| Behavior | Evidence |
+| --- | --- |
+| Wayland state mapping | `modules/platform/tests/wayland_event_tests.cpp` (no compositor needed) maps an empty state array and the activated, maximized and fullscreen states to `Visible`, any array containing `XDG_TOPLEVEL_STATE_SUSPENDED` to `Occluded`, and a later array without it back to `Visible`; it also pins the state's protocol version at 6. |
+| Host hidden rate | `modules/runtime/game_host/tests/timing_tests.cpp` drives `HostPacing` with the synthetic clock: one simulated second waits 60 times while visible and exactly 10 times while hidden, on `anchor + k * 100 ms`; hiding selects a 400 ms lateness bound and drops the schedule; repeating the current visibility keeps it; a window shown 30 ms into a hidden interval starts its next frame at once and then follows the 60 Hz grid anchored at the reveal; `Reset()` keeps the interval. |
+| Telemetry | The same file runs the loop's order (pace, sample, apply visibility): the frame that observes the hidden window reports a 100 ms `pacing_interval_ns`, the next frame is the hidden baseline, the one after it waits 100 ms, showing restores 16,666,667 ns in the same frame, and no visibility change adds a frame-clock baseline. |
+
+Not covered: a live compositor suspending a Ludus window. The Wayland suite's
+compositor cases still skip without `LUDUS_TEST_WAYLAND=1`, and no Linux host
+with a compositor was available for this change; Mutter and KWin send the
+suspended state for minimized and fully covered windows, Weston does not. Wake-up
+rates were not measured for the host or on Linux; the macOS measurement above
+covers the shared pacer and the same hidden interval.
+
+| Validation (macOS arm64 host, pinned Clang 23.1.3, warnings as errors) | Result |
+| --- | --- |
+| Development build of the GameHost, Platform and their test targets | Passed, warning-clean, after a one-line fix to `window_cocoa.mm` that `develop` needed: the explicit-boolean-comparison migration compared a `UniquePtr` with `nullptr`, which that type does not support, so `develop` did not compile on macOS. |
+| `ludus_game_host_timing_tests`, `ludus_game_host_session_tests`, `ludus_game_host_reload_tests`, `ludus_platform_cocoa_tests` | 7 cases (293 assertions, including the two new pacing cases), 7 passed and 1 skipped, 2,171 assertions, and 7 cases (201 assertions, `LUDUS_TEST_COCOA=1`) passed. |
+| Wayland backend and test compilation | Not possible on macOS; the Linux CI presets compile and run `ludus_platform_wayland_tests`, whose mapping cases need no compositor. |
+| `source_policy.py`, `./scripts/check --format`, clang-tidy on the changed native sources | Passed; no tidy findings in the five changed native sources. |
+| Documentation: `check-docs`, strict MkDocs build, `test_docs.py`, `test_wiki.py`, `check-wiki --documentation-only`, `scripts/build-api` | Passed; 187 headers, no new documentation gaps. |
 
 ## Runtime timing telemetry
 

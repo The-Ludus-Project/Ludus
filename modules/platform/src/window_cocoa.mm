@@ -312,7 +312,7 @@ foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexc
         {
             CocoaWindow* allocated = new (std::nothrow) CocoaWindow(info);
             foundation::UniquePtr<CocoaWindow> window(allocated);
-            if (window == nullptr || window->Open() == false)
+            if (window.Get() == nullptr || window->Open() == false)
             {
                 return nullptr;
             }
