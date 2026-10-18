@@ -214,8 +214,8 @@ ComputeCapabilities ComputeLimits() noexcept
             {65535, 65535, 65535},
             static_cast<uint32>(internal::RASTER_BINDINGS)};
 }
-// Thanks to Apple, Metal Programming Guide, "Resource Fundamentals"
-// (https://developer.apple.com/library/archive/documentation/Miscellaneous/MetalProgrammingGuide/ResourceFundamentals/ResourceFundamentals.html).
+// Thanks to Apple, "MTLDevice", Metal documentation, for library/pipeline creation:
+// https://developer.apple.com/documentation/metal/mtldevice.
 // Retain immutable device/function inputs on a dedicated preparation lane;
 // publish results and retire resources exclusively on the RHI owner thread.
 struct MetalShaderPreparation final : NativePreparationTask
