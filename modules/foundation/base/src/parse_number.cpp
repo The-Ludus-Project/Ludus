@@ -7,41 +7,83 @@ namespace
 // Exact rational conversion: compare decimal integers with binary32 values,
 // then compare the adjacent-value midpoint. No approximate floating arithmetic.
 // 1024 decimal digits plus binary32 scaling fit in 6144 bits.
+/// Words of an Integer: 6144 bits.
+constexpr usize INTEGER_WORDS = 192;
+/// Bits per Integer word.
+constexpr uint32 WORD_BITS = 32;
+/// Little-endian base-2^32 magnitude. Length counts the words up to the highest
+/// nonzero one, so arithmetic touches only significant words; values that would
+/// exceed INTEGER_WORDS are truncated exactly as a fixed-width loop would.
 struct Integer final
 {
-    uint32 Words[192] = {};
+    uint32 Words[INTEGER_WORDS] = {};
+    usize Length = 0;
     void Multiply(uint32 factor) noexcept
     {
         uint64 carry = 0;
-        for (usize index = 0; index < 192; ++index)
+        for (usize index = 0; index < Length; ++index)
         {
             const uint64 product = static_cast<uint64>(Words[index]) * factor + carry;
             Words[index] = static_cast<uint32>(product);
-            carry = product >> 32;
+            carry = product >> WORD_BITS;
         }
+        if (carry != 0 && Length < INTEGER_WORDS)
+        {
+            Words[Length++] = static_cast<uint32>(carry);
+        }
+        trim();
     }
     void Add(uint32 digit) noexcept
     {
         uint64 carry = digit;
-        for (usize index = 0; index < 192 && carry != 0; ++index)
+        for (usize index = 0; index < INTEGER_WORDS && carry != 0; ++index)
         {
             carry += Words[index];
             Words[index] = static_cast<uint32>(carry);
-            carry >>= 32;
+            carry >>= WORD_BITS;
+            if (index >= Length)
+            {
+                Length = index + 1;
+            }
         }
+        trim();
     }
+    /// Multiply by 2^count, dropping bits beyond INTEGER_WORDS.
     void Shift(uint32 count) noexcept
     {
-        while (count != 0)
+        if (Length == 0 || count == 0)
         {
-            uint32 carry = 0;
-            for (usize index = 0; index < 192; ++index)
-            {
-                const uint32 next = Words[index] >> 31;
-                Words[index] = (Words[index] << 1) | carry;
-                carry = next;
-            }
-            --count;
+            return;
+        }
+        const usize wordShift = count / WORD_BITS;
+        const uint32 bitShift = count % WORD_BITS;
+        if (wordShift >= INTEGER_WORDS)
+        {
+            *this = {};
+            return;
+        }
+        const usize sourceTop = Length + 1 <= INTEGER_WORDS - wordShift ? Length + 1 : INTEGER_WORDS - wordShift;
+        for (usize index = sourceTop + wordShift; index-- > wordShift;)
+        {
+            const usize source = index - wordShift;
+            const uint32 high = source < Length ? Words[source] : 0;
+            const uint32 low = source > 0 && source - 1 < Length ? Words[source - 1] : 0;
+            Words[index] = bitShift == 0 ? high : (high << bitShift) | (low >> (WORD_BITS - bitShift));
+        }
+        for (usize index = 0; index < wordShift; ++index)
+        {
+            Words[index] = 0;
+        }
+        Length = sourceTop + wordShift;
+        trim();
+    }
+
+private:
+    void trim() noexcept
+    {
+        while (Length != 0 && Words[Length - 1] == 0)
+        {
+            --Length;
         }
     }
 };
@@ -51,7 +93,11 @@ bool Digit(char value) noexcept
 }
 int32 Compare(const Integer& left, const Integer& right) noexcept
 {
-    for (usize index = 192; index != 0; --index)
+    if (left.Length != right.Length)
+    {
+        return left.Length < right.Length ? -1 : 1;
+    }
+    for (usize index = left.Length; index != 0; --index)
     {
         if (left.Words[index - 1] != right.Words[index - 1])
         {
