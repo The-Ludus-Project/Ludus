@@ -286,7 +286,7 @@ TEST_CASE("Authoring areas remain reachable at smaller workspace sizes", "[edito
         CHECK(project->viewport()->height() > 100);
         CHECK(inspector->viewport()->width() > 100);
         CHECK(inspector->viewport()->height() > 100);
-        if (!captures.isEmpty())
+        if (captures.isEmpty() == false)
         {
             REQUIRE(window.grab().save(captures + QStringLiteral("-%1.png").arg(size.width())));
         }
@@ -296,7 +296,7 @@ TEST_CASE("Authoring areas remain reachable at smaller workspace sizes", "[edito
     CHECK(audio->isVisible());
     CHECK(audio->viewport()->width() > 100);
     CHECK(audio->viewport()->height() > 100);
-    if (!captures.isEmpty())
+    if (captures.isEmpty() == false)
     {
         REQUIRE(window.grab().save(captures + QStringLiteral("-audio.png")));
     }

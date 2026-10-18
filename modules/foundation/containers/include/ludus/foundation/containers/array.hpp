@@ -103,8 +103,8 @@ ComputeGrowthCapacity(usize currentCapacity, // NOLINT(bugprone-easily-swappable
 template <typename ElementType>
 class Array
 {
-    static_assert(!std::is_const_v<ElementType>, "Array<const T> is not supported");
-    static_assert(!std::is_reference_v<ElementType>, "Array<T&> is not supported");
+    static_assert(std::is_const_v<ElementType> == false, "Array<const T> is not supported");
+    static_assert(std::is_reference_v<ElementType> == false, "Array<T&> is not supported");
     // Reallocation of a non-relocatable type uses move-construction; a throwing
     // move would break the strong guarantee. Under -fno-exceptions moves cannot
     // throw, but require noexcept-movability (or copyability) to document intent.
@@ -276,7 +276,7 @@ public:
     /// native spelling of "reserve": the name states the postcondition. Infallible (fatal on OOM/overflow).
     void EnsureCapacity(usize newCapacity)
     {
-        if (!TryEnsureCapacity(newCapacity))
+        if (TryEnsureCapacity(newCapacity) == false)
         {
             detail::OnAllocationFailure();
         }
@@ -302,7 +302,7 @@ public:
     /// move-only element types.
     void Resize(usize newSize)
     {
-        if (!TryResizeImpl(newSize, nullptr))
+        if (TryResizeImpl(newSize, nullptr) == false)
         {
             detail::OnAllocationFailure();
         }
@@ -312,7 +312,7 @@ public:
     void Resize(usize newSize, const ElementType& value)
         requires std::is_copy_constructible_v<ElementType>
     {
-        if (!TryResizeImpl(newSize, &value))
+        if (TryResizeImpl(newSize, &value) == false)
         {
             detail::OnAllocationFailure();
         }
@@ -521,7 +521,7 @@ public:
     /// @pre Input must not overlap this array's storage.
     void AddRange(std::span<const ElementType> items)
     {
-        if (!TryAddRange(items))
+        if (TryAddRange(items) == false)
         {
             detail::OnAllocationFailure();
         }
@@ -767,7 +767,7 @@ public:
         }
         for (usize i = 0; i < a.mSize; ++i)
         {
-            if (!(a.mData[i] == b.mData[i]))
+            if ((a.mData[i] == b.mData[i]) == false)
             {
                 return false;
             }
@@ -877,7 +877,7 @@ private:
         {
             detail::OnCapacityOverflow();
         }
-        if (!ReallocateTo(newCap))
+        if (ReallocateTo(newCap) == false)
         {
             detail::OnAllocationFailure();
         }

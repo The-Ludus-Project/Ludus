@@ -73,7 +73,7 @@ Status AudioSystem::Impl::StartDevice() noexcept
     {
         renderer->Groups[i] = Groups[i];
     }
-    if (!renderer->EnsurePhysicalInitialized())
+    if (renderer->EnsurePhysicalInitialized() == false)
     {
         delete renderer;
         delete native;
@@ -182,7 +182,7 @@ Status AudioSystem::Impl::StartWorker() noexcept
         [](void* input) -> void* {
             auto* state = static_cast<Impl*>(input);
             uint32 first = 0;
-            while (!state->WorkerStop.load(std::memory_order_acquire))
+            while (state->WorkerStop.load(std::memory_order_acquire) == false)
             {
                 // One bounded decode unit per instance, rotate tie order. Prioritize
                 // smaller published runway before every round; never decode on renderer.
@@ -265,12 +265,12 @@ void AudioSystem::Impl::CloseWorker() noexcept
 }
 uint32 AudioSystem::Impl::FindStream(StreamHandle handle) const noexcept
 {
-    if (!handle.IsValid() || handle.Session != Session || handle.Slot >= StreamInstances)
+    if (handle.IsValid() == false || handle.Session != Session || handle.Slot >= StreamInstances)
     {
         return StreamInstances;
     }
     const auto& slot = Streams[handle.Slot];
-    return slot.InUse && !slot.Retiring && slot.Generation == handle.Generation ? handle.Slot : StreamInstances;
+    return slot.InUse && slot.Retiring == false && slot.Generation == handle.Generation ? handle.Slot : StreamInstances;
 }
 void AudioSystem::Impl::PublishRender() noexcept
 {
@@ -292,19 +292,19 @@ void AudioSystem::Impl::PublishRender() noexcept
     stats.PreClip = PreClipFrames;
     stats.NonFinite = NonFiniteFaults;
     stats.Losses = SnapshotLosses;
-    if (!Control->RenderMetrics.TryPublishBatch({&stats, 1}))
+    if (Control->RenderMetrics.TryPublishBatch({&stats, 1}) == false)
     {
         ++SnapshotLosses;
     }
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         const auto& v = Voices[i];
-        if (!v.InUse)
+        if (v.InUse == false)
         {
             continue;
         }
         const RenderRecord record{i, v.Generation.Value, v.State, v.CursorFrame, v.FadeGain, v.LastCause, v.Silence};
-        if (!Control->RenderSnapshots.TryPublishBatch({&record, 1}))
+        if (Control->RenderSnapshots.TryPublishBatch({&record, 1}) == false)
         {
             ++SnapshotLosses;
             break;

@@ -102,7 +102,7 @@ int main()
         return 13;
     }
     DebugSnapshot stop;
-    if (!provider.Inspect(stop) || !stop.Paused || stop.Stop == 0 || stop.FrameCount == 0 ||
+    if (provider.Inspect(stop) == false || stop.Paused == false || stop.Stop == 0 || stop.FrameCount == 0 ||
         provider.ResumeDebug(stop.Stop + 1, DebugMode::Continue, output, diagnostic) != Status::InvalidInput)
     {
         return 14;

@@ -149,12 +149,12 @@ struct L4Scene final
             mesh.Normals = normals;
             mesh.Texcoords = uv;
             status = renderer.CreateMesh(mesh, Geometry);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
             status = rhi::CreateTexture(device, textures::l4_bake::Description(), textures::l4_bake::Upload(), Bake);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -182,7 +182,7 @@ struct L4Scene final
             for (usize i = 0; i < 7; ++i)
             {
                 status = renderer.CreateLitMaterial(Program, Material(i, light), Materials[i], selected);
-                if (!Accepted(status))
+                if (Accepted(status) == false)
                 {
                     return status;
                 }
@@ -228,7 +228,7 @@ struct L4Scene final
                 }
             }
             status = renderer.PrepareShadowAtlas(Casters, {32, 32, regions, 4}, Atlas);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -272,7 +272,7 @@ struct L4Scene final
             material.Shadows = Atlas;
             rr::LightSelection selected;
             status = renderer.CreateLitMaterial(Program, material, Materials[7], selected);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -293,7 +293,7 @@ struct L4Scene final
                 return status;
             }
             status = renderer.PrepareView(Current, Camera(), View, Report);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -306,12 +306,12 @@ struct L4Scene final
                                    {96, 64, Hdr ? rhi::RasterFormat::Rgba16Float : rhi::RasterFormat::Rgba8Unorm, true},
                                    {},
                                    Target);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
             status = rhi::CreateTexture(device, {96, 64, rhi::RasterFormat::Rgba8Unorm, true}, {}, Display);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -343,14 +343,14 @@ struct L4Scene final
             rr::LightingOutput tone;
             tone.Encode = false;
             status = renderer.PrepareLightingPresentation(Target, mapping, tone, Tone);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
             rr::LightingOutput encode;
             encode.ToneMap = false;
             status = renderer.PrepareLightingPresentation(Display, mapping, encode, Encode);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -395,7 +395,7 @@ struct L4Scene final
     rhi::RasterStatus MoveCaster(rr::Renderer& renderer) noexcept
     {
         using S = rhi::RasterStatus;
-        if (!Moved)
+        if (Moved == false)
         {
             Moved = true;
             rr::SceneItem items[8];
@@ -411,7 +411,7 @@ struct L4Scene final
                 return status;
             }
             status = renderer.PrepareView(Current, Camera(), View, Report);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }

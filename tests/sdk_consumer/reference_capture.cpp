@@ -80,19 +80,20 @@ int main(int argc, char** argv)
     if (status != S::Ready)
         return 7;
     rr::ReferenceCaptureInfo info;
-    if (renderer.GetReferenceCaptureInfo(capture, info) != S::Ready || info.InvalidContributions != 0 || !info.Complete)
+    if (renderer.GetReferenceCaptureInfo(capture, info) != S::Ready || info.InvalidContributions != 0 ||
+        info.Complete == false)
         return 8;
     Array<uint8> bytes;
-    if (!bytes.TryResize(256 + usize(description.Width) * description.Height * 16))
+    if (bytes.TryResize(256 + usize(description.Width) * description.Height * 16) == false)
         return 9;
     usize written = 0;
     if (renderer.EncodeReferenceHdr(capture, bytes.GetData(), bytes.GetSize(), written) != S::Ready)
         return 10;
     filesystem::WriteDirectory directory;
-    if (!directory.Open(".").Succeeded())
+    if (directory.Open(".").Succeeded() == false)
         return 11;
     const auto output = argc > 1 ? std::string_view(argv[1]) : std::string_view("reference.luhdr");
-    if (!directory.Publish(output, {bytes.GetData(), written}).Outcome.Succeeded())
+    if (directory.Publish(output, {bytes.GetData(), written}).Outcome.Succeeded() == false)
         return 12;
     return 0;
 }

@@ -64,7 +64,7 @@ bool RayMetalSizes(const MTLAccelerationStructureSizes& sizes,
 } // namespace
 RayCapabilities RayLimits() noexcept
 {
-    if (gDevice == nil || gQueue == nil || !gDevice.supportsRaytracing)
+    if (gDevice == nil || gQueue == nil || gDevice.supportsRaytracing == false)
     {
         return {};
     }
@@ -80,7 +80,7 @@ RayCapabilities RayLimits() noexcept
 }
 RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) noexcept
 {
-    if (!gRayMetalPrograms.EnsureSlots(slot + 1))
+    if (gRayMetalPrograms.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -139,7 +139,8 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
                 argument.type == MTLBindingTypeInstanceAccelerationStructure ||
                 (argument.type == MTLBindingTypeBuffer &&
                  ((id<MTLBufferBinding>)argument).bufferDataType == MTLDataTypeInstanceAccelerationStructure);
-            if (argument.index > 4 || (argument.index == 0 ? !structure : argument.type != MTLBindingTypeBuffer))
+            if (argument.index > 4 ||
+                (argument.index == 0 ? structure == false : argument.type != MTLBindingTypeBuffer))
             {
                 LUDUS_LOG_ERROR(LOG_RHI,
                                 "Ray query binding {} has native type {}",
@@ -168,7 +169,7 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
 }
 RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayAllocation& allocation) noexcept
 {
-    if (!gRayMetalGeometry.EnsureSlots(slot + 1))
+    if (gRayMetalGeometry.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -201,7 +202,7 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
         auto* descriptor = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
         descriptor.geometryDescriptors = @[ triangles ];
         const auto sizes = [gDevice accelerationStructureSizesWithDescriptor:descriptor];
-        if (!RayMetalSizes(sizes, vertexBytes + indexBytes, d.ByteBudget, allocation))
+        if (RayMetalSizes(sizes, vertexBytes + indexBytes, d.ByteBudget, allocation) == false)
         {
             return RasterStatus::CapacityExceeded;
         }
@@ -231,7 +232,7 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
 RasterStatus
 RayCreateScene(usize slot, const internal::NativeRaySceneDescription& description, RayAllocation& allocation) noexcept
 {
-    if (!gRayMetalScene.EnsureSlots(slot + 1))
+    if (gRayMetalScene.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -248,7 +249,7 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
             return RasterStatus::CapacityExceeded;
         }
         RayMetalScene scene;
-        if (!scene.Geometries.TryResize(count))
+        if (scene.Geometries.TryResize(count) == false)
         {
             return internal::StorageFailure();
         }
@@ -291,7 +292,7 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
         descriptor.instanceCount = count;
         descriptor.instancedAccelerationStructures = structures;
         const auto sizes = [gDevice accelerationStructureSizesWithDescriptor:descriptor];
-        if (!RayMetalSizes(sizes, instanceBytes + opacityBytes, budget, allocation))
+        if (RayMetalSizes(sizes, instanceBytes + opacityBytes, budget, allocation) == false)
         {
             return RasterStatus::CapacityExceeded;
         }
@@ -320,7 +321,7 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
 }
 RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submission, RayAllocation& allocation) noexcept
 {
-    if (!gRayMetalBatch.EnsureSlots(slot + 1))
+    if (gRayMetalBatch.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }

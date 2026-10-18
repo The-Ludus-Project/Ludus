@@ -420,7 +420,7 @@ TEST_CASE("Renderer controls and inspector remain reachable in a small styled Wo
         CHECK(top.y() >= 0);
         CHECK(top.y() + control->height() <= world.height());
     }
-    if (!qEnvironmentVariable("LUDUS_RENDER_SCREENSHOT").isEmpty())
+    if (qEnvironmentVariable("LUDUS_RENDER_SCREENSHOT").isEmpty() == false)
     {
         QSignalSpy frame(&world.findChild<RenderPanel*>()->Preview(), &RenderPreview::FrameReady);
         REQUIRE(frame.wait(5000));

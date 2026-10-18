@@ -39,7 +39,7 @@ namespace
 QByteArray Read(const QString& path)
 {
     QFile file(path);
-    if (QFileInfo(path).isSymLink() || !file.open(QIODevice::ReadOnly) || file.size() > 131072)
+    if (QFileInfo(path).isSymLink() || file.open(QIODevice::ReadOnly) == false || file.size() > 131072)
     {
         return {};
     }
@@ -54,7 +54,7 @@ QString Within(const QString& root, const QString& relative)
     const QFileInfo info(QDir(root).filePath(relative));
     const auto path = info.canonicalFilePath();
     const auto base = QFileInfo(root).canonicalFilePath();
-    return !info.isSymLink() && path.startsWith(base + QLatin1Char('/')) ? path : QString();
+    return info.isSymLink() == false && path.startsWith(base + QLatin1Char('/')) ? path : QString();
 }
 QJsonObject Object(const QByteArray& bytes)
 {
@@ -81,13 +81,13 @@ ScriptWorkspace::ScriptWorkspace(EditorController* controller, QWidget* parent)
     button(QStringLiteral("Undo"), [this]() { History(false); });
     button(QStringLiteral("Redo"), [this]() { History(true); });
     Cook_ = button(QStringLiteral("Cook scripts"), [this]() {
-        if (!Dirty_)
+        if (Dirty_ == false)
         {
             Controller_->CookScripts();
         }
     });
     Reload_ = button(QStringLiteral("Build / Reload"), [this]() {
-        if (!Dirty_)
+        if (Dirty_ == false)
         {
             if (Controller_->CanBuildReload())
             {
@@ -156,13 +156,13 @@ ScriptWorkspace::ScriptWorkspace(EditorController* controller, QWidget* parent)
     Status_->setWordWrap(true);
     layout->addWidget(Status_);
     connect(Assets_, &QComboBox::currentIndexChanged, this, [this]() {
-        if (!Rendering_)
+        if (Rendering_ == false)
         {
             OpenSelected();
         }
     });
     connect(Text_, &QPlainTextEdit::textChanged, this, [this]() {
-        if (!Rendering_ && !Graph_)
+        if (Rendering_ == false && Graph_ == false)
         {
             Dirty_ = Text_->toPlainText().toUtf8() != Baseline_;
             Refresh();
@@ -194,17 +194,17 @@ void ScriptWorkspace::SetProject(const QString& root, const QString& source, con
     Dirty_ = false;
     Sidecar_ = Object(Read(QDir(root).filePath(QStringLiteral("ludus.scripts.json"))));
     const auto name = Sidecar_.value(QStringLiteral("name")).toString();
-    const bool nameValid = !name.isEmpty() && name.size() <= 64 && name.at(0).isLetter() && [&name]() {
+    const bool nameValid = name.isEmpty() == false && name.size() <= 64 && name.at(0).isLetter() && [&name]() {
         for (QChar c : name)
         {
-            if (c.unicode() >= 128 || (!c.isLetterOrNumber() && c != QLatin1Char('_')))
+            if (c.unicode() >= 128 || (c.isLetterOrNumber() == false && c != QLatin1Char('_')))
             {
                 return false;
             }
         }
         return true;
     }();
-    if (Sidecar_.size() != 4 || Sidecar_.value(QStringLiteral("version")).toInt() != 1 || !nameValid ||
+    if (Sidecar_.size() != 4 || Sidecar_.value(QStringLiteral("version")).toInt() != 1 || nameValid == false ||
         Within(root, Sidecar_.value(QStringLiteral("contract")).toString()).isEmpty())
     {
         Sidecar_ = {};
@@ -222,7 +222,7 @@ void ScriptWorkspace::SetProject(const QString& root, const QString& source, con
             program
                 .value(program.contains(QStringLiteral("graph")) ? QStringLiteral("graph") : QStringLiteral("source"))
                 .toString());
-        if (!path.isEmpty())
+        if (path.isEmpty() == false)
         {
             Assets_->addItem(QFileInfo(path).fileName(), program);
         }
@@ -232,7 +232,7 @@ void ScriptWorkspace::SetProject(const QString& root, const QString& source, con
 }
 void ScriptWorkspace::OpenSelected()
 {
-    if (Dirty_ && !ConfirmDiscard())
+    if (Dirty_ && ConfirmDiscard() == false)
     {
         const QSignalBlocker blocker(Assets_);
         Assets_->setCurrentIndex(Selected_);
@@ -274,7 +274,7 @@ void ScriptWorkspace::Commit(const QByteArray& bytes)
 }
 void ScriptWorkspace::History(bool redo)
 {
-    if (!Graph_)
+    if (Graph_ == false)
     {
         if (redo)
         {
@@ -303,9 +303,9 @@ void ScriptWorkspace::History(bool redo)
 }
 void ScriptWorkspace::RenderGraph()
 {
-    Text_->setVisible(!Graph_);
+    Text_->setVisible(Graph_ == false);
     Nodes_->setVisible(Graph_);
-    if (!Graph_)
+    if (Graph_ == false)
     {
         return;
     }
@@ -371,7 +371,8 @@ void ScriptWorkspace::ChangeNode(foundation::int32 row, foundation::int32 column
     const auto text = Nodes_->item(row, column)->text();
     bool ok = false;
     const foundation::int32 number = text.toInt(&ok);
-    if (key.isEmpty() || (!ok && !(key == QStringLiteral("amount") && text == QStringLiteral("event"))) ||
+    if (key.isEmpty() ||
+        (ok == false && (key == QStringLiteral("amount") && text == QStringLiteral("event")) == false) ||
         (ok && (number < 1 || number > (key == QStringLiteral("count") ? 4 : 10))))
     {
         RenderGraph();
@@ -384,15 +385,15 @@ void ScriptWorkspace::ChangeNode(foundation::int32 row, foundation::int32 column
 }
 bool ScriptWorkspace::CanSave() const noexcept
 {
-    return !Path_.isEmpty();
+    return Path_.isEmpty() == false;
 }
 bool ScriptWorkspace::CanUndo() const
 {
-    return Graph_ ? !Undo_.isEmpty() : Text_->document()->isUndoAvailable();
+    return Graph_ ? Undo_.isEmpty() == false : Text_->document()->isUndoAvailable();
 }
 bool ScriptWorkspace::CanRedo() const
 {
-    return Graph_ ? !Redo_.isEmpty() : Text_->document()->isRedoAvailable();
+    return Graph_ ? Redo_.isEmpty() == false : Text_->document()->isRedoAvailable();
 }
 void ScriptWorkspace::Undo()
 {
@@ -413,7 +414,7 @@ void ScriptWorkspace::CommitPending()
 bool ScriptWorkspace::Save()
 {
     CommitPending();
-    if (Path_.isEmpty() || !QFileInfo(Path_).isFile() || QFileInfo(Path_).canonicalFilePath() != Path_ ||
+    if (Path_.isEmpty() || QFileInfo(Path_).isFile() == false || QFileInfo(Path_).canonicalFilePath() != Path_ ||
         Read(Path_) != Disk_ || QFileInfo(Path_).isSymLink())
     {
         Status_->setText(QStringLiteral("Asset changed on disk; reopen or merge explicitly."));
@@ -426,7 +427,7 @@ bool ScriptWorkspace::Save()
     }
     QSaveFile file(Path_);
     file.setDirectWriteFallback(false);
-    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+    if (file.open(QIODevice::WriteOnly) == false || file.write(bytes) != bytes.size() || file.commit() == false)
     {
         Status_->setText(QStringLiteral("Asset save failed."));
         return false;
@@ -440,7 +441,7 @@ bool ScriptWorkspace::Save()
 bool ScriptWorkspace::ConfirmDiscard()
 {
     CommitPending();
-    if (!Dirty_)
+    if (Dirty_ == false)
     {
         return true;
     }
@@ -494,7 +495,7 @@ void ScriptWorkspace::Send(const QString& action)
 void ScriptWorkspace::Breakpoint(bool enabled)
 {
     const auto& status = Controller_->PlayState().ScriptStatus;
-    if (!MapsMatch() || status.value(QStringLiteral("package")) != Evidence_.value(QStringLiteral("key")))
+    if (MapsMatch() == false || status.value(QStringLiteral("package")) != Evidence_.value(QStringLiteral("key")))
     {
         return;
     }
@@ -576,7 +577,7 @@ void ScriptWorkspace::Highlight()
 {
     const auto& status = Controller_->PlayState().ScriptStatus;
     const auto stop = status.value(QStringLiteral("stop")).toString();
-    if (!status.value(QStringLiteral("partial")).toBool() || !MapsMatch() ||
+    if (status.value(QStringLiteral("partial")).toBool() == false || MapsMatch() == false ||
         status.value(QStringLiteral("package")) != Evidence_.value(QStringLiteral("key")))
     {
         Text_->setExtraSelections({});
@@ -594,7 +595,7 @@ void ScriptWorkspace::Highlight()
     }
     const auto frame = frames.first().toObject();
     const auto source = frame.value(QStringLiteral("source")).toString();
-    if (!source.endsWith(QStringLiteral("asset/") + Program_.value(QStringLiteral("asset")).toString()))
+    if (source.endsWith(QStringLiteral("asset/") + Program_.value(QStringLiteral("asset")).toString()) == false)
     {
         return;
     }
@@ -648,8 +649,8 @@ void ScriptWorkspace::Refresh()
     if (key.size() == 64 && [&key]() {
             for (QChar c : key)
             {
-                if (!((c >= QLatin1Char('0') && c <= QLatin1Char('9')) ||
-                      (c >= QLatin1Char('a') && c <= QLatin1Char('f'))))
+                if (((c >= QLatin1Char('0') && c <= QLatin1Char('9')) ||
+                     (c >= QLatin1Char('a') && c <= QLatin1Char('f'))) == false)
                 {
                     return false;
                 }
@@ -662,19 +663,20 @@ void ScriptWorkspace::Refresh()
     const auto& play = Controller_->PlayState();
     Debug_->setPlainText(play.ScriptMessage + QLatin1Char('\n') +
                          QString::fromUtf8(QJsonDocument(play.ScriptStatus).toJson(QJsonDocument::Indented)));
-    Cook_->setEnabled(!Path_.isEmpty() && !Sidecar_.isEmpty() && !Dirty_ && !Controller_->State().Busy());
-    Reload_->setEnabled(!Dirty_ && (Controller_->CanBuildReload() || Controller_->Caps().CanBuild));
-    const bool ready = play.Phase == PlayPhase::Running && !play.ScriptBusy && !play.DebuggerStopped;
+    Cook_->setEnabled(Path_.isEmpty() == false && Sidecar_.isEmpty() == false && Dirty_ == false &&
+                      Controller_->State().Busy() == false);
+    Reload_->setEnabled(Dirty_ == false && (Controller_->CanBuildReload() || Controller_->Caps().CanBuild));
+    const bool ready = play.Phase == PlayPhase::Running && play.ScriptBusy == false && play.DebuggerStopped == false;
     for (auto* control : DebugControls_)
     {
         const auto action = control->property("scriptAction").toString();
-        control->setEnabled(ready &&
-                            (action == QStringLiteral("inspect") ||
-                             (!play.ScriptStatus.isEmpty() &&
-                              (action == QStringLiteral("restart") ||
-                               (action == QStringLiteral("interact") ? !play.ScriptPaused : play.ScriptPaused)))));
+        control->setEnabled(
+            ready && (action == QStringLiteral("inspect") ||
+                      (play.ScriptStatus.isEmpty() == false &&
+                       (action == QStringLiteral("restart") ||
+                        (action == QStringLiteral("interact") ? play.ScriptPaused == false : play.ScriptPaused)))));
     }
-    Break_->setEnabled(ready && MapsMatch() && !play.ScriptStatus.isEmpty() &&
+    Break_->setEnabled(ready && MapsMatch() && play.ScriptStatus.isEmpty() == false &&
                        play.ScriptStatus.value(QStringLiteral("package")) == Evidence_.value(QStringLiteral("key")));
     ClearBreak_->setEnabled(Break_->isEnabled());
     Highlight();
@@ -685,8 +687,9 @@ void ScriptWorkspace::Refresh()
     ClearBreak_->setEnabled(false);
 #endif
     Status_->setText(
-        Dirty_         ? QStringLiteral("Unsaved asset draft; save before cooking.")
-        : !MapsMatch() ? QStringLiteral("Source maps are stale; cook, then build/reload before setting breakpoints.")
+        Dirty_ ? QStringLiteral("Unsaved asset draft; save before cooking.")
+        : MapsMatch() == false
+            ? QStringLiteral("Source maps are stale; cook, then build/reload before setting breakpoints.")
         : play.ScriptPaused
             ? QStringLiteral(
                   "Paused script: state/effects are unpublished. Continue/step or restart before native reload.")

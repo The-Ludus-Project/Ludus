@@ -218,14 +218,14 @@ int main(int argc, char** argv)
             const auto leaf = slash == std::string_view::npos ? path : path.substr(slash + 1);
             ludus::foundation::filesystem::Directory directory;
             ludus::foundation::filesystem::File file;
-            if (!directory.Open(root).Succeeded() || !directory.OpenRead(leaf, file).Succeeded() || file.Size() == 0 ||
-                file.Size() > sizeof(levelBytes))
+            if (directory.Open(root).Succeeded() == false || directory.OpenRead(leaf, file).Succeeded() == false ||
+                file.Size() == 0 || file.Size() > sizeof(levelBytes))
             {
                 return 1;
             }
             levelSize = static_cast<usize>(file.Size());
             const auto read = file.ReadAt(0, {reinterpret_cast<uint8*>(levelBytes), levelSize});
-            if (!read.Outcome.Succeeded() || read.BytesRead != levelSize)
+            if (read.Outcome.Succeeded() == false || read.BytesRead != levelSize)
             {
                 return 1;
             }
@@ -282,7 +282,7 @@ int main(int argc, char** argv)
                 return 1;
             }
         }
-        if (!session.Activate())
+        if (session.Activate() == false)
         {
             return 1;
         }
@@ -335,9 +335,9 @@ int main(int argc, char** argv)
     {
         return 1;
     }
-    if (!application.Start(ludus::graphics::rhi::BackendSelection::Auto,
-                           levelSize != 0 ? levelBytes : nullptr,
-                           levelSize))
+    if (application.Start(ludus::graphics::rhi::BackendSelection::Auto,
+                          levelSize != 0 ? levelBytes : nullptr,
+                          levelSize) == false)
     {
         return 1;
     }

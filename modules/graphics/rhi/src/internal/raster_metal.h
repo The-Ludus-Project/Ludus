@@ -51,7 +51,7 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
 {
     for (id<MTLBinding> binding in bindings)
     {
-        if (!binding.used)
+        if (binding.used == false)
         {
             continue;
         }
@@ -95,7 +95,7 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
                 found = true;
             }
         }
-        if (!found)
+        if (found == false)
         {
             LUDUS_LOG_WARN(LOG_RHI,
                            "Raster Metal binding {} index {} type {} is absent from stage reflection",
@@ -114,7 +114,7 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
 // no storage/MSAA or R8/RG8 attachment path is advertised. R8 copies use RGBA8Unorm.
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {
-    if (gDevice == nil || (internal::CompressedTexture(format) && !gDevice.supportsBCTextureCompression))
+    if (gDevice == nil || (internal::CompressedTexture(format) && gDevice.supportsBCTextureCompression == false))
     {
         return {};
     }
@@ -226,7 +226,7 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
                                                                error:&error];
         const uint32 threads = info.WorkgroupSize[0] * info.WorkgroupSize[1] * info.WorkgroupSize[2];
         if (pipeline == nil || reflection == nil || threads > pipeline.maxTotalThreadsPerThreadgroup ||
-            !RasterMetalBindings(reflection.bindings, gRasterShaders[info.Shader].Info, {}))
+            RasterMetalBindings(reflection.bindings, gRasterShaders[info.Shader].Info, {}) == false)
         {
             LogError(error);
             return RasterStatus::Failed;
@@ -302,7 +302,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         {
             return RasterStatus::OutOfMemory;
         }
-        if (!info.Attachment && !info.DeferredInitialization)
+        if (info.Attachment == false && info.DeferredInitialization == false)
         {
             uint32 width = info.Width, height = info.Height;
             for (usize level = 0; level < info.MipLevels; ++level)
@@ -513,8 +513,8 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
                                                            reflection:&reflection
                                                                 error:&error];
         if (pipeline == nil || reflection == nil ||
-            !RasterMetalBindings(reflection.vertexBindings, gRasterShaders[info.Vertex].Info, info) ||
-            !RasterMetalBindings(reflection.fragmentBindings, gRasterShaders[info.Fragment].Info, info))
+            RasterMetalBindings(reflection.vertexBindings, gRasterShaders[info.Vertex].Info, info) == false ||
+            RasterMetalBindings(reflection.fragmentBindings, gRasterShaders[info.Fragment].Info, info) == false)
         {
             LogError(error);
             return RasterStatus::Failed;
@@ -679,7 +679,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     internal::RasterArea area;
     const auto width = gRasterWidth == 0 ? gFrame.Width : gRasterWidth;
     const auto height = gRasterHeight == 0 ? gFrame.Height : gRasterHeight;
-    if (!internal::RasterResolveArea(gRasterRegion, width, height, area))
+    if (internal::RasterResolveArea(gRasterRegion, width, height, area) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -814,7 +814,7 @@ uint64 RasterCompleted() noexcept
 {
     for (usize i = 0; i < FRAMES; ++i)
     {
-        if (gSubmitted[i] != nil && !CheckCommand(gSubmitted[i]))
+        if (gSubmitted[i] != nil && CheckCommand(gSubmitted[i]) == false)
         {
             return gRasterCompleted;
         }

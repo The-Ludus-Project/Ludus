@@ -42,13 +42,13 @@ PlayProcess::PlayProcess(QObject* parent) : QObject(parent)
     connect(&Process_, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus status) {
         Read();
         // Consume the bounded final backlog before reporting ownership release.
-        while (!Failed_ && Backlog_.contains('\n'))
+        while (Failed_ == false && Backlog_.contains('\n'))
         {
             Consume();
         }
         ReadyTimer_.stop();
         Active_ = false;
-        const bool confirmed = CleanupConfirmed_ && exitCode == 0 && status == QProcess::NormalExit && !Failed_;
+        const bool confirmed = CleanupConfirmed_ && exitCode == 0 && status == QProcess::NormalExit && Failed_ == false;
         Q_EMIT Finished(confirmed);
     });
 }
@@ -88,7 +88,7 @@ bool PlayProcess::Start(PlayLaunch launch)
 
 bool PlayProcess::BeginSession(foundation::uint64 epoch, QJsonObject request)
 {
-    if (!Active_ || !Ready_ || Failed_ || epoch == 0 ||
+    if (Active_ == false || Ready_ == false || Failed_ || epoch == 0 ||
         request.value(QStringLiteral("type")).toString() != QStringLiteral("start"))
     {
         return false;
@@ -101,7 +101,7 @@ bool PlayProcess::BeginSession(foundation::uint64 epoch, QJsonObject request)
 
 bool PlayProcess::Send(QJsonObject request)
 {
-    if (!Active_ || !Ready_ || Failed_ || Process_.state() == QProcess::NotRunning)
+    if (Active_ == false || Ready_ == false || Failed_ || Process_.state() == QProcess::NotRunning)
     {
         return false;
     }
@@ -134,7 +134,7 @@ bool PlayProcess::Send(QJsonObject request)
 void PlayProcess::Close()
 {
     StopLatched_ = true;
-    if (Ready_ && !CloseSent_)
+    if (Ready_ && CloseSent_ == false)
     {
         CloseSent_ = true;
         (void)Send({{QStringLiteral("type"), QStringLiteral("close")}});
@@ -158,7 +158,7 @@ void PlayProcess::Read()
 void PlayProcess::Consume()
 {
     ConsumeScheduled_ = false;
-    for (int i = 0; i < 32 && !Failed_; ++i)
+    for (int i = 0; i < 32 && Failed_ == false; ++i)
     {
         const auto newline = Backlog_.indexOf('\n');
         if (newline < 0)
@@ -178,7 +178,7 @@ void PlayProcess::Consume()
         }
         QJsonParseError error{};
         const auto document = QJsonDocument::fromJson(line, &error);
-        if (error.error != QJsonParseError::NoError || !document.isObject())
+        if (error.error != QJsonParseError::NoError || document.isObject() == false)
         {
             Fail(QStringLiteral("Malformed Play frame"));
             return;
@@ -210,9 +210,9 @@ void PlayProcess::Consume()
             }
             continue;
         }
-        const bool stoppedBeforeStart = !StartSent_ && StopLatched_ && type == QStringLiteral("ended") &&
+        const bool stoppedBeforeStart = StartSent_ == false && StopLatched_ && type == QStringLiteral("ended") &&
                                         event.value(QStringLiteral("epoch")) == QStringLiteral("0000000000000000");
-        if (event.value(QStringLiteral("epoch")).toString() != Epoch_ && !stoppedBeforeStart)
+        if (event.value(QStringLiteral("epoch")).toString() != Epoch_ && stoppedBeforeStart == false)
         {
             Fail(QStringLiteral("Play epoch mismatch"));
             return;
@@ -232,7 +232,7 @@ void PlayProcess::Consume()
                         {QStringLiteral("request"), event.value(QStringLiteral("request"))}});
         }
     }
-    if (Backlog_.contains('\n') && !ConsumeScheduled_ && !Failed_)
+    if (Backlog_.contains('\n') && ConsumeScheduled_ == false && Failed_ == false)
     {
         ConsumeScheduled_ = true;
         QTimer::singleShot(0, this, &PlayProcess::Consume);

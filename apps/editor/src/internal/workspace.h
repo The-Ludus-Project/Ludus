@@ -131,7 +131,7 @@ struct WorkspaceState
     // Dirty is the semantic inequality of saved and draft (design section 4).
     [[nodiscard]] bool Dirty() const noexcept
     {
-        return !HasSaved || !(Saved == Draft);
+        return HasSaved == false || (Saved == Draft) == false;
     }
 
     // True while an operation is owned (not Idle/CleanupUnknown is "busy").

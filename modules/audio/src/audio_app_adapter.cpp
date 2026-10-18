@@ -22,7 +22,7 @@ uint32 EventAdapter::AllocPolicy(uint32 eventId, uint32 ownerTag) noexcept
 {
     for (uint32 i = 0; i < POLICY_TABLE_CAPACITY; ++i)
     {
-        if (!mPolicy[i].InUse)
+        if (mPolicy[i].InUse == false)
         {
             mPolicy[i] = PolicyEntry{};
             mPolicy[i].InUse = true;
@@ -36,13 +36,13 @@ uint32 EventAdapter::AllocPolicy(uint32 eventId, uint32 ownerTag) noexcept
 
 bool EventAdapter::VoiceStillActive(VoiceHandle v) const noexcept
 {
-    if (!v.IsValid())
+    if (v.IsValid() == false)
     {
         return false;
     }
     VoiceInfo info{};
     const Status s = mSystem.GetVoiceInfo(v, info);
-    if (!IsOk(s))
+    if (IsOk(s) == false)
     {
         // Reclaimed/stale generation of a previously accepted handle proves the
         // owner no longer owns a live slot (design section 4).
@@ -55,7 +55,7 @@ void EventAdapter::TrackLoop(uint32 ownerTag, VoiceHandle v) noexcept
 {
     for (auto& loop : mLoops)
     {
-        if (!loop.InUse)
+        if (loop.InUse == false)
         {
             loop.InUse = true;
             loop.OwnerTag = ownerTag;
@@ -129,13 +129,13 @@ TriggerResult EventAdapter::Trigger(const TriggerRequest& req, uint64 nowTicks) 
         bool hasRoom = false;
         for (const auto& e : mPolicy)
         {
-            if (!e.InUse)
+            if (e.InUse == false)
             {
                 hasRoom = true;
                 break;
             }
         }
-        if (!hasRoom)
+        if (hasRoom == false)
         {
             out.Suppressed = SuppressReason::TableFull;
             EmitOwner(OwnerEventKind::PolicySuppressed,
@@ -152,7 +152,7 @@ TriggerResult EventAdapter::Trigger(const TriggerRequest& req, uint64 nowTicks) 
     VoiceHandle v{};
     const Status s = mSystem.PlayClip(req.Play, v);
     out.EngineStatus = s;
-    if (!IsOk(s))
+    if (IsOk(s) == false)
     {
         // Engine failure consumes no cooldown and leaves no active/duck state.
         EmitOwner(OwnerEventKind::VoiceCapacityRejected, s, PolicyCause::None, req.EventId, req.OwnerTag, nowTicks);
@@ -192,7 +192,7 @@ DescriptorValidation EventAdapter::ValidateDescriptor(const EventDescriptor& des
     }
     for (uint32 i = 0; i < desc.VariationCount; ++i)
     {
-        if (!mSystem.IsClipReady(desc.Variations[i]))
+        if (mSystem.IsClipReady(desc.Variations[i]) == false)
         {
             out.Field = DescriptorField::VariationHandle;
             out.BadVariationIndex = i;
@@ -204,12 +204,12 @@ DescriptorValidation EventAdapter::ValidateDescriptor(const EventDescriptor& des
         out.Field = DescriptorField::Priority;
         return out;
     }
-    if (!(desc.DefaultGain >= 0.0F) || desc.DefaultGain > 1.0F)
+    if ((desc.DefaultGain >= 0.0F) == false || desc.DefaultGain > 1.0F)
     {
         out.Field = DescriptorField::Gain; // also catches NaN (fails >= 0)
         return out;
     }
-    if (!(desc.Rate >= RATE_MIN) || desc.Rate > RATE_MAX)
+    if ((desc.Rate >= RATE_MIN) == false || desc.Rate > RATE_MAX)
     {
         out.Field = DescriptorField::Rate;
         return out;
@@ -239,7 +239,7 @@ TriggerResult EventAdapter::TriggerDescriptor(const EventDescriptor& desc,
 {
     TriggerResult out{};
     const DescriptorValidation v = ValidateDescriptor(desc);
-    if (!v.Valid)
+    if (v.Valid == false)
     {
         // Owner-side preparation/validation failure: no voice, no phantom.
         EmitOwner(OwnerEventKind::PreparationFailed,
@@ -283,17 +283,17 @@ void EventAdapter::Update(uint64 nowTicks) noexcept
     // policy entries whose cooldown has elapsed and have no live instance.
     for (auto& e : mPolicy)
     {
-        if (!e.InUse)
+        if (e.InUse == false)
         {
             continue;
         }
-        if (e.HasActive && !VoiceStillActive(e.Active))
+        if (e.HasActive && VoiceStillActive(e.Active) == false)
         {
             e.HasActive = false;
             e.Active = VoiceHandle{};
         }
         const bool cooldownElapsed = e.CooldownTicks == 0 || nowTicks >= e.LastAdmitTick + e.CooldownTicks;
-        if (!e.HasActive && cooldownElapsed)
+        if (e.HasActive == false && cooldownElapsed)
         {
             e.InUse = false; // reclaim; owner-key reuse gets a fresh entry
         }
@@ -301,7 +301,7 @@ void EventAdapter::Update(uint64 nowTicks) noexcept
     // Reap finished owned loops.
     for (auto& loop : mLoops)
     {
-        if (loop.InUse && !VoiceStillActive(loop.Voice))
+        if (loop.InUse && VoiceStillActive(loop.Voice) == false)
         {
             loop.InUse = false;
         }
@@ -324,7 +324,7 @@ void EventAdapter::Update(uint64 nowTicks) noexcept
                 }
             }
         }
-        if (!any)
+        if (any == false)
         {
             // Remove the owned duck modifier (never restore bus gain to 1).
             (void)mSystem.ReleaseModifier(mDuck);
@@ -359,13 +359,13 @@ TriggerResult EventAdapter::TriggerDialogue(const TriggerRequest& req, uint64 no
     // Admit the dialogue line through the normal policed path first. A failed
     // admission must create no member and no duck.
     TriggerResult out = Trigger(req, nowTicks);
-    if (!out.Admitted || !mDuckConfigured)
+    if (out.Admitted == false || mDuckConfigured == false)
     {
         return out;
     }
 
     // On the first accepted member, acquire the shared duck modifier.
-    if (!mDuckActive)
+    if (mDuckActive == false)
     {
         ModifierValue mv{};
         mv.BusIndex = mDuckBus;
@@ -380,7 +380,7 @@ TriggerResult EventAdapter::TriggerDialogue(const TriggerRequest& req, uint64 no
     // Record membership.
     for (auto& d : mDialogue)
     {
-        if (!d.InUse)
+        if (d.InUse == false)
         {
             d.InUse = true;
             d.Voice = out.Voice;

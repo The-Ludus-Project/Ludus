@@ -331,7 +331,7 @@ bool CreateForeign(Foreign& fixture) noexcept
         .pNext = &timeline,
     };
     getFeatures(source->Physical, &features);
-    if (!timeline.timelineSemaphore)
+    if (timeline.timelineSemaphore == 0)
     {
         return false;
     }
@@ -400,7 +400,7 @@ bool RetireConsumers(Foreign& fixture) noexcept
     auto* source = static_cast<Source*>(fixture.Context);
     if (source != nullptr && source->Device != VK_NULL_HANDLE)
     {
-        if (!SignalGate(*source, 2))
+        if (SignalGate(*source, 2) == false)
         {
             return false;
         }
@@ -473,7 +473,7 @@ bool SubmitSample(Foreign& fixture, const ludus::graphics::rhi::NativeTextureInf
     NATIVE_VK(api.vkCreateImage(source.Device, &image, nullptr, &source.Target));
     VkMemoryRequirements requirements{};
     api.vkGetImageMemoryRequirements(source.Device, source.Target, &requirements);
-    if (!Allocate(source, requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, source.TargetMemory))
+    if (Allocate(source, requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, source.TargetMemory) == false)
     {
         return false;
     }
@@ -488,10 +488,10 @@ bool SubmitSample(Foreign& fixture, const ludus::graphics::rhi::NativeTextureInf
     };
     NATIVE_VK(api.vkCreateBuffer(source.Device, &buffer, nullptr, &source.Output));
     api.vkGetBufferMemoryRequirements(source.Device, source.Output, &requirements);
-    if (!Allocate(source,
-                  requirements,
-                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                  source.OutputMemory))
+    if (Allocate(source,
+                 requirements,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 source.OutputMemory) == false)
     {
         return false;
     }
@@ -500,10 +500,10 @@ bool SubmitSample(Foreign& fixture, const ludus::graphics::rhi::NativeTextureInf
     buffer.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     NATIVE_VK(api.vkCreateBuffer(source.Device, &buffer, nullptr, &source.Vertices));
     api.vkGetBufferMemoryRequirements(source.Device, source.Vertices, &requirements);
-    if (!Allocate(source,
-                  requirements,
-                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                  source.VertexMemory))
+    if (Allocate(source,
+                 requirements,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 source.VertexMemory) == false)
     {
         return false;
     }
@@ -790,7 +790,7 @@ bool SubmitSample(Foreign& fixture, const ludus::graphics::rhi::NativeTextureInf
 bool ReadSample(Foreign& fixture, ludus::foundation::uint8 (&pixels)[64]) noexcept
 {
     auto& source = *static_cast<Source*>(fixture.Context);
-    if (!SignalGate(source, 2))
+    if (SignalGate(source, 2) == false)
     {
         return false;
     }

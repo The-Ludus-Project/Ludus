@@ -41,7 +41,7 @@ Status EntityRegistry::TryInitialize(uint32 capacity) noexcept
     }
     core::Array<Slot> slots;
     core::Array<uint32> free;
-    if (!slots.TryResize(capacity) || !free.TryEnsureCapacity(capacity))
+    if (slots.TryResize(capacity) == false || free.TryEnsureCapacity(capacity) == false)
     {
         return Status::AllocationFailure;
     }
@@ -87,7 +87,7 @@ Status EntityRegistry::CheckStructuralBudget(usize creates, usize releases) cons
 }
 Status EntityRegistry::TryCreate(EntityId& output) noexcept
 {
-    if (!CanMutateStructure())
+    if (CanMutateStructure() == false)
     {
         return Status::InvalidPhase;
     }
@@ -116,7 +116,7 @@ bool EntityRegistry::IsAlive(EntityId entity) const noexcept
 }
 bool EntityRegistry::IsActive(EntityId entity) const noexcept
 {
-    return IsAlive(entity) && !mSlots[entity.Slot].Pending;
+    return IsAlive(entity) && mSlots[entity.Slot].Pending == false;
 }
 uint64 EntityRegistry::GetCreationSequence(EntityId entity) const noexcept
 {
@@ -124,7 +124,7 @@ uint64 EntityRegistry::GetCreationSequence(EntityId entity) const noexcept
 }
 Status EntityRegistry::MarkPendingDestroy(EntityId entity) noexcept
 {
-    if (!IsAlive(entity))
+    if (IsAlive(entity) == false)
     {
         return Status::InvalidEntity;
     }
@@ -133,11 +133,11 @@ Status EntityRegistry::MarkPendingDestroy(EntityId entity) noexcept
 }
 Status EntityRegistry::TryRelease(EntityId entity) noexcept
 {
-    if (!CanMutateStructure())
+    if (CanMutateStructure() == false)
     {
         return Status::InvalidPhase;
     }
-    if (!IsAlive(entity))
+    if (IsAlive(entity) == false)
     {
         return Status::InvalidEntity;
     }

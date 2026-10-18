@@ -20,7 +20,7 @@ namespace ludus::editor
 {
 void MainWindow::CommitProjectFields()
 {
-    if (!Controller_->Caps().CanEdit)
+    if (Controller_->Caps().CanEdit == false)
     {
         return;
     }
@@ -79,13 +79,15 @@ void MainWindow::RenderDocumentActions()
     auto* plain = qobject_cast<QPlainTextEdit*>(focus);
     if (line != nullptr)
     {
-        UndoAction_->setEnabled(line->isEnabled() && !line->isReadOnly() && line->isUndoAvailable());
-        RedoAction_->setEnabled(line->isEnabled() && !line->isReadOnly() && line->isRedoAvailable());
+        UndoAction_->setEnabled(line->isEnabled() && line->isReadOnly() == false && line->isUndoAvailable());
+        RedoAction_->setEnabled(line->isEnabled() && line->isReadOnly() == false && line->isRedoAvailable());
     }
     else if (plain != nullptr)
     {
-        UndoAction_->setEnabled(plain->isEnabled() && !plain->isReadOnly() && plain->document()->isUndoAvailable());
-        RedoAction_->setEnabled(plain->isEnabled() && !plain->isReadOnly() && plain->document()->isRedoAvailable());
+        UndoAction_->setEnabled(plain->isEnabled() && plain->isReadOnly() == false &&
+                                plain->document()->isUndoAvailable());
+        RedoAction_->setEnabled(plain->isEnabled() && plain->isReadOnly() == false &&
+                                plain->document()->isRedoAvailable());
     }
     else
     {
@@ -104,7 +106,7 @@ void MainWindow::RenderDocumentActions()
 void MainWindow::OnUndoRequested()
 {
     RenderDocumentActions();
-    if (!UndoAction_->isEnabled())
+    if (UndoAction_->isEnabled() == false)
     {
         return;
     }
@@ -138,7 +140,7 @@ void MainWindow::OnUndoRequested()
 void MainWindow::OnRedoRequested()
 {
     RenderDocumentActions();
-    if (!RedoAction_->isEnabled())
+    if (RedoAction_->isEnabled() == false)
     {
         return;
     }

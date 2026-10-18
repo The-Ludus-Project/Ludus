@@ -89,7 +89,7 @@ public:
     /// an exact capture.
     [[nodiscard]] bool IsCompleteForReplay() const noexcept
     {
-        return !mWrapped && !mSawOverflow;
+        return mWrapped == false && mSawOverflow == false;
     }
 
     void Clear() noexcept;

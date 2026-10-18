@@ -31,7 +31,7 @@ bool Wait(Predicate&& predicate)
 {
     QElapsedTimer timer;
     timer.start();
-    while (!predicate() && timer.elapsed() < 90000)
+    while (predicate() == false && timer.elapsed() < 90000)
     {
         QTest::qWait(20);
     }
@@ -97,7 +97,7 @@ TEST_CASE("native editor installed SDK build play edit reload asset and reopen",
 {
     REQUIRE(QApplication::platformName() != QStringLiteral("offscreen"));
     REQUIRE(QApplication::platformName() != QStringLiteral("minimal"));
-    REQUIRE(!qEnvironmentVariable("LUDUS_SDK_PREFIX").isEmpty());
+    REQUIRE(qEnvironmentVariable("LUDUS_SDK_PREFIX").isEmpty() == false);
     QTemporaryDir project;
     QTemporaryDir secondProject;
     REQUIRE(project.isValid());
@@ -167,7 +167,7 @@ TEST_CASE("native editor installed SDK build play edit reload asset and reopen",
     REQUIRE(tool != nullptr);
     QObject measurementContext; // Retires captured-stack callbacks before those values die.
     QObject::connect(tool, &ToolProcess::Event, &measurementContext, [&](const ProtocolEvent& event) {
-        if (!measureGeneration)
+        if (measureGeneration == false)
         {
             return;
         }
@@ -196,9 +196,9 @@ TEST_CASE("native editor installed SDK build play edit reload asset and reopen",
     controller.OpenProject(descriptor);
     // Exercise main's shared setup repair before playing: actual configure,
     // build and CTest, followed by the read-only check of owned local presets.
-    REQUIRE(Wait([&]() { return !controller.State().Busy() && controller.Caps().CanProjectSetup; }));
+    REQUIRE(Wait([&]() { return controller.State().Busy() == false && controller.Caps().CanProjectSetup; }));
     controller.SetupProject(qEnvironmentVariable("LUDUS_SDK_PREFIX"), {}, false);
-    REQUIRE(Wait([&]() { return !controller.State().Busy() && controller.Caps().CanProjectSetup; }));
+    REQUIRE(Wait([&]() { return controller.State().Busy() == false && controller.Caps().CanProjectSetup; }));
     INFO(controller.JobDetails().toStdString());
     INFO(controller.Log().Text().toStdString());
     REQUIRE(controller.State().Result.Kind == Outcome::Success);
@@ -208,16 +208,16 @@ TEST_CASE("native editor installed SDK build play edit reload asset and reopen",
     controller.Play();
     const bool started = Wait([&]() {
         return (controller.PlayState().Phase == PlayPhase::Running && SpeedRow(controller) >= 0) ||
-               (controller.State().Result.Kind == Outcome::Failed && !controller.State().Busy());
+               (controller.State().Result.Kind == Outcome::Failed && controller.State().Busy() == false);
     });
     INFO(controller.JobDetails().toStdString());
     INFO(controller.Log().Text().toStdString());
     REQUIRE(started);
     REQUIRE(controller.PlayState().Phase == PlayPhase::Running);
     REQUIRE(controller.PlayState().HostPid > 0);
-    REQUIRE(!controller.PlayState().HostArgv.isEmpty());
+    REQUIRE(controller.PlayState().HostArgv.isEmpty() == false);
     REQUIRE(controller.PlayState().HostCwd == QFileInfo(project.path()).canonicalFilePath());
-    REQUIRE(!controller.PlayState().SdkIdentity.isEmpty());
+    REQUIRE(controller.PlayState().SdkIdentity.isEmpty() == false);
     REQUIRE(controller.JobDetails().contains(controller.PlayState().HostArgv.front()));
     controller.PlayCommand(QStringLiteral("Pause"));
     REQUIRE(
@@ -248,14 +248,14 @@ TEST_CASE("native editor installed SDK build play edit reload asset and reopen",
     controller.EditProperty(SpeedRow(controller), QStringLiteral("0.25"));
     REQUIRE(Wait([&]() { return SpeedIs(controller, 0.25F) && controller.CanUndoSession(); }));
     controller.UndoSessionEdit();
-    REQUIRE(Wait([&]() { return !SpeedIs(controller, 0.25F) && controller.CanRedoSession(); }));
+    REQUIRE(Wait([&]() { return SpeedIs(controller, 0.25F) == false && controller.CanRedoSession(); }));
     controller.RedoSessionEdit();
     REQUIRE(Wait(
         [&]() { return SpeedIs(controller, 0.25F) && controller.CanApplyToTuningDocument(SpeedRow(controller)); }));
     controller.ApplyLivePropertyToTuningDocument(SpeedRow(controller));
     REQUIRE(Wait([&]() { return controller.CanSaveTuningDocument(); }));
     controller.SaveTuningDocument();
-    REQUIRE(Wait([&]() { return !controller.PlayState().TuningDocumentDirty; }));
+    REQUIRE(Wait([&]() { return controller.PlayState().TuningDocumentDirty == false; }));
     controller.SetAutoReload(true);
     REQUIRE(controller.AutoReloadEnabled());
     const auto generation = controller.PlayState().Generation;
@@ -326,13 +326,13 @@ TEST_CASE("native editor installed SDK build play edit reload asset and reopen",
     }));
     REQUIRE_FALSE(SpeedIs(controller, 0.25F)); // B has its own authored document.
     controller.BuildReload();
-    REQUIRE(!controller.RequestClose());
+    REQUIRE(controller.RequestClose() == false);
     controller.Stop();
     REQUIRE(Wait([&]() { return controller.Caps().CanCloseImmediately; }));
     REQUIRE(controller.State().Result.Code != ResultCode::ProtocolError);
     REQUIRE(controller.RequestClose());
     const auto metrics = qEnvironmentVariable("LUDUS_LIVE_JOURNEY_METRICS");
-    if (!metrics.isEmpty())
+    if (metrics.isEmpty() == false)
     {
         Write(metrics,
               QJsonDocument(QJsonObject{{QStringLiteral("platform"), QApplication::platformName()},

@@ -12,7 +12,7 @@ int main()
     ParseError error;
     uint64 value = 0;
     if (document.Read(R"({"v":[1,2],"text":"\ud83c\udfae"})", error) != ParseStatus::Ok ||
-        !document.Root().Get("v").At(1).Integer(value) || value != 2)
+        document.Root().Get("v").At(1).Integer(value) == false || value != 2)
     {
         return 1;
     }
@@ -29,7 +29,7 @@ int main()
     std::span<const uint8> bytes;
     if (writer.Finish(bytes) != ParseStatus::Ok ||
         document.Read({reinterpret_cast<const char*>(bytes.data()), bytes.size()}, error) != ParseStatus::Ok ||
-        !document.Root().Integer(value) || value != 42)
+        document.Root().Integer(value) == false || value != 42)
     {
         return 3;
     }

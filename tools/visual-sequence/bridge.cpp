@@ -80,19 +80,19 @@ bool Hex(std::string_view text, std::span<uint8> output) noexcept
 
 bool Load(JsonValue request) noexcept
 {
-    if (!request.Fields({"version", "action", "artifact", "expected"}))
+    if (request.Fields({"version", "action", "artifact", "expected"}) == false)
     {
         return false;
     }
     std::string_view expected;
-    if (!request.Get("expected").String(expected) ||
-        (session.Active() != nullptr && (!session.SafePoint() || expected != session.Active()->Key)) ||
-        (session.Active() == nullptr && !expected.empty()))
+    if (request.Get("expected").String(expected) == false ||
+        (session.Active() != nullptr && (session.SafePoint() == false || expected != session.Active()->Key)) ||
+        (session.Active() == nullptr && expected.empty() == false))
     {
         return false;
     }
     const JsonValue artifact = request.Get("artifact");
-    if (!artifact.Fields({"version", "key", "pin", "contract", "revision", "name", "code", "first_line"}))
+    if (artifact.Fields({"version", "key", "pin", "contract", "revision", "name", "code", "first_line"}) == false)
     {
         return false;
     }
@@ -104,25 +104,25 @@ bool Load(JsonValue request) noexcept
     uint64 version = 0;
     uint64 revision = 0;
     uint64 first = 0;
-    if (!artifact.Get("version").Integer(version) || version != 1 || !artifact.Get("key").String(key) ||
-        key.size() != 64 || !artifact.Get("pin").String(pin) || pin != s2::BASE.Pin ||
-        !artifact.Get("contract").String(contract) || contract != s2::BASE.Contract ||
-        !artifact.Get("name").String(name) || name.size() != 24 || !name.starts_with("@visual/") ||
-        !artifact.Get("code").String(code) || !artifact.Get("revision").Integer(revision) || revision == 0 ||
-        revision > 2147483647 || !artifact.Get("first_line").Integer(first) || first == 0 || first > 1024 ||
-        (session.Active() != nullptr && revision <= session.Active()->Revision))
+    if (artifact.Get("version").Integer(version) == false || version != 1 || artifact.Get("key").String(key) == false ||
+        key.size() != 64 || artifact.Get("pin").String(pin) == false || pin != s2::BASE.Pin ||
+        artifact.Get("contract").String(contract) == false || contract != s2::BASE.Contract ||
+        artifact.Get("name").String(name) == false || name.size() != 24 || name.starts_with("@visual/") == false ||
+        artifact.Get("code").String(code) == false || artifact.Get("revision").Integer(revision) == false ||
+        revision == 0 || revision > 2147483647 || artifact.Get("first_line").Integer(first) == false || first == 0 ||
+        first > 1024 || (session.Active() != nullptr && revision <= session.Active()->Revision))
     {
         return false;
     }
     uint8 keyBytes[32]{};
     uint8 identityBytes[8]{};
-    if (!Hex(key, keyBytes) || !Hex(name.substr(8), identityBytes))
+    if (Hex(key, keyBytes) == false || Hex(name.substr(8), identityBytes) == false)
     {
         return false;
     }
     const uint32 candidate = session.Active() == nullptr ? 0 : 1 - activeSlot;
     Slot& slot = slots[candidate];
-    if (!Hex(code, slot.Code) || slot.Code[0] == 0)
+    if (Hex(code, slot.Code) == false || slot.Code[0] == 0)
     {
         return false;
     }

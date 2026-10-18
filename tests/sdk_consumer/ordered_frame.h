@@ -232,7 +232,7 @@ inline rhi::RasterStatus BuildOrderedFrame(rhi::DeviceHandle device,
         return status;
     }
     const uint32 extra = inputs.Compute == nullptr ? 0 : 1;
-    return report.LivePasses == (reference ? 4U + extra : 3U + extra) && report.Culled[extra] == !reference
+    return report.LivePasses == (reference ? 4U + extra : 3U + extra) && report.Culled[extra] == (reference == false)
                ? rhi::RasterStatus::Ready
                : rhi::RasterStatus::Failed;
 }

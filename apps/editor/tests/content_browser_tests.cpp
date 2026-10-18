@@ -320,7 +320,7 @@ TEST_CASE("Content completion runs on the GUI owner and shutdown acknowledges ca
     REQUIRE(jobs.Start(request));
     CHECK_FALSE(jobs.Start(request));
     jobs.Shutdown();
-    for (uint32 attempt = 0; !jobs.Finished() && attempt < 1000; ++attempt)
+    for (uint32 attempt = 0; jobs.Finished() == false && attempt < 1000; ++attempt)
     {
         QTest::qWait(10);
     }

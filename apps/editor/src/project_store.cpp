@@ -63,7 +63,7 @@ bool ValidTargetName(const QString& value)
         const ushort u = c.unicode();
         return (u >= u'A' && u <= u'Z') || (u >= u'a' && u <= u'z') || (u >= u'0' && u <= u'9') || u == u'_';
     };
-    if (!isWord(first))
+    if (isWord(first) == false)
     {
         return false;
     }
@@ -71,7 +71,7 @@ bool ValidTargetName(const QString& value)
     {
         const ushort u = c.unicode();
         const bool extra = u == u'.' || u == u'+' || u == u'-';
-        if (!isWord(c) && !extra)
+        if (isWord(c) == false && extra == false)
         {
             return false;
         }
@@ -95,7 +95,7 @@ bool ParseStringList(const QJsonValue& value,
                      QStringList& out,
                      QString& message)
 {
-    if (!value.isArray())
+    if (value.isArray() == false)
     {
         message = QStringLiteral("'%1' must be an array").arg(context);
         return false;
@@ -109,7 +109,7 @@ bool ParseStringList(const QJsonValue& value,
     QSet<QString> seen;
     for (const auto& item : array)
     {
-        if (!item.isString())
+        if (item.isString() == false)
         {
             message = QStringLiteral("every '%1' entry must be a string").arg(context);
             return false;
@@ -123,7 +123,7 @@ bool ParseStringList(const QJsonValue& value,
         bool first = true;
         for (const QChar c : s)
         {
-            if (!validChar(c, first))
+            if (validChar(c, first) == false)
             {
                 message = QStringLiteral("invalid '%1' entry").arg(context);
                 return false;
@@ -183,7 +183,7 @@ QString UnknownKey(const QJsonObject& object, const QStringList& allowed)
 {
     for (auto it = object.constBegin(); it != object.constEnd(); ++it)
     {
-        if (!allowed.contains(it.key()))
+        if (allowed.contains(it.key()) == false)
         {
             return it.key();
         }
@@ -218,7 +218,7 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
 
     QJsonParseError error{};
     const QJsonDocument document = QJsonDocument::fromJson(bytes, &error);
-    if (error.error != QJsonParseError::NoError || !document.isObject())
+    if (error.error != QJsonParseError::NoError || document.isObject() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("malformed JSON: %1").arg(error.errorString()));
     }
@@ -227,7 +227,7 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
     // version: a JSON number numerically equal to 1 or 2; reject bool/string/
     // non-integer float. The allowed root keys depend on the version so a v1
     // file still rejects v2's extra fields (old-reader behavior preserved).
-    if (!root.contains(QStringLiteral("version")))
+    if (root.contains(QStringLiteral("version")) == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("missing field 'version'"));
     }
@@ -266,7 +266,7 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
         rootKeys << QStringLiteral("engine") << QStringLiteral("template");
     }
     const QString unknown = UnknownKey(root, rootKeys);
-    if (!unknown.isEmpty())
+    if (unknown.isEmpty() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("unknown field '%1'").arg(unknown));
     }
@@ -276,7 +276,7 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
 
     // name
     const QJsonValue nameValue = root.value(QStringLiteral("name"));
-    if (!nameValue.isString())
+    if (nameValue.isString() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'name' must be a string"));
     }
@@ -285,14 +285,14 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'name' must be nonempty"));
     }
-    if (ContainsNul(descriptor.Name) || !WithinBytes(descriptor.Name, limits::MaxNameBytes))
+    if (ContainsNul(descriptor.Name) || WithinBytes(descriptor.Name, limits::MaxNameBytes) == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'name' exceeds 128 UTF-8 bytes or contains NUL"));
     }
 
     // provider
     const QJsonValue providerValue = root.value(QStringLiteral("provider"));
-    if (!providerValue.isString())
+    if (providerValue.isString() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'provider' must be a string"));
     }
@@ -312,13 +312,13 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
 
     // source_dir
     const QJsonValue sourceValue = root.value(QStringLiteral("source_dir"));
-    if (!sourceValue.isString())
+    if (sourceValue.isString() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'source_dir' must be a string"));
     }
     descriptor.SourceDir = sourceValue.toString();
-    if (!IsRelativePath(descriptor.SourceDir) || ContainsNul(descriptor.SourceDir) ||
-        !WithinBytes(descriptor.SourceDir, limits::MaxPathBytes))
+    if (IsRelativePath(descriptor.SourceDir) == false || ContainsNul(descriptor.SourceDir) ||
+        WithinBytes(descriptor.SourceDir, limits::MaxPathBytes) == false)
     {
         return Fail(ResultCode::InvalidProject,
                     QStringLiteral("'source_dir' must be a relative path within 4096 UTF-8 bytes"));
@@ -326,7 +326,7 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
 
     // preset
     const QJsonValue presetValue = root.value(QStringLiteral("preset"));
-    if (!presetValue.isString())
+    if (presetValue.isString() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'preset' must be a string"));
     }
@@ -340,7 +340,7 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
                                                      descriptor.Preset == QStringLiteral("macos-clang-debug") ||
                                                      descriptor.Preset == QStringLiteral("macos-clang-development") ||
                                                      descriptor.Preset == QStringLiteral("macos-clang-release"));
-        if (!v1Preset && !v2Native)
+        if (v1Preset == false && v2Native == false)
         {
             return Fail(ResultCode::InvalidProject,
                         schemaVersion == 2
@@ -351,54 +351,54 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
 
     // target
     const QJsonValue targetValue = root.value(QStringLiteral("target"));
-    if (!targetValue.isString())
+    if (targetValue.isString() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'target' must be a string"));
     }
     descriptor.Target = targetValue.toString();
-    if (!ValidTargetName(descriptor.Target) || !WithinBytes(descriptor.Target, limits::MaxTargetBytes))
+    if (ValidTargetName(descriptor.Target) == false || WithinBytes(descriptor.Target, limits::MaxTargetBytes) == false)
     {
         return Fail(ResultCode::InvalidProject,
                     QStringLiteral("'target' must match [A-Za-z0-9_][A-Za-z0-9_.+-]* within 256 bytes"));
     }
 
     // run { cwd, args }
-    if (!root.contains(QStringLiteral("run")))
+    if (root.contains(QStringLiteral("run")) == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("missing field 'run'"));
     }
     const QJsonValue runValue = root.value(QStringLiteral("run"));
-    if (!runValue.isObject())
+    if (runValue.isObject() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'run' must be an object"));
     }
     const QJsonObject run = runValue.toObject();
     static const QStringList runKeys{QStringLiteral("cwd"), QStringLiteral("args")};
     const QString runUnknown = UnknownKey(run, runKeys);
-    if (!runUnknown.isEmpty())
+    if (runUnknown.isEmpty() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("unknown field 'run.%1'").arg(runUnknown));
     }
 
     const QJsonValue cwdValue = run.value(QStringLiteral("cwd"));
-    if (!cwdValue.isString())
+    if (cwdValue.isString() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'run.cwd' must be a string"));
     }
     descriptor.RunCwd = cwdValue.toString();
-    if (!IsRelativePath(descriptor.RunCwd) || ContainsNul(descriptor.RunCwd) ||
-        !WithinBytes(descriptor.RunCwd, limits::MaxPathBytes))
+    if (IsRelativePath(descriptor.RunCwd) == false || ContainsNul(descriptor.RunCwd) ||
+        WithinBytes(descriptor.RunCwd, limits::MaxPathBytes) == false)
     {
         return Fail(ResultCode::InvalidProject,
                     QStringLiteral("'run.cwd' must be a relative path within 4096 UTF-8 bytes"));
     }
 
-    if (!run.contains(QStringLiteral("args")))
+    if (run.contains(QStringLiteral("args")) == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("missing field 'run.args'"));
     }
     const QJsonValue argsValue = run.value(QStringLiteral("args"));
-    if (!argsValue.isArray())
+    if (argsValue.isArray() == false)
     {
         return Fail(ResultCode::InvalidProject, QStringLiteral("'run.args' must be an array"));
     }
@@ -410,7 +410,7 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
     usize total = 0;
     for (const auto& item : args)
     {
-        if (!item.isString())
+        if (item.isString() == false)
         {
             return Fail(ResultCode::InvalidProject, QStringLiteral("every 'run.args' entry must be a string"));
         }
@@ -438,13 +438,13 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
         // engine: required for provider cmake, forbidden for provider ludus.
         if (descriptor.ProviderKind == Provider::Cmake)
         {
-            if (!root.contains(QStringLiteral("engine")))
+            if (root.contains(QStringLiteral("engine")) == false)
             {
                 return Fail(ResultCode::InvalidProject,
                             QStringLiteral("version-2 'cmake' projects require an 'engine' object"));
             }
             const QJsonValue engineValue = root.value(QStringLiteral("engine"));
-            if (!engineValue.isObject())
+            if (engineValue.isObject() == false)
             {
                 return Fail(ResultCode::InvalidProject, QStringLiteral("'engine' must be an object"));
             }
@@ -453,17 +453,17 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
                                                 QStringLiteral("components"),
                                                 QStringLiteral("features")};
             const QString engineUnknown = UnknownKey(engine, engineKeys);
-            if (!engineUnknown.isEmpty())
+            if (engineUnknown.isEmpty() == false)
             {
                 return Fail(ResultCode::InvalidProject, QStringLiteral("unknown field 'engine.%1'").arg(engineUnknown));
             }
             const QJsonValue engineVersionValue = engine.value(QStringLiteral("version"));
-            if (!engineVersionValue.isString())
+            if (engineVersionValue.isString() == false)
             {
                 return Fail(ResultCode::InvalidProject, QStringLiteral("'engine.version' must be a string"));
             }
             const QString engineVersion = engineVersionValue.toString();
-            if (engineVersion.isEmpty() || !WithinBytes(engineVersion, limits::MaxVersionBytes))
+            if (engineVersion.isEmpty() || WithinBytes(engineVersion, limits::MaxVersionBytes) == false)
             {
                 return Fail(ResultCode::InvalidProject,
                             QStringLiteral("'engine.version' must be an exact release token"));
@@ -471,7 +471,7 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
             bool firstEngine = true;
             for (const QChar c : engineVersion)
             {
-                if (!TokenChar(c, firstEngine, /*allowPlus=*/true))
+                if (TokenChar(c, firstEngine, /*allowPlus=*/true) == false)
                 {
                     return Fail(ResultCode::InvalidProject,
                                 QStringLiteral("'engine.version' must be an exact release token"));
@@ -483,12 +483,12 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
             if (engine.contains(QStringLiteral("components")))
             {
                 QString msg;
-                if (!ParseStringList(engine.value(QStringLiteral("components")),
-                                     QStringLiteral("engine.components"),
-                                     { .Count = limits::MaxComponentCount, .Bytes = limits::MaxComponentBytes },
-                                     ComponentChar,
-                                     descriptor.Engine.Components,
-                                     msg))
+                if (ParseStringList(engine.value(QStringLiteral("components")),
+                                    QStringLiteral("engine.components"),
+                                    { .Count = limits::MaxComponentCount, .Bytes = limits::MaxComponentBytes },
+                                    ComponentChar,
+                                    descriptor.Engine.Components,
+                                    msg) == false)
                 {
                     return Fail(ResultCode::InvalidProject, msg);
                 }
@@ -496,12 +496,12 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
             if (engine.contains(QStringLiteral("features")))
             {
                 QString msg;
-                if (!ParseStringList(engine.value(QStringLiteral("features")),
-                                     QStringLiteral("engine.features"),
-                                     { .Count = limits::MaxFeatureCount, .Bytes = limits::MaxFeatureBytes },
-                                     FeatureChar,
-                                     descriptor.Engine.Features,
-                                     msg))
+                if (ParseStringList(engine.value(QStringLiteral("features")),
+                                    QStringLiteral("engine.features"),
+                                    { .Count = limits::MaxFeatureCount, .Bytes = limits::MaxFeatureBytes },
+                                    FeatureChar,
+                                    descriptor.Engine.Features,
+                                    msg) == false)
                 {
                     return Fail(ResultCode::InvalidProject, msg);
                 }
@@ -521,38 +521,38 @@ ParseOutcome ParseDescriptor(const QByteArray& bytes)
         if (root.contains(QStringLiteral("template")))
         {
             const QJsonValue templateValue = root.value(QStringLiteral("template"));
-            if (!templateValue.isObject())
+            if (templateValue.isObject() == false)
             {
                 return Fail(ResultCode::InvalidProject, QStringLiteral("'template' must be an object"));
             }
             const QJsonObject templateObj = templateValue.toObject();
             static const QStringList templateKeys{QStringLiteral("id"), QStringLiteral("version")};
             const QString templateUnknown = UnknownKey(templateObj, templateKeys);
-            if (!templateUnknown.isEmpty())
+            if (templateUnknown.isEmpty() == false)
             {
                 return Fail(ResultCode::InvalidProject,
                             QStringLiteral("unknown field 'template.%1'").arg(templateUnknown));
             }
             const QJsonValue idValue = templateObj.value(QStringLiteral("id"));
-            if (!idValue.isString())
+            if (idValue.isString() == false)
             {
                 return Fail(ResultCode::InvalidProject, QStringLiteral("'template.id' must be a string"));
             }
             const QString templateId = idValue.toString();
-            if (templateId.isEmpty() || !WithinBytes(templateId, limits::MaxTemplateIdBytes))
+            if (templateId.isEmpty() || WithinBytes(templateId, limits::MaxTemplateIdBytes) == false)
             {
                 return Fail(ResultCode::InvalidProject, QStringLiteral("'template.id' must be a bounded token"));
             }
             bool firstTid = true;
             for (const QChar c : templateId)
             {
-                if (!TokenChar(c, firstTid, /*allowPlus=*/false))
+                if (TokenChar(c, firstTid, /*allowPlus=*/false) == false)
                 {
                     return Fail(ResultCode::InvalidProject, QStringLiteral("'template.id' must be a bounded token"));
                 }
                 firstTid = false;
             }
-            if (!templateObj.contains(QStringLiteral("version")))
+            if (templateObj.contains(QStringLiteral("version")) == false)
             {
                 return Fail(ResultCode::InvalidProject, QStringLiteral("missing field 'template.version'"));
             }
@@ -706,7 +706,7 @@ LoadOutcome ProjectStore::Load(const QString& descriptorPath) const
         outcome.Parse = Fail(ResultCode::InvalidProject, QStringLiteral("descriptor exceeds the 64 KiB size limit"));
         return outcome;
     }
-    if (!file.open(QIODevice::ReadOnly))
+    if (file.open(QIODevice::ReadOnly) == false)
     {
         outcome.Parse =
             Fail(ResultCode::InvalidProject, QStringLiteral("cannot open descriptor: %1").arg(file.errorString()));
@@ -728,7 +728,7 @@ ProjectStore::Save(const QString& descriptorPath, const ProjectDescriptor& draft
     // ever written are bytes that parse back to the same descriptor.
     const QByteArray bytes = SerializeDescriptor(draft);
     const ParseOutcome check = ParseDescriptor(bytes);
-    if (!check.Ok() || !(check.Descriptor == draft))
+    if (check.Ok() == false || (check.Descriptor == draft) == false)
     {
         outcome.Code = ResultCode::InvalidProject;
         outcome.Message = check.Ok() ? QStringLiteral("draft failed round-trip validation") : check.Message;
@@ -741,7 +741,7 @@ ProjectStore::Save(const QString& descriptorPath, const ProjectDescriptor& draft
     QDir().mkpath(lockDirPath);
     QLockFile lock(QDir(lockDirPath).filePath(info.fileName() + QStringLiteral(".lock")));
     lock.setStaleLockTime(0);
-    if (!lock.tryLock(250))
+    if (lock.tryLock(250) == false)
     {
         outcome.Code = ResultCode::Busy;
         outcome.Message = QStringLiteral("another editor holds the project settings lock");
@@ -751,10 +751,10 @@ ProjectStore::Save(const QString& descriptorPath, const ProjectDescriptor& draft
     // Optimistic conflict detection: the current disk bytes must still match the
     // digest recorded at Open/last Save. External change/deletion => Conflict,
     // keep the draft and offer explicit Reload.
-    if (!expectedDigest.isEmpty())
+    if (expectedDigest.isEmpty() == false)
     {
         QFile current(descriptorPath);
-        if (!current.exists())
+        if (current.exists() == false)
         {
             outcome.Code = ResultCode::Conflict;
             outcome.Message = QStringLiteral("the saved descriptor was deleted on disk; reload or save as new");
@@ -783,7 +783,7 @@ ProjectStore::Save(const QString& descriptorPath, const ProjectDescriptor& draft
     // Direct-write fallback disabled: without the temporary-file replacement we
     // would lose atomic-replacement protection (design section 4).
     save.setDirectWriteFallback(false);
-    if (!save.open(QIODevice::WriteOnly))
+    if (save.open(QIODevice::WriteOnly) == false)
     {
         outcome.Code = ResultCode::InvalidProject;
         outcome.Message = QStringLiteral("cannot open descriptor for writing: %1").arg(save.errorString());
@@ -819,7 +819,7 @@ ProjectStore::Save(const QString& descriptorPath, const ProjectDescriptor& draft
         return outcome;
     }
 
-    if (!save.commit())
+    if (save.commit() == false)
     {
         // Commit failure preserves the previous destination and the dirty draft.
         outcome.Code = ResultCode::InvalidProject;

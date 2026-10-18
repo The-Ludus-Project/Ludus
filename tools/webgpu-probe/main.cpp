@@ -81,8 +81,9 @@ EM_BOOL renderFrame(float64, void*) noexcept
 
     WGPUSurfaceTexture surfaceTexture = WGPU_SURFACE_TEXTURE_INIT;
     wgpuSurfaceGetCurrentTexture(gProbe.Surface, &surfaceTexture);
-    if (!surfaceTexture.texture || (surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&
-                                    surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal))
+    if (surfaceTexture.texture == nullptr ||
+        (surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&
+         surfaceTexture.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal))
     {
         if (surfaceTexture.texture)
         {
@@ -94,7 +95,7 @@ EM_BOOL renderFrame(float64, void*) noexcept
 
     WGPUTextureView view = wgpuTextureCreateView(surfaceTexture.texture, nullptr);
     WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(gProbe.Device, nullptr);
-    if (!view || !encoder)
+    if (view == nullptr || encoder == nullptr)
     {
         if (view)
         {
@@ -156,7 +157,7 @@ EM_BOOL renderFrame(float64, void*) noexcept
 void deviceReady(WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringView message, void*, void*) noexcept
 {
     diagnose("Device request", message);
-    if (status != WGPURequestDeviceStatus_Success || !device)
+    if (status != WGPURequestDeviceStatus_Success || device == nullptr)
     {
         fail("WebGPU device request failed. Check browser/GPU support and reload.");
         return;
@@ -166,7 +167,7 @@ void deviceReady(WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringVi
 
     WGPUSurfaceCapabilities capabilities = WGPU_SURFACE_CAPABILITIES_INIT;
     if (wgpuSurfaceGetCapabilities(gProbe.Surface, gProbe.Adapter, &capabilities) != WGPUStatus_Success ||
-        capabilities.formatCount == 0 || !gProbe.Queue)
+        capabilities.formatCount == 0 || gProbe.Queue == nullptr)
     {
         wgpuSurfaceCapabilitiesFreeMembers(capabilities);
         fail("WebGPU canvas capabilities are unavailable.");
@@ -180,7 +181,7 @@ void deviceReady(WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringVi
     configuration.presentMode = WGPUPresentMode_Fifo;
     wgpuSurfaceConfigure(gProbe.Surface, &configuration);
     wgpuSurfaceCapabilitiesFreeMembers(capabilities);
-    if (!gProbe.Failed)
+    if (gProbe.Failed == false)
     {
         showStatus("ready",
                    gProbe.CompatibilityRequested
@@ -217,13 +218,13 @@ void adapterReady(WGPURequestAdapterStatus status, WGPUAdapter adapter, WGPUStri
     *cursor++ = ')';
     *cursor = '\0';
     diagnose(label, message);
-    if (status != WGPURequestAdapterStatus_Success || !adapter)
+    if (status != WGPURequestAdapterStatus_Success || adapter == nullptr)
     {
         if (adapter)
         {
             wgpuAdapterRelease(adapter);
         }
-        if (!gProbe.CompatibilityRequested)
+        if (gProbe.CompatibilityRequested == false)
         {
             gProbe.CompatibilityRequested = true;
             showStatus("initializing", "Core adapter unavailable; trying WebGPU compatibility mode…");
@@ -258,7 +259,7 @@ int main()
 {
     showStatus("initializing", "Requesting a WebGPU adapter…");
     gProbe.Instance = wgpuCreateInstance(nullptr);
-    if (!gProbe.Instance)
+    if (gProbe.Instance == nullptr)
     {
         fail("WebGPU instance creation failed.");
         return 1;
@@ -268,7 +269,7 @@ int main()
     WGPUSurfaceDescriptor descriptor = WGPU_SURFACE_DESCRIPTOR_INIT;
     descriptor.nextInChain = &canvas.chain;
     gProbe.Surface = wgpuInstanceCreateSurface(gProbe.Instance, &descriptor);
-    if (!gProbe.Surface)
+    if (gProbe.Surface == nullptr)
     {
         fail("WebGPU canvas surface creation failed.");
         return 1;

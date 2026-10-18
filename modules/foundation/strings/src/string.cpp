@@ -19,7 +19,7 @@ usize Growth(usize current, // NOLINT(bugprone-easily-swappable-parameters): cur
 }
 void CopyBytes(char* destination, std::string_view source) noexcept
 {
-    if (!source.empty())
+    if (source.empty() == false)
     {
         std::memmove(destination, source.data(), source.size());
     }
@@ -150,7 +150,7 @@ StringStatus String::TryAppendMany(std::span<const std::string_view> values) noe
     usize total = mSize;
     for (auto value : values)
     {
-        if (!TryAdd(total, value.size(), total) || total > kMaxCapacity)
+        if (TryAdd(total, value.size(), total) == false || total > kMaxCapacity)
         {
             return StringStatus::TooLarge;
         }

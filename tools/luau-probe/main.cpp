@@ -212,17 +212,17 @@ bool Check(bool condition, const char* name) noexcept
 bool Sweep(const uint8* bytecode, usize bytes, const char* name, int32 expected) noexcept
 {
     const Outcome baseline = Run(bytecode, bytes, name);
-    if (!Check(baseline.CallStatus == LUA_OK && baseline.Execution.Result == expected && baseline.Memory.Live == 0,
-               name))
+    if (Check(baseline.CallStatus == LUA_OK && baseline.Execution.Result == expected && baseline.Memory.Live == 0,
+              name) == false)
     {
         return false;
     }
     for (usize fail_at = 1; fail_at <= baseline.Memory.Attempts; ++fail_at)
     {
         const Outcome failed = Run(bytecode, bytes, name, { .FailAt = fail_at, .InterruptLimit = 0 });
-        const bool reported = !failed.Created || failed.InitStatus == LUA_ERRMEM || failed.CallStatus == LUA_ERRMEM ||
-                              failed.Execution.LoadStatus == 1;
-        if (!reported || failed.Memory.Live != 0 || failed.Memory.Denied == 0)
+        const bool reported = failed.Created == false || failed.InitStatus == LUA_ERRMEM ||
+                              failed.CallStatus == LUA_ERRMEM || failed.Execution.LoadStatus == 1;
+        if (reported == false || failed.Memory.Live != 0 || failed.Memory.Denied == 0)
         {
             LUDUS_LOG_ERROR(LOG_S0,
                             "S0 FAIL allocation-point={} init={} call={} load={} live={}",

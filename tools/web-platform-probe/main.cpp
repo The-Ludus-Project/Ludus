@@ -24,7 +24,7 @@ uint64 gKeyDownEvents = 0;
 
 bool Verify(bool condition, std::string_view message) noexcept
 {
-    if (!condition)
+    if (condition == false)
     {
         LUDUS_LOG_WARN(logging::LOG_TEMP, "W3 failure: {}", message);
     }
@@ -116,7 +116,7 @@ void Drain() noexcept
 
 void Frame() noexcept
 {
-    if (!gWindow)
+    if (gWindow.Get() == nullptr)
     {
         return;
     }
@@ -211,103 +211,108 @@ bool Automated() noexcept
     {
         return false;
     }
-    if (!Verify(Create(), "create"))
+    if (Verify(Create(), "create") == false)
     {
         return false;
     }
     browser::WindowState state;
     (void)gWindow->GetBrowserState(state);
     const auto native = gWindow->GetNativeWindowInfo();
-    if (!Verify(native.System == WindowSystem::WebCanvas && native.CanvasSelector != nullptr && state.Attached &&
-                    state.Visible && state.FramebufferWidth == static_cast<uint32>(state.CssWidth * state.PixelRatio) &&
-                    state.FramebufferHeight == static_cast<uint32>(state.CssHeight * state.PixelRatio),
-                "canvas descriptor"))
+    if (Verify(native.System == WindowSystem::WebCanvas && native.CanvasSelector != nullptr && state.Attached &&
+                   state.Visible && state.FramebufferWidth == static_cast<uint32>(state.CssWidth * state.PixelRatio) &&
+                   state.FramebufferHeight == static_cast<uint32>(state.CssHeight * state.PixelRatio),
+               "canvas descriptor") == false)
     {
         return false;
     }
     UniquePtr<Window> duplicate;
-    if (!Verify(!gManager.CreateWindow({}, duplicate), "exclusive canvas ownership"))
+    if (Verify(gManager.CreateWindow({}, duplicate) == false, "exclusive canvas ownership") == false)
     {
         return false;
     }
     Drain();
     Scenario(0);
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(state.Keys[static_cast<usize>(browser::Key::KeyW)] && state.Focused && WasPrevented(), "keydown"))
+    if (Verify(state.Keys[static_cast<usize>(browser::Key::KeyW)] && state.Focused && WasPrevented(), "keydown") ==
+        false)
     {
         return false;
     }
     Scenario(1);
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(!state.Keys[static_cast<usize>(browser::Key::KeyW)] && !state.Focused, "blur clears held keys"))
+    if (Verify(state.Keys[static_cast<usize>(browser::Key::KeyW)] == false && state.Focused == false,
+               "blur clears held keys") == false)
     {
         return false;
     }
     Scenario(2);
     (void)gWindow->HandleEvent({});
-    if (!Verify(gWindow->SetBrowserFramebufferLimit(128), "limit update"))
+    if (Verify(gWindow->SetBrowserFramebufferLimit(128), "limit update") == false)
     {
         return false;
     }
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(state.CssWidth == 300 && state.CssHeight == 150 && state.FramebufferWidth <= 128 &&
-                    state.FramebufferHeight <= 128 && !gWindow->SetBrowserFramebufferLimit(0),
-                "CSS/pixel size limits"))
+    if (Verify(state.CssWidth == 300 && state.CssHeight == 150 && state.FramebufferWidth <= 128 &&
+                   state.FramebufferHeight <= 128 && gWindow->SetBrowserFramebufferLimit(0) == false,
+               "CSS/pixel size limits") == false)
     {
         return false;
     }
     Scenario(3);
     (void)gWindow->HandleEvent({});
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(!state.Visible && state.FramebufferWidth == 0 && state.FramebufferHeight == 0, "hidden canvas"))
+    if (Verify(state.Visible == false && state.FramebufferWidth == 0 && state.FramebufferHeight == 0,
+               "hidden canvas") == false)
     {
         return false;
     }
     Scenario(4);
     (void)gWindow->HandleEvent({});
-    if (!Verify(!WasPrevented(), "Tab navigation"))
+    if (Verify(WasPrevented() == false, "Tab navigation") == false)
     {
         return false;
     }
     Drain();
     Scenario(5);
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(state.DroppedEvents > 0 && !state.Keys[static_cast<usize>(browser::Key::KeyA)], "overflow held state"))
+    if (Verify(state.DroppedEvents > 0 && state.Keys[static_cast<usize>(browser::Key::KeyA)] == false,
+               "overflow held state") == false)
     {
         return false;
     }
     Drain();
     Scenario(6);
     browser::InputEvent event;
-    if (!Verify(gWindow->PollBrowserInput(event) && event.Kind == browser::EventKind::Wheel && event.WheelX == 32 &&
-                    event.WheelY == 48,
-                "wheel normalization"))
+    if (Verify(gWindow->PollBrowserInput(event) && event.Kind == browser::EventKind::Wheel && event.WheelX == 32 &&
+                   event.WheelY == 48,
+               "wheel normalization") == false)
     {
         return false;
     }
     Scenario(7);
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(state.Buttons == 1 && state.PointerX >= 0, "pointer"))
+    if (Verify(state.Buttons == 1 && state.PointerX >= 0, "pointer") == false)
     {
         return false;
     }
     Scenario(8);
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(state.Buttons == 0 && state.Keys[static_cast<usize>(browser::Key::KeyW)],
-                "pointer cancel preserves keyboard"))
+    if (Verify(state.Buttons == 0 && state.Keys[static_cast<usize>(browser::Key::KeyW)],
+               "pointer cancel preserves keyboard") == false)
     {
         return false;
     }
     Scenario(9);
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(!state.Focused && !state.Keys[static_cast<usize>(browser::Key::KeyB)], "window blur"))
+    if (Verify(state.Focused == false && state.Keys[static_cast<usize>(browser::Key::KeyB)] == false, "window blur") ==
+        false)
     {
         return false;
     }
     Scenario(10);
     (void)gWindow->HandleEvent({});
     gWindow.Reset();
-    if (!Verify(Create(), "restart"))
+    if (Verify(Create(), "restart") == false)
     {
         return false;
     }
@@ -321,18 +326,19 @@ bool Automated() noexcept
             ++keyEvents;
         }
     }
-    if (!Verify(keyEvents == 1, "no duplicate callbacks after restart"))
+    if (Verify(keyEvents == 1, "no duplicate callbacks after restart") == false)
     {
         return false;
     }
     Scenario(11);
-    if (!Verify(!gWindow->HandleEvent({}), "removed canvas"))
+    if (Verify(gWindow->HandleEvent({}) == false, "removed canvas") == false)
     {
         return false;
     }
     (void)gWindow->GetBrowserState(state);
-    if (!Verify(!state.Attached && !state.Visible && !state.Keys[static_cast<usize>(browser::Key::KeyW)],
-                "removed state"))
+    if (Verify(state.Attached == false && state.Visible == false &&
+                   state.Keys[static_cast<usize>(browser::Key::KeyW)] == false,
+               "removed state") == false)
     {
         return false;
     }
@@ -352,7 +358,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void W3Restart()
 
 int main(int argc, char** argv)
 {
-    if (!gManager.Initialize({}))
+    if (gManager.Initialize({}) == false)
     {
         return 1;
     }
@@ -362,13 +368,13 @@ int main(int argc, char** argv)
         ReportResult(passed ? 1 : 0);
         return passed ? 0 : 1;
     }
-    if (!Create())
+    if (Create() == false)
     {
         return 1;
     }
     // Repeated creation/destruction is checked without blocking the event loop.
     gWindow.Reset();
-    if (!Create())
+    if (Create() == false)
     {
         return 1;
     }

@@ -130,7 +130,7 @@ namespace
 // Find a live font slot for `font`, validating its generation.
 [[nodiscard]] FontSlot* ResolveFont(FontSystem* system, FontId font) noexcept
 {
-    if (system == nullptr || !font.IsValid())
+    if (system == nullptr || font.IsValid() == false)
     {
         return nullptr;
     }
@@ -140,7 +140,7 @@ namespace
         return nullptr;
     }
     FontSlot& candidate = system->Fonts[slot];
-    if (!candidate.InUse || candidate.Generation != HandleGeneration(font.Value))
+    if (candidate.InUse == false || candidate.Generation != HandleGeneration(font.Value))
     {
         return nullptr;
     }
@@ -149,7 +149,7 @@ namespace
 
 [[nodiscard]] LayoutSlot* ResolveLayout(FontSystem* system, LayoutId layout) noexcept
 {
-    if (system == nullptr || !layout.IsValid())
+    if (system == nullptr || layout.IsValid() == false)
     {
         return nullptr;
     }
@@ -159,7 +159,7 @@ namespace
         return nullptr;
     }
     LayoutSlot& candidate = system->Layouts[slot];
-    if (!candidate.InUse || candidate.Generation != HandleGeneration(layout.Value))
+    if (candidate.InUse == false || candidate.Generation != HandleGeneration(layout.Value))
     {
         return nullptr;
     }
@@ -355,14 +355,14 @@ Status LoadFont(FontSystem* system, std::span<const uint8> bytes, uint32 faceInd
     bool found = false;
     for (uint32 i = 0; i < system->Fonts.GetSize(); ++i)
     {
-        if (!system->Fonts[i].InUse)
+        if (system->Fonts[i].InUse == false)
         {
             slotIndex = i;
             found = true;
             break;
         }
     }
-    if (!found)
+    if (found == false)
     {
         return Status::ResourceLimit;
     }
@@ -483,7 +483,7 @@ Status ShapeInternal(FontSystem* system,
 
     // Strict UTF-8 validation first.
     const internal::Utf8Result validation = internal::ValidateUtf8(utf8);
-    if (!validation.Valid)
+    if (validation.Valid == false)
     {
         return Status::InvalidUtf8;
     }
@@ -501,7 +501,7 @@ Status ShapeInternal(FontSystem* system,
         {
             return Status::UnsupportedText;
         }
-        if (!ScriptMatchesRun(codePoint, runScript))
+        if (ScriptMatchesRun(codePoint, runScript) == false)
         {
             return Status::UnsupportedText;
         }
@@ -512,26 +512,26 @@ Status ShapeInternal(FontSystem* system,
     bool found = false;
     for (uint32 i = 0; i < system->Layouts.GetSize(); ++i)
     {
-        if (!system->Layouts[i].InUse)
+        if (system->Layouts[i].InUse == false)
         {
             layoutIndex = i;
             found = true;
             break;
         }
     }
-    if (!found)
+    if (found == false)
     {
         return Status::ResourceLimit;
     }
 
     const Status sizeStatus = SyncFaceSize(fontSlot, runSpec.PixelHeight);
-    if (!IsOk(sizeStatus))
+    if (IsOk(sizeStatus) == false)
     {
         return sizeStatus;
     }
 
     hb_buffer_t* buffer = hb_buffer_create();
-    if (buffer == nullptr || !hb_buffer_allocation_successful(buffer))
+    if (buffer == nullptr || hb_buffer_allocation_successful(buffer) == 0)
     {
         if (buffer != nullptr)
         {
@@ -555,14 +555,14 @@ Status ShapeInternal(FontSystem* system,
     hb_buffer_set_language(buffer, hb_language_from_string(runSpec.Language, -1));
 
     hb_buffer_add_utf8(buffer, utf8.data(), static_cast<int>(utf8.size()), 0, static_cast<int>(utf8.size()));
-    if (!hb_buffer_allocation_successful(buffer))
+    if (hb_buffer_allocation_successful(buffer) == 0)
     {
         hb_buffer_destroy(buffer);
         return Status::OutOfMemory;
     }
 
     hb_shape(fontSlot.HbFont, buffer, nullptr, 0);
-    if (!hb_buffer_allocation_successful(buffer))
+    if (hb_buffer_allocation_successful(buffer) == 0)
     {
         hb_buffer_destroy(buffer);
         return Status::OutOfMemory;
@@ -633,7 +633,7 @@ Status ShapeInternal(FontSystem* system,
                 const float32 top = gyTop;
                 const float32 right = gx + metricsW;
                 const float32 bottom = gyTop + metricsH;
-                if (!haveInk)
+                if (haveInk == false)
                 {
                     inkLeft = left;
                     inkTop = top;
@@ -794,7 +794,7 @@ Status RasterizeGlyph(FontSystem* system,
     }
 
     const Status sizeStatus = SyncFaceSize(*slot, pixelHeight);
-    if (!IsOk(sizeStatus))
+    if (IsOk(sizeStatus) == false)
     {
         return sizeStatus;
     }

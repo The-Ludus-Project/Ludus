@@ -23,7 +23,7 @@ Status Analyze(ma_decoder* decoder, SourceInfo& output, std::span<float32> peaks
         status = Status::Unsupported;
     }
     next.Frames = length;
-    if (status == Status::Ok && !peaks.empty())
+    if (status == Status::Ok && peaks.empty() == false)
     {
         for (auto& value : peaks)
         {
@@ -47,7 +47,7 @@ Status Analyze(ma_decoder* decoder, SourceInfo& output, std::span<float32> peaks
                 for (uint32 c = 0; c < next.Channels; ++c)
                 {
                     auto value = scratch[f * next.Channels + c];
-                    if (!ludus::foundation::math::IsFinite(value))
+                    if (ludus::foundation::math::IsFinite(value) == false)
                     {
                         status = Status::DecodeError;
                         break;
@@ -97,7 +97,7 @@ Status InspectSource(std::span<const uint8> encoded,
     const bool wav = encoded.size() >= 12 && std::memcmp(encoded.data(), "RIFF", 4) == 0 &&
                      std::memcmp(encoded.data() + 8, "WAVE", 4) == 0;
     const bool flac = encoded.size() >= 4 && std::memcmp(encoded.data(), "fLaC", 4) == 0;
-    if ((format == SourceFormat::Wav && !wav) || (format == SourceFormat::Flac && !flac))
+    if ((format == SourceFormat::Wav && wav == false) || (format == SourceFormat::Flac && flac == false))
     {
         return Status::DecodeError;
     }

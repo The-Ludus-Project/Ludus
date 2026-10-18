@@ -111,7 +111,7 @@ void FormatDiagnostic(TextWriter& writer,
                       const detail::DiagnosticArg* args,
                       usize count) noexcept
 {
-    if (!Valid(format, count) || (args == nullptr && count != 0))
+    if (Valid(format, count) == false || (args == nullptr && count != 0))
     {
         writer.Raw("[format-error] format=");
         // Bounded fallback, reserving room for indexed arguments when possible.

@@ -144,11 +144,11 @@ bool HostSession::RetireActive() noexcept
     }
     ActiveRetired_ = true;
     Services_.GateWork();
-    if (InstanceReady_ && Instance_ != nullptr && Active_.IsLoaded() && !Quiesced_ && ModuleHasReload())
+    if (InstanceReady_ && Instance_ != nullptr && Active_.IsLoaded() && Quiesced_ == false && ModuleHasReload())
     {
         Quiesced_ = Active_.Table().Quiesce != nullptr && Active_.Table().Quiesce(Instance_) == Status::Ok;
     }
-    if ((InstanceReady_ && ModuleHasReload() && !Quiesced_) || Services_.OutstandingWork() != 0)
+    if ((InstanceReady_ && ModuleHasReload() && Quiesced_ == false) || Services_.OutstandingWork() != 0)
     {
         // A worker may still use the instance and execute its module code.
         // Leave all three alive; process exit is the only safe recovery.
@@ -171,7 +171,7 @@ bool HostSession::RetireActive() noexcept
         State_ = PlayState::CleanupUnknown;
         return false;
     }
-    if (!Active_.Close())
+    if (Active_.Close() == false)
     {
         Services_.PinUntilProcessExit();
         State_ = PlayState::CleanupUnknown;
@@ -285,7 +285,7 @@ void HostSession::EmitCommandResult(uint64 requestId, CommandStatus status, std:
     m.SetHexId("generation", ActiveGeneration_);
     m.SetUint("schema_epoch", SchemaEpoch_);
     m.SetString("state", PlayStateName(State_));
-    if (!message.empty())
+    if (message.empty() == false)
     {
         m.SetString("message", message);
     }
@@ -321,7 +321,8 @@ void HostSession::EmitReady() noexcept
 
 bool HostSession::PrepareInitialLoad(std::string_view path, uint64 generation, game_api::ByteView authored) noexcept
 {
-    if (ControlFd_ < 0 || !Services_.IsValid() || generation == 0 || path.empty() || State_ != PlayState::Stopped)
+    if (ControlFd_ < 0 || Services_.IsValid() == false || generation == 0 || path.empty() ||
+        State_ != PlayState::Stopped)
     {
         return false;
     }
@@ -336,7 +337,7 @@ bool HostSession::PrepareInitialLoad(std::string_view path, uint64 generation, g
 
 bool HostSession::LoadInitial(std::string_view modulePath, uint64 generation, game_api::ByteView authored) noexcept
 {
-    if (!Services_.IsValid() || generation == 0 || Instance_ != nullptr)
+    if (Services_.IsValid() == false || generation == 0 || Instance_ != nullptr)
     {
         InitialFailure_ = RunResult::Internal;
         State_ = PlayState::Failed;
@@ -401,7 +402,8 @@ void HostSession::StepFrame() noexcept
     {
         return;
     }
-    if (Instance_ == nullptr || !Active_.IsLoaded() || (State_ != PlayState::Running && State_ != PlayState::Paused))
+    if (Instance_ == nullptr || Active_.IsLoaded() == false ||
+        (State_ != PlayState::Running && State_ != PlayState::Paused))
     {
         return;
     }
@@ -487,7 +489,7 @@ bool HostSession::PumpControl() noexcept
     while (Reader_.Next(payload))
     {
         Message command;
-        if (!Message::Parse(payload, command))
+        if (Message::Parse(payload, command) == false)
         {
             EmitCommandResult(0, CommandStatus::ProtocolError, "malformed frame");
             continue;
@@ -509,7 +511,7 @@ bool HostSession::PumpControl() noexcept
 void HostSession::Dispatch(const Message& command) noexcept
 {
     std::string type;
-    if (!command.GetString("command", type))
+    if (command.GetString("command", type) == false)
     {
         EmitCommandResult(0, CommandStatus::ProtocolError, "missing command");
         return;
@@ -518,9 +520,10 @@ void HostSession::Dispatch(const Message& command) noexcept
     uint64 version = 0;
     uint64 session = 0;
     uint64 epoch = 0;
-    if (!command.GetUint("protocol", version) || version != protocol::kProtocolVersion ||
-        !command.GetHexId("request", requestId) || requestId == 0 || !command.GetHexId("session", session) ||
-        session != SessionId_ || !command.GetHexId("epoch", epoch) || epoch != ProjectEpoch_)
+    if (command.GetUint("protocol", version) == false || version != protocol::kProtocolVersion ||
+        command.GetHexId("request", requestId) == false || requestId == 0 ||
+        command.GetHexId("session", session) == false || session != SessionId_ ||
+        command.GetHexId("epoch", epoch) == false || epoch != ProjectEpoch_)
     {
         EmitCommandResult(requestId, CommandStatus::ProtocolError, "protocol/request/session/epoch mismatch");
         return;
@@ -581,7 +584,7 @@ void HostSession::Dispatch(const Message& command) noexcept
     {
         knownFields = command.HasOnly({"command", "protocol", "request", "session", "epoch", "expected_generation"});
     }
-    if (!knownFields)
+    if (knownFields == false)
     {
         EmitCommandResult(requestId, CommandStatus::InvalidRequest, "unknown command or fields");
         return;
@@ -589,7 +592,7 @@ void HostSession::Dispatch(const Message& command) noexcept
     if (type == "Ack")
     {
         uint64 acknowledged = 0;
-        if (!command.GetHexId("acknowledge", acknowledged))
+        if (command.GetHexId("acknowledge", acknowledged) == false)
         {
             EmitCommandResult(requestId, CommandStatus::InvalidRequest, "missing acknowledge id");
             return;
@@ -619,8 +622,8 @@ void HostSession::Dispatch(const Message& command) noexcept
     if (type == "Load")
     {
         uint64 generation = 0;
-        if (!AwaitingLoad_ || !HelloReceived_ || State_ != PlayState::Starting ||
-            !command.GetHexId("generation", generation) || generation != InitialGeneration_)
+        if (AwaitingLoad_ == false || HelloReceived_ == false || State_ != PlayState::Starting ||
+            command.GetHexId("generation", generation) == false || generation != InitialGeneration_)
         {
             EmitCommandResult(requestId,
                               CommandStatus::InvalidRequest,
@@ -628,7 +631,7 @@ void HostSession::Dispatch(const Message& command) noexcept
             return;
         }
         AwaitingLoad_ = false; // No retry may create a second instance.
-        if (!LoadInitial(InitialPath_, InitialGeneration_, InitialAuthored_))
+        if (LoadInitial(InitialPath_, InitialGeneration_, InitialAuthored_) == false)
         {
             StopLatched_ = true;
             EmitCommandResult(requestId, CommandStatus::IncompatibleModule, "initial load failed");
@@ -685,7 +688,7 @@ void HostSession::Dispatch(const Message& command) noexcept
     if (mutation || type == "ReadProperties")
     {
         uint64 expected = 0;
-        if (!command.GetHexId("expected_generation", expected) || expected != ActiveGeneration_)
+        if (command.GetHexId("expected_generation", expected) == false || expected != ActiveGeneration_)
         {
             EmitCommandResult(requestId, CommandStatus::SchemaChanged, "module generation changed; refresh values");
             return;
@@ -725,7 +728,7 @@ void HostSession::Dispatch(const Message& command) noexcept
         uint64 reconcile = 0;
         if (command.Has("reconcile"))
         {
-            if (!command.GetHexId("reconcile", reconcile))
+            if (command.GetHexId("reconcile", reconcile) == false)
             {
                 EmitCommandResult(requestId, CommandStatus::InvalidRequest, "invalid reconciliation id");
                 return;
@@ -757,10 +760,10 @@ void HostSession::Dispatch(const Message& command) noexcept
     {
         uint64 extension = 0;
         std::string payload;
-        if (State_ != PlayState::Running || !command.GetUint("extension", extension) || extension != 1 ||
-            !command.GetString("payload", payload) || payload.empty() || payload.size() > 4096 ||
-            !protocol::ValidUtf8(payload) ||
-            !game_api::HasCapability(Active_.Metadata().Capabilities, game_api::Capability::ScriptDebug))
+        if (State_ != PlayState::Running || command.GetUint("extension", extension) == false || extension != 1 ||
+            command.GetString("payload", payload) == false || payload.empty() || payload.size() > 4096 ||
+            protocol::ValidUtf8(payload) == false ||
+            game_api::HasCapability(Active_.Metadata().Capabilities, game_api::Capability::ScriptDebug) == false)
         {
             EmitCommandResult(requestId,
                               CommandStatus::InvalidRequest,
@@ -777,7 +780,7 @@ void HostSession::Dispatch(const Message& command) noexcept
             &written,
             &paused);
         if (status != Status::Ok || written > sizeof(output) || paused > 1 ||
-            !protocol::ValidUtf8({reinterpret_cast<const char*>(output), written}))
+            protocol::ValidUtf8({reinterpret_cast<const char*>(output), written}) == false)
         {
             EmitCommandResult(requestId, CommandStatus::InvalidRequest, "script-debug request rejected");
             return;
@@ -796,9 +799,9 @@ void HostSession::Dispatch(const Message& command) noexcept
         uint64 assetId = 0;
         uint64 digest = 0;
         std::string encoded;
-        if (Presenter_ == nullptr || !command.GetHexId("asset_id", assetId) ||
-            assetId != game_api::kFrameClearAssetId || !command.GetHexId("digest", digest) ||
-            !command.GetString("artifact", encoded) || encoded.size() != game_api::kFrameClearArtifactBytes * 2)
+        if (Presenter_ == nullptr || command.GetHexId("asset_id", assetId) == false ||
+            assetId != game_api::kFrameClearAssetId || command.GetHexId("digest", digest) == false ||
+            command.GetString("artifact", encoded) == false || encoded.size() != game_api::kFrameClearArtifactBytes * 2)
         {
             EmitCommandResult(requestId,
                               CommandStatus::InvalidRequest,
@@ -817,8 +820,8 @@ void HostSession::Dispatch(const Message& command) noexcept
             const auto nibble = static_cast<ludus::foundation::uint8>(digit <= '9' ? digit - '0' : digit - 'a' + 10);
             bytes[i / 2] = static_cast<ludus::foundation::uint8>((bytes[i / 2] << 4U) | nibble);
         }
-        if (!Services_.PrepareResource(assetId) ||
-            !Presenter_->ReplaceClearConfiguration({bytes.data(), bytes.size()}, digest))
+        if (Services_.PrepareResource(assetId) == false ||
+            Presenter_->ReplaceClearConfiguration({bytes.data(), bytes.size()}, digest) == false)
         {
             EmitCommandResult(requestId,
                               CommandStatus::ReloadRejected,
@@ -918,7 +921,7 @@ void HostSession::Dispatch(const Message& command) noexcept
     {
         std::string path;
         uint64 generation = 0;
-        if (!command.GetString("module_path", path) || !command.GetHexId("generation", generation))
+        if (command.GetString("module_path", path) == false || command.GetHexId("generation", generation) == false)
         {
             EmitCommandResult(requestId, CommandStatus::InvalidRequest, "reload needs module_path+generation");
             return;
@@ -956,12 +959,12 @@ CommandStatus HostSession::ReloadTo(std::string_view newModulePath, uint64 newGe
     {
         return CommandStatus::Busy;
     }
-    if (Instance_ == nullptr || !Active_.IsLoaded() || (State_ != PlayState::Running && State_ != PlayState::Paused) ||
-        newGeneration <= ActiveGeneration_)
+    if (Instance_ == nullptr || Active_.IsLoaded() == false ||
+        (State_ != PlayState::Running && State_ != PlayState::Paused) || newGeneration <= ActiveGeneration_)
     {
         return CommandStatus::InvalidRequest;
     }
-    if (!game_api::HasCapability(Active_.Metadata().Capabilities, game_api::Capability::Reload))
+    if (game_api::HasCapability(Active_.Metadata().Capabilities, game_api::Capability::Reload) == false)
     {
         return CommandStatus::RestartRequired;
     }
@@ -990,7 +993,7 @@ CommandStatus HostSession::ReloadTo(std::string_view newModulePath, uint64 newGe
         return loadStatus == LoadStatus::IdentityRejected ? CommandStatus::IncompatibleModule
                                                           : CommandStatus::ReloadRejected;
     }
-    if (!game_api::HasCapability(candidateModule.Metadata().Capabilities, game_api::Capability::Reload))
+    if (game_api::HasCapability(candidateModule.Metadata().Capabilities, game_api::Capability::Reload) == false)
     {
         State_ = priorState;
         EmitReloadPhase(ReloadPhase::Rejected);
@@ -1003,7 +1006,7 @@ CommandStatus HostSession::ReloadTo(std::string_view newModulePath, uint64 newGe
     // EXACT prior pause state (do NOT resume a previously-paused A), re-emit the
     // phase and return the status. A keeps its instance/state/resources.
     auto reject = [&](CommandStatus status) -> CommandStatus {
-        if (!wasPaused)
+        if (wasPaused == false)
         {
             Services_.Activate();
             // A was running: it was quiesced for the attempt, so resume it. A
@@ -1033,7 +1036,7 @@ CommandStatus HostSession::ReloadTo(std::string_view newModulePath, uint64 newGe
     // is already quiesced; do not double-quiesce.
     EmitReloadPhase(ReloadPhase::Quiesce);
     Services_.GateWork();
-    if (!wasPaused)
+    if (wasPaused == false)
     {
         if (Active_.Table().Quiesce(Instance_) != Status::Ok)
         {
@@ -1087,11 +1090,11 @@ CommandStatus HostSession::ReloadTo(std::string_view newModulePath, uint64 newGe
     // here, BEFORE commit. B is created paused.
     EmitReloadPhase(ReloadPhase::Stage);
     HostServiceProvider stagingServices;
-    if (!stagingServices.IsValid())
+    if (stagingServices.IsValid() == false)
     {
         return reject(CommandStatus::ReloadRejected);
     }
-    if (!stagingServices.CopyResourcesFrom(Services_))
+    if (stagingServices.CopyResourcesFrom(Services_) == false)
     {
         return reject(CommandStatus::ReloadRejected);
     }
@@ -1174,7 +1177,7 @@ CommandStatus HostSession::ReloadTo(std::string_view newModulePath, uint64 newGe
         EmitReloadPhase(ReloadPhase::Rejected);
         return CommandStatus::RestartRequired;
     }
-    if (!Retired_.Close())
+    if (Retired_.Close() == false)
     {
         RetiredServices_.PinUntilProcessExit();
         // dlclose failed: the old image's residency is uncertain (design 8).
@@ -1262,7 +1265,7 @@ RunResult RunStaticEntry(const HostConfig& config, StaticEntryFn entry) noexcept
     {
         // The same 60 Hz absolute schedule as the play session, without telemetry.
         (void)pacer.Pace(pacingClock);
-        if (!presenter.Poll())
+        if (presenter.Poll() == false)
         {
             break;
         }
@@ -1302,7 +1305,7 @@ usize HostSession::CaptureCheckpoint(ludus::foundation::uint8* buffer, usize cap
     {
         return 0;
     }
-    if (Instance_ == nullptr || !Active_.IsLoaded() || Active_.Table().CheckpointSize == nullptr ||
+    if (Instance_ == nullptr || Active_.IsLoaded() == false || Active_.Table().CheckpointSize == nullptr ||
         Active_.Table().WriteCheckpoint == nullptr || buffer == nullptr)
     {
         return 0;
@@ -1335,7 +1338,8 @@ bool HostSession::ModuleHasReload() const noexcept
 
 usize HostSession::ReadActiveProperties(ludus::foundation::uint8* buffer, usize capacity) noexcept
 {
-    if (Instance_ == nullptr || !Active_.IsLoaded() || Active_.Table().ReadProperties == nullptr || buffer == nullptr)
+    if (Instance_ == nullptr || Active_.IsLoaded() == false || Active_.Table().ReadProperties == nullptr ||
+        buffer == nullptr)
     {
         return 0;
     }
@@ -1369,7 +1373,7 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
         // frame pacing"). No busy spin and no pause/reload catch-up.
         const platform::PaceResult pace = Pacer_.Pace(PacingClock_);
         Timing_.Record(FrameClock_.Sample(ludus::foundation::time::Now()), pace);
-        if ((presenter != nullptr && !presenter->Poll()) || !PumpControl())
+        if ((presenter != nullptr && presenter->Poll() == false) || PumpControl() == false)
         {
             break;
         }
@@ -1406,7 +1410,7 @@ RunResult HostSession::RunLoop(uint64 maxFrames, FramePresenter* presenter) noex
 
     Presenter_ = nullptr;
     // Stop: retire the instance before releasing the loader reference.
-    if (!RetireActive())
+    if (RetireActive() == false)
     {
         LUDUS_LOG_ERROR(LOG_SESSION, "module retirement uncertain; process restart required");
     }

@@ -72,8 +72,9 @@ void BreakForDebugger() noexcept
 [[noreturn]] void TerminateForAssertion() noexcept
 {
     const auto& packet = gFatalPacket;
-    if (!packet.MinimalReady.load(std::memory_order_acquire) || !packet.CompleteReady.load(std::memory_order_acquire) ||
-        !packet.DeliveryReady.load(std::memory_order_acquire) || packet.Complete[packet.CompleteSize] != '\0')
+    if (packet.MinimalReady.load(std::memory_order_acquire) == false ||
+        packet.CompleteReady.load(std::memory_order_acquire) == false ||
+        packet.DeliveryReady.load(std::memory_order_acquire) == false || packet.Complete[packet.CompleteSize] != '\0')
     {
         std::_Exit(75);
     }

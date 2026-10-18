@@ -87,7 +87,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                                        QStringLiteral("New 3D scene"),
                                                        QDir(Root_).filePath(QStringLiteral("scenes/main.lulevel")),
                                                        QStringLiteral("Ludus levels (*.lulevel)"));
-        if (!path.isEmpty())
+        if (path.isEmpty() == false)
         {
             (void)Create(path);
         }
@@ -97,7 +97,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                                        QStringLiteral("Open 3D scene"),
                                                        Root_,
                                                        QStringLiteral("Ludus levels (*.lulevel)"));
-        if (!path.isEmpty())
+        if (path.isEmpty() == false)
         {
             (void)Open(path);
         }
@@ -159,7 +159,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         (void)Start(QStringLiteral("assemble"));
     });
     connect(&Preview_, &RenderPreview::Changed, this, [this]() {
-        if (!Busy_)
+        if (Busy_ == false)
         {
             Status_->setText(Preview_.Status());
         }
@@ -247,13 +247,13 @@ bool LevelWorkspace::Relative(const QString& path, QString& relative) const
     const auto absolute = QFileInfo(path).absoluteFilePath();
     relative = QDir(Root_).relativeFilePath(absolute);
     auto parent = QFileInfo(absolute).absolutePath();
-    while (!QFileInfo::exists(parent))
+    while (QFileInfo::exists(parent) == false)
     {
         parent = QFileInfo(parent).absolutePath();
     }
     const auto realParent = QFileInfo(parent).canonicalFilePath();
     const auto realRoot = QFileInfo(Root_).canonicalFilePath();
-    return !relative.startsWith(QStringLiteral("../")) && !QDir::isAbsolutePath(relative) &&
+    return relative.startsWith(QStringLiteral("../")) == false && QDir::isAbsolutePath(relative) == false &&
            absolute.endsWith(QStringLiteral(".lulevel")) &&
            (realParent == realRoot || realParent.startsWith(realRoot + QLatin1Char('/')));
 }
@@ -264,7 +264,7 @@ bool LevelWorkspace::Create(const QString& path)
     {
         return false;
     }
-    if (!Relative(path, relative) || QFileInfo::exists(path))
+    if (Relative(path, relative) == false || QFileInfo::exists(path))
     {
         Status_->setText(QStringLiteral("Choose a new .lulevel path inside this project, or open the existing scene."));
         return false;
@@ -275,7 +275,7 @@ bool LevelWorkspace::Create(const QString& path)
         Status_->setText(DescribeEntropyUnavailable());
         return false;
     }
-    if (!ConfirmDiscard())
+    if (ConfirmDiscard() == false)
     {
         return false;
     }
@@ -303,7 +303,7 @@ bool LevelWorkspace::Create(const QString& path)
 bool LevelWorkspace::Open(const QString& path)
 {
     QString relative;
-    if (Busy_ || !Relative(path, relative) || !ConfirmDiscard())
+    if (Busy_ || Relative(path, relative) == false || ConfirmDiscard() == false)
     {
         return false;
     }
@@ -380,7 +380,7 @@ bool LevelWorkspace::VerifyAssets(const QJsonObject& level)
     }
     VerificationOnly_ = true;
     Candidate_ = level;
-    if (!Start(QStringLiteral("assemble")))
+    if (Start(QStringLiteral("assemble")) == false)
     {
         VerificationOnly_ = false;
         return false;
@@ -425,7 +425,7 @@ void LevelWorkspace::ClearImportState()
 }
 bool LevelWorkspace::Save()
 {
-    if (!CanSave())
+    if (CanSave() == false)
     {
         return false;
     }
@@ -690,7 +690,7 @@ void LevelWorkspace::Completed()
         }
         return;
     }
-    if (Cancelling_ || !succeeded || result.value(QStringLiteral("schema")).toInt() != 1)
+    if (Cancelling_ || succeeded == false || result.value(QStringLiteral("schema")).toInt() != 1)
     {
         Error_ =
             Cancelling_ ? QStringLiteral("Import cancelled; current scene and saved level retained.") : OperationError_;
@@ -790,7 +790,7 @@ void LevelWorkspace::CommitCandidate()
     {
         Path_ = CandidatePath_;
     }
-    Dirty_ = !WorldOwned_ && Operation_ != QStringLiteral("save") && Operation_ != QStringLiteral("open");
+    Dirty_ = WorldOwned_ == false && Operation_ != QStringLiteral("save") && Operation_ != QStringLiteral("open");
     Busy_ = false;
     PreviousScene_ = {};
     Status_->setText(Operation_ == QStringLiteral("save")
@@ -805,7 +805,7 @@ void LevelWorkspace::Rollback(const QString& error)
     AwaitingViewport_ = false;
     PublishingCatalog_ = false;
     Preview_.Stop();
-    if (Preview_.SetScene(PreviousScene_) && !PreviousScene_.Identity.isEmpty())
+    if (Preview_.SetScene(PreviousScene_) && PreviousScene_.Identity.isEmpty() == false)
     {
         (void)Preview_.Start();
     }
@@ -823,7 +823,7 @@ void LevelWorkspace::Rollback(const QString& error)
 }
 void LevelWorkspace::Publish()
 {
-    if (!Success_ || Cancelling_)
+    if (Success_ == false || Cancelling_)
     {
         Busy_ = false;
         Status_->setText(Error_);
@@ -860,7 +860,7 @@ void LevelWorkspace::Publish()
     const bool existingFrame = Preview_.FrameAvailable() && PreviousScene_.PacketIdentity == Scene_.PacketIdentity &&
                                PreviousScene_.AssetsIdentity == Scene_.AssetsIdentity;
     Q_EMIT PreviewStarting();
-    if (!Preview_.SetScene(Scene_))
+    if (Preview_.SetScene(Scene_) == false)
     {
         Rollback(Preview_.Status());
         return;
@@ -897,7 +897,7 @@ void LevelWorkspace::Publish()
         return;
     }
     AwaitingViewport_ = true;
-    if (!Preview_.Start())
+    if (Preview_.Start() == false)
     {
         Rollback(Preview_.Status());
         return;
@@ -934,7 +934,7 @@ void LevelWorkspace::Publish()
 }
 void LevelWorkspace::ApplyPendingProject()
 {
-    if (ProjectPending_ && !Busy_)
+    if (ProjectPending_ && Busy_ == false)
     {
         ProjectPending_ = false;
         SetProject(PendingRoot_, PendingEpoch_);
@@ -942,7 +942,7 @@ void LevelWorkspace::ApplyPendingProject()
 }
 void LevelWorkspace::Cancel()
 {
-    if (!Busy_)
+    if (Busy_ == false)
     {
         return;
     }
@@ -963,7 +963,7 @@ bool LevelWorkspace::ConfirmDiscard()
             QStringLiteral("Finish or cancel the current scene operation before closing/changing projects."));
         return false;
     }
-    if (WorldOwned_ || !Dirty_)
+    if (WorldOwned_ || Dirty_ == false)
     {
         return true;
     }
@@ -997,12 +997,12 @@ void LevelWorkspace::Render()
     }
     File_->setText(Path_.isEmpty() ? QStringLiteral("No 3D scene open")
                                    : Path_ + (Dirty_ ? QStringLiteral(" *") : QString()));
-    New_->setEnabled(!Busy_ && !Root_.isEmpty());
-    Open_->setEnabled(!Busy_ && !Root_.isEmpty());
-    Import_->setEnabled(!Busy_ && !Level_.isEmpty());
+    New_->setEnabled(Busy_ == false && Root_.isEmpty() == false);
+    Open_->setEnabled(Busy_ == false && Root_.isEmpty() == false);
+    Import_->setEnabled(Busy_ == false && Level_.isEmpty() == false);
     Save_->setEnabled(CanSave());
-    Cancel_->setEnabled(Busy_ && Operation_ != QStringLiteral("save") && !PublishingCatalog_);
-    Objects_->setEnabled(!Busy_);
+    Cancel_->setEnabled(Busy_ && Operation_ != QStringLiteral("save") && PublishingCatalog_ == false);
+    Objects_->setEnabled(Busy_ == false);
     Rendering_ = false;
     Inspect();
     Q_EMIT DocumentChanged();
@@ -1016,7 +1016,7 @@ void LevelWorkspace::Inspect()
     Rendering_ = true;
     const auto index = Objects_->currentRow();
     const auto objects = Level_.value(QStringLiteral("objects")).toArray();
-    const bool available = !Busy_ && index >= 0 && index < objects.size();
+    const bool available = Busy_ == false && index >= 0 && index < objects.size();
     Name_->setEnabled(available);
     Remove_->setEnabled(available);
     const auto object = available ? objects[index].toObject() : QJsonObject{};

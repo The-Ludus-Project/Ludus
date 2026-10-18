@@ -47,7 +47,7 @@ bool IsValid(Color color) noexcept
     const float32 channels[] = {color.R, color.G, color.B, color.A};
     for (const auto channel : channels)
     {
-        if (!IsFinite(channel) || channel < 0 || channel > 1)
+        if (IsFinite(channel) == false || channel < 0 || channel > 1)
         {
             return false;
         }
@@ -152,8 +152,8 @@ Status Context::TryInitialize(usize capacity) noexcept
     {
         tableSize *= 2;
     }
-    if (!state->Buffers[0].TryInitialize(capacity) || !state->Buffers[1].TryInitialize(capacity) ||
-        !state->Ids.TryResize(tableSize))
+    if (state->Buffers[0].TryInitialize(capacity) == false || state->Buffers[1].TryInitialize(capacity) == false ||
+        state->Ids.TryResize(tableSize) == false)
     {
         delete state;
         return Status::OutOfMemory;
@@ -172,7 +172,7 @@ Status Context::TrySetDocument(std::span<const Element> elements, Viewport viewp
     {
         return Status::CapacityExceeded;
     }
-    if (!IsValid(viewport.Bounds))
+    if (IsValid(viewport.Bounds) == false)
     {
         return Status::InvalidDescription;
     }
@@ -185,7 +185,7 @@ Status Context::TrySetDocument(std::span<const Element> elements, Viewport viewp
     for (usize index = 0; index < elements.size(); ++index)
     {
         const auto& element = elements[index];
-        if (!IsValid(element) || (element.Parent != kRoot && element.Parent >= index))
+        if (IsValid(element) == false || (element.Parent != kRoot && element.Parent >= index))
         {
             return Status::InvalidDescription;
         }
@@ -244,12 +244,12 @@ Status Context::TrySetDocument(std::span<const Element> elements, Viewport viewp
             }
             cursor +=
                 (flow == Flow::Row ? bounds.Width : bounds.Height) + buffer.Elements[element.Parent].Placement.Gap;
-            if (!IsFinite(cursor))
+            if (IsFinite(cursor) == false)
             {
                 return Status::InvalidDescription;
             }
         }
-        if (!IsValid(parent) || !IsValid(bounds))
+        if (IsValid(parent) == false || IsValid(bounds) == false)
         {
             return Status::InvalidDescription;
         }
@@ -266,12 +266,12 @@ Status Context::TrySetDocument(std::span<const Element> elements, Viewport viewp
     buffer.Count = elements.size();
     mState->Current = 1 - mState->Current;
     const auto* focused = mState->Find(mState->Focus);
-    if (focused == nullptr || !CanFocus(*focused))
+    if (focused == nullptr || CanFocus(*focused) == false)
     {
         mState->Focus = 0;
     }
     const auto* captured = mState->Find(mState->Capture);
-    if (captured == nullptr || !CanFocus(*captured))
+    if (captured == nullptr || CanFocus(*captured) == false)
     {
         mState->Capture = 0;
     }
@@ -312,7 +312,7 @@ bool Context::TryFocus(WidgetId id) noexcept
         return true;
     }
     const auto* box = mState->Find(id);
-    if (box == nullptr || !CanFocus(*box))
+    if (box == nullptr || CanFocus(*box) == false)
     {
         return false;
     }
@@ -353,7 +353,7 @@ InputResult Context::Route(Event event) noexcept
              IsFinite(event.Y))
     {
         const auto& buffer = mState->Buffers[mState->Current];
-        if (event.Kind == EventKind::PointerDown && !mState->PointerOwned)
+        if (event.Kind == EventKind::PointerDown && mState->PointerOwned == false)
         {
             for (usize index = buffer.Count; index > 0; --index)
             {

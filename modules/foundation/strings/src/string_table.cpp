@@ -151,7 +151,7 @@ StringStatus StringTable::State::Find(std::string_view value, NameId& outId) con
 }
 StringStatus StringTable::State::Resolve(NameId id, std::string_view& outSpelling) const noexcept
 {
-    if (!id.IsValid())
+    if (id.IsValid() == false)
     {
         return StringStatus::InvalidHandle;
     }
@@ -179,7 +179,7 @@ StringStatus StringTable::State::EnsureEntries() noexcept
         capacity = Config.MaxEntries;
     }
     usize bytes = 0;
-    if (!TryMultiply(capacity, sizeof(Entry), bytes))
+    if (TryMultiply(capacity, sizeof(Entry), bytes) == false)
     {
         return StringStatus::TooLarge;
     }
@@ -213,7 +213,7 @@ StringStatus StringTable::State::EnsureSlots() noexcept
     }
     usize capacity = SlotCapacity == 0 ? 16 : SlotCapacity * 2;
     usize bytes = 0;
-    if (capacity < SlotCapacity || !TryMultiply(capacity, sizeof(uint32), bytes))
+    if (capacity < SlotCapacity || TryMultiply(capacity, sizeof(uint32), bytes) == false)
     {
         return StringStatus::TooLarge;
     }
@@ -263,7 +263,7 @@ StringStatus StringTable::State::EnsurePage(usize bytes) noexcept
         capacity = available - sizeof(Page);
     }
     usize allocation = 0;
-    if (!TryAdd(capacity, sizeof(Page), allocation))
+    if (TryAdd(capacity, sizeof(Page), allocation) == false)
     {
         return StringStatus::TooLarge;
     }
@@ -325,7 +325,7 @@ StringStatus StringTable::State::Intern(std::string_view value, NameId& outId) n
     // All fallible work precedes this commit. Source may borrow an old page;
     // append-only storage keeps it valid across metadata growth and rehashing.
     char* spelling = Pages->Bytes() + Pages->Used;
-    if (!value.empty())
+    if (value.empty() == false)
     {
         std::memcpy(spelling, value.data(), value.size());
     }
@@ -345,7 +345,7 @@ CreateTable(const StringTableConfig& config, const AllocationDomain& domain, Str
         config.MaxAllocatedBytes < sizeof(StringTable::State) ||
         config.MaxSpellingBytes >= (static_cast<usize>(-1) >> 1) ||
         (config.HashPolicy != StringHashPolicy::Trusted && config.HashPolicy != StringHashPolicy::Untrusted) ||
-        (config.HashPolicy == StringHashPolicy::Untrusted && !config.HasSecretKey))
+        (config.HashPolicy == StringHashPolicy::Untrusted && config.HasSecretKey == false))
     {
         return StringStatus::InvalidArgument;
     }

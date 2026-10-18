@@ -50,7 +50,7 @@ Status AudioSystem::Initialize(const SystemConfig& config) noexcept
     }
 
     const Status cfgStatus = impl->ValidateConfig(config);
-    if (!IsOk(cfgStatus))
+    if (IsOk(cfgStatus) == false)
     {
         delete impl;
         return cfgStatus;
@@ -174,7 +174,7 @@ Status
 AudioSystem::PrepareClip(std::span<const uint8> encoded, const ClipDescriptor& descriptor, ClipHandle& outClip) noexcept
 {
     outClip = {};
-    if (!mImpl || mImpl->State != SystemState::Ready)
+    if (mImpl.Get() == nullptr || mImpl->State != SystemState::Ready)
     {
         return Status::NotReady;
     }
@@ -185,7 +185,7 @@ AudioSystem::PrepareClip(std::span<const uint8> encoded, const ClipDescriptor& d
 Status AudioSystem::InstallClip(PreparedClip& prepared, ClipHandle& outClip) noexcept
 {
     outClip = {};
-    if (!mImpl || mImpl->State != SystemState::Ready)
+    if (mImpl.Get() == nullptr || mImpl->State != SystemState::Ready)
     {
         return Status::NotReady;
     }
@@ -199,7 +199,7 @@ Status AudioSystem::InstallClip(PreparedClip& prepared, ClipHandle& outClip) noe
     uint32 slot = mImpl->LogicalCapacity;
     for (uint32 i = 0; i < mImpl->LogicalCapacity; ++i)
     {
-        if (!mImpl->Clips[i].InUse && !mImpl->Clips[i].Generation.IsExhausted())
+        if (mImpl->Clips[i].InUse == false && mImpl->Clips[i].Generation.IsExhausted() == false)
         {
             slot = i;
             break;
@@ -221,7 +221,7 @@ Status AudioSystem::InstallClip(PreparedClip& prepared, ClipHandle& outClip) noe
         return Status::AssetCapacity;
     }
     internal::ClipSlot& c = mImpl->Clips[slot];
-    if (!c.Generation.Advance())
+    if (c.Generation.Advance() == false)
     {
 
         return Status::AssetCapacity;
@@ -252,7 +252,7 @@ Status AudioSystem::PrepareStream(std::span<const uint8> encoded,
                                   StreamHandle& outStream) noexcept
 {
     outStream = {};
-    if (!mImpl || mImpl->State != SystemState::Ready)
+    if (mImpl.Get() == nullptr || mImpl->State != SystemState::Ready)
     {
         return Status::NotReady;
     }
@@ -272,7 +272,7 @@ Status AudioSystem::PrepareStream(std::span<const uint8> encoded,
     uint32 index = state.StreamInstances;
     for (uint32 i = 0; i < state.StreamInstances; ++i)
     {
-        if (!state.Streams[i].InUse && state.Streams[i].Generation < 0xFFFFFFFEU)
+        if (state.Streams[i].InUse == false && state.Streams[i].Generation < 0xFFFFFFFEU)
         {
             index = i;
             break;
@@ -315,7 +315,7 @@ Status AudioSystem::PrepareStream(foundation::core::UniquePtr<StreamInput> input
                                   StreamHandle& outStream) noexcept
 {
     outStream = {};
-    if (!mImpl || mImpl->State != SystemState::Ready)
+    if (mImpl.Get() == nullptr || mImpl->State != SystemState::Ready)
     {
         return Status::NotReady;
     }
@@ -323,7 +323,7 @@ Status AudioSystem::PrepareStream(foundation::core::UniquePtr<StreamInput> input
     uint32 index = state.StreamInstances;
     for (uint32 i = 0; i < state.StreamInstances; ++i)
     {
-        if (!state.Streams[i].InUse && state.Streams[i].Generation < 0xFFFFFFFEU)
+        if (state.Streams[i].InUse == false && state.Streams[i].Generation < 0xFFFFFFFEU)
         {
             index = i;
             break;
@@ -363,7 +363,7 @@ Status AudioSystem::PrepareStream(foundation::core::UniquePtr<StreamInput> input
 
 bool AudioSystem::IsClipReady(ClipHandle clip) const noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return false;
     }
@@ -372,7 +372,7 @@ bool AudioSystem::IsClipReady(ClipHandle clip) const noexcept
 
 Status AudioSystem::RetireClip(ClipHandle clip) noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -388,7 +388,7 @@ Status AudioSystem::RetireClip(ClipHandle clip) noexcept
 
 Status AudioSystem::RetireStream(StreamHandle stream) noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -400,7 +400,7 @@ Status AudioSystem::RetireStream(StreamHandle stream) noexcept
     auto& instance = mImpl->Streams[slot];
     instance.Retiring = true;
     // Active playback retains the ring; cancellation follows durable terminal.
-    if (!instance.Played)
+    if (instance.Played == false)
     {
         instance.Data->Cancel.store(true, std::memory_order_release);
     }
@@ -413,7 +413,7 @@ Status AudioSystem::RetireStream(StreamHandle stream) noexcept
 BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexcept
 {
     BatchResult result{};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         result.Result = Status::NotReady;
         return result;
@@ -452,7 +452,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
         switch (cmd.Kind)
         {
             case CommandKind::Play:
-                if (!s.ValidatePlay(cmd.Play))
+                if (s.ValidatePlay(cmd.Play) == false)
                 {
                     result.Result = Status::InvalidArgument;
                     ++s.RejectedCommands;
@@ -515,7 +515,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
             }
             case CommandKind::SetBusBaseGain:
             case CommandKind::SetBusUserGain:
-                if (cmd.BusIndex >= s.BusCount || !std::isfinite(cmd.BusGain) || cmd.BusGain < 0.0F ||
+                if (cmd.BusIndex >= s.BusCount || std::isfinite(cmd.BusGain) == false || cmd.BusGain < 0.0F ||
                     cmd.BusGain > 1.0F)
                 {
                     result.Result = Status::InvalidArgument;
@@ -527,8 +527,9 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
                 // Orientation validated lazily; reject NaN/Inf and degenerate basis.
                 {
                     const ListenerPose& l = cmd.Listener;
-                    if (!std::isfinite(l.Forward.X) || !std::isfinite(l.Forward.Y) || !std::isfinite(l.Forward.Z) ||
-                        !std::isfinite(l.Up.X) || !std::isfinite(l.Up.Y) || !std::isfinite(l.Up.Z))
+                    if (std::isfinite(l.Forward.X) == false || std::isfinite(l.Forward.Y) == false ||
+                        std::isfinite(l.Forward.Z) == false || std::isfinite(l.Up.X) == false ||
+                        std::isfinite(l.Up.Y) == false || std::isfinite(l.Up.Z) == false)
                     {
                         result.Result = Status::InvalidArgument;
                         ++s.RejectedCommands;
@@ -563,7 +564,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
         {
             const uint32 slot = reservedSlots[r];
             VoiceSlot& v = s.Voices[slot];
-            if (!v.IsStream)
+            if (v.IsStream == false)
             {
                 internal::ClipSlot& c = s.Clips[v.ClipSlotIndex];
                 if (c.Pins > 0)
@@ -774,7 +775,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
 
     // --- Phase 3: publish once ---------------------------------------------
     std::span<const QueuedCommand> batch(s.BatchScratch, scratchCount);
-    if (!s.CommandRing.TryPublishBatch(batch))
+    if (s.CommandRing.TryPublishBatch(batch) == false)
     {
         rollback();
         s.LastBatchVoiceCount = 0;
@@ -815,7 +816,7 @@ Status AudioSystem::PlayClip(const PlayParams& params, VoiceHandle& outVoice) no
     cmd.Kind = CommandKind::Play;
     cmd.Play = params;
     const BatchResult r = TrySubmitBatch(std::span<const Command>(&cmd, 1));
-    if (IsOk(r.Result) && !r.Voices.empty())
+    if (IsOk(r.Result) && r.Voices.empty() == false)
     {
         outVoice = r.Voices[0];
     }
@@ -832,7 +833,7 @@ Status AudioSystem::PlayStream(StreamHandle stream,
                                VoiceHandle& outVoice) noexcept
 {
     outVoice = {};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -852,7 +853,7 @@ Status AudioSystem::PlayStream(StreamHandle stream,
     {
         return Status::NotReady;
     }
-    if (busIndex >= s.BusCount || priority > 7 || !std::isfinite(gain) || gain < 0 || gain > 1)
+    if (busIndex >= s.BusCount || priority > 7 || std::isfinite(gain) == false || gain < 0 || gain > 1)
     {
         return Status::InvalidArgument;
     }
@@ -895,7 +896,7 @@ Status AudioSystem::PlayStream(StreamHandle stream,
     q.Stream = instance.Data;
     q.AdmissionEpoch = s.StopAllEpoch;
     q.Looping = v.Looping;
-    if (!s.CommandRing.TryPublishBatch({&q, 1}))
+    if (s.CommandRing.TryPublishBatch({&q, 1}) == false)
     {
         v.InUse = false;
         return Status::QueueFull;
@@ -910,7 +911,7 @@ Status AudioSystem::PlayStream(StreamHandle stream,
 // ===========================================================================
 Status AudioSystem::Stop(VoiceHandle voice) noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -929,7 +930,7 @@ Status AudioSystem::Stop(VoiceHandle voice) noexcept
 
 void AudioSystem::StopAll() noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return;
     }
@@ -950,7 +951,7 @@ void AudioSystem::StopAll() noexcept
 // ===========================================================================
 void AudioSystem::Service() noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return;
     }
@@ -1013,7 +1014,7 @@ void AudioSystem::Service() noexcept
 Status AudioSystem::GetVoiceInfo(VoiceHandle voice, VoiceInfo& out) const noexcept
 {
     out = VoiceInfo{};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -1059,7 +1060,7 @@ Status AudioSystem::GetVoiceInfo(VoiceHandle voice, VoiceInfo& out) const noexce
 Status AudioSystem::GetGroupInfo(uint32 groupIndex, GroupInfo& out) const noexcept
 {
     out = GroupInfo{};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -1079,7 +1080,7 @@ Status AudioSystem::GetGroupInfo(uint32 groupIndex, GroupInfo& out) const noexce
 Status AudioSystem::GetBusMeter(uint32 busIndex, BusMeter& out) const noexcept
 {
     out = BusMeter{};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -1106,7 +1107,7 @@ Status AudioSystem::GetBusMeter(uint32 busIndex, BusMeter& out) const noexcept
 void AudioSystem::GetSystemSnapshot(SystemSnapshot& out) const noexcept
 {
     out = SystemSnapshot{};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return;
     }
@@ -1126,7 +1127,7 @@ Status AudioSystem::RenderOffline(std::span<float32> output,
                                   BufferLayout bufferLayout,
                                   uint32 frames) noexcept
 {
-    if (!mImpl || mImpl->State != SystemState::Ready)
+    if (mImpl.Get() == nullptr || mImpl->State != SystemState::Ready)
     {
         return Status::NotReady;
     }
@@ -1142,7 +1143,7 @@ Status AudioSystem::RenderOffline(std::span<float32> output,
 // ===========================================================================
 Status AudioSystem::ResumeFromUserGesture() noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -1152,7 +1153,7 @@ Status AudioSystem::ResumeFromUserGesture() noexcept
 
 Status AudioSystem::BeginShutdown() noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -1212,11 +1213,11 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
                                     ModifierHandle& outModifier) noexcept
 {
     outModifier = ModifierHandle{};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
-    if (values.size() > BUS_CAPACITY || !std::isfinite(weight) || weight < 0.0F || weight > 1.0F)
+    if (values.size() > BUS_CAPACITY || std::isfinite(weight) == false || weight < 0.0F || weight > 1.0F)
     {
         return Status::InvalidArgument;
     }
@@ -1224,7 +1225,7 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
     // Validate bus indices and dB ranges before reserving.
     for (const ModifierValue& mv : values)
     {
-        if (mv.BusIndex >= s.BusCount || !std::isfinite(mv.TargetDb) || mv.TargetDb < MODIFIER_DB_MIN ||
+        if (mv.BusIndex >= s.BusCount || std::isfinite(mv.TargetDb) == false || mv.TargetDb < MODIFIER_DB_MIN ||
             mv.TargetDb > MODIFIER_DB_MAX)
         {
             return Status::InvalidArgument;
@@ -1234,7 +1235,7 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
     uint32 slot = MODIFIER_CAPACITY;
     for (uint32 i = 0; i < MODIFIER_CAPACITY; ++i)
     {
-        if (!s.Modifiers[i].InUse && !s.Modifiers[i].Generation.IsExhausted())
+        if (s.Modifiers[i].InUse == false && s.Modifiers[i].Generation.IsExhausted() == false)
         {
             slot = i;
             break;
@@ -1245,7 +1246,7 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
         return Status::AssetCapacity;
     }
     internal::ModifierState& m = s.Modifiers[slot];
-    if (!m.Generation.Advance())
+    if (m.Generation.Advance() == false)
     {
         return Status::AssetCapacity;
     }
@@ -1276,7 +1277,7 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
         {
             q.ModifierValues[i] = values[i];
         }
-        if (!s.CommandRing.TryPublishBatch({&q, 1}))
+        if (s.CommandRing.TryPublishBatch({&q, 1}) == false)
         {
             m.InUse = false;
             return Status::QueueFull;
@@ -1288,11 +1289,11 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
 
 Status AudioSystem::UpdateModifier(ModifierHandle modifier, float32 weight) noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
-    if (!std::isfinite(weight) || weight < 0.0F || weight > 1.0F)
+    if (std::isfinite(weight) == false || weight < 0.0F || weight > 1.0F)
     {
         return Status::InvalidArgument;
     }
@@ -1310,7 +1311,7 @@ Status AudioSystem::UpdateModifier(ModifierHandle modifier, float32 weight) noex
         q.ModifierSlotIndex = slot;
         q.ModifierGeneration = m.Generation.Value;
         q.ModifierWeight = weight;
-        if (!mImpl->CommandRing.TryPublishBatch({&q, 1}))
+        if (mImpl->CommandRing.TryPublishBatch({&q, 1}) == false)
         {
             return Status::QueueFull;
         }
@@ -1322,7 +1323,7 @@ Status AudioSystem::UpdateModifier(ModifierHandle modifier, float32 weight) noex
 
 Status AudioSystem::ReleaseModifier(ModifierHandle modifier) noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -1339,7 +1340,7 @@ Status AudioSystem::ReleaseModifier(ModifierHandle modifier) noexcept
         q.BatchLength = 1;
         q.ModifierSlotIndex = slot;
         q.ModifierGeneration = m.Generation.Value;
-        if (!mImpl->CommandRing.TryPublishBatch({&q, 1}))
+        if (mImpl->CommandRing.TryPublishBatch({&q, 1}) == false)
         {
             return Status::QueueFull;
         }
@@ -1357,7 +1358,7 @@ Status AudioSystem::ReleaseModifier(ModifierHandle modifier) noexcept
 
 float32 AudioSystem::UserGainFromSlider(float32 u, float32 dbRange) noexcept
 {
-    if (!std::isfinite(u) || !std::isfinite(dbRange))
+    if (std::isfinite(u) == false || std::isfinite(dbRange) == false)
     {
         return 0.0F;
     }

@@ -10,7 +10,7 @@ uint32 DecodeScheduler::AddStream(DecodeSource* source, uint64 refillTarget) noe
     }
     for (uint32 i = 0; i < SCHEDULER_STREAM_CAPACITY; ++i)
     {
-        if (!mStreams[i].Active)
+        if (mStreams[i].Active == false)
         {
             mStreams[i] = ScheduledStream{};
             mStreams[i].Active = true;
@@ -38,7 +38,7 @@ ScheduledStream* DecodeScheduler::Stream(uint32 slot) noexcept
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): named slot/frames.
 void DecodeScheduler::NotifyConsumed(uint32 slot, uint64 frames) noexcept
 {
-    if (slot >= SCHEDULER_STREAM_CAPACITY || !mStreams[slot].Active)
+    if (slot >= SCHEDULER_STREAM_CAPACITY || mStreams[slot].Active == false)
     {
         return;
     }
@@ -71,7 +71,7 @@ uint32 DecodeScheduler::PickMostStarved() noexcept
     for (uint32 i = 0; i < SCHEDULER_STREAM_CAPACITY; ++i)
     {
         ScheduledStream& s = mStreams[i];
-        if (!s.Active || s.Cancelled || s.Eof || s.Buffered >= s.RefillTarget)
+        if (s.Active == false || s.Cancelled || s.Eof || s.Buffered >= s.RefillTarget)
         {
             continue;
         }
@@ -125,7 +125,7 @@ SchedulerStats DecodeScheduler::RunPass(float32* scratch, uint32 scratchFrames, 
             job = &mStreams[starved];
             job->LastServiceRank = ++mRoundRobin;
         }
-        else if (mCold.Active && !mCold.Cancelled && !mCold.Eof && mCold.Produced < mCold.RefillTarget)
+        else if (mCold.Active && mCold.Cancelled == false && mCold.Eof == false && mCold.Produced < mCold.RefillTarget)
         {
             job = &mCold;
             isCold = true;
@@ -140,9 +140,9 @@ SchedulerStats DecodeScheduler::RunPass(float32* scratch, uint32 scratchFrames, 
         // unit (diagnostic; the cold job has no runway constraint).
         for (uint32 i = 0; i < SCHEDULER_STREAM_CAPACITY; ++i)
         {
-            if (mStreams[i].Active && !mStreams[i].Cancelled && !mStreams[i].Eof)
+            if (mStreams[i].Active && mStreams[i].Cancelled == false && mStreams[i].Eof == false)
             {
-                if (!runwaySeen || mStreams[i].Buffered < stats.MinBufferedRunway)
+                if (runwaySeen == false || mStreams[i].Buffered < stats.MinBufferedRunway)
                 {
                     stats.MinBufferedRunway = mStreams[i].Buffered;
                     runwaySeen = true;

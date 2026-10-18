@@ -40,7 +40,7 @@ public:
     }
     [[nodiscard]] bool CanBeginSession() const noexcept
     {
-        return Active_ && Ready_ && !Failed_ && !StopLatched_;
+        return Active_ && Ready_ && Failed_ == false && StopLatched_ == false;
     }
 
 Q_SIGNALS:

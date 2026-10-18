@@ -87,7 +87,7 @@ Owner* Make(const CreateInfo* info, const ludus::s2::Package& package) noexcept
     owner->Info = *info;
     // AuthoredDocument is borrowed by Create; never retain it.
     owner->Info.AuthoredDocument = {};
-    if (!owner->Scripts.Initialize(package))
+    if (owner->Scripts.Initialize(package) == false)
     {
         delete owner;
         return nullptr;
@@ -125,7 +125,7 @@ Status Update(GameInstance* instance, const FrameInput* /*input*/, RenderParams*
     {
         return Status::ScriptPaused;
     }
-    if (!owner->Quiesced && owner->Armed)
+    if (owner->Quiesced == false && owner->Armed)
     {
         owner->Armed = false;
         const auto status = owner->Scripts.Begin();
@@ -160,7 +160,7 @@ Status Resume(GameInstance* instance) noexcept
 }
 Status Size(GameInstance* instance, usize* out) noexcept
 {
-    if (instance == nullptr || out == nullptr || !AsOwner(instance)->Scripts.SafePoint())
+    if (instance == nullptr || out == nullptr || AsOwner(instance)->Scripts.SafePoint() == false)
     {
         return Status::InvalidArgument;
     }
@@ -174,7 +174,7 @@ Status Write(GameInstance* instance, CheckpointHeader* header, ByteSpan body, us
         return Status::InvalidArgument;
     }
     auto* owner = AsOwner(instance);
-    if (!owner->Scripts.Checkpoint({body.Data, body.Capacity}, *written))
+    if (owner->Scripts.Checkpoint({body.Data, body.Capacity}, *written) == false)
     {
         return Status::Internal;
     }
@@ -203,7 +203,7 @@ Status Candidate(const CreateInfo* info, const CheckpointHeader* header, ByteVie
     {
         return Status::Internal;
     }
-    if (!owner->Scripts.Restore({body.Data, body.Size}))
+    if (owner->Scripts.Restore({body.Data, body.Size}) == false)
     {
         Destroy(reinterpret_cast<GameInstance*>(owner));
         return Status::MigrationUnsupported;
@@ -240,7 +240,7 @@ Status Control(GameInstance* instance, ByteView request, ByteSpan response, usiz
     *written = 0;
     auto* owner = AsOwner(instance);
     const std::string_view text{reinterpret_cast<const char*>(request.Data), request.Size};
-    if (!owner->Scripts.Control(text, {response.Data, response.Capacity}, *written))
+    if (owner->Scripts.Control(text, {response.Data, response.Capacity}, *written) == false)
     {
         return Status::InvalidArgument;
     }

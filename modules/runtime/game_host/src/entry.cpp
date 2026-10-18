@@ -64,7 +64,7 @@ struct AuthoredBytes final
             }
         } closeFd{fd};
         struct stat info = {};
-        if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 20 || info.st_size > 262144)
+        if (::fstat(fd, &info) != 0 || S_ISREG(info.st_mode) == false || info.st_size < 20 || info.st_size > 262144)
         {
             return false;
         }
@@ -202,7 +202,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         if (arg == "--module" || arg == "--inspect-module")
         {
             std::string_view value;
-            if (!nextValue(value))
+            if (nextValue(value) == false)
             {
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }
@@ -213,7 +213,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         {
             std::string_view value;
             uint64 fd = 0;
-            if (!nextValue(value) || !ParseU64(value, fd) || fd > 0x7fffffffU)
+            if (nextValue(value) == false || ParseU64(value, fd) == false || fd > 0x7fffffffU)
             {
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }
@@ -223,7 +223,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         {
             std::string_view value;
             uint64 frames = 0;
-            if (!nextValue(value) || !ParseU64(value, frames))
+            if (nextValue(value) == false || ParseU64(value, frames) == false)
             {
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }
@@ -233,7 +233,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         else if (arg == "--project-id")
         {
             std::string_view value;
-            if (!nextValue(value) || !ParseHex(value, config.ProjectId))
+            if (nextValue(value) == false || ParseHex(value, config.ProjectId) == false)
             {
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }
@@ -241,7 +241,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         else if (arg == "--game-id")
         {
             std::string_view value;
-            if (!nextValue(value) || !ParseHex(value, config.GameId))
+            if (nextValue(value) == false || ParseHex(value, config.GameId) == false)
             {
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }
@@ -249,7 +249,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         else if (arg == "--project-epoch")
         {
             std::string_view value;
-            if (!nextValue(value) || !ParseHex(value, config.ProjectEpoch) || config.ProjectEpoch == 0)
+            if (nextValue(value) == false || ParseHex(value, config.ProjectEpoch) == false || config.ProjectEpoch == 0)
             {
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }
@@ -257,7 +257,8 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         else if (arg == "--generation")
         {
             std::string_view value;
-            if (!nextValue(value) || !ParseHex(value, config.InitialGeneration) || config.InitialGeneration == 0)
+            if (nextValue(value) == false || ParseHex(value, config.InitialGeneration) == false ||
+                config.InitialGeneration == 0)
             {
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }
@@ -265,7 +266,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         else if (arg == "--authored-document")
         {
             std::string_view value;
-            if (!nextValue(value) || value.empty() || !authoredPath.empty())
+            if (nextValue(value) == false || value.empty() || authoredPath.empty() == false)
             {
                 return static_cast<int>(RunResult::BadArguments);
             }
@@ -279,7 +280,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         {
             const char*& path = arg == "--config" ? configurationPath : preferencePath;
             std::string_view value;
-            if (path != nullptr || !nextValue(value) || value.empty())
+            if (path != nullptr || nextValue(value) == false || value.empty())
             {
                 return static_cast<int>(RunResult::BadArguments);
             }
@@ -342,7 +343,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
             return true;
         }
         AuthoredBytes bytes;
-        if (!bytes.Read(path))
+        if (bytes.Read(path) == false)
         {
             LUDUS_LOG_ERROR(kConfigurationLog, "Cannot read bounded configuration file '{}'", path);
             return false;
@@ -380,7 +381,8 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         }
         return status == cfg::Status::Ok;
     };
-    if (!loadSettings(configurationPath, cfg::Layer::Project) || !loadSettings(preferencePath, cfg::Layer::Preference))
+    if (loadSettings(configurationPath, cfg::Layer::Project) == false ||
+        loadSettings(preferencePath, cfg::Layer::Preference) == false)
     {
         return static_cast<int>(RunResult::BadArguments);
     }
@@ -409,9 +411,9 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
     config.MaxFrames = options.MaxFrames;
     config.Mode = options.Headless ? Presentation::Headless : Presentation::Windowed;
 
-    if (!authoredPath.empty())
+    if (authoredPath.empty() == false)
     {
-        if (!authored.Read(authoredPath.c_str()))
+        if (authored.Read(authoredPath.c_str()) == false)
         {
             return static_cast<int>(RunResult::BadArguments);
         }

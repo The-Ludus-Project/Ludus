@@ -109,7 +109,7 @@ Status PackGpuScene(const ReferenceJob& job,
     {
         return Status::CapacityExceeded;
     }
-    if (!data.TryResize(dataSize) || !texels.TryResize(size))
+    if (data.TryResize(dataSize) == false || texels.TryResize(size) == false)
     {
         return Status::OutOfMemory;
     }
@@ -202,7 +202,7 @@ Status PackGpuScene(const ReferenceJob& job,
             for (usize x = 0; x < image.Width; ++x)
             {
                 uint32 word = 0;
-                if (!foundation::TryReadLittleEndian({image.Bytes + y * image.RowPitch + x * 4, 4}, word))
+                if (foundation::TryReadLittleEndian({image.Bytes + y * image.RowPitch + x * 4, 4}, word) == false)
                 {
                     return Status::InvalidDescription;
                 }
@@ -299,7 +299,7 @@ Status PollGpuJob(rhi::DeviceHandle device, const GpuPreviewState& state, GpuPre
                 return Accepted(status) ? Status::Pending : (job.Setup = status);
             }
         }
-        if (!job.ComputeBindingsCreated)
+        if (job.ComputeBindingsCreated == false)
         {
             const usize pixels = usize(job.Width) * job.Height;
             const rhi::RasterBindingResource bindings[]{{0, job.Parameters, 0, sizeof(internal::GpuPreviewUniform)},
@@ -308,17 +308,17 @@ Status PollGpuJob(rhi::DeviceHandle device, const GpuPreviewState& state, GpuPre
                                                         {3, job.Colors, 0, pixels * 16},
                                                         {4, job.Texels, 0, job.TexelBytes}};
             const Status created = rhi::CreateBindingSet(device, state.ComputeLayout, bindings, job.ComputeBindings);
-            if (!Accepted(created))
+            if (Accepted(created) == false)
             {
                 return job.Setup = created;
             }
             job.ComputeBindingsCreated = true;
         }
-        if (!job.ImageBindingsCreated)
+        if (job.ImageBindingsCreated == false)
         {
             const rhi::RasterBindingResource binding{0, job.ImageParameters, 0, 16};
             const Status created = rhi::CreateBindingSet(device, state.ImageLayout, {&binding, 1}, job.ImageBindings);
-            if (!Accepted(created))
+            if (Accepted(created) == false)
             {
                 return job.Setup = created;
             }
@@ -404,7 +404,7 @@ void Renderer::State::RetireGpuPreviews() noexcept
     for (usize i = 0; i < 4; ++i)
     {
         GpuPreviewRecord& job = GpuPreview->Jobs[i];
-        if (job.Used && !job.Owned && !job.Frames[0].Owned && !job.Frames[1].Owned)
+        if (job.Used && job.Owned == false && job.Frames[0].Owned == false && job.Frames[1].Owned == false)
         {
             const Status status = PollGpuJob(Device, *GpuPreview, job);
             if (status != Status::Pending && status != Status::NotReady)
@@ -416,7 +416,7 @@ void Renderer::State::RetireGpuPreviews() noexcept
 }
 void Renderer::State::ClearGpuPreview() noexcept
 {
-    if (!GpuPreview)
+    if (GpuPreview.Get() == nullptr)
     {
         return;
     }
@@ -444,7 +444,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
                                   const rhi::RasterShaderDescription& fragment,
                                   const GpuPreviewOptions& options) noexcept
 {
-    if (!mState || mState->Setup != Status::Ready)
+    if (mState.Get() == nullptr || mState->Setup != Status::Ready)
     {
         return Status::NotReady;
     }
@@ -458,7 +458,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         return status;
     }
     if (options.CpuByteBudget <= sizeof(GpuPreviewState) || options.GpuByteBudget < 44 ||
-        !math::IsFinite(options.Exposure) || options.Exposure <= 0 || options.Exposure > 10000)
+        math::IsFinite(options.Exposure) == false || options.Exposure <= 0 || options.Exposure > 10000)
     {
         return Status::InvalidDescription;
     }
@@ -488,7 +488,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         vertex.Inputs[1].Format != rhi::RasterVertexFormat::Float4 || vertex.Bindings.size() != 1 ||
         vertex.Bindings[0].Binding != 0 || vertex.Bindings[0].Kind != rhi::RasterBindingKind::UniformBuffer ||
         vertex.Bindings[0].MinSize != 16 || vertex.Bindings[0].Visibility != rhi::RasterVisibility::Vertex ||
-        !fragment.Bindings.empty())
+        fragment.Bindings.empty() == false)
     {
         return Status::InvalidDescription;
     }
@@ -521,7 +521,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         status = PollGpuPreview();
     }
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         mState->ClearGpuPreview();
         mState->ClearReference();
@@ -530,7 +530,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
 }
 Status Renderer::PollGpuPreview() noexcept
 {
-    if (!mState || !mState->GpuPreview)
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -615,7 +615,7 @@ Status Renderer::PollGpuPreview() noexcept
                 }
                 const math::Vector2 corners[]{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
                 const uint16 indices[]{0, 1, 2, 0, 2, 3};
-                if (!state.QuadCreated)
+                if (state.QuadCreated == false)
                 {
                     status = rhi::CreateBuffer(mState->Device,
                                                {rhi::BufferRole::Vertex, sizeof(corners)},
@@ -623,7 +623,7 @@ Status Renderer::PollGpuPreview() noexcept
                                                state.Quad);
                     state.QuadCreated = Accepted(status);
                 }
-                if (Accepted(status) && !state.IndicesCreated)
+                if (Accepted(status) && state.IndicesCreated == false)
                 {
                     status = rhi::CreateBuffer(mState->Device,
                                                {rhi::BufferRole::Index16, sizeof(indices)},
@@ -648,7 +648,7 @@ Status Renderer::PollGpuPreview() noexcept
                 break;
             }
         }
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             state.Setup = status;
             return status;
@@ -668,7 +668,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                  const ReferenceCaptureDescription& description,
                                  renderer::GpuPreview& output) noexcept
 {
-    if (!mState || !mState->GpuPreview)
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -736,8 +736,9 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     const usize texelBytes = texels.GetSize() * sizeof(math::Vector4);
     const usize uploadBytes = dataBytes + texelBytes;
     usize gpuBytes = 0;
-    if (!foundation::TryMultiply(pixels, usize{64}, gpuBytes) || !foundation::TryAdd(gpuBytes, uploadBytes, gpuBytes) ||
-        !foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) ||
+    if (foundation::TryMultiply(pixels, usize{64}, gpuBytes) == false ||
+        foundation::TryAdd(gpuBytes, uploadBytes, gpuBytes) == false ||
+        foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) == false ||
         gpuBytes > state.Options.GpuByteBudget - state.GpuBytes || uploadBytes > scratch ||
         pixels > (scratch - uploadBytes) / 32)
     {
@@ -762,7 +763,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         return Status::Unsupported;
     }
     Array<uint8> zeros;
-    if (!zeros.TryResize(pixels * 32))
+    if (zeros.TryResize(pixels * 32) == false)
     {
         return Status::OutOfMemory;
     }
@@ -835,7 +836,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         status = PollGpuJob(mState->Device, state, job);
     }
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         mState->DropGpuPreview(slot);
         return status;
@@ -962,7 +963,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
                                    rhi::SurfaceHandle surface,
                                    rhi::SubmissionToken& completion) noexcept
 {
-    if (!mState || !mState->GpuPreview)
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::InvalidState;
     }
@@ -1021,7 +1022,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
 }
 Status Renderer::GetGpuPreviewInfo(renderer::GpuPreview handle, GpuPreviewInfo& output) noexcept
 {
-    if (!mState || !mState->GpuPreview)
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::InvalidState;
     }
@@ -1037,7 +1038,7 @@ Status Renderer::GetGpuPreviewInfo(renderer::GpuPreview handle, GpuPreviewInfo& 
         return Status::InvalidHandle;
     }
     const Status status = PollGpuJob(mState->Device, state, *job);
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         return status;
     }
@@ -1047,7 +1048,7 @@ Status Renderer::GetGpuPreviewInfo(renderer::GpuPreview handle, GpuPreviewInfo& 
 Status
 Renderer::AcquireGpuPreviewFrame(renderer::GpuPreview handle, GpuPreviewFrame& frame, GpuPreviewImage& output) noexcept
 {
-    if (!mState || !mState->GpuPreview)
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::InvalidState;
     }
@@ -1067,11 +1068,11 @@ Renderer::AcquireGpuPreviewFrame(renderer::GpuPreview handle, GpuPreviewFrame& f
         return Status::InvalidHandle;
     }
     const Status status = PollGpuJob(mState->Device, state, *job);
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         return status;
     }
-    if (!job->HasImage || job->Frames[job->LatestFrame].Owned)
+    if (job->HasImage == false || job->Frames[job->LatestFrame].Owned)
     {
         return Status::NotReady;
     }
@@ -1088,7 +1089,7 @@ Renderer::AcquireGpuPreviewFrame(renderer::GpuPreview handle, GpuPreviewFrame& f
 }
 Status Renderer::Release(renderer::GpuPreview& handle) noexcept
 {
-    if (!mState || !mState->GpuPreview)
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::InvalidState;
     }
@@ -1109,7 +1110,7 @@ Status Renderer::Release(renderer::GpuPreview& handle) noexcept
 }
 Status Renderer::Release(GpuPreviewFrame& handle) noexcept
 {
-    if (!mState || !mState->GpuPreview)
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::InvalidState;
     }
@@ -1125,7 +1126,7 @@ Status Renderer::Release(GpuPreviewFrame& handle) noexcept
     }
     GpuPreviewRecord& job = mState->GpuPreview->Jobs[slot / 2];
     internal::GpuFrameRecord& frame = job.Frames[slot % 2];
-    if (!job.Used || !frame.Owned || frame.Generation != Access::Generation(handle))
+    if (job.Used == false || frame.Owned == false || frame.Generation != Access::Generation(handle))
     {
         return Status::InvalidHandle;
     }

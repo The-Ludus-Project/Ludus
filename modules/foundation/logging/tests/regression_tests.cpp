@@ -55,7 +55,7 @@ inline constexpr LogCategory LogRegression{"Regression"};
 std::string read_file(const std::filesystem::path& path)
 {
     std::ifstream stream(path, std::ios::binary);
-    if (!stream)
+    if (stream.fail() == true)
     {
         return {};
     }
@@ -188,7 +188,7 @@ TEST_CASE("F3: records become visible on the timed flush interval", "[logging][r
     // must reach the file on its own (requirements R46). Poll to avoid flakiness.
     const auto path = find_log_file(dir);
     bool visible = false;
-    for (int i = 0; i < 100 && !visible; ++i)
+    for (int i = 0; i < 100 && visible == false; ++i)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         visible = read_file(path).find("timed-flush visibility marker") != std::string::npos;
@@ -498,7 +498,7 @@ TEST_CASE("breadcrumb ring: concurrent writers and a reader are race-free",
     {
         writers.AddInPlace([t, &stop] {
             int i = 0;
-            while (!stop.load(std::memory_order_relaxed))
+            while (stop.load(std::memory_order_relaxed) == false)
             {
                 LUDUS_LOG_WARN(LogRegression, "crumb t={} i={}", t, i++);
             }
@@ -743,7 +743,7 @@ TEST_CASE("async: Error is visible without an explicit flush (R54)", "[logging][
     // Error/Fatal), so the record should appear without our calling Flush().
     const auto path = find_log_file(dir);
     bool visible = false;
-    for (int i = 0; i < 200 && !visible; ++i)
+    for (int i = 0; i < 200 && visible == false; ++i)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         visible = read_file(path).find("async error visibility marker") != std::string::npos;

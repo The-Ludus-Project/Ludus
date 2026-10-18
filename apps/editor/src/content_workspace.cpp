@@ -66,7 +66,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     connect(Jobs_, &ContentJobs::BusyChanged, this, [this]() {
         RenderActions();
         Q_EMIT BusyChanged();
-        if (RefreshPending_ && !Busy() && !Closing_)
+        if (RefreshPending_ && Busy() == false && Closing_ == false)
         {
             RefreshPending_ = false;
             Refresh();
@@ -79,7 +79,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
         RestoreSelection();
     });
     connect(Table_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& index) {
-        if (!Applying_ && index.isValid())
+        if (Applying_ == false && index.isValid())
         {
             SelectedId_ = index.data(Qt::UserRole).toString();
         }
@@ -126,8 +126,8 @@ void ContentWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     Applying_ = true;
     Model_->SetRows({});
     Applying_ = false;
-    RefreshPending_ = Busy() && !Root_.isEmpty();
-    if (!Root_.isEmpty() && !Busy())
+    RefreshPending_ = Busy() && Root_.isEmpty() == false;
+    if (Root_.isEmpty() == false && Busy() == false)
     {
         Refresh();
     }
@@ -156,7 +156,7 @@ void ContentWorkspace::Refresh()
     request.Operation = ++NextOperation_;
     ActiveOperation_ = request.Operation;
     Status_->setText(QStringLiteral("Reading content catalog…"));
-    if (!Jobs_->Start(request))
+    if (Jobs_->Start(request) == false)
     {
         Status_->setText(QStringLiteral("Content worker unavailable; retry Refresh."));
     }
@@ -194,7 +194,7 @@ void ContentWorkspace::ChooseImport(bool reimport)
         return;
     }
     QString id = selected;
-    if (!reimport)
+    if (reimport == false)
     {
         bool accepted = false;
         id = QInputDialog::getText(this,
@@ -203,7 +203,7 @@ void ContentWorkspace::ChooseImport(bool reimport)
                                    QLineEdit::Normal,
                                    QStringLiteral("source/") + QFileInfo(file).completeBaseName().toLower(),
                                    &accepted);
-        if (!accepted || identity != Epoch_)
+        if (accepted == false || identity != Epoch_)
         {
             return;
         }
@@ -222,7 +222,7 @@ void ContentWorkspace::Accept(const ContentResult& result)
     {
         return;
     }
-    if (!result.Request.Id.isEmpty())
+    if (result.Request.Id.isEmpty() == false)
     {
         SelectedId_ = result.Request.Id;
         // Retain the explicit import result while refreshing its new catalog.
@@ -252,12 +252,12 @@ QString ContentWorkspace::SelectedId() const
 }
 void ContentWorkspace::RenderActions()
 {
-    const bool available = !Root_.isEmpty() && !Busy() && !Closing_;
+    const bool available = Root_.isEmpty() == false && Busy() == false && Closing_ == false;
     Refresh_->setEnabled(available);
     Import_->setEnabled(available);
     const auto* row = Model_->Row(Proxy_->mapToSource(Table_->currentIndex()));
     Reimport_->setEnabled(available && row != nullptr && row->Kind == content::Kind::AudioSource);
-    Cancel_->setEnabled(Busy() && !Closing_);
+    Cancel_->setEnabled(Busy() && Closing_ == false);
 #if defined(Q_OS_WASM)
     Refresh_->setEnabled(false);
     Import_->setEnabled(false);

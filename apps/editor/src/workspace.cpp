@@ -69,11 +69,11 @@ Capabilities ComputeCapabilities(const WorkspaceState& state)
 
     // Open is disabled during a job and while cleanup is unknown: a destructive
     // document switch cannot happen while an operation owns the workspace.
-    caps.CanOpen = !busy && !stopping && !cleanupUnknown;
+    caps.CanOpen = busy == false && stopping == false && cleanupUnknown == false;
     caps.CanCloseProject = loaded && caps.CanOpen;
-    caps.CanEdit = loaded && !busy && !stopping && !cleanupUnknown;
-    caps.CanSave = loaded && state.Dirty() && !busy && !stopping && !cleanupUnknown;
-    caps.CanReload = loaded && !busy && !stopping && !cleanupUnknown;
+    caps.CanEdit = loaded && busy == false && stopping == false && cleanupUnknown == false;
+    caps.CanSave = loaded && state.Dirty() && busy == false && stopping == false && cleanupUnknown == false;
+    caps.CanReload = loaded && busy == false && stopping == false && cleanupUnknown == false;
 
     caps.CanConfigure = CanStartJob(state, ActionKind::Configure);
     caps.CanBuild = CanStartJob(state, ActionKind::Build);
@@ -91,7 +91,7 @@ Capabilities ComputeCapabilities(const WorkspaceState& state)
     caps.CanClearOutput = true;
     caps.CanCopyJobDetails = state.ActiveJob != 0 || state.Result.Kind != Outcome::None;
     // While busy, Close requires explicit Stop and Close first.
-    caps.CanCloseImmediately = !busy && !stopping;
+    caps.CanCloseImmediately = busy == false && stopping == false;
     return caps;
 }
 
@@ -105,7 +105,7 @@ bool CanStartJob(const WorkspaceState& state, ActionKind kind)
     }
     if (kind == ActionKind::ProjectCreate)
     {
-        return state.Document == DocumentState::NoProject || !state.Dirty();
+        return state.Document == DocumentState::NoProject || state.Dirty() == false;
     }
     if (state.Document != DocumentState::ProjectLoaded)
     {
@@ -117,17 +117,17 @@ bool CanStartJob(const WorkspaceState& state, ActionKind kind)
         case ActionKind::ProjectSetup:
         case ActionKind::ReleaseInit:
         case ActionKind::Package:
-            return !state.Dirty() && state.Saved.Version == 2 && state.Saved.ProviderKind == Provider::Cmake;
+            return state.Dirty() == false && state.Saved.Version == 2 && state.Saved.ProviderKind == Provider::Cmake;
         case ActionKind::Configure:
             return true;
         case ActionKind::BuildDebug:
-            return !state.Dirty() && (state.Saved.Preset == QStringLiteral("linux-clang-debug") ||
-                                      state.Saved.Preset == QStringLiteral("linux-clang-development"));
+            return state.Dirty() == false && (state.Saved.Preset == QStringLiteral("linux-clang-debug") ||
+                                              state.Saved.Preset == QStringLiteral("linux-clang-development"));
         case ActionKind::Build:
         case ActionKind::BuildRun:
             // Build/BuildRun require a clean saved document; unsaved edits must be
             // saved first (design section 5).
-            return !state.Dirty();
+            return state.Dirty() == false;
         default:
             return false;
     }
@@ -231,7 +231,7 @@ WorkspaceState ApplyPhaseEvent(const WorkspaceState& state, uint64 jobId, Phase 
         return next;
     }
 
-    if (!AllowedForward({ .From = state.OperationPhase, .To = requested }))
+    if (AllowedForward({ .From = state.OperationPhase, .To = requested }) == false)
     {
         // Reject unexpected/duplicate/backward phase for the current job.
         return state;
@@ -281,7 +281,7 @@ WorkspaceState ApplyResult(const WorkspaceState& state, uint64 jobId, const Last
     next.Result = result;
     // Cleanup uncertainty outranks everything: it is not success and forbids a
     // new operation until operator recovery.
-    if (!result.CleanupConfirmed || result.Kind == Outcome::CleanupUnknown)
+    if (result.CleanupConfirmed == false || result.Kind == Outcome::CleanupUnknown)
     {
         next.OperationPhase = Phase::CleanupUnknown;
     }

@@ -86,7 +86,7 @@ int main()
     uint8 bytes[256] = {};
     usize written = 0;
     game::CheckpointHeader header;
-    if (!Checkpoint(table, active.Instance, bytes, header, written) || written < 32)
+    if (Checkpoint(table, active.Instance, bytes, header, written) == false || written < 32)
     {
         return 7;
     }
@@ -94,9 +94,10 @@ int main()
     const auto view = std::span<const uint8>(bytes, written);
     ludus::runtime::behavior::Record record;
     ludus::sample::State state;
-    if (!TryReadLittleEndian(view, tick) || !TryReadLittleEndian(view.subspan(8), applied) || tick != 2 ||
-        applied != 1 || !ludus::runtime::behavior::DecodeState(ludus::sample::SCHEMA, view.subspan(32), record) ||
-        !ludus::sample::TryReadState(record, state) || state.Interactions != 2 || !state.OpenRequested)
+    if (TryReadLittleEndian(view, tick) == false || TryReadLittleEndian(view.subspan(8), applied) == false ||
+        tick != 2 || applied != 1 ||
+        ludus::runtime::behavior::DecodeState(ludus::sample::SCHEMA, view.subspan(32), record) == false ||
+        ludus::sample::TryReadState(record, state) == false || state.Interactions != 2 || state.OpenRequested == false)
     {
         return 8;
     }
@@ -122,14 +123,14 @@ int main()
         return 12;
     }
     if (table.Resume(replacement.Instance) != game::Status::Ok ||
-        !Checkpoint(table, replacement.Instance, bytes, header, written))
+        Checkpoint(table, replacement.Instance, bytes, header, written) == false)
     {
         return 13;
     }
-    if (!ludus::runtime::behavior::DecodeState(ludus::sample::SCHEMA,
-                                               std::span<const uint8>(bytes, written).subspan(32),
-                                               record) ||
-        !ludus::sample::TryReadState(record, state) || state.Interactions != 2 || !state.OpenRequested)
+    if (ludus::runtime::behavior::DecodeState(ludus::sample::SCHEMA,
+                                              std::span<const uint8>(bytes, written).subspan(32),
+                                              record) == false ||
+        ludus::sample::TryReadState(record, state) == false || state.Interactions != 2 || state.OpenRequested == false)
     {
         return 14;
     }

@@ -17,8 +17,8 @@ inline bool CreateResourceMeshes(graphics::renderer::Renderer& renderer,
     namespace resources = ludus::resources;
     resources::MeshSource sources[2];
     sources[0].Resource.Type = sources[1].Resource.Type = content::Kind::Mesh;
-    if (!sources[0].Resource.Id.Set("mesh/quad") || !sources[0].Resource.Path.Set("quad.mesh") ||
-        !sources[1].Resource.Id.Set("mesh/triangle") || !sources[1].Resource.Path.Set("triangle.mesh"))
+    if (sources[0].Resource.Id.Set("mesh/quad") == false || sources[0].Resource.Path.Set("quad.mesh") == false ||
+        sources[1].Resource.Id.Set("mesh/triangle") == false || sources[1].Resource.Path.Set("triangle.mesh") == false)
     {
         return false;
     }
@@ -78,7 +78,7 @@ inline bool CreateResourceMeshes(graphics::renderer::Renderer& renderer,
     resources::Lease leases[2];
     resources::ScopeHandle scope;
     content::ResourceId name;
-    if (!name.Set("sdk/renderer") || manager.OpenScope(name, scope) != resources::Status::Ok)
+    if (name.Set("sdk/renderer") == false || manager.OpenScope(name, scope) != resources::Status::Ok)
     {
         return false;
     }

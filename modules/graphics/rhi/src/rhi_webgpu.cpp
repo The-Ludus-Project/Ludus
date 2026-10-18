@@ -142,7 +142,7 @@ void Configured(WGPUPopErrorScopeStatus status,
                 void*) noexcept
 {
     const uint32 token = Token(userdata);
-    if (!internal::Current(token))
+    if (internal::Current(token) == false)
     {
         return;
     }
@@ -163,7 +163,7 @@ void DeviceReady(WGPURequestDeviceStatus status,
                  void*) noexcept
 {
     const uint32 token = Token(userdata);
-    if (!internal::Current(token))
+    if (internal::Current(token) == false)
     {
         if (device != nullptr)
         {
@@ -246,7 +246,7 @@ void AdapterReady(WGPURequestAdapterStatus status,
                   void*) noexcept
 {
     const uint32 token = Token(userdata);
-    if (!internal::Current(token))
+    if (internal::Current(token) == false)
     {
         if (adapter != nullptr)
         {
@@ -260,7 +260,7 @@ void AdapterReady(WGPURequestAdapterStatus status,
         {
             wgpuAdapterRelease(adapter);
         }
-        if (!gCompatibility)
+        if (gCompatibility == false)
         {
             gCompatibility = true;
             RequestAdapter(token);
@@ -464,8 +464,8 @@ bool ValidColor(float64 value) noexcept
 } // namespace
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
-    if (target.Width > gMaxDimension || target.Height > gMaxDimension || !ValidColor(target.Red) ||
-        !ValidColor(target.Green) || !ValidColor(target.Blue) || !ValidColor(target.Alpha))
+    if (target.Width > gMaxDimension || target.Height > gMaxDimension || ValidColor(target.Red) == false ||
+        ValidColor(target.Green) == false || ValidColor(target.Blue) == false || ValidColor(target.Alpha) == false)
     {
         return FrameStatus::InvalidState;
     }
@@ -478,7 +478,7 @@ FrameStatus Begin() noexcept
     {
         return FrameStatus::Skipped;
     }
-    if (!gConfigured || gConfiguration.width != gTarget.Width || gConfiguration.height != gTarget.Height)
+    if (gConfigured == false || gConfiguration.width != gTarget.Width || gConfiguration.height != gTarget.Height)
     {
         gConfiguration.width = gTarget.Width;
         gConfiguration.height = gTarget.Height;

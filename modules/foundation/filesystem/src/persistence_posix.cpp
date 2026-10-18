@@ -149,7 +149,7 @@ Result Check(int parent, const char* name, const WriteOptions& options) noexcept
     {
         return {Status::AccessDenied};
     }
-    if (!S_ISREG(info.st_mode) || info.st_size < 0)
+    if (S_ISREG(info.st_mode) == false || info.st_size < 0)
     {
         return {Status::NotRegularFile};
     }
@@ -212,7 +212,7 @@ Result Parent(int root, std::string_view path, Work& work) noexcept
         }
         const auto closed = Close(work.Parent);
         work.Parent = next;
-        if (!closed.Succeeded())
+        if (closed.Succeeded() == false)
         {
             return closed;
         }
@@ -231,7 +231,7 @@ Result Temporary(Work& work) noexcept
             {
                 return {Status::LimitExceeded};
             }
-        } while (!gSequence.compare_exchange_weak(sequence, sequence + 1, std::memory_order_relaxed));
+        } while (gSequence.compare_exchange_weak(sequence, sequence + 1, std::memory_order_relaxed) == false);
         constexpr std::string_view PREFIX = ".ludus-write-";
         Copy(PREFIX, work.Name);
         usize position = PREFIX.size();
@@ -299,7 +299,7 @@ Result WriteDirectory::Open(std::string_view nativeRoot) noexcept
         return {Status::InvalidArgument};
     }
 #if defined(LUDUS_FILESYSTEM_PERSISTENCE_FAULT_TESTING)
-    if (!persistence_test::AllocationAllowed())
+    if (persistence_test::AllocationAllowed() == false)
     {
         return {Status::OutOfMemory};
     }
@@ -337,7 +337,7 @@ PublicationResult WriteDirectory::Publish(std::string_view relativePath,
                                           std::span<const uint8> bytes,
                                           const WriteOptions& options) const noexcept
 {
-    if (mImpl == nullptr || !ValidPath(relativePath) ||
+    if (mImpl == nullptr || ValidPath(relativePath) == false ||
         (options.Sync != SyncPolicy::PublishOnly && options.Sync != SyncPolicy::File &&
          options.Sync != SyncPolicy::FileAndDirectory) ||
         (options.Condition != WriteCondition::Any && options.Condition != WriteCondition::Missing &&
@@ -352,7 +352,7 @@ PublicationResult WriteDirectory::Publish(std::string_view relativePath,
     Work work;
     PublicationResult result;
     result.Outcome = Parent(mImpl->Root, relativePath, work);
-    if (!result.Outcome.Succeeded())
+    if (result.Outcome.Succeeded() == false)
     {
         return work.Finish(result);
     }
@@ -399,7 +399,7 @@ PublicationResult WriteDirectory::Publish(std::string_view relativePath,
     {
         result.Outcome = closed;
     }
-    else if (!closed.Succeeded())
+    else if (closed.Succeeded() == false)
     {
         result.Cleanup = closed;
     }

@@ -74,19 +74,19 @@ bool ScenePreview::Start()
     return false;
 #else
     Stop();
-    if (!Document_->Loaded() || rhi::GetStartup().State != rhi::StartupState::Idle || Surface_ == ~uint64{0})
+    if (Document_->Loaded() == false || rhi::GetStartup().State != rhi::StartupState::Idle || Surface_ == ~uint64{0})
     {
         return false;
     }
     platform::WindowManager manager;
-    if (!manager.Initialize({}) ||
-        !manager.CreateWindow(
+    if (manager.Initialize({}) == false ||
+        manager.CreateWindow(
             {
                 .Name = "Ludus World authoring - WASD cursor, Enter pick, arrows transform, Esc cancel",
                 .Width = 960,
                 .Height = 640,
             },
-            Window_))
+            Window_) == false)
     {
         Status_ = QStringLiteral("Authoring window could not start; the World remains editable.");
         Q_EMIT Changed();
@@ -186,13 +186,13 @@ void ScenePreview::Input()
     {
         const auto& record = Queue_[i];
         const auto key = record.PhysicalKey;
-        if (!input::IsValidKey(key))
+        if (input::IsValidKey(key) == false)
         {
             continue;
         }
         const auto index = input::KeyIndex(key);
         const bool down = record.Transition == input::KeyTransition::Down;
-        if (!down)
+        if (down == false)
         {
             Suppressed_[index] = false;
         }
@@ -215,8 +215,8 @@ void ScenePreview::Input()
                 {
                     continue;
                 }
-                if (!Document_->Previewing() &&
-                    !Document_->BeginTransform(&Selected_, 1, Document_->Stamp(0, Surface_)))
+                if (Document_->Previewing() == false &&
+                    Document_->BeginTransform(&Selected_, 1, Document_->Stamp(0, Surface_)) == false)
                 {
                     continue;
                 }
@@ -227,7 +227,7 @@ void ScenePreview::Input()
                 (void)Document_->PreviewTransform(&value, 1);
                 changed = true;
             }
-            else if (!Arrows_[0] && !Arrows_[1] && !Arrows_[2] && !Arrows_[3])
+            else if (Arrows_[0] == false && Arrows_[1] == false && Arrows_[2] == false && Arrows_[3] == false)
             {
                 (void)Document_->AcceptTransform();
                 changed = true;
@@ -247,7 +247,7 @@ void ScenePreview::Input()
                 changed = true;
             }
         }
-        else if (down && key == Key::Tab && !Document_->Previewing())
+        else if (down && key == Key::Tab && Document_->Previewing() == false)
         {
             const auto& scene = Document_->Draft();
             const auto next = (SceneDocument::Find(scene, Selected_) + 1) % scene.Level.EntityCount;
@@ -268,11 +268,11 @@ void ScenePreview::Input()
 }
 bool ScenePreview::Prepare() noexcept
 {
-    if (!Created_)
+    if (Created_ == false)
     {
-        if (!Accepted(rhi::CreateShader(shaders::editor_scene::Vertex(), Vertex_)) ||
-            !Accepted(rhi::CreateShader(shaders::editor_scene::Fragment(), Fragment_)) ||
-            !Accepted(rhi::CreateUniform(sizeof(SceneUniforms), Uniform_)))
+        if (Accepted(rhi::CreateShader(shaders::editor_scene::Vertex(), Vertex_)) == false ||
+            Accepted(rhi::CreateShader(shaders::editor_scene::Fragment(), Fragment_)) == false ||
+            Accepted(rhi::CreateUniform(sizeof(SceneUniforms), Uniform_)) == false)
         {
             return false;
         }
@@ -293,7 +293,7 @@ bool ScenePreview::Prepare() noexcept
         }
     }
     if (rhi::GetStatus(Pipeline_) == rhi::ResourceStatus::InvalidHandle &&
-        !Accepted(rhi::CreatePipeline({Vertex_, Fragment_, Uniform_}, Pipeline_)))
+        Accepted(rhi::CreatePipeline({Vertex_, Fragment_, Uniform_}, Pipeline_)) == false)
     {
         return false;
     }
@@ -376,16 +376,16 @@ bool ScenePreview::Render() noexcept
 }
 void ScenePreview::Tick()
 {
-    if (!Window_)
+    if (Window_.Get() == nullptr)
     {
         return;
     }
-    if (!Document_->Loaded())
+    if (Document_->Loaded() == false)
     {
         Stop();
         return;
     }
-    if (!Window_->HandleEvent({}))
+    if (Window_->HandleEvent({}) == false)
     {
         Stop();
         Status_ = QStringLiteral("Authoring surface closed.");
@@ -408,7 +408,7 @@ void ScenePreview::Tick()
     Input();
     const auto state = rhi::GetStartup().State;
     if (state == rhi::StartupState::Failed || state == rhi::StartupState::DeviceLost ||
-        (state == rhi::StartupState::Ready && (!Prepare() || (Ready_ && !Render()))))
+        (state == rhi::StartupState::Ready && (Prepare() == false || (Ready_ && Render() == false))))
     {
         Stop();
         Status_ = QStringLiteral("Authoring rendering stopped; the World remains editable and saveable.");

@@ -40,7 +40,7 @@ bool ByteCursor::ReadUint8(uint8& output) noexcept
 
 bool ByteCursor::ReadUint32LittleEndian(uint32& output) noexcept
 {
-    if (!TryReadLittleEndian(mInput.subspan(mPosition), output))
+    if (TryReadLittleEndian(mInput.subspan(mPosition), output) == false)
     {
         return false;
     }
@@ -50,7 +50,7 @@ bool ByteCursor::ReadUint32LittleEndian(uint32& output) noexcept
 
 bool ByteCursor::ReadUint64LittleEndian(uint64& output) noexcept
 {
-    if (!TryReadLittleEndian(mInput.subspan(mPosition), output))
+    if (TryReadLittleEndian(mInput.subspan(mPosition), output) == false)
     {
         return false;
     }
@@ -111,7 +111,7 @@ ParseStatus ValidateUtf8(std::string_view input, ParseError& error) noexcept
             const auto byte = static_cast<uint8>(input[offset + i]);
             valid = i == 1 ? byte >= secondMin && byte <= secondMax : byte >= 0x80 && byte <= 0xbf;
         }
-        if (!valid)
+        if (valid == false)
         {
             error.Status = ParseStatus::InvalidEncoding;
             error.Offset = offset;

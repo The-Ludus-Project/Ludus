@@ -31,13 +31,13 @@ public:
             (*previous)->After == before)
         {
             auto& entry = *previous;
-            if (!entry.has_value())
+            if (entry.has_value() == false)
             {
                 return false;
             }
             entry->After = after;
-            MergeAllowed_ = !(entry->Before == after);
-            if (!MergeAllowed_)
+            MergeAllowed_ = (entry->Before == after) == false;
+            if (MergeAllowed_ == false)
             {
                 // Removing a cancelled group must not expose an older field's
                 // entry to coalescing by the next edit in this field.
@@ -81,12 +81,12 @@ public:
     // Reject a mismatched current head without changing content or history.
     [[nodiscard]] bool Undo(T& current) noexcept
     {
-        if (!CanUndo())
+        if (CanUndo() == false)
         {
             return false;
         }
         const auto& entry = Entries_[Cursor_ - 1];
-        if (!entry.has_value() || !(current == entry->After))
+        if (entry.has_value() == false || (current == entry->After) == false)
         {
             return false;
         }
@@ -98,12 +98,12 @@ public:
     }
     [[nodiscard]] bool Redo(T& current) noexcept
     {
-        if (!CanRedo())
+        if (CanRedo() == false)
         {
             return false;
         }
         const auto& entry = Entries_[Cursor_];
-        if (!entry.has_value() || !(current == entry->Before))
+        if (entry.has_value() == false || (current == entry->Before) == false)
         {
             return false;
         }

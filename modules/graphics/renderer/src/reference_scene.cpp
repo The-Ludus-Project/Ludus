@@ -124,7 +124,7 @@ bool Intersect(const ReferenceTriangle& triangle,
 int32 Address(int32 coordinate, bool repeat, uint32 extent) noexcept
 {
     const auto size = static_cast<int32>(extent);
-    if (!repeat)
+    if (repeat == false)
     {
         return math::Clamp(coordinate, int32{0}, size - 1);
     }
@@ -152,7 +152,7 @@ rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::
     const auto nearClip = d.ReverseZ ? 1.0F : 0.0F, farClip = 1 - nearClip;
     const auto near = job.ClipToWorld * math::Vector4{x, y, nearClip, 1};
     const auto far = job.ClipToWorld * math::Vector4{x, y, farClip, 1};
-    if (!math::IsFinite(near) || !math::IsFinite(far) || near.W == 0)
+    if (math::IsFinite(near) == false || math::IsFinite(far) == false || near.W == 0)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -161,7 +161,7 @@ rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::
     math::Vector3 direction;
     if (far.W == 0)
     {
-        if (!d.InfiniteFar || d.OrthographicCamera)
+        if (d.InfiniteFar == false || d.OrthographicCamera)
         {
             return rhi::RasterStatus::InvalidDescription;
         }
@@ -171,7 +171,7 @@ rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::
     {
         direction = ReferenceNormalize(math::Vector3{far.X / far.W, far.Y / far.W, far.Z / far.W} - origin);
     }
-    if (!math::IsFinite(origin) || math::Length(direction) == 0 || math::Abs(origin.X) > 1000000 ||
+    if (math::IsFinite(origin) == false || math::Length(direction) == 0 || math::Abs(origin.X) > 1000000 ||
         math::Abs(origin.Y) > 1000000 || math::Abs(origin.Z) > 1000000)
     {
         return rhi::RasterStatus::InvalidDescription;
@@ -181,7 +181,7 @@ rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::
     {
         distance = math::Dot(math::Vector3{far.X / far.W, far.Y / far.W, far.Z / far.W} - origin, direction);
     }
-    else if (!math::IsEmpty(job.Scene.Bounds))
+    else if (math::IsEmpty(job.Scene.Bounds) == false)
     {
         float64 maximum = 0;
         for (usize corner = 0; corner < 8; ++corner)
@@ -196,7 +196,7 @@ rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::
     }
     auto result = ReferenceRay(origin, direction, distance);
     result.MinDistance = d.OrthographicCamera ? 0 : math::Dot(nearPoint - origin, direction);
-    if (!math::IsFinite(distance) || distance < 0 || result.MinDistance < 0 || result.MinDistance > distance)
+    if (math::IsFinite(distance) == false || distance < 0 || result.MinDistance < 0 || result.MinDistance > distance)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -234,7 +234,8 @@ rhi::RasterStatus BuildReferenceBvh(ReferenceSceneData& scene) noexcept
         return rhi::RasterStatus::CapacityExceeded;
     }
     Array<uint32> scratch;
-    if (!scene.Order.TryResize(count) || !scratch.TryResize(count) || !scene.Nodes.TryEnsureCapacity(count * 2))
+    if (scene.Order.TryResize(count) == false || scratch.TryResize(count) == false ||
+        scene.Nodes.TryEnsureCapacity(count * 2) == false)
     {
         return rhi::RasterStatus::OutOfMemory;
     }
@@ -272,7 +273,7 @@ math::Vector4 SampleReferenceImage(const ReferenceSurfaceData& surface,
     }
     uv = {uv.X * surface.UvTransform.X + surface.UvTransform.Z, uv.Y * surface.UvTransform.Y + surface.UvTransform.W};
     // Reject arithmetic overflow before floor-to-integer texture addressing.
-    if (!math::IsFinite(uv))
+    if (math::IsFinite(uv) == false)
     {
         return {__builtin_nanf(""), __builtin_nanf(""), __builtin_nanf(""), __builtin_nanf("")};
     }
@@ -423,7 +424,7 @@ TraceReferenceOracle(const ReferenceSceneData& scene, const rhi::RayInput& ray, 
             const auto index = scene.Order[i];
             const auto& triangle = scene.Triangles[index];
             OracleIntersection intersection;
-            if (!Intersect(triangle, ray, closest, intersection) ||
+            if (Intersect(triangle, ray, closest, intersection) == false ||
                 (intersection.Distance == closest && index >= chosen))
             {
                 continue;
@@ -456,13 +457,13 @@ TraceReferenceOracle(const ReferenceSceneData& scene, const rhi::RayInput& ray, 
 rhi::RasterStatus PrepareReferenceCamera(ReferenceJob& job) noexcept
 {
     const auto& d = job.Description;
-    if (!math::IsFinite(d.WorldToClip) || !math::IsFinite(d.CameraPosition) ||
+    if (math::IsFinite(d.WorldToClip) == false || math::IsFinite(d.CameraPosition) == false ||
         math::TryInverse(d.WorldToClip, job.ClipToWorld) != math::MathStatus::Success ||
-        (d.InfiniteFar && (!d.ReverseZ || d.OrthographicCamera)))
+        (d.InfiniteFar && (d.ReverseZ == false || d.OrthographicCamera)))
     {
         return rhi::RasterStatus::InvalidDescription;
     }
-    if (!d.OrthographicCamera)
+    if (d.OrthographicCamera == false)
     {
         const auto eye = d.WorldToClip * math::Vector4{d.CameraPosition.X, d.CameraPosition.Y, d.CameraPosition.Z, 1};
         if (math::Abs(eye.W) > 1e-5F)

@@ -224,8 +224,9 @@ bool EndFrame() noexcept
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
-    if (!ClampDimension(target.Width) || !ClampDimension(target.Height) || !ValidColor(target.Red) ||
-        !ValidColor(target.Green) || !ValidColor(target.Blue) || !ValidColor(target.Alpha))
+    if (ClampDimension(target.Width) == false || ClampDimension(target.Height) == false ||
+        ValidColor(target.Red) == false || ValidColor(target.Green) == false || ValidColor(target.Blue) == false ||
+        ValidColor(target.Alpha) == false)
     {
         return FrameStatus::InvalidState;
     }

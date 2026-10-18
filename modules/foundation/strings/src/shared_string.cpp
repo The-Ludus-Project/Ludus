@@ -80,10 +80,11 @@ bool operator==(const SharedString& left, const SharedString& right) noexcept
 StringStatus CreateShared(std::string_view value, const AllocationDomain& domain, SharedString& output) noexcept
 {
     SharedString result;
-    if (!value.empty())
+    if (value.empty() == false)
     {
         usize bytes = 0;
-        if (!TryAdd(value.size(), sizeof(SharedString::Block) + 1, bytes) || bytes > (static_cast<usize>(-1) >> 1))
+        if (TryAdd(value.size(), sizeof(SharedString::Block) + 1, bytes) == false ||
+            bytes > (static_cast<usize>(-1) >> 1))
         {
             return StringStatus::TooLarge;
         }

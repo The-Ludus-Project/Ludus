@@ -31,7 +31,7 @@ uint32 Free(Record* records, uint32 count) noexcept
 {
     for (uint32 i = 0; i < count; ++i)
     {
-        if (!records[i].Used && records[i].Generation != NONE)
+        if (records[i].Used == false && records[i].Generation != NONE)
         {
             return i;
         }
@@ -294,14 +294,15 @@ struct Manager::Impl final
     }
     void RetireIfIdle(uint32 index) noexcept
     {
-        if (index != NONE && Versions[index].Used && Versions[index].Live && !Held(index))
+        if (index != NONE && Versions[index].Used && Versions[index].Live && Held(index) == false)
         {
             Versions[index].Retiring = true;
         }
     }
     void CancelIfUnneeded(uint32 index) noexcept
     {
-        if (index == NONE || !Operations[index].Used || Operations[index].Cleaning || Held(Operations[index].Version))
+        if (index == NONE || Operations[index].Used == false || Operations[index].Cleaning ||
+            Held(Operations[index].Version))
         {
             return;
         }
@@ -369,9 +370,9 @@ struct Manager::Impl final
             const auto binding = version.Dependencies[i];
             const auto& child = Versions[binding.Version];
             Error childError;
-            const auto childResult = !child.Used || !child.Live
-                                         ? Status::DependencyFailed
-                                         : Usable(child, failure != nullptr ? &childError : nullptr);
+            const Status childResult = child.Used == false || child.Live == false
+                                           ? Status::DependencyFailed
+                                           : Usable(child, failure != nullptr ? &childError : nullptr);
             if (childResult != Status::Ok)
             {
                 if (failure != nullptr)
@@ -422,7 +423,8 @@ struct Manager::Impl final
         for (uint32 i = 0; i < Limits.Versions; ++i)
         {
             auto& parent = Versions[i];
-            if (!parent.Used || parent.Live || parent.Operation == NONE || Operations[parent.Operation].Cleaning)
+            if (parent.Used == false || parent.Live || parent.Operation == NONE ||
+                Operations[parent.Operation].Cleaning)
             {
                 continue;
             }
@@ -530,7 +532,7 @@ struct Manager::Impl final
         version.Payload = nullptr;
         // Dependency ownership ends at this acknowledgment, even when a failed
         // child tombstone still has a parent reference used for failure propagation.
-        if (!Held(index))
+        if (Held(index) == false)
         {
             DropRecord(index);
         }
@@ -538,7 +540,7 @@ struct Manager::Impl final
     void ServiceOperation(uint32 index) noexcept
     {
         auto& op = Operations[index];
-        if (!op.Used)
+        if (op.Used == false)
         {
             return;
         }
@@ -572,7 +574,7 @@ struct Manager::Impl final
         {
             return;
         }
-        if (!op.Started)
+        if (op.Started == false)
         {
             DependencyView views[MAX_DEPENDENCIES];
             for (uint32 i = 0; i < version.DependencyCount; ++i)
@@ -629,13 +631,13 @@ struct Manager::Impl final
     void ServiceVersion(uint32 index) noexcept
     {
         auto& version = Versions[index];
-        if (!version.Used)
+        if (version.Used == false)
         {
             return;
         }
         if (version.PhysicalRetired)
         {
-            if (!Held(index))
+            if (Held(index) == false)
             {
                 DropRecord(index);
             }
@@ -652,7 +654,7 @@ struct Manager::Impl final
     void StopTransaction(uint32 index, Status reason) noexcept
     {
         auto& transaction = Transactions[index];
-        if (!Active(transaction))
+        if (Active(transaction) == false)
         {
             return;
         }
@@ -671,7 +673,7 @@ struct Manager::Impl final
     void ServiceTransaction(uint32 index) noexcept
     {
         auto& transaction = Transactions[index];
-        if (!transaction.Used || !Active(transaction))
+        if (transaction.Used == false || Active(transaction) == false)
         {
             return;
         }
@@ -686,7 +688,7 @@ struct Manager::Impl final
                                 root.DependencyResult != Status::Ok ? Status::DependencyFailed : root.Failure.Cause);
                 return;
             }
-            if (!root.Live)
+            if (root.Live == false)
             {
                 ready = false;
             }
@@ -712,7 +714,7 @@ struct Manager::Impl final
         for (uint32 i = 0; i < Limits.CatalogSnapshots; ++i)
         {
             auto& snapshot = Catalogs[i];
-            if (!snapshot.Used || i == Current || Scoped(i))
+            if (snapshot.Used == false || i == Current || Scoped(i))
             {
                 continue;
             }
@@ -731,7 +733,7 @@ struct Manager::Impl final
             {
                 held |= Transactions[j].Used && Active(Transactions[j]) && Transactions[j].Catalog == i;
             }
-            if (!held)
+            if (held == false)
             {
                 snapshot.Used = false;
             }
@@ -950,7 +952,8 @@ struct Manager::Impl final
             plan.AdapterIndices[asset] = adapterIndex;
             plan.Epochs[asset] = epoch;
             const auto bound = snapshot.Bindings[asset];
-            if (bound != NONE && Versions[bound].Used && !Versions[bound].Retiring && !Versions[bound].PhysicalRetired)
+            if (bound != NONE && Versions[bound].Used && Versions[bound].Retiring == false &&
+                Versions[bound].PhysicalRetired == false)
             {
                 const auto& version = Versions[bound];
                 if (version.Epoch != epoch)
@@ -966,7 +969,7 @@ struct Manager::Impl final
                     }
                     plan.Slots[asset] = bound;
                 }
-                else if (version.Operation != NONE && !Operations[version.Operation].Cleaning)
+                else if (version.Operation != NONE && Operations[version.Operation].Cleaning == false)
                 {
                     plan.Slots[asset] = bound;
                 }
@@ -975,9 +978,9 @@ struct Manager::Impl final
             {
                 const auto& version = Versions[i];
                 if (version.Used && version.Catalog == catalog && version.Asset == asset && version.Epoch == epoch &&
-                    !version.Retiring && !version.PhysicalRetired &&
+                    version.Retiring == false && version.PhysicalRetired == false &&
                     ((version.Live && Usable(version) == Status::Ok) ||
-                     (version.Operation != NONE && !Operations[version.Operation].Cleaning)))
+                     (version.Operation != NONE && Operations[version.Operation].Cleaning == false)))
                 {
                     bool exact = version.DependencyCount == snapshot.ChildCount[asset];
                     for (uint32 j = 0; j < version.DependencyCount && exact; ++j)
@@ -1002,7 +1005,7 @@ struct Manager::Impl final
             for (uint32 i = 0; i < Limits.Versions; ++i)
             {
                 const auto& version = Versions[i];
-                if (version.Used && !version.PhysicalRetired)
+                if (version.Used && version.PhysicalRetired == false)
                 {
                     const auto& provider = Provider(version);
                     occupied += provider.Context == adapter.Context && provider.Type == adapter.Type ? 1U : 0U;
@@ -1030,14 +1033,14 @@ struct Manager::Impl final
         uint32 versions = 0, operations = 0;
         for (uint32 i = 0; i < Limits.Versions && versions < plan.Count; ++i)
         {
-            if (!Versions[i].Used && Versions[i].Generation != NONE)
+            if (Versions[i].Used == false && Versions[i].Generation != NONE)
             {
                 plan.VersionSlots[versions++] = i;
             }
         }
         for (uint32 i = 0; i < Limits.Operations && operations < plan.Count; ++i)
         {
-            if (!Operations[i].Used && Operations[i].Generation != NONE)
+            if (Operations[i].Used == false && Operations[i].Generation != NONE)
             {
                 plan.OperationSlots[operations++] = i;
             }
@@ -1072,7 +1075,7 @@ struct Manager::Impl final
             {
                 const auto edge = snapshot.Children[asset][j], child = plan.Slots[snapshot.Edges[edge].Child];
                 version.Dependencies[j] = {child, edge};
-                if (!Versions[child].Live)
+                if (Versions[child].Live == false)
                 {
                     ++version.PendingDependencies;
                     version.WaitingMask |= 1U << j;
@@ -1084,7 +1087,7 @@ struct Manager::Impl final
     }
     Status NewScope(uint32 catalog, const content::ResourceId& name, ScopeHandle& output) noexcept
     {
-        if (output.Owner != 0 || output.Slot != 0 || output.Generation != 0 || !content::ValidId(name.View()))
+        if (output.Owner != 0 || output.Slot != 0 || output.Generation != 0 || content::ValidId(name.View()) == false)
         {
             return Status::InvalidState;
         }
@@ -1114,7 +1117,7 @@ Status Manager::Initialize(const content::Catalog& catalog,
                            FailureInfo* diagnostic) noexcept
 {
     if (mImpl != nullptr &&
-        (!mImpl->Stopping || Inspect().Versions != 0 || Inspect().Requests != 0 || Inspect().Leases != 0))
+        (mImpl->Stopping == false || Inspect().Versions != 0 || Inspect().Requests != 0 || Inspect().Leases != 0))
     {
         return Status::InvalidState;
     }
@@ -1195,7 +1198,7 @@ Status Manager::BeginAcquire(ScopeHandle scope, AssetHandle asset, RequestHandle
         return Status::InvalidState;
     }
     auto& state = *mImpl;
-    if (!state.Valid(scope, state.Scopes, state.Limits.Scopes) || !state.ValidAsset(asset))
+    if (state.Valid(scope, state.Scopes, state.Limits.Scopes) == false || state.ValidAsset(asset) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1239,7 +1242,7 @@ Status Manager::BeginAcquire(ScopeHandle scope, AssetHandle asset, RequestHandle
 }
 Status Manager::GetRequest(RequestHandle request, RequestInfo& output) const noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(request, mImpl->Requests, mImpl->Limits.Requests))
+    if (mImpl == nullptr || mImpl->Valid(request, mImpl->Requests, mImpl->Limits.Requests) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1252,7 +1255,7 @@ Status Manager::TakeLease(RequestHandle request, Lease& output) noexcept
     {
         return Status::InvalidState;
     }
-    if (mImpl == nullptr || !mImpl->Valid(request, mImpl->Requests, mImpl->Limits.Requests))
+    if (mImpl == nullptr || mImpl->Valid(request, mImpl->Requests, mImpl->Limits.Requests) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1282,7 +1285,7 @@ Status Manager::TakeLease(RequestHandle request, Lease& output) noexcept
 }
 Status Manager::Cancel(RequestHandle request) noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(request, mImpl->Requests, mImpl->Limits.Requests))
+    if (mImpl == nullptr || mImpl->Valid(request, mImpl->Requests, mImpl->Limits.Requests) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1308,7 +1311,7 @@ Status Manager::EndRequest(RequestHandle request) noexcept
 }
 Status Manager::Borrow(LeaseToken lease, content::Kind type, const void*& output) const noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(lease, mImpl->Leases, mImpl->Limits.Leases))
+    if (mImpl == nullptr || mImpl->Valid(lease, mImpl->Leases, mImpl->Limits.Leases) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1329,7 +1332,7 @@ Status Manager::BorrowDependency(LeaseToken parent,
                                  content::Kind type,
                                  const void*& output) const noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(parent, mImpl->Leases, mImpl->Limits.Leases))
+    if (mImpl == nullptr || mImpl->Valid(parent, mImpl->Leases, mImpl->Limits.Leases) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1356,7 +1359,7 @@ Status Manager::BorrowDependency(LeaseToken parent,
 }
 Status Manager::Release(LeaseToken lease) noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(lease, mImpl->Leases, mImpl->Limits.Leases))
+    if (mImpl == nullptr || mImpl->Valid(lease, mImpl->Leases, mImpl->Limits.Leases) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1392,7 +1395,7 @@ Status Manager::BeginReplacement(const content::Catalog& catalog,
     uint32 selectedCount = 0;
     for (usize i = 0; i < rootCount; ++i)
     {
-        if (!state.ValidAsset(roots[i]))
+        if (state.ValidAsset(roots[i]) == false)
         {
             return Status::InvalidHandle;
         }
@@ -1401,7 +1404,7 @@ Status Manager::BeginReplacement(const content::Catalog& catalog,
         {
             duplicate |= selected[j] == roots[i].Slot;
         }
-        if (!duplicate)
+        if (duplicate == false)
         {
             selected[selectedCount++] = roots[i].Slot;
         }
@@ -1472,7 +1475,7 @@ Status Manager::BeginReplacement(const content::Catalog& catalog,
 }
 Status Manager::GetTransaction(TransactionHandle transaction, TransactionInfo& output) const noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(transaction, mImpl->Transactions, mImpl->Limits.Transactions))
+    if (mImpl == nullptr || mImpl->Valid(transaction, mImpl->Transactions, mImpl->Limits.Transactions) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1487,7 +1490,7 @@ Status Manager::OpenTransactionScope(TransactionHandle transaction,
     {
         return Status::InvalidState;
     }
-    if (!mImpl->Valid(transaction, mImpl->Transactions, mImpl->Limits.Transactions))
+    if (mImpl->Valid(transaction, mImpl->Transactions, mImpl->Limits.Transactions) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1501,17 +1504,17 @@ Status Manager::Commit(TransactionHandle transaction) noexcept
         return Status::InvalidState;
     }
     auto& state = *mImpl;
-    if (!state.Valid(transaction, state.Transactions, state.Limits.Transactions))
+    if (state.Valid(transaction, state.Transactions, state.Limits.Transactions) == false)
     {
         return Status::InvalidHandle;
     }
     auto& record = state.Transactions[transaction.Slot];
-    if (!state.Active(record))
+    if (state.Active(record) == false)
     {
         return record.Info.State == TransactionState::Committed ? Status::InvalidState : record.Info.Result;
     }
     state.ServiceTransaction(transaction.Slot);
-    if (!state.Active(record))
+    if (state.Active(record) == false)
     {
         return record.Info.Result;
     }
@@ -1541,7 +1544,7 @@ Status Manager::Commit(TransactionHandle transaction) noexcept
 }
 Status Manager::CancelTransaction(TransactionHandle transaction) noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(transaction, mImpl->Transactions, mImpl->Limits.Transactions))
+    if (mImpl == nullptr || mImpl->Valid(transaction, mImpl->Transactions, mImpl->Limits.Transactions) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1554,7 +1557,7 @@ Status Manager::CancelTransaction(TransactionHandle transaction) noexcept
 }
 Status Manager::EndTransaction(TransactionHandle transaction) noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(transaction, mImpl->Transactions, mImpl->Limits.Transactions))
+    if (mImpl == nullptr || mImpl->Valid(transaction, mImpl->Transactions, mImpl->Limits.Transactions) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1564,7 +1567,7 @@ Status Manager::EndTransaction(TransactionHandle transaction) noexcept
 }
 Status Manager::GetScope(ScopeHandle scope, ScopeInfo& output) const noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(scope, mImpl->Scopes, mImpl->Limits.Scopes))
+    if (mImpl == nullptr || mImpl->Valid(scope, mImpl->Scopes, mImpl->Limits.Scopes) == false)
     {
         return Status::InvalidHandle;
     }
@@ -1585,7 +1588,7 @@ Status Manager::GetScope(ScopeHandle scope, ScopeInfo& output) const noexcept
 }
 Status Manager::CloseScope(ScopeHandle scope) noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(scope, mImpl->Scopes, mImpl->Limits.Scopes))
+    if (mImpl == nullptr || mImpl->Valid(scope, mImpl->Scopes, mImpl->Limits.Scopes) == false)
     {
         return Status::InvalidHandle;
     }

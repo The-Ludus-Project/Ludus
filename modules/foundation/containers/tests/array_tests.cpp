@@ -25,7 +25,7 @@ using ludus::foundation::usize;
 namespace tst = ludus::containers::testing;
 
 static_assert(std::is_constructible_v<Array<int32>, std::initializer_list<int32>>);
-static_assert(!std::is_constructible_v<Array<tst::MoveOnly>, std::initializer_list<tst::MoveOnly>>);
+static_assert(std::is_constructible_v<Array<tst::MoveOnly>, std::initializer_list<tst::MoveOnly>> == false);
 
 TEST_CASE("Array initializer lists supply elements rather than counts", "[array][initializer-list]")
 {
@@ -850,7 +850,7 @@ concept HasCopyFillResize = requires(Array<T>& values, const T& value) {
     values.Resize(2, value);
 };
 static_assert(HasCopyFillResize<int32>);
-static_assert(!HasCopyFillResize<tst::MoveOnly>);
+static_assert(HasCopyFillResize<tst::MoveOnly> == false);
 } // namespace
 TEST_CASE("Array value resize preserves move-only elements and rejects overflow", "[array][resize][move-only]")
 {

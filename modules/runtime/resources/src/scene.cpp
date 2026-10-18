@@ -397,7 +397,7 @@ SceneDefinitionAdapter::~SceneDefinitionAdapter() noexcept
     {
         for (const auto& job : mState->Jobs)
         {
-            LUDUS_REQUIRE(!job.Used);
+            LUDUS_REQUIRE(job.Used == false);
         }
     }
     delete mState;

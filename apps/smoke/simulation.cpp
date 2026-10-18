@@ -32,7 +32,7 @@ void Advance(Simulation& inoutSimulation,
     {
         inoutSimulation.Phase -= 2;
     }
-    if (!input.Focused)
+    if (input.Focused == false)
     {
         return;
     }

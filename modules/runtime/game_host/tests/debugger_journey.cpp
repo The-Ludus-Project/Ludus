@@ -55,7 +55,7 @@ int main(int argc, char** argv)
     const char* fixtureB = argv[2];
 
     HostSession session(0x11, 0x22, -1);
-    if (!session.LoadInitial(fixtureA))
+    if (session.LoadInitial(fixtureA) == false)
     {
         std::fprintf(stderr, "LoadInitial(A) failed\n");
         return 3;

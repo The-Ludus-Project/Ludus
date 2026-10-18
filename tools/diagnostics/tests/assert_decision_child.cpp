@@ -131,7 +131,7 @@ int main(int argc, char** argv)
         // opens a dialog or sends a DecisionRequest.
         const bool ok = LUDUS_CHECK(FailingCondition(), "check-recovery-probe");
         Mark(ok ? "CHECK-TRUE\n" : "CHECK-FALSE\n");
-        return !ok && gConditions == 1 ? 0 : 66;
+        return ok == false && gConditions == 1 ? 0 : 66;
     }
 
     Mark("UNKNOWN-MODE\n");

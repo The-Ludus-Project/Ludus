@@ -54,7 +54,7 @@ Status Normalize(const Descriptor& descriptor, const Value& input, Value& output
         case Type::Int64: {
             int32 narrowed{};
             if (input.Signed < descriptor.MinSigned || input.Signed > descriptor.MaxSigned ||
-                (input.Kind == Type::Int32 && !TryIntegerCast(input.Signed, narrowed)))
+                (input.Kind == Type::Int32 && TryIntegerCast(input.Signed, narrowed) == false))
             {
                 return Status::InvalidValue;
             }
@@ -64,7 +64,7 @@ Status Normalize(const Descriptor& descriptor, const Value& input, Value& output
         case Type::Uint64: {
             uint32 narrowed{};
             if (input.Unsigned < descriptor.MinUnsigned || input.Unsigned > descriptor.MaxUnsigned ||
-                (input.Kind == Type::Uint32 && !TryIntegerCast(input.Unsigned, narrowed)))
+                (input.Kind == Type::Uint32 && TryIntegerCast(input.Unsigned, narrowed) == false))
             {
                 return Status::InvalidValue;
             }
@@ -72,7 +72,8 @@ Status Normalize(const Descriptor& descriptor, const Value& input, Value& output
         }
         case Type::Float32:
         case Type::Float64:
-            if (!math::IsFinite(input.Real) || input.Real < descriptor.MinReal || input.Real > descriptor.MaxReal)
+            if (math::IsFinite(input.Real) == false || input.Real < descriptor.MinReal ||
+                input.Real > descriptor.MaxReal)
             {
                 return Status::InvalidValue;
             }
@@ -96,7 +97,7 @@ Status Normalize(const Descriptor& descriptor, const Value& input, Value& output
             break;
         case Type::Enum:
         case Type::String:
-            if (!ValidText(input.Text.GetView(), descriptor.MaxTextBytes))
+            if (ValidText(input.Text.GetView(), descriptor.MaxTextBytes) == false)
             {
                 return Status::InvalidValue;
             }
@@ -107,7 +108,7 @@ Status Normalize(const Descriptor& descriptor, const Value& input, Value& output
                 {
                     found = found || choice == input.Text.GetView();
                 }
-                if (!found)
+                if (found == false)
                 {
                     return Status::InvalidValue;
                 }
@@ -124,7 +125,7 @@ template <typename Element>
 Element* Allocate(const AllocationDomain& domain, usize count) noexcept
 {
     usize bytes{};
-    if (!TryMultiply(count, sizeof(Element), bytes))
+    if (TryMultiply(count, sizeof(Element), bytes) == false)
     {
         return nullptr;
     }
@@ -268,7 +269,7 @@ Value Value::FromFloat64(float64 value) noexcept
 }
 Status Value::FromText(Type kind, std::string_view text, Value& output) noexcept
 {
-    if ((kind != Type::String && kind != Type::Enum) || !ValidText(text, 256))
+    if ((kind != Type::String && kind != Type::Enum) || ValidText(text, 256) == false)
     {
         return Status::InvalidValue;
     }
@@ -334,10 +335,10 @@ Status Context::Initialize(std::span<const Descriptor> schema,
     }
     usize bytesPerSetting{};
     usize storageBytes{};
-    if (!TryMultiply(sizeof(Impl::Cell), LAYER_COUNT * 2, bytesPerSetting) ||
-        !TryAdd(bytesPerSetting, sizeof(Value) * 3 + sizeof(uint32), bytesPerSetting) ||
-        !TryMultiply(bytesPerSetting, schema.size(), storageBytes) ||
-        !TryAdd(storageBytes, sizeof(Impl), storageBytes) || storageBytes > limits.MaxStorageBytes)
+    if (TryMultiply(sizeof(Impl::Cell), LAYER_COUNT * 2, bytesPerSetting) == false ||
+        TryAdd(bytesPerSetting, sizeof(Value) * 3 + sizeof(uint32), bytesPerSetting) == false ||
+        TryMultiply(bytesPerSetting, schema.size(), storageBytes) == false ||
+        TryAdd(storageBytes, sizeof(Impl), storageBytes) == false || storageBytes > limits.MaxStorageBytes)
     {
         return Fail(error, Status::LimitExceeded);
     }
@@ -345,22 +346,24 @@ Status Context::Initialize(std::span<const Descriptor> schema,
     {
         const auto& descriptor = schema[i];
         Value normalized;
-        if (!ValidName(descriptor.Name) || descriptor.Group >= kGroups || descriptor.MaxTextBytes > 256 ||
+        if (ValidName(descriptor.Name) == false || descriptor.Group >= kGroups || descriptor.MaxTextBytes > 256 ||
             descriptor.Application > Apply::NextLaunch || descriptor.AllowedSources == 0 ||
             (descriptor.AllowedSources & ~ALL_SOURCES) != 0 ||
             (descriptor.Persistent && (descriptor.AllowedSources & SourceMask(Layer::Preference)) == 0) ||
             descriptor.MinSigned > descriptor.MaxSigned || descriptor.MinUnsigned > descriptor.MaxUnsigned ||
-            !math::IsFinite(descriptor.MinReal) || !math::IsFinite(descriptor.MaxReal) ||
-            descriptor.MinReal > descriptor.MaxReal || !ValidText(descriptor.Help, 4096) ||
-            !ValidText(descriptor.Units, 64) ||
-            (descriptor.Default.Kind != Type::Enum && !descriptor.Choices.empty()) || descriptor.Choices.size() > 32 ||
-            Normalize(descriptor, descriptor.Default, normalized) != Status::Ok || !(normalized == descriptor.Default))
+            math::IsFinite(descriptor.MinReal) == false || math::IsFinite(descriptor.MaxReal) == false ||
+            descriptor.MinReal > descriptor.MaxReal || ValidText(descriptor.Help, 4096) == false ||
+            ValidText(descriptor.Units, 64) == false ||
+            (descriptor.Default.Kind != Type::Enum && descriptor.Choices.empty() == false) ||
+            descriptor.Choices.size() > 32 || Normalize(descriptor, descriptor.Default, normalized) != Status::Ok ||
+            (normalized == descriptor.Default) == false)
         {
             return Fail(error, Status::InvalidSchema, descriptor.Name, i);
         }
         for (usize choice = 0; choice < descriptor.Choices.size(); ++choice)
         {
-            if (!ValidText(descriptor.Choices[choice], descriptor.MaxTextBytes) || descriptor.Choices[choice].empty())
+            if (ValidText(descriptor.Choices[choice], descriptor.MaxTextBytes) == false ||
+                descriptor.Choices[choice].empty())
             {
                 return Fail(error, Status::InvalidSchema, descriptor.Name, i);
             }
@@ -423,7 +426,7 @@ Status Context::Initialize(std::span<const Descriptor> schema,
         if (status == Status::Ok)
         {
             while (token != ~uint64{0} &&
-                   !gNextContext.compare_exchange_weak(token, token + 1, std::memory_order_relaxed))
+                   gNextContext.compare_exchange_weak(token, token + 1, std::memory_order_relaxed) == false)
             {
             }
             status = token == ~uint64{0} ? Status::GenerationExhausted : Status::Ok;
@@ -486,14 +489,14 @@ Status Context::Bind(std::string_view name, Binding& output) const noexcept
 }
 Status Context::Explain(Binding binding, Explanation& output) const noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(binding))
+    if (mImpl == nullptr || mImpl->Valid(binding) == false)
     {
         return Status::InvalidState;
     }
     Explanation result;
     result.Requested = mImpl->Requested[binding.Index];
     result.Active = mImpl->Active[binding.Index];
-    result.Pending = !(result.Requested == result.Active);
+    result.Pending = (result.Requested == result.Active) == false;
     result.GroupGeneration = mImpl->Generations[mImpl->Descriptors[binding.Index].Group];
     for (usize layer = 0; layer < LAYER_COUNT; ++layer)
     {
@@ -511,12 +514,12 @@ Status Context::Explain(Binding binding, Explanation& output) const noexcept
 }
 Status Context::ReadLayer(Binding binding, Layer layer, Value& output, Origin& origin) const noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(binding) || static_cast<usize>(layer) >= LAYER_COUNT)
+    if (mImpl == nullptr || mImpl->Valid(binding) == false || static_cast<usize>(layer) >= LAYER_COUNT)
     {
         return Status::InvalidState;
     }
     const auto& cell = mImpl->At(mImpl->Cells, binding.Index, static_cast<usize>(layer));
-    if (!cell.Present)
+    if (cell.Present == false)
     {
         return Status::UnknownSetting;
     }
@@ -573,11 +576,11 @@ Status Context::Prepare(Layer layer,
         }
         const auto& descriptor = mImpl->Descriptors[binding.Index];
         if ((descriptor.AllowedSources & SourceMask(layer)) == 0 ||
-            (layer == Layer::Preference && !descriptor.Persistent))
+            (layer == Layer::Preference && descriptor.Persistent == false))
         {
             return Fail(error, Status::InvalidSource, edit.Name, i);
         }
-        if (!ValidText(edit.From.Source.GetView(), 128))
+        if (ValidText(edit.From.Source.GetView(), 128) == false)
         {
             return Fail(error, Status::InvalidValue, edit.Name, i);
         }
@@ -657,7 +660,7 @@ Status Context::Prepare(Layer layer,
 }
 Status Context::ReadPrepared(Binding binding, Value& output) const noexcept
 {
-    if (mImpl == nullptr || !mImpl->Valid(binding) || !mImpl->Prepared)
+    if (mImpl == nullptr || mImpl->Valid(binding) == false || mImpl->Prepared == false)
     {
         return Status::InvalidState;
     }
@@ -667,7 +670,7 @@ Status Context::ReadPrepared(Binding binding, Value& output) const noexcept
 Status Context::Commit(uint64 expectedRevision, Diagnostic& error) noexcept
 {
     error = {};
-    if (mImpl == nullptr || !mImpl->Prepared)
+    if (mImpl == nullptr || mImpl->Prepared == false)
     {
         return Fail(error, Status::InvalidState);
     }
@@ -684,7 +687,8 @@ Status Context::Commit(uint64 expectedRevision, Diagnostic& error) noexcept
     for (usize i = 0; i < count; ++i)
     {
         const auto& descriptor = mImpl->Descriptors[i];
-        if ((!mImpl->Sealed || descriptor.Application == Apply::Live) && !(mImpl->Active[i] == mImpl->Candidate[i]))
+        if ((mImpl->Sealed == false || descriptor.Application == Apply::Live) &&
+            (mImpl->Active[i] == mImpl->Candidate[i]) == false)
         {
             changed[descriptor.Group] = true;
         }
@@ -703,7 +707,7 @@ Status Context::Commit(uint64 expectedRevision, Diagnostic& error) noexcept
     for (usize i = 0; i < count; ++i)
     {
         mImpl->Requested[i] = mImpl->Candidate[i];
-        if (!mImpl->Sealed || mImpl->Descriptors[i].Application == Apply::Live)
+        if (mImpl->Sealed == false || mImpl->Descriptors[i].Application == Apply::Live)
         {
             mImpl->Active[i] = mImpl->Candidate[i];
         }
@@ -759,7 +763,7 @@ bool ValidName(std::string_view name) noexcept
             start = false;
         }
     }
-    return !start;
+    return start == false;
 }
 std::string_view StatusName(Status status) noexcept
 {

@@ -58,7 +58,7 @@ StartupError StartWebGl(uint32 token, bool afterWebGpu) noexcept
     // attempt. The forced-WebGL2 path (afterWebGpu == false) skips this.
     if (afterWebGpu && gWindow.CanvasSelector != nullptr)
     {
-        if (!ludus::platform::browser::ReplaceCanvas(gWindow.CanvasSelector))
+        if (ludus::platform::browser::ReplaceCanvas(gWindow.CanvasSelector) == false)
         {
             internal::RecordAttempt(token, Backend::WebGL2, StartupError::SurfaceUnavailable);
             return StartupError::SurfaceUnavailable;
@@ -75,7 +75,7 @@ StartupError StartWebGl(uint32 token, bool afterWebGpu) noexcept
 bool Fallback(uint32 token, StartupError error) noexcept
 {
     if (gSelection != BackendSelection::Auto || gActive != Backend::WebGPU || gWebGlTried ||
-        !IsCapabilityFailure(error))
+        IsCapabilityFailure(error) == false)
     {
         return false;
     }
@@ -180,7 +180,7 @@ Start(const ApplicationInfo& app, const WindowInfo& window, uint32 token, Backen
     {
         // Synchronous WebGPU failure. For Auto, try WebGL 2 now; otherwise report.
         internal::RecordAttempt(token, Backend::WebGPU, error);
-        if (selection == BackendSelection::Auto && IsCapabilityFailure(error) && !gWebGlTried)
+        if (selection == BackendSelection::Auto && IsCapabilityFailure(error) && gWebGlTried == false)
         {
             const auto next = internal::Reissue(token);
             webgpu::Shutdown();

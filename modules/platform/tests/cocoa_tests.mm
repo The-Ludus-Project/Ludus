@@ -147,7 +147,7 @@ TEST_CASE("Cocoa creates owned windows and publishes resized backing-pixel exten
         CHECK(extent.CanvasSelector == nullptr);
         [native miniaturize:nil];
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (!native.miniaturized && std::chrono::steady_clock::now() < deadline)
+        while (native.miniaturized == false && std::chrono::steady_clock::now() < deadline)
         {
             REQUIRE(window->HandleEvent({}));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));

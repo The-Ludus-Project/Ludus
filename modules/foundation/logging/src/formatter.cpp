@@ -156,7 +156,7 @@ void FormatConsoleLine(const LogRecordView& record, bool use_color, std::string&
     buffer.append("] ");
     buffer.append(record.Message);
 
-    if (IsSourceVisibleFor(record.Level) && !record.File.empty())
+    if (IsSourceVisibleFor(record.Level) && record.File.empty() == false)
     {
         buffer.append("\n    ");
         buffer.append(record.File);

@@ -35,7 +35,7 @@ template <typename T, typename... Args>
 T* AllocateObject(Args&&... args) noexcept
 {
 #if defined(LUDUS_FILESYSTEM_PACK_FAULT_TESTING)
-    if (!test::PackAllocationAllowed())
+    if (test::PackAllocationAllowed() == false)
     {
         return nullptr;
     }
@@ -47,12 +47,12 @@ T* AllocateArray(usize count) noexcept
 {
     usize bytes = 0;
     isize admitted = 0;
-    if (!TryMultiply(count, sizeof(T), bytes) || !TryIntegerCast(bytes, admitted))
+    if (TryMultiply(count, sizeof(T), bytes) == false || TryIntegerCast(bytes, admitted) == false)
     {
         return nullptr;
     }
 #if defined(LUDUS_FILESYSTEM_PACK_FAULT_TESTING)
-    if (!test::PackAllocationAllowed())
+    if (test::PackAllocationAllowed() == false)
     {
         return nullptr;
     }
@@ -66,7 +66,7 @@ struct Reader final
     template <typename T>
     bool Read(T& output) noexcept
     {
-        if (!TryReadLittleEndian(Bytes.subspan(Position), output))
+        if (TryReadLittleEndian(Bytes.subspan(Position), output) == false)
         {
             return false;
         }
@@ -97,7 +97,7 @@ struct Header final
 Result ReadExact(const ProviderFile& source, uint64 offset, std::span<uint8> destination) noexcept
 {
     const auto result = source.ReadAt(offset, destination);
-    if (!result.Outcome.Succeeded())
+    if (result.Outcome.Succeeded() == false)
     {
         return result.Outcome;
     }
@@ -112,10 +112,12 @@ Result ParseHeader(std::span<uint8> bytes, const PackLimits& limits, uint64 arch
     Reader reader{bytes, 8};
     uint32 version = 0, headerSize = 0, flags = 0, checksum = 0;
     uint64 indexOffset = 0, reserved = 0;
-    if (!reader.Read(version) || !reader.Read(headerSize) || !reader.Read(flags) || !reader.Read(header.BlockSize) ||
-        !reader.Read(header.Files) || !reader.Read(header.Blocks) || !reader.Read(indexOffset) ||
-        !reader.Read(header.IndexSize) || !reader.Read(header.Payload) || !reader.Read(header.Size) ||
-        !reader.Read(header.IndexCrc) || !reader.Read(checksum) || !reader.Read(reserved))
+    if (reader.Read(version) == false || reader.Read(headerSize) == false || reader.Read(flags) == false ||
+        reader.Read(header.BlockSize) == false || reader.Read(header.Files) == false ||
+        reader.Read(header.Blocks) == false || reader.Read(indexOffset) == false ||
+        reader.Read(header.IndexSize) == false || reader.Read(header.Payload) == false ||
+        reader.Read(header.Size) == false || reader.Read(header.IndexCrc) == false || reader.Read(checksum) == false ||
+        reader.Read(reserved) == false)
     {
         return {Status::CorruptData};
     }
@@ -210,12 +212,12 @@ public:
     }
     [[nodiscard]] Result OpenRead(std::string_view path, ProviderFile*& output) const noexcept override
     {
-        if (!ValidPath(path))
+        if (ValidPath(path) == false)
         {
             return {Status::InvalidArgument};
         }
         const auto revision = ReadExact(*Archive, 0, {});
-        if (!revision.Succeeded())
+        if (revision.Succeeded() == false)
         {
             return revision;
         }
@@ -266,7 +268,7 @@ ReadResult PackFile::ReadAt(uint64 offset, std::span<uint8> destination) const n
     }
     const std::lock_guard lock(mMutex);
     auto result = ReadExact(*mSource.Archive, 0, {});
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return {result};
     }
@@ -287,7 +289,7 @@ ReadResult PackFile::ReadAt(uint64 offset, std::span<uint8> destination) const n
         auto stored = std::span(Scratch, block.Stored);
         auto decoded = std::span(Scratch + mSource.Metadata.BlockSize, block.Decoded);
         result = ReadExact(*mSource.Archive, block.Offset, stored);
-        if (!result.Succeeded())
+        if (result.Succeeded() == false)
         {
             return {result, result.Code == Status::Changed ? 0 : progress};
         }
@@ -295,7 +297,7 @@ ReadResult PackFile::ReadAt(uint64 offset, std::span<uint8> destination) const n
         {
             std::memcpy(decoded.data(), stored.data(), stored.size());
         }
-        else if (!internal::DecodeLz4(stored, decoded))
+        else if (internal::DecodeLz4(stored, decoded) == false)
         {
             return {{Status::CorruptData}, progress};
         }
@@ -321,16 +323,17 @@ Result ParseIndex(PackProvider& provider, usize indexSize, const PackLimits& lim
     {
         auto& entry = provider.Entries[i];
         uint32 pathSize = 0, reserved = 0;
-        if (!reader.Read(pathSize) || !reader.Read(entry.First) || !reader.Read(entry.Count) ||
-            !reader.Read(reserved) || !reader.Read(entry.Decoded) || !reader.Read(entry.Stored) ||
-            !reader.Path(pathSize, entry.Path) || reserved != 0 || entry.First != nextBlock ||
-            entry.Count > header.Blocks - nextBlock || (i != 0 && provider.Entries[i - 1].Path >= entry.Path))
+        if (reader.Read(pathSize) == false || reader.Read(entry.First) == false || reader.Read(entry.Count) == false ||
+            reader.Read(reserved) == false || reader.Read(entry.Decoded) == false ||
+            reader.Read(entry.Stored) == false || reader.Path(pathSize, entry.Path) == false || reserved != 0 ||
+            entry.First != nextBlock || entry.Count > header.Blocks - nextBlock ||
+            (i != 0 && provider.Entries[i - 1].Path >= entry.Path))
         {
             return {Status::CorruptData};
         }
         const uint64 expected = entry.Decoded / header.BlockSize + (entry.Decoded % header.BlockSize != 0 ? 1 : 0);
         if (expected != entry.Count || (entry.Count == 0 && entry.Stored != 0) ||
-            !TryAdd(totalDecoded, entry.Decoded, totalDecoded))
+            TryAdd(totalDecoded, entry.Decoded, totalDecoded) == false)
         {
             return {Status::CorruptData};
         }
@@ -347,8 +350,8 @@ Result ParseIndex(PackProvider& provider, usize indexSize, const PackLimits& lim
     for (usize i = 0; i < header.Blocks; ++i)
     {
         auto& block = provider.Blocks[i];
-        if (!reader.Read(block.Offset) || !reader.Read(block.Stored) || !reader.Read(block.Decoded) ||
-            !reader.Read(block.Codec) || !reader.Read(block.Crc))
+        if (reader.Read(block.Offset) == false || reader.Read(block.Stored) == false ||
+            reader.Read(block.Decoded) == false || reader.Read(block.Codec) == false || reader.Read(block.Crc) == false)
         {
             return {Status::CorruptData};
         }
@@ -374,7 +377,7 @@ Result ParseIndex(PackProvider& provider, usize indexSize, const PackLimits& lim
             const uint64 expected =
                 (static_cast<uint64>(header.BlockSize) < entry.Decoded - decoded ? static_cast<uint64>(header.BlockSize)
                                                                                  : entry.Decoded - decoded);
-            if (block.Decoded != expected || !TryAdd(stored, static_cast<uint64>(block.Stored), stored))
+            if (block.Decoded != expected || TryAdd(stored, static_cast<uint64>(block.Stored), stored) == false)
             {
                 return {Status::CorruptData};
             }
@@ -418,7 +421,7 @@ Result CreatePackProvider(const ProviderHandle& storage,
                           const PackLimits& limits,
                           ProviderHandle& output) noexcept
 {
-    if (storage.Get() == nullptr || !ValidPath(relativePath) || limits.MaxBlockBytes == 0 ||
+    if (storage.Get() == nullptr || ValidPath(relativePath) == false || limits.MaxBlockBytes == 0 ||
         limits.MaxBlockBytes > MAX_PACK_BLOCK_BYTES)
     {
         return {Status::InvalidArgument};
@@ -430,7 +433,7 @@ Result CreatePackProvider(const ProviderHandle& storage,
     }
     ProviderHandle owner(next);
     auto result = storage.Get()->OpenRead(relativePath, next->Archive);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return result;
     }
@@ -449,18 +452,18 @@ Result CreatePackProvider(const ProviderHandle& storage,
     }
     uint8 bytes[HEADER_BYTES]{};
     result = ReadExact(*next->Archive, 0, bytes);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return result;
     }
     result = ParseHeader(bytes, limits, archiveSize, next->Metadata);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return result;
     }
     usize indexSize = 0;
     isize admitted = 0;
-    if (!TryIntegerCast(next->Metadata.IndexSize, indexSize) || !TryIntegerCast(indexSize, admitted))
+    if (TryIntegerCast(next->Metadata.IndexSize, indexSize) == false || TryIntegerCast(indexSize, admitted) == false)
     {
         return {Status::LimitExceeded};
     }
@@ -473,7 +476,7 @@ Result CreatePackProvider(const ProviderHandle& storage,
         }
     }
     result = ReadExact(*next->Archive, HEADER_BYTES, {next->Index, indexSize});
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return result;
     }
@@ -498,13 +501,13 @@ Result CreatePackProvider(const ProviderHandle& storage,
         }
     }
     result = ParseIndex(*next, indexSize, limits);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return result;
     }
     // Ensure an ordinary native mutation during metadata validation is visible.
     result = ReadExact(*next->Archive, 0, {});
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return result;
     }

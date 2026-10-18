@@ -19,13 +19,15 @@ enum class ExampleEnum : uint8
 {
     Zero,
 };
-static_assert(!Integer<bool> && !Integer<char> && !Integer<char8_t> && !Integer<char16_t> && !Integer<char32_t> &&
-              !Integer<wchar_t> && !Integer<ExampleEnum> && !Integer<float32> && !Integer<float64>);
-static_assert(!Integer<const uint32> && !Integer<volatile uint32> && !Integer<uint32&>);
+static_assert(Integer<bool> == false && Integer<char> == false && Integer<char8_t> == false &&
+              Integer<char16_t> == false && Integer<char32_t> == false && Integer<wchar_t> == false &&
+              Integer<ExampleEnum> == false && Integer<float32> == false && Integer<float64> == false);
+static_assert(Integer<const uint32> == false && Integer<volatile uint32> == false && Integer<uint32&> == false);
 
 template <typename ValueType>
 concept HasCheckedAdd = requires(ValueType value, ValueType& out) { TryAdd(value, value, out); };
-static_assert(!HasCheckedAdd<bool> && !HasCheckedAdd<char> && !HasCheckedAdd<float32> && !HasCheckedAdd<ExampleEnum>);
+static_assert(HasCheckedAdd<bool> == false && HasCheckedAdd<char> == false && HasCheckedAdd<float32> == false &&
+              HasCheckedAdd<ExampleEnum> == false);
 
 template <typename DestinationType, typename SourceType>
 constexpr bool CanRepresent(SourceType value) noexcept
@@ -101,14 +103,16 @@ constexpr bool VerifyConstexprArithmetic() noexcept
     {
         return false;
     }
-    if (!TryAdd(ValueType{20}, ValueType{22}, out) || out != 42 || !TrySubtract(out, ValueType{2}, out) || out != 40 ||
-        !TryMultiply(ValueType{2}, out, out) || out != 80)
+    if (TryAdd(ValueType{20}, ValueType{22}, out) == false || out != 42 ||
+        TrySubtract(out, ValueType{2}, out) == false || out != 40 || TryMultiply(ValueType{2}, out, out) == false ||
+        out != 80)
     {
         return false;
     }
     if constexpr (std::is_signed_v<ValueType>)
     {
-        return !TryMultiply(lo, ValueType{-1}, out) && out == 80 && TryMultiply(lo, ValueType{1}, out) && out == lo;
+        return TryMultiply(lo, ValueType{-1}, out) == false && out == 80 && TryMultiply(lo, ValueType{1}, out) &&
+               out == lo;
     }
     return true;
 }
@@ -123,9 +127,9 @@ constexpr bool VerifyConstexprCasts() noexcept
     uint8 small = 42;
     int64 signedValue = 42;
     int16 wide{};
-    return !TryIntegerCast(int8{-1}, small) && small == 42 && !TryIntegerCast(uint16{256}, small) && small == 42 &&
-           !TryIntegerCast(~uint64{0}, signedValue) && signedValue == 42 && TryIntegerCast(uint8{255}, wide) &&
-           wide == 255;
+    return TryIntegerCast(int8{-1}, small) == false && small == 42 && TryIntegerCast(uint16{256}, small) == false &&
+           small == 42 && TryIntegerCast(~uint64{0}, signedValue) == false && signedValue == 42 &&
+           TryIntegerCast(uint8{255}, wide) && wide == 255;
 }
 static_assert(VerifyConstexprCasts());
 

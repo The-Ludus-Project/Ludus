@@ -7,7 +7,7 @@ int main(int argc, char* argv[])
 {
     // Never read or change the user's editor history in offscreen tests.
     QTemporaryDir config;
-    if (!config.isValid())
+    if (config.isValid() == false)
     {
         return 1;
     }

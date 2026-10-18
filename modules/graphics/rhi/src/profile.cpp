@@ -31,7 +31,7 @@ bool ValidProfileRequirements(const DeviceProfileRequirements& requirements) noe
             (entry.Dimension == TextureDimension::D2 && entry.MinDepthOrLayers > 1) ||
             (entry.Dimension == TextureDimension::Cube && entry.MinDepthOrLayers > 6) || entry.MinMipLevels == 0 ||
             entry.SampleCount == 0 || entry.SampleCount > 64 || (entry.SampleCount & (entry.SampleCount - 1)) != 0 ||
-            (entry.SampleCount != 1 && !entry.Uses.ColorAttachment && !entry.Uses.Blendable))
+            (entry.SampleCount != 1 && entry.Uses.ColorAttachment == false && entry.Uses.Blendable == false))
         {
             return false;
         }
@@ -325,53 +325,53 @@ ProfileDiagnostic CheckProfile(const DeviceProfileRequirements& requirements, co
                 .Requested = 1,
             };
         }
-        if (request.Uses.Sampled && !format.Uses.Sampled)
+        if (request.Uses.Sampled && format.Uses.Sampled == false)
         {
             return { .Requirement = ProfileRequirement::Sampled, .Format = request.Format, .Requested = 1 };
         }
-        if (request.Uses.Filterable && !format.Uses.Filterable)
+        if (request.Uses.Filterable && format.Uses.Filterable == false)
         {
             return { .Requirement = ProfileRequirement::Filterable, .Format = request.Format, .Requested = 1 };
         }
-        if (request.Uses.ColorAttachment && !format.Uses.ColorAttachment)
+        if (request.Uses.ColorAttachment && format.Uses.ColorAttachment == false)
         {
             return { .Requirement = ProfileRequirement::ColorAttachment, .Format = request.Format, .Requested = 1 };
         }
-        if (request.Uses.Blendable && !format.Uses.Blendable)
+        if (request.Uses.Blendable && format.Uses.Blendable == false)
         {
             return { .Requirement = ProfileRequirement::Blendable, .Format = request.Format, .Requested = 1 };
         }
-        if (request.Uses.Storage && !format.Uses.Storage)
+        if (request.Uses.Storage && format.Uses.Storage == false)
         {
             return { .Requirement = ProfileRequirement::Storage, .Format = request.Format, .Requested = 1 };
         }
         if (request.Uses.CopySource &&
-            (!format.Uses.CopySource || request.Dimension != TextureDimension::D2 || request.SampleCount != 1))
+            (format.Uses.CopySource == false || request.Dimension != TextureDimension::D2 || request.SampleCount != 1))
         {
             return { .Requirement = ProfileRequirement::CopySource, .Format = request.Format, .Requested = 1 };
         }
-        if (request.Uses.CopyDestination &&
-            (!format.Uses.CopyDestination || request.Dimension != TextureDimension::D2 || request.SampleCount != 1))
+        if (request.Uses.CopyDestination && (format.Uses.CopyDestination == false ||
+                                             request.Dimension != TextureDimension::D2 || request.SampleCount != 1))
         {
             return { .Requirement = ProfileRequirement::CopyDestination, .Format = request.Format, .Requested = 1 };
         }
-        if (request.PartialViews && !format.PartialViews)
+        if (request.PartialViews && format.PartialViews == false)
         {
             return { .Requirement = ProfileRequirement::PartialViews, .Format = request.Format, .Requested = 1 };
         }
-        if (request.AttachmentViews && !format.AttachmentViews)
+        if (request.AttachmentViews && format.AttachmentViews == false)
         {
             return { .Requirement = ProfileRequirement::AttachmentViews, .Format = request.Format, .Requested = 1 };
         }
-        if (request.DepthSampled && !format.DepthSampled)
+        if (request.DepthSampled && format.DepthSampled == false)
         {
             return { .Requirement = ProfileRequirement::DepthSampled, .Format = request.Format, .Requested = 1 };
         }
-        if (request.StencilAttachment && !format.StencilAttachment)
+        if (request.StencilAttachment && format.StencilAttachment == false)
         {
             return { .Requirement = ProfileRequirement::StencilAttachment, .Format = request.Format, .Requested = 1 };
         }
-        if (request.StencilSampled && !format.StencilSampled)
+        if (request.StencilSampled && format.StencilSampled == false)
         {
             return { .Requirement = ProfileRequirement::StencilSampled, .Format = request.Format, .Requested = 1 };
         }
@@ -614,7 +614,7 @@ bool ValidStorageLimits(const StorageLimits& limits) noexcept
 }
 bool ConfigureStorage(const StorageLimits& limits) noexcept
 {
-    if (!ValidStorageLimits(limits) || limits.HostBytes < gStorageUsage.HostBytes ||
+    if (ValidStorageLimits(limits) == false || limits.HostBytes < gStorageUsage.HostBytes ||
         limits.ResourceBytes < gStorageUsage.ResourceBytes)
     {
         return false;

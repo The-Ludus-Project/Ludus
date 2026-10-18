@@ -75,7 +75,7 @@ LUDUS_INLINE ElementType* ConstructAt(ElementType* at, Args&&... args)
 template <typename ElementType>
 LUDUS_INLINE void DestroyAt(ElementType* at) noexcept
 {
-    if constexpr (!std::is_trivially_destructible_v<ElementType>)
+    if constexpr (std::is_trivially_destructible_v<ElementType> == false)
     {
         at->~ElementType();
     }
@@ -86,7 +86,7 @@ LUDUS_INLINE void DestroyAt(ElementType* at) noexcept
 template <typename ElementType>
 LUDUS_INLINE void DestroyRange(ElementType* first, ElementType* last) noexcept
 {
-    if constexpr (!std::is_trivially_destructible_v<ElementType>)
+    if constexpr (std::is_trivially_destructible_v<ElementType> == false)
     {
         for (; first != last; ++first)
         {

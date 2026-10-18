@@ -54,14 +54,14 @@ Status Native(Transaction& transaction, void*) noexcept
     ludus::sample::State state;
     ludus::sample::Config config;
     ludus::sample::Event event;
-    if (!ludus::sample::TryReadState(transaction.State(), state) ||
-        !ludus::sample::TryReadConfig(transaction.Input().Config, config) ||
-        !ludus::sample::TryReadEvent(transaction.Input().Event, event))
+    if (ludus::sample::TryReadState(transaction.State(), state) == false ||
+        ludus::sample::TryReadConfig(transaction.Input().Config, config) == false ||
+        ludus::sample::TryReadEvent(transaction.Input().Event, event) == false)
     {
         return Status::InvalidInput;
     }
     state.Interactions += event.Amount;
-    if (state.Interactions >= config.Threshold && !state.OpenRequested)
+    if (state.Interactions >= config.Threshold && state.OpenRequested == false)
     {
         const auto result = ludus::sample::RequestDoorOpen(transaction, event.Target, event.Amount);
         if (result.Status == CommandStatus::Accepted)

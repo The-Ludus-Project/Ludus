@@ -148,7 +148,7 @@ public:
                 break;
             case EventKind::Focus:
                 mState.Focused = packet.A != 0;
-                if (!mState.Focused)
+                if (mState.Focused == false)
                 {
                     ResetInput();
                 }
@@ -156,7 +156,7 @@ public:
             case EventKind::Visibility:
                 mState.Visible = packet.A != 0;
                 mVisibility = mState.Visible == true ? WindowVisibility::Visible : WindowVisibility::Occluded;
-                if (!mState.Visible)
+                if (mState.Visible == false)
                 {
                     ResetInput();
                 }
@@ -260,7 +260,7 @@ UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexcept
     {
         return {};
     }
-    if (!window->Attach(info.CaptureBrowserInput))
+    if (window->Attach(info.CaptureBrowserInput) == false)
     {
         delete window;
         return {};

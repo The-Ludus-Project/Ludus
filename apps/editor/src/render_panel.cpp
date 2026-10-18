@@ -234,7 +234,7 @@ void RenderPanel::ShowSceneFailure(const QString& error)
 }
 bool RenderPanel::Refresh(bool launch)
 {
-    if (World_ == nullptr || !World_->Loaded())
+    if (World_ == nullptr || World_->Loaded() == false)
     {
         return false;
     }
@@ -299,7 +299,7 @@ void RenderPanel::Publish(const RenderScene& scene, bool launch)
         const foundation::int32 index = Cameras_->findData(selected);
         Cameras_->setCurrentIndex(index < 0 ? 0 : index);
     }
-    if (!Preview_.SetScene(scene))
+    if (Preview_.SetScene(scene) == false)
     {
         Status_->setText(Preview_.Status());
         return;
@@ -308,13 +308,13 @@ void RenderPanel::Publish(const RenderScene& scene, bool launch)
     if (launch)
     {
         Q_EMIT Starting();
-        if (!Preview_.Start())
+        if (Preview_.Start() == false)
         {
             Viewport_->ClearFrame(Preview_.Status());
         }
         return;
     }
-    if (!Preview_.Running())
+    if (Preview_.Running() == false)
     {
         Status_->setText(
             QStringLiteral(
@@ -336,8 +336,8 @@ void RenderPanel::UpdateTintAction()
 {
     const auto binding = Preview_.Scene().RenderableBinding;
     const auto component = binding.value(QStringLiteral("component")).toString();
-    Tint_->setEnabled(World_ != nullptr && World_->Loaded() && !Selected_.isEmpty() && !Pending_ && Job_ == nullptr &&
-                      Stale_.isEmpty() && !component.isEmpty() &&
+    Tint_->setEnabled(World_ != nullptr && World_->Loaded() && Selected_.isEmpty() == false && Pending_ == false &&
+                      Job_ == nullptr && Stale_.isEmpty() && component.isEmpty() == false &&
                       World_->Entity(Selected_).value(QStringLiteral("components")).toObject().contains(component));
 }
 void RenderPanel::WorldChanged()
@@ -407,9 +407,9 @@ void RenderPanel::updateNavigationControls()
 }
 void RenderPanel::ShowStatus()
 {
-    Open_->setEnabled(World_ != nullptr && World_->Loaded() && !Preview_.Running());
+    Open_->setEnabled(World_ != nullptr && World_->Loaded() && Preview_.Running() == false);
     Stop_->setEnabled(Preview_.Running() || (Job_ != nullptr && Job_->Generation() == Generation_) || Again_);
-    if (!Preview_.Status().isEmpty())
+    if (Preview_.Status().isEmpty() == false)
     {
         Status_->setText(
             Preview_.Status() +

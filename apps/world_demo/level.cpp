@@ -54,7 +54,7 @@ public:
     template <usize N>
     bool Text(char (&output)[N]) noexcept
     {
-        if (!Require('"'))
+        if (Require('"') == false)
         {
             return false;
         }
@@ -170,7 +170,7 @@ public:
         if (mPosition < mSource.size() && mSource[mPosition] == '.')
         {
             ++mPosition;
-            if (!Digits())
+            if (Digits() == false)
             {
                 return Fail(LevelError::Syntax);
             }
@@ -182,7 +182,7 @@ public:
             {
                 ++mPosition;
             }
-            if (!Digits())
+            if (Digits() == false)
             {
                 return Fail(LevelError::Syntax);
             }
@@ -195,7 +195,7 @@ public:
     {
         Space();
         const usize start = mPosition;
-        if (!Digits() || (mPosition - start > 1 && mSource[start] == '0'))
+        if (Digits() == false || (mPosition - start > 1 && mSource[start] == '0'))
         {
             return Fail(LevelError::Syntax);
         }
@@ -209,17 +209,17 @@ public:
     template <typename Field>
     bool Object(Field field, uint32 required) noexcept
     {
-        if (!Require('{'))
+        if (Require('{') == false)
         {
             return false;
         }
         uint32 seen = 0;
-        if (!Take('}'))
+        if (Take('}') == false)
         {
             do
             {
                 char key[32] = {};
-                if (!Text(key) || !Require(':') || !field(std::string_view(key), seen))
+                if (Text(key) == false || Require(':') == false || field(std::string_view(key), seen) == false)
                 {
                     return false;
                 }
@@ -244,7 +244,7 @@ public:
     template <typename T, usize N, typename Decode>
     bool List(T (&items)[N], usize& count, Decode decode) noexcept
     {
-        if (!Require('['))
+        if (Require('[') == false)
         {
             return false;
         }
@@ -259,7 +259,7 @@ public:
             {
                 return Fail(LevelError::Capacity);
             }
-            if (!decode(items[count++]))
+            if (decode(items[count++]) == false)
             {
                 return false;
             }
@@ -297,7 +297,7 @@ bool ReadRecipe(Reader& reader, Recipe& recipe) noexcept
             if (key == "kind")
             {
                 char kind[16] = {};
-                if (!reader.Field(seen, 2) || !reader.Text(kind))
+                if (reader.Field(seen, 2) == false || reader.Text(kind) == false)
                 {
                     return false;
                 }
@@ -533,7 +533,7 @@ LevelResult ReadLevel(std::string_view source, Level& output) noexcept
             return reader.Fail(LevelError::UnknownField);
         },
         63);
-    if (!parsed || !reader.End())
+    if (parsed == false || reader.End() == false)
     {
         return reader.Result();
     }
@@ -551,9 +551,10 @@ LevelError ValidateLevel(const Level& level) noexcept
     {
         return LevelError::Capacity;
     }
-    if (!Bounded(level.Minimum) || !Bounded(level.Maximum) || !Bounded(level.Camera) ||
-        !Bounded(level.VerticalExtent) || !Identifier(level.Id) ||
-        !Positive({level.Maximum.X - level.Minimum.X, level.Maximum.Y - level.Minimum.Y}) || level.VerticalExtent <= 0)
+    if (Bounded(level.Minimum) == false || Bounded(level.Maximum) == false || Bounded(level.Camera) == false ||
+        Bounded(level.VerticalExtent) == false || Identifier(level.Id) == false ||
+        Positive({level.Maximum.X - level.Minimum.X, level.Maximum.Y - level.Minimum.Y}) == false ||
+        level.VerticalExtent <= 0)
     {
         return LevelError::InvalidValue;
     }
@@ -561,7 +562,8 @@ LevelError ValidateLevel(const Level& level) noexcept
     for (usize index = 0; index < level.CollisionCount; ++index)
     {
         const auto& box = level.Collision[index];
-        if (!Bounded(box.Center) || !Bounded(box.HalfExtent) || !Identifier(box.Id) || !Positive(box.HalfExtent))
+        if (Bounded(box.Center) == false || Bounded(box.HalfExtent) == false || Identifier(box.Id) == false ||
+            Positive(box.HalfExtent) == false)
         {
             return LevelError::InvalidValue;
         }
@@ -577,13 +579,13 @@ LevelError ValidateLevel(const Level& level) noexcept
     {
         const auto& recipe = level.Entities[index];
         if ((recipe.Type != Kind::Player && recipe.Type != Kind::Enemy && recipe.Type != Kind::Exit) ||
-            !Bounded(recipe.Position) || !Bounded(recipe.Rotation) || !Bounded(recipe.Scale) ||
-            !Bounded(recipe.HalfExtent) || !Bounded(recipe.Speed) ||
+            Bounded(recipe.Position) == false || Bounded(recipe.Rotation) == false || Bounded(recipe.Scale) == false ||
+            Bounded(recipe.HalfExtent) == false || Bounded(recipe.Speed) == false ||
             recipe.HalfExtent.X * recipe.Scale.X * 2 >= level.Maximum.X - level.Minimum.X ||
-            recipe.HalfExtent.Y * recipe.Scale.Y * 2 >= level.Maximum.Y - level.Minimum.Y || !Identifier(recipe.Id) ||
-            !Positive(recipe.Scale) || !Positive(recipe.HalfExtent) || recipe.Position.X < level.Minimum.X ||
-            recipe.Position.X > level.Maximum.X || recipe.Position.Y < level.Minimum.Y ||
-            recipe.Position.Y > level.Maximum.Y)
+            recipe.HalfExtent.Y * recipe.Scale.Y * 2 >= level.Maximum.Y - level.Minimum.Y ||
+            Identifier(recipe.Id) == false || Positive(recipe.Scale) == false || Positive(recipe.HalfExtent) == false ||
+            recipe.Position.X < level.Minimum.X || recipe.Position.X > level.Maximum.X ||
+            recipe.Position.Y < level.Minimum.Y || recipe.Position.Y > level.Maximum.Y)
         {
             return LevelError::InvalidValue;
         }
@@ -610,7 +612,7 @@ LevelError ValidateLevel(const Level& level) noexcept
         }
         else
         {
-            if (!(recipe.Speed > 0) || recipe.Speed > 32 || recipe.Health == 0 || recipe.Health > 100000)
+            if ((recipe.Speed > 0) == false || recipe.Speed > 32 || recipe.Health == 0 || recipe.Health > 100000)
             {
                 return LevelError::InvalidValue;
             }
@@ -630,7 +632,7 @@ LevelError ValidateLevel(const Level& level) noexcept
                     targetFound |=
                         level.Entities[other].Id == recipe.Target && level.Entities[other].Type == Kind::Player;
                 }
-                if (!targetFound)
+                if (targetFound == false)
                 {
                     return LevelError::InvalidReference;
                 }
@@ -685,7 +687,7 @@ bool WriteLevel(const Level& level, core::Array<char>& output) noexcept
         return false;
     }
     Writer writer;
-    if (!writer.Data.TryEnsureCapacity(65536))
+    if (writer.Data.TryEnsureCapacity(65536) == false)
     {
         return false;
     }
@@ -776,14 +778,14 @@ bool WriteLevel(const Level& level, core::Array<char>& output) noexcept
         writer.Text("}}");
     }
     writer.Text("]}");
-    if (!writer.Valid)
+    if (writer.Valid == false)
     {
         return false;
     }
     // Formatting is cold-path work. Names are validated ASCII identifiers, so
     // the canonical compact stream has no escaped quotes to interpret here.
     core::Array<char> formatted;
-    if (!formatted.TryEnsureCapacity(65536))
+    if (formatted.TryEnsureCapacity(65536) == false)
     {
         return false;
     }
@@ -803,9 +805,9 @@ bool WriteLevel(const Level& level, core::Array<char>& output) noexcept
         const char value = writer.Data[index];
         if (value == '\"')
         {
-            quoted = !quoted;
+            quoted = quoted == false;
         }
-        if (!quoted && (value == '}' || value == ']'))
+        if (quoted == false && (value == '}' || value == ']'))
         {
             --depth;
             if (writer.Data[index - 1] != '{' && writer.Data[index - 1] != '[')
@@ -814,7 +816,7 @@ bool WriteLevel(const Level& level, core::Array<char>& output) noexcept
             }
         }
         append(value);
-        if (!quoted && (value == '{' || value == '['))
+        if (quoted == false && (value == '{' || value == '['))
         {
             ++depth;
             if (writer.Data[index + 1] != '}' && writer.Data[index + 1] != ']')
@@ -822,17 +824,17 @@ bool WriteLevel(const Level& level, core::Array<char>& output) noexcept
                 line();
             }
         }
-        else if (!quoted && value == ',')
+        else if (quoted == false && value == ',')
         {
             line();
         }
-        else if (!quoted && value == ':')
+        else if (quoted == false && value == ':')
         {
             append(' ');
         }
     }
     append('\n');
-    if (!valid)
+    if (valid == false)
     {
         return false;
     }

@@ -12,12 +12,12 @@ using ControlNet = Vector3d[4][4];
 [[nodiscard]] MathStatus Load(const BicubicBezierPatch& patch, PatchParameter parameter, ControlNet& control) noexcept
 {
     const MathStatus uStatus = internal::CheckParameter(parameter.U);
-    if (!IsSuccess(uStatus))
+    if (IsSuccess(uStatus) == false)
     {
         return uStatus;
     }
     const MathStatus vStatus = internal::CheckParameter(parameter.V);
-    if (!IsSuccess(vStatus))
+    if (IsSuccess(vStatus) == false)
     {
         return vStatus;
     }
@@ -25,7 +25,7 @@ using ControlNet = Vector3d[4][4];
     {
         for (usize v = 0; v < 4; ++v)
         {
-            if (!IsFinite(patch.Control[u][v]))
+            if (IsFinite(patch.Control[u][v]) == false)
             {
                 return MathStatus::NonFiniteInput;
             }
@@ -49,7 +49,7 @@ using ControlNet = Vector3d[4][4];
     {
         for (usize v = 0; v < 4; ++v)
         {
-            if (!internal::Narrow(control[u][v], out.Control[u][v]))
+            if (internal::Narrow(control[u][v], out.Control[u][v]) == false)
             {
                 return false;
             }
@@ -86,12 +86,12 @@ MathStatus TryEvaluatePatch(const BicubicBezierPatch& patch, PatchParameter para
 {
     ControlNet control{};
     const MathStatus status = Load(patch, parameter, control);
-    if (!IsSuccess(status))
+    if (IsSuccess(status) == false)
     {
         return status;
     }
     Vector3 result;
-    if (!internal::Narrow(Evaluate(control, parameter, 0, 0), result))
+    if (internal::Narrow(Evaluate(control, parameter, 0, 0), result) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -102,7 +102,7 @@ MathStatus TryEvaluatePatch(const BicubicBezierPatch& patch, PatchParameter para
 {
     ControlNet control{};
     const MathStatus status = Load(patch, parameter, control);
-    if (!IsSuccess(status))
+    if (IsSuccess(status) == false)
     {
         return status;
     }
@@ -116,12 +116,12 @@ MathStatus TryEvaluatePatch(const BicubicBezierPatch& patch, PatchParameter para
         dvv[u] = internal::EvaluateDerivative(control[u], parameter.V, 2);
     }
     PatchSample result;
-    if (!internal::Narrow(internal::EvaluateDerivative(positions, parameter.U, 0), result.Position) ||
-        !internal::Narrow(internal::EvaluateDerivative(positions, parameter.U, 1), result.DU) ||
-        !internal::Narrow(internal::EvaluateDerivative(dv, parameter.U, 0), result.DV) ||
-        !internal::Narrow(internal::EvaluateDerivative(positions, parameter.U, 2), result.DUU) ||
-        !internal::Narrow(internal::EvaluateDerivative(dv, parameter.U, 1), result.DUV) ||
-        !internal::Narrow(internal::EvaluateDerivative(dvv, parameter.U, 0), result.DVV))
+    if (internal::Narrow(internal::EvaluateDerivative(positions, parameter.U, 0), result.Position) == false ||
+        internal::Narrow(internal::EvaluateDerivative(positions, parameter.U, 1), result.DU) == false ||
+        internal::Narrow(internal::EvaluateDerivative(dv, parameter.U, 0), result.DV) == false ||
+        internal::Narrow(internal::EvaluateDerivative(positions, parameter.U, 2), result.DUU) == false ||
+        internal::Narrow(internal::EvaluateDerivative(dv, parameter.U, 1), result.DUV) == false ||
+        internal::Narrow(internal::EvaluateDerivative(dvv, parameter.U, 0), result.DVV) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -132,7 +132,7 @@ MathStatus TrySplitPatch(const BicubicBezierPatch& patch, PatchParameter paramet
 {
     ControlNet control{};
     const MathStatus status = Load(patch, parameter, control);
-    if (!IsSuccess(status))
+    if (IsSuccess(status) == false)
     {
         return status;
     }
@@ -153,12 +153,12 @@ MathStatus TrySplitPatch(const BicubicBezierPatch& patch, PatchParameter paramet
     }
     PatchSubdivision result;
     PatchSplit split = SplitV(lowU, parameter.V);
-    if (!Narrow(split.Low, result.U0V0) || !Narrow(split.High, result.U0V1))
+    if (Narrow(split.Low, result.U0V0) == false || Narrow(split.High, result.U0V1) == false)
     {
         return MathStatus::OutOfRange;
     }
     split = SplitV(highU, parameter.V);
-    if (!Narrow(split.Low, result.U1V0) || !Narrow(split.High, result.U1V1))
+    if (Narrow(split.Low, result.U1V0) == false || Narrow(split.High, result.U1V1) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -173,8 +173,8 @@ MathStatus TrySplitPatch(const BicubicBezierPatch& patch, PatchParameter paramet
 // docs/architecture/curves-surfaces-gems-review.md#fast-patch-normals
 MathStatus TryPatchNormal(const PatchSample& sample, PatchNormalPolicy policy, Vector3& out) noexcept
 {
-    if (!IsFinite(sample.DU) || !IsFinite(sample.DV) || !IsFinite(policy.MinDerivativeLength) ||
-        !IsFinite(policy.MinSinAngle))
+    if (IsFinite(sample.DU) == false || IsFinite(sample.DV) == false || IsFinite(policy.MinDerivativeLength) == false ||
+        IsFinite(policy.MinSinAngle) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -204,7 +204,7 @@ MathStatus TryPatchNormal(const PatchSample& sample, PatchNormalPolicy policy, V
         return MathStatus::IllConditioned;
     }
     Vector3 result;
-    if (!internal::Narrow(Divide(cross, crossLength), result))
+    if (internal::Narrow(Divide(cross, crossLength), result) == false)
     {
         return MathStatus::OutOfRange;
     }

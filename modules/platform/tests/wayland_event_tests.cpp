@@ -47,7 +47,7 @@ TEST_CASE("Wayland event pumping progresses without incoming events", "[platform
     const wl_callback_listener listener{ .done = onSyncDone };
     REQUIRE(wl_callback_add_listener(callback, &listener, &syncDone) == 0);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (!syncDone && std::chrono::steady_clock::now() < deadline)
+    while (syncDone == false && std::chrono::steady_clock::now() < deadline)
     {
         REQUIRE(window->HandleEvent({}));
     }

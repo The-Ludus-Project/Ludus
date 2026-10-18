@@ -72,14 +72,14 @@ bool FaultCase(Program program, RuntimeStatus expected) noexcept
 {
     Provider provider;
     World world;
-    if (!Initialize(world) || !Load(provider, program))
+    if (Initialize(world) == false || Load(provider, program) == false)
     {
         return false;
     }
     const EventRecord event = Event(world, 0, 1, 2);
     const Result result = Dispatch(world, &event, 1, LuauInteraction, &provider);
     return result != Result::Accepted && world.Faulted && world.States[0].Interactions == 0 &&
-           !world.States[0].OpenRequested && world.CommandCount == 0 && world.NextToken == 1 &&
+           world.States[0].OpenRequested == false && world.CommandCount == 0 && world.NextToken == 1 &&
            provider.Last.Code == expected && provider.Last.Source.Asset == 0xb123456789abcdefULL &&
            provider.Last.Source.Execution == world.Execution && provider.Last.Source.Instance == 1000 &&
            provider.Last.Source.Tick == 1 && provider.Last.Source.EntitySlot == world.Doors[0].Slot &&
@@ -90,7 +90,7 @@ bool FaultOrdering() noexcept
 {
     Provider provider;
     World world;
-    if (!Initialize(world) || !Load(provider, {FAULT, sizeof(FAULT), "@fault.luau"}))
+    if (Initialize(world) == false || Load(provider, {FAULT, sizeof(FAULT), "@fault.luau"}) == false)
     {
         return false;
     }
@@ -116,7 +116,7 @@ bool AllocationSweep() noexcept
     {
         Provider baseline;
         World world;
-        if (!Initialize(world) || !Load(baseline, {ALLOCATION, sizeof(ALLOCATION), "@allocation.luau"}))
+        if (Initialize(world) == false || Load(baseline, {ALLOCATION, sizeof(ALLOCATION), "@allocation.luau"}) == false)
         {
             return false;
         }
@@ -133,7 +133,7 @@ bool AllocationSweep() noexcept
     {
         Provider provider;
         World world;
-        if (!Initialize(world) || !Load(provider, {ALLOCATION, sizeof(ALLOCATION), "@allocation.luau"}))
+        if (Initialize(world) == false || Load(provider, {ALLOCATION, sizeof(ALLOCATION), "@allocation.luau"}) == false)
         {
             return false;
         }
@@ -141,8 +141,8 @@ bool AllocationSweep() noexcept
         provider.Vm.SetAllocationFailure(fail_at);
         const EventRecord event = Event(world, 0, 1, 2);
         if (Dispatch(world, &event, 1, LuauInteraction, &provider) != Result::AllocationFailure ||
-            world.States[0].Interactions != 0 || world.CommandCount != 0 || world.NextToken != 1 || !world.Faulted ||
-            provider.Vm.GetMemory().Live != 0 || provider.Vm.GetMemory().Denied == 0)
+            world.States[0].Interactions != 0 || world.CommandCount != 0 || world.NextToken != 1 ||
+            world.Faulted == false || provider.Vm.GetMemory().Live != 0 || provider.Vm.GetMemory().Denied == 0)
         {
             return Check(false, "invocation-allocation-failure-sweep");
         }
@@ -156,7 +156,8 @@ bool ExpiredState() noexcept
 {
     Provider provider;
     World world;
-    if (!Initialize(world) || !Load(provider, {EXPIRED_STATE, sizeof(EXPIRED_STATE), "@expired_state.luau"}))
+    if (Initialize(world) == false ||
+        Load(provider, {EXPIRED_STATE, sizeof(EXPIRED_STATE), "@expired_state.luau"}) == false)
     {
         return false;
     }
@@ -189,7 +190,7 @@ bool Reentrancy() noexcept
 {
     Provider provider;
     World world;
-    if (!Initialize(world) || !Load(provider, {DOOR, sizeof(DOOR), "@door.luau"}))
+    if (Initialize(world) == false || Load(provider, {DOOR, sizeof(DOOR), "@door.luau"}) == false)
     {
         return false;
     }
@@ -209,7 +210,7 @@ bool BoundaryOutcomes() noexcept
 {
     Provider provider;
     World world;
-    if (!Initialize(world) || !Load(provider, {BLOCKED, sizeof(BLOCKED), "@blocked.luau"}))
+    if (Initialize(world) == false || Load(provider, {BLOCKED, sizeof(BLOCKED), "@blocked.luau"}) == false)
     {
         return false;
     }
@@ -255,7 +256,7 @@ bool FrozenProjections() noexcept
     {
         Provider provider;
         World world;
-        if (!Initialize(world) || !Load(provider, {IMMUTABLE, sizeof(IMMUTABLE), "@immutable.luau"}))
+        if (Initialize(world) == false || Load(provider, {IMMUTABLE, sizeof(IMMUTABLE), "@immutable.luau"}) == false)
         {
             return false;
         }
@@ -269,7 +270,7 @@ bool NonStringError() noexcept
 {
     Provider provider;
     World world;
-    if (!Initialize(world) || !Load(provider, {NON_STRING, sizeof(NON_STRING), "@non_string.luau"}))
+    if (Initialize(world) == false || Load(provider, {NON_STRING, sizeof(NON_STRING), "@non_string.luau"}) == false)
     {
         return false;
     }

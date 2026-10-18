@@ -14,11 +14,11 @@ namespace ludus::foundation::math
 // representation. Source scope: docs/architecture/math-research.md.
 MathStatus TryMakeRelative(Vector3d position, Vector3d origin, float64 maxAbsComponent, Vector3& out) noexcept
 {
-    if (!IsFinite(position) || !IsFinite(origin) || !std::isfinite(maxAbsComponent))
+    if (IsFinite(position) == false || IsFinite(origin) == false || std::isfinite(maxAbsComponent) == false)
     {
         return MathStatus::NonFiniteInput;
     }
-    if (!(maxAbsComponent > 0.0))
+    if ((maxAbsComponent > 0.0) == false)
     {
         return MathStatus::InvalidArgument;
     }
@@ -26,7 +26,7 @@ MathStatus TryMakeRelative(Vector3d position, Vector3d origin, float64 maxAbsCom
     const float64 dx = position.X - origin.X;
     const float64 dy = position.Y - origin.Y;
     const float64 dz = position.Z - origin.Z;
-    if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz))
+    if (std::isfinite(dx) == false || std::isfinite(dy) == false || std::isfinite(dz) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -37,7 +37,7 @@ MathStatus TryMakeRelative(Vector3d position, Vector3d origin, float64 maxAbsCom
     const float32 fx = static_cast<float32>(dx);
     const float32 fy = static_cast<float32>(dy);
     const float32 fz = static_cast<float32>(dz);
-    if (!IsFinite(fx) || !IsFinite(fy) || !IsFinite(fz))
+    if (IsFinite(fx) == false || IsFinite(fy) == false || IsFinite(fz) == false)
     {
         return MathStatus::OutOfRange;
     }

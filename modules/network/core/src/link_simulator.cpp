@@ -52,7 +52,7 @@ LinkStatus LinkSimulator::Send(uint64 nowUs, std::span<const uint8> message) noe
     {
         return LinkStatus::InvalidArgument;
     }
-    if (!AdvanceTime(nowUs))
+    if (AdvanceTime(nowUs) == false)
     {
         return LinkStatus::InvalidTime;
     }
@@ -107,14 +107,14 @@ LinkStatus LinkSimulator::Send(uint64 nowUs, std::span<const uint8> message) noe
 }
 LinkStatus LinkSimulator::Receive(uint64 nowUs, OwnedMessage& message) noexcept
 {
-    if (!AdvanceTime(nowUs))
+    if (AdvanceTime(nowUs) == false)
     {
         return LinkStatus::InvalidTime;
     }
     Pending* selected = nullptr;
     for (auto& packet : mPackets)
     {
-        if (!packet.Active || packet.DueUs > nowUs)
+        if (packet.Active == false || packet.DueUs > nowUs)
         {
             continue;
         }

@@ -98,7 +98,7 @@ bool Resources() noexcept
     gCube = caps.MaxAttachmentCubeDimension >= 8 && caps.MaxAttachmentMipLevels >= 2;
     gDepth = caps.DepthSampled;
     gStencilSample = caps.StencilSampled;
-    if (gProfile.Interface.MaxColorAttachments < 2 || !caps.StencilAttachment)
+    if (gProfile.Interface.MaxColorAttachments < 2 || caps.StencilAttachment == false)
     {
         return false;
     }
@@ -125,7 +125,7 @@ bool Resources() noexcept
             description.Dimension = rhi::TextureDimension::Cube;
             description.DepthOrLayers = 6;
         }
-        if (!Accepted(rhi::CreateTexture(gDevice, description, {}, gTextures[i])))
+        if (Accepted(rhi::CreateTexture(gDevice, description, {}, gTextures[i])) == false)
         {
             return false;
         }
@@ -151,7 +151,7 @@ bool ViewsAndShaders() noexcept
             description.BaseMip = 1;
             description.BaseLayer = 4;
         }
-        if (!Accepted(rhi::CreateTextureView(gDevice, gTextures[i == 7 ? 8 : i], description, gAttachments[i])))
+        if (Accepted(rhi::CreateTextureView(gDevice, gTextures[i == 7 ? 8 : i], description, gAttachments[i])) == false)
         {
             return false;
         }
@@ -165,7 +165,7 @@ bool ViewsAndShaders() noexcept
             view.BaseMip = 1;
             view.BaseLayer = 1;
         }
-        if (!Accepted(rhi::CreateTextureView(gDevice, gTextures[textures[i]], view, gSampled[i])))
+        if (Accepted(rhi::CreateTextureView(gDevice, gTextures[textures[i]], view, gSampled[i])) == false)
         {
             return false;
         }
@@ -176,23 +176,25 @@ bool ViewsAndShaders() noexcept
         cubeView.BaseMip = 1;
         cubeView.BaseLayer = 4;
     }
-    if (!Accepted(rhi::CreateTextureView(gDevice, gTextures[8], cubeView, gSampled[6])))
+    if (Accepted(rhi::CreateTextureView(gDevice, gTextures[8], cubeView, gSampled[6])) == false)
     {
         return false;
     }
     if (gDepth &&
-        !Accepted(rhi::CreateTextureView(gDevice, gTextures[0], { .Aspect = rhi::TextureAspect::Depth }, gSampled[5])))
+        Accepted(rhi::CreateTextureView(gDevice, gTextures[0], { .Aspect = rhi::TextureAspect::Depth }, gSampled[5])) ==
+            false)
     {
         return false;
     }
     auto& stencil = gStencilView;
     if (gStencilSample &&
-        !Accepted(rhi::CreateTextureView(gDevice, gTextures[0], { .Aspect = rhi::TextureAspect::Stencil }, stencil)))
+        Accepted(rhi::CreateTextureView(gDevice, gTextures[0], { .Aspect = rhi::TextureAspect::Stencil }, stencil)) ==
+            false)
     {
         return false;
     }
-    if (!Accepted(rhi::CreateSampler(gDevice, {}, gSampler)) ||
-        !Accepted(rhi::CreateRasterShader(gDevice, ludus::shaders::r10write::Vertex(), gVertex)))
+    if (Accepted(rhi::CreateSampler(gDevice, {}, gSampler)) == false ||
+        Accepted(rhi::CreateRasterShader(gDevice, ludus::shaders::r10write::Vertex(), gVertex)) == false)
     {
         return false;
     }
@@ -203,11 +205,11 @@ bool ViewsAndShaders() noexcept
                                                    ludus::shaders::r10stencil::Fragment()};
     for (usize i = 0; i < 5; ++i)
     {
-        if ((i == 3 && !gDepth) || (i == 4 && !gStencilSample))
+        if ((i == 3 && gDepth == false) || (i == 4 && gStencilSample == false))
         {
             continue;
         }
-        if (!Accepted(rhi::CreateRasterShader(gDevice, fragments[i], gFragments[i])))
+        if (Accepted(rhi::CreateRasterShader(gDevice, fragments[i], gFragments[i])) == false)
         {
             return false;
         }
@@ -221,15 +223,15 @@ bool ViewsAndShaders() noexcept
                                             0};
     return Accepted(rhi::CreateBindingLayout(gDevice, {}, gLayouts[0])) &&
            Accepted(rhi::CreateBindingLayout(gDevice, color, gLayouts[1])) &&
-           (!gDepth || Accepted(rhi::CreateBindingLayout(gDevice, {&depth, 1}, gLayouts[2]))) &&
-           (!gStencilSample || Accepted(rhi::CreateBindingLayout(gDevice, {&stencilBinding, 1}, gLayouts[3])));
+           (gDepth == false || Accepted(rhi::CreateBindingLayout(gDevice, {&depth, 1}, gLayouts[2]))) &&
+           (gStencilSample == false || Accepted(rhi::CreateBindingLayout(gDevice, {&stencilBinding, 1}, gLayouts[3])));
 }
 bool PipelinesAndSets() noexcept
 {
     if (gStencilSample)
     {
         const rhi::RasterBindingResource resource{ .Binding = 3, .Texture = gStencilView };
-        if (!Accepted(rhi::CreateBindingSet(gDevice, gLayouts[3], {&resource, 1}, gSets[6])))
+        if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[3], {&resource, 1}, gSets[6])) == false)
         {
             return false;
         }
@@ -240,7 +242,7 @@ bool PipelinesAndSets() noexcept
     }
     // Empty write bindings use an independent snapshot; sampled snapshots retain their aspect views.
     rhi::BindingSetHandle empty;
-    if (!Accepted(rhi::CreateBindingSet(gDevice, gLayouts[0], {}, empty)))
+    if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[0], {}, empty)) == false)
     {
         return false;
     }
@@ -254,7 +256,7 @@ bool PipelinesAndSets() noexcept
                                                           .Binding = 1,
                                                           .Sampler = gSampler,
                                                       }};
-        if (!Accepted(rhi::CreateBindingSet(gDevice, gLayouts[1], resources, gSets[i])))
+        if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[1], resources, gSets[i])) == false)
         {
             return false;
         }
@@ -267,14 +269,14 @@ bool PipelinesAndSets() noexcept
                                                           .Binding = 1,
                                                           .Sampler = gSampler,
                                                       }};
-    if (!Accepted(rhi::CreateBindingSet(gDevice, gLayouts[1], cubeResources, gSets[7])))
+    if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[1], cubeResources, gSets[7])) == false)
     {
         return false;
     }
     if (gDepth)
     {
         const rhi::RasterBindingResource resource{ .Binding = 2, .Texture = gSampled[5] };
-        if (!Accepted(rhi::CreateBindingSet(gDevice, gLayouts[2], {&resource, 1}, gSets[5])))
+        if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[2], {&resource, 1}, gSets[5])) == false)
         {
             return false;
         }
@@ -285,7 +287,7 @@ bool PipelinesAndSets() noexcept
     const rhi::RasterFormat colors[2]{rhi::RasterFormat::Rgba8Unorm, rhi::RasterFormat::Rgba8Unorm};
     for (usize i = 0; i < 7; ++i)
     {
-        if ((i == 5 && !gDepth) || (i == 6 && !gStencilSample))
+        if ((i == 5 && gDepth == false) || (i == 6 && gStencilSample == false))
         {
             continue;
         }
@@ -318,7 +320,7 @@ bool PipelinesAndSets() noexcept
                 pipeline.StencilWriteMask = 0;
             }
         }
-        if (!Accepted(rhi::CreateRasterPipeline(gDevice, pipeline, gPipelines[i])))
+        if (Accepted(rhi::CreateRasterPipeline(gDevice, pipeline, gPipelines[i])) == false)
         {
             return false;
         }
@@ -444,7 +446,7 @@ bool DrawCase(bool graph) noexcept
                                  6,
                                  4,
                                  1};
-    if (!graph)
+    if (graph == false)
     {
         return rhi::BeginFrame(gDevice, gSurface) == rhi::DeviceStatus::Ready &&
                rhi::BeginRasterPass(gDevice, pass) == rhi::RasterStatus::Ready &&
@@ -588,7 +590,7 @@ void Tick() noexcept
     }
     if (gStage == 0)
     {
-        if (!Resources())
+        if (Resources() == false)
         {
             Stop(true);
             return;
@@ -599,16 +601,16 @@ void Tick() noexcept
     {
         for (auto texture : gTextures)
         {
-            if (!Ready(texture))
+            if (Ready(texture) == false)
             {
                 return;
             }
         }
-        if (!Ready(gVertices) || !Ready(gIndices))
+        if (Ready(gVertices) == false || Ready(gIndices) == false)
         {
             return;
         }
-        if (!ViewsAndShaders())
+        if (ViewsAndShaders() == false)
         {
             Stop(true);
             return;
@@ -619,41 +621,41 @@ void Tick() noexcept
     {
         for (auto view : gAttachments)
         {
-            if (!Ready(view))
+            if (Ready(view) == false)
             {
                 return;
             }
         }
         for (usize i = 0; i < 6; ++i)
         {
-            if ((i < 5 || gDepth) && !Ready(gSampled[i]))
+            if ((i < 5 || gDepth) && Ready(gSampled[i]) == false)
             {
                 return;
             }
         }
         for (usize i = 0; i < 5; ++i)
         {
-            if ((i != 3 || gDepth) && (i != 4 || gStencilSample) && !Ready(gFragments[i]))
+            if ((i != 3 || gDepth) && (i != 4 || gStencilSample) && Ready(gFragments[i]) == false)
             {
                 return;
             }
         }
         for (usize i = 0; i < 4; ++i)
         {
-            if ((i != 2 || gDepth) && (i != 3 || gStencilSample) && !Ready(gLayouts[i]))
+            if ((i != 2 || gDepth) && (i != 3 || gStencilSample) && Ready(gLayouts[i]) == false)
             {
                 return;
             }
         }
-        if (!Ready(gSampled[6]))
+        if (Ready(gSampled[6]) == false)
         {
             return;
         }
-        if ((gStencilSample && !Ready(gStencilView)) || !Ready(gSampler) || !Ready(gVertex))
+        if ((gStencilSample && Ready(gStencilView) == false) || Ready(gSampler) == false || Ready(gVertex) == false)
         {
             return;
         }
-        if (!PipelinesAndSets())
+        if (PipelinesAndSets() == false)
         {
             Stop(true);
             return;
@@ -664,16 +666,17 @@ void Tick() noexcept
     {
         for (usize i = 0; i < 7; ++i)
         {
-            if ((i != 5 || gDepth) && (i != 6 || gStencilSample) && (!Ready(gSets[i]) || !Ready(gPipelines[i])))
+            if ((i != 5 || gDepth) && (i != 6 || gStencilSample) &&
+                (Ready(gSets[i]) == false || Ready(gPipelines[i]) == false))
             {
                 return;
             }
         }
-        if (!Ready(gSets[7]))
+        if (Ready(gSets[7]) == false)
         {
             return;
         }
-        if (!Ready(gEmpty))
+        if (Ready(gEmpty) == false)
         {
             return;
         }
@@ -682,7 +685,7 @@ void Tick() noexcept
     if (gStage == 4)
     {
         if (rhi::SetFrameTarget(gDevice, gSurface, {96, 64, 0, 0, 0, 1}) != rhi::DeviceStatus::Ready ||
-            !DrawCase((gCase & 1) != 0 || gCase == 16) ||
+            DrawCase((gCase & 1) != 0 || gCase == 16) == false ||
             rhi::RequestTextureReadback(gDevice, gTextures[7], {0, 0, 0, 8, 8}, 32, gRead) !=
                 rhi::RasterStatus::Pending)
         {
@@ -693,7 +696,7 @@ void Tick() noexcept
     }
     if (gStage == 5 && Ready(gRead))
     {
-        if (!Verify() || rhi::Release(gDevice, gRead) != rhi::RasterStatus::Ready)
+        if (Verify() == false || rhi::Release(gDevice, gRead) != rhi::RasterStatus::Ready)
         {
             Stop(true);
             return;
@@ -722,7 +725,7 @@ int main()
     config.Height = 64;
     config.CanvasSelector = "#canvas";
     config.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(config, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(config, gWindow) == false)
     {
         return 1;
     }
@@ -742,11 +745,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto started = time::NowTicks();
-    while (!gDone && time::NowTicks() - started < 30 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - started < 30 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

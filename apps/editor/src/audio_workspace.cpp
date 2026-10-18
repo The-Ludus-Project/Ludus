@@ -203,7 +203,7 @@ AudioWorkspace::AudioWorkspace(QWidget* parent) : QWidget(parent)
                                 .arg(starvations));
     });
     connect(Preview_, &AudioPreview::Imported, this, [this](const QString& root) {
-        if (root == Root_ && !Dirty_)
+        if (root == Root_ && Dirty_ == false)
         {
             Reload();
         }
@@ -235,7 +235,7 @@ void AudioWorkspace::SetRoot(const QString& root)
     {
         return;
     }
-    if (!ConfirmDiscard())
+    if (ConfirmDiscard() == false)
     {
         return;
     }
@@ -288,14 +288,14 @@ void AudioWorkspace::Reload()
 }
 void AudioWorkspace::RefreshCatalog()
 {
-    if (!Dirty_)
+    if (Dirty_ == false)
     {
         Reload();
     }
 }
 bool AudioWorkspace::OpenResource(const QString& id)
 {
-    if (!ConfirmDiscard())
+    if (ConfirmDiscard() == false)
     {
         return false;
     }
@@ -313,7 +313,7 @@ bool AudioWorkspace::OpenResource(const QString& id)
 }
 bool AudioWorkspace::ConfirmDiscard()
 {
-    if (!Dirty_)
+    if (Dirty_ == false)
     {
         return true;
     }
@@ -324,7 +324,7 @@ bool AudioWorkspace::ConfirmDiscard()
     if (result == QMessageBox::Save)
     {
         Save();
-        return !Dirty_;
+        return Dirty_ == false;
     }
     if (result == QMessageBox::Discard)
     {
@@ -336,7 +336,7 @@ bool AudioWorkspace::ConfirmDiscard()
 }
 void AudioWorkspace::Open()
 {
-    if (List_->currentItem() == nullptr || !ConfirmDiscard())
+    if (List_->currentItem() == nullptr || ConfirmDiscard() == false)
     {
         return;
     }
@@ -414,7 +414,7 @@ void AudioWorkspace::Render()
     End_->setText(QString::number(region.End));
     for (QWidget* widget : std::initializer_list<QWidget*>{Group_, Rate_, Min_, Max_, Spatial_, Suppress_, Cooldown_})
     {
-        widget->setEnabled(!IsMusic_ && HasDocument_);
+        widget->setEnabled(IsMusic_ == false && HasDocument_);
     }
     for (auto* spin : {Gain_, Rate_, Min_, Max_})
     {
@@ -425,7 +425,7 @@ void AudioWorkspace::Render()
 }
 void AudioWorkspace::Edit()
 {
-    if (!Rendering_ && HasDocument_)
+    if (Rendering_ == false && HasDocument_)
     {
         Dirty_ = true;
         Message_->setText(QStringLiteral("Unsaved audio draft."));
@@ -434,7 +434,7 @@ void AudioWorkspace::Edit()
 }
 bool AudioWorkspace::ReadDraft(audio::content::Sound& sound, audio::content::Music& music)
 {
-    if (!HasDocument_)
+    if (HasDocument_ == false)
     {
         return false;
     }
@@ -447,7 +447,7 @@ bool AudioWorkspace::ReadDraft(audio::content::Sound& sound, audio::content::Mus
     audio::content::Loop region{Loop_->isChecked(),
                                 Begin_->text().toULongLong(&beginOk),
                                 End_->text().toULongLong(&endOk)};
-    if (!beginOk || !endOk)
+    if (beginOk == false || endOk == false)
     {
         Message_->setText(QStringLiteral("Loop frames must be unsigned integers."));
         return false;
@@ -534,7 +534,7 @@ void AudioWorkspace::Save()
 {
     audio::content::Sound sound;
     audio::content::Music music;
-    if (!ReadDraft(sound, music))
+    if (ReadDraft(sound, music) == false)
     {
         return;
     }
@@ -561,7 +561,7 @@ void AudioWorkspace::Play()
 {
     audio::content::Sound sound;
     audio::content::Music music;
-    if (!ReadDraft(sound, music))
+    if (ReadDraft(sound, music) == false)
     {
         return;
     }
@@ -589,14 +589,14 @@ bool AudioWorkspace::PreviewFinished() const noexcept
 
 void ludus::editor::AudioWorkspace::Import()
 {
-    if (!Root_.isEmpty())
+    if (Root_.isEmpty() == false)
     {
         Q_EMIT ImportRequested();
     }
 }
 void ludus::editor::AudioWorkspace::Create(bool music)
 {
-    if (Root_.isEmpty() || !ConfirmDiscard())
+    if (Root_.isEmpty() || ConfirmDiscard() == false)
     {
         return;
     }
@@ -608,11 +608,11 @@ void ludus::editor::AudioWorkspace::Create(bool music)
                                           music ? QStringLiteral("music/theme") : QStringLiteral("sound/impact"),
                                           &ok)
                         .toUtf8();
-    if (!ok)
+    if (ok == false)
     {
         return;
     }
-    if (!ludus::content::ValidId(View(id)) || Catalog_.Find(View(id)) != nullptr)
+    if (ludus::content::ValidId(View(id)) == false || Catalog_.Find(View(id)) != nullptr)
     {
         Message_->setText(QStringLiteral("Invalid or duplicate ID."));
         return;
@@ -664,7 +664,7 @@ void ludus::editor::AudioWorkspace::Create(bool music)
     }
     ludus::content::Bytes catalogBytes;
     if (candidate.Write(catalogBytes) != ludus::content::Status::Ok ||
-        !QDir().mkpath(QFileInfo(Root_ + QLatin1Char('/') + path).path()) ||
+        QDir().mkpath(QFileInfo(Root_ + QLatin1Char('/') + path).path()) == false ||
         ludus::content::SaveFile(View(rootBytes), View(pathBytes), bytes.Data(), nullptr) != ludus::content::Status::Ok)
     {
         Message_->setText(QStringLiteral("Cannot save new definition."));

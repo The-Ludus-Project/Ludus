@@ -207,7 +207,7 @@ void dispatchAdmitted(LogLevel level,
     // state; a record admitted here belongs to the current session.
     if (s.EffectiveMode.load(std::memory_order_acquire) == LogMode::Asynchronous)
     {
-        if (s.Lifecycle.load(std::memory_order_acquire) != State::Accepting || !s.Async)
+        if (s.Lifecycle.load(std::memory_order_acquire) != State::Accepting || s.Async.Get() == nullptr)
         {
             if (level >= LogLevel::Warning && level != LogLevel::Fatal)
             {
@@ -290,7 +290,7 @@ void startFlushThread(LoggerState& s)
     s.FlushStop = false;
     s.FlushThread = std::thread([&s] {
         std::unique_lock lock(s.FlushMutex);
-        while (!s.FlushStop)
+        while (s.FlushStop == false)
         {
             s.FlushCv.wait_for(lock, std::chrono::milliseconds(s.FlushIntervalMs), [&s] { return s.FlushStop; });
             if (s.FlushStop)
@@ -471,7 +471,7 @@ LogStatus LogSystem::Shutdown()
     // then stop the flush worker (outside the dispatch lock to avoid a deadlock),
     // then flush/close sinks under the lock and join.
     State expected = State::Accepting;
-    if (!s.Lifecycle.compare_exchange_strong(expected, State::Draining, std::memory_order_acq_rel))
+    if (s.Lifecycle.compare_exchange_strong(expected, State::Draining, std::memory_order_acq_rel) == false)
     {
         return LogStatus::NotInitialized;
     }
@@ -525,7 +525,7 @@ FlushResult LogSystem::Flush(FlushKind kind, uint32 timeoutMilliseconds)
     // cannot block requesting the flush.
     if (s.EffectiveMode.load(std::memory_order_acquire) == LogMode::Asynchronous)
     {
-        if (!s.Async)
+        if (s.Async.Get() == nullptr)
         {
             result.Status = LogStatus::NotInitialized;
             return result;

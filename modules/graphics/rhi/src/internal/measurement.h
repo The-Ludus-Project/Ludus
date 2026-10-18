@@ -16,7 +16,7 @@ inline bool TimestampDuration(foundation::uint64 start,
                               foundation::uint64 elapsedCpu,
                               foundation::float64& output) noexcept
 {
-    if (counter.Bits == 0 || counter.Bits > 64 || !(counter.Tick > 0) || !(counter.Tick < 1e9))
+    if (counter.Bits == 0 || counter.Bits > 64 || (counter.Tick > 0) == false || (counter.Tick < 1e9) == false)
     {
         return false;
     }
@@ -56,7 +56,7 @@ public:
     explicit TimingArmRollback(GpuTiming& output) noexcept : Output(output), Previous(output), Owner(DeviceOwner()) {}
     ~TimingArmRollback() noexcept
     {
-        if (!Accepted && DeviceOwner() == Owner && GetStartup().State == StartupState::Ready)
+        if (Accepted == false && DeviceOwner() == Owner && GetStartup().State == StartupState::Ready)
         {
             Output = Previous;
         }

@@ -74,7 +74,7 @@ bool MainThread() noexcept
 
 uint32 PixelExtent(CGFloat value) noexcept
 {
-    if (!std::isfinite(value) || value <= 0 || value > std::numeric_limits<uint32>::max())
+    if (std::isfinite(value) == false || value <= 0 || value > std::numeric_limits<uint32>::max())
     {
         return 0;
     }
@@ -192,7 +192,7 @@ void PumpEvents() noexcept
 
 void DispatchResponderKey(NSEvent* event) noexcept
 {
-    if (!MainThread() || event == gNormalizedEvent)
+    if (MainThread() == false || event == gNormalizedEvent)
     {
         return;
     }
@@ -232,7 +232,7 @@ bool OnMainThread() noexcept
 
 bool Initialize([[maybe_unused]] const WindowManager::InitializeInfo& info) noexcept
 {
-    if (!MainThread())
+    if (MainThread() == false)
     {
         return false;
     }
@@ -255,7 +255,7 @@ bool Initialize([[maybe_unused]] const WindowManager::InitializeInfo& info) noex
         }
         if (gOwnsApplication)
         {
-            if (![application setActivationPolicy:NSApplicationActivationPolicyRegular])
+            if ([application setActivationPolicy:NSApplicationActivationPolicyRegular] == false)
             {
                 return false;
             }
@@ -301,8 +301,8 @@ bool Initialize([[maybe_unused]] const WindowManager::InitializeInfo& info) noex
 
 foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexcept
 {
-    if (!MainThread() || !gInitialized || info.Width == 0 || info.Height == 0 || info.Width > MAX_CONTENT_EXTENT ||
-        info.Height > MAX_CONTENT_EXTENT || info.Name.size() > 4096)
+    if (MainThread() == false || gInitialized == false || info.Width == 0 || info.Height == 0 ||
+        info.Width > MAX_CONTENT_EXTENT || info.Height > MAX_CONTENT_EXTENT || info.Name.size() > 4096)
     {
         return nullptr;
     }
@@ -312,7 +312,7 @@ foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexc
         {
             CocoaWindow* allocated = new (std::nothrow) CocoaWindow(info);
             foundation::UniquePtr<CocoaWindow> window(allocated);
-            if (!window || !window->Open())
+            if (window == nullptr || window->Open() == false)
             {
                 return nullptr;
             }
@@ -390,13 +390,13 @@ CocoaWindow::~CocoaWindow() noexcept
 
 bool CocoaWindow::HandleEvent([[maybe_unused]] const Event& event) noexcept
 {
-    if (!MainThread() || mClosed)
+    if (MainThread() == false || mClosed)
     {
         return false;
     }
     PumpEvents();
     RefreshExtent();
-    return !mClosed;
+    return mClosed == false;
 }
 
 void CocoaWindow::RefreshExtent() noexcept
@@ -471,7 +471,7 @@ void CocoaWindow::FocusChanged(bool focused) noexcept
 
 void CocoaWindow::Closed() noexcept
 {
-    if (!mClosed)
+    if (mClosed == false)
     {
         mClosed = true;
         mFocused = false;
@@ -486,12 +486,12 @@ void CocoaWindow::Closed() noexcept
 
 void CocoaWindow::KeyEvent(NSEvent* event) noexcept
 {
-    if (!mFocused || mClosed)
+    if (mFocused == false || mClosed)
     {
         return;
     }
     const input::Key key = MapKeyCode(event.keyCode);
-    if (!input::IsValidKey(key))
+    if (input::IsValidKey(key) == false)
     {
         return;
     }

@@ -24,8 +24,8 @@ int ExerciseInstalledPack() noexcept
     using namespace ludus::foundation::filesystem;
     ProviderHandle storage, pack;
     const MemoryEntry entry{"archive", kPack};
-    if (!CreateMemoryProvider({&entry, 1}, storage).Succeeded() ||
-        !CreatePackProvider(storage, "archive", {}, pack).Succeeded())
+    if (CreateMemoryProvider({&entry, 1}, storage).Succeeded() == false ||
+        CreatePackProvider(storage, "archive", {}, pack).Succeeded() == false)
     {
         return 11;
     }
@@ -33,9 +33,10 @@ int ExerciseInstalledPack() noexcept
     MountSnapshot snapshot;
     VirtualPath key;
     VirtualFile file, clone;
-    if (!MountSnapshot::Create({&mount, 1}, 1, snapshot).Succeeded() || !key.Set(Root::Assets, "entry").Succeeded() ||
-        !snapshot.OpenRead(key, file).Outcome.Succeeded() || !file.Clone(clone).Succeeded() ||
-        !MountSnapshot::Create({}, 2, snapshot).Succeeded())
+    if (MountSnapshot::Create({&mount, 1}, 1, snapshot).Succeeded() == false ||
+        key.Set(Root::Assets, "entry").Succeeded() == false ||
+        snapshot.OpenRead(key, file).Outcome.Succeeded() == false || file.Clone(clone).Succeeded() == false ||
+        MountSnapshot::Create({}, 2, snapshot).Succeeded() == false)
     {
         return 11;
     }

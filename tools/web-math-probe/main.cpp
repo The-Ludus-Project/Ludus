@@ -39,7 +39,7 @@ int gFail = 0;
 
 void Check(bool condition, const char* label)
 {
-    if (!condition)
+    if (condition == false)
     {
         std::printf("FAIL: %s\n", label);
         ++gFail;

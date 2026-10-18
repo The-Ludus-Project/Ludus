@@ -233,7 +233,7 @@ inline constexpr EvdevKeyTable EVDEV_KEY_TABLE{};
 BuildKeyRecord(uint32 code, bool pressed, uint32 timeMs, ludus::input::KeyboardRecord& outRecord) noexcept
 {
     const Key physical = MapEvdevCode(code);
-    if (!ludus::input::IsValidKey(physical))
+    if (ludus::input::IsValidKey(physical) == false)
     {
         return false;
     }

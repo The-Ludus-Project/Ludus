@@ -125,7 +125,7 @@ void Frame() noexcept
     {
         (void)gWindow->SetBrowserFramebufferLimit(startup.MaxTextureDimension2D);
         (void)gWindow->GetBrowserState(window);
-        if (!gBuilding)
+        if (gBuilding == false)
         {
             BuildDemo();
         }

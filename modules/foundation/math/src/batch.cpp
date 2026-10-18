@@ -60,7 +60,7 @@ TryTransformPoints(const Affine3& transform, std::span<const Vector3> input, std
     {
         return MathStatus::SizeMismatch;
     }
-    if (!IsFinite(transform))
+    if (IsFinite(transform) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -81,12 +81,12 @@ TryTransformPoints(const Affine3& transform, std::span<const Vector3> input, std
     for (usize i = 0; i < input.size(); ++i)
     {
         const Vector3 p = input[i];
-        if (!IsFinite(p))
+        if (IsFinite(p) == false)
         {
             return MathStatus::NonFiniteInput;
         }
         const Vector3 r = TransformPoint(transform, p);
-        if (!IsFinite(r))
+        if (IsFinite(r) == false)
         {
             return MathStatus::OutOfRange;
         }
@@ -110,7 +110,7 @@ MathStatus TryClassifySpheres(const Frustum& frustum,
     {
         return MathStatus::SizeMismatch;
     }
-    if (!std::isfinite(margin))
+    if (std::isfinite(margin) == false)
     {
         return MathStatus::NonFiniteInput;
     }

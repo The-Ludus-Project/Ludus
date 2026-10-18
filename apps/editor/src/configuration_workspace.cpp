@@ -58,7 +58,7 @@ QString Display(const Value& value)
 bool Read(const QString& path, QByteArray& output)
 {
     QFile file(path);
-    if (QFileInfo(path).isSymLink() || !file.open(QIODevice::ReadOnly) ||
+    if (QFileInfo(path).isSymLink() || file.open(QIODevice::ReadOnly) == false ||
         file.size() > static_cast<qint64>(MAX_BUNDLE_BYTES))
     {
         return false;
@@ -184,13 +184,13 @@ void ConfigurationWorkspace::Save(bool choosePath)
         (void)DownloadEditorDocument(this, path);
     }
 #else
-    const auto path = !choosePath && !PreferencePath_.isEmpty()
-                          ? PreferencePath_
-                          : QFileDialog::getSaveFileName(this,
-                                                         QStringLiteral("Save preferences"),
-                                                         PreferencePath_,
-                                                         QStringLiteral("JSON (*.json)"));
-    if (!path.isEmpty())
+    const QString path = choosePath == false && PreferencePath_.isEmpty() == false
+                             ? PreferencePath_
+                             : QFileDialog::getSaveFileName(this,
+                                                            QStringLiteral("Save preferences"),
+                                                            PreferencePath_,
+                                                            QStringLiteral("JSON (*.json)"));
+    if (path.isEmpty() == false)
     {
         (void)SavePreferences(path);
     }
@@ -203,7 +203,7 @@ ConfigurationWorkspace::~ConfigurationWorkspace()
 bool ConfigurationWorkspace::Report(Status status, const Diagnostic& error)
 {
     const bool success = status == Status::Ok || status == Status::PendingRestart;
-    if (!success && error.ByteOffset != UNKNOWN_BYTE_OFFSET)
+    if (success == false && error.ByteOffset != UNKNOWN_BYTE_OFFSET)
     {
         Status_->setText(
             QStringLiteral("Configuration %1 at byte %2").arg(Text(StatusName(status))).arg(error.ByteOffset));
@@ -280,7 +280,7 @@ bool ConfigurationWorkspace::Edit(std::string_view name, const QString& text, bo
     edit.Name = name;
     edit.Remove = reset;
     (void)edit.From.Source.TryAssign("Editor preferences");
-    if (!reset)
+    if (reset == false)
     {
         const auto utf8 = text.toUtf8();
         std::string_view input{utf8.constData(), static_cast<foundation::usize>(utf8.size())};
@@ -314,7 +314,7 @@ bool ConfigurationWorkspace::Edit(std::string_view name, const QString& text, bo
     {
         status = Context_->Commit(Context_->Revision(), error);
     }
-    if (!Report(status, error))
+    if (Report(status, error) == false)
     {
         return false;
     }
@@ -332,7 +332,7 @@ bool ConfigurationWorkspace::Load(const QString& path, Layer layer)
         return Report(Status::InvalidSource);
     }
     QByteArray bytes;
-    if (!Read(path, bytes))
+    if (Read(path, bytes) == false)
     {
         return Report(Status::InvalidBundle);
     }
@@ -348,7 +348,7 @@ bool ConfigurationWorkspace::Load(const QString& path, Layer layer)
     {
         status = Context_->Commit(Context_->Revision(), error);
     }
-    if (!Report(status, error))
+    if (Report(status, error) == false)
     {
         return false;
     }
@@ -371,7 +371,7 @@ bool ConfigurationWorkspace::SavePreferences(const QString& path)
     if (absolute == PreferencePath_)
     {
         QByteArray current;
-        if (!Read(path, current) || current != PreferenceStamp_)
+        if (Read(path, current) == false || current != PreferenceStamp_)
         {
             return Report(Status::Conflict);
         }
@@ -385,10 +385,10 @@ bool ConfigurationWorkspace::SavePreferences(const QString& path)
     }
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
-    if (!file.open(QIODevice::WriteOnly) ||
+    if (file.open(QIODevice::WriteOnly) == false ||
         file.write(reinterpret_cast<const char*>(output.data()), static_cast<qint64>(output.size())) !=
             static_cast<qint64>(output.size()) ||
-        !file.commit())
+        file.commit() == false)
     {
         return Report(Status::InvalidState);
     }
@@ -399,9 +399,9 @@ bool ConfigurationWorkspace::SavePreferences(const QString& path)
 }
 bool ConfigurationWorkspace::ConfirmDiscard()
 {
-    return !Dirty_ || QMessageBox::question(this,
-                                            QStringLiteral("Unsaved configuration preferences"),
-                                            QStringLiteral("Discard unsaved configuration preferences?"),
-                                            QMessageBox::Discard | QMessageBox::Cancel) == QMessageBox::Discard;
+    return Dirty_ == false || QMessageBox::question(this,
+                                                    QStringLiteral("Unsaved configuration preferences"),
+                                                    QStringLiteral("Discard unsaved configuration preferences?"),
+                                                    QMessageBox::Discard | QMessageBox::Cancel) == QMessageBox::Discard;
 }
 } // namespace ludus::editor

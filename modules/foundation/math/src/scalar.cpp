@@ -70,7 +70,8 @@ template <typename ScalarType>
 template <typename ScalarType>
 [[nodiscard]] bool NearlyEqualImpl(ScalarType a, ScalarType b, ScalarType absTol, ScalarType relTol) noexcept
 {
-    if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(absTol) || !std::isfinite(relTol))
+    if (std::isfinite(a) == false || std::isfinite(b) == false || std::isfinite(absTol) == false ||
+        std::isfinite(relTol) == false)
     {
         return false;
     }
@@ -90,11 +91,11 @@ template <typename ScalarType>
 template <typename ScalarType>
 [[nodiscard]] MathStatus TrySmoothStepImpl(ScalarType edge0, ScalarType edge1, ScalarType x, ScalarType& out) noexcept
 {
-    if (!std::isfinite(edge0) || !std::isfinite(edge1) || !std::isfinite(x))
+    if (std::isfinite(edge0) == false || std::isfinite(edge1) == false || std::isfinite(x) == false)
     {
         return MathStatus::NonFiniteInput;
     }
-    if (!(edge0 < edge1))
+    if ((edge0 < edge1) == false)
     {
         return MathStatus::InvalidArgument;
     }
@@ -112,7 +113,8 @@ template <typename ScalarType>
                                                     ScalarType dt,
                                                     ScalarType& out) noexcept
 {
-    if (!std::isfinite(current) || !std::isfinite(target) || !std::isfinite(rate) || !std::isfinite(dt))
+    if (std::isfinite(current) == false || std::isfinite(target) == false || std::isfinite(rate) == false ||
+        std::isfinite(dt) == false)
     {
         return MathStatus::NonFiniteInput;
     }

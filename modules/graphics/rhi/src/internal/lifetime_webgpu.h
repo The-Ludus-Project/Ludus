@@ -44,7 +44,7 @@ void LifetimeWebCompleted(LifetimeWebTransfer& transfer, RasterStatus result) no
     {
         --transfer.Callbacks;
     }
-    if ((transfer.Abandoned || !internal::Current(transfer.Session)) && transfer.Callbacks == 0)
+    if ((transfer.Abandoned || internal::Current(transfer.Session) == false) && transfer.Callbacks == 0)
     {
         LifetimeWebDrop(transfer);
     }
@@ -115,7 +115,7 @@ RasterStatus LifetimeWebStage(LifetimeWebTransfer& transfer, bool readback) noex
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
     const auto& transfer = gLifetimeWeb[readback ? 1 : 0][slot];
-    return !transfer.Busy && transfer.Callbacks == 0;
+    return transfer.Busy == false && transfer.Callbacks == 0;
 }
 RasterStatus LifetimeUpload(usize transferSlot,
                             const BufferDescription& info,
@@ -354,7 +354,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
 {
     auto& transfer = gLifetimeWeb[readback ? 1 : 0][slot];
-    if (!transfer.Busy || transfer.Session != gSession)
+    if (transfer.Busy == false || transfer.Session != gSession)
     {
         return RasterStatus::Failed;
     }
@@ -362,7 +362,7 @@ RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
     {
         return RasterStatus::Pending;
     }
-    if (readback && !transfer.Mapped && transfer.Result == RasterStatus::Ready)
+    if (readback && transfer.Mapped == false && transfer.Result == RasterStatus::Ready)
     {
         return RasterStatus::Failed;
     }

@@ -187,7 +187,7 @@ Status Update(GameInstance* instance, const FrameInput* input, RenderParams* out
     }
     const bool interact = (input->HeldActions & 4U) != 0 && (owner.PreviousActions & 4U) == 0;
     owner.PreviousActions = input->HeldActions;
-    if (interact && !owner.Quiesced)
+    if (interact && owner.Quiesced == false)
     {
         behavior::Invocation call
         {
@@ -262,13 +262,13 @@ Status Size(GameInstance* instance, usize* out) noexcept
         return Status::InvalidArgument;
     }
     behavior::DebugSnapshot snapshot;
-    if (!AsOwner(instance)->Scripts.Inspect(snapshot) || snapshot.Paused)
+    if (AsOwner(instance)->Scripts.Inspect(snapshot) == false || snapshot.Paused)
     {
         return Status::MigrationUnsupported;
     }
     uint8 bytes[256] = {};
     usize written = 0;
-    if (!behavior::EncodeState(project::SCHEMA, AsOwner(instance)->State, bytes, written))
+    if (behavior::EncodeState(project::SCHEMA, AsOwner(instance)->State, bytes, written) == false)
     {
         return Status::Internal;
     }
@@ -284,7 +284,7 @@ Status Write(GameInstance* instance, CheckpointHeader* header, ByteSpan body, us
     auto& owner = *AsOwner(instance);
     usize encoded = 0;
     auto bytes = std::span<uint8>(body.Data, body.Capacity);
-    if (!behavior::EncodeState(project::SCHEMA, owner.State, bytes.subspan(32), encoded))
+    if (behavior::EncodeState(project::SCHEMA, owner.State, bytes.subspan(32), encoded) == false)
     {
         return Status::Internal;
     }
@@ -320,10 +320,11 @@ Status Candidate(const CreateInfo* info, const CheckpointHeader* header, ByteVie
     }
     const auto bytes = std::span<const uint8>(body.Data, body.Size);
     uint64 previous_execution = 0;
-    if (!behavior::DecodeState(project::SCHEMA, bytes.subspan(32), owner->State) ||
-        !TryReadLittleEndian(bytes, owner->Tick) || !TryReadLittleEndian(bytes.subspan(8), owner->Applied) ||
-        !TryReadLittleEndian(bytes.subspan(16), owner->PreviousActions) ||
-        !TryReadLittleEndian(bytes.subspan(24), previous_execution) || previous_execution == ~uint64{0})
+    if (behavior::DecodeState(project::SCHEMA, bytes.subspan(32), owner->State) == false ||
+        TryReadLittleEndian(bytes, owner->Tick) == false ||
+        TryReadLittleEndian(bytes.subspan(8), owner->Applied) == false ||
+        TryReadLittleEndian(bytes.subspan(16), owner->PreviousActions) == false ||
+        TryReadLittleEndian(bytes.subspan(24), previous_execution) == false || previous_execution == ~uint64{0})
     {
         Destroy(reinterpret_cast<GameInstance*>(owner));
         return Status::MigrationUnsupported;
@@ -367,7 +368,7 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
     }
     auto& owner = *AsOwner(instance);
     behavior::DebugSnapshot snapshot;
-    if (!owner.Scripts.Inspect(snapshot))
+    if (owner.Scripts.Inspect(snapshot) == false)
     {
         return Status::InvalidArgument;
     }
@@ -391,13 +392,14 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
     const auto request = document.Root();
     std::string_view action;
     uint64 version = 0;
-    if (!request.Get("version").Integer(version) || version != 1 || !request.Get("action").String(action))
+    if (request.Get("version").Integer(version) == false || version != 1 ||
+        request.Get("action").String(action) == false)
     {
         return Status::InvalidArgument;
     }
     if (action == "inspect")
     {
-        if (!request.Fields({"version", "action"}))
+        if (request.Fields({"version", "action"}) == false)
         {
             return Status::InvalidArgument;
         }
@@ -406,10 +408,11 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
     {
         std::string_view session_text, execution_text, stop_text;
         uint64 session = 0, execution = 0, stop = 0;
-        if (!request.Get("session").String(session_text) || !request.Get("execution").String(execution_text) ||
-            !request.Get("stop").String(stop_text) || !Hex(session_text, session) || !Hex(execution_text, execution) ||
-            !Hex(stop_text, stop) || session != owner.Info.GameId || execution != owner.Execution ||
-            stop != snapshot.Stop)
+        if (request.Get("session").String(session_text) == false ||
+            request.Get("execution").String(execution_text) == false ||
+            request.Get("stop").String(stop_text) == false || Hex(session_text, session) == false ||
+            Hex(execution_text, execution) == false || Hex(stop_text, stop) == false || session != owner.Info.GameId ||
+            execution != owner.Execution || stop != snapshot.Stop)
         {
             return Status::InvalidArgument;
         }
@@ -418,10 +421,11 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
             uint64 asset = 0, line = 0;
             std::string_view asset_text;
             bool enabled = false;
-            if (!request.Fields({"version", "action", "session", "execution", "stop", "asset", "line", "enabled"}) ||
-                !request.Get("asset").String(asset_text) || !Hex(asset_text, asset) ||
-                !request.Get("line").Integer(line) || line == 0 || line > 65536 ||
-                !request.Get("enabled").Boolean(enabled) ||
+            if (request.Fields({"version", "action", "session", "execution", "stop", "asset", "line", "enabled"}) ==
+                    false ||
+                request.Get("asset").String(asset_text) == false || Hex(asset_text, asset) == false ||
+                request.Get("line").Integer(line) == false || line == 0 || line > 65536 ||
+                request.Get("enabled").Boolean(enabled) == false ||
                 owner.Scripts.Breakpoint(asset, static_cast<int32>(line), enabled) < 0)
             {
                 return Status::InvalidArgument;
@@ -429,7 +433,8 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
         }
         else if (action == "restart")
         {
-            if (!request.Fields({"version", "action", "session", "execution", "stop"}) || owner.Execution == ~uint64{0})
+            if (request.Fields({"version", "action", "session", "execution", "stop"}) == false ||
+                owner.Execution == ~uint64{0})
             {
                 return Status::InvalidArgument;
             }
@@ -450,9 +455,10 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
             {
                 uint64 asset = 0, amount = 0;
                 std::string_view asset_text;
-                if (!request.Fields({"version", "action", "session", "execution", "stop", "asset", "amount"}) ||
-                    snapshot.Paused || owner.Quiesced || !request.Get("asset").String(asset_text) ||
-                    !Hex(asset_text, asset) || !request.Get("amount").Integer(amount) || amount == 0 || amount > 10)
+                if (request.Fields({"version", "action", "session", "execution", "stop", "asset", "amount"}) == false ||
+                    snapshot.Paused || owner.Quiesced || request.Get("asset").String(asset_text) == false ||
+                    Hex(asset_text, asset) == false || request.Get("amount").Integer(amount) == false || amount == 0 ||
+                    amount > 10)
                 {
                     return Status::InvalidArgument;
                 }
@@ -479,7 +485,7 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
             }
             else
             {
-                if (!request.Fields({"version", "action", "session", "execution", "stop"}) ||
+                if (request.Fields({"version", "action", "session", "execution", "stop"}) == false ||
                     (action != "continue" && action != "into" && action != "over" && action != "out"))
                 {
                     return Status::InvalidArgument;

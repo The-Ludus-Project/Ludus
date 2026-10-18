@@ -12,13 +12,13 @@ template <class Curve>
 [[nodiscard]] MathStatus Load(const Curve& curve, float64 u, Vector3d* control) noexcept
 {
     const MathStatus status = internal::CheckParameter(u);
-    if (!IsSuccess(status))
+    if (IsSuccess(status) == false)
     {
         return status;
     }
     for (usize i = 0; i < 4; ++i)
     {
-        if (!IsFinite(curve.Control[i]))
+        if (IsFinite(curve.Control[i]) == false)
         {
             return MathStatus::NonFiniteInput;
         }
@@ -31,12 +31,12 @@ template <class Curve, class Value>
 {
     Vector3d control[4]{};
     const MathStatus status = Load(curve, u, control);
-    if (!IsSuccess(status))
+    if (IsSuccess(status) == false)
     {
         return status;
     }
     Value result{};
-    if (!internal::Narrow(internal::Evaluate(4, control, u), result))
+    if (internal::Narrow(internal::Evaluate(4, control, u), result) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -48,14 +48,14 @@ template <class Curve, class Sample>
 {
     Vector3d control[4]{};
     const MathStatus status = Load(curve, u, control);
-    if (!IsSuccess(status))
+    if (IsSuccess(status) == false)
     {
         return status;
     }
     Sample result;
-    if (!internal::Narrow(internal::Evaluate(4, control, u), result.Position) ||
-        !internal::Narrow(internal::EvaluateDerivative(control, u, 1), result.FirstDerivative) ||
-        !internal::Narrow(internal::EvaluateDerivative(control, u, 2), result.SecondDerivative))
+    if (internal::Narrow(internal::Evaluate(4, control, u), result.Position) == false ||
+        internal::Narrow(internal::EvaluateDerivative(control, u, 1), result.FirstDerivative) == false ||
+        internal::Narrow(internal::EvaluateDerivative(control, u, 2), result.SecondDerivative) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -69,8 +69,8 @@ template <class Curve, class Sample>
 template <class Hermite, class Curve>
 [[nodiscard]] MathStatus FromHermite(const Hermite& hermite, float64 width, Curve& out) noexcept
 {
-    if (!IsFinite(width) || !IsFinite(hermite.Start) || !IsFinite(hermite.End) || !IsFinite(hermite.StartDerivative) ||
-        !IsFinite(hermite.EndDerivative))
+    if (IsFinite(width) == false || IsFinite(hermite.Start) == false || IsFinite(hermite.End) == false ||
+        IsFinite(hermite.StartDerivative) == false || IsFinite(hermite.EndDerivative) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -82,10 +82,10 @@ template <class Hermite, class Curve>
     result.Control[0] = hermite.Start;
     result.Control[3] = hermite.End;
     const float64 scale = width / 3.0;
-    if (!internal::Narrow(internal::Widen(hermite.Start) + internal::Widen(hermite.StartDerivative) * scale,
-                          result.Control[1]) ||
-        !internal::Narrow(internal::Widen(hermite.End) - internal::Widen(hermite.EndDerivative) * scale,
-                          result.Control[2]))
+    if (internal::Narrow(internal::Widen(hermite.Start) + internal::Widen(hermite.StartDerivative) * scale,
+                         result.Control[1]) == false ||
+        internal::Narrow(internal::Widen(hermite.End) - internal::Widen(hermite.EndDerivative) * scale,
+                         result.Control[2]) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -101,7 +101,7 @@ template <class Curve>
     }
     Vector3d control[4]{};
     const MathStatus status = Load(curve, u, control);
-    if (!IsSuccess(status))
+    if (IsSuccess(status) == false)
     {
         return status;
     }
@@ -109,8 +109,8 @@ template <class Curve>
     Curve leftResult, rightResult;
     for (usize i = 0; i < 4; ++i)
     {
-        if (!internal::Narrow(split.Left[i], leftResult.Control[i]) ||
-            !internal::Narrow(split.Right[i], rightResult.Control[i]))
+        if (internal::Narrow(split.Left[i], leftResult.Control[i]) == false ||
+            internal::Narrow(split.Right[i], rightResult.Control[i]) == false)
         {
             return MathStatus::OutOfRange;
         }

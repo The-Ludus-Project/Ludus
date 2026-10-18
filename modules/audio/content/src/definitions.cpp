@@ -28,7 +28,8 @@ bool Id(JsonValue root, const char* field, ResourceId& id) noexcept
 bool Number(JsonValue root, const char* field, float32& output, float64 min, float64 max) noexcept
 {
     float64 value = 0;
-    if (!root.Get(field).Number(value) || (!ludus::foundation::math::IsFinite(value) || value < min || value > max))
+    if (root.Get(field).Number(value) == false ||
+        (ludus::foundation::math::IsFinite(value) == false || value < min || value > max))
     {
         return false;
     }
@@ -52,32 +53,32 @@ bool Common(JsonValue root,
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
     uint64 version = 0, p = 0;
-    if (!root.Get("version").Integer(version) || version != 1)
+    if (root.Get("version").Integer(version) == false || version != 1)
     {
         (void)Bad(diagnostic, "version");
         return false;
     }
-    if (!Id(root, "id", id))
+    if (Id(root, "id", id) == false)
     {
         (void)Bad(diagnostic, "id");
         return false;
     }
-    if (!Id(root, "bus", bus))
+    if (Id(root, "bus", bus) == false)
     {
         (void)Bad(diagnostic, "bus");
         return false;
     }
-    if (!root.Get("priority").Integer(p) || p > 7)
+    if (root.Get("priority").Integer(p) == false || p > 7)
     {
         (void)Bad(diagnostic, "priority");
         return false;
     }
-    if (!Number(root, "gain", gain, 0, 1))
+    if (Number(root, "gain", gain, 0, 1) == false)
     {
         (void)Bad(diagnostic, "gain");
         return false;
     }
-    if (!ReadLoop(root.Get("loop"), loop))
+    if (ReadLoop(root.Get("loop"), loop) == false)
     {
         (void)Bad(diagnostic, "loop");
         return false;
@@ -134,38 +135,41 @@ ContentStatus ReadSound(std::string_view json, Sound& output, Diagnostic& diagno
     }
     const auto root = doc.Root();
     Sound next;
-    if (!root.Fields(
-            {"version", "id", "bus", "group", "priority", "gain", "rate", "spatial", "loop", "policy", "variations"}))
+    if (root.Fields(
+            {"version", "id", "bus", "group", "priority", "gain", "rate", "spatial", "loop", "policy", "variations"}) ==
+        false)
     {
         return Bad(diagnostic, "sound.fields");
     }
-    if (!Common(root, next.Id, next.Bus, next.Priority, next.Gain, next.Region, diagnostic))
+    if (Common(root, next.Id, next.Bus, next.Priority, next.Gain, next.Region, diagnostic) == false)
     {
         return diagnostic.Result;
     }
-    if (!Id(root, "group", next.Group) || !Number(root, "rate", next.Rate, 0.5, 2.0))
+    if (Id(root, "group", next.Group) == false || Number(root, "rate", next.Rate, 0.5, 2.0) == false)
     {
         return Bad(diagnostic, "sound.rate/group");
     }
     const auto spatial = root.Get("spatial");
     std::string_view mode;
-    if (!spatial.Fields({"mode", "min_distance", "max_distance"}) || !spatial.Get("mode").String(mode) ||
-        (mode != "point" && mode != "none") || !Number(spatial, "min_distance", next.MinDistance, 0, 1e30) ||
-        !Number(spatial, "max_distance", next.MaxDistance, 0, 1e30) || next.MaxDistance <= next.MinDistance)
+    if (spatial.Fields({"mode", "min_distance", "max_distance"}) == false ||
+        spatial.Get("mode").String(mode) == false || (mode != "point" && mode != "none") ||
+        Number(spatial, "min_distance", next.MinDistance, 0, 1e30) == false ||
+        Number(spatial, "max_distance", next.MaxDistance, 0, 1e30) == false || next.MaxDistance <= next.MinDistance)
     {
         return Bad(diagnostic, "sound.spatial");
     }
     next.Positional = mode == "point";
     const auto policy = root.Get("policy");
     uint64 cooldown = 0;
-    if (!policy.Fields({"cooldown_ms", "suppress_while_active"}) || !policy.Get("cooldown_ms").Integer(cooldown) ||
-        cooldown > 600000 || !policy.Get("suppress_while_active").Boolean(next.SuppressWhileActive))
+    if (policy.Fields({"cooldown_ms", "suppress_while_active"}) == false ||
+        policy.Get("cooldown_ms").Integer(cooldown) == false || cooldown > 600000 ||
+        policy.Get("suppress_while_active").Boolean(next.SuppressWhileActive) == false)
     {
         return Bad(diagnostic, "sound.policy");
     }
     next.CooldownMs = static_cast<uint32>(cooldown);
     const auto variations = root.Get("variations");
-    if (!variations.Array() || variations.Count() == 0 || variations.Count() > 16)
+    if (variations.Array() == false || variations.Count() == 0 || variations.Count() > 16)
     {
         return Bad(diagnostic, "sound.variations");
     }
@@ -173,7 +177,8 @@ ContentStatus ReadSound(std::string_view json, Sound& output, Diagnostic& diagno
     for (usize i = 0; i < next.VariationCount; ++i)
     {
         std::string_view id;
-        if (!variations.At(i).String(id) || !ludus::content::ValidId(id) || !next.Variations[i].Set(id))
+        if (variations.At(i).String(id) == false || ludus::content::ValidId(id) == false ||
+            next.Variations[i].Set(id) == false)
         {
             return Bad(diagnostic, "sound.variations.id");
         }
@@ -198,15 +203,15 @@ ContentStatus ReadMusic(std::string_view json, Music& output, Diagnostic& diagno
     }
     const auto root = doc.Root();
     Music next;
-    if (!root.Fields({"version", "id", "source", "bus", "priority", "gain", "loop"}))
+    if (root.Fields({"version", "id", "source", "bus", "priority", "gain", "loop"}) == false)
     {
         return Bad(diagnostic, "music.fields");
     }
-    if (!Common(root, next.Id, next.Bus, next.Priority, next.Gain, next.Region, diagnostic))
+    if (Common(root, next.Id, next.Bus, next.Priority, next.Gain, next.Region, diagnostic) == false)
     {
         return diagnostic.Result;
     }
-    if (!Id(root, "source", next.Source))
+    if (Id(root, "source", next.Source) == false)
     {
         return Bad(diagnostic, "source");
     }
@@ -216,7 +221,7 @@ ContentStatus ReadMusic(std::string_view json, Music& output, Diagnostic& diagno
 ContentStatus WriteSound(const Sound& sound, Bytes& output) noexcept
 {
     Bytes scratch;
-    if (!scratch.Resize(16384))
+    if (scratch.Resize(16384) == false)
     {
         return ContentStatus::OutOfMemory;
     }
@@ -270,7 +275,7 @@ ContentStatus WriteSound(const Sound& sound, Bytes& output) noexcept
 ContentStatus WriteMusic(const Music& music, Bytes& output) noexcept
 {
     Bytes scratch;
-    if (!scratch.Resize(4096))
+    if (scratch.Resize(4096) == false)
     {
         return ContentStatus::OutOfMemory;
     }

@@ -56,17 +56,17 @@ public:
         if (size > mValues.GetCapacity())
         {
             usize bytes = 0;
-            if (!TryMultiply(size, sizeof(T), bytes))
+            if (TryMultiply(size, sizeof(T), bytes) == false)
             {
                 StorageCapacityFailed();
                 return false;
             }
-            if (!ReserveHostStorage(bytes))
+            if (ReserveHostStorage(bytes) == false)
             {
                 return false;
             }
             const auto prior = mValues.GetCapacity() * sizeof(T);
-            if (!mValues.TryEnsureCapacity(size))
+            if (mValues.TryEnsureCapacity(size) == false)
             {
                 ReleaseHostStorage(bytes);
                 StorageAllocationFailed();
@@ -160,7 +160,7 @@ public:
         const auto required = count / STORAGE_PAGE_SLOTS + (count % STORAGE_PAGE_SLOTS != 0 ? 1U : 0U);
         while (mPages.GetSize() < required)
         {
-            if (!ReserveHostStorage(sizeof(Page)))
+            if (ReserveHostStorage(sizeof(Page)) == false)
             {
                 return false;
             }
@@ -172,7 +172,7 @@ public:
                 return false;
             }
             const auto index = mPages.GetSize();
-            if (!mPages.TryResize(index + 1))
+            if (mPages.TryResize(index + 1) == false)
             {
                 delete page;
                 ReleaseHostStorage(sizeof(Page));

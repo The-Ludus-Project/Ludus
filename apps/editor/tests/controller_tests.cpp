@@ -295,7 +295,7 @@ TEST_CASE("Opening an SDK project automatically reports missing setup without ru
     QSignalSpy finished(tool, &ToolProcess::Finished);
     controller.OpenProject(descriptor);
     QDeadlineTimer deadline(10000);
-    while (controller.State().Result.Kind == Outcome::None && !deadline.hasExpired())
+    while (controller.State().Result.Kind == Outcome::None && deadline.hasExpired() == false)
     {
         QTest::qWait(10);
     }
@@ -333,8 +333,9 @@ TEST_CASE("Editor New Project verifies the SDK project and opens it after bridge
     creation.Sdk = sdk;
     controller.CreateProject(creation);
     QDeadlineTimer deadline(60000);
-    while ((controller.State().Document != DocumentState::ProjectLoaded || !controller.Caps().CanCloseImmediately) &&
-           !deadline.hasExpired())
+    while ((controller.State().Document != DocumentState::ProjectLoaded ||
+            controller.Caps().CanCloseImmediately == false) &&
+           deadline.hasExpired() == false)
     {
         QTest::qWait(10);
     }
@@ -392,7 +393,7 @@ QMessageBox* WaitForDebugPrompt(MainWindow& window)
 {
     QDeadlineTimer deadline(10000);
     QMessageBox* dialog = nullptr;
-    while (dialog == nullptr && !deadline.hasExpired())
+    while (dialog == nullptr && deadline.hasExpired() == false)
     {
         QTest::qWait(10);
         dialog = window.findChild<QMessageBox*>(QStringLiteral("debuggerSetupDialog"));
@@ -403,7 +404,7 @@ QMessageBox* WaitForDebugPrompt(MainWindow& window)
 void WaitForDebugSession(EditorController& controller)
 {
     QDeadlineTimer deadline(10000);
-    while (controller.State().OperationPhase != Phase::Debugging && !deadline.hasExpired())
+    while (controller.State().OperationPhase != Phase::Debugging && deadline.hasExpired() == false)
     {
         QTest::qWait(10);
     }
@@ -414,7 +415,7 @@ void StopDebugSession(EditorController& controller)
 {
     controller.Stop();
     QDeadlineTimer deadline(10000);
-    while (!controller.Caps().CanCloseImmediately && !deadline.hasExpired())
+    while (controller.Caps().CanCloseImmediately == false && deadline.hasExpired() == false)
     {
         QTest::qWait(10);
     }

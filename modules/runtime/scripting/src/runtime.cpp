@@ -198,7 +198,7 @@ int32 Runtime::Initialize(lua_State* state) noexcept
         {
             luaL_error(state, "invalid program export");
         }
-        if (!program.Entrypoint)
+        if (program.Entrypoint == false)
         {
             // S2 admits flat immutable constants; reject nested mutable exports.
             lua_pushnil(state);
@@ -403,7 +403,7 @@ void Runtime::OnBreak(lua_State* state, lua_Debug* debug) noexcept
 void Runtime::OnStep(lua_State* state, lua_Debug* debug) noexcept
 {
     auto* runtime = static_cast<Runtime*>(GetCallContext(state).DebugOwner);
-    if (!runtime->mDebugEnabled || runtime->mMode == ResumeMode::Continue)
+    if (runtime->mDebugEnabled == false || runtime->mMode == ResumeMode::Continue)
     {
         return;
     }
@@ -427,7 +427,7 @@ Status Runtime::Resume(ResumeMode mode, Diagnostic& diagnostic) noexcept
     {
         return Status::Reentrant;
     }
-    if (!mPaused || mThread == nullptr)
+    if (mPaused == false || mThread == nullptr)
     {
         return Status::NotReady;
     }
@@ -453,7 +453,7 @@ int32 Runtime::SetBreakpoint(lua_State* state) noexcept
 
 int32 Runtime::Breakpoint(BreakpointSpec point) noexcept
 {
-    if (mEntered || mState == nullptr || !mDebugEnabled || point.Line < 1)
+    if (mEntered || mState == nullptr || mDebugEnabled == false || point.Line < 1)
     {
         return -1;
     }
@@ -538,9 +538,9 @@ Status Runtime::LoadPrograms(const Program* programs, usize count, Setup install
             bool found = false;
             for (usize k = 0; k < i; ++k)
             {
-                found |= !programs[k].Entrypoint && programs[k].Asset == program.Dependencies[j];
+                found |= programs[k].Entrypoint == false && programs[k].Asset == program.Dependencies[j];
             }
-            if (!found)
+            if (found == false)
             {
                 return Status::InvalidArtifact;
             }
@@ -602,7 +602,7 @@ Status Runtime::Invoke(Identity identity, void* user, Setup arguments, Diagnosti
             break;
         }
     }
-    if (!found)
+    if (found == false)
     {
         diagnostic.Code = Status::InvalidArtifact;
         return diagnostic.Code;

@@ -42,7 +42,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
 {
     const auto slot = publication.Lease;
     const auto textureSlot = publication.Texture;
-    if (!gNativeMetalReads.EnsureSlots(slot + 1))
+    if (gNativeMetalReads.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -64,7 +64,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
 RasterStatus NativeTextureRelease(usize slot) noexcept
 {
     auto& record = gNativeMetalReads[slot];
-    if (!record.Released)
+    if (record.Released == false)
     {
         [record.Completion commit];
         record.Released = true;

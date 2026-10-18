@@ -162,7 +162,7 @@ bool BindingsFit(NSArray<id<MTLBinding>>* bindings, usize declaredSize, usize bu
 {
     for (id<MTLBinding> binding in bindings)
     {
-        if (!binding.used)
+        if (binding.used == false)
         {
             continue;
         }
@@ -203,20 +203,20 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
 {
     @autoreleasepool
     {
-        if (![NSThread isMainThread] || !ValidWindow(window))
+        if ([NSThread isMainThread] == false || ValidWindow(window) == false)
         {
             return StartupError::InvalidWindow;
         }
         gToken = token;
-        if (!backend::Initialize(app))
+        if (backend::Initialize(app) == false)
         {
             return gDevice == nil ? StartupError::AdapterUnavailable : StartupError::DeviceUnavailable;
         }
-        if (!ConnectWindow(window))
+        if (ConnectWindow(window) == false)
         {
             return StartupError::SurfaceUnavailable;
         }
-        if (!InitializeRendering())
+        if (InitializeRendering() == false)
         {
             return StartupError::RenderingUnavailable;
         }
@@ -228,7 +228,7 @@ bool Initialize(const ApplicationInfo&) noexcept
 {
     @autoreleasepool
     {
-        if (![NSThread isMainThread])
+        if ([NSThread isMainThread] == false)
         {
             return false;
         }
@@ -255,8 +255,8 @@ bool Initialize(const ApplicationInfo&) noexcept
         // Thanks to Apple's "Metal Feature Set Tables" (resource limits),
         // https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf:
         // Mac2 / Apple4 and later guarantee the conservative 16384 texture limit.
-        if (gDevice == nil ||
-            (![gDevice supportsFamily:MTLGPUFamilyMac2] && ![gDevice supportsFamily:MTLGPUFamilyApple4]))
+        if (gDevice == nil || ([gDevice supportsFamily:MTLGPUFamilyMac2] == false &&
+                               [gDevice supportsFamily:MTLGPUFamilyApple4] == false))
         {
             gDevice = nil;
             return false;
@@ -272,7 +272,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
 {
     @autoreleasepool
     {
-        if (![NSThread isMainThread] || gDevice == nil || gConnected || !ValidWindow(window) ||
+        if ([NSThread isMainThread] == false || gDevice == nil || gConnected || ValidWindow(window) == false ||
             window.Width > MAX_DIMENSION || window.Height > MAX_DIMENSION)
         {
             return false;
@@ -356,8 +356,9 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
     {
         return FrameStatus::InvalidState;
     }
-    if (target.Width > MAX_DIMENSION || target.Height > MAX_DIMENSION || !ValidChannel(target.Red) ||
-        !ValidChannel(target.Green) || !ValidChannel(target.Blue) || !ValidChannel(target.Alpha))
+    if (target.Width > MAX_DIMENSION || target.Height > MAX_DIMENSION || ValidChannel(target.Red) == false ||
+        ValidChannel(target.Green) == false || ValidChannel(target.Blue) == false ||
+        ValidChannel(target.Alpha) == false)
     {
         return FrameStatus::Failed;
     }
@@ -368,7 +369,7 @@ FrameStatus Begin() noexcept
 {
     @autoreleasepool
     {
-        if (!gRendering)
+        if (gRendering == false)
         {
             return FrameStatus::NotReady;
         }
@@ -379,18 +380,19 @@ FrameStatus Begin() noexcept
         gFrame = {};
         for (auto command : gSubmitted)
         {
-            if (command != nil && !CheckCommand(command))
+            if (command != nil && CheckCommand(command) == false)
             {
                 return FrameStatus::Failed;
             }
         }
-        if (gTarget.Width == 0 || gTarget.Height == 0 || (gWindow != nil && (gWindow.miniaturized || !gWindow.visible)))
+        if (gTarget.Width == 0 || gTarget.Height == 0 ||
+            (gWindow != nil && (gWindow.miniaturized || gWindow.visible == false)))
         {
             return FrameStatus::Skipped;
         }
         [gSubmitted[gSlot] waitUntilCompleted];
         (void)RasterCompleted();
-        if (gSubmitted[gSlot] != nil && !CheckCommand(gSubmitted[gSlot]))
+        if (gSubmitted[gSlot] != nil && CheckCommand(gSubmitted[gSlot]) == false)
         {
             return FrameStatus::Failed;
         }
@@ -573,8 +575,8 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
         }
         const usize size = gUniforms[resources.Uniform].Size;
         if (reflection == nil ||
-            !BindingsFit(reflection.vertexBindings, gShaders[resources.Vertex].UniformSize, size) ||
-            !BindingsFit(reflection.fragmentBindings, gShaders[resources.Fragment].UniformSize, size))
+            BindingsFit(reflection.vertexBindings, gShaders[resources.Vertex].UniformSize, size) == false ||
+            BindingsFit(reflection.fragmentBindings, gShaders[resources.Fragment].UniformSize, size) == false)
         {
             return ResourceStatus::Failed;
         }
@@ -622,7 +624,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {
     @autoreleasepool
     {
-        if (!gRendering || gLayer != nil || gEncoder != nil || gHeadless == nil)
+        if (gRendering == false || gLayer != nil || gEncoder != nil || gHeadless == nil)
         {
             return false;
         }
@@ -634,7 +636,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
         for (auto command : gSubmitted)
         {
             [command waitUntilCompleted];
-            if (command != nil && !CheckCommand(command))
+            if (command != nil && CheckCommand(command) == false)
             {
                 return false;
             }
@@ -660,7 +662,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
         [encoder endEncoding];
         [command commit];
         [command waitUntilCompleted];
-        if (!CheckCommand(command))
+        if (CheckCommand(command) == false)
         {
             return false;
         }

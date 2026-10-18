@@ -79,14 +79,14 @@ bool Specs(std::span<const FieldSpec> specs, bool entity) noexcept
     for (usize i = 0; i < specs.size(); ++i)
     {
         const auto& field = specs[i];
-        if (field.Id == 0 || !Name(field.Name) || field.Min > field.Max || field.Default < field.Min ||
+        if (field.Id == 0 || Name(field.Name) == false || field.Min > field.Max || field.Default < field.Min ||
             field.Default > field.Max)
         {
             return false;
         }
         if (field.Type == Kind::Entity)
         {
-            if (!entity || field.Min != 0 || field.Max != 0)
+            if (entity == false || field.Min != 0 || field.Max != 0)
             {
                 return false;
             }
@@ -109,17 +109,17 @@ bool Specs(std::span<const FieldSpec> specs, bool entity) noexcept
 bool ValidContract(const Contract& contract) noexcept
 {
     uint8 hash[32]{};
-    if (contract.Digest == nullptr || std::strlen(contract.Digest) != 64 || !Hex(contract.Digest, hash) ||
-        contract.State.empty() || !Specs(contract.Config, false) || !Specs(contract.State, false) ||
-        !Specs(contract.Event, true) || contract.Operations.size() > 16)
+    if (contract.Digest == nullptr || std::strlen(contract.Digest) != 64 || Hex(contract.Digest, hash) == false ||
+        contract.State.empty() || Specs(contract.Config, false) == false || Specs(contract.State, false) == false ||
+        Specs(contract.Event, true) == false || contract.Operations.size() > 16)
     {
         return false;
     }
     for (usize i = 0; i < contract.Operations.size(); ++i)
     {
         const auto& op = contract.Operations[i];
-        if (op.Id == 0 || !Name(op.Name) || op.Phase == 0 || op.Phase > 255 || op.Capability == 0 ||
-            op.Arguments.size() > 4 || !Specs(op.Arguments, true))
+        if (op.Id == 0 || Name(op.Name) == false || op.Phase == 0 || op.Phase > 255 || op.Capability == 0 ||
+            op.Arguments.size() > 4 || Specs(op.Arguments, true) == false)
         {
             return false;
         }
@@ -169,7 +169,7 @@ bool ValidRecord(const Record& record,
             if (record.Items[j].Id == specs[i].Id)
             {
                 ++found;
-                if (!ValidValue(record.Items[j].Data, specs[i], input, services))
+                if (ValidValue(record.Items[j].Data, specs[i], input, services) == false)
                 {
                     return false;
                 }
@@ -222,7 +222,7 @@ CommandStatus Admit(const Contract& contract,
     }
     for (usize i = 0; i < arguments.size(); ++i)
     {
-        if (!ValidValue(arguments[i], op->Arguments[i], input, services))
+        if (ValidValue(arguments[i], op->Arguments[i], input, services) == false)
         {
             return op->Arguments[i].Type == Kind::Entity ? CommandStatus::InvalidEntity : CommandStatus::InvalidValue;
         }
@@ -306,11 +306,11 @@ Status ExecuteNative(const Contract& contract,
                      void* user,
                      Outcome& output) noexcept
 {
-    if (!ValidContract(contract))
+    if (ValidContract(contract) == false)
     {
         return Status::InvalidContract;
     }
-    if (handler == nullptr || !ValidInput(contract, input, services))
+    if (handler == nullptr || ValidInput(contract, input, services) == false)
     {
         return Status::InvalidInput;
     }
@@ -320,7 +320,7 @@ Status ExecuteNative(const Contract& contract,
     {
         return status;
     }
-    if (!ValidRecord(candidate.mCandidate.State, contract.State, input, services))
+    if (ValidRecord(candidate.mCandidate.State, contract.State, input, services) == false)
     {
         return Status::InvalidInput;
     }
@@ -335,7 +335,7 @@ std::string_view LuauProfile() noexcept
 // Declared scalar state only; wire records never serialize native object layout.
 bool EncodeState(const Contract& contract, const Record& state, std::span<uint8> output, usize& written) noexcept
 {
-    if (!ValidContract(contract) || !ValidRecord(state, contract.State, {}, {}))
+    if (ValidContract(contract) == false || ValidRecord(state, contract.State, {}, {}) == false)
     {
         return false;
     }
@@ -366,7 +366,7 @@ bool EncodeState(const Contract& contract, const Record& state, std::span<uint8>
 }
 bool DecodeState(const Contract& contract, std::span<const uint8> bytes, Record& output) noexcept
 {
-    if (!ValidContract(contract) || bytes.size() < 44)
+    if (ValidContract(contract) == false || bytes.size() < 44)
     {
         return false;
     }
@@ -395,7 +395,7 @@ bool DecodeState(const Contract& contract, std::span<const uint8> bytes, Record&
         candidate.Items[i].Data.Type = static_cast<Kind>(kind);
         (void)TryReadLittleEndian(data.subspan(8), candidate.Items[i].Data.Scalar);
     }
-    if (!ValidRecord(candidate, contract.State, {}, {}))
+    if (ValidRecord(candidate, contract.State, {}, {}) == false)
     {
         return false;
     }
@@ -404,7 +404,7 @@ bool DecodeState(const Contract& contract, std::span<const uint8> bytes, Record&
 }
 bool MigrateState(const Record& source, const Contract& target, Record& output) noexcept
 {
-    if (!ValidContract(target) || source.Count > 16)
+    if (ValidContract(target) == false || source.Count > 16)
     {
         return false;
     }
@@ -429,7 +429,7 @@ bool MigrateState(const Record& source, const Contract& target, Record& output) 
         {
             found |= source.Items[i].Id == spec.Id;
         }
-        if (!found)
+        if (found == false)
         {
             return false;
         }
@@ -441,7 +441,7 @@ bool MigrateState(const Record& source, const Contract& target, Record& output) 
             }
         }
     }
-    if (!ValidRecord(candidate, target.State, {}, {}))
+    if (ValidRecord(candidate, target.State, {}, {}) == false)
     {
         return false;
     }
@@ -483,7 +483,7 @@ struct LuauProvider::Impl
     static Context& Current(lua_State* state) noexcept
     {
         auto& call = scripting::GetCallContext(state);
-        if (!call.Active || call.User == nullptr)
+        if (call.Active == false || call.User == nullptr)
         {
             scripting::Reject(state, 1, "operation outside active invocation");
         }
@@ -516,7 +516,7 @@ struct LuauProvider::Impl
                 scripting::Reject(state, 1, "uint32 required");
             }
             const float64 number = lua_tonumber(state, index);
-            if (!foundation::math::IsFinite(number) || number < 0 || number > 4294967295.0)
+            if (foundation::math::IsFinite(number) == false || number < 0 || number > 4294967295.0)
             {
                 scripting::Reject(state, 1, "uint32 range");
             }
@@ -673,12 +673,12 @@ struct LuauProvider::Impl
         uint32 version = 0, total = 0, programs = 0, reserved = 0;
         uint8 profile[32]{}, contract[32]{};
         if (bytes.size() < 120 || bytes.size() > usize{2} * 1024 * 1024 || std::memcmp(bytes.data(), MAGIC, 8) != 0 ||
-            !TryReadLittleEndian(bytes.subspan(8), version) || version != 1 ||
-            !TryReadLittleEndian(bytes.subspan(12), total) || total != bytes.size() ||
-            !TryReadLittleEndian(bytes.subspan(112), programs) || programs == 0 || programs > 8 ||
-            !TryReadLittleEndian(bytes.subspan(116), reserved) || reserved != 0 || !Hex(LuauProfile(), profile) ||
-            !Hex(Schema.Digest, contract) || std::memcmp(bytes.data() + 16, profile, 32) != 0 ||
-            std::memcmp(bytes.data() + 48, contract, 32) != 0)
+            TryReadLittleEndian(bytes.subspan(8), version) == false || version != 1 ||
+            TryReadLittleEndian(bytes.subspan(12), total) == false || total != bytes.size() ||
+            TryReadLittleEndian(bytes.subspan(112), programs) == false || programs == 0 || programs > 8 ||
+            TryReadLittleEndian(bytes.subspan(116), reserved) == false || reserved != 0 ||
+            Hex(LuauProfile(), profile) == false || Hex(Schema.Digest, contract) == false ||
+            std::memcmp(bytes.data() + 16, profile, 32) != 0 || std::memcmp(bytes.data() + 48, contract, 32) != 0)
         {
             return false;
         }
@@ -776,7 +776,7 @@ Status LuauProvider::Load(const Contract& contract,
     {
         return Status::Paused;
     }
-    if (!ValidContract(contract))
+    if (ValidContract(contract) == false)
     {
         return Status::InvalidContract;
     }
@@ -827,7 +827,7 @@ LuauProvider::Invoke(const Invocation& input, Services services, Outcome& output
     }
     mImpl->Vm.EnableDebugger(false);
     mImpl->Busy = true;
-    if (!ValidInput(mImpl->Schema, input, services))
+    if (ValidInput(mImpl->Schema, input, services) == false)
     {
         mImpl->Busy = false;
         diagnostic = { .Code = Status::InvalidInput };
@@ -838,7 +838,7 @@ LuauProvider::Invoke(const Invocation& input, Services services, Outcome& output
     {
         found |= program.Entrypoint && program.Asset == input.Asset && program.Revision == input.Revision;
     }
-    if (!found)
+    if (found == false)
     {
         mImpl->Busy = false;
         diagnostic = { .Code = Status::InvalidInput };
@@ -915,7 +915,7 @@ LuauProvider::BeginDebug(const Invocation& input, Services services, Outcome& ou
     {
         found |= program.Entrypoint && program.Asset == input.Asset && program.Revision == input.Revision;
     }
-    if (!found || !ValidInput(mImpl->Schema, input, services))
+    if (found == false || ValidInput(mImpl->Schema, input, services) == false)
     {
         mImpl->Busy = false;
         diagnostic = { .Code = Status::InvalidInput };
@@ -957,8 +957,8 @@ Status LuauProvider::ResumeDebug(uint64 expected_stop, DebugMode mode, Outcome& 
         diagnostic = { .Code = mImpl == nullptr ? Status::NotReady : Status::Reentrant };
         return diagnostic.Code;
     }
-    if (mImpl->Pending == nullptr || !mImpl->Vm.IsPaused() || expected_stop == 0 || expected_stop != mImpl->DebugStop ||
-        static_cast<uint8>(mode) > static_cast<uint8>(DebugMode::Out))
+    if (mImpl->Pending == nullptr || mImpl->Vm.IsPaused() == false || expected_stop == 0 ||
+        expected_stop != mImpl->DebugStop || static_cast<uint8>(mode) > static_cast<uint8>(DebugMode::Out))
     {
         diagnostic = { .Code = Status::InvalidInput };
         return diagnostic.Code;

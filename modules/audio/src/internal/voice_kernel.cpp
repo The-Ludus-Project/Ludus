@@ -30,7 +30,7 @@ uint32 RenderResidentVoice(const KernelInput& input,
     {
         return 0;
     }
-    if (!dsp->Rs.IsReady())
+    if (dsp->Rs.IsReady() == false)
     {
         return 0;
     }
@@ -73,7 +73,7 @@ uint32 RenderResidentVoice(const KernelInput& input,
     // Produce output in bounded chunks, assembling wrap-aware source scratch for
     // each chunk and running it through the resampler. The resampler holds the
     // fractional phase/history across chunks and spans.
-    while (producedTotal < frames && !endReached)
+    while (producedTotal < frames && endReached == false)
     {
         uint32 outWant = frames - producedTotal;
         if (outWant > scratchFrames)
@@ -152,7 +152,7 @@ uint32 RenderResidentVoice(const KernelInput& input,
         float32* outStage = scratch + static_cast<uint64>(scratchFrames) * srcChannels;
         // outStage must hold outWant * srcChannels; the scratch buffer the caller
         // supplies is sized for both (2x). Guard conservatively.
-        if (!dsp->Rs.Process(scratch, &inCount, outStage, &outCount))
+        if (dsp->Rs.Process(scratch, &inCount, outStage, &outCount) == false)
         {
             break;
         }
@@ -222,7 +222,7 @@ uint32 RenderResidentVoice(const KernelInput& input,
     {
         *input.CurrentGainR = curR;
     }
-    if (endReached && !input.Looping)
+    if (endReached && input.Looping == false)
     {
         dsp->AtEof = true;
     }

@@ -35,7 +35,7 @@ InputSystem::~InputSystem() noexcept = default;
 
 AdmissionStatus InputSystem::Ingest(const KeyboardRecord& record) noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return AdmissionStatus::RejectedInvalid;
     }
@@ -49,7 +49,7 @@ bool InputSystem::GetLiveDown(Key key) const noexcept
 
 StepStatus InputSystem::ConsumeStep(uint64 stepId) noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return StepStatus::InvalidStep;
     }
@@ -61,7 +61,7 @@ const KeyboardSnapshot& InputSystem::GetKeyboardSnapshot() const noexcept
     // A valid system always has a published (initially neutral) snapshot. For an
     // invalid system return a shared neutral snapshot so callers never deref null.
     static const KeyboardSnapshot kNeutral{};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return kNeutral;
     }
@@ -70,7 +70,7 @@ const KeyboardSnapshot& InputSystem::GetKeyboardSnapshot() const noexcept
 
 std::span<const StepEvent> InputSystem::GetStepEvents() const noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return {};
     }
@@ -79,7 +79,7 @@ std::span<const StepEvent> InputSystem::GetStepEvents() const noexcept
 
 ActionStatus InputSystem::GetAction(ActionId id, ActionState& out) const noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return ActionStatus::InvalidAction;
     }
@@ -88,7 +88,7 @@ ActionStatus InputSystem::GetAction(ActionId id, ActionState& out) const noexcep
 
 BindingStatus InputSystem::ReplaceBindings(const BindingMap& map) noexcept
 {
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return BindingStatus::CapacityExceeded;
     }
@@ -111,7 +111,7 @@ void InputSystem::RequestReset(ResetReason reason, const FocusBaseline& baseline
 const InputCounters& InputSystem::GetCounters() const noexcept
 {
     static const InputCounters kEmpty{};
-    if (!mImpl)
+    if (mImpl.Get() == nullptr)
     {
         return kEmpty;
     }

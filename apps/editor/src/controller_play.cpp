@@ -57,14 +57,14 @@ Capabilities EditorController::Caps() const
         caps.CanProjectCheck = caps.CanProjectSetup = caps.CanProjectCreate = false;
         caps.CanCloseImmediately = false;
         caps.CanStop = (PlayState_.Phase != PlayPhase::CleanupUnknown || Play_.CanBeginSession()) &&
-                       (PlayState_.Phase != PlayPhase::Stopped || !TuningDocumentDirty_);
+                       (PlayState_.Phase != PlayPhase::Stopped || TuningDocumentDirty_ == false);
         caps.CanCopyJobDetails = true;
     }
     // A result is provisional until the one-shot adapter has exited and drained.
     if (Tool_.Active())
     {
         caps.CanCloseImmediately = false;
-        if (!State_.Busy())
+        if (State_.Busy() == false)
         {
             caps.CanCloseProject = caps.CanOpen = caps.CanEdit = caps.CanSave = caps.CanReload = false;
             caps.CanConfigure = caps.CanBuild = caps.CanBuildRun = caps.CanBuildDebug = false;
@@ -86,15 +86,15 @@ Capabilities EditorController::Caps() const
 bool EditorController::CanPlay() const
 {
 #if defined(Q_OS_WASM)
-    return State_.Document == DocumentState::ProjectLoaded && !State_.Busy() &&
-           !BrowserPlayer(State_.DescriptorPath).isEmpty();
+    return State_.Document == DocumentState::ProjectLoaded && State_.Busy() == false &&
+           BrowserPlayer(State_.DescriptorPath).isEmpty() == false;
 #else
     return QFileInfo(Tooling_.PythonPath).isExecutable() && QFileInfo::exists(Tooling_.AdapterPath) &&
            QFileInfo::exists(QDir(Tooling_.ToolingRoot).filePath(QStringLiteral("scripts/python/play_tool.py"))) &&
-           State_.Document == DocumentState::ProjectLoaded && State_.HasSaved && !SetupCheckPending_ &&
-           !State_.Dirty() && !State_.Busy() && State_.OperationPhase != Phase::CleanupUnknown && !Tool_.Active() &&
-           (!Play_.Active() || Play_.CanBeginSession()) && !TuningDocumentDirty_ &&
-           PlayState_.Phase == PlayPhase::Stopped &&
+           State_.Document == DocumentState::ProjectLoaded && State_.HasSaved && SetupCheckPending_ == false &&
+           State_.Dirty() == false && State_.Busy() == false && State_.OperationPhase != Phase::CleanupUnknown &&
+           Tool_.Active() == false && (Play_.Active() == false || Play_.CanBeginSession()) &&
+           TuningDocumentDirty_ == false && PlayState_.Phase == PlayPhase::Stopped &&
            QFileInfo::exists(
                QDir(QFileInfo(State_.DescriptorPath).absolutePath()).filePath(QStringLiteral("ludus.play.json"))) &&
            (State_.Saved.Preset == QStringLiteral("linux-clang-debug") ||
@@ -106,8 +106,8 @@ bool EditorController::CanPlay() const
 
 bool EditorController::CanBuildReload() const
 {
-    return !PlayState_.ScriptPaused && !State_.Dirty() && !State_.Busy() && !Tool_.Active() && !GenerationJob_ &&
-           !PlayState_.DebuggerStopped &&
+    return PlayState_.ScriptPaused == false && State_.Dirty() == false && State_.Busy() == false &&
+           Tool_.Active() == false && GenerationJob_ == false && PlayState_.DebuggerStopped == false &&
            (PlayState_.Phase == PlayPhase::Running || PlayState_.Phase == PlayPhase::Paused);
 }
 
@@ -122,7 +122,7 @@ QString EditorController::NextPlayRequest()
 
 void EditorController::Play()
 {
-    if (!CanPlay())
+    if (CanPlay() == false)
     {
         return;
     }
@@ -150,7 +150,7 @@ void EditorController::Play()
 
 void EditorController::BuildReload()
 {
-    if (!CanBuildReload())
+    if (CanBuildReload() == false)
     {
         return;
     }
@@ -161,12 +161,12 @@ void EditorController::BuildReload()
 
 void EditorController::SetAutoReload(bool enabled)
 {
-    if (!enabled)
+    if (enabled == false)
     {
         Watch_.Stop();
     }
     else if ((PlayState_.Phase == PlayPhase::Running || PlayState_.Phase == PlayPhase::Paused) &&
-             !Watch_.Start(QFileInfo(State_.DescriptorPath).absolutePath()))
+             Watch_.Start(QFileInfo(State_.DescriptorPath).absolutePath()) == false)
     {
         PlayState_.Message = QStringLiteral("Source watch setup failed; use manual build/reload");
     }
@@ -180,10 +180,10 @@ void EditorController::ReloadClearConfiguration(const QString& source)
         return;
     }
     const auto relative = QDir(QFileInfo(State_.DescriptorPath).absolutePath()).relativeFilePath(source);
-    if (!Play_.Send({{QStringLiteral("type"), QStringLiteral("asset")},
-                     {QStringLiteral("request"), NextPlayRequest()},
-                     {QStringLiteral("source"), relative},
-                     {QStringLiteral("expected_generation"), PlayState_.Generation}}))
+    if (Play_.Send({{QStringLiteral("type"), QStringLiteral("asset")},
+                    {QStringLiteral("request"), NextPlayRequest()},
+                    {QStringLiteral("source"), relative},
+                    {QStringLiteral("expected_generation"), PlayState_.Generation}}) == false)
     {
         PlayState_.Message = QStringLiteral("Configuration import could not be queued");
         Publish();
@@ -200,10 +200,10 @@ void EditorController::ActivateGeneration(const QString& path)
     }
     if (Play_.Active() && (PlayState_.Phase == PlayPhase::Running || PlayState_.Phase == PlayPhase::Paused))
     {
-        if (!Play_.Send({{QStringLiteral("type"), QStringLiteral("reload")},
-                         {QStringLiteral("request"), request},
-                         {QStringLiteral("generation_path"), path},
-                         {QStringLiteral("expected_generation"), PlayState_.Generation}}))
+        if (Play_.Send({{QStringLiteral("type"), QStringLiteral("reload")},
+                        {QStringLiteral("request"), request},
+                        {QStringLiteral("generation_path"), path},
+                        {QStringLiteral("expected_generation"), PlayState_.Generation}}) == false)
         {
             PlayState_.Message = QStringLiteral("Reload command could not be queued; inspect Play status");
         }
@@ -223,7 +223,7 @@ void EditorController::ActivateGeneration(const QString& path)
                                              .Epoch = PlayState_.Epoch,
                                              .StartRequest = start,
                                          });
-        if (!sent)
+        if (sent == false)
         {
             PlayState_.Phase = Play_.Active() ? PlayPhase::CleanupUnknown : PlayPhase::Stopped;
             PlayState_.Message = QStringLiteral("Play supervisor could not start the session");
@@ -233,8 +233,8 @@ void EditorController::ActivateGeneration(const QString& path)
 
 void EditorController::CookScripts()
 {
-    if (State_.HasSaved && !State_.Dirty() && !State_.Busy() && !Tool_.Active() && !GenerationJob_ &&
-        PlayState_.Phase != PlayPhase::Starting && PlayState_.Phase != PlayPhase::Stopping &&
+    if (State_.HasSaved && State_.Dirty() == false && State_.Busy() == false && Tool_.Active() == false &&
+        GenerationJob_ == false && PlayState_.Phase != PlayPhase::Starting && PlayState_.Phase != PlayPhase::Stopping &&
         PlayState_.Phase != PlayPhase::CleanupUnknown)
     {
         StartJob(ActionKind::Build, ToolOperation::CookScripts);
@@ -242,7 +242,7 @@ void EditorController::CookScripts()
 }
 void EditorController::ScriptCommand(const QJsonObject& command)
 {
-    if (!ScriptRequest_.isEmpty() || PlayState_.DebuggerStopped || PlayState_.Phase != PlayPhase::Running ||
+    if (ScriptRequest_.isEmpty() == false || PlayState_.DebuggerStopped || PlayState_.Phase != PlayPhase::Running ||
         command.value(QStringLiteral("version")).toInt() != 1)
     {
         return;
@@ -254,13 +254,13 @@ void EditorController::ScriptCommand(const QJsonObject& command)
     }
     ScriptRequest_ = NextPlayRequest();
     PlayState_.ScriptBusy = true;
-    if (!Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
-                     {QStringLiteral("request"), ScriptRequest_},
-                     {QStringLiteral("command"),
-                      QJsonObject{{QStringLiteral("command"), QStringLiteral("ScriptDebug")},
-                                  {QStringLiteral("expected_generation"), PlayState_.Generation},
-                                  {QStringLiteral("extension"), 1},
-                                  {QStringLiteral("payload"), QString::fromUtf8(payload)}}}}))
+    if (Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
+                    {QStringLiteral("request"), ScriptRequest_},
+                    {QStringLiteral("command"),
+                     QJsonObject{{QStringLiteral("command"), QStringLiteral("ScriptDebug")},
+                                 {QStringLiteral("expected_generation"), PlayState_.Generation},
+                                 {QStringLiteral("extension"), 1},
+                                 {QStringLiteral("payload"), QString::fromUtf8(payload)}}}}) == false)
     {
         ScriptRequest_.clear();
         PlayState_.ScriptBusy = false;
@@ -288,7 +288,7 @@ void EditorController::PlayCommand(const QString& command)
 
 void EditorController::RefreshProperties()
 {
-    if (!PropertyRequest_.isEmpty() ||
+    if (PropertyRequest_.isEmpty() == false ||
         (PlayState_.Phase != PlayPhase::Running && PlayState_.Phase != PlayPhase::Paused))
     {
         return;
@@ -296,11 +296,11 @@ void EditorController::RefreshProperties()
     PropertyChunks_ = {};
     PropertyCount_ = 0;
     PropertyRequest_ = NextPlayRequest();
-    if (!Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
-                     {QStringLiteral("request"), PropertyRequest_},
-                     {QStringLiteral("command"),
-                      QJsonObject{{QStringLiteral("command"), QStringLiteral("ReadProperties")},
-                                  {QStringLiteral("expected_generation"), PlayState_.Generation}}}}))
+    if (Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
+                    {QStringLiteral("request"), PropertyRequest_},
+                    {QStringLiteral("command"),
+                     QJsonObject{{QStringLiteral("command"), QStringLiteral("ReadProperties")},
+                                 {QStringLiteral("expected_generation"), PlayState_.Generation}}}}) == false)
     {
         PropertyRequest_.clear();
     }
@@ -396,7 +396,7 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
         PlayState_.Properties = {};
         // A dirty tuning draft belongs to the editor session and survives a
         // stopped game. Keep the actor alive until Save or explicit Discard.
-        if (!TuningDocumentDirty_)
+        if (TuningDocumentDirty_ == false)
         {
             Play_.Close();
         }
@@ -418,7 +418,7 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
                 PlayState_.TuningCanUndo = TuningCanUndo_;
                 PlayState_.TuningCanRedo = TuningCanRedo_;
             }
-            if (TuningDocumentCloseAfterRequest_ && status == QStringLiteral("Ok") && !TuningDocumentDirty_ &&
+            if (TuningDocumentCloseAfterRequest_ && status == QStringLiteral("Ok") && TuningDocumentDirty_ == false &&
                 PlayState_.Phase == PlayPhase::Stopped)
             {
                 Play_.Close();
@@ -428,7 +428,7 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
         }
         if (request == EditRequest_)
         {
-            if (status == QStringLiteral("Ok") && !EditReply_.isEmpty())
+            if (status == QStringLiteral("Ok") && EditReply_.isEmpty() == false)
             {
                 PendingEdit_.Expected = EditReply_;
                 if (EditIntent_ == EditIntent::Undo)
@@ -456,7 +456,7 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
         }
         PlayState_.Message = status + QStringLiteral(": ") + event.value(QStringLiteral("message")).toString();
         const auto host = event.value(QStringLiteral("host")).toObject();
-        if (!ScriptRequest_.isEmpty() && request == ScriptRequest_)
+        if (ScriptRequest_.isEmpty() == false && request == ScriptRequest_)
         {
             ScriptRequest_.clear();
             PlayState_.ScriptBusy = false;
@@ -497,7 +497,8 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
                 PlayState_.ScriptPaused = host.value(QStringLiteral("script_paused")).toBool();
             }
         }
-        if (PlayState_.Phase != PlayPhase::Stopping && PlayState_.Phase != PlayPhase::CleanupUnknown && !host.isEmpty())
+        if (PlayState_.Phase != PlayPhase::Stopping && PlayState_.Phase != PlayPhase::CleanupUnknown &&
+            host.isEmpty() == false)
         {
             const auto state = host.value(QStringLiteral("state")).toString();
             if (state == QStringLiteral("Running"))
@@ -513,7 +514,7 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
                 PlayState_.Phase = PlayPhase::CleanupUnknown;
             }
             const auto generation = host.value(QStringLiteral("generation")).toString();
-            if (!generation.isEmpty() && generation != PlayState_.Generation)
+            if (generation.isEmpty() == false && generation != PlayState_.Generation)
             {
                 PlayState_.Generation = generation;
                 PlayState_.ScriptStatus = {};
@@ -616,19 +617,19 @@ void EditorController::OnPlayEvent(const QJsonObject& event)
 
 bool EditorController::CanEditProperties() const
 {
-    return !PlayState_.DebuggerStopped && EditRequest_.isEmpty() && PropertyRequest_.isEmpty() &&
-           !PlayState_.Properties.isEmpty() &&
+    return PlayState_.DebuggerStopped == false && EditRequest_.isEmpty() && PropertyRequest_.isEmpty() &&
+           PlayState_.Properties.isEmpty() == false &&
            (PlayState_.Phase == PlayPhase::Running || PlayState_.Phase == PlayPhase::Paused);
 }
 
 void EditorController::EditProperty(int row, const QString& text)
 {
-    if (!CanEditProperties() || row < 0 || row >= PlayState_.Properties.size())
+    if (CanEditProperties() == false || row < 0 || row >= PlayState_.Properties.size())
     {
         return;
     }
     const auto property = PlayState_.Properties.at(row).toObject();
-    if (!property.value(QStringLiteral("writable")).toBool())
+    if (property.value(QStringLiteral("writable")).toBool() == false)
     {
         return;
     }
@@ -659,10 +660,10 @@ void EditorController::EditProperty(int row, const QString& text)
     }
     else if (kind == 4)
     {
-        valid = text.toUtf8().size() <= 256 && !text.contains(QChar(u'\0'));
+        valid = text.toUtf8().size() <= 256 && text.contains(QChar(u'\0')) == false;
         edit.insert(QStringLiteral("value"), text);
     }
-    if (!valid)
+    if (valid == false)
     {
         PlayState_.Message = QStringLiteral("Invalid typed value");
         Publish();
@@ -682,9 +683,9 @@ void EditorController::SubmitEdit(const QJsonObject& edit)
                               {QStringLiteral("schema_epoch"), static_cast<qint64>(PlayState_.SchemaEpoch)},
                               {QStringLiteral("schema_version"), static_cast<qint64>(PlayState_.SchemaVersion)},
                               {QStringLiteral("edits"), QJsonArray{edit}}};
-    if (!Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
-                     {QStringLiteral("request"), EditRequest_},
-                     {QStringLiteral("command"), command}}))
+    if (Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
+                    {QStringLiteral("request"), EditRequest_},
+                    {QStringLiteral("command"), command}}) == false)
     {
         EditRequest_.clear();
     }
@@ -693,17 +694,17 @@ void EditorController::SubmitEdit(const QJsonObject& edit)
 
 bool EditorController::CanUndoSession() const
 {
-    return CanEditProperties() && !SessionUndo_.isEmpty();
+    return CanEditProperties() && SessionUndo_.isEmpty() == false;
 }
 bool EditorController::CanRedoSession() const
 {
-    return CanEditProperties() && !SessionRedo_.isEmpty();
+    return CanEditProperties() && SessionRedo_.isEmpty() == false;
 }
 
 bool EditorController::CanApplyToTuningDocument(int row) const
 {
-    if (!TuningDocumentAvailable_ || !TuningDocumentRequest_.isEmpty() || !CanEditProperties() || row < 0 ||
-        row >= PlayState_.Properties.size())
+    if (TuningDocumentAvailable_ == false || TuningDocumentRequest_.isEmpty() == false ||
+        CanEditProperties() == false || row < 0 || row >= PlayState_.Properties.size())
     {
         return false;
     }
@@ -719,7 +720,7 @@ bool EditorController::CanSaveTuningDocument() const noexcept
 
 void EditorController::ApplyLivePropertyToTuningDocument(int row)
 {
-    if (!CanApplyToTuningDocument(row))
+    if (CanApplyToTuningDocument(row) == false)
     {
         return;
     }
@@ -756,15 +757,15 @@ void EditorController::ApplyLivePropertyToTuningDocument(int row)
 
 void EditorController::SendTuningDocumentCommand(QJsonObject command, bool closeWhenClean)
 {
-    if (!TuningDocumentAvailable_ || !TuningDocumentRequest_.isEmpty() || !Play_.Active())
+    if (TuningDocumentAvailable_ == false || TuningDocumentRequest_.isEmpty() == false || Play_.Active() == false)
     {
         return;
     }
     TuningDocumentRequest_ = NextPlayRequest();
     TuningDocumentCloseAfterRequest_ = closeWhenClean;
-    if (!Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
-                     {QStringLiteral("request"), TuningDocumentRequest_},
-                     {QStringLiteral("command"), command}}))
+    if (Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
+                    {QStringLiteral("request"), TuningDocumentRequest_},
+                    {QStringLiteral("command"), command}}) == false)
     {
         TuningDocumentRequest_.clear();
         TuningDocumentCloseAfterRequest_ = false;
@@ -814,7 +815,7 @@ void EditorController::RedoSessionEdit()
 }
 void EditorController::ReplaySessionEdit(bool undo)
 {
-    if (!(undo ? CanUndoSession() : CanRedoSession()))
+    if ((undo ? CanUndoSession() : CanRedoSession()) == false)
     {
         return;
     }

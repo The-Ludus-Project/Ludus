@@ -51,7 +51,7 @@ struct Vec3 final
 [[nodiscard]] Vec3 Normalize(const Vec3& v) noexcept
 {
     const float32 len = Length(v);
-    if (len <= 0.0F || !std::isfinite(len))
+    if (len <= 0.0F || std::isfinite(len) == false)
     {
         return Vec3{0.0F, 0.0F, 0.0F};
     }
@@ -82,7 +82,7 @@ void AudioSystem::Impl::ComputeVoiceGains(VoiceSlot& v, float32& outGainL, float
     // Output gains exclude the bus-chain gain: the bus stage applies each bus
     // gain exactly once at its edge (design section 8). The bus-chain gain is
     // retained only as a selection-score contribution.
-    if (!v.Positional)
+    if (v.Positional == false)
     {
         v.ScoreDistanceGain = 1.0F;
         const bool stereoBed = Clips[v.ClipSlotIndex].Channels == 2;
@@ -157,7 +157,7 @@ uint32 AudioSystem::Impl::BindPhysical(uint32 logicalSlot) noexcept
     for (uint32 i = 0; i < MixedCapacity; ++i)
     {
         internal::PhysicalVoice& ph = Physical[i];
-        if (!ph.Bound)
+        if (ph.Bound == false)
         {
             ph.Bound = true;
             ph.LogicalSlot = logicalSlot;
@@ -202,7 +202,7 @@ bool AudioSystem::Impl::EnsurePhysicalInitialized() noexcept
     }
     for (uint32 i = 0; i < MixedCapacity; ++i)
     {
-        if (!Physical[i].Init(SampleRate, LpfOrder))
+        if (Physical[i].Init(SampleRate, LpfOrder) == false)
         {
             return false;
         }

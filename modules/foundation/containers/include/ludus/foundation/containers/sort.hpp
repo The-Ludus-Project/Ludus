@@ -28,7 +28,7 @@ void SortSift(T* values, usize root, usize count, const Compare& less) noexcept
         {
             ++child;
         }
-        if (!less(values[root], values[child]))
+        if (less(values[root], values[child]) == false)
         {
             break;
         }

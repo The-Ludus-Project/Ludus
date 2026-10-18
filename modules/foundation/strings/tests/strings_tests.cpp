@@ -139,13 +139,14 @@ static_assert(kPlayer.Fingerprint == SymbolFingerprint64("player"));
 static_assert(SymbolFingerprint64("") == 14695981039346656037ULL);
 static_assert(SymbolFingerprint64("a") == 0xaf63dc4c8601ec8cULL);
 static_assert(SymbolFingerprint64("foobar") == 0x85944171f73967e8ULL);
-static_assert(!std::is_copy_constructible_v<String>);
+static_assert(std::is_copy_constructible_v<String> == false);
 static_assert(std::is_nothrow_move_constructible_v<String>);
 static_assert(sizeof(NameId) == 8);
 static_assert(sizeof(SharedString) == sizeof(void*));
 template <typename Owner>
 concept TemporaryView = requires { Owner{}.GetView(); };
-static_assert(!TemporaryView<String> && !TemporaryView<SharedString> && !TemporaryView<StaticString<4>>);
+static_assert(TemporaryView<String> == false && TemporaryView<SharedString> == false &&
+              TemporaryView<StaticString<4>> == false);
 } // namespace
 
 TEST_CASE("bounded strings keep counted zeros, overlaps and old values on overflow", "[strings]")

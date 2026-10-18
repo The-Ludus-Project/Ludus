@@ -52,7 +52,8 @@ bool Runner::Validate() noexcept
         {
             error = PlanError::MissingName;
         }
-        else if (!node.BeginStart || !node.PollStart || !node.BeginStop || !node.PollStop)
+        else if (node.BeginStart == nullptr || node.PollStart == nullptr || node.BeginStop == nullptr ||
+                 node.PollStop == nullptr)
         {
             error = PlanError::MissingCallback;
         }
@@ -87,11 +88,11 @@ BeginStatus Runner::Begin() noexcept
     {
         return BeginStatus::Busy;
     }
-    if (!Validate())
+    if (Validate() == false)
     {
         return BeginStatus::InvalidPlan;
     }
-    if (!core::TryAdd(mGeneration, uint64{1}, mGeneration))
+    if (core::TryAdd(mGeneration, uint64{1}, mGeneration) == false)
     {
         return BeginStatus::GenerationExhausted;
     }
@@ -112,7 +113,7 @@ void Runner::RequestStop() noexcept
 
 void Runner::ObserveStopRequest() noexcept
 {
-    if (!mStopRequested.load(std::memory_order_acquire))
+    if (mStopRequested.load(std::memory_order_acquire) == false)
     {
         return;
     }

@@ -43,7 +43,7 @@ FramePresenter::~FramePresenter() noexcept
 }
 RunResult FramePresenter::Start(Presentation mode) noexcept
 {
-    if (!Input_.IsValid())
+    if (Input_.IsValid() == false)
     {
         return RunResult::Internal;
     }
@@ -63,13 +63,13 @@ RunResult FramePresenter::Start(Presentation mode) noexcept
         return RunResult::Ok;
     }
     platform::WindowManager manager;
-    if (!manager.Initialize({}) || !manager.CreateWindow(
-                                       {
-                                           .Name = "Ludus game",
-                                           .Width = 800,
-                                           .Height = 600,
-                                       },
-                                       Window_))
+    if (manager.Initialize({}) == false || manager.CreateWindow(
+                                               {
+                                                   .Name = "Ludus game",
+                                                   .Width = 800,
+                                                   .Height = 600,
+                                               },
+                                               Window_) == false)
     {
         return RunResult::WindowUnavailable;
     }
@@ -96,7 +96,7 @@ RunResult FramePresenter::Start(Presentation mode) noexcept
 }
 bool FramePresenter::Poll() noexcept
 {
-    if (Window_ && !Window_->HandleEvent({}))
+    if (Window_ && Window_->HandleEvent({}) == false)
     {
         return false;
     }
@@ -131,13 +131,13 @@ void FramePresenter::FillInput(game_api::FrameInput& frame) const noexcept
 }
 RunResult FramePresenter::Present(const game_api::RenderParams& render) noexcept
 {
-    if (!Finite(render.ClearRed) || !Finite(render.ClearGreen) || !Finite(render.ClearBlue) ||
-        !Finite(render.ClearAlpha) || !Finite(render.Uniform0) || !Finite(render.Uniform1) ||
-        !Finite(render.Uniform2) || !Finite(render.Uniform3))
+    if (Finite(render.ClearRed) == false || Finite(render.ClearGreen) == false || Finite(render.ClearBlue) == false ||
+        Finite(render.ClearAlpha) == false || Finite(render.Uniform0) == false || Finite(render.Uniform1) == false ||
+        Finite(render.Uniform2) == false || Finite(render.Uniform3) == false)
     {
         return RunResult::Internal;
     }
-    if (!Rendering_)
+    if (Rendering_ == false)
     {
         return RunResult::Ok;
     }
@@ -199,7 +199,7 @@ bool FramePresenter::ReplaceClearConfiguration(game_api::ByteView artifact, ludu
     {
         const auto bits = static_cast<uint32>(game_api::ReadCheckpointUint(artifact.Data + 8 + i * 4, 4));
         std::memcpy(&channels[i], &bits, sizeof(bits));
-        if (!Finite(channels[i]) || channels[i] < 0 || channels[i] > 1)
+        if (Finite(channels[i]) == false || channels[i] < 0 || channels[i] > 1)
         {
             return false;
         }

@@ -90,7 +90,7 @@ void FrameClock::Reset() noexcept
 
 FrameSample FrameClock::Sample(Timestamp now) noexcept
 {
-    if (!mHasBaseline)
+    if (mHasBaseline == false)
     {
         mPrevious = now;
         mHasBaseline = true;

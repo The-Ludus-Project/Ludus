@@ -19,7 +19,7 @@ namespace
 {
 bool Unit(math::Vector3 v) noexcept
 {
-    if (!math::IsFinite(v))
+    if (math::IsFinite(v) == false)
     {
         return false;
     }
@@ -93,12 +93,12 @@ rhi::RasterStatus EvaluateReferenceBsdf(const ReferenceBsdf& b,
                                         math::Vector3 light,
                                         ReferenceBsdfEvaluation& output) noexcept
 {
-    if (!Valid(b) || !Unit(normal) || !Unit(view) || !Unit(light))
+    if (Valid(b) == false || Unit(normal) == false || Unit(view) == false || Unit(light) == false)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
     const auto result = Evaluate(b, normal, view, light);
-    if (!math::IsFinite(result.Value) || !math::IsFinite(result.Pdf) || result.Pdf < 0)
+    if (math::IsFinite(result.Value) == false || math::IsFinite(result.Pdf) == false || result.Pdf < 0)
     {
         return rhi::RasterStatus::Failed;
     }
@@ -111,8 +111,8 @@ rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf& b,
                                       math::Vector3 sample,
                                       ReferenceBsdfSample& output) noexcept
 {
-    if (!Valid(b) || !Unit(normal) || !Unit(view) || !math::IsFinite(sample) || sample.X < 0 || sample.X >= 1 ||
-        sample.Y < 0 || sample.Y >= 1 || sample.Z < 0 || sample.Z >= 1)
+    if (Valid(b) == false || Unit(normal) == false || Unit(view) == false || math::IsFinite(sample) == false ||
+        sample.X < 0 || sample.X >= 1 || sample.Y < 0 || sample.Y >= 1 || sample.Z < 0 || sample.Z >= 1)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -152,7 +152,7 @@ rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf& b,
     {
         result.Direction = direction;
         result.Evaluation = Evaluate(b, normal, view, direction);
-        if (!math::IsFinite(result.Evaluation.Value) || !math::IsFinite(result.Evaluation.Pdf) ||
+        if (math::IsFinite(result.Evaluation.Value) == false || math::IsFinite(result.Evaluation.Pdf) == false ||
             result.Evaluation.Pdf <= 0)
         {
             return rhi::RasterStatus::Failed;

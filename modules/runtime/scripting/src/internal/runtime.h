@@ -109,7 +109,7 @@ public:
     }
     void EnableDebugger(bool enabled) noexcept
     {
-        if (!mEntered && !mPaused)
+        if (mEntered == false && mPaused == false)
         {
             mDebugEnabled = enabled;
         }

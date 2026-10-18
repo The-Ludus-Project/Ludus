@@ -91,8 +91,8 @@ TEST_CASE("Descriptor-bound revisions survive atomic replacement and detect in-p
     FileReader current;
     REQUIRE(current.Open(directory, "source.wav") == Status::Ok);
     REQUIRE(current.Size() == 2);
-    REQUIRE(!ValidPath(std::string_view("bad\xff", 4)));
-    REQUIRE(!ValidPath(std::string_view("bad\xc0\x80", 5)));
+    REQUIRE(ValidPath(std::string_view("bad\xff", 4)) == false);
+    REQUIRE(ValidPath(std::string_view("bad\xc0\x80", 5)) == false);
     REQUIRE(ValidPath("audio/音.wav"));
     ResourceId corrupt;
     corrupt.Length = 129;

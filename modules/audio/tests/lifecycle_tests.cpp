@@ -184,7 +184,7 @@ TEST_CASE("Stop and StopAll work with a full command queue", "[audio][lifecycle]
     {
         VoiceHandle v{};
         const Status s = sys.PlayClip({ .Clip = clip }, v);
-        if (IsOk(s) && !gotFirst)
+        if (IsOk(s) && gotFirst == false)
         {
             first = v;
             gotFirst = true;

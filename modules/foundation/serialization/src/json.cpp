@@ -143,7 +143,7 @@ Status ReadJson(const Schema& schema,
         return error.Code;
     }
     const auto root = document.Root();
-    if (!root.Fields({"schema", "version", "values"}) || !root.Get("values").Object())
+    if (root.Fields({"schema", "version", "values"}) == false || root.Get("values").Object() == false)
     {
         return Fail(error, Status::InvalidDocument);
     }
@@ -151,7 +151,7 @@ Status ReadJson(const Schema& schema,
     FormatId(schema.Id, expectedId);
     std::string_view actualId;
     uint64 version = 0;
-    if (!root.Get("schema").String(actualId) || !root.Get("version").Integer(version))
+    if (root.Get("schema").String(actualId) == false || root.Get("version").Integer(version) == false)
     {
         return Fail(error, Status::InvalidDocument);
     }
@@ -180,11 +180,11 @@ Status ReadJson(const Schema& schema,
             return Fail(error, Status::UnknownField);
         }
         const auto& field = schema.Fields[slot];
-        if (!field.Persist)
+        if (field.Persist == false)
         {
             return Fail(error, Status::ReadOnly, field.Id);
         }
-        if (!Decode(node, field, staged[slot]) || ValidateValue(field, staged[slot]) != Status::Ok)
+        if (Decode(node, field, staged[slot]) == false || ValidateValue(field, staged[slot]) != Status::Ok)
         {
             return Fail(error, Status::InvalidValue, field.Id);
         }
@@ -222,11 +222,11 @@ Status WriteJson(const Schema& schema,
     for (usize index = 0; index < schema.Fields.size(); ++index)
     {
         const auto& field = schema.Fields[index];
-        if (!field.Persist)
+        if (field.Persist == false)
         {
             continue;
         }
-        if (!first)
+        if (first == false)
         {
             writer.Raw(",");
         }

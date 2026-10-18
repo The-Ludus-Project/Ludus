@@ -30,7 +30,7 @@ public:
     }
     [[nodiscard]] bool HasSchema() const noexcept
     {
-        return !Schema_.isEmpty();
+        return Schema_.isEmpty() == false;
     }
     [[nodiscard]] bool Dirty() const noexcept
     {

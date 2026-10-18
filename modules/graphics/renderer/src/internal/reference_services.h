@@ -51,7 +51,7 @@ bool SameReferenceIntegral(const ReferenceJob& a,
     }
     for (usize i = 0; i < lights.Count; ++i)
     {
-        if (!SameReferenceLight(a.Lights[i], lights.Lights[i]))
+        if (SameReferenceLight(a.Lights[i], lights.Lights[i]) == false)
         {
             return false;
         }
@@ -104,7 +104,7 @@ bool ReferenceFingerprint(ReferenceJob& job, usize budget) noexcept
         return false;
     }
     Array<uint8> stream;
-    if (!stream.TryResize(bytes))
+    if (stream.TryResize(bytes) == false)
     {
         return false;
     }
@@ -305,7 +305,7 @@ Status Renderer::State::PrepareReferenceMesh(const MeshDescription& input,
     }
     core::UniquePtr<internal::ReferenceMeshData> data(allocation);
     data->Device = Device;
-    if (!data->Positions.TryResize(input.VertexCount) || !data->Normals.TryResize(input.VertexCount) ||
+    if (data->Positions.TryResize(input.VertexCount) == false || data->Normals.TryResize(input.VertexCount) == false ||
         data->MaterialUvs1.TryResize(input.VertexCount) == false ||
         data->Tangents.TryResize(input.VertexCount) == false || data->Colors.TryResize(input.VertexCount) == false ||
         data->Uvs.TryResize(input.VertexCount) == false ||
@@ -339,7 +339,7 @@ Status Renderer::State::PrepareReferenceMesh(const MeshDescription& input,
                                                       data->Uvs.GetData(),
                                                       budget};
         data->NativeStatus = rhi::CreateRayGeometry(Device, description, data->Geometry);
-        if (!Accepted(data->NativeStatus))
+        if (Accepted(data->NativeStatus) == false)
         {
             return data->NativeStatus;
         }
@@ -378,7 +378,7 @@ Status Renderer::State::PrepareReferenceSurface(const MaterialDescription& surfa
     data->AlphaCutoff = surface.AlphaCutoff;
     data->Emission = lighting->Emission;
     data->IsEmissionTwoSided = lighting->IsEmissionTwoSided;
-    data->HasTexture = !rhi::IsNull(surface.Texture);
+    data->HasTexture = rhi::IsNull(surface.Texture) == false;
     data->HasSurfaceMap = rhi::IsNull(lighting->SurfaceMap) == false;
     data->HasEmissionMap = rhi::IsNull(lighting->EmissionMap) == false;
     data->AreAuthoredInputsEnabled = lighting->AreAuthoredInputsEnabled;
@@ -390,7 +390,7 @@ Status Renderer::State::PrepareReferenceSurface(const MaterialDescription& surfa
 void Renderer::State::DropReferenceCapture(usize index) noexcept
 {
     auto& record = Reference->Captures[index];
-    if (!record.Used)
+    if (record.Used == false)
     {
         return;
     }
@@ -404,7 +404,7 @@ void Renderer::State::DropReferenceCapture(usize index) noexcept
 }
 void Renderer::State::ClearReference() noexcept
 {
-    if (!Reference)
+    if (Reference.Get() == nullptr)
     {
         return;
     }
@@ -426,7 +426,7 @@ void Renderer::State::ClearReference() noexcept
 Status Renderer::EnableReferenceRendering(const rhi::ShaderDescription& shader,
                                           const ReferenceRenderingOptions& options) noexcept
 {
-    if (!mState || mState->Setup != Status::Ready)
+    if (mState.Get() == nullptr || mState->Setup != Status::Ready)
     {
         return Status::NotReady;
     }
@@ -492,7 +492,7 @@ Status Renderer::EnableReferenceRendering(const rhi::ShaderDescription& shader,
 }
 Status Renderer::DisableReferenceRendering() noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
     }
@@ -549,8 +549,9 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         {
             continue;
         }
-        if (item.MaterialSlot == NO_MATERIAL || !Materials[item.MaterialSlot].Lit ||
-            !Materials[item.MaterialSlot].Reference || !MeshRecords[item.MeshSlot].Reference)
+        if (item.MaterialSlot == NO_MATERIAL || Materials[item.MaterialSlot].Lit == false ||
+            Materials[item.MaterialSlot].Reference.Get() == nullptr ||
+            MeshRecords[item.MeshSlot].Reference.Get() == nullptr)
         {
             return Status::Unsupported;
         }
@@ -644,7 +645,8 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     usize fixed = 0;
     usize transient = 0;
     // Bounded source counts fit uint64; convert only at the wasm32 allocation boundary.
-    if (!foundation::TryIntegerCast(fixedWide, fixed) || !foundation::TryIntegerCast(transientWide, transient))
+    if (foundation::TryIntegerCast(fixedWide, fixed) == false ||
+        foundation::TryIntegerCast(transientWide, transient) == false)
     {
         return Status::CapacityExceeded;
     }
@@ -674,12 +676,13 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     {
         return Status::InvalidDescription;
     }
-    if (!job->Scene.Instances.TryEnsureCapacity(instances) || !job->Scene.Instances.TryResize(instances) ||
-        !job->Pixels.TryEnsureCapacity(pixels) || !job->Pixels.TryResize(pixels) ||
-        !job->Paths.TryEnsureCapacity(tile) || !job->Paths.TryResize(tile) || !job->Rays.TryEnsureCapacity(tile * 2) ||
-        !job->Rays.TryResize(tile * 2) || !job->Hits.TryEnsureCapacity(tile * 2) || !job->Hits.TryResize(tile * 2) ||
-        !job->Scene.Triangles.TryEnsureCapacity(triangles) || !job->Scene.Triangles.TryResize(triangles) ||
-        !job->Scene.Emitters.TryEnsureCapacity(emitters))
+    if (job->Scene.Instances.TryEnsureCapacity(instances) == false ||
+        job->Scene.Instances.TryResize(instances) == false || job->Pixels.TryEnsureCapacity(pixels) == false ||
+        job->Pixels.TryResize(pixels) == false || job->Paths.TryEnsureCapacity(tile) == false ||
+        job->Paths.TryResize(tile) == false || job->Rays.TryEnsureCapacity(tile * 2) == false ||
+        job->Rays.TryResize(tile * 2) == false || job->Hits.TryEnsureCapacity(tile * 2) == false ||
+        job->Hits.TryResize(tile * 2) == false || job->Scene.Triangles.TryEnsureCapacity(triangles) == false ||
+        job->Scene.Triangles.TryResize(triangles) == false || job->Scene.Emitters.TryEnsureCapacity(emitters) == false)
     {
         return Status::OutOfMemory;
     }
@@ -757,7 +760,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
                 triangle.Colors[corner] =
                     instance.Surface->AreAuthoredInputsEnabled ? mesh.Colors[vertex] : math::Vector4{1, 1, 1, 1};
                 const auto p = triangle.Positions[corner];
-                if (!math::IsFinite(p) || math::Abs(p.X) > 1000000 || math::Abs(p.Y) > 1000000 ||
+                if (math::IsFinite(p) == false || math::Abs(p.X) > 1000000 || math::Abs(p.Y) > 1000000 ||
                     math::Abs(p.Z) > 1000000)
                 {
                     return Status::Unsupported;
@@ -796,20 +799,21 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
             const auto localNormal =
                 math::Cross(mesh.Positions[i1] - mesh.Positions[i0], mesh.Positions[i2] - mesh.Positions[i0]);
             triangle.GeometricNormal = internal::ReferenceNormalize(normalMatrix * localNormal);
-            if (!math::IsFinite(triangle.Area) || triangle.Area <= 0 || math::Length(triangle.GeometricNormal) == 0)
+            if (math::IsFinite(triangle.Area) == false || triangle.Area <= 0 ||
+                math::Length(triangle.GeometricNormal) == 0)
             {
                 return Status::Unsupported;
             }
             for (auto normal : triangle.Normals)
             {
-                if (!math::IsFinite(normal) || math::Dot(normal, triangle.GeometricNormal) <= 0)
+                if (math::IsFinite(normal) == false || math::Dot(normal, triangle.GeometricNormal) <= 0)
                 {
                     return Status::Unsupported;
                 }
             }
             const auto& emission = instance.Surface->Emission;
             if ((emission.X > 0 || emission.Y > 0 || emission.Z > 0) &&
-                !job->Scene.Emitters.TryAdd(static_cast<uint32>(triangleAt)))
+                job->Scene.Emitters.TryAdd(static_cast<uint32>(triangleAt)) == false)
             {
                 return Status::OutOfMemory;
             }
@@ -830,7 +834,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     {
         return status;
     }
-    if (!ReferenceFingerprint(*job, remaining - fixed))
+    if (ReferenceFingerprint(*job, remaining - fixed) == false)
     {
         return Status::OutOfMemory;
     }
@@ -855,11 +859,11 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         return Status::CapacityExceeded;
     }
     job->Stage = ReferenceStage::Primary;
-    if (!oracle && instances != 0)
+    if (oracle == false && instances != 0)
     {
         Array<rhi::RayInstanceDescription> native;
         Array<Array<float32>> alpha;
-        if (!native.TryResize(instances) || !alpha.TryResize(instances))
+        if (native.TryResize(instances) == false || alpha.TryResize(instances) == false)
         {
             return Status::OutOfMemory;
         }
@@ -908,7 +912,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
             {
                 const auto& image = source.Texture;
                 const auto size = usize(image.Width) * image.Height;
-                if (!alpha[at].TryResize(size))
+                if (alpha[at].TryResize(size) == false)
                 {
                     return Status::OutOfMemory;
                 }
@@ -935,7 +939,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
             return Status::CapacityExceeded;
         }
         status = rhi::CreateRayScene(Device, {native.GetData(), instances, budget}, job->Scene.Native);
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             return status;
         }
@@ -949,7 +953,7 @@ Status Renderer::BeginReferenceCapture(Snapshot snapshot,
                                        const ReferenceCaptureDescription& description,
                                        ReferenceCapture& output) noexcept
 {
-    if (!mState || !mState->Reference)
+    if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -976,7 +980,7 @@ Status Renderer::BeginReferenceCapture(Snapshot snapshot,
     }
     core::UniquePtr<ReferenceJob> job;
     status = mState->BuildReferenceJob(Access::Slot(snapshot), description, job);
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         return status;
     }
@@ -991,7 +995,7 @@ Status Renderer::BeginReferenceCapture(Snapshot snapshot,
 }
 Status Renderer::Release(ReferenceCapture& handle) noexcept
 {
-    if (!mState || !mState->Reference)
+    if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -1011,7 +1015,7 @@ Status Renderer::Release(ReferenceCapture& handle) noexcept
 }
 Status Renderer::GetStatus(ReferenceCapture handle) const noexcept
 {
-    if (!mState || !mState->Reference)
+    if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -1033,7 +1037,7 @@ Status Renderer::GetStatus(ReferenceCapture handle) const noexcept
 }
 Status Renderer::GetReferenceCaptureInfo(ReferenceCapture handle, ReferenceCaptureInfo& output) const noexcept
 {
-    if (!mState || !mState->Reference)
+    if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -1047,7 +1051,7 @@ Status Renderer::GetReferenceCaptureInfo(ReferenceCapture handle, ReferenceCaptu
 }
 Status Renderer::CopyReferencePixels(ReferenceCapture handle, ReferencePixel* output, usize count) const noexcept
 {
-    if (!mState || !mState->Reference)
+    if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -1086,7 +1090,7 @@ ReferenceQuery(ReferenceJob& job, rhi::RayQueryProgram program, ReferenceTravers
     for (usize i = 0; i < job.QueryCount; ++i)
     {
         const auto origin = internal::ReferenceOrigin(job.Rays[i]);
-        if (!math::IsFinite(origin) || math::Abs(origin.X) > 1000000 || math::Abs(origin.Y) > 1000000 ||
+        if (math::IsFinite(origin) == false || math::Abs(origin.X) > 1000000 || math::Abs(origin.Y) > 1000000 ||
             math::Abs(origin.Z) > 1000000)
         {
             ++job.Info.InvalidContributions;
@@ -1173,7 +1177,7 @@ bool FiniteReferenceSum(const internal::ReferenceSum& sum) noexcept
 } // namespace
 Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle) noexcept
 {
-    if (!mState || !mState->Reference)
+    if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -1233,7 +1237,7 @@ Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle) noexcept
             job.Rays[i] = path.Ray;
         }
         const auto status = ReferenceQuery(job, state.Program, state.Options.Traversal, state.Options.RayByteBudget);
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             return fail(status);
         }
@@ -1286,7 +1290,7 @@ Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle) noexcept
             return Status::Pending;
         }
         const auto status = ReferenceQuery(job, state.Program, state.Options.Traversal, state.Options.RayByteBudget);
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             return fail(status);
         }
@@ -1354,9 +1358,9 @@ Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle) noexcept
             trial.Emission.Add(path.Emission);
             trial.Direct.Add(path.Direct);
             trial.Indirect.Add(path.Indirect);
-            if (!FiniteReferenceSum(trial.Emission) || !FiniteReferenceSum(trial.Direct) ||
-                !FiniteReferenceSum(trial.Indirect) ||
-                !math::IsFinite(trial.Emission.Value + trial.Direct.Value + trial.Indirect.Value))
+            if (FiniteReferenceSum(trial.Emission) == false || FiniteReferenceSum(trial.Direct) == false ||
+                FiniteReferenceSum(trial.Indirect) == false ||
+                math::IsFinite(trial.Emission.Value + trial.Direct.Value + trial.Indirect.Value) == false)
             {
                 ++job.Info.InvalidContributions;
                 job.Info.FailurePixel = path.Pixel;
@@ -1396,7 +1400,7 @@ Status Renderer::UpdateReferenceCapture(ReferenceCapture handle,
                                         Snapshot snapshot,
                                         const ReferenceCaptureDescription& description) noexcept
 {
-    if (!mState || !mState->Reference)
+    if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -1441,7 +1445,7 @@ Status Renderer::UpdateReferenceCapture(ReferenceCapture handle,
     }
     core::UniquePtr<ReferenceJob> replacement;
     status = mState->BuildReferenceJob(Access::Slot(snapshot), description, replacement);
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         return status;
     }
@@ -1461,7 +1465,7 @@ Status Renderer::UpdateReferenceCapture(ReferenceCapture handle,
 Status
 Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capacity, usize& written) const noexcept
 {
-    if (!mState || !mState->Reference)
+    if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -1501,7 +1505,7 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
     const uint32 flags = (job.Info.Traversal == ReferenceTraversal::CpuOracle ? 1U : 0U) |
                          (job.Description.CenterRays ? 2U : 0U) | (job.Description.OrthographicCamera ? 4U : 0U) |
                          (job.Description.ReverseZ ? 8U : 0U) | (job.Description.InfiniteFar ? 16U : 0U) |
-                         (!job.Info.Complete ? 32U : 0U);
+                         (job.Info.Complete == false ? 32U : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);

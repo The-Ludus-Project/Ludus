@@ -118,7 +118,7 @@ Status JsonWriter::Finish(Bytes& output) noexcept
     {
         return result == foundation::parsing::ParseStatus::OutOfMemory ? Status::OutOfMemory : Status::Limit;
     }
-    if (!output.Resize(bytes.size()))
+    if (output.Resize(bytes.size()) == false)
     {
         return Status::OutOfMemory;
     }

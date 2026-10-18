@@ -115,7 +115,7 @@ bool Run(int argc, char** argv) noexcept
                 return false;
             }
             const auto path = source->Path.View();
-            if (!path.ends_with(".wav") && !path.ends_with(".flac"))
+            if (path.ends_with(".wav") == false && path.ends_with(".flac") == false)
             {
                 return false;
             }
@@ -136,7 +136,7 @@ bool Run(int argc, char** argv) noexcept
                 return false;
             }
             firstRate = info.SampleRate;
-            if (!isMusic && info.Frames > audio::RESIDENT_PCM_CAP_BYTES / (2 * sizeof(float32)))
+            if (isMusic == false && info.Frames > audio::RESIDENT_PCM_CAP_BYTES / (2 * sizeof(float32)))
             {
                 return false;
             }
@@ -154,7 +154,7 @@ bool Run(int argc, char** argv) noexcept
         return false;
     }
     content::Bytes buffer;
-    if (!buffer.Resize(content::MAX_DOCUMENT_BYTES))
+    if (buffer.Resize(content::MAX_DOCUMENT_BYTES) == false)
     {
         return false;
     }
@@ -178,7 +178,7 @@ bool Run(int argc, char** argv) noexcept
         while (remaining != 0)
         {
             usize count = 0;
-            if (file.Read(scratch, count) != content::Status::Ok || count == 0 || !hasher.Add({scratch, count}))
+            if (file.Read(scratch, count) != content::Status::Ok || count == 0 || hasher.Add({scratch, count}) == false)
             {
                 return false;
             }
@@ -190,7 +190,7 @@ bool Run(int argc, char** argv) noexcept
         {
             return false;
         }
-        if (!first)
+        if (first == false)
         {
             writer.Raw(",");
         }
@@ -226,7 +226,7 @@ int main(int argc, char** argv)
             ludus::foundation::logging::LogSystem::Shutdown();
         }
     } cleanup;
-    if (!Run(argc, argv))
+    if (Run(argc, argv) == false)
     {
         LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE, "Content validation failed; no package published.");
         return 1;

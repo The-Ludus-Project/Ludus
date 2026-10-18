@@ -27,8 +27,8 @@ bool Color(math::Vector4 color) noexcept
 bool Same(const OverlayStyle& a, const OverlayStyle& b) noexcept
 {
     return a.Depth == b.Depth && a.Clip == b.Clip &&
-           (!a.Clip || (a.Scissor.X == b.Scissor.X && a.Scissor.Y == b.Scissor.Y &&
-                        a.Scissor.Width == b.Scissor.Width && a.Scissor.Height == b.Scissor.Height));
+           (a.Clip == false || (a.Scissor.X == b.Scissor.X && a.Scissor.Y == b.Scissor.Y &&
+                                a.Scissor.Width == b.Scissor.Width && a.Scissor.Height == b.Scissor.Height));
 }
 rhi::RasterRectangle Intersection(rhi::RasterRectangle a, rhi::RasterRectangle b) noexcept
 {
@@ -62,7 +62,7 @@ OverlayList::OverlayList() noexcept = default;
 OverlayList::~OverlayList() = default;
 Status OverlayList::Initialize() noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         mState.Reset(new (std::nothrow) State);
     }
@@ -103,7 +103,7 @@ uint64 OverlayList::DroppedCommands() const noexcept
 // D3D9 upload method. Review: docs/architecture/renderer-systems-gems-review.md.
 Status OverlayList::Append(const OverlayVertex* vertices, usize count, const OverlayStyle& style) noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -114,7 +114,7 @@ Status OverlayList::Append(const OverlayVertex* vertices, usize count, const Ove
     }
     auto& s = *mState;
     const bool merge = s.CommandsUsed != 0 && Same(s.Commands[s.CommandsUsed - 1].Style, style);
-    if (count > MAX_VERTICES - s.VerticesUsed || (count != 0 && !merge && s.CommandsUsed == MAX_COMMANDS))
+    if (count > MAX_VERTICES - s.VerticesUsed || (count != 0 && merge == false && s.CommandsUsed == MAX_COMMANDS))
     {
         if (s.Dropped != ~uint64{0})
         {
@@ -125,9 +125,9 @@ Status OverlayList::Append(const OverlayVertex* vertices, usize count, const Ove
     for (usize i = 0; i < count; ++i)
     {
         const auto& v = vertices[i];
-        if (!math::IsFinite(v.Clip) || v.Clip.W <= 0 || v.Clip.Z < 0 || v.Clip.Z > v.Clip.W ||
-            !math::IsFinite(v.Coverage) || v.Coverage.X < 0 || v.Coverage.X > 1 || v.Coverage.Y < 0 ||
-            v.Coverage.Y > 1 || (v.Coverage.Z != 0 && v.Coverage.Z != 1) || !Color(v.Color))
+        if (math::IsFinite(v.Clip) == false || v.Clip.W <= 0 || v.Clip.Z < 0 || v.Clip.Z > v.Clip.W ||
+            math::IsFinite(v.Coverage) == false || v.Coverage.X < 0 || v.Coverage.X > 1 || v.Coverage.Y < 0 ||
+            v.Coverage.Y > 1 || (v.Coverage.Z != 0 && v.Coverage.Z != 1) || Color(v.Color) == false)
         {
             return Status::InvalidDescription;
         }
@@ -159,9 +159,9 @@ Status OverlayList::Quad(math::Vector4 rectangle,
                          bool coverage,
                          const OverlayStyle& style) noexcept
 {
-    if (width == 0 || height == 0 || !math::IsFinite(rectangle) || !math::IsFinite(uv) || !Color(color) ||
-        rectangle.Z < rectangle.X || rectangle.W < rectangle.Y || uv.X < 0 || uv.Y < 0 || uv.Z > 1 || uv.W > 1 ||
-        uv.Z < uv.X || uv.W < uv.Y)
+    if (width == 0 || height == 0 || math::IsFinite(rectangle) == false || math::IsFinite(uv) == false ||
+        Color(color) == false || rectangle.Z < rectangle.X || rectangle.W < rectangle.Y || uv.X < 0 || uv.Y < 0 ||
+        uv.Z > 1 || uv.W > 1 || uv.Z < uv.X || uv.W < uv.Y)
     {
         return Status::InvalidDescription;
     }
@@ -189,8 +189,8 @@ Status OverlayList::Line(math::Vector4 start,
                          uint32 height,
                          const OverlayStyle& style) noexcept
 {
-    if (!math::IsFinite(start) || !math::IsFinite(end) || !Color(color) || !math::IsFinite(physicalWidth) ||
-        physicalWidth <= 0 || width == 0 || height == 0)
+    if (math::IsFinite(start) == false || math::IsFinite(end) == false || Color(color) == false ||
+        math::IsFinite(physicalWidth) == false || physicalWidth <= 0 || width == 0 || height == 0)
     {
         return Status::InvalidDescription;
     }
@@ -375,7 +375,7 @@ Status OverlayRenderer::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidState;
     }
-    if (vertex.Inputs.size() != 3 || !vertex.Bindings.empty() || !fragment.Inputs.empty() ||
+    if (vertex.Inputs.size() != 3 || vertex.Bindings.empty() == false || fragment.Inputs.empty() == false ||
         fragment.Bindings.size() != 2 || vertex.Artifact.Stage != rhi::ShaderStage::Vertex ||
         fragment.Artifact.Stage != rhi::ShaderStage::Fragment)
     {
@@ -400,7 +400,7 @@ Status OverlayRenderer::Initialize(rhi::DeviceHandle device,
         }
     }
     mState.Reset(new (std::nothrow) State);
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::OutOfMemory;
     }
@@ -441,7 +441,7 @@ Status OverlayRenderer::Initialize(rhi::DeviceHandle device,
                                    {reinterpret_cast<const uint8*>(indices), sizeof(indices)},
                                    s.Indices);
     }
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         return s.Setup = status;
     }
@@ -449,7 +449,7 @@ Status OverlayRenderer::Initialize(rhi::DeviceHandle device,
 }
 Status OverlayRenderer::Poll() noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -510,7 +510,7 @@ Status OverlayRenderer::Poll() noexcept
         description.DepthCompare =
             depth == 2 ? rhi::RasterDepthCompare::GreaterEqual : rhi::RasterDepthCompare::LessEqual;
         status = rhi::CreateRasterPipeline(s.Device, description, s.Pipelines[s.Phase]);
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             return s.Setup = status;
         }
@@ -524,7 +524,7 @@ Status OverlayRenderer::Poll() noexcept
 }
 Status OverlayRenderer::Prepare(const OverlayList& list, rhi::TextureHandle atlas, PreparedOverlay& output) noexcept
 {
-    if (!mState || mState->Setup != Status::Ready)
+    if (mState.Get() == nullptr || mState->Setup != Status::Ready)
     {
         return Status::NotReady;
     }
@@ -583,14 +583,14 @@ Status OverlayRenderer::Prepare(const OverlayList& list, rhi::TextureHandle atla
                                           v.Upload);
         v.UploadOwned = status == Status::Pending;
     }
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         s.Drop(v);
         return status;
     }
     const auto prepared = internal::OverlayAccess::Make({s.Identity, v.Generation, static_cast<uint32>(index)});
     status = GetStatus(prepared);
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         s.Drop(v);
         return status;
@@ -600,7 +600,7 @@ Status OverlayRenderer::Prepare(const OverlayList& list, rhi::TextureHandle atla
 }
 Status OverlayRenderer::GetStatus(PreparedOverlay overlay) noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -648,11 +648,11 @@ Status OverlayRenderer::GetStatus(PreparedOverlay overlay) noexcept
     {
         return v->Setup = Status::Ready;
     }
-    if (!v->BindingCreated)
+    if (v->BindingCreated == false)
     {
         const rhi::RasterBindingResource values[]{{0, {}, 0, 0, v->Atlas, {}}, {1, {}, 0, 0, {}, s.Sampler}};
         status = rhi::CreateBindingSet(s.Device, s.Layout, values, v->Bindings);
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             return v->Setup = status;
         }
@@ -667,7 +667,7 @@ Status OverlayRenderer::GetStatus(PreparedOverlay overlay) noexcept
 }
 Status OverlayRenderer::Draw(PreparedOverlay overlay, const rhi::RasterPassDescription& description) noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }
@@ -682,7 +682,7 @@ Status OverlayRenderer::Draw(PreparedOverlay overlay, const rhi::RasterPassDescr
         return v->Setup;
     }
     const bool surface = rhi::IsNull(description.Color);
-    if (!surface)
+    if (surface == false)
     {
         rhi::TextureDescription target;
         const auto status = rhi::GetTextureDescription(s.Device, description.Color, target);
@@ -690,7 +690,7 @@ Status OverlayRenderer::Draw(PreparedOverlay overlay, const rhi::RasterPassDescr
         {
             return status;
         }
-        if (!target.Attachment || target.Format != rhi::RasterFormat::Rgba8Unorm)
+        if (target.Attachment == false || target.Format != rhi::RasterFormat::Rgba8Unorm)
         {
             return Status::Unsupported;
         }
@@ -734,7 +734,7 @@ Status OverlayRenderer::Draw(PreparedOverlay overlay, const rhi::RasterPassDescr
 }
 Status OverlayRenderer::Release(PreparedOverlay& overlay) noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::InvalidHandle;
     }

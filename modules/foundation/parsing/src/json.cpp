@@ -201,7 +201,7 @@ usize JsonValue::MemberCount() const noexcept
 }
 bool JsonValue::MemberAt(usize index, std::string_view& key, JsonValue& value) const noexcept
 {
-    if (!Object() || index >= MemberCount())
+    if (Object() == false || index >= MemberCount())
     {
         return false;
     }
@@ -221,7 +221,7 @@ bool JsonValue::Null() const noexcept
 }
 bool JsonValue::String(std::string_view& output) const noexcept
 {
-    if (!yyjson_is_str(Val(*this)))
+    if (yyjson_is_str(Val(*this)) == false)
     {
         return false;
     }
@@ -230,7 +230,7 @@ bool JsonValue::String(std::string_view& output) const noexcept
 }
 bool JsonValue::Integer(uint64& output) const noexcept
 {
-    if (!yyjson_is_uint(Val(*this)))
+    if (yyjson_is_uint(Val(*this)) == false)
     {
         return false;
     }
@@ -248,7 +248,7 @@ bool JsonValue::SignedInteger(int64& output) const noexcept
 }
 bool JsonValue::Number(float64& output) const noexcept
 {
-    if (!yyjson_is_num(Val(*this)))
+    if (yyjson_is_num(Val(*this)) == false)
     {
         return false;
     }
@@ -257,7 +257,7 @@ bool JsonValue::Number(float64& output) const noexcept
 }
 bool JsonValue::Boolean(bool& output) const noexcept
 {
-    if (!yyjson_is_bool(Val(*this)))
+    if (yyjson_is_bool(Val(*this)) == false)
     {
         return false;
     }
@@ -266,13 +266,13 @@ bool JsonValue::Boolean(bool& output) const noexcept
 }
 bool JsonValue::Fields(std::initializer_list<const char*> required) const noexcept
 {
-    if (!Object() || yyjson_obj_size(Val(*this)) != required.size())
+    if (Object() == false || yyjson_obj_size(Val(*this)) != required.size())
     {
         return false;
     }
     for (const char* key : required)
     {
-        if (!Get(key).Valid())
+        if (Get(key).Valid() == false)
         {
             return false;
         }
@@ -372,7 +372,7 @@ ParseStatus JsonDocument::Read(std::string_view input, ParseError& error, const 
         mCapacity = size;
     }
     yyjson_alc allocator{};
-    if (!yyjson_alc_pool_init(&allocator, mPool, mCapacity))
+    if (yyjson_alc_pool_init(&allocator, mPool, mCapacity) == false)
     {
         return Fail(error, ParseStatus::OutOfMemory);
     }
@@ -512,7 +512,7 @@ void JsonWriter::Boolean(bool value) noexcept
 }
 ParseStatus JsonWriter::Finish(std::span<const uint8>& output) noexcept
 {
-    if (!mFinished)
+    if (mFinished == false)
     {
         Raw("\n");
         mFinished = true;

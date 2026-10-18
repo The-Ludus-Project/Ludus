@@ -24,7 +24,7 @@ Status TryRasterLayout(RasterInput input, RasterLayout& out) noexcept
     const int64 magnitude = widePitch < 0 ? -widePitch : widePitch;
     usize lastRow{};
     usize sourceExtent{};
-    if (!TryIntegerCast(magnitude, next.Pitch))
+    if (TryIntegerCast(magnitude, next.Pitch) == false)
     {
         return Status::ResourceLimit;
     }
@@ -32,10 +32,10 @@ Status TryRasterLayout(RasterInput input, RasterLayout& out) noexcept
     {
         return Status::BackendFailure;
     }
-    if (!TryMultiply(static_cast<usize>(input.Width), static_cast<usize>(input.Height), next.CoverageBytes) ||
-        !TryMultiply(static_cast<usize>(input.Height - 1), next.Pitch, lastRow) ||
-        !TryAdd(lastRow, static_cast<usize>(input.Width), sourceExtent) || next.CoverageBytes > (~usize{0} >> 1) ||
-        sourceExtent > (~usize{0} >> 1))
+    if (TryMultiply(static_cast<usize>(input.Width), static_cast<usize>(input.Height), next.CoverageBytes) == false ||
+        TryMultiply(static_cast<usize>(input.Height - 1), next.Pitch, lastRow) == false ||
+        TryAdd(lastRow, static_cast<usize>(input.Width), sourceExtent) == false ||
+        next.CoverageBytes > (~usize{0} >> 1) || sourceExtent > (~usize{0} >> 1))
     {
         return Status::ResourceLimit;
     }

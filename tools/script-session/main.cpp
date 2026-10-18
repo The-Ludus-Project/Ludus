@@ -37,7 +37,7 @@ extern "C" S2_EXPORT const char* S2Control(const char* request) noexcept
 {
     using namespace ludus::s2;
     gWritten = 0;
-    if (request == nullptr || !gSession.Control(request, gOutput, gWritten))
+    if (request == nullptr || gSession.Control(request, gOutput, gWritten) == false)
     {
         return nullptr;
     }

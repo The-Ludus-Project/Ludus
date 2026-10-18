@@ -68,13 +68,13 @@ RasterStatus MutableDestination(Record& record, RasterKind kind) noexcept
 RasterStatus TransferRows(const TextureRegion& region, usize pitch, usize& nativePitch, usize& nativeSize) noexcept
 {
     usize rowBytes = 0, size = 0, rounded = 0;
-    if (!TryMultiply(usize{region.Width}, usize{4}, rowBytes) || pitch < rowBytes || pitch % 4 != 0 ||
-        !TryMultiply(pitch, usize{region.Height}, size) || !TryAdd(rowBytes, usize{255}, rounded))
+    if (TryMultiply(usize{region.Width}, usize{4}, rowBytes) == false || pitch < rowBytes || pitch % 4 != 0 ||
+        TryMultiply(pitch, usize{region.Height}, size) == false || TryAdd(rowBytes, usize{255}, rounded) == false)
     {
         return RasterStatus::InvalidDescription;
     }
     nativePitch = rounded & ~usize{255};
-    if (!TryMultiply(nativePitch, usize{region.Height}, nativeSize))
+    if (TryMultiply(nativePitch, usize{region.Height}, nativeSize) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -123,7 +123,7 @@ RasterStatus TextureDestination(Record& texture, const TextureRegion& region) no
     {
         return RasterStatus::Unsupported;
     }
-    if (!InitializedMip(texture, region.Mip) && !FullMip(texture, region))
+    if (InitializedMip(texture, region.Mip) == false && FullMip(texture, region) == false)
     {
         return RasterStatus::InvalidState;
     }
@@ -151,7 +151,8 @@ RasterStatus RequestBufferUpdate(DeviceHandle device,
     {
         return RasterStatus::InvalidHandle;
     }
-    if (bytes == nullptr || size == 0 || offset % 4 != 0 || size % 4 != 0 || !Fits(offset, size, buffer->Buffer.Size))
+    if (bytes == nullptr || size == 0 || offset % 4 != 0 || size % 4 != 0 ||
+        Fits(offset, size, buffer->Buffer.Size) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -223,7 +224,7 @@ RasterStatus RequestTextureUpdate(DeviceHandle device,
     {
         return rows;
     }
-    if (bytes == nullptr || !TryMultiply(rowPitch, usize{region.Height}, callerSize) || byteCount != callerSize)
+    if (bytes == nullptr || TryMultiply(rowPitch, usize{region.Height}, callerSize) == false || byteCount != callerSize)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -291,7 +292,7 @@ RasterStatus RequestTextureCopy(DeviceHandle device,
     {
         return source->Status == RasterStatus::Pending ? RasterStatus::NotReady : source->Status;
     }
-    if (!InitializedMip(*source, sourceRegion.Mip))
+    if (InitializedMip(*source, sourceRegion.Mip) == false)
     {
         return RasterStatus::InvalidState;
     }
@@ -353,7 +354,7 @@ RasterStatus RequestTextureReadback(DeviceHandle device,
     {
         return texture->Status == RasterStatus::Pending ? RasterStatus::NotReady : texture->Status;
     }
-    if (!InitializedMip(*texture, region.Mip))
+    if (InitializedMip(*texture, region.Mip) == false)
     {
         return RasterStatus::InvalidState;
     }
@@ -416,7 +417,7 @@ RasterStatus GetTextureResidency(DeviceHandle device, TextureHandle handle, Text
     result.MipLevels = texture->Texture.MipLevels;
     for (uint32 mip = 0; mip < result.MipLevels; ++mip)
     {
-        if (!InitializedMip(*texture, mip))
+        if (InitializedMip(*texture, mip) == false)
         {
             continue;
         }
@@ -437,11 +438,11 @@ RasterStatus GetStatus(DeviceHandle device, TransferTicket ticket) noexcept
         return admission;
     }
     auto* record = ResolveLifetime(gUploads, ticket);
-    if (record == nullptr || !record->Mutable)
+    if (record == nullptr || record->Mutable == false)
     {
         return RasterStatus::InvalidHandle;
     }
-    if (!FrameOpen())
+    if (FrameOpen() == false)
     {
         const auto polled = PollLifetime(device);
         if (polled != RasterStatus::Ready)
@@ -459,7 +460,7 @@ RasterStatus Release(DeviceHandle device, TransferTicket& ticket) noexcept
         return admission;
     }
     auto* record = ResolveLifetime(gUploads, ticket);
-    if (record == nullptr || !record->Mutable)
+    if (record == nullptr || record->Mutable == false)
     {
         return RasterStatus::InvalidHandle;
     }

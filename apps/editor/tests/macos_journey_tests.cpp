@@ -31,7 +31,7 @@ bool WaitMac(Predicate&& predicate)
 {
     QElapsedTimer timer;
     timer.start();
-    while (!predicate() && timer.elapsed() < 90000)
+    while (predicate() == false && timer.elapsed() < 90000)
     {
         QTest::qWait(20);
     }
@@ -43,7 +43,7 @@ TEST_CASE("Cocoa editor creates checks repairs builds runs stops and reopens a m
 {
     REQUIRE(QApplication::platformName() == QStringLiteral("cocoa"));
     const auto sdk = qEnvironmentVariable("LUDUS_SETUP_TEST_SDK");
-    REQUIRE(!sdk.isEmpty());
+    REQUIRE(sdk.isEmpty() == false);
     QTemporaryDir directory;
     REQUIRE(directory.isValid());
     const auto root = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
@@ -127,7 +127,7 @@ TEST_CASE("Cocoa editor creates checks repairs builds runs stops and reopens a m
         CHECK(controller.State().SetupStatus.contains(QStringLiteral("Engine revision: ")));
     }
     const auto capture = qEnvironmentVariable("LUDUS_MACOS_EDITOR_CAPTURE");
-    if (!capture.isEmpty())
+    if (capture.isEmpty() == false)
     {
         REQUIRE(window.grab().save(capture));
     }
@@ -137,7 +137,7 @@ TEST_CASE("Cocoa editor authors and verifies a macOS Release app", "[.macos-rele
 {
     REQUIRE(QApplication::platformName() == QStringLiteral("cocoa"));
     const auto sdk = qEnvironmentVariable("LUDUS_RELEASE_TEST_SDK");
-    REQUIRE(!sdk.isEmpty());
+    REQUIRE(sdk.isEmpty() == false);
     QTemporaryDir directory;
     REQUIRE(directory.isValid());
     const auto root = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
@@ -153,7 +153,7 @@ TEST_CASE("Cocoa editor authors and verifies a macOS Release app", "[.macos-rele
     creation.Destination = directory.filePath(QStringLiteral("Release Game"));
     creation.Name = QStringLiteral("Release Game");
     creation.Sdk = qEnvironmentVariable("LUDUS_SETUP_TEST_SDK");
-    REQUIRE(!creation.Sdk.isEmpty());
+    REQUIRE(creation.Sdk.isEmpty() == false);
     controller.CreateProject(creation);
     REQUIRE(WaitMac(
         [&]() { return controller.State().Result.Kind != Outcome::None && controller.Caps().CanCloseImmediately; }));
