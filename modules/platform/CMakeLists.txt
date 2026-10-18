@@ -216,6 +216,9 @@ endif()
 if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_ENABLE_WAYLAND)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_platform_wayland_tests tests/wayland_event_tests.cpp)
+    # The visibility cases name xdg_toplevel_state values from the generated protocol header.
+    target_include_directories(ludus_platform_wayland_tests PRIVATE "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}")
+    add_dependencies(ludus_platform_wayland_tests ludus_platform_wayland_protocols)
     target_link_libraries(ludus_platform_wayland_tests PRIVATE
         Ludus::Platform Catch2::Catch2WithMain PkgConfig::WAYLAND_CLIENT)
     target_compile_definitions(ludus_platform_wayland_tests PRIVATE LUDUS_PLATFORM_WAYLAND=1)

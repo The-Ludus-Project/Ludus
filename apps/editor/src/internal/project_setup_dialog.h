@@ -22,10 +22,20 @@ struct ProjectSetupOptions
     bool DisableWeb = false;
 };
 
+/// What the Repair dialog knows about the open project and this editor, used to
+/// validate and discover engine installs. Empty fields disable those checks.
+struct ProjectSetupContext
+{
+    QString ExpectedFlavor; ///< SDK flavor required by the saved profile (`Development`, ...).
+    QString ToolingRoot;    ///< This editor's tooling checkout; its out/install folders are offered.
+};
+
 class ProjectSetupDialog final : public QDialog
 {
 public:
-    explicit ProjectSetupDialog(const QString& projectDirectory, QWidget* parent = nullptr);
+    explicit ProjectSetupDialog(const QString& projectDirectory,
+                                QWidget* parentOrNull = nullptr,
+                                const ProjectSetupContext& context = {});
     [[nodiscard]] ProjectSetupOptions Options() const noexcept;
 
 private:
@@ -41,6 +51,9 @@ private:
     QLabel* EngineHelp_ = nullptr;
     QWidget* NativeFields_ = nullptr;
     QLineEdit* Sdk_ = nullptr;
+    QComboBox* mDetectedEnginesOrNull = nullptr;
+    QLabel* mSdkCheckOrNull = nullptr;
+    QString mExpectedFlavor;
     QCheckBox* Browser_ = nullptr;
     QWidget* BrowserFields_ = nullptr;
     QLineEdit* WebSdk_ = nullptr;

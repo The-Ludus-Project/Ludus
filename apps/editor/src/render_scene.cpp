@@ -12,6 +12,9 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/memory/allocation_domain.hpp>
+#include <ludus/foundation/memory/owned_object.hpp>
+#include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/foundation/parsing/json.hpp>
 
 #include <string_view>
@@ -595,7 +598,8 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
         {
             continue;
         }
-        const auto id = entity.value(QStringLiteral("id")).toString();
+        // The entity key: a version-2 UUID or a version-1 ID.
+        const QString id = world.GetEntityKey(entity);
         const auto name = entity.value(QStringLiteral("name")).toString();
         math::TransformTRS trs;
         if (Attached(entity, transform) == false || Transform(Values(entity, transform), trs, error) == false)
@@ -1154,14 +1158,20 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
                              const QJsonObject& revisions)
 {
     RenderScene candidate;
-    candidate.Definition = QSharedPointer<resources::SceneDefinition>::create();
+    SharedPtr<resources::SceneDefinition> decoded;
+    if (TryMakeShared<resources::SceneDefinition>(GetSystemAllocationDomain(), decoded) != OwnershipStatus::Ok)
+    {
+        return Fail(error, QStringLiteral("Cooked scene allocation failed. Previous viewport retained."));
+    }
     if (resources::SceneDefinition::Decode(reinterpret_cast<const uint8*>(bytes.constData()),
                                            static_cast<usize>(bytes.size()),
-                                           *candidate.Definition) != resources::Status::Ok)
+                                           *decoded) != resources::Status::Ok)
     {
         return Fail(error,
                     QStringLiteral("Cooked scene failed bounded runtime validation. Previous viewport retained."));
     }
+    // Publish only the complete decode; no holder mutates it afterwards.
+    candidate.Definition = Move(decoded);
     const auto& scene = *candidate.Definition;
     candidate.Lit = true;
     candidate.LogicalId = QStringLiteral("level/") + level.value(QStringLiteral("id")).toString();

@@ -9,6 +9,7 @@
 //
 // It uses private Qt value types but creates no widgets and runs no tools.
 
+#include "internal/engine_pin.h"
 #include "internal/project_descriptor.h"
 
 #include <ludus/foundation/base/types.h>
@@ -126,6 +127,7 @@ struct WorkspaceState
     QStringList DiscoveredTargets; // executable targets from last Configure
     QString DiscoveredPreset;      // preset the discovery cache belongs to
     QString SetupStatus;           // read-only CMake setup result for the saved project
+    EnginePinStatus EnginePin;     // selected engine install versus this editor's engine (last check)
     LastResult Result;
 
     // Dirty is the semantic inequality of saved and draft (design section 4).

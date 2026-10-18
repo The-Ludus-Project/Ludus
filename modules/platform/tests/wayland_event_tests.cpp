@@ -9,6 +9,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <wayland-client.h>
+#include <xdg-shell-client-protocol.h>
 
 namespace
 {
@@ -56,4 +57,58 @@ TEST_CASE("Wayland event pumping progresses without incoming events", "[platform
 
     window->SetClosed(true);
     CHECK_FALSE(window->HandleEvent({}));
+}
+
+// Compositor-independent: the mapping from an xdg_toplevel.configure state array
+// to WindowVisibility (xdg-shell.xml, xdg_toplevel.state "suspended", since 6).
+namespace
+{
+void AppendState(wl_array& inoutStates, ludus::foundation::uint32 state)
+{
+    ludus::foundation::uint32* slot =
+        static_cast<ludus::foundation::uint32*>(wl_array_add(&inoutStates, sizeof(ludus::foundation::uint32)));
+    REQUIRE(slot != nullptr);
+    *slot = state;
+}
+} // namespace
+
+TEST_CASE("Toplevel configure states map the suspended state to Occluded", "[platform][wayland][visibility]")
+{
+    using ludus::platform::WindowVisibility;
+    using ludus::platform::wayland::ComputeToplevelVisibility;
+
+    wl_array states;
+    wl_array_init(&states);
+
+    // No states: a plain visible toplevel.
+    CHECK(ComputeToplevelVisibility(states) == WindowVisibility::Visible);
+
+    // Ordinary window states never hide the window.
+    AppendState(states, XDG_TOPLEVEL_STATE_ACTIVATED);
+    AppendState(states, XDG_TOPLEVEL_STATE_MAXIMIZED);
+    AppendState(states, XDG_TOPLEVEL_STATE_FULLSCREEN);
+    CHECK(ComputeToplevelVisibility(states) == WindowVisibility::Visible);
+
+#if defined(XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION)
+    STATIC_CHECK(XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION == 6);
+    // Suspended anywhere in the array hides the window; the protocol does not say minimized.
+    AppendState(states, XDG_TOPLEVEL_STATE_SUSPENDED);
+    CHECK(ComputeToplevelVisibility(states) == WindowVisibility::Occluded);
+
+    wl_array_release(&states);
+    wl_array_init(&states);
+    AppendState(states, XDG_TOPLEVEL_STATE_SUSPENDED);
+    AppendState(states, XDG_TOPLEVEL_STATE_ACTIVATED);
+    CHECK(ComputeToplevelVisibility(states) == WindowVisibility::Occluded);
+
+    // A later configure without the state is the window becoming visible again.
+    wl_array_release(&states);
+    wl_array_init(&states);
+    AppendState(states, XDG_TOPLEVEL_STATE_ACTIVATED);
+    CHECK(ComputeToplevelVisibility(states) == WindowVisibility::Visible);
+#else
+    WARN("wayland-protocols older than 1.32: no suspended state, Wayland windows are always Visible");
+#endif
+
+    wl_array_release(&states);
 }

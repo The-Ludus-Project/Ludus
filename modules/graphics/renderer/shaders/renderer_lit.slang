@@ -281,6 +281,11 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
 [shader("fragment")] float4 FragmentMain(Varying input) : SV_Target
 {
     float4 baseColor = SampleBaseTexel(input);
+    // Thanks to the W3C GPU for the Web Working Group, WGSL, "Derivative Built-in Functions":
+    // https://www.w3.org/TR/WGSL/#derivative-builtin-functions
+    // Evaluate quad derivatives before the per-fragment tangent-frame choice.
+    float3 positionDerivativeXWorld = ddx(input.PositionWorld);
+    float3 positionDerivativeYWorld = ddy(input.PositionWorld);
     float3 normalWorld = NormalizeOrZero(input.NormalWorld);
     float3 viewDirectionWorld = input.EyeWorld.w >= 2 ? NormalizeOrZero(input.EyeWorld.xyz)
                                                       : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
@@ -300,6 +305,8 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
         SurfaceParameters parameters = DecodeSurfaceParameters(texel, metallic, roughness, material.SurfaceMap.x);
         metallic = parameters.Metallic;
         roughness = parameters.Roughness;
+        float2 uvDerivativeXMaterial = ddx(uv);
+        float2 uvDerivativeYMaterial = ddy(uv);
 #    ifdef LUDUS_AUTHORED_INPUTS
         if (material.Authored.x > .5 && abs(input.TangentWorld.w) > .5)
         {
@@ -314,10 +321,10 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
 #    endif
             normalWorld = ApplyNormalWorld(normalWorld,
                                            parameters.NormalTangent,
-                                           ddx(input.PositionWorld),
-                                           ddy(input.PositionWorld),
-                                           ddx(uv),
-                                           ddy(uv));
+                                           positionDerivativeXWorld,
+                                           positionDerivativeYWorld,
+                                           uvDerivativeXMaterial,
+                                           uvDerivativeYMaterial);
     }
 #endif
     float nv = max(dot(normalWorld, viewDirectionWorld), 0);
@@ -344,7 +351,7 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
             bakeTexture.SampleLevel(colorSampler, saturate(input.BakeUv) * material.BakeUv.xy + material.BakeUv.zw, 0)
                 .rgb *
             material.BakeScale.rgb;
-    float3 geometricNormalWorld = cross(ddx(input.PositionWorld), ddy(input.PositionWorld));
+    float3 geometricNormalWorld = cross(positionDerivativeXWorld, positionDerivativeYWorld);
     if (dot(geometricNormalWorld, input.NormalWorld) < 0)
         geometricNormalWorld = -geometricNormalWorld;
     float3 result = material.Emission.w > .5 || dot(geometricNormalWorld, viewDirectionWorld) > 0

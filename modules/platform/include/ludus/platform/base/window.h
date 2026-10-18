@@ -95,8 +95,12 @@ public:
     /// occlusion state says no part is visible; it is refreshed by HandleEvent() and
     /// window-delegate notifications, on the main thread. Browser windows report
     /// Occluded while the canvas is hidden, detached or zero-sized, matching
-    /// browser::WindowState::Visible. Wayland and headless windows always report
-    /// Visible because those backends do not observe occlusion.
+    /// browser::WindowState::Visible. Wayland windows report Occluded while the
+    /// compositor's latest xdg_toplevel configure carries the suspended state
+    /// (xdg_wm_base version 6: minimized, fully covered or on a switched-off output)
+    /// and after close; the protocol does not distinguish minimization, and a
+    /// compositor bound below version 6 never suspends. Headless windows always
+    /// report Visible because that backend does not observe occlusion.
     /// @note Occlusion is a power hint, not a guarantee: partial or translucent cover
     /// still reports Visible, and AppKit delivers changes asynchronously, so a newly
     /// opened window may report Occluded until the window server has placed it.

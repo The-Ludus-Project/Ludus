@@ -8,9 +8,17 @@ the `ludus_pointer_diagnostics` negative-compilation gate. Slice 2 (domain objec
 ownership) is implemented in
 [owned_object.hpp](../../modules/foundation/memory/include/ludus/foundation/memory/owned_object.hpp)
 with [factory tests](../../modules/foundation/memory/tests/owned_object_tests.cpp);
-`InputSystem`'s reducer storage is its first migrated consumer. The allocation
-domain and shared string were already implemented. General shared/weak owners
-are future work. No performance results accompany this design.
+`InputSystem`'s reducer storage is its first migrated consumer. Slice 3 (shared
+and weak consumer) is implemented in
+[shared_ptr.hpp](../../modules/foundation/memory/include/ludus/foundation/memory/shared_ptr.hpp)
+with a private controller in
+[shared_controller.cpp](../../modules/foundation/memory/src/shared_controller.cpp),
+[ownership tests](../../modules/foundation/memory/tests/shared_ptr_tests.cpp) and
+negative compilation in `ludus_pointer_diagnostics`; the editor's decoded
+`RenderScene::Definition` snapshot is its first consumer. The allocation domain
+and shared string were already implemented. Concurrent promotion proof,
+debugger views and benchmarks (slice 4) are future work. No performance results
+accompany this design.
 
 Use **unique ownership by default, atomic shared ownership for independent
 overlapping lifetimes, and explicit handles and leases for managed objects**.
@@ -30,7 +38,7 @@ design and the changes made after reading the relevant Gems chapters.
 
 The first four rows record the defects found at review time and their slice 1
 repair; the remaining rows describe existing facilities later slices build on,
-and the slice 2 factory.
+and the slice 2 and slice 3 implementations.
 
 | Inspected source | Finding and consequence |
 | --- | --- |
@@ -40,6 +48,7 @@ and the slice 2 factory.
 | [Base CMake](../../modules/foundation/base/CMakeLists.txt) | Exported `pointer.hpp` without dedicated pointer tests. **Repaired:** [pointer_tests.cpp](../../modules/foundation/base/tests/pointer_tests.cpp) covers ownership and constraints; [pointer_compile_failures.cpp](../../modules/foundation/base/tests/pointer_compile_failures.cpp) holds the hard-error cases compiled by `ludus_pointer_diagnostics`. |
 | [AllocationDomain](../../modules/foundation/memory/include/ludus/foundation/memory/allocation_domain.hpp) | Already supplies immutable domain identity, fallible allocation and original-layout free. Object factories can use it without placing Memory below Base. |
 | [owned_object.hpp](../../modules/foundation/memory/include/ludus/foundation/memory/owned_object.hpp) | **Slice 2:** `TryCreateOwned<T>` and exact-type `DomainDeleter<T>` implement the factory contract below. [keyboard.cpp](../../modules/input/src/keyboard.cpp) creates and destroys the `InputSystem` reducer through the system domain; other `new`/`delete` pairs are unchanged. |
+| [shared_ptr.hpp](../../modules/foundation/memory/include/ludus/foundation/memory/shared_ptr.hpp) | **Slice 3:** `SharedPtr<T>`, `WeakPtr<T>` and `TryMakeShared<T>` implement the shared contract below with one combined allocation and an out-of-line controller ([shared_controller.cpp](../../modules/foundation/memory/src/shared_controller.cpp)). The editor's [RenderScene](../../apps/editor/src/internal/render_scene.h) holds its decoded `SceneDefinition` as `SharedPtr<const T>` across the workspace, load job, preview residency, GPU generation and static-lighting bake; other `QSharedPointer` uses are unchanged. |
 | [SharedString](../../modules/foundation/strings/src/shared_string.cpp) | Already uses an immutable block, domain attribution, `uint64` atomic count and saturation pinning. Preserve its API and semantics; its private count helpers do not establish weak-promotion safety. |
 | [Wayland owners](../../modules/platform/include/ludus/platform/wayland/window.h), [Cocoa window factory](../../modules/platform/src/window_cocoa.mm), [Audio facade](../../modules/audio/src/facade.cpp) | Native deleter specializations and raw ownership transfers already exist. Preserve creator-specific destruction and audit the receiving protocol before changing factories. |
 
@@ -54,8 +63,8 @@ source and evidence determine implementation status.
 | One object owner, PIMPL, service or private node | `UniquePtr<T, D>` | Move ownership; destruction follows that owner. |
 | Required synchronous access | `T&` or `const T&` | Caller retains the owner/protected phase through the call. |
 | Optional synchronous access | `T*` or `const T*` | Nullable borrow; never independently extends lifetime. |
-| Independently retained immutable CPU object | Proposed `SharedPtr<const T>` | Each retained owner holds the same fixed object until release. |
-| Observer of a shared CPU object, callback back edge | Proposed `WeakPtr<T>` | `Lock()` obtains a temporary shared hold or returns empty. |
+| Independently retained immutable CPU object | `SharedPtr<const T>` | Each retained owner holds the same fixed object until release. |
+| Observer of a shared CPU object, callback back edge | `WeakPtr<T>` | `Lock()` obtains a temporary shared hold or returns empty. |
 | World/entity/component reference across mutations | Typed owner/slot/generation handle | Explicit owner validation and a protected borrow; copying a handle adds no ownership. |
 | Resource identity across eviction/reload | Typed asset handle | Identifies the logical record; does not imply residency. |
 | Resource data used by work in flight | Resource/version lease | Pins one exact resident version and its required dependencies. |
@@ -82,9 +91,11 @@ Logging, containers or private implementation headers. Do not add owners to
 `core.h`, a foundational header, or the PCH.
 
 Domain object factories and `DomainDeleter<T>` live in
-`foundation/memory/owned_object.hpp`. Place proposed `SharedPtr<T>` and
-`WeakPtr<T>` together in `foundation/memory/shared_ptr.hpp` in FoundationMemory.
-There is no new ownership module or dependency cycle.
+`foundation/memory/owned_object.hpp`. `SharedPtr<T>` and `WeakPtr<T>` live
+together in `foundation/memory/shared_ptr.hpp` in FoundationMemory, with the
+out-of-line controller operations declared in the installed but unsupported
+`detail/shared_controller.hpp`. There is no new ownership module or dependency
+cycle.
 
 Public shared wrappers hold a typed view and a forward-declared controller.
 Publish only the small support declarations required by those templates, with
@@ -169,7 +180,7 @@ Factories are `[[nodiscard]]` and `noexcept`. They return the small
 `OwnershipStatus` with `Ok`, `InvalidState`, `TooLarge`, and `OutOfMemory`.
 `TryCreateOwned<T>(domain, output, args...)` writes the existing unique template
 with `DomainDeleter<T>`; `TryMakeShared<T>(domain, output, args...)` writes the
-proposed shared owner. Both return a status. These contracts refine the memory
+shared owner. Both return a status. These contracts refine the memory
 design's object-factory sketch; byte allocation and existing APIs retain their behavior.
 
 Owning outputs must be empty on entry. A nonempty output returns `InvalidState`
@@ -460,6 +471,12 @@ before selecting an optimization; there is no universal fastest pointer family.
    Test exact destruction through adjusted/virtual base views, self/copy/move
    assignment, last weak released inside the object destructor, nested release,
    domain lifetime, failed construction allocation and forbidden raw adoption.
+   **Implemented** with the editor's decoded scene definition as the consumer:
+   it is decoded on a load thread, then retained independently by the GUI
+   workspace, preview residency, GPU generation and static-lighting bake jobs,
+   with unordered release; the resource manager only borrows it, so a lease does
+   not apply. Reduced-width saturation of the private count transitions is
+   covered single-threaded; saturation races remain in slice 4.
 4. **Concurrent proof and observability:** use barriers to race weak promotion
    against final release, verify that every successful lock protects a fully
    published live object, and that destruction/free happen exactly once. Test

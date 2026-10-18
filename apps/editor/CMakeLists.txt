@@ -44,7 +44,7 @@ endif()
 # AUTOMOC is enabled per target below, not globally.
 
 # Native editor builds include rendering; lightweight builds explicitly opt out.
-# Browser builds retain their separate document-only authoring path.
+# Browser builds use a separate WebGPU canvas without Qt Quick interop.
 set(editor_render_preview_default ON)
 if(EMSCRIPTEN)
     set(editor_render_preview_default OFF)
@@ -57,9 +57,7 @@ endif()
 
 set(editor_viewport_sources
     src/preview_viewport.cpp
-    src/viewport_navigation.cpp
-    src/internal/software_viewport.h
-    src/software_viewport.cpp)
+    src/viewport_navigation.cpp)
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Quick)
     # The readback fallback is selected only on Linux, but the shared viewport code references it.
@@ -104,6 +102,8 @@ add_library(ludus_editor_core STATIC
     src/project_store.cpp
     src/recent_projects.cpp
     src/tool_operation.cpp
+    src/internal/engine_pin.h
+    src/engine_pin.cpp
     ${editor_process_sources}
     src/log_buffer.cpp
     src/internal/timing_view.h
@@ -233,6 +233,7 @@ target_link_libraries(ludus_editor
         Qt6::Gui
         Qt6::Widgets
         Ludus::FoundationBase
+        Ludus::FoundationMemory
         Ludus::FoundationLogging
         Ludus::AudioContent
         Ludus::FoundationConfigJson
@@ -248,11 +249,18 @@ target_link_libraries(ludus_editor PRIVATE Ludus::Platform)
 # Scene import, save and assembly run in process (no Python scene backend),
 # including the browser Editor's MEMFS copies.
 target_link_libraries(ludus_editor PRIVATE Ludus::SceneCook ludus_stb_image)
+# World documents share the version-2 record constants with their owner (object handles stage 3).
+target_link_libraries(ludus_editor PRIVATE Ludus::ContentIdentity)
 if(EMSCRIPTEN)
-    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_SOFTWARE_VIEWPORT=1)
+    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_BROWSER_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
+    target_sources(ludus_editor PRIVATE src/browser_viewport.cpp src/internal/browser_viewport.h)
+    target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi)
+    ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
+        renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
+        renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
-    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1)
+    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi Qt6::Quick)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)
@@ -308,6 +316,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/world_demo_workspace_tests.cpp
+        tests/world_identity_tests.cpp
         src/internal/controller.h
         src/internal/configuration_workspace.h
         src/internal/main_window.h
@@ -350,6 +359,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/content_import_gate_tests.cpp
         tests/content_browser_tests.cpp
         tests/project_setup_dialog_tests.cpp
+        tests/engine_pin_tests.cpp
         tests/project_lifecycle_tests.cpp
         tests/workspace_layout_tests.cpp
         tests/recent_projects_tests.cpp
@@ -360,6 +370,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/live_journey_tests.cpp
         tests/macos_journey_tests.cpp
     )
+    # Keep the small software rasterizer only as an independent test oracle.
+    target_sources(ludus_editor_tests PRIVATE src/software_viewport.cpp)
     set_target_properties(ludus_editor_tests PROPERTIES AUTOMOC ON)
     qt_add_resources(ludus_editor_tests ludus_brand
         PREFIX "/ludus"
@@ -394,6 +406,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Qt6::Widgets
             Qt6::Test
             Ludus::FoundationBase
+            Ludus::FoundationMemory
             Ludus::FoundationLogging
             Ludus::AudioContent
             Ludus::FoundationConfigJson
@@ -407,11 +420,13 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_editor_tests)
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::Platform)
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook ludus_stb_image)
+    # The tests also replay committed migration manifests to produce version-2 World fixtures.
+    target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity)
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::FoundationTime)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW)
-        target_compile_definitions(ludus_editor_tests PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1)
+        target_compile_definitions(ludus_editor_tests PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)

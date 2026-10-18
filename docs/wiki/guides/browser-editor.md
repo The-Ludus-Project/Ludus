@@ -35,6 +35,9 @@ than opening a guide.
 - Open the **Configuration** tab, load a cooked project bundle or preference
   document, inspect inherited values, edit/reset preferences, and download sparse
   preference overrides.
+- Import a scene into a World and navigate its GPU viewport with orbit, pan, zoom
+  and focus. The viewport requires WebGPU over HTTPS or localhost; the rest of the
+  workspace requires WebGL. See the [viewport profile and limits](../../development/browser-editor.md#scene-import-and-viewport).
 - Arrange the existing panels and inspect output and workflow status.
 
 Project imports admit at most 4096 files and 32 MiB per session; individual

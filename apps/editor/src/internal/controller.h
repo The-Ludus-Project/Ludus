@@ -156,6 +156,9 @@ public:
     void BuildDebug(const QString& debugger = {}, bool setup = false);
     void CheckProjectSetup();
     void SetupProject(const QString& sdk, const QString& webSdk, bool prepareEngine, bool disableWeb = false);
+    /// Rebuild and install this editor's engine, select it for the project and verify the
+    /// project build. Offered when the last check reported a stale or unusable engine pin.
+    void UseEditorEngine();
     void CreateProject(const ProjectCreationOptions& creation);
     void SetupRelease(const QString& platform, const QString& itchTarget);
     void PackageRelease(const QString& profile, const QString& version, const QString& sdk);

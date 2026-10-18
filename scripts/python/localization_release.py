@@ -485,8 +485,35 @@ def _pascal(text: str, separators: str) -> str:
     return "".join(part.capitalize() for part in re.split(f"[{separators}]", text) if part)
 
 
+# Fixed parameters of generated typed helpers; an argument spelled like one gets a suffix.
+HELPER_PARAMETERS = frozenset({"context", "binding", "output", "outResult", "arguments"})
+HELPER_TYPES = {"text": "std::string_view", "count": "ludus::foundation::int64",
+                "number": "ludus::foundation::float64", "enum": "std::string_view"}
+
+
+def _helper_parameter(name: str) -> str:
+    """camelCase spelling of a snake_case argument name, never a keyword or fixed parameter."""
+    first, *rest = name.split("_")
+    spelled = first + "".join(part.capitalize() for part in rest)
+    return spelled + "Argument" if spelled in CPP_KEYWORDS or spelled in HELPER_PARAMETERS else spelled
+
+
+def _typed_helper(name: str, key: str, arguments: list[dict]) -> list[str]:
+    """Erases typed parameters to the non-template ludus::localization::Format."""
+    qualified = "ludus::localization"
+    parameters = [f"{HELPER_TYPES[a['type']]} {_helper_parameter(a['name'])}" for a in arguments]
+    values = [f'        {qualified}::Make{a["type"].capitalize()}Argument("{a["name"]}", {_helper_parameter(a["name"])}),'
+              for a in arguments]
+    return [f"/// Formats `{key}` with its complete schema through {qualified}::Format; same statuses and contract.",
+            f"[[nodiscard]] inline {qualified}::Status {name}({qualified}::FormatterContext& context,",
+            f"    {qualified}::MessageBinding binding, " + ", ".join(parameters) + ",",
+            f"    std::span<char> output, {qualified}::FormatResult& outResult) noexcept",
+            "{", f"    const {qualified}::ArgumentValue arguments[] = {{", *values, "    };",
+            f"    return {qualified}::Format(context, binding, arguments, output, outResult);", "}"]
+
+
 def descriptors(source: dict, namespace: str) -> str:
-    """Exact keys and argument schemas only; translation edits never change the header."""
+    """Exact keys, argument schemas and typed helpers; translation edits never change the header."""
     if not NAMESPACE.fullmatch(namespace) or \
             any(part in CPP_KEYWORDS or "__" in part for part in namespace.split("::")):
         fail(f"bindings namespace {namespace!r} must contain lowercase, non-reserved C++ identifiers")
@@ -494,7 +521,8 @@ def descriptors(source: dict, namespace: str) -> str:
     lines = ["#pragma once", "",
              f"// Generated from the {domain} source schema by scripts/localization cook-release.",
              "// Translation edits do not change this file; key or argument schema edits do.",
-             "#include <ludus/localization/catalog.hpp>", "", "#include <string_view>", "",
+             "#include <ludus/localization/catalog.hpp>", "#include <ludus/localization/formatter.hpp>", "",
+             "#include <span>", "#include <string_view>", "",
              f"namespace {namespace}", "{"]
     names: dict[str, str] = {}
 
@@ -535,6 +563,7 @@ def descriptors(source: dict, namespace: str) -> str:
         table = claim(f"{descriptor}Arguments", key)
         lines += [f"inline constexpr {qualified}::ArgumentDescriptor {table}[] = {{", *rows, "};",
                   f'inline constexpr {qualified}::MessageDescriptor {descriptor}{{{{"{domain}", "{key}"}}, {table}}};']
+        lines += _typed_helper(claim("Format" + suffix, key), key, arguments)
     return "\n".join(lines + [f"}} // namespace {namespace}", ""])
 
 

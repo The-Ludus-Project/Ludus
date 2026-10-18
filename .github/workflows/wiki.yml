@@ -159,6 +159,16 @@ jobs:
           cd tools/web-browser-tests
           npx playwright install --with-deps chromium
           node web_samples.mjs ../../out/editor-pages ../../out/web-sample-qa
+      - name: Verify imported-scene WebGPU viewport in Chromium
+        run: |
+          cd tools/web-browser-tests
+          node editor_viewport.mjs ../../out/editor-pages ../../out/editor-viewport-qa
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-editor-viewport-screenshots
+          path: out/editor-viewport-qa
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: always()
         with:

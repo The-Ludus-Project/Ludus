@@ -15,6 +15,7 @@
 
 #include <ludus/foundation/geometry/frame.hpp>
 
+#include "internal/control_box.hpp"
 #include "internal/span_math.hpp"
 
 #include <ludus/foundation/math/scalar.hpp>
@@ -433,7 +434,7 @@ RejectRange(Baker& inoutBaker, usize spanIndex, float64 start, float64 end, cons
         math::Enclosure speed;
         if (status == GeometryStatus::Success)
         {
-            status = internal::TryBoundBoxDistance(hodograph, origin, speed);
+            status = internal::ToGeometryStatus(internal::TryEncloseDistance(hodograph, origin, speed));
         }
         if (status != GeometryStatus::Success)
         {

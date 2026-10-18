@@ -70,7 +70,7 @@ inline QByteArray MakeKey(const RenderScene& scene)
         stream << surface.Tint.X << surface.Tint.Y << surface.Tint.Z << surface.Tint.W;
         stream << surface.Emission.X << surface.Emission.Y << surface.Emission.Z;
     }
-    if (scene.Definition.isNull() == false)
+    if (scene.Definition != nullptr)
     {
         for (const resources::SceneMaterial& material : scene.Definition->Materials)
         {
@@ -100,7 +100,7 @@ inline QByteArray MakeKey(const RenderScene& scene)
     }
     static_assert(sizeof(math::Vector3) == sizeof(float32) * 3);
     static_assert(sizeof(math::Vector2) == sizeof(float32) * 2);
-    if (scene.Definition.isNull() == false)
+    if (scene.Definition != nullptr)
     {
         WriteLittleEndianUint64(stream, static_cast<uint64>(scene.Definition->Meshes.GetSize()));
         WriteLittleEndianUint64(stream, static_cast<uint64>(scene.Definition->Textures.GetSize()));
@@ -123,7 +123,7 @@ inline QByteArray MakeKey(const RenderScene& scene)
     const auto addBytes = [&hash](const void* dataOrNull, usize count) {
         hash.addData(QByteArrayView(static_cast<const char*>(dataOrNull), static_cast<isize>(count)));
     };
-    if (scene.Definition.isNull() == false)
+    if (scene.Definition != nullptr)
     {
         for (const resources::SceneMesh& mesh : scene.Definition->Meshes)
         {
@@ -153,9 +153,10 @@ struct Inputs final
     uint64 DependencyRevision = 0;
 };
 
-inline rhi::RasterStatus BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs)
+inline rhi::RasterStatus
+BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, bool shouldBuildShadows = true)
 {
-    if (scene.Definition.isNull() == true || key.size() < static_cast<isize>(sizeof(uint64) * 2) ||
+    if (scene.Definition == nullptr || key.size() < static_cast<isize>(sizeof(uint64) * 2) ||
         scene.Definition->Objects.GetSize() > MAX_INSTANCES ||
         scene.Definition->Objects.GetSize() != static_cast<usize>(scene.Objects.size()))
     {
@@ -264,6 +265,11 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene, const QByteArray&
         return normalizedStatus;
     }
     result.Lights = normalized;
+    if (shouldBuildShadows == false)
+    {
+        outInputs = result;
+        return rhi::RasterStatus::Ready;
+    }
     for (usize i = 0; i < result.Lights.Count; ++i)
     {
         const rr::DirectLight& light = result.Lights.Lights[i];

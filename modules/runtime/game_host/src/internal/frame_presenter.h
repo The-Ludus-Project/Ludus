@@ -35,6 +35,12 @@ public:
     {
         return Rendering_;
     }
+    /// Whether the window can be seen as of the latest Poll(); a headless presenter is always visible.
+    /// The host lowers its pacing rate while this is false (high-resolution-time.md, "Native frame pacing").
+    [[nodiscard]] bool IsWindowVisible() const noexcept
+    {
+        return Window_.Get() == nullptr || Window_->GetVisibility() == platform::WindowVisibility::Visible;
+    }
 
 private:
     ludus::input::InputSystem Input_;

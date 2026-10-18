@@ -42,3 +42,27 @@ adapter, launch flags, HTTP requests and individual results. PNG screenshots
 and report.json go under out/browser-qa/results, uploaded even on CI failure.
 No special isolation headers are served. Real hardware/itch.io acceptance is
 separately tracked in [hosted acceptance](../webgpu-hosted-acceptance.md).
+
+## Browser editor viewport
+
+After building the [browser editor payload](../browser-editor.md), run its actual
+Qt/Wasm import and viewport acceptance with the same test dependencies:
+
+```sh
+cd tools/web-browser-tests
+node editor_viewport.mjs ../../out/editor-pages ../../out/editor-viewport-qa
+```
+
+This separate runner opens a World, imports a small PBRT scene through SceneCook
+and MEMFS, checks visible GPU pixels in Solid/Albedo/Lit, navigates with Qt mouse
+input, resizes, hides/shows its tab, destroys the real GPU device and tests an
+unavailable WebGPU API. Explicitly synthetic pipeline delay/rejection also checks
+that pending and failed candidates retain prior pixels and can recover. It saves
+screenshots and a report with the adapter, browser version and launch flags. The default uses SwiftShader; set `LUDUS_QA_GPU=hardware`
+for an installed physical adapter and optionally `LUDUS_QA_BROWSER` to an explicit
+browser executable. These test flags do not establish flag-free hosted acceptance.
+
+The Qt controls are canvas-drawn, so this runner uses a fixed 1440×1000 layout
+and explicit input coordinates. Update its interaction steps when that layout
+changes. Frame counters are paired with composited screenshot checks; neither
+Qt widget pixels nor a completed shader build alone proves scene rendering.

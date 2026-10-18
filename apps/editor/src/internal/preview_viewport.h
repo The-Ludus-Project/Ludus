@@ -21,6 +21,8 @@ enum class ViewportPresentation : foundation::uint8
     /// Qt Quick and the engine share one GPU device: Qt's Metal device, or on Linux a Vulkan
     /// device the editor creates on Qt's instance and Qt Quick adopts (any Qt 6 release).
     SharedDevice,
+    /// Engine WebGPU canvas positioned over the Qt layout/input proxy, without pixel readback.
+    BrowserCanvas,
     /// The engine owns a headless Vulkan device and the viewport paints double-buffered CPU copies.
     /// Used when forced with LUDUS_EDITOR_VIEWPORT=offscreen or when no shareable device presents.
     OffscreenReadback,

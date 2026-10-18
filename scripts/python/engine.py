@@ -1864,6 +1864,41 @@ def run_analysis_commands(root: Path, commands: Sequence[Sequence[object]], *,
         raise EngineError(f"Static analysis failed for {failures} translation unit(s). {details}")
 
 
+def run_tidy_changed(root: Path, preset: str, base: str) -> None:
+    """Changed-line naming, magic-number and implicit-bool analysis (changed_tidy.py)."""
+    from changed_tidy import changed_lines, line_filter, plan
+
+    versions = load_tool_versions(root)
+    clang_tidy = find_system_tool(root, "clang-tidy", versions)
+    build_dir = build_dir_for_preset(root, preset)
+    if not (build_dir / "compile_commands.json").is_file():
+        cmake_configure(root, preset)
+    changed = changed_lines(root, base)
+    if not changed:
+        print(f"Changed-line analysis: no C++ lines changed since {base}.")
+        return
+    try:
+        entries = compilation_entries(build_dir)
+    except ValueError as exc:
+        raise EngineError(str(exc)) from exc
+    selected = plan(root, entries, changed)
+    if not selected:
+        print("Changed-line analysis: no changed source is compiled by this preset; source_policy.py still applies.")
+        return
+    directory = analysis_directory(root)
+    filter_text = line_filter(root, changed)
+    header_filter = f"^{re.escape(str(root.resolve()))}/({'|'.join(TIDY_ROOTS)})/.*"
+    commands = []
+    for index, (entry, policy) in enumerate(selected):
+        database = directory / "commands" / str(index)
+        database.mkdir(parents=True)
+        (database / "compile_commands.json").write_text(json.dumps([entry]) + "\n")
+        commands.append([clang_tidy, "-p", database, "--quiet", f"--config-file={policy}",
+                         f"--line-filter={filter_text}", f"--header-filter={header_filter}", entry["file"]])
+    print(f"Changed-line analysis: {len(changed)} changed files, {len(commands)} translation units", flush=True)
+    run_analysis_commands(root, commands, directory=directory)
+
+
 def run_include_cleaner(root: Path, preset: str) -> None:
     """Advisory include-hygiene report using clang-tidy's misc-include-cleaner.
 
@@ -1944,7 +1979,8 @@ def command_check(args: argparse.Namespace) -> int:
     analyzer = getattr(args, "analyzer", False)
     tooling = getattr(args, "tooling", False)
     inventory_only = getattr(args, "inventory", False)
-    explicit = args.format or args.tidy or include_cleaner or analyzer or tooling or inventory_only
+    tidy_changed = getattr(args, "tidy_changed", False)
+    explicit = args.format or args.tidy or include_cleaner or analyzer or tooling or inventory_only or tidy_changed
     run_all = args.all or not explicit
 
     if args.format or run_all:
@@ -1970,6 +2006,9 @@ def command_check(args: argparse.Namespace) -> int:
         run_tidy(root, args.preset)
     if analyzer:
         run_tidy(root, args.preset, analyzer=True)
+    if tidy_changed:
+        ensure_bootstrap_for_preset(root, args.preset)
+        run_tidy_changed(root, args.preset, getattr(args, "base", None) or "origin/develop")
     if tooling:
         from tooling_quality import check
         try:
@@ -2575,6 +2614,8 @@ def make_parser() -> argparse.ArgumentParser:
     preview.add_argument("--no-editor-preview", dest="with_editor_preview", action="store_false",
                          help="build a lightweight document-only editor without shader tools")
     init_parser.set_defaults(with_editor_preview=True)
+    init_parser.add_argument("--no-engine-refresh", dest="skip_engine_refresh", action="store_true",
+                             help="with --with-editor, do not reinstall this checkout's older engine installs under out/install")
     for name, label in (("tests", "native test targets and Catch2 dependencies"),
                         ("smoke-app", "sample applications (smoke and native input demo)"),
                         ("web-probes", "browser feasibility probes"),
@@ -2634,6 +2675,13 @@ def make_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("preset", nargs="?", default=DEFAULT_PRESET)
     check_parser.add_argument("--format", action="store_true", help="verify clang-format")
     check_parser.add_argument("--tidy", action="store_true", help="run targeted clang-tidy")
+    check_parser.add_argument(
+        "--tidy-changed",
+        action="store_true",
+        dest="tidy_changed",
+        help="run naming, magic-number and implicit-bool clang-tidy rules on lines changed since --base",
+    )
+    check_parser.add_argument("--base", help="comparison ref for --tidy-changed (default: origin/develop)")
     check_parser.add_argument("--analyzer", action="store_true", help="run advisory stable LLVM analyzer rules on the complete configured inventory")
     check_parser.add_argument("--tooling", action="store_true", help="check Python and workflows with prepared pinned Ruff/actionlint")
     check_parser.add_argument("--inventory", action="store_true", help="validate complete configured source inventory without running analyzers")

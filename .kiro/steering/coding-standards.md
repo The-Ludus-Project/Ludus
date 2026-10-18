@@ -98,13 +98,14 @@ reviews or validating the selected World's interactive viewport.
   (parameters only, not locals) start with `out` or `inout`; no literal sizes in
   template arguments — use a named constant or shared alias such as
   `MessageText`.
-- Compare booleans explicitly: `condition == false`, never `!condition`; prefer
-  `condition == true` over a bare boolean operand. Older code is updated when
-  touched.
-- Enforcement is per adopted module (per-directory `.clang-tidy` with
-  `readability-identifier-naming`, plus `config/naming_scopes.txt` for
-  `tools/check_naming.py`); see the table in `AGENTS.md` §Naming for which
-  rules are tool-enforced and which are review-only.
+- Compare booleans explicitly: `condition == false`, never `!condition`
+  (enforced in every C++ file by `tools/check_naming.py`); prefer
+  `condition == true` over a bare boolean operand (review-only).
+- No magic numbers: name literals other than 0, 1, 2 and 0.5.
+- Naming, magic numbers and implicit bool conversions are tool-enforced on
+  changed lines (`scripts/python/source_policy.py`,
+  `./scripts/check <preset> --tidy-changed`) and in full in adopted scopes; see
+  `AGENTS.md` §"Naming enforcement" for the table and local commands.
 - Formats shared by tools and runtime (e.g. LUSCN, `Ludus::SceneFormat`) live in
   their own header-only target owned by neither side; cookers never link the
   renderer.

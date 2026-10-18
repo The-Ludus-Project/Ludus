@@ -145,6 +145,49 @@ def metal_uniform_size(path):
     return size
 
 
+def relative_line_directives(code, roots):
+    """Name the files in emitted ``#line`` directives relative to a captured root.
+
+    Slang spells the compiled source and its includes by absolute path. Embedded
+    in a generated header, that text differs per checkout, and a compiler cache
+    shared between checkouts can then pair one checkout's literal with another's
+    folded length: when ccache hashes preprocessed output it relativizes every
+    line-start ``#line N "path"`` under its base_dir, and it cannot tell a raw
+    string literal from a line marker. Keep the directives for Metal diagnostics,
+    but name each file by its shortest path relative to the source or include
+    directories, so every checkout emits identical bytes. An absolute path
+    outside every root fails: pass its directory through INCLUDE.
+    """
+    bases = []
+    for root in roots:
+        spelled = Path(root)
+        bases.append(spelled)
+        resolved = spelled.resolve()
+        if resolved != spelled:
+            bases.append(resolved)
+
+    def remap(match):
+        filename = Path(match[2])
+        if not filename.is_absolute():
+            return match[0]
+        candidates = []
+        for spelling in (filename, filename.resolve()):
+            for base in bases:
+                try:
+                    candidates.append(spelling.relative_to(base).as_posix())
+                except ValueError:
+                    continue
+        if not candidates:
+            raise RuntimeError(f'Emitted line directive names {filename} outside the captured source and include directories')
+        return match[1] + min(candidates, key=len) + match[3]
+
+    code = re.sub(r'(^[ \t]*#line\s+\d+\s+")([^"]+)(")', remap, code, flags=re.M)
+    for base in bases:
+        if str(base) in code:
+            raise RuntimeError(f'Emitted shader text still names the checkout directory {base}')
+    return code
+
+
 def compile_metal(args, lock):
     # Thanks to the Slang team, "Metal-Specific Functionalities", User Guide:
     # https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/a2-02-metal-target-specific.html
@@ -154,6 +197,7 @@ def compile_metal(args, lock):
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     extra = [part for path in args.include for part in ('-I', path)] + ['-D' + value for value in args.define]
+    roots = [Path(args.source).parent, *args.include]
     commands, dependencies, entries, sizes, sources = [], [], {}, {}, {}
     for stage, source_entry in (('vertex', args.vertex), ('fragment', args.fragment)):
         artifact = output / f'{args.name}.{stage}.metal'
@@ -166,7 +210,8 @@ def compile_metal(args, lock):
         run(command)
         dependencies.append(depfile.read_text().split(':', 1)[1].strip())
         reflected = json.loads(reflection.read_text())['entryPoints']
-        code = artifact.read_text()
+        code = relative_line_directives(artifact.read_text(), roots)
+        artifact.write_text(code)
         emitted = re.findall(r'\[\[' + stage + r'\]\]\s+\w+\s+(\w+)\s*\(', code)
         if len(reflected) != 1 or reflected[0]['stage'] != stage or len(emitted) != 1:
             raise RuntimeError('Expected one Metal entry with the requested stage')

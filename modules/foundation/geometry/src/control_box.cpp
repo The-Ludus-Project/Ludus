@@ -1,6 +1,8 @@
-// Outward-rounded control-point boxes (see internal/control_box.hpp).
+// Outward-rounded boxes and their shared arithmetic (see internal/control_box.hpp).
 
 #include "internal/control_box.hpp"
+
+#include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::foundation::geometry::internal
 {
@@ -13,6 +15,11 @@ using math::MathStatus;
 constexpr usize BLOSSOM_ARGUMENT_COUNT = 3;
 // Spatial axes of a point.
 constexpr usize AXIS_COUNT = 3;
+
+[[nodiscard]] Enclosure MakeEnclosureHull(Enclosure left, Enclosure right) noexcept
+{
+    return Enclosure{ .Lower = math::Min(left.Lower, right.Lower), .Upper = math::Max(left.Upper, right.Upper) };
+}
 
 // (1 - t) * start + t * end for one axis, enclosing the exact value for exact t.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters): interpolation endpoints and weights share one type.
@@ -58,9 +65,9 @@ GeometryStatus ToGeometryStatus(math::MathStatus status) noexcept
     return GeometryStatus::InvalidArgument;
 }
 
-ControlBox MakePointBox(const Vector3& point) noexcept
+EnclosureBox MakePointBox(const Vector3& point) noexcept
 {
-    return ControlBox
+    return EnclosureBox
     {
         .X = MakePointEnclosure(static_cast<float64>(point.X)),
         .Y = MakePointEnclosure(static_cast<float64>(point.Y)),
@@ -68,12 +75,33 @@ ControlBox MakePointBox(const Vector3& point) noexcept
     };
 }
 
-MathStatus TryInterpolateBox(const ControlBox& start, const ControlBox& end, float64 t, ControlBox& outBox) noexcept
+EnclosureBox MakePointBox(const math::Vector3d& point) noexcept
+{
+    return EnclosureBox
+    {
+        .X = MakePointEnclosure(point.X),
+        .Y = MakePointEnclosure(point.Y),
+        .Z = MakePointEnclosure(point.Z),
+    };
+}
+
+EnclosureBox MakeBoxHull(const EnclosureBox& left, const EnclosureBox& right) noexcept
+{
+    return EnclosureBox
+    {
+        .X = MakeEnclosureHull(left.X, right.X),
+        .Y = MakeEnclosureHull(left.Y, right.Y),
+        .Z = MakeEnclosureHull(left.Z, right.Z),
+    };
+}
+
+MathStatus
+TryInterpolateBox(const EnclosureBox& start, const EnclosureBox& end, float64 t, EnclosureBox& outBox) noexcept
 {
     Enclosure oneMinusT;
     MathStatus status = math::TrySubtractOutward(MakePointEnclosure(1.0), MakePointEnclosure(t), oneMinusT);
     const Enclosure parameter = MakePointEnclosure(t);
-    ControlBox result;
+    EnclosureBox result;
     if (status == MathStatus::Success)
     {
         status = TryInterpolateAxis(start.X, end.X, oneMinusT, parameter, result.X);
@@ -97,7 +125,7 @@ MathStatus TryEvaluateBlossom(const CubicControlBoxes& control,
                               float64 first,
                               float64 second,
                               float64 third,
-                              ControlBox& outPoint) noexcept
+                              EnclosureBox& outPoint) noexcept
 {
     CubicControlBoxes level = control;
     const StaticArray<float64, BLOSSOM_ARGUMENT_COUNT> parameters{{first, second, third}};
@@ -149,9 +177,9 @@ MathStatus TryEncloseSubcurveControls(const CubicControlBoxes& control,
     return status;
 }
 
-MathStatus TrySubtractBoxes(const ControlBox& left, const ControlBox& right, ControlBox& outBox) noexcept
+MathStatus TrySubtractBoxes(const EnclosureBox& left, const EnclosureBox& right, EnclosureBox& outBox) noexcept
 {
-    ControlBox result;
+    EnclosureBox result;
     MathStatus status = math::TrySubtractOutward(left.X, right.X, result.X);
     if (status == MathStatus::Success)
     {
@@ -168,9 +196,9 @@ MathStatus TrySubtractBoxes(const ControlBox& left, const ControlBox& right, Con
     return status;
 }
 
-MathStatus TryAddBoxes(const ControlBox& left, const ControlBox& right, ControlBox& outBox) noexcept
+MathStatus TryAddBoxes(const EnclosureBox& left, const EnclosureBox& right, EnclosureBox& outBox) noexcept
 {
-    ControlBox result;
+    EnclosureBox result;
     MathStatus status = math::TryAddOutward(left.X, right.X, result.X);
     if (status == MathStatus::Success)
     {
@@ -187,9 +215,9 @@ MathStatus TryAddBoxes(const ControlBox& left, const ControlBox& right, ControlB
     return status;
 }
 
-MathStatus TryScaleBox(const ControlBox& box, Enclosure factor, ControlBox& outBox) noexcept
+MathStatus TryScaleBox(const EnclosureBox& box, Enclosure factor, EnclosureBox& outBox) noexcept
 {
-    ControlBox result;
+    EnclosureBox result;
     MathStatus status = math::TryMultiplyOutward(factor, box.X, result.X);
     if (status == MathStatus::Success)
     {
@@ -206,7 +234,7 @@ MathStatus TryScaleBox(const ControlBox& box, Enclosure factor, ControlBox& outB
     return status;
 }
 
-MathStatus TryEncloseBoxLength(const ControlBox& box, Enclosure& outLength) noexcept
+MathStatus TryEncloseBoxLength(const EnclosureBox& box, Enclosure& outLength) noexcept
 {
     const StaticArray<Enclosure, AXIS_COUNT> axes{{box.X, box.Y, box.Z}};
     Enclosure sum = MakePointEnclosure(0.0);
@@ -227,9 +255,9 @@ MathStatus TryEncloseBoxLength(const ControlBox& box, Enclosure& outLength) noex
     return status;
 }
 
-MathStatus TryEncloseDistance(const ControlBox& start, const ControlBox& end, Enclosure& outDistance) noexcept
+MathStatus TryEncloseDistance(const EnclosureBox& start, const EnclosureBox& end, Enclosure& outDistance) noexcept
 {
-    ControlBox difference;
+    EnclosureBox difference;
     MathStatus status = TrySubtractBoxes(end, start, difference);
     if (status == MathStatus::Success)
     {

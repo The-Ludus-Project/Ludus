@@ -9,7 +9,11 @@ import subprocess
 from pathlib import Path
 
 from formatting import TOKENS, format_source
-from naming_rules import pointer_findings
+from naming_rules import (
+    abbreviation_findings,
+    pointer_findings,
+    reference_and_boolean_findings,
+)
 
 CPP = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".mm"}
 ROOTS = {"modules", "apps", "examples", "tests", "tools", "cmake"}
@@ -35,6 +39,121 @@ def code_only(source: str) -> str:
         end = match.end()
     pieces.append(source[end:])
     return "".join(pieces)
+
+
+NUMBER = re.compile(
+    r"(?<![\w.'])(?:0[xX][0-9A-Fa-f']+|0[bB][01']+|(?:\d[\d']*)?\.?\d[\d']*(?:[eE][+-]?\d+)?)"
+    r"[uUlLfFzZ]*(?![\w.'])"
+)
+# Values that need no name: identity/zero, halving/doubling and their float spellings.
+# clang-tidy readability-magic-numbers applies the same idea with its ignore lists.
+PERMITTED_NUMBERS = {0.0, 1.0, 2.0, 0.5}
+MAGIC_NUMBER_WAIVER = re.compile(r"// ludus-style: magic-number .{12,}")
+ABBREVIATION_WAIVER = re.compile(r"// ludus-style: abbreviation .{12,}")
+NAMED_CONSTANT = re.compile(
+    r"\b(?:constexpr|constinit|const)\b[^;{}()]*?[A-Za-z_]\w*\s*(?:\[[^\]]*\]\s*)?(?:=|\{)[^;]*$"
+)
+
+
+def numeric_value(text: str) -> float | None:
+    literal = text.replace("'", "").rstrip("uUlLfFzZ")
+    try:
+        if re.match(r"0[xXbB]", literal) or re.fullmatch(r"0\d+", literal):
+            return float(int(literal, 0 if literal[1:2].isalpha() else 8))
+        return float(literal)
+    except ValueError:
+        return None
+
+
+def is_test_source(path: str) -> bool:
+    parts = Path(path).parts
+    name = Path(path).stem
+    return (
+        "tests" in parts
+        or "benchmarks" in parts
+        or name.endswith(("_tests", "_test", "_bench", "_oracle"))
+        or path.startswith("tools/")
+    )
+
+
+BLOCK_KEYWORDS = {"else", "do", "try", "struct", "class", "union", "namespace", "enum", "extern"}
+
+
+def is_braced_initializer(code: str, opening: int) -> bool:
+    """Whether the `{` at opening starts an initializer rather than a block."""
+    before = code[:opening].rstrip()
+    if before.endswith(("=", ",", "(", "{", ">")):
+        return True
+    word = re.search(r"(\w+)$", before)
+    return word is not None and word.group(1) not in BLOCK_KEYWORDS
+
+
+def statement_begin(code: str, offset: int) -> int:
+    """Start of the statement containing offset; braced initializers stay inside."""
+    index = offset - 1
+    while index >= 0:
+        character = code[index]
+        if character == ";":
+            return index + 1
+        if character == "{":
+            if is_braced_initializer(code, index) is False:
+                return index + 1
+            index -= 1
+            continue
+        if character == "}":
+            depth = 0
+            opening = index
+            while opening >= 0:
+                depth += (code[opening] == "}") - (code[opening] == "{")
+                if depth == 0:
+                    break
+                opening -= 1
+            if opening < 0 or is_braced_initializer(code, opening) is False:
+                return index + 1
+            index = opening - 1
+            continue
+        index -= 1
+    return 0
+
+
+def magic_numbers(code: str) -> list[int]:
+    """Offsets of unnamed numeric literals (AGENTS.md "No magic numbers").
+
+    Exempt: 0, 1, 2 and 0.5 (any spelling), named-constant initializers
+    (`constexpr`/`const` declarations), enumerators and static_assert. This is a
+    lexical changed-line ratchet; whether a name explains a value stays a review
+    question. Template-argument sizes are deliberately reported.
+    """
+    offsets = []
+    for match in NUMBER.finditer(code):
+        value = numeric_value(match.group())
+        if value is None or value in PERMITTED_NUMBERS:
+            continue
+        statement = code[statement_begin(code, match.start()) : match.start()]
+        # A brace-initialized constant's own `{` opens its initializer.
+        if NAMED_CONSTANT.search(statement.replace("\n", " ")):
+            continue
+        if re.search(r"\bstatic_assert\s*\(", statement):
+            continue
+        depth = 0
+        index = match.start() - 1
+        enclosing = -1
+        while index >= 0:
+            character = code[index]
+            if character == "}":
+                depth += 1
+            elif character == "{":
+                if depth == 0:
+                    enclosing = index
+                    break
+                depth -= 1
+            index -= 1
+        if enclosing >= 0:
+            head_start = max(code.rfind(";", 0, enclosing), code.rfind("}", 0, enclosing), code.rfind("{", 0, enclosing))
+            if re.search(r"\benum\b", code[head_start + 1 : enclosing]):
+                continue
+        offsets.append(match.start())
+    return offsets
 
 
 def added_lines(before: str, after: str) -> set[int]:
@@ -145,6 +264,23 @@ def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str
                 report(match.start(), "reuse the owning admission-limit constant instead of a duplicated capacity literal")
         for offset, _, message in pointer_findings(code):
             report(offset, message)
+        for offset, _, message in reference_and_boolean_findings(code):
+            report(offset, message)
+        source_lines = source.splitlines()
+        for offset, _, message in abbreviation_findings(code):
+            line = code.count("\n", 0, offset)
+            if line < len(source_lines) and ABBREVIATION_WAIVER.search(source_lines[line]):
+                continue
+            report(offset, message)
+        if is_test_source(path) is False:
+            for offset in magic_numbers(code):
+                line = code.count("\n", 0, offset)
+                if line < len(source_lines) and MAGIC_NUMBER_WAIVER.search(source_lines[line]):
+                    continue
+                report(
+                    offset,
+                    "name this numeric literal with a constant in its owner (0, 1, 2 and 0.5 need no name)",
+                )
         for match in re.finditer(r"!(?!=)|\bnot\b", code):
             report(
                 match.start(),

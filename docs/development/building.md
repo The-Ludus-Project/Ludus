@@ -175,6 +175,16 @@ instead. Launch it afterwards with `./scripts/editor --preset <preset>`.
 Qt remains an optional editor dependency outside Conan and the installed SDK.
 See [the editor guide](editor-workspace.md).
 
+Editor setup also keeps this checkout's engine installs current. Game projects
+build against an installed engine below `out/install/` (selected in their
+ignored `.ludus/local.json`). After building the editor, init compares each
+install for the same target, flavor and ABI variant with the revision just
+configured. Installs built from another revision are rebuilt and reinstalled
+in place, so a project no longer builds against older engine code than the
+editor runs. Installs outside this checkout are never changed. Pass
+`--no-engine-refresh` to skip this step. Configure also re-runs when `git` HEAD
+moves, so a plain `cmake --build` after a pull records the new revision.
+
 Conan may still build missing third-party packages while preparing the dependency cache; Catch2 is included only when tests are enabled. That is dependency setup, not a Ludus engine target build. If an existing CMake cache points at stale tool paths, init may fresh-configure that generated build tree to repair it, but it still does not compile or link Ludus targets.
 
 VS Code is configured to use the project-managed CMake at `out/host-tools/venv/bin/cmake`. If VS Code was already open while `./init.sh` ran, reload the window before pressing the CMake Tools Build button.
@@ -548,6 +558,15 @@ Sharing changes these build outputs:
   exact source paths in the debugger.
 - Translation units with checkout-specific definitions, such as the text tests'
   absolute fixture directory, still compile in each checkout.
+- Generated headers must not embed a checkout path. ccache hashes preprocessed
+  output by relativizing every line-start `#line N "path"` under `base_dir`,
+  and cannot tell a line marker from the same text inside a raw string literal.
+  A header whose embedded text differs only by such a path hashes equal in
+  every checkout, so one checkout's object, with its own folded literal length,
+  is reused next to another checkout's copy of the same `inline` literal. The
+  shader helpers therefore name Slang's emitted `#line` files relative to the
+  captured source and include directories
+  ([fullscreen rendering](fullscreen-rendering.md#macos-metal)).
 - `-ftime-trace` compilations bypass ccache, because ccache does not cache that
   option. `./scripts/profile-build` and `./scripts/check-build-budget` also
   turn ccache off, so build-time evidence is unaffected.
@@ -775,8 +794,9 @@ regressions to the owning check rather than relying on an isolated PR comment.
 Run the changed-source gate with an explicit comparison:
 
 ```sh
-python3 scripts/python/source_policy.py --base origin/main --clang-format clang-format-23
-PYTHONPATH=scripts/python python3 -m unittest test_source_policy -v
+python3 scripts/python/source_policy.py --base origin/develop --clang-format clang-format-23
+PYTHONPATH=scripts/python python3 -m unittest test_source_policy test_check_naming test_changed_tidy -v
+./scripts/check linux-clang-development --tidy-changed --base origin/develop
 ```
 
 CI uses the PR's actual base commit and includes standalone examples, tests and
@@ -798,6 +818,21 @@ Comments, strings, directives, unchanged lines, owner headers and test fixtures
 are excluded. It does not evaluate arbitrary C++ expressions or establish that
 the selected constant represents the right policy; review those semantics using
 [limit ownership](../architecture/content-resources.md#limit-ownership).
+
+On changed C++ lines the gate also applies the naming rules: `out`/`inout`
+reference parameter prefixes (N2), boolean names that read as questions (N3),
+`OrNull` on explicitly null-initialized pointers (N4), and a list of rejected
+abbreviations in declarations (N5). Outside test sources, `tests/`,
+`benchmarks/` and `tools/`, numeric literals other than 0, 1, 2 and 0.5 need a
+named constant unless they initialize a `constexpr`/`const` declaration, an
+enumerator or a `static_assert`; append `// ludus-style: magic-number <reason>`
+to keep a justified literal. `tools/check_naming.py` (run by
+`./scripts/check --format`) rejects `!`/`not` negation in every first-party
+C++ file. `--tidy-changed` runs clang-tidy `readability-identifier-naming`,
+`readability-magic-numbers` and `readability-implicit-bool-conversion` on the
+changed lines of each changed translation unit (and the headers it includes);
+batch validation runs it in the static-analysis job. A header changed without
+a changed includer is only covered by the lexical gate.
 Formatting, compilation, independent shader reflection and semantic review
 remain necessary. Shader entry-point renames must update every source and
 installed-SDK cook call; shared includes must be installed and appear in compiler
