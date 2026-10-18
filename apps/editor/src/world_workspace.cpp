@@ -47,12 +47,12 @@ namespace
 bool Read(const QString& path, QByteArray& output, foundation::int64 limit)
 {
     const QFileInfo info(path);
-    if (!info.isFile() || info.isSymLink() || info.canonicalFilePath() != info.absoluteFilePath())
+    if (info.isFile() == false || info.isSymLink() || info.canonicalFilePath() != info.absoluteFilePath())
     {
         return false;
     }
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > limit)
+    if (file.open(QIODevice::ReadOnly) == false || file.size() <= 0 || file.size() > limit)
     {
         return false;
     }
@@ -157,7 +157,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     files->addWidget(PlayButton_, 1, 3);
     connect(PreviewButton_, &QPushButton::clicked, this, [this]() { (void)StartPreview(); });
     connect(PlayButton_, &QPushButton::clicked, this, [this]() {
-        if (Save() && !Dirty() && !SceneBusy())
+        if (Save() && Dirty() == false && SceneBusy() == false)
         {
             StopPreview();
             Q_EMIT PlayRequested();
@@ -348,7 +348,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     connect(open, &QPushButton::clicked, this, [pick]() { pick(false); });
     connect(create, &QPushButton::clicked, this, [pick]() { pick(true); });
     connect(Entities_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* item) {
-        if (!Rendering_ && !Pending_)
+        if (Rendering_ == false && Pending_ == false)
         {
             Selected_ = item == nullptr ? QString() : item->data(Qt::UserRole).toString();
             RenderInspector();
@@ -392,7 +392,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
             return;
         }
         QString error;
-        if (!Document_.RemoveEntity(Selected_, error))
+        if (Document_.RemoveEntity(Selected_, error) == false)
         {
             Changed(error);
             return;
@@ -404,7 +404,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     });
     connect(Attach_, &QPushButton::clicked, this, [this]() {
         QString error;
-        if (!Document_.Attach(Selected_, error, Components_->currentData().toString()))
+        if (Document_.Attach(Selected_, error, Components_->currentData().toString()) == false)
         {
             Changed(error);
             return;
@@ -484,7 +484,7 @@ bool WorldWorkspace::Inside(const QString& path, bool existing) const
     }
     const QFileInfo info(path);
     const auto absolute = info.absoluteFilePath();
-    if (!absolute.startsWith(Root_ + QLatin1Char('/')) || info.isSymLink())
+    if (absolute.startsWith(Root_ + QLatin1Char('/')) == false || info.isSymLink())
     {
         return false;
     }
@@ -493,18 +493,18 @@ bool WorldWorkspace::Inside(const QString& path, bool existing) const
         return info.isFile() && info.canonicalFilePath() == absolute;
     }
     const QFileInfo parent(info.absolutePath());
-    return !info.exists() && parent.isDir() && parent.canonicalFilePath() == parent.absoluteFilePath();
+    return info.exists() == false && parent.isDir() && parent.canonicalFilePath() == parent.absoluteFilePath();
 }
 bool WorldWorkspace::LoadProjectSchema(WorldDocument& candidate, QByteArray& schema, bool worldDemo)
 {
     const auto path = QDir(Root_).filePath(QStringLiteral("authoring/world.schema.json"));
     QString error;
-    if (!QFileInfo::exists(path) && !QFileInfo(path).isSymLink())
+    if (QFileInfo::exists(path) == false && QFileInfo(path).isSymLink() == false)
     {
         if (worldDemo)
         {
             QFile builtin(QStringLiteral(":/world-demo/world.schema.json"));
-            if (!builtin.open(QIODevice::ReadOnly))
+            if (builtin.open(QIODevice::ReadOnly) == false)
             {
                 Changed(QStringLiteral("The World demo adapter schema is unavailable."));
                 return false;
@@ -518,13 +518,13 @@ bool WorldWorkspace::LoadProjectSchema(WorldDocument& candidate, QByteArray& sch
         }
         return candidate.LoadSchema(schema, error);
     }
-    if (!Inside(path, true) || !Read(path, schema, 65536))
+    if (Inside(path, true) == false || Read(path, schema, 65536) == false)
     {
         Changed(QStringLiteral("Unreadable or unsafe authoring/world.schema.json. Repair the declared schema before "
                                "opening or creating a World."));
         return false;
     }
-    if (!candidate.LoadSchema(schema, error))
+    if (candidate.LoadSchema(schema, error) == false)
     {
         Changed(QStringLiteral("Schema: ") + error);
         return false;
@@ -539,7 +539,7 @@ bool WorldWorkspace::Open(const QString& path)
     }
     if (path.endsWith(QStringLiteral(".lulevel")))
     {
-        if (!Inside(path, true))
+        if (Inside(path, true) == false)
         {
             return false;
         }
@@ -547,8 +547,8 @@ bool WorldWorkspace::Open(const QString& path)
         WorldDocument candidate;
         QByteArray schema;
         QString error;
-        if (!Inside(destination, false) || !LoadProjectSchema(candidate, schema) || !candidate.New(error) ||
-            !ConfirmDiscard())
+        if (Inside(destination, false) == false || LoadProjectSchema(candidate, schema) == false ||
+            candidate.New(error) == false || ConfirmDiscard() == false)
         {
             Changed(QStringLiteral("Choose a level without an existing converted World document."));
             return false;
@@ -558,7 +558,7 @@ bool WorldWorkspace::Open(const QString& path)
         SceneGeneration_ = DocumentGeneration_;
         Importing_ = true;
         Scene_->SetWorldSnapshot(candidate);
-        if (!Scene_->Open(path))
+        if (Scene_->Open(path) == false)
         {
             Importing_ = false;
             ConversionPath_.clear();
@@ -570,29 +570,30 @@ bool WorldWorkspace::Open(const QString& path)
     WorldDocument candidate;
     QByteArray schema, bytes;
     QString error;
-    if (!Inside(path, true) || !Read(path, bytes, WorldDocument::MaxBytes))
+    if (Inside(path, true) == false || Read(path, bytes, WorldDocument::MaxBytes) == false)
     {
         Changed(QStringLiteral("Open a regular world file inside the project's source folder (at most 512 KiB)."));
         return false;
     }
     const auto incoming = QJsonDocument::fromJson(bytes).object();
-    const bool legacy = !incoming.contains(QStringLiteral("schema")) && incoming.contains(QStringLiteral("settings"));
+    const bool legacy =
+        incoming.contains(QStringLiteral("schema")) == false && incoming.contains(QStringLiteral("settings"));
     const bool demo =
         legacy || incoming.value(QStringLiteral("schema")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
-    if (!LoadProjectSchema(candidate, schema, demo))
+    if (LoadProjectSchema(candidate, schema, demo) == false)
     {
         return false;
     }
     const auto destination = legacy ? QFileInfo(path).absolutePath() + QLatin1Char('/') +
                                           QFileInfo(path).completeBaseName() + QStringLiteral(".world.json")
                                     : path;
-    if ((legacy && !Inside(destination, false)) ||
+    if ((legacy && Inside(destination, false) == false) ||
         (legacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
     {
         Changed(error);
         return false;
     }
-    if (!ConfirmDiscard())
+    if (ConfirmDiscard() == false)
     {
         return false;
     }
@@ -600,8 +601,8 @@ bool WorldWorkspace::Open(const QString& path)
     // Validate the current bytes again before replacing the live document.
     QByteArray currentSchema;
     WorldDocument currentDefinition;
-    if (!LoadProjectSchema(currentDefinition, currentSchema, demo) || currentSchema != schema ||
-        !Read(path, bytes, WorldDocument::MaxBytes) ||
+    if (LoadProjectSchema(currentDefinition, currentSchema, demo) == false || currentSchema != schema ||
+        Read(path, bytes, WorldDocument::MaxBytes) == false ||
         (legacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
     {
         Changed(QStringLiteral("Incoming world/schema changed while opening. Retry Open World."));
@@ -634,7 +635,7 @@ bool WorldWorkspace::Create(const QString& path)
     {
         return false;
     }
-    if (!Inside(path, false))
+    if (Inside(path, false) == false)
     {
         Changed(QStringLiteral(
             "Choose a new file inside the project's source folder. Existing files are never replaced by New World."));
@@ -643,15 +644,15 @@ bool WorldWorkspace::Create(const QString& path)
     WorldDocument candidate;
     QByteArray schema;
     QString error;
-    if (!LoadProjectSchema(candidate, schema, IsWorldDemo(Document_)) || !candidate.New(error))
+    if (LoadProjectSchema(candidate, schema, IsWorldDemo(Document_)) == false || candidate.New(error) == false)
     {
-        if (!error.isEmpty())
+        if (error.isEmpty() == false)
         {
             Changed(error);
         }
         return false;
     }
-    if (!ConfirmDiscard())
+    if (ConfirmDiscard() == false)
     {
         return false;
     }
@@ -828,7 +829,7 @@ void WorldWorkspace::RefreshScene()
         Scene_->StopPreview();
         ValidatedScene_ = {};
     }
-    else if (!SceneBusy() && (level != ValidatedScene_ || Document_.Encode() != ValidatedWorld_))
+    else if (SceneBusy() == false && (level != ValidatedScene_ || Document_.Encode() != ValidatedWorld_))
     {
         SceneGeneration_ = DocumentGeneration_;
         Scene_->SetWorldSnapshot(Document_);
@@ -841,7 +842,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     {
         DraftPreview_ = false;
         // This packet represents only inspector buffers; Apply/Reset still own the document.
-        if (!accepted)
+        if (accepted == false)
         {
             Changed(Scene_->StatusText());
         }
@@ -860,7 +861,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     Importing_ = false;
     const auto conversion = ConversionPath_;
     ConversionPath_.clear();
-    if (!accepted)
+    if (accepted == false)
     {
         SceneError_ = Scene_->StatusText();
         Render();
@@ -883,15 +884,15 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     }
     SceneError_.clear();
     ShowImportReports();
-    if (!conversion.isEmpty())
+    if (conversion.isEmpty() == false)
     {
         WorldDocument candidate;
         QString error;
         WorldDocument currentDefinition;
         QByteArray currentSchema;
-        if (!Inside(conversion, false) || !LoadProjectSchema(currentDefinition, currentSchema) ||
-            currentSchema != ConversionSchema_ || !candidate.LoadSchema(ConversionSchema_, error) ||
-            !candidate.New(error) || !candidate.ImportScene(Scene_->Document(), error))
+        if (Inside(conversion, false) == false || LoadProjectSchema(currentDefinition, currentSchema) == false ||
+            currentSchema != ConversionSchema_ || candidate.LoadSchema(ConversionSchema_, error) == false ||
+            candidate.New(error) == false || candidate.ImportScene(Scene_->Document(), error) == false)
         {
             ValidatedScene_ = {};
             RefreshScene();
@@ -912,7 +913,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     if (importing && conversion.isEmpty())
     {
         QString error;
-        if (!Document_.ImportScene(Scene_->Document(), error))
+        if (Document_.ImportScene(Scene_->Document(), error) == false)
         {
             ValidatedScene_ = {};
             RefreshScene();
@@ -940,7 +941,7 @@ void WorldWorkspace::SceneVerified(bool accepted)
     }
     const bool saving = SavePending_;
     SavePending_ = false;
-    if (!accepted)
+    if (accepted == false)
     {
         Changed(Scene_->StatusText());
         return;
@@ -977,8 +978,8 @@ void WorldWorkspace::Render()
     const bool scene = Document_.Draft().contains(QStringLiteral("scene"));
     Viewport_->setVisible(scene);
     const bool demo = IsWorldDemo(Document_);
-    BoundViewport_->setVisible(!scene && !demo);
-    Render_->setVisible(!scene && !demo);
+    BoundViewport_->setVisible(scene == false && demo == false);
+    Render_->setVisible(scene == false && demo == false);
     PreviewButton_->setVisible(demo);
     PlayButton_->setVisible(demo);
 }
@@ -1043,7 +1044,7 @@ void WorldWorkspace::RenderInspector()
                        group);
         help->setWordWrap(true);
         rows->addRow(help);
-        if (!Document_.Schema().contains(QStringLiteral("scene_transform")))
+        if (Document_.Schema().contains(QStringLiteral("scene_transform")) == false)
         {
             for (const auto& key : {QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
             {
@@ -1077,7 +1078,7 @@ void WorldWorkspace::RenderInspector()
         const auto component = definition.toObject();
         const auto cid = component.value(QStringLiteral("id")).toString();
         const auto label = component.value(QStringLiteral("label")).toString();
-        if (!attached.contains(cid))
+        if (attached.contains(cid) == false)
         {
             Components_->addItem(label, cid);
             continue;
@@ -1170,7 +1171,7 @@ void WorldWorkspace::RenderInspector()
             field->setToolTip(tooltip);
             auto title = p.value(QStringLiteral("label")).toString();
             const auto unit = p.value(QStringLiteral("unit")).toString();
-            if (!unit.isEmpty())
+            if (unit.isEmpty() == false)
             {
                 title += QStringLiteral(" (%1)").arg(unit);
             }
@@ -1192,7 +1193,7 @@ void WorldWorkspace::RenderInspector()
                     return;
                 }
                 QString error;
-                if (!Document_.Detach(Selected_, error, cid))
+                if (Document_.Detach(Selected_, error, cid) == false)
                 {
                     Changed(error);
                     return;
@@ -1268,7 +1269,7 @@ void WorldWorkspace::PickTint(const QString& id, const QJsonObject& binding)
                     }
                 }
                 const auto linear = displayToLinear.map(display);
-                if (!linear.isValid())
+                if (linear.isValid() == false)
                 {
                     return;
                 }
@@ -1293,7 +1294,7 @@ void WorldWorkspace::Pending()
 }
 void WorldWorkspace::Changed(const QString& message)
 {
-    if (!message.isEmpty())
+    if (message.isEmpty() == false)
     {
         Status_->setText(
             message +
@@ -1304,26 +1305,27 @@ void WorldWorkspace::Changed(const QString& message)
     const bool busy = SceneBusy() || DemoDocument_.Previewing();
     if (Name_ != nullptr)
     {
-        Name_->setEnabled(!busy || DraftPreview_);
+        Name_->setEnabled(busy == false || DraftPreview_);
     }
     for (auto* field : Fields_)
     {
-        field->setEnabled(!busy || DraftPreview_);
+        field->setEnabled(busy == false || DraftPreview_);
     }
-    Entities_->setEnabled(!Pending_ && !busy);
-    Import_->setEnabled(Document_.Loaded() && !IsWorldDemo(Document_) && !Pending_ && !busy);
-    PreviewButton_->setEnabled(Document_.Loaded() && !busy);
-    PlayButton_->setEnabled(Document_.Loaded() && !busy);
+    Entities_->setEnabled(Pending_ == false && busy == false);
+    Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false && busy == false);
+    PreviewButton_->setEnabled(Document_.Loaded() && busy == false);
+    PlayButton_->setEnabled(Document_.Loaded() && busy == false);
     CancelScene_->setVisible(busy);
     CancelScene_->setEnabled(Scene_->CanCancel());
-    Add_->setEnabled(Document_.Loaded() && !Pending_ && Entities_->count() < 128 && !busy);
-    Duplicate_->setEnabled(!Selected_.isEmpty() && !Pending_ && Entities_->count() < 128 && !busy);
-    Remove_->setEnabled(!Selected_.isEmpty() && !Pending_ && !busy);
-    Attach_->setEnabled(!Selected_.isEmpty() && !Pending_ && Components_->count() > 0 && !busy);
-    Components_->setEnabled(!Pending_ && !busy);
-    Apply_->setEnabled(Pending_ && !busy);
-    Reset_->setEnabled(Pending_ && !busy);
-    Recovery_->setEnabled(Document_.Loaded() && !busy && !Dirty() && !Unsaved_ &&
+    Add_->setEnabled(Document_.Loaded() && Pending_ == false && Entities_->count() < 128 && busy == false);
+    Duplicate_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && Entities_->count() < 128 &&
+                           busy == false);
+    Remove_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && busy == false);
+    Attach_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && Components_->count() > 0 && busy == false);
+    Components_->setEnabled(Pending_ == false && busy == false);
+    Apply_->setEnabled(Pending_ && busy == false);
+    Reset_->setEnabled(Pending_ && busy == false);
+    Recovery_->setEnabled(Document_.Loaded() && busy == false && Dirty() == false && Unsaved_ == false &&
                           QFileInfo::exists(Path_ + QStringLiteral(".ludus-recovery")));
     PathLabel_->setText(Path_.isEmpty()
                             ? QStringLiteral("No world open")
@@ -1359,7 +1361,7 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
                 {
                     candidate = values.value(pid);
                 }
-                else if (!WorldDocument::ParseValue(p, text->text(), candidate, error))
+                else if (WorldDocument::ParseValue(p, text->text(), candidate, error) == false)
                 {
                     invalid = text;
                     return false;
@@ -1375,7 +1377,7 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
         c.value() = values;
     }
     auto scene = Document_.Entity(Selected_).value(QStringLiteral("scene")).toObject();
-    if (!scene.isEmpty() && !Document_.Schema().contains(QStringLiteral("scene_transform")))
+    if (scene.isEmpty() == false && Document_.Schema().contains(QStringLiteral("scene_transform")) == false)
     {
         for (const auto& key : {QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
         {
@@ -1401,7 +1403,7 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
                                                                                 : -1000000},
                                            {QStringLiteral("max"), key == QStringLiteral("rotation") ? 360 : 1000000}};
                 QJsonValue value;
-                if (!WorldDocument::ParseValue(property, field->text(), value, error))
+                if (WorldDocument::ParseValue(property, field->text(), value, error) == false)
                 {
                     invalid = field;
                     return false;
@@ -1411,7 +1413,7 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
             scene.insert(key, values);
         }
     }
-    if (!document.Edit(Selected_, components, Name_->text(), error, scene.isEmpty() ? nullptr : &scene))
+    if (document.Edit(Selected_, components, Name_->text(), error, scene.isEmpty() ? nullptr : &scene) == false)
     {
         return false;
     }
@@ -1419,7 +1421,7 @@ bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*
 }
 void WorldWorkspace::PreviewDraft()
 {
-    if (!Document_.Loaded())
+    if (Document_.Loaded() == false)
     {
         return;
     }
@@ -1435,7 +1437,7 @@ void WorldWorkspace::PreviewDraft()
     auto draft = Document_;
     QString error;
     QWidget* invalid = nullptr;
-    if (Pending_ && !ReadDraft(draft, error, invalid))
+    if (Pending_ && ReadDraft(draft, error, invalid) == false)
     {
         return;
     }
@@ -1448,7 +1450,7 @@ void WorldWorkspace::PreviewDraft()
         DraftPreview_ = true;
         SceneGeneration_ = DocumentGeneration_;
         Scene_->SetWorldSnapshot(draft);
-        if (!Scene_->Assemble(draft.SceneLevel()))
+        if (Scene_->Assemble(draft.SceneLevel()) == false)
         {
             DraftPreview_ = false;
         }
@@ -1465,7 +1467,7 @@ QJsonObject WorldWorkspace::Session() const
 void WorldWorkspace::RestoreSession(const QJsonObject& state)
 {
     const auto path = state.value(QStringLiteral("world")).toString();
-    if (!path.isEmpty() && QDir::isRelativePath(path))
+    if (path.isEmpty() == false && QDir::isRelativePath(path))
     {
         const auto absolute = QDir(Root_).filePath(path);
         if (Inside(absolute, true))
@@ -1482,7 +1484,7 @@ void WorldWorkspace::RestoreSession(const QJsonObject& state)
         (void)Split_->restoreState(bytes);
     }
     const auto selected = state.value(QStringLiteral("selection")).toString();
-    if (!Document_.Entity(selected).isEmpty())
+    if (Document_.Entity(selected).isEmpty() == false)
     {
         Selected_ = selected;
         Render();
@@ -1494,14 +1496,14 @@ bool WorldWorkspace::Apply()
     {
         return false;
     }
-    if (!Pending_)
+    if (Pending_ == false)
     {
         return Document_.Loaded();
     }
     WorldDocument candidate = Document_;
     QString error;
     QWidget* invalid = nullptr;
-    if (!ReadDraft(candidate, error, invalid))
+    if (ReadDraft(candidate, error, invalid) == false)
     {
         if (invalid != nullptr)
         {
@@ -1540,7 +1542,7 @@ bool WorldWorkspace::Apply()
 }
 bool WorldWorkspace::Save()
 {
-    if (!Document_.Loaded() || !Apply())
+    if (Document_.Loaded() == false || Apply() == false)
     {
         return false;
     }
@@ -1548,7 +1550,7 @@ bool WorldWorkspace::Save()
     {
         world_demo::Level projection;
         QString error;
-        if (!ProjectWorldDemo(Document_, projection, error))
+        if (ProjectWorldDemo(Document_, projection, error) == false)
         {
             Changed(error);
             return false;
@@ -1557,15 +1559,15 @@ bool WorldWorkspace::Save()
     const auto level = Document_.SceneLevel();
     const bool validated = SaveValidated_;
     SaveValidated_ = false;
-    if (!level.isEmpty() && !validated)
+    if (level.isEmpty() == false && validated == false)
     {
-        if (!SceneBusy())
+        if (SceneBusy() == false)
         {
             SceneGeneration_ = DocumentGeneration_;
             Scene_->SetWorldSnapshot(Document_);
             (void)Scene_->VerifyAssets(level);
         }
-        if (!SceneBusy())
+        if (SceneBusy() == false)
         {
             Changed(QStringLiteral("Scene validation could not start; World edits remain open."));
             return false;
@@ -1576,28 +1578,30 @@ bool WorldWorkspace::Save()
     }
     QByteArray schema;
     WorldDocument definition;
-    if (!LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) || schema != SchemaDisk_)
+    if (LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) == false || schema != SchemaDisk_)
     {
         Changed(QStringLiteral("The project schema changed. Save was refused; keep this world open and reconcile the "
                                "schema before retrying."));
         return false;
     }
-    if (!Inside(Path_, !Unsaved_) || QFileInfo(Path_ + QStringLiteral(".ludus-editor-lock")).isSymLink())
+    if (Inside(Path_, Unsaved_ == false) == false ||
+        QFileInfo(Path_ + QStringLiteral(".ludus-editor-lock")).isSymLink())
     {
         Changed(QStringLiteral("The world location changed or already exists. Save was refused."));
         return false;
     }
     QLockFile lock(Path_ + QStringLiteral(".ludus-editor-lock"));
     QByteArray current;
-    if (!lock.tryLock(0) ||
-        (Unsaved_ ? QFileInfo::exists(Path_) : (!Read(Path_, current, WorldDocument::MaxBytes) || current != Disk_)))
+    if (lock.tryLock(0) == false ||
+        (Unsaved_ ? QFileInfo::exists(Path_)
+                  : (Read(Path_, current, WorldDocument::MaxBytes) == false || current != Disk_)))
     {
         Changed(QStringLiteral(
             "The world changed on disk or is locked. Your edits remain open; resolve the conflict before saving."));
         return false;
     }
     const auto bytes = Document_.Encode();
-    if (!Replace(Path_, bytes))
+    if (Replace(Path_, bytes) == false)
     {
         Changed(QStringLiteral("Could not atomically save the world. Your edits remain open."));
         return false;
@@ -1621,8 +1625,8 @@ void WorldWorkspace::Snapshot()
     RefreshWorldDemo();
     RefreshScene();
     Render_->WorldChanged();
-    RecoveryFailed_ = Document_.Dirty() && !Unsaved_;
-    if (!Unsaved_ && !Document_.Dirty() && Inside(Path_, true))
+    RecoveryFailed_ = Document_.Dirty() && Unsaved_ == false;
+    if (Unsaved_ == false && Document_.Dirty() == false && Inside(Path_, true))
     {
         QByteArray old;
         if (Read(Path_ + QStringLiteral(".ludus-recovery"), old, WorldDocument::MaxBytes + 256) &&
@@ -1631,7 +1635,7 @@ void WorldWorkspace::Snapshot()
             (void)QFile::remove(Path_ + QStringLiteral(".ludus-recovery"));
         }
     }
-    if (Unsaved_ || !Document_.Dirty() || !Inside(Path_, true))
+    if (Unsaved_ || Document_.Dirty() == false || Inside(Path_, true) == false)
     {
         return;
     }
@@ -1643,24 +1647,25 @@ void WorldWorkspace::Snapshot()
     }
     QLockFile lock(lockPath);
     QByteArray disk;
-    if (!lock.tryLock(0) || !Read(Path_, disk, WorldDocument::MaxBytes) || disk != Disk_)
+    if (lock.tryLock(0) == false || Read(Path_, disk, WorldDocument::MaxBytes) == false || disk != Disk_)
     {
         return;
     }
     const auto bytes = Document_.Encode();
-    RecoveryFailed_ =
-        !Replace(recovery,
-                 RecoveryHeader() + QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex() + '\n' + bytes);
+    RecoveryFailed_ = Replace(recovery,
+                              RecoveryHeader() + QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex() +
+                                  '\n' + bytes) == false;
 }
 bool WorldWorkspace::Recover()
 {
     QByteArray envelope, current, schema;
     const auto header = RecoveryHeader();
     WorldDocument definition;
-    if (SceneBusy() || Dirty() || Unsaved_ || !Inside(Path_, true) || !Read(Path_, current, WorldDocument::MaxBytes) ||
-        current != Disk_ || !LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) || schema != SchemaDisk_ ||
-        !Read(Path_ + QStringLiteral(".ludus-recovery"), envelope, WorldDocument::MaxBytes + 256) ||
-        !envelope.startsWith(header))
+    if (SceneBusy() || Dirty() || Unsaved_ || Inside(Path_, true) == false ||
+        Read(Path_, current, WorldDocument::MaxBytes) == false || current != Disk_ ||
+        LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) == false || schema != SchemaDisk_ ||
+        Read(Path_ + QStringLiteral(".ludus-recovery"), envelope, WorldDocument::MaxBytes + 256) == false ||
+        envelope.startsWith(header) == false)
     {
         Changed(
             QStringLiteral("Recovery is missing or belongs to a different saved world/schema. Nothing was changed."));
@@ -1674,13 +1679,13 @@ bool WorldWorkspace::Recover()
     }
     WorldDocument candidate;
     QString error;
-    if (!candidate.LoadSchema(SchemaDisk_, error) || !candidate.Load(bytes, error))
+    if (candidate.LoadSchema(SchemaDisk_, error) == false || candidate.Load(bytes, error) == false)
     {
         Changed(error);
         return false;
     }
     // Recovery is one undoable edit against the saved document.
-    if (!Document_.Restore(candidate.Draft(), error))
+    if (Document_.Restore(candidate.Draft(), error) == false)
     {
         Changed(error);
         return false;
@@ -1701,7 +1706,7 @@ bool WorldWorkspace::ConfirmDiscard()
         Changed(QStringLiteral("Wait for the scene operation to finish before closing or changing documents."));
         return false;
     }
-    if (!Dirty())
+    if (Dirty() == false)
     {
         return true;
     }
@@ -1715,7 +1720,7 @@ bool WorldWorkspace::ConfirmDiscard()
     if (answer == QMessageBox::Save)
     {
         const bool requested = Save();
-        return requested && !SceneBusy() && !SavePending_ && !Dirty();
+        return requested && SceneBusy() == false && SavePending_ == false && Dirty() == false;
     }
     if (answer != QMessageBox::Discard)
     {
@@ -1745,19 +1750,19 @@ RenderPreview& WorldWorkspace::GetRenderPreview() noexcept
 }
 bool WorldWorkspace::StartPreview()
 {
-    if (!IsWorldDemo(Document_) || !Apply())
+    if (IsWorldDemo(Document_) == false || Apply() == false)
     {
         return false;
     }
     RefreshWorldDemo();
     world_demo::Level projection;
     QString error;
-    if (!ProjectWorldDemo(Document_, projection, error))
+    if (ProjectWorldDemo(Document_, projection, error) == false)
     {
         Changed(error);
         return false;
     }
-    if (!DemoDocument_.Loaded())
+    if (DemoDocument_.Loaded() == false)
     {
         Changed(QStringLiteral("The World preview projection could not be prepared. Authoring edits were retained."));
         return false;
@@ -1769,20 +1774,20 @@ bool WorldWorkspace::StartPreview()
 }
 void WorldWorkspace::RefreshWorldDemo()
 {
-    if (!IsWorldDemo(Document_) || DemoSyncing_)
+    if (IsWorldDemo(Document_) == false || DemoSyncing_)
     {
         return;
     }
     world_demo::Level projection;
     QString error;
-    if (!ProjectWorldDemo(Document_, projection, error))
+    if (ProjectWorldDemo(Document_, projection, error) == false)
     {
         DemoPreview_.Stop();
         DemoDocument_.Clear();
         return;
     }
     foundation::core::Array<char> bytes;
-    if (!world_demo::WriteLevel(projection, bytes))
+    if (world_demo::WriteLevel(projection, bytes) == false)
     {
         DemoPreview_.Stop();
         DemoDocument_.Clear();
@@ -1799,16 +1804,16 @@ void WorldWorkspace::RefreshWorldDemo()
 }
 void WorldWorkspace::WorldDemoChanged()
 {
-    if (DemoSyncing_ || !IsWorldDemo(Document_))
+    if (DemoSyncing_ || IsWorldDemo(Document_) == false)
     {
         return;
     }
     // The preview selects by runtime label; the World selects by entity key (a version-2 UUID).
     const QString selected = Document_.FindEntityKey(QString::fromLatin1(DemoPreview_.Selected().Text));
-    if (!DemoDocument_.Previewing() && DemoDocument_.Dirty())
+    if (DemoDocument_.Previewing() == false && DemoDocument_.Dirty())
     {
         QString error;
-        if (!Pending_ && CommitWorldDemoGesture(Document_, DemoDocument_.Draft(), error))
+        if (Pending_ == false && CommitWorldDemoGesture(Document_, DemoDocument_.Draft(), error))
         {
             Snapshot();
         }
@@ -1819,7 +1824,7 @@ void WorldWorkspace::WorldDemoChanged()
             return;
         }
     }
-    if (!Pending_ && !DemoDocument_.Previewing())
+    if (Pending_ == false && DemoDocument_.Previewing() == false)
     {
         Selected_ = selected;
         Render();
@@ -1832,7 +1837,7 @@ bool WorldWorkspace::PreviewRunning() const noexcept
 }
 void WorldWorkspace::ResumePreview()
 {
-    if (!Document_.Loaded() || SceneBusy())
+    if (Document_.Loaded() == false || SceneBusy())
     {
         return;
     }
@@ -1857,7 +1862,7 @@ void WorldWorkspace::StopPreview() noexcept
 }
 void WorldWorkspace::Undo()
 {
-    if (!Pending_ && !DemoDocument_.Previewing() && !SceneBusy() && Document_.Undo())
+    if (Pending_ == false && DemoDocument_.Previewing() == false && SceneBusy() == false && Document_.Undo())
     {
         Render();
         Snapshot();
@@ -1866,7 +1871,7 @@ void WorldWorkspace::Undo()
 }
 void WorldWorkspace::Redo()
 {
-    if (!Pending_ && !DemoDocument_.Previewing() && !SceneBusy() && Document_.Redo())
+    if (Pending_ == false && DemoDocument_.Previewing() == false && SceneBusy() == false && Document_.Redo())
     {
         Render();
         Snapshot();

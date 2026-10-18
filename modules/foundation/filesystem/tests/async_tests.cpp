@@ -117,7 +117,7 @@ ReadCompletion Collect(AsyncReader& reader)
 {
     ReadCompletion completion;
     const uint64 until = AsyncNow() + 5'000'000'000;
-    while (!reader.Poll(completion) && AsyncNow() < until)
+    while (reader.Poll(completion) == false && AsyncNow() < until)
     {
         std::this_thread::yield();
     }

@@ -16,7 +16,7 @@ constexpr float64 kInf = std::numeric_limits<float64>::infinity();
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (ox, oy, oz) are the x/y/z out components.
 [[nodiscard]] bool NormalizeD3(Vector3 v, float64& ox, float64& oy, float64& oz, float64& outLen) noexcept
 {
-    if (!IsFinite(v))
+    if (IsFinite(v) == false)
     {
         return false;
     }
@@ -27,7 +27,7 @@ constexpr float64 kInf = std::numeric_limits<float64>::infinity();
     }
     const float64 ux = (float64)v.X / s, uy = (float64)v.Y / s, uz = (float64)v.Z / s;
     const float64 len = s * std::sqrt(ux * ux + uy * uy + uz * uz);
-    if (len == 0.0 || !std::isfinite(len))
+    if (len == 0.0 || std::isfinite(len) == false)
     {
         return false;
     }
@@ -41,7 +41,7 @@ constexpr float64 kInf = std::numeric_limits<float64>::infinity();
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (nx, ny, nz, d) are the plane's normalized coefficient outs.
 [[nodiscard]] bool PlaneUnitFinite(const Plane& p, float64& nx, float64& ny, float64& nz, float64& d) noexcept
 {
-    if (!IsFinite(p.Normal) || !IsFinite(p.D))
+    if (IsFinite(p.Normal) == false || IsFinite(p.D) == false)
     {
         return false;
     }
@@ -70,19 +70,19 @@ constexpr float64 kInf = std::numeric_limits<float64>::infinity();
 // leaves collision response to callers. See docs/architecture/math-research.md.
 MathStatus TryMakePlane(Vector3 normal, Vector3 point, Plane& out) noexcept
 {
-    if (!IsFinite(normal) || !IsFinite(point))
+    if (IsFinite(normal) == false || IsFinite(point) == false)
     {
         return MathStatus::NonFiniteInput;
     }
     float64 nx, ny, nz, len;
-    if (!NormalizeD3(normal, nx, ny, nz, len))
+    if (NormalizeD3(normal, nx, ny, nz, len) == false)
     {
         return MathStatus::Degenerate;
     }
     const float64 d =
         -(nx * static_cast<float64>(point.X) + ny * static_cast<float64>(point.Y) + nz * static_cast<float64>(point.Z));
     const float32 fx = (float32)nx, fy = (float32)ny, fz = (float32)nz, fd = (float32)d;
-    if (!IsFinite(fx) || !IsFinite(fy) || !IsFinite(fz) || !IsFinite(fd))
+    if (IsFinite(fx) == false || IsFinite(fy) == false || IsFinite(fz) == false || IsFinite(fd) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -92,19 +92,19 @@ MathStatus TryMakePlane(Vector3 normal, Vector3 point, Plane& out) noexcept
 
 MathStatus TryPlaneSignedDistance(const Plane& plane, Vector3 p, float32& out) noexcept
 {
-    if (!IsFinite(p))
+    if (IsFinite(p) == false)
     {
         return MathStatus::NonFiniteInput;
     }
     float64 nx, ny, nz, d;
-    if (!PlaneUnitFinite(plane, nx, ny, nz, d))
+    if (PlaneUnitFinite(plane, nx, ny, nz, d) == false)
     {
         return MathStatus::Degenerate;
     }
     const float64 dist =
         nx * static_cast<float64>(p.X) + ny * static_cast<float64>(p.Y) + nz * static_cast<float64>(p.Z) + d;
     const float32 f = (float32)dist;
-    if (!IsFinite(f))
+    if (IsFinite(f) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -121,7 +121,7 @@ MathStatus TryProjectOntoPlane(const Plane& plane, Vector3 p, Vector3& out) noex
         return status;
     }
     const Vector3 result = p - plane.Normal * dist;
-    if (!IsFinite(result))
+    if (IsFinite(result) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -131,12 +131,12 @@ MathStatus TryProjectOntoPlane(const Plane& plane, Vector3 p, Vector3& out) noex
 
 MathStatus TryReflectVector(const Plane& plane, Vector3 v, Vector3& out) noexcept
 {
-    if (!IsFinite(v))
+    if (IsFinite(v) == false)
     {
         return MathStatus::NonFiniteInput;
     }
     float64 nx, ny, nz, d;
-    if (!PlaneUnitFinite(plane, nx, ny, nz, d))
+    if (PlaneUnitFinite(plane, nx, ny, nz, d) == false)
     {
         return MathStatus::Degenerate;
     }
@@ -145,7 +145,7 @@ MathStatus TryReflectVector(const Plane& plane, Vector3 v, Vector3& out) noexcep
     const Vector3 result{(float32)(static_cast<float64>(v.X) - 2.0 * dot * nx),
                          (float32)(static_cast<float64>(v.Y) - 2.0 * dot * ny),
                          (float32)(static_cast<float64>(v.Z) - 2.0 * dot * nz)};
-    if (!IsFinite(result))
+    if (IsFinite(result) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -184,7 +184,7 @@ Aabb2 Merge(const Aabb2& a, const Aabb2& b) noexcept
 }
 bool Contains(const Aabb3& box, Vector3 point) noexcept
 {
-    if (IsEmpty(box) || !IsFinite(box) || !IsFinite(point))
+    if (IsEmpty(box) || IsFinite(box) == false || IsFinite(point) == false)
     {
         return false;
     }
@@ -193,7 +193,7 @@ bool Contains(const Aabb3& box, Vector3 point) noexcept
 }
 bool Contains(const Aabb2& box, Vector2 point) noexcept
 {
-    if (IsEmpty(box) || !IsFinite(box) || !IsFinite(point))
+    if (IsEmpty(box) || IsFinite(box) == false || IsFinite(point) == false)
     {
         return false;
     }
@@ -202,7 +202,7 @@ bool Contains(const Aabb2& box, Vector2 point) noexcept
 
 MathStatus TryTransformAabb(const Affine3& a, const Aabb3& box, Aabb3& out) noexcept
 {
-    if (!IsFinite(a))
+    if (IsFinite(a) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -211,7 +211,7 @@ MathStatus TryTransformAabb(const Affine3& a, const Aabb3& box, Aabb3& out) noex
         out = EmptyAabb3();
         return MathStatus::Success;
     }
-    if (!IsFinite(box))
+    if (IsFinite(box) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -252,7 +252,7 @@ MathStatus TryTransformAabb(const Affine3& a, const Aabb3& box, Aabb3& out) noex
     }
     const Vector3 mn{(float32)lo[0], (float32)lo[1], (float32)lo[2]};
     const Vector3 mx{(float32)hi[0], (float32)hi[1], (float32)hi[2]};
-    if (!IsFinite(mn) || !IsFinite(mx))
+    if (IsFinite(mn) == false || IsFinite(mx) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -262,7 +262,7 @@ MathStatus TryTransformAabb(const Affine3& a, const Aabb3& box, Aabb3& out) noex
 
 MathStatus TryTransformAabb(const Affine2& a, const Aabb2& box, Aabb2& out) noexcept
 {
-    if (!IsFinite(a))
+    if (IsFinite(a) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -271,7 +271,7 @@ MathStatus TryTransformAabb(const Affine2& a, const Aabb2& box, Aabb2& out) noex
         out = EmptyAabb2();
         return MathStatus::Success;
     }
-    if (!IsFinite(box))
+    if (IsFinite(box) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -297,7 +297,7 @@ MathStatus TryTransformAabb(const Affine2& a, const Aabb2& box, Aabb2& out) noex
     }
     const Vector2 mn{(float32)lo[0], (float32)lo[1]};
     const Vector2 mx{(float32)hi[0], (float32)hi[1]};
-    if (!IsFinite(mn) || !IsFinite(mx))
+    if (IsFinite(mn) == false || IsFinite(mx) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -319,7 +319,7 @@ bool IsValidInterval(const RayInterval& interval) noexcept
     {
         return false;
     }
-    if (!std::isfinite(interval.MinT) || interval.MinT < 0.0)
+    if (std::isfinite(interval.MinT) == false || interval.MinT < 0.0)
     {
         return false;
     }
@@ -335,7 +335,7 @@ namespace
 {
 [[nodiscard]] bool RayDirectionValid(const Ray3& ray) noexcept
 {
-    if (!IsFinite(ray.Origin) || !IsFinite(ray.Direction))
+    if (IsFinite(ray.Origin) == false || IsFinite(ray.Direction) == false)
     {
         return false;
     }
@@ -347,16 +347,16 @@ namespace
 
 MathStatus TryRayAabb(const Ray3& ray, const Aabb3& box, const RayInterval& interval, RayHit& out) noexcept
 {
-    if (!RayDirectionValid(ray))
+    if (RayDirectionValid(ray) == false)
     {
-        return (!IsFinite(ray.Origin) || !IsFinite(ray.Direction)) ? MathStatus::NonFiniteInput
-                                                                   : MathStatus::InvalidArgument;
+        return (IsFinite(ray.Origin) == false || IsFinite(ray.Direction) == false) ? MathStatus::NonFiniteInput
+                                                                                   : MathStatus::InvalidArgument;
     }
-    if (!IsValidInterval(interval))
+    if (IsValidInterval(interval) == false)
     {
         return MathStatus::InvalidArgument;
     }
-    if (!IsFinite(box))
+    if (IsFinite(box) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -420,16 +420,16 @@ MathStatus TryRayAabb(const Ray3& ray, const Aabb3& box, const RayInterval& inte
 
 MathStatus TryRaySphere(const Ray3& ray, const Sphere& sphere, const RayInterval& interval, RayHit& out) noexcept
 {
-    if (!RayDirectionValid(ray))
+    if (RayDirectionValid(ray) == false)
     {
-        return (!IsFinite(ray.Origin) || !IsFinite(ray.Direction)) ? MathStatus::NonFiniteInput
-                                                                   : MathStatus::InvalidArgument;
+        return (IsFinite(ray.Origin) == false || IsFinite(ray.Direction) == false) ? MathStatus::NonFiniteInput
+                                                                                   : MathStatus::InvalidArgument;
     }
-    if (!IsValidInterval(interval))
+    if (IsValidInterval(interval) == false)
     {
         return MathStatus::InvalidArgument;
     }
-    if (!IsFinite(sphere.Center) || !std::isfinite(sphere.Radius))
+    if (IsFinite(sphere.Center) == false || std::isfinite(sphere.Radius) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -530,7 +530,7 @@ struct D3
 // Source scope and adaptations: docs/architecture/math-research.md.
 MathStatus TryClosestPointsSegments(Vector3 p0, Vector3 p1, Vector3 q0, Vector3 q1, SegmentClosest& out) noexcept
 {
-    if (!IsFinite(p0) || !IsFinite(p1) || !IsFinite(q0) || !IsFinite(q1))
+    if (IsFinite(p0) == false || IsFinite(p1) == false || IsFinite(q0) == false || IsFinite(q1) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -602,7 +602,7 @@ MathStatus TryClosestPointsSegments(Vector3 p0, Vector3 p1, Vector3 q0, Vector3 
         consider(ProjectParam(q1p0, u, a), 1.0);
     }
 
-    if (!std::isfinite(bestSq))
+    if (std::isfinite(bestSq) == false)
     {
         return MathStatus::Degenerate; // should not happen for finite input
     }
@@ -615,7 +615,7 @@ MathStatus TryClosestPointsSegments(Vector3 p0, Vector3 p1, Vector3 q0, Vector3 
     const float32 cp2z = (float32)(static_cast<float64>(q0.Z) + bestT * v.z);
     const Vector3 c1{cp1x, cp1y, cp1z};
     const Vector3 c2{cp2x, cp2y, cp2z};
-    if (!IsFinite(c1) || !IsFinite(c2))
+    if (IsFinite(c1) == false || IsFinite(c2) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -634,12 +634,12 @@ namespace
 [[nodiscard]] bool NormalizePlaneD(float64 nx, float64 ny, float64 nz, float64 d, Plane& out) noexcept
 {
     const float64 len = std::sqrt(nx * nx + ny * ny + nz * nz);
-    if (len == 0.0 || !std::isfinite(len))
+    if (len == 0.0 || std::isfinite(len) == false)
     {
         return false;
     }
     const float32 fx = (float32)(nx / len), fy = (float32)(ny / len), fz = (float32)(nz / len), fd = (float32)(d / len);
-    if (!IsFinite(fx) || !IsFinite(fy) || !IsFinite(fz) || !IsFinite(fd))
+    if (IsFinite(fx) == false || IsFinite(fy) == false || IsFinite(fz) == false || IsFinite(fd) == false)
     {
         return false;
     }
@@ -655,7 +655,7 @@ namespace
 // See docs/architecture/math-research.md for source scope and the derivation.
 MathStatus TryExtractFrustum(const Matrix4& worldToClip, FrustumMode mode, Frustum& out) noexcept
 {
-    if (!IsFinite(worldToClip))
+    if (IsFinite(worldToClip) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -710,7 +710,7 @@ MathStatus TryExtractFrustum(const Matrix4& worldToClip, FrustumMode mode, Frust
             // depthLower must have zero xyz and a positive constant; mark inactive.
             const float64 xyzLen =
                 std::sqrt(cands[i].nx * cands[i].nx + cands[i].ny * cands[i].ny + cands[i].nz * cands[i].nz);
-            if (xyzLen > 1e-5 || !(cands[i].d > 0.0))
+            if (xyzLen > 1e-5 || (cands[i].d > 0.0) == false)
             {
                 return MathStatus::Degenerate;
             }
@@ -720,7 +720,7 @@ MathStatus TryExtractFrustum(const Matrix4& worldToClip, FrustumMode mode, Frust
         else
         {
             Plane p{};
-            if (!NormalizePlaneD(cands[i].nx, cands[i].ny, cands[i].nz, cands[i].d, p))
+            if (NormalizePlaneD(cands[i].nx, cands[i].ny, cands[i].nz, cands[i].d, p) == false)
             {
                 return MathStatus::Degenerate;
             }
@@ -756,7 +756,7 @@ namespace
 MathStatus
 TryClassifySphere(const Frustum& frustum, const Sphere& sphere, float32 margin, FrustumRelation& out) noexcept
 {
-    if (!IsFinite(sphere.Center) || !std::isfinite(sphere.Radius) || !std::isfinite(margin))
+    if (IsFinite(sphere.Center) == false || std::isfinite(sphere.Radius) == false || std::isfinite(margin) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -786,7 +786,7 @@ TryClassifySphere(const Frustum& frustum, const Sphere& sphere, float32 margin, 
             out = FrustumRelation::Outside;
             return MathStatus::Success;
         }
-        if (!(dist > r + allowance))
+        if ((dist > r + allowance) == false)
         {
             anyIntersecting = true;
         }
@@ -797,7 +797,7 @@ TryClassifySphere(const Frustum& frustum, const Sphere& sphere, float32 margin, 
 
 MathStatus TryClassifyAabb(const Frustum& frustum, const Aabb3& box, float32 margin, FrustumRelation& out) noexcept
 {
-    if (!std::isfinite(margin))
+    if (std::isfinite(margin) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -810,7 +810,7 @@ MathStatus TryClassifyAabb(const Frustum& frustum, const Aabb3& box, float32 mar
         out = FrustumRelation::Outside;
         return MathStatus::Success;
     }
-    if (!IsFinite(box))
+    if (IsFinite(box) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -840,7 +840,7 @@ MathStatus TryClassifyAabb(const Frustum& frustum, const Aabb3& box, float32 mar
             out = FrustumRelation::Outside;
             return MathStatus::Success;
         }
-        if (!(s > rproj + static_cast<float64>(margin) + allowance))
+        if ((s > rproj + static_cast<float64>(margin) + allowance) == false)
         {
             anyIntersecting = true;
         }

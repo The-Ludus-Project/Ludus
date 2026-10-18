@@ -53,7 +53,7 @@ bool FrameOpen() noexcept
 }
 bool ClaimRasterFrame() noexcept
 {
-    if (!gFrame || gDrawn)
+    if (gFrame == false || gDrawn)
     {
         return false;
     }
@@ -84,7 +84,7 @@ bool Current(uint32 token) noexcept
 }
 void Fail(uint32 token, StartupError error) noexcept
 {
-    if (!Current(token))
+    if (Current(token) == false)
     {
         return;
     }
@@ -122,7 +122,7 @@ void FaultRasterSession() noexcept
 }
 void Complete(uint32 token, StartupError error, const BackendLimits& limits) noexcept
 {
-    if (!Current(token) || gStartup.State != StartupState::Pending)
+    if (Current(token) == false || gStartup.State != StartupState::Pending)
     {
         return;
     }
@@ -189,7 +189,7 @@ void Complete(uint32 token, StartupError error, const BackendLimits& limits) noe
 }
 void SelectBackend(uint32 token, Backend backend) noexcept
 {
-    if (!Current(token))
+    if (Current(token) == false)
     {
         return;
     }
@@ -199,7 +199,7 @@ void SelectBackend(uint32 token, Backend backend) noexcept
 }
 uint32 Reissue(uint32 token) noexcept
 {
-    if (!Current(token) || gStartup.State != StartupState::Pending)
+    if (Current(token) == false || gStartup.State != StartupState::Pending)
     {
         return 0;
     }
@@ -212,7 +212,7 @@ uint32 Reissue(uint32 token) noexcept
 }
 void RecordAttempt(uint32 token, Backend backend, StartupError error) noexcept
 {
-    if (!Current(token))
+    if (Current(token) == false)
     {
         return;
     }
@@ -242,7 +242,7 @@ StartStatus StartSelected(const ApplicationInfo& app,
     {
         return StartStatus::Busy;
     }
-    if (!internal::ConfigureStorage(storage))
+    if (internal::ConfigureStorage(storage) == false)
     {
         gStartup = {};
         gStartup.State = StartupState::Failed;
@@ -257,7 +257,7 @@ StartStatus StartSelected(const ApplicationInfo& app,
     gProfile = {};
     // A forced selection the build cannot provide fails explicitly; it never
     // silently switches to another backend.
-    if (!backend::Supports(selection))
+    if (backend::Supports(selection) == false)
     {
         gStartup.State = StartupState::Failed;
         gStartup.Error = StartupError::BackendUnavailable;
@@ -349,7 +349,7 @@ FrameStatus BeginFrameStatus() noexcept
     {
         return FrameStatus::InvalidState;
     }
-    if (!internal::PrepareRasterFrame())
+    if (internal::PrepareRasterFrame() == false)
     {
         return FrameStatus::Failed;
     }
@@ -366,11 +366,11 @@ FrameStatus EndFrameStatus() noexcept
     {
         return FrameStatus::NotReady;
     }
-    if (!gFrame)
+    if (gFrame == false)
     {
         return FrameStatus::InvalidState;
     }
-    if (!internal::RasterFinishFrame())
+    if (internal::RasterFinishFrame() == false)
     {
         return FrameStatus::Failed;
     }
@@ -398,11 +398,11 @@ bool ConnectWindow(const WindowInfo& window) noexcept
 }
 bool InitializeRendering() noexcept
 {
-    if (!gLegacy)
+    if (gLegacy == false)
     {
         return false;
     }
-    if (!gRendering)
+    if (gRendering == false)
     {
         gRendering = backend::InitializeRendering();
     }
@@ -541,7 +541,7 @@ ResourceStatus Allocate(Resource* resources, usize& slot) noexcept
 }
 bool ValidEntry(std::string_view entry) noexcept
 {
-    return !entry.empty() && entry.size() < 64 && entry.find('\0') == std::string_view::npos;
+    return entry.empty() == false && entry.size() < 64 && entry.find('\0') == std::string_view::npos;
 }
 ResourceStatus Finish(Resource& resource, ResourceStatus result) noexcept
 {
@@ -656,10 +656,11 @@ ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& 
     const bool validArtifact =
         kind == Backend::Vulkan   ? (description.Spirv.size() >= 5 && description.Spirv[0] == 0x07230203U &&
                                      ValidEntry(description.SpirvEntry))
-        : kind == Backend::WebGL2 ? (!description.GlslEs.empty() && description.GlslEsEntry == "main")
-        : kind == Backend::Metal  ? (!description.Msl.empty() && ValidEntry(description.MslEntry))
-                                  : (!description.Wgsl.empty() && ValidEntry(description.WgslEntry));
-    if ((description.Stage != ShaderStage::Vertex && description.Stage != ShaderStage::Fragment) || !validArtifact)
+        : kind == Backend::WebGL2 ? (description.GlslEs.empty() == false && description.GlslEsEntry == "main")
+        : kind == Backend::Metal  ? (description.Msl.empty() == false && ValidEntry(description.MslEntry))
+                                  : (description.Wgsl.empty() == false && ValidEntry(description.WgslEntry));
+    if ((description.Stage != ShaderStage::Vertex && description.Stage != ShaderStage::Fragment) ||
+        validArtifact == false)
     {
         return ResourceStatus::InvalidDescription;
     }
@@ -846,7 +847,7 @@ ResourceStatus DrawFullscreen(PipelineHandle handle) noexcept
     {
         return gPipelines[slot].Status;
     }
-    if (!gFrame || gDrawn || gRasterDrawn || !gUniforms[gPipelines[slot].Uniform].Updated)
+    if (gFrame == false || gDrawn || gRasterDrawn || gUniforms[gPipelines[slot].Uniform].Updated == false)
     {
         return ResourceStatus::InvalidState;
     }

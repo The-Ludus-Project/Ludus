@@ -106,13 +106,13 @@ Status Catalog::Read(std::string_view json, Diagnostic& diagnostic) noexcept
     }
     const auto root = document.Root();
     uint64 version = 0;
-    if (!root.Fields({"version", "resources"}) || !root.Get("version").Integer(version) || version != 1)
+    if (root.Fields({"version", "resources"}) == false || root.Get("version").Integer(version) == false || version != 1)
     {
         return diagnostic.Result = Status::Invalid;
     }
     const auto entries = root.Get("resources");
     const usize count = entries.Count();
-    if (!entries.Array() || count > MAX_RESOURCES)
+    if (entries.Array() == false || count > MAX_RESOURCES)
     {
         return diagnostic.Result = Status::Limit;
     }
@@ -161,7 +161,7 @@ Status Catalog::Read(std::string_view json, Diagnostic& diagnostic) noexcept
                 valid = false;
             }
         }
-        if (!valid)
+        if (valid == false)
         {
             delete[] next;
             return diagnostic.Result = Status::Invalid;
@@ -190,7 +190,7 @@ Status Catalog::Put(const Resource& resource) noexcept
 {
     if ((resource.Type != Kind::AudioSource && resource.Type != Kind::Sound && resource.Type != Kind::Music &&
          resource.Type != Kind::Mesh && resource.Type != Kind::CookedScene) ||
-        !ValidId(resource.Id.View()) || !ValidPath(resource.Path.View()))
+        ValidId(resource.Id.View()) == false || ValidPath(resource.Path.View()) == false)
     {
         return Status::Invalid;
     }
@@ -229,7 +229,7 @@ Status Catalog::Put(const Resource& resource) noexcept
 Status Catalog::Write(Bytes& output) const noexcept
 {
     Bytes buffer;
-    if (!buffer.Resize(MAX_DOCUMENT_BYTES))
+    if (buffer.Resize(MAX_DOCUMENT_BYTES) == false)
     {
         return Status::OutOfMemory;
     }

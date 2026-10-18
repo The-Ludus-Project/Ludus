@@ -76,7 +76,7 @@ const char* PhaseName(Phase phase)
 EditorController::EditorController(ToolingPaths tooling, QObject* parent, const QString& recentProjectsPath)
     : QObject(parent), Tooling_(std::move(tooling)), RecentProjects_(recentProjectsPath), Tool_(this), Play_(this)
 {
-    if (!RecentProjects_.Load())
+    if (RecentProjects_.Load() == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_CTRL, Warning, "could not load recent projects; starting with an empty history");
     }
@@ -94,7 +94,7 @@ EditorController::EditorController(ToolingPaths tooling, QObject* parent, const 
         PlayState_.Phase = confirmed ? PlayPhase::Stopped : PlayPhase::CleanupUnknown;
         PlayState_.Properties = {};
         PropertyRequest_.clear();
-        if (confirmed && !TuningDocumentDirty_)
+        if (confirmed && TuningDocumentDirty_ == false)
         {
             TuningDocumentAvailable_ = false;
             TuningDocumentDigest_.clear();
@@ -103,7 +103,7 @@ EditorController::EditorController(ToolingPaths tooling, QObject* parent, const 
             PlayState_.TuningDocumentDirty = false;
             PlayState_.TuningCanUndo = PlayState_.TuningCanRedo = false;
         }
-        else if (!confirmed && TuningDocumentDirty_)
+        else if (confirmed == false && TuningDocumentDirty_)
         {
             PlayState_.Message =
                 QStringLiteral("Play supervisor exited with an unsaved tuning draft; recovery is unknown");
@@ -117,7 +117,7 @@ EditorController::EditorController(ToolingPaths tooling, QObject* parent, const 
         [this]() {
             const QString created = PendingCreatedProject_;
             PendingCreatedProject_.clear();
-            if (!created.isEmpty() && State_.Result.Kind == Outcome::Success)
+            if (created.isEmpty() == false && State_.Result.Kind == Outcome::Success)
             {
                 OpenProject(QDir(created).filePath(QStringLiteral("ludus.project.json")));
             }
@@ -139,7 +139,7 @@ void EditorController::Publish()
     {
         Watch_.Stop();
     }
-    Watch_.SetBusy(!CanBuildReload());
+    Watch_.SetBusy(CanBuildReload() == false);
     Q_EMIT StateChanged();
 }
 
@@ -150,13 +150,13 @@ QString EditorController::ResolveDescriptorPath() const
 
 void EditorController::OpenProject(const QString& descriptorPath)
 {
-    if (!Caps().CanOpen)
+    if (Caps().CanOpen == false)
     {
         return; // a failed attempt leaves the existing workspace intact
     }
     const QString absolute = QFileInfo(descriptorPath).absoluteFilePath();
     const LoadOutcome outcome = Store_.Load(absolute);
-    if (!outcome.Ok())
+    if (outcome.Ok() == false)
     {
         // Invalid/missing file leaves the previous workspace unchanged and
         // records a useful error as the last result.
@@ -190,7 +190,7 @@ void EditorController::OpenProject(const QString& descriptorPath)
 
 bool EditorController::CloseProject()
 {
-    if (!Caps().CanCloseProject || State_.Dirty() || TuningDocumentDirty_)
+    if (Caps().CanCloseProject == false || State_.Dirty() || TuningDocumentDirty_)
     {
         return false;
     }
@@ -213,7 +213,7 @@ bool EditorController::CloseProject()
 
 void EditorController::RememberProject()
 {
-    if (!RecentProjects_.Remember({ .DescriptorPath = State_.DescriptorPath, .Name = State_.Saved.Name }))
+    if (RecentProjects_.Remember({ .DescriptorPath = State_.DescriptorPath, .Name = State_.Saved.Name }) == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_CTRL,
                        Warning,
@@ -223,11 +223,11 @@ void EditorController::RememberProject()
 
 void EditorController::ClearRecentProjects()
 {
-    if (!Caps().CanOpen)
+    if (Caps().CanOpen == false)
     {
         return;
     }
-    if (!RecentProjects_.Clear())
+    if (RecentProjects_.Clear() == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_CTRL, Warning, "could not persist cleared recent projects");
     }
@@ -236,11 +236,11 @@ void EditorController::ClearRecentProjects()
 
 void EditorController::EditDraft(const ProjectDescriptor& draft, bool merge)
 {
-    if (!Caps().CanEdit)
+    if (Caps().CanEdit == false)
     {
         return;
     }
-    if (!ProjectHistory_.Commit(State_.Draft, draft, merge))
+    if (ProjectHistory_.Commit(State_.Draft, draft, merge) == false)
     {
         return;
     }
@@ -289,7 +289,7 @@ void EditorController::RedoProjectEdit()
 
 void EditorController::Save()
 {
-    if (Saving_ || !Caps().CanSave)
+    if (Saving_ || Caps().CanSave == false)
     {
         return;
     }
@@ -307,7 +307,7 @@ void EditorController::Save()
     {
         return;
     }
-    if (!outcome.Ok())
+    if (outcome.Ok() == false)
     {
         LastResult result;
         result.Kind = Outcome::Failed;
@@ -330,12 +330,12 @@ void EditorController::Save()
 
 void EditorController::Reload()
 {
-    if (!Caps().CanReload)
+    if (Caps().CanReload == false)
     {
         return;
     }
     const LoadOutcome outcome = Store_.Load(State_.DescriptorPath);
-    if (!outcome.Ok())
+    if (outcome.Ok() == false)
     {
         LastResult result;
         result.Kind = Outcome::Failed;
@@ -360,7 +360,7 @@ void EditorController::Reload()
 
 void EditorController::StartJob(ActionKind kind, ToolOperation operation, const ToolLaunch& options)
 {
-    if (Tool_.Active() || !CanStartJob(State_, kind))
+    if (Tool_.Active() || CanStartJob(State_, kind) == false)
     {
         return; // duplicate/invalid starts cannot create a second job
     }
@@ -392,7 +392,7 @@ void EditorController::StartJob(ActionKind kind, ToolOperation operation, const 
     launch.Operation = operation;
     launch.Job = State_.ActiveJob;
 
-    if (!Tool_.Start(launch))
+    if (Tool_.Start(launch) == false)
     {
         LastResult result;
         result.Kind = Outcome::Failed;
@@ -446,7 +446,7 @@ void EditorController::CheckProjectSetup()
 
 void EditorController::SetupProject(const QString& sdk, const QString& webSdk, bool prepareEngine, bool disableWeb)
 {
-    if (!Caps().CanProjectSetup)
+    if (Caps().CanProjectSetup == false)
     {
         return;
     }
@@ -460,7 +460,7 @@ void EditorController::SetupProject(const QString& sdk, const QString& webSdk, b
 
 void EditorController::CreateProject(const ProjectCreationOptions& creation)
 {
-    if (!Caps().CanProjectCreate)
+    if (Caps().CanProjectCreate == false)
     {
         return;
     }
@@ -497,7 +497,7 @@ void EditorController::BuildRun()
 
 void EditorController::BuildDebug(const QString& debugger, bool setup)
 {
-    if (!Caps().CanBuildDebug)
+    if (Caps().CanBuildDebug == false)
     {
         return;
     }
@@ -509,7 +509,7 @@ void EditorController::BuildDebug(const QString& debugger, bool setup)
 
 void EditorController::SetupRelease(const QString& platform, const QString& itchTarget)
 {
-    if (!Caps().CanReleaseInit)
+    if (Caps().CanReleaseInit == false)
     {
         return;
     }
@@ -521,7 +521,7 @@ void EditorController::SetupRelease(const QString& platform, const QString& itch
 
 void EditorController::PackageRelease(const QString& profile, const QString& version, const QString& sdk)
 {
-    if (!Caps().CanPackage)
+    if (Caps().CanPackage == false)
     {
         return;
     }
@@ -547,10 +547,10 @@ void EditorController::Stop()
     {
         PlayState_.Phase = PlayPhase::Stopping;
         const auto request = NextPlayRequest();
-        if (!Play_.Send(
-                {{QStringLiteral("type"), QStringLiteral("command")},
-                 {QStringLiteral("request"), request},
-                 {QStringLiteral("command"), QJsonObject{{QStringLiteral("command"), QStringLiteral("Stop")}}}}))
+        if (Play_.Send({{QStringLiteral("type"), QStringLiteral("command")},
+                        {QStringLiteral("request"), request},
+                        {QStringLiteral("command"),
+                         QJsonObject{{QStringLiteral("command"), QStringLiteral("Stop")}}}}) == false)
         {
             PlayState_.Phase = PlayPhase::CleanupUnknown;
             PlayState_.Message = QStringLiteral("Stop could not be queued; inspect Play status");
@@ -659,13 +659,13 @@ void EditorController::OnToolEvent(const ProtocolEvent& event)
             break;
         }
         case ProtocolEvent::Type::SetupDetails:
-            if (event.Job == SetupCheckJob_ && !State_.StopLatched)
+            if (event.Job == SetupCheckJob_ && State_.StopLatched == false)
             {
                 PendingSetupDetails_ = event.Text;
             }
             break;
         case ProtocolEvent::Type::Generation:
-            if (GenerationJob_ && !State_.StopLatched)
+            if (GenerationJob_ && State_.StopLatched == false)
             {
                 PublishedGeneration_ = event.GenerationPath;
             }
@@ -690,11 +690,11 @@ void EditorController::OnToolEvent(const ProtocolEvent& event)
             result.ExitCode = event.ExitCode;
             result.Signal = event.Signal;
             result.CleanupConfirmed = event.CleanupConfirmed;
-            if (!event.CleanupConfirmed)
+            if (event.CleanupConfirmed == false)
             {
                 result.Kind = Outcome::CleanupUnknown;
             }
-            PendingDebuggerPrompt_ = State_.ActiveAction == ActionKind::BuildDebug && !State_.StopLatched &&
+            PendingDebuggerPrompt_ = State_.ActiveAction == ActionKind::BuildDebug && State_.StopLatched == false &&
                                      result.Kind == Outcome::Failed && result.Code == ResultCode::MissingDebugger &&
                                      result.CleanupConfirmed;
             if (event.Job == SetupCheckJob_)
@@ -712,11 +712,11 @@ void EditorController::OnToolEvent(const ProtocolEvent& event)
             {
                 GenerationJob_ = false;
                 if (result.Kind == Outcome::Success && PlayState_.Phase != PlayPhase::Stopping &&
-                    !PublishedGeneration_.isEmpty())
+                    PublishedGeneration_.isEmpty() == false)
                 {
                     ActivateGeneration(PublishedGeneration_);
                 }
-                else if (!Play_.Active())
+                else if (Play_.Active() == false)
                 {
                     PlayState_.Phase = result.CleanupConfirmed ? PlayPhase::Stopped : PlayPhase::CleanupUnknown;
                 }
@@ -746,7 +746,7 @@ void EditorController::OnToolEvent(const ProtocolEvent& event)
                 State_.Result = foundation::Move(result);
             }
             GenerationJob_ = false;
-            if (!Play_.Active() && PlayState_.Phase != PlayPhase::Stopped)
+            if (Play_.Active() == false && PlayState_.Phase != PlayPhase::Stopped)
             {
                 PlayState_.Phase = event.CleanupConfirmed ? PlayPhase::Stopped : PlayPhase::CleanupUnknown;
             }

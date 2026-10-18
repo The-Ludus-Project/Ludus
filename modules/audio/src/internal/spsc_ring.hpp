@@ -112,7 +112,7 @@ public:
 
         const uint32 depth = newWrite - read;
         uint32 hw = mHighWater.load(std::memory_order_relaxed);
-        while (depth > hw && !mHighWater.compare_exchange_weak(hw, depth, std::memory_order_relaxed))
+        while (depth > hw && mHighWater.compare_exchange_weak(hw, depth, std::memory_order_relaxed) == false)
         {
             // hw refreshed by the failed exchange; retry only on the producer
             // thread's own high-water bookkeeping, never on the hot queue path.

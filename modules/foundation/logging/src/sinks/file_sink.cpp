@@ -165,7 +165,7 @@ void pruneSessions(const std::filesystem::path& directory,
         }
         const std::filesystem::directory_entry& entry = *iter;
         std::error_code fec;
-        if (!entry.is_regular_file(fec) || fec)
+        if (entry.is_regular_file(fec) == false || fec)
         {
             continue;
         }
@@ -196,11 +196,11 @@ void pruneSessions(const std::filesystem::path& directory,
             group = &groups.GetLast();
         }
         group->Segments.Add(entry.path());
-        if (!sec)
+        if (sec.value() == 0)
         {
             group->TotalBytes += size;
         }
-        if (!tec && (!group->TimeValid || wtime > group->NewestTime))
+        if (tec.value() == 0 && (group->TimeValid == false || wtime > group->NewestTime))
         {
             group->NewestTime = wtime;
             group->TimeValid = true;
@@ -214,7 +214,7 @@ void pruneSessions(const std::filesystem::path& directory,
         const auto max_age = std::chrono::hours(24) * static_cast<int>(maxAgeDays);
         for (auto& g : groups)
         {
-            if (g.IsActive || !g.TimeValid)
+            if (g.IsActive || g.TimeValid == false)
             {
                 continue;
             }
@@ -237,7 +237,7 @@ void pruneSessions(const std::filesystem::path& directory,
     foundation::Array<Group*> inactive;
     for (auto& g : groups)
     {
-        if (!g.IsActive && !g.Segments.IsEmpty())
+        if (g.IsActive == false && g.Segments.IsEmpty() == false)
         {
             inactive.Add(&g);
         }
@@ -247,7 +247,7 @@ void pruneSessions(const std::filesystem::path& directory,
         {
             return a->TimeValid; // valid times sort before invalid
         }
-        if (!a->TimeValid)
+        if (a->TimeValid == false)
         {
             return a->Key < b->Key; // stable tiebreak
         }
@@ -263,7 +263,7 @@ void pruneSessions(const std::filesystem::path& directory,
     usize active_count = 0;
     for (const auto& g : groups)
     {
-        if (g.IsActive && !g.Segments.IsEmpty())
+        if (g.IsActive && g.Segments.IsEmpty() == false)
         {
             active_count = 1;
         }
@@ -357,7 +357,7 @@ FileSink* FileSink::Create(const FileSinkConfig& config)
 
     std::error_code ec;
     std::filesystem::create_directories(directory, ec);
-    if (ec && !std::filesystem::exists(directory))
+    if (ec && std::filesystem::exists(directory) == false)
     {
         return nullptr;
     }

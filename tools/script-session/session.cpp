@@ -63,7 +63,7 @@ bool RestoreState(const StateRecord& record, const Package& package, s1::State& 
         },
         { .Id = s1::STATE_OPENREQUESTED_FIELD_ID, .Kind = FieldKind::Boolean, .Min = 0, .Max = 1, .Default = 0 }};
     StateRecord migrated;
-    if (!MigrateState(record, package.Schema, fields, migrated))
+    if (MigrateState(record, package.Schema, fields, migrated) == false)
     {
         return false;
     }
@@ -80,8 +80,8 @@ bool Session::Initialize(const Package& package) noexcept
 
 bool Session::Initialize(const Package& package, std::span<const Package* const> admitted) noexcept
 {
-    if (mActive != nullptr || admitted.empty() || admitted.size() > 8 || !Trusted(package, admitted) ||
-        !s1::Initialize(mWorld))
+    if (mActive != nullptr || admitted.empty() || admitted.size() > 8 || Trusted(package, admitted) == false ||
+        s1::Initialize(mWorld) == false)
     {
         return false;
     }
@@ -98,13 +98,13 @@ bool Session::Initialize(const Package& package, std::span<const Package* const>
 
 bool Session::SafePoint() const noexcept
 {
-    return mActive != nullptr && !mPending && !mWorld.Faulted && mWorld.At == s1::Phase::EndTick &&
-           mWorld.CommandCount == 0 && !mVms[mBank].IsPaused();
+    return mActive != nullptr && mPending == false && mWorld.Faulted == false && mWorld.At == s1::Phase::EndTick &&
+           mWorld.CommandCount == 0 && mVms[mBank].IsPaused() == false;
 }
 
 Status Session::Begin(InvokeRequest request) noexcept
 {
-    if (!SafePoint() || request.Instance >= 2 || request.Amount < 1 || request.Amount > 10)
+    if (SafePoint() == false || request.Instance >= 2 || request.Amount < 1 || request.Amount > 10)
     {
         return Status::NotReady;
     }
@@ -162,7 +162,7 @@ Status Session::Finish(Status status) noexcept
 
 Status Session::Resume(ResumeMode mode) noexcept
 {
-    if (!mPending)
+    if (mPending == false)
     {
         return Status::NotReady;
     }
@@ -181,7 +181,7 @@ int32 Session::Breakpoint(BreakpointSpec point) noexcept
         .Line = point.Line + mActive->FirstLine - 1,
         .Enabled = point.Enabled,
     });
-    if (resolved < 0 && mPending && !Vm().IsPaused())
+    if (resolved < 0 && mPending && Vm().IsPaused() == false)
     {
         mWorld.Faulted = true;
         mPending = false;
@@ -191,7 +191,7 @@ int32 Session::Breakpoint(BreakpointSpec point) noexcept
 
 Replacement Session::Prepare(const Package& package, std::string_view expected) noexcept
 {
-    if (!SafePoint())
+    if (SafePoint() == false)
     {
         return Replacement::NotSafePoint;
     }
@@ -200,15 +200,15 @@ Replacement Session::Prepare(const Package& package, std::string_view expected) 
     {
         return Replacement::Stale;
     }
-    if (!Trusted(package, mCatalog) || package.Revision <= mActive->Revision || package.Schema < mActive->Schema ||
-        std::strcmp(package.Pin, mActive->Pin) != 0 || std::strcmp(package.Contract, mActive->Contract) != 0 ||
-        mWorld.Execution == ~uint64{0})
+    if (Trusted(package, mCatalog) == false || package.Revision <= mActive->Revision ||
+        package.Schema < mActive->Schema || std::strcmp(package.Pin, mActive->Pin) != 0 ||
+        std::strcmp(package.Contract, mActive->Contract) != 0 || mWorld.Execution == ~uint64{0})
     {
         return Replacement::Rejected;
     }
     for (uint32 i = 0; i < 2; ++i)
     {
-        if (!RestoreState(Capture(mWorld.States[i], mActive->Schema), package, mMigrated[i]))
+        if (RestoreState(Capture(mWorld.States[i], mActive->Schema), package, mMigrated[i]) == false)
         {
             return Replacement::Rejected;
         }
@@ -228,7 +228,7 @@ Replacement Session::Prepare(const Package& package, std::string_view expected) 
 
 Replacement Session::Commit(std::string_view expected) noexcept
 {
-    if (!SafePoint())
+    if (SafePoint() == false)
     {
         return Replacement::NotSafePoint;
     }
@@ -268,7 +268,7 @@ void Session::Close() noexcept
 
 bool Session::Checkpoint(std::span<uint8> output, usize& written) const noexcept
 {
-    if (!SafePoint() || output.size() < 168)
+    if (SafePoint() == false || output.size() < 168)
     {
         return false;
     }
@@ -282,7 +282,7 @@ bool Session::Checkpoint(std::span<uint8> output, usize& written) const noexcept
     {
         const auto record = Capture(mWorld.States[i], mActive->Schema);
         usize size = 0;
-        if (!EncodeState(record, std::span<uint8>{bytes}.subspan(88 + static_cast<usize>(i) * 40, 40), size))
+        if (EncodeState(record, std::span<uint8>{bytes}.subspan(88 + static_cast<usize>(i) * 40, 40), size) == false)
         {
             return false;
         }
@@ -294,7 +294,7 @@ bool Session::Checkpoint(std::span<uint8> output, usize& written) const noexcept
 
 bool Session::Restore(std::span<const uint8> input) noexcept
 {
-    if (!SafePoint() || input.size() != 168)
+    if (SafePoint() == false || input.size() != 168)
     {
         return false;
     }
@@ -324,9 +324,9 @@ bool Session::Restore(std::span<const uint8> input) noexcept
     {
         StateRecord record;
         s1::State checked;
-        if (!DecodeState(input.subspan(88 + static_cast<usize>(i) * 40, 40), record) ||
-            record.Schema != source->Schema || !RestoreState(record, *source, checked) ||
-            !RestoreState(record, *mActive, states[i]))
+        if (DecodeState(input.subspan(88 + static_cast<usize>(i) * 40, 40), record) == false ||
+            record.Schema != source->Schema || RestoreState(record, *source, checked) == false ||
+            RestoreState(record, *mActive, states[i]) == false)
         {
             return false;
         }

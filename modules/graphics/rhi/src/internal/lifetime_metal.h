@@ -54,7 +54,7 @@ RasterStatus LifetimeMetalCopy(LifetimeMetalTransfer& transfer,
 } // namespace
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
-    return !gLifetimeMetal[readback ? 1 : 0][slot].Busy;
+    return gLifetimeMetal[readback ? 1 : 0][slot].Busy == false;
 }
 RasterStatus LifetimeUpload(usize transferSlot,
                             const BufferDescription&,
@@ -202,11 +202,11 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
 {
     auto& transfer = gLifetimeMetal[readback ? 1 : 0][slot];
-    if (!transfer.Busy || transfer.Command == nil)
+    if (transfer.Busy == false || transfer.Command == nil)
     {
         return RasterStatus::Failed;
     }
-    if (!CheckCommand(transfer.Command))
+    if (CheckCommand(transfer.Command) == false)
     {
         return RasterStatus::Failed;
     }

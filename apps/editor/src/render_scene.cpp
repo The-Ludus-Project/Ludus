@@ -159,7 +159,7 @@ bool Decode(const QByteArray& bytes, parsing::JsonDocument& document, QString& e
     limits.MaxStringBytes = 1024;
     if (document.Read({bytes.constData(), static_cast<usize>(bytes.size())}, diagnostic, limits) !=
             parsing::ParseStatus::Ok ||
-        !document.Root().Object())
+        document.Root().Object() == false)
     {
         return Fail(error, QStringLiteral("Invalid preview JSON, duplicate keys or document limits exceeded."));
     }
@@ -177,7 +177,7 @@ bool CopyJson(parsing::JsonValue source, QJsonValue& output)
             std::string_view key;
             parsing::JsonValue value;
             QJsonValue copy;
-            if (!source.MemberAt(i, key, value) || !CopyJson(value, copy))
+            if (source.MemberAt(i, key, value) == false || CopyJson(value, copy) == false)
             {
                 return false;
             }
@@ -192,7 +192,7 @@ bool CopyJson(parsing::JsonValue source, QJsonValue& output)
         for (usize i = 0; i < source.Count(); ++i)
         {
             QJsonValue copy;
-            if (!CopyJson(source.At(i), copy))
+            if (CopyJson(source.At(i), copy) == false)
             {
                 return false;
             }
@@ -230,7 +230,7 @@ bool Object(const QByteArray& bytes, QJsonObject& output, QString& error)
 {
     parsing::JsonDocument document;
     QJsonValue copy;
-    if (!Decode(bytes, document, error) || !CopyJson(document.Root(), copy))
+    if (Decode(bytes, document, error) == false || CopyJson(document.Root(), copy) == false)
     {
         return Fail(error, error.isEmpty() ? QStringLiteral("Preview values could not be copied.") : error);
     }
@@ -241,7 +241,7 @@ bool Fields(const QJsonObject& object, const QStringList& fields)
 {
     for (auto it = object.begin(); it != object.end(); ++it)
     {
-        if (!fields.contains(it.key()))
+        if (fields.contains(it.key()) == false)
         {
             return false;
         }
@@ -250,7 +250,8 @@ bool Fields(const QJsonObject& object, const QStringList& fields)
 }
 bool Number(const QJsonValue& value, float32& output)
 {
-    if (!value.isDouble() || !math::IsFinite(value.toDouble()) || value.toDouble() < -1e6 || value.toDouble() > 1e6)
+    if (value.isDouble() == false || math::IsFinite(value.toDouble()) == false || value.toDouble() < -1e6 ||
+        value.toDouble() > 1e6)
     {
         return false;
     }
@@ -260,23 +261,24 @@ bool Number(const QJsonValue& value, float32& output)
 bool Mesh(const QByteArray& bytes, PreviewMesh& mesh, QString& error)
 {
     parsing::JsonDocument document;
-    if (!Decode(bytes, document, error))
+    if (Decode(bytes, document, error) == false)
     {
         return false;
     }
     const auto object = document.Root();
     const auto positions = object.Get("positions"), uvs = object.Get("uvs"), indices = object.Get("indices");
     uint64 version = 0;
-    if (!object.Fields({"version", "positions", "uvs", "indices"}) || object.MemberCount() != 4 ||
-        !object.Get("version").Integer(version) || version != 1 || !positions.Array() || positions.Count() == 0 ||
-        positions.Count() > 4096 || !uvs.Array() || uvs.Count() != positions.Count() || !indices.Array() ||
-        indices.Count() == 0 || indices.Count() > 12288 || indices.Count() % 3 != 0)
+    if (object.Fields({"version", "positions", "uvs", "indices"}) == false || object.MemberCount() != 4 ||
+        object.Get("version").Integer(version) == false || version != 1 || positions.Array() == false ||
+        positions.Count() == 0 || positions.Count() > 4096 || uvs.Array() == false ||
+        uvs.Count() != positions.Count() || indices.Array() == false || indices.Count() == 0 ||
+        indices.Count() > 12288 || indices.Count() % 3 != 0)
     {
         return Fail(error, QStringLiteral("Mesh needs v1, 1–4096 XYZ positions, matching UVs and triangle indices."));
     }
     const auto number = [](parsing::JsonValue source, float32& output) {
         float64 value = 0;
-        if (!source.Number(value) || !math::IsFinite(value) || value < -1e6 || value > 1e6)
+        if (source.Number(value) == false || math::IsFinite(value) == false || value < -1e6 || value > 1e6)
         {
             return false;
         }
@@ -288,8 +290,9 @@ bool Mesh(const QByteArray& bytes, PreviewMesh& mesh, QString& error)
         const auto xyz = positions.At(i), uv = uvs.At(i);
         math::Vector3 p;
         math::Vector2 t;
-        if (!xyz.Array() || xyz.Count() != 3 || !uv.Array() || uv.Count() != 2 || !number(xyz.At(0), p.X) ||
-            !number(xyz.At(1), p.Y) || !number(xyz.At(2), p.Z) || !number(uv.At(0), t.X) || !number(uv.At(1), t.Y))
+        if (xyz.Array() == false || xyz.Count() != 3 || uv.Array() == false || uv.Count() != 2 ||
+            number(xyz.At(0), p.X) == false || number(xyz.At(1), p.Y) == false || number(xyz.At(2), p.Z) == false ||
+            number(uv.At(0), t.X) == false || number(uv.At(1), t.Y) == false)
         {
             return Fail(error, QStringLiteral("Mesh positions/UVs must be finite numbers within ±1,000,000."));
         }
@@ -299,7 +302,7 @@ bool Mesh(const QByteArray& bytes, PreviewMesh& mesh, QString& error)
     for (usize i = 0; i < indices.Count(); ++i)
     {
         uint64 index = 0;
-        if (!indices.At(i).Integer(index) || index >= positions.Count())
+        if (indices.At(i).Integer(index) == false || index >= positions.Count())
         {
             return Fail(
                 error,
@@ -320,8 +323,8 @@ bool Binding(const WorldDocument& world,
     const auto binding = descriptor.value(role).toObject();
     const auto component = world.Component(binding.value(QStringLiteral("component")).toString());
     const auto properties = binding.value(QStringLiteral("properties")).toObject();
-    if (!Fields(binding, {QStringLiteral("component"), QStringLiteral("properties")}) || component.isEmpty() ||
-        !Fields(properties, names))
+    if (Fields(binding, {QStringLiteral("component"), QStringLiteral("properties")}) == false || component.isEmpty() ||
+        Fields(properties, names) == false)
     {
         return Fail(error,
                     QStringLiteral("%1 binding must name a declared component and its semantic properties.").arg(role));
@@ -340,7 +343,7 @@ bool Binding(const WorldDocument& world,
                 found = true;
             }
         }
-        if (key.isEmpty() || used.contains(key) || !found)
+        if (key.isEmpty() || used.contains(key) || found == false)
         {
             return Fail(
                 error,
@@ -377,10 +380,11 @@ bool Transform(const QJsonObject& values, math::TransformTRS& output, QString& e
     float32 x = 0, y = 0, z = 0;
     math::Quaternion qx, qy, qz;
     const auto get = [&](const char* key, float32& v) { return Number(values.value(QString::fromLatin1(key)), v); };
-    if (!get("x", candidate.Translation.X) || !get("y", candidate.Translation.Y) ||
-        !get("z", candidate.Translation.Z) || !get("sx", candidate.Scale.X) || !get("sy", candidate.Scale.Y) ||
-        !get("sz", candidate.Scale.Z) || candidate.Scale.X <= 0 || candidate.Scale.Y <= 0 || candidate.Scale.Z <= 0 ||
-        !get("rx", x) || !get("ry", y) || !get("rz", z) ||
+    if (get("x", candidate.Translation.X) == false || get("y", candidate.Translation.Y) == false ||
+        get("z", candidate.Translation.Z) == false || get("sx", candidate.Scale.X) == false ||
+        get("sy", candidate.Scale.Y) == false || get("sz", candidate.Scale.Z) == false || candidate.Scale.X <= 0 ||
+        candidate.Scale.Y <= 0 || candidate.Scale.Z <= 0 || get("rx", x) == false || get("ry", y) == false ||
+        get("rz", z) == false ||
         math::TryFromAxisAngle({1, 0, 0}, x * 0.01745329252F, qx) != math::MathStatus::Success ||
         math::TryFromAxisAngle({0, 1, 0}, y * 0.01745329252F, qy) != math::MathStatus::Success ||
         math::TryFromAxisAngle({0, 0, 1}, z * 0.01745329252F, qz) != math::MathStatus::Success ||
@@ -410,9 +414,9 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
     const auto canonical = QFileInfo(root).canonicalFilePath();
     QByteArray bytes;
     QJsonObject descriptor;
-    if (!world.Loaded() || canonical.isEmpty() ||
-        !Read(canonical, QStringLiteral("authoring/render.preview.json"), bytes, error) ||
-        !Object(bytes, descriptor, error))
+    if (world.Loaded() == false || canonical.isEmpty() ||
+        Read(canonical, QStringLiteral("authoring/render.preview.json"), bytes, error) == false ||
+        Object(bytes, descriptor, error) == false)
     {
         return Fail(error,
                     error.isEmpty() ? QStringLiteral("Open a world in a project with authoring/render.preview.json.")
@@ -430,8 +434,8 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 QStringLiteral("textures")}) == false ||
         descriptor.value(QStringLiteral("version")) != QJsonValue(1) ||
         descriptor.value(QStringLiteral("schema")) != world.Schema().value(QStringLiteral("id")) ||
-        !descriptor.value(QStringLiteral("meshes")).isArray() ||
-        !descriptor.value(QStringLiteral("textures")).isArray())
+        descriptor.value(QStringLiteral("meshes")).isArray() == false ||
+        descriptor.value(QStringLiteral("textures")).isArray() == false)
     {
         return Fail(error,
                     QStringLiteral("Preview descriptor must use v1, this world schema and explicit bindings/assets."));
@@ -441,46 +445,46 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
     QJsonObject cameraBinding;
     QJsonObject lightBinding;
     const QString number = QStringLiteral("number");
-    if (!Binding(world,
+    if (Binding(world,
+                descriptor,
+                QStringLiteral("transform"),
+                {QStringLiteral("x"),
+                 QStringLiteral("y"),
+                 QStringLiteral("z"),
+                 QStringLiteral("rx"),
+                 QStringLiteral("ry"),
+                 QStringLiteral("rz"),
+                 QStringLiteral("sx"),
+                 QStringLiteral("sy"),
+                 QStringLiteral("sz")},
+                {number, number, number, number, number, number, number, number, number},
+                transform,
+                error) == false ||
+        Binding(world,
+                descriptor,
+                QStringLiteral("renderable"),
+                {QStringLiteral("mesh"),
+                 QStringLiteral("texture"),
+                 QStringLiteral("visible"),
+                 QStringLiteral("r"),
+                 QStringLiteral("g"),
+                 QStringLiteral("b")},
+                {QStringLiteral("asset"), QStringLiteral("asset"), QStringLiteral("boolean"), number, number, number},
+                renderable,
+                error) == false ||
+        (descriptor.value(QStringLiteral("camera")).isNull() == false &&
+         Binding(world,
                  descriptor,
-                 QStringLiteral("transform"),
-                 {QStringLiteral("x"),
-                  QStringLiteral("y"),
-                  QStringLiteral("z"),
-                  QStringLiteral("rx"),
-                  QStringLiteral("ry"),
-                  QStringLiteral("rz"),
-                  QStringLiteral("sx"),
-                  QStringLiteral("sy"),
-                  QStringLiteral("sz")},
-                 {number, number, number, number, number, number, number, number, number},
-                 transform,
-                 error) ||
-        !Binding(world,
-                 descriptor,
-                 QStringLiteral("renderable"),
-                 {QStringLiteral("mesh"),
-                  QStringLiteral("texture"),
-                  QStringLiteral("visible"),
-                  QStringLiteral("r"),
-                  QStringLiteral("g"),
-                  QStringLiteral("b")},
-                 {QStringLiteral("asset"), QStringLiteral("asset"), QStringLiteral("boolean"), number, number, number},
-                 renderable,
-                 error) ||
-        (!descriptor.value(QStringLiteral("camera")).isNull() &&
-         !Binding(world,
-                  descriptor,
-                  QStringLiteral("camera"),
-                  {QStringLiteral("projection"),
-                   QStringLiteral("fov"),
-                   QStringLiteral("span"),
-                   QStringLiteral("near"),
-                   QStringLiteral("far"),
-                   QStringLiteral("follow")},
-                  {QStringLiteral("enum"), number, number, number, number, QStringLiteral("entity")},
-                  cameraBinding,
-                  error)))
+                 QStringLiteral("camera"),
+                 {QStringLiteral("projection"),
+                  QStringLiteral("fov"),
+                  QStringLiteral("span"),
+                  QStringLiteral("near"),
+                  QStringLiteral("far"),
+                  QStringLiteral("follow")},
+                 {QStringLiteral("enum"), number, number, number, number, QStringLiteral("entity")},
+                 cameraBinding,
+                 error) == false))
     {
         return false;
     }
@@ -552,7 +556,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 (void)buffer.open(QIODevice::ReadOnly);
                 QImageReader reader(&buffer, QByteArrayLiteral("png"));
                 const auto size = reader.size();
-                if (!size.isValid() || size.width() > 2048 || size.height() > 2048)
+                if (size.isValid() == false || size.width() > 2048 || size.height() > 2048)
                 {
                     return Fail(error, QStringLiteral("%1: PNG preview must be 1–2048 pixels per axis.").arg(id));
                 }
@@ -567,7 +571,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
             {
                 PreviewMesh mesh;
                 mesh.Id = id;
-                if (!Mesh(bytes, mesh, error))
+                if (Mesh(bytes, mesh, error) == false)
                 {
                     error = id + QStringLiteral(": ") + error;
                     return false;
@@ -595,7 +599,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
         const QString id = world.GetEntityKey(entity);
         const auto name = entity.value(QStringLiteral("name")).toString();
         math::TransformTRS trs;
-        if (!Attached(entity, transform) || !Transform(Values(entity, transform), trs, error))
+        if (Attached(entity, transform) == false || Transform(Values(entity, transform), trs, error) == false)
         {
             return Fail(error, name + QStringLiteral(": missing or invalid transform. ") + error);
         }
@@ -652,10 +656,10 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 object.Mesh = Find(candidate.Meshes, values.value(QStringLiteral("mesh")).toString());
                 const auto textureId = values.value(QStringLiteral("texture")).toString();
                 object.Texture = textureId.isEmpty() ? -1 : Find(candidate.Textures, textureId);
-                if (object.Mesh < 0 || (!textureId.isEmpty() && object.Texture < 0) ||
-                    !Number(values.value(QStringLiteral("r")), object.Tint.X) ||
-                    !Number(values.value(QStringLiteral("g")), object.Tint.Y) ||
-                    !Number(values.value(QStringLiteral("b")), object.Tint.Z) || object.Tint.X < 0 ||
+                if (object.Mesh < 0 || (textureId.isEmpty() == false && object.Texture < 0) ||
+                    Number(values.value(QStringLiteral("r")), object.Tint.X) == false ||
+                    Number(values.value(QStringLiteral("g")), object.Tint.Y) == false ||
+                    Number(values.value(QStringLiteral("b")), object.Tint.Z) == false || object.Tint.X < 0 ||
                     object.Tint.X > 1 || object.Tint.Y < 0 || object.Tint.Y > 1 || object.Tint.Z < 0 ||
                     object.Tint.Z > 1 || math::TryToAffine3(trs, 1e-4F, object.Transform) != math::MathStatus::Success)
                 {
@@ -687,11 +691,12 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 for (const auto vertex : candidate.Meshes[object.Mesh].Positions)
                 {
                     const auto p = math::TransformPoint(object.Transform, vertex);
-                    if (!math::IsFinite(p) || math::Abs(p.X) > 1e6F || math::Abs(p.Y) > 1e6F || math::Abs(p.Z) > 1e6F)
+                    if (math::IsFinite(p) == false || math::Abs(p.X) > 1e6F || math::Abs(p.Y) > 1e6F ||
+                        math::Abs(p.Z) > 1e6F)
                     {
                         return Fail(error, name + QStringLiteral(": transformed geometry exceeds preview bounds."));
                     }
-                    if (!bounds)
+                    if (bounds == false)
                     {
                         low = high = p;
                         bounds = true;
@@ -722,21 +727,21 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                                                             : camera::CameraProjection::OrthographicFinite;
             if ((projection != QStringLiteral("perspective") && projection != QStringLiteral("infinite") &&
                  projection != QStringLiteral("orthographic")) ||
-                !Number(values.value(QStringLiteral("fov")), definition.Lens.VerticalFov) ||
-                !Number(values.value(QStringLiteral("span")), definition.Lens.VerticalSpan) ||
-                !Number(values.value(QStringLiteral("near")), definition.Lens.NearPlane) ||
-                !Number(values.value(QStringLiteral("far")), definition.Lens.FarPlane))
+                Number(values.value(QStringLiteral("fov")), definition.Lens.VerticalFov) == false ||
+                Number(values.value(QStringLiteral("span")), definition.Lens.VerticalSpan) == false ||
+                Number(values.value(QStringLiteral("near")), definition.Lens.NearPlane) == false ||
+                Number(values.value(QStringLiteral("far")), definition.Lens.FarPlane) == false)
             {
                 return Fail(error, name + QStringLiteral(": invalid camera lens."));
             }
             definition.Lens.VerticalFov *= 0.01745329252F;
             camera::CameraTargetSample target;
             const auto follow = values.value(QStringLiteral("follow")).toString();
-            if (!follow.isEmpty())
+            if (follow.isEmpty() == false)
             {
                 const auto e = world.Entity(follow);
                 math::TransformTRS targetTransform;
-                if (!Attached(e, transform) || !Transform(Values(e, transform), targetTransform, error))
+                if (Attached(e, transform) == false || Transform(Values(e, transform), targetTransform, error) == false)
                 {
                     return Fail(error, name + QStringLiteral(": follow target needs a valid transform."));
                 }
@@ -930,7 +935,7 @@ bool RenderScene::Merge(const RenderScene& authored,
 {
     if (authored.Objects.isEmpty() == true && authored.AuthoredLights.Count == 0)
     {
-        if (!cooked.isEmpty())
+        if (cooked.isEmpty() == false)
         {
             return LoadCooked(cooked, level, output, error, revisions);
         }
@@ -939,9 +944,10 @@ bool RenderScene::Merge(const RenderScene& authored,
         return true;
     }
     resources::SceneDefinition imported;
-    if (!cooked.isEmpty() && resources::SceneDefinition::Decode(reinterpret_cast<const uint8*>(cooked.constData()),
-                                                                static_cast<usize>(cooked.size()),
-                                                                imported) != resources::Status::Ok)
+    if (cooked.isEmpty() == false &&
+        resources::SceneDefinition::Decode(reinterpret_cast<const uint8*>(cooked.constData()),
+                                           static_cast<usize>(cooked.size()),
+                                           imported) != resources::Status::Ok)
     {
         return Fail(error, QStringLiteral("Invalid imported scene during World composition."));
     }
@@ -1219,11 +1225,11 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         bindings.append(QJsonObject{{QStringLiteral("id"), object.value(QStringLiteral("id"))},
                                     {QStringLiteral("mesh"), mesh},
                                     {QStringLiteral("material"), material}});
-        if (!resourceIds.contains(mesh))
+        if (resourceIds.contains(mesh) == false)
         {
             resourceIds.append(mesh);
         }
-        if (!resourceIds.contains(material))
+        if (resourceIds.contains(material) == false)
         {
             resourceIds.append(material);
         }

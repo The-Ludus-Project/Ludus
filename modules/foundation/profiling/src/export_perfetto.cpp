@@ -160,7 +160,7 @@ void AppendThreadName(std::string& inoutJson, bool& inoutIsFirst, uint32 threadI
 
 void AppendEventObject(std::string& out, bool& first, const ChromeEvent& event) noexcept
 {
-    if (!first)
+    if (first == false)
     {
         out += ",\n";
     }
@@ -244,20 +244,20 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
     }
 
     foundation::Array<FlatEvent> scratch;
-    if (!scratch.TryResize(events.GetSize()))
+    if (scratch.TryResize(events.GetSize()) == false)
     {
         return false;
     }
-    if (!foundation::StableSort(events.GetData(),
-                                scratch.GetData(),
-                                events.GetSize(),
-                                [](const FlatEvent& a, const FlatEvent& b) noexcept {
-                                    if (a.ThreadId != b.ThreadId)
-                                    {
-                                        return a.ThreadId < b.ThreadId;
-                                    }
-                                    return a.Ticks < b.Ticks;
-                                }))
+    if (foundation::StableSort(events.GetData(),
+                               scratch.GetData(),
+                               events.GetSize(),
+                               [](const FlatEvent& a, const FlatEvent& b) noexcept {
+                                   if (a.ThreadId != b.ThreadId)
+                                   {
+                                       return a.ThreadId < b.ThreadId;
+                                   }
+                                   return a.Ticks < b.Ticks;
+                               }) == false)
     {
         return false;
     }

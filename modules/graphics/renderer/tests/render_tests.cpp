@@ -374,7 +374,7 @@ TEST_CASE("L2 R8 coverage orientation, painter scissors and clipped thick lines 
     const auto published = atlas.Publish(device, texture);
     REQUIRE((published == rhi::RasterStatus::Ready || published == rhi::RasterStatus::Pending));
     bool textureReady = false;
-    for (usize i = 0; i < 100000 && !textureReady; ++i)
+    for (usize i = 0; i < 100000 && textureReady == false; ++i)
     {
         REQUIRE(overlays.Poll() == rhi::RasterStatus::Ready);
         const auto status = rhi::GetStatus(device, texture);
@@ -387,7 +387,7 @@ TEST_CASE("L2 R8 coverage orientation, painter scissors and clipped thick lines 
     REQUIRE((preparedStatus == rhi::RasterStatus::Ready || preparedStatus == rhi::RasterStatus::Pending));
     // Bounded nonblocking poll; native transfer completion may lag submission.
     bool ready = false;
-    for (usize i = 0; i < 100000 && !ready; ++i)
+    for (usize i = 0; i < 100000 && ready == false; ++i)
     {
         REQUIRE(overlays.Poll() == rhi::RasterStatus::Ready);
         const auto status = overlays.GetStatus(prepared);

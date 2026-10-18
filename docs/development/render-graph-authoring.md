@@ -15,8 +15,8 @@ in-editor preview are RG3b.
 **RG0 plans are contract diagnostics, not executable renderer packages.** They
 do not compile shaders, evaluate scene draw-item coverage, negotiate device
 capabilities or render pixels. Those checks are reported as pending. RG1 builds shader packages; RG2 owns
-Renderer/RHI integration. `DefaultOpaque` and `RendererStatic` identify the
-qualified static override profile described below; arbitrary mesh/material
+Renderer/RHI integration. `DefaultOpaque`, `DefaultMasked` and `RendererStatic`
+identify the qualified static profile described below; arbitrary mesh/material
 compatibility is never inferred from those labels.
 
 ## Create a saved graph and import it
@@ -127,7 +127,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | Scene | None | Outputs `scene: Scene`; declares a future scene-snapshot binding |
 | Camera | `active`, `role` (`Presentation` or `Offscreen`), `target_type` | Input `target` of the specified texture type; output `view: View`. An inactive camera may leave target unbound and needs no route, but cannot drive a raster pass |
 | Target | `type`, `format`, `extent: [width, height]`, `samples`, `imported`, `initialized`, `presentation` | Outputs `texture` of the specified texture type; names physical resource version 0 |
-| Raster | `mode`, `vertex_layout: RendererStatic`, `material: DefaultOpaque`, `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
+| Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
 | Subgraph | `asset`, `configuration` | Selected asset interface defines its input/output ports |
 | Export | `type` | Input `texture` matching ColorTexture or DepthTexture; external output root |
 | Present | None | Input `color: ColorTexture`; root for the written version of an imported presentation target |
@@ -275,7 +275,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `profiles` | Nonempty, unique list of admitted targets; all are built |
 | `schemas` | At most 16 named `Uniform`, `Vertex` or `Varying` schemas; at most 16 fields each |
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
-| `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth` and/or `.DepthOnly` mappings and legal pipeline recipes |
+| `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
 | `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
 
 Identifiers use 1–63 ASCII letters/digits/underscores and start with a letter;
@@ -303,7 +303,10 @@ float4 PSMain(RasterVarying value)
 ```
 
 Each technique declares `id`, `configuration`, `vertex`, `fragment` and nonempty
-`recipes`. The starter manifest shows the entire source format. Every program
+`recipes`. A graph raster with `material: DefaultMasked` selects the
+`DefaultStaticMasked` technique of its mode. When both depth-only techniques are
+declared, `DefaultStaticMasked.DepthOnly` must name its own authored coverage
+program rather than the opaque void depth program. The starter manifest shows the entire source format. Every program
 belongs to a technique; unknown, implicit or wrong-stage selections fail.
 All root graph configurations and their import interfaces are validated, and
 selected graph techniques must appear in the build manifest. Both authored
@@ -434,9 +437,9 @@ already declared DepthOnly technique. Neither disconnecting color nor
 `emit-runtime` invents shader programs. Both declared techniques still enter the
 bounded offline build; the generated execution header includes only selected
 stages. A nonvoid depth function rejects at shader compilation instead of silently
-discarding its return value. Scalar/vector RG1 layouts remain available through
-ordinary `new-build`; they require their own runtime binding integration and are
-rejected by this initial static executor.
+discarding its return value. Generic `new-build` manifests (clip-space starter
+inputs) still reject; executed techniques keep the `RendererStatic` instance
+interface and may add the per-draw uniform bindings described below.
 
 The source and installed SDK expose the same build helper:
 
@@ -535,19 +538,86 @@ allocation as well. Resize, foreign image import and history need another
 qualified profile/generation; they reject here instead of silently changing
 allocation identity. Reset before destroying the device.
 
-The first profile is bounded to 16 passes, 32 logical resources, 8 cameras,
-128 draw items and 32 meshes. It qualifies RGBA8/Depth32, single-sample static
-opaque default-material override, TriangleList, no culling, counter-clockwise
-front, conventional Less/depth-write, no bound uniforms. A depth export does not
-establish pre-Z equivalence for later shading with another comparison, alpha,
-custom depth or deformation path. Arbitrary programs with those semantics require
-explicit author qualification and parity fixtures. Renderer prewarms additional
+The profile is bounded to 16 passes, 32 logical resources, 8 cameras, 128 draw
+items and 32 meshes. It qualifies RGBA8/Depth32, single-sample static geometry,
+TriangleList, no culling, counter-clockwise front and conventional
+Less/depth-write, for the opaque and explicitly authored masked families. A depth
+export does not establish pre-Z equivalence for later shading with another
+comparison, transparency, custom depth or deformation path. Arbitrary programs
+with those semantics require explicit author qualification and parity fixtures.
+
+### Per-draw uniform values
+
+Add RG1 uniform bindings to the techniques' programs in a `--renderer-static`
+manifest. Fields are `Float32`–`Float4` in slots 0–7, as in RG1. The emitted
+header exports `UNIFORM_VALUE_COUNT` and one `UNIFORM_VALUE_<SCHEMA>_<FIELD>`
+offset per schema field, for example:
+
+```cpp
+ludus::foundation::StaticArray<ludus::foundation::float32, RasterGraph::UNIFORM_VALUE_COUNT> values{};
+values[RasterGraph::UNIFORM_VALUE_MATERIAL_TINT + 0] = 1; // Tint is Float3.
+values[RasterGraph::UNIFORM_VALUE_MATERIAL_GAIN] = .5F;
+item.Uniforms = {values.GetData(), values.GetSize()};
+```
+
+Values are grouped by uniform schema in identifier order; techniques reading one
+schema share its values. Every item that is not intentionally excluded must supply
+exactly `UNIFORM_VALUE_COUNT` finite values. An unbound plan requires none. Values
+are copied before Update returns. Renderer packs them with the selected backend's
+reflected layout: Metal, SPIR-V, WGSL or GLSL ES, never by reinterpreting a host
+struct. Equal value sets share one immutable uniform buffer and binding snapshot
+and stay instanced. Each bound technique admits at most 16 distinct sets per
+extraction; more return CapacityExceeded and preserve the drawable scene. Each
+item carries at most 64 logical values, a plan at most 16 bindings, and each block
+at most 1024 bytes. A vertex and fragment stage may share a slot only with an
+identical schema and layout. Changing values republishes the extraction and never
+creates a shader or pipeline. The diagnostic magenta route is unavailable when the
+opaque color technique binds uniforms, because it cannot honor the instance color.
+Coverage stays Unsupported. Per-view values, matrices, arrays, textures and storage
+bindings remain unqualified.
+
+### Masked coverage
+
+Declare `material: DefaultMasked` on the graph raster and author both
+`DefaultStaticMasked` techniques. Share the coverage function between their
+fragments through an include, and give the depth-only fragment its own program.
+The checked-in [masked fixtures](../../tests/sdk_consumer/rg2/masked_color/main.lushader.json.in)
+discard by a per-draw mesh-space threshold:
+
+```slang
+void ApplyCoverage(RasterVarying value)
+{
+    if (value.PositionMesh.x < mask.Threshold)
+    {
+        discard;
+    }
+}
+```
+
+Masked techniques cover only items declared `RenderGraphMaterial::Masked`, and
+opaque techniques cover only `Opaque` items. A graph with both families serves
+mixed scenes, each item drawn only by its own family's passes. `Transparent`,
+`Unsupported` and deformation contracts are still rejected under either family.
+Renderer rejects a masked depth-only fragment identical to the opaque depth
+fragment, or a masked geometry stage that differs between the masked techniques. Renderer prewarms additional
 finite built-in state combinations; these physical PSOs are separate from RG1’s
 authored recipe budget. RG2 makes no scheduling/memory/performance improvement
 claim. Interactive editor adoption, graph editing and reload are RG3.
 
 `test_render_graph_execution` checks lowering, rejection, deterministic header
-publication, profile bounds and the RG1 nested-root/packer-name regressions.
+publication, profile bounds and the RG1 nested-root/packer-name regressions. It
+also checks uniform table lowering, merged stage slots, the interface identity
+changing with uniform schemas and layouts, masked technique lowering, masked
+coverage needing its own depth function, and still-rejected transparent
+materials, deformation layouts and masked plans without masked techniques.
+Renderer `[render-graph]` unit tests cover per-draw packing for the selected
+target, set deduplication and its bound, incomplete or nonfinite values,
+mismatched stage interfaces, malformed and missing target layouts, masked family
+coverage, mixed opaque/masked views, and masked depth/geometry admission. Native
+GPU tests render the `bound` fixture's per-draw values, compare its cooked
+`.lurgrt` uniform tables and pixels with the compiled header, and require the
+`masked_color` and `masked_depth` exports to agree byte for byte in depth and
+pixel for pixel in coverage.
 Renderer’s deterministic tests cover mixed material slots, visibility-independent
 coverage, missing/conflicting routes, streaming readiness/failure and preserved
 revisions, resize preflight and export initialization/completion. Native GPU tests
@@ -643,8 +713,10 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h`. `emit-runtime` headers
-now also export `INTERFACE_IDENTITY`. With CMake, add `RUNTIME_PACKAGE` to
+`ludus/content/render_graph_format/runtime_package.h` (layout version 2, with
+uniform binding/block/field records and GLSL ES block names). `emit-runtime`
+headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
+interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to
 `ludus_compile_render_graph`; it sets `<NAME>_RUNTIME_PACKAGE` to the cooked file.
 
 At runtime, decode the file into a `RenderGraphPackage` (bytes are copied, so the
@@ -721,10 +793,13 @@ What each fixture establishes:
   `INTERFACE_IDENTITY`. The installed CLI also runs `schema-diff`.
 - The installed runtime consumer (`tests/sdk_consumer/render_graph_runtime.cpp`)
   is built against the installed SDK for the host's single target: Metal, SPIR-V,
-  or WGSL in the browser. It renders the cooked offscreen graph from its compiled
-  header, then decodes the embedded `.lurgrt` and activates it twice. After each
-  activation it reads the exported color back through the RHI and compares every
-  byte with the compiled-header frame.
+  or WGSL in the browser. It qualifies two cooked offscreen graphs in turn: the
+  opaque static graph, and the `masked_color` graph, whose authored masked
+  coverage reads a per-draw uniform value. For each graph it renders the compiled
+  header's frame, then decodes the embedded `.lurgrt` and activates it twice. After
+  each activation it reads the exported color back through the RHI and compares
+  every byte with the compiled-header frame. The masked graph must also keep its
+  covered half and leave the discarded half at the cleared background.
 - Editor `[render-graph]` tests cover canonical JSON bytes, draft/save separation,
   undo coalescing, save conflicts, snapshots and diagnostic navigation. They run
   the real CLI to check that the editor and CLI produce the same plan and the same

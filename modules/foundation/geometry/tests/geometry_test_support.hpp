@@ -9,6 +9,8 @@
 #include <ludus/foundation/geometry/frame.hpp>
 #include <ludus/foundation/geometry/path.hpp>
 #include <ludus/foundation/geometry/status.hpp>
+#include <ludus/foundation/geometry/surface.hpp>
+#include <ludus/foundation/geometry/tessellation.hpp>
 
 #include <curves_surfaces/reference_fixtures.hpp>
 
@@ -56,6 +58,7 @@ inline constexpr usize CORPUS_QUERY_ITERATIONS = 256;
         .MaxSubdivisions = CORPUS_WORK_LIMIT,
         .MaxIterations = CORPUS_QUERY_ITERATIONS,
         .MaxPreparedBytes = CORPUS_WORK_LIMIT * 256U,
+        .MaxPatches = CORPUS_WORK_LIMIT,
     };
 }
 
@@ -185,5 +188,73 @@ PrepareStoredSpans(usize spanCount, bool isClosed, PreparedFixture& inoutFixture
     WorkLimits limits = MakeLimits();
     limits.MaxDepth = FRAME_TEST_DEPTH;
     return FramePreparation{ .SeedUp = seedUp, .Limits = limits };
+}
+
+/// Patch corpus fixture by name; the first fixture when the name is unknown.
+[[nodiscard]] inline const fixtures::PatchFixture& FindPatch(const char* name) noexcept
+{
+    for (const fixtures::PatchFixture& fixture : fixtures::PATCH_FIXTURES)
+    {
+        if (std::strcmp(fixture.Name, name) == 0)
+        {
+            return fixture;
+        }
+    }
+    return fixtures::PATCH_FIXTURES[0];
+}
+
+/// One source patch from a corpus fixture's exact float32 controls.
+[[nodiscard]] inline SurfacePatchSource MakePatchSource(const fixtures::PatchFixture& fixture, uint64 id) noexcept
+{
+    SurfacePatchSource patch;
+    patch.Id = id;
+    for (usize i = 0; i < PATCH_CONTROL_ORDER; ++i)
+    {
+        for (usize j = 0; j < PATCH_CONTROL_ORDER; ++j)
+        {
+            patch.Control[i][j] = ToVector(fixture.Control[i][j]);
+        }
+    }
+    return patch;
+}
+
+[[nodiscard]] inline SurfacePreparation MakeSurfacePreparation() noexcept
+{
+    return SurfacePreparation{ .Tolerance = MakeProfile(), .Limits = MakeLimits() };
+}
+
+/// Prepare a surface from borrowed patches and adjacency records at the origin.
+[[nodiscard]] inline GeometryStatus PrepareSurface(BorrowedView<const SurfacePatchSource> patches,
+                                                   BorrowedView<const SurfaceAdjacencySource> adjacency,
+                                                   PreparedSurface& outSurface,
+                                                   GeometryDiagnostic* outDiagnosticOrNull = nullptr) noexcept
+{
+    const SurfaceSource source{ .Patches = patches, .Adjacency = adjacency, .Revision = 7 };
+    return TryPrepareSurface(source, MakeSurfacePreparation(), outSurface, outDiagnosticOrNull);
+}
+
+/// Generous mesh budgets for corpus tests.
+[[nodiscard]] inline SurfaceMeshLimits MakeMeshLimits(usize maxLevel) noexcept
+{
+    return SurfaceMeshLimits
+    {
+        .MaxLevel = maxLevel,
+        .MaxCellTests = CORPUS_WORK_LIMIT * 16U,
+        .MaxVertices = CORPUS_WORK_LIMIT,
+        .MaxTriangles = CORPUS_WORK_LIMIT,
+        .MaxOutputBytes = CORPUS_WORK_LIMIT * 256U,
+    };
+}
+
+/// Strict mesh profile with the given position error and level limit.
+[[nodiscard]] inline SurfaceMeshProfile MakeMeshProfile(float64 positionError, usize maxLevel) noexcept
+{
+    return SurfaceMeshProfile
+    {
+        .Precision = PrecisionProfile::Strict,
+        .PositionError = positionError,
+        .Degeneracy = SurfaceDegeneracyPolicy::Report,
+        .Limits = MakeMeshLimits(maxLevel),
+    };
 }
 } // namespace ludus::foundation::geometry::test_support

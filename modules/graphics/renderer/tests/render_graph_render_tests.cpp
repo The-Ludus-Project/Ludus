@@ -1,7 +1,10 @@
 #include "internal/readback.h"
 #include "renderer_composite.h"
+#include "rg2_bound.h"
 #include "rg2_depth.h"
 #include "rg2_depth_display.h"
+#include "rg2_masked_color.h"
+#include "rg2_masked_depth.h"
 #include "rg2_offscreen.h"
 #include "rg2_surface.h"
 
@@ -19,6 +22,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <new>
+#include <string_view>
 
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
@@ -92,13 +96,20 @@ struct GraphGpuFixture final
         REQUIRE(rhi::backend::ReadHeadlessPixels(Pixels.AsSpan()) == true);
     }
 };
-/// Read the build-tree runtime generation cooked by ludus_compile_render_graph(... RUNTIME_PACKAGE).
-core::UniquePtr<renderer::RenderGraphPackage> LoadSurfacePackage()
+/// Build-tree location of one runtime generation cooked by ludus_compile_render_graph(... RUNTIME_PACKAGE).
+struct PackageLocation final
+{
+    std::string_view Directory; ///< Absolute output directory of the graph.
+    std::string_view File;      ///< `<NAME>.lurgrt` inside Directory.
+};
+constexpr PackageLocation SURFACE_PACKAGE{LUDUS_RG3_SURFACE_DIRECTORY, "rg2_surface.lurgrt"};
+constexpr PackageLocation BOUND_PACKAGE{LUDUS_RG3_BOUND_DIRECTORY, "rg2_bound.lurgrt"};
+core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation& location)
 {
     filesystem::Directory directory;
-    REQUIRE(directory.Open(LUDUS_RG3_SURFACE_DIRECTORY).Succeeded() == true);
+    REQUIRE(directory.Open(location.Directory).Succeeded() == true);
     filesystem::File file;
-    REQUIRE(directory.OpenRead("rg2_surface.lurgrt", file).Succeeded() == true);
+    REQUIRE(directory.OpenRead(location.File, file).Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
     const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
@@ -109,6 +120,10 @@ core::UniquePtr<renderer::RenderGraphPackage> LoadSurfacePackage()
     REQUIRE(package.Get() != nullptr);
     REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
     return package;
+}
+core::UniquePtr<renderer::RenderGraphPackage> LoadSurfacePackage()
+{
+    return LoadPackage(SURFACE_PACKAGE);
 }
 /// Compare one runtime stage description with the compiled header's, target by target.
 void CheckSameStage(const rhi::RasterShaderDescription& runtime, const rhi::RasterShaderDescription& compiled)
@@ -132,7 +147,118 @@ void CheckSameStage(const rhi::RasterShaderDescription& runtime, const rhi::Rast
         CHECK(runtime.Inputs[input].Location == compiled.Inputs[input].Location);
         CHECK(runtime.Inputs[input].Format == compiled.Inputs[input].Format);
     }
-    CHECK(runtime.Bindings.size() == compiled.Bindings.size());
+    REQUIRE(runtime.Bindings.size() == compiled.Bindings.size());
+    for (usize binding = 0; binding < compiled.Bindings.size(); ++binding)
+    {
+        CHECK(runtime.Bindings[binding].Binding == compiled.Bindings[binding].Binding);
+        CHECK(runtime.Bindings[binding].Kind == compiled.Bindings[binding].Kind);
+        CHECK(runtime.Bindings[binding].Visibility == compiled.Bindings[binding].Visibility);
+        CHECK(runtime.Bindings[binding].MinSize == compiled.Bindings[binding].MinSize);
+    }
+    for (usize slot = 0; slot < format::UNIFORM_SLOT_COUNT; ++slot)
+    {
+        CHECK(runtime.UniformBlocks[slot] == compiled.UniformBlocks[slot]);
+    }
+}
+/// Compare every numeric uniform record of a decoded generation with its compiled header.
+void CheckSameUniforms(const renderer::RenderGraphPlan& runtime, const renderer::RenderGraphPlan& compiled)
+{
+    CHECK(runtime.Description.UniformValueCount == compiled.Description.UniformValueCount);
+    REQUIRE(runtime.UniformBindings.GetSize() == compiled.UniformBindings.GetSize());
+    for (usize i = 0; i < compiled.UniformBindings.GetSize(); ++i)
+    {
+        CHECK(runtime.UniformBindings[i].Program == compiled.UniformBindings[i].Program);
+        CHECK(runtime.UniformBindings[i].Slot == compiled.UniformBindings[i].Slot);
+        CHECK(runtime.UniformBindings[i].Stages == compiled.UniformBindings[i].Stages);
+        CHECK(runtime.UniformBindings[i].ValueOffset == compiled.UniformBindings[i].ValueOffset);
+        CHECK(runtime.UniformBindings[i].ValueCount == compiled.UniformBindings[i].ValueCount);
+    }
+    REQUIRE(runtime.UniformBlocks.GetSize() == compiled.UniformBlocks.GetSize());
+    for (usize i = 0; i < compiled.UniformBlocks.GetSize(); ++i)
+    {
+        CHECK(runtime.UniformBlocks[i].Binding == compiled.UniformBlocks[i].Binding);
+        CHECK(runtime.UniformBlocks[i].Target == compiled.UniformBlocks[i].Target);
+        CHECK(runtime.UniformBlocks[i].Size == compiled.UniformBlocks[i].Size);
+    }
+    REQUIRE(runtime.UniformFields.GetSize() == compiled.UniformFields.GetSize());
+    for (usize i = 0; i < compiled.UniformFields.GetSize(); ++i)
+    {
+        CHECK(runtime.UniformFields[i].Binding == compiled.UniformFields[i].Binding);
+        CHECK(runtime.UniformFields[i].Target == compiled.UniformFields[i].Target);
+        CHECK(runtime.UniformFields[i].ValueOffset == compiled.UniformFields[i].ValueOffset);
+        CHECK(runtime.UniformFields[i].Components == compiled.UniformFields[i].Components);
+        CHECK(runtime.UniformFields[i].ByteOffset == compiled.UniformFields[i].ByteOffset);
+    }
+}
+/// Draw a sampled depth aspect into the surface with the depth display recipe and read it back.
+struct DepthDisplay final
+{
+    rhi::DeviceHandle Device{};
+    rhi::BindingLayoutHandle Layout{};
+    rhi::RasterPipelineHandle Pipeline{};
+    rhi::BufferHandle Vertices{};
+    rhi::BufferHandle Indices{};
+    explicit DepthDisplay(rhi::DeviceHandle device) : Device(device)
+    {
+        const rhi::RasterShaderDescription vertex = shaders::rg2_depth_display::Vertex();
+        const rhi::RasterShaderDescription fragment = shaders::rg2_depth_display::Fragment();
+        rhi::RasterShaderHandle vertexHandle;
+        rhi::RasterShaderHandle fragmentHandle;
+        REQUIRE(rhi::CreateRasterShader(Device, vertex, vertexHandle) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateRasterShader(Device, fragment, fragmentHandle) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateBindingLayout(Device, fragment.Bindings, Layout) == rhi::RasterStatus::Ready);
+        const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{sizeof(math::Vector4), false}}};
+        const StaticArray<rhi::RasterVertexAttribute, ATTRIBUTE_COUNT> attributes{
+            {{0, 0, 0, rhi::RasterVertexFormat::Float4}}};
+        rhi::RasterPipelineDescription description;
+        description.Vertex = vertexHandle;
+        description.Fragment = fragmentHandle;
+        description.Layout = Layout;
+        description.Streams = streams.AsSpan();
+        description.Attributes = attributes.AsSpan();
+        REQUIRE(rhi::CreateRasterPipeline(Device, description, Pipeline) == rhi::RasterStatus::Ready);
+        const StaticArray<math::Vector4, VERTEX_COUNT> positions{{{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}}};
+        const StaticArray<uint32, INDEX_COUNT> indices{{0, 1, 2}};
+        REQUIRE(rhi::CreateBuffer(Device,
+                                  {rhi::BufferRole::Vertex, sizeof(positions)},
+                                  {reinterpret_cast<const uint8*>(positions.GetData()), sizeof(positions)},
+                                  Vertices) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CreateBuffer(Device,
+                                  {rhi::BufferRole::Index32, sizeof(indices)},
+                                  {reinterpret_cast<const uint8*>(indices.GetData()), sizeof(indices)},
+                                  Indices) == rhi::RasterStatus::Ready);
+    }
+    void Show(rhi::SurfaceHandle surface, rhi::TextureHandle texture, StaticArray<uint8, PIXEL_BYTES>& outPixels)
+    {
+        rhi::TextureViewHandle depth;
+        REQUIRE(rhi::CreateTextureView(Device, texture, { .Aspect = rhi::TextureAspect::Depth }, depth) ==
+                rhi::RasterStatus::Ready);
+        const rhi::RasterBindingResource resource{ .Texture = depth };
+        rhi::BindingSetHandle set;
+        REQUIRE(rhi::CreateBindingSet(Device, Layout, {&resource, 1}, set) == rhi::RasterStatus::Ready);
+        const rhi::RasterVertexSlice slice{Vertices, 0, sizeof(math::Vector4) * VERTEX_COUNT};
+        rhi::RasterDraw drawing;
+        drawing.Pipeline = Pipeline;
+        drawing.Bindings = set;
+        drawing.Vertices = {&slice, 1};
+        drawing.Indices = Indices;
+        drawing.IndexCount = INDEX_COUNT;
+        drawing.VertexCount = VERTEX_COUNT;
+        REQUIRE(rhi::BeginFrame(Device, surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::BeginRasterPass(Device, {}) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::DrawIndexed(Device, drawing) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(Device, completion) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(outPixels.AsSpan()) == true);
+        static_cast<void>(rhi::Destroy(Device, set));
+        static_cast<void>(rhi::Destroy(Device, depth));
+    }
+};
+constexpr usize ROW_PIXELS = WIDTH;
+/// Byte offset of pixel (column, row) in the RGBA8 readback.
+constexpr usize GetPixel(usize column, usize row)
+{
+    return (row * ROW_PIXELS + column) * 4;
 }
 } // namespace
 TEST_CASE("RG2 cooked graph renders extracted geometry and follows camera/instance changes", "[render-graph][gpu]")
@@ -420,4 +546,241 @@ TEST_CASE("RG3 runtime generation renders the same pixels as its compiled header
         REQUIRE(fixture.Pixels[i] == compiled[i]);
     }
     activation.Reset();
+}
+namespace
+{
+constexpr usize BOUND_ITEM_COUNT = 2;
+constexpr usize BOUND_VALUE_COUNT = packages::rg2_bound::UNIFORM_VALUE_COUNT;
+constexpr usize MASK_VALUE_COUNT = packages::rg2_masked_depth::UNIFORM_VALUE_COUNT;
+/// Two items left and right of center, each with its own per-draw Material values.
+struct BoundScene final
+{
+    StaticArray<renderer::RenderGraphItem, BOUND_ITEM_COUNT> Items{};
+    StaticArray<StaticArray<float32, BOUND_VALUE_COUNT>, BOUND_ITEM_COUNT> Values{};
+    explicit BoundScene(const renderer::RenderGraphItem& prototype)
+    {
+        for (usize i = 0; i < BOUND_ITEM_COUNT; ++i)
+        {
+            Items[i] = prototype;
+            Items[i].SourceId = i + 1;
+            Items[i].MeshToWorld.Translation.X = i == 0 ? -.5F : .5F;
+            Items[i].Uniforms = {Values[i].GetData(), BOUND_VALUE_COUNT};
+        }
+        constexpr usize TINT = packages::rg2_bound::UNIFORM_VALUE_MATERIAL_TINT;
+        constexpr usize GAIN = packages::rg2_bound::UNIFORM_VALUE_MATERIAL_GAIN;
+        Values[0][TINT] = 1;
+        Values[0][GAIN] = 1;
+        Values[1][TINT + 1] = 1;
+        Values[1][GAIN] = .5F;
+    }
+    rhi::RasterStatus Update(renderer::RenderGraph& inoutGraph, GraphGpuFixture& inoutFixture, uint64 revision)
+    {
+        renderer::RenderGraphReport report;
+        return inoutGraph.Update({inoutFixture.Meshes.GetData(), inoutFixture.Meshes.GetSize()},
+                                 {Items.GetData(), Items.GetSize()},
+                                 {inoutFixture.Cameras.GetData(), inoutFixture.Cameras.GetSize()},
+                                 revision,
+                                 renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                 report);
+    }
+};
+renderer::RenderGraphPrograms MakeBoundPrograms()
+{
+    return packages::rg2_bound::MakePrograms(shaders::renderer_composite::Vertex(),
+                                             shaders::renderer_composite::Fragment());
+}
+} // namespace
+TEST_CASE("RG2 bound uniforms render per-draw material values without shader permutations", "[render-graph][gpu]")
+{
+    GraphGpuFixture fixture;
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, packages::rg2_bound::MakePlan(), MakeBoundPrograms()) ==
+            rhi::RasterStatus::Ready);
+    BoundScene scene{fixture.Items[0]};
+    REQUIRE(scene.Update(fixture.Graph, fixture, 1) == rhi::RasterStatus::Ready);
+    fixture.Render();
+    const usize left = GetPixel(24, 32);
+    const usize right = GetPixel(72, 32);
+    CHECK(fixture.Pixels[left] == 255);
+    CHECK(fixture.Pixels[left + 1] == 0);
+    CHECK(fixture.Pixels[right] == 0);
+    CHECK(fixture.Pixels[right + 1] >= 127);
+    CHECK(fixture.Pixels[right + 1] <= 128);
+    // Changing only runtime values republishes the extraction with the same cooked programs.
+    scene.Values[0][packages::rg2_bound::UNIFORM_VALUE_MATERIAL_GAIN] = .5F;
+    REQUIRE(scene.Update(fixture.Graph, fixture, 2) == rhi::RasterStatus::Ready);
+    fixture.Render();
+    CHECK(fixture.Pixels[left] >= 127);
+    CHECK(fixture.Pixels[left] <= 128);
+    CHECK(fixture.Pixels[right + 1] >= 127);
+}
+TEST_CASE("RG3 bound runtime generation carries the compiled uniform tables and renders the same pixels",
+          "[render-graph][gpu][activation]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> decoded = LoadPackage(BOUND_PACKAGE);
+    const BorrowedView<const uint8> identity = decoded->GetInterfaceIdentity();
+    REQUIRE(identity.GetSize() == packages::rg2_bound::INTERFACE_IDENTITY.GetSize());
+    for (usize i = 0; i < identity.GetSize(); ++i)
+    {
+        CHECK(identity[i] == packages::rg2_bound::INTERFACE_IDENTITY[i]);
+    }
+    CheckSameUniforms(decoded->GetPlan(), packages::rg2_bound::MakePlan());
+    const renderer::RenderGraphPrograms runtime = decoded->GetPrograms({}, {});
+    const renderer::RenderGraphPrograms compiled = packages::rg2_bound::MakePrograms({}, {});
+    CheckSameStage(runtime.ColorVertex, compiled.ColorVertex);
+    CheckSameStage(runtime.ColorFragment, compiled.ColorFragment);
+    CHECK(runtime.ColorFragment.Bindings.empty() == false);
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, packages::rg2_bound::MakePlan(), MakeBoundPrograms()) ==
+            rhi::RasterStatus::Ready);
+    BoundScene scene{fixture.Items[0]};
+    REQUIRE(scene.Update(fixture.Graph, fixture, 1) == rhi::RasterStatus::Ready);
+    fixture.Render();
+    const StaticArray<uint8, PIXEL_BYTES> header = fixture.Pixels;
+    fixture.Graph.Reset();
+    renderer::RenderGraphActivation activation;
+    REQUIRE(activation.Initialize(
+                fixture.Device,
+                {packages::rg2_bound::INTERFACE_IDENTITY.GetData(), packages::rg2_bound::INTERFACE_IDENTITY.GetSize()},
+                shaders::renderer_composite::Vertex(),
+                shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    const rhi::RasterStatus staged = activation.Stage(LoadPackage(BOUND_PACKAGE));
+    REQUIRE((staged == rhi::RasterStatus::Ready || staged == rhi::RasterStatus::Pending));
+    rhi::RasterStatus polled = activation.Poll();
+    for (usize attempt = 0; polled == rhi::RasterStatus::Pending && attempt < 1000; ++attempt)
+    {
+        polled = activation.Poll();
+    }
+    REQUIRE(polled == rhi::RasterStatus::Ready);
+    renderer::RenderGraph* activeOrNull = activation.GetActiveOrNull();
+    REQUIRE(activeOrNull != nullptr);
+    REQUIRE(scene.Update(*activeOrNull, fixture, 1) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(activeOrNull->Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    for (usize i = 0; i < PIXEL_BYTES; ++i)
+    {
+        REQUIRE(fixture.Pixels[i] == header[i]);
+    }
+    activation.Reset();
+}
+TEST_CASE("RG2 masked color and separately authored masked depth agree on authored coverage", "[render-graph][gpu]")
+{
+    GraphGpuFixture fixture;
+    StaticArray<float32, MASK_VALUE_COUNT> mask{};
+    mask[packages::rg2_masked_depth::UNIFORM_VALUE_MASK_THRESHOLD] = 0;
+    fixture.Items[0].Coverage = renderer::RenderGraphMaterial::Masked;
+    fixture.Items[0].Uniforms = {mask.GetData(), mask.GetSize()};
+    DepthDisplay display{fixture.Device};
+    // Masked depth-only export, the pre-Z technique's authored coverage.
+    REQUIRE(fixture.Graph.Initialize(fixture.Device,
+                                     packages::rg2_masked_depth::MakePlan(),
+                                     packages::rg2_masked_depth::MakePrograms(
+                                         shaders::renderer_composite::Vertex(),
+                                         shaders::renderer_composite::Fragment())) == rhi::RasterStatus::Ready);
+    fixture.Update(1);
+    fixture.Render();
+    rhi::TextureHandle texture;
+    rhi::TextureAspect aspect;
+    REQUIRE(fixture.Graph.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(aspect == rhi::TextureAspect::Depth);
+    StaticArray<uint8, PIXEL_BYTES> depthOnly{};
+    display.Show(fixture.Surface, texture, depthOnly);
+    // Mesh x >= threshold keeps the right half of the triangle at its 0.5 depth.
+    const usize kept = GetPixel(55, 32);
+    const usize discarded = GetPixel(40, 32);
+    CHECK(depthOnly[kept] >= 127);
+    CHECK(depthOnly[kept] <= 128);
+    CHECK(depthOnly[discarded] == 255);
+    CHECK(depthOnly[0] == 255);
+    fixture.Graph.Reset();
+    // Masked color technique, exporting its color and its depth aspect.
+    REQUIRE(fixture.Graph.Initialize(fixture.Device,
+                                     packages::rg2_masked_color::MakePlan(),
+                                     packages::rg2_masked_color::MakePrograms(
+                                         shaders::renderer_composite::Vertex(),
+                                         shaders::renderer_composite::Fragment())) == rhi::RasterStatus::Ready);
+    fixture.Update(2);
+    fixture.Render();
+    rhi::TextureHandle colorTexture;
+    REQUIRE(fixture.Graph.GetExport(0, colorTexture, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(aspect == rhi::TextureAspect::Color);
+    REQUIRE(fixture.Graph.GetExport(1, texture, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(aspect == rhi::TextureAspect::Depth);
+    StaticArray<uint8, PIXEL_BYTES> colorDepth{};
+    display.Show(fixture.Surface, texture, colorDepth);
+    // Depth parity: the same authored coverage writes byte-identical depth in both techniques.
+    for (usize i = 0; i < PIXEL_BYTES; ++i)
+    {
+        REQUIRE(colorDepth[i] == depthOnly[i]);
+    }
+    // Color parity: covered pixels are exactly those with geometry depth.
+    renderer::Renderer compositor;
+    const renderer::RenderGraphPrograms flat =
+        packages::rg2_surface::MakePrograms(shaders::renderer_composite::Vertex(),
+                                            shaders::renderer_composite::Fragment());
+    REQUIRE(compositor.Initialize(fixture.Device, flat.ColorVertex, flat.ColorFragment) == rhi::RasterStatus::Ready);
+    REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                       shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::Presentation presentation;
+    REQUIRE(compositor.PreparePresentation(colorTexture, mapping, presentation) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    for (usize row = 0; row < HEIGHT; ++row)
+    {
+        for (usize column = 0; column < WIDTH; ++column)
+        {
+            const usize pixel = GetPixel(column, row);
+            const bool hasGeometry = depthOnly[pixel] != 255;
+            const bool isRed = fixture.Pixels[pixel] == 255 && fixture.Pixels[pixel + 1] == 0;
+            REQUIRE(hasGeometry == isRed);
+        }
+    }
+    static_cast<void>(compositor.Release(presentation));
+    compositor.Reset();
+    fixture.Graph.Reset();
+    // A per-draw threshold beyond the mesh removes all coverage; no program is rebuilt.
+    REQUIRE(fixture.Graph.Initialize(fixture.Device,
+                                     packages::rg2_masked_depth::MakePlan(),
+                                     packages::rg2_masked_depth::MakePrograms(
+                                         shaders::renderer_composite::Vertex(),
+                                         shaders::renderer_composite::Fragment())) == rhi::RasterStatus::Ready);
+    mask[packages::rg2_masked_depth::UNIFORM_VALUE_MASK_THRESHOLD] = 1;
+    fixture.Update(3);
+    fixture.Render();
+    REQUIRE(fixture.Graph.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
+    display.Show(fixture.Surface, texture, depthOnly);
+    CHECK(depthOnly[kept] == 255);
+}
+TEST_CASE("RG2 masked techniques keep rejecting opaque and transparent items", "[render-graph][gpu]")
+{
+    GraphGpuFixture fixture;
+    StaticArray<float32, MASK_VALUE_COUNT> mask{};
+    fixture.Items[0].Uniforms = {mask.GetData(), mask.GetSize()};
+    REQUIRE(fixture.Graph.Initialize(fixture.Device,
+                                     packages::rg2_masked_depth::MakePlan(),
+                                     packages::rg2_masked_depth::MakePrograms(
+                                         shaders::renderer_composite::Vertex(),
+                                         shaders::renderer_composite::Fragment())) == rhi::RasterStatus::Ready);
+    for (const renderer::RenderGraphMaterial material :
+         {renderer::RenderGraphMaterial::Opaque, renderer::RenderGraphMaterial::Transparent})
+    {
+        fixture.Items[0].Coverage = material;
+        renderer::RenderGraphReport report;
+        CHECK(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                   {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                   {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                   1,
+                                   renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                   report) == rhi::RasterStatus::Unsupported);
+        CHECK(report.Unsupported == 1);
+    }
 }

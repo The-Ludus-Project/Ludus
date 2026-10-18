@@ -42,7 +42,7 @@ using nullptr_t = decltype(nullptr);
 ///
 /// Used by UniquePtr's converting assignment and other polymorphic-ownership seams.
 template <typename DerivedType, typename BaseType>
-concept DerivedFrom = std::is_base_of_v<BaseType, DerivedType> && !std::is_same_v<DerivedType, BaseType>;
+concept DerivedFrom = std::is_base_of_v<BaseType, DerivedType> && std::is_same_v<DerivedType, BaseType> == false;
 
 /// @brief Move: unconditional cast to an rvalue reference.
 ///
@@ -68,7 +68,7 @@ template <typename ValueType>
 template <typename ValueType>
 [[nodiscard]] constexpr ValueType&& Forward(std::remove_reference_t<ValueType>&& value) noexcept
 {
-    static_assert(!std::is_lvalue_reference_v<ValueType>, "Forward must not turn an rvalue into an lvalue");
+    static_assert(std::is_lvalue_reference_v<ValueType> == false, "Forward must not turn an rvalue into an lvalue");
     return static_cast<ValueType&&>(value);
 }
 

@@ -513,7 +513,7 @@ TEST_CASE("Unavailable HDR requirements reject while preferences preserve the LD
     CHECK(diagnostic.Requirement == ProfileRequirement::Blendable);
     CHECK(diagnostic.Format == RasterFormat::Rgba16Float);
     CHECK_FALSE(info.Profile.Raster.HdrColor);
-    if (!required)
+    if (required == false)
     {
         FormatCapabilities format;
         CHECK(GetFormatCapabilities(fixture.Device, RasterFormat::Rgba16Float, format) == RasterStatus::Ready);

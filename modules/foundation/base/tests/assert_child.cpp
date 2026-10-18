@@ -78,7 +78,7 @@ const char* RecursiveCheck()
 const char* HoldReport()
 {
     gEntered.store(true, std::memory_order_release);
-    while (!gRelease.load(std::memory_order_acquire))
+    while (gRelease.load(std::memory_order_acquire) == false)
     {
         std::this_thread::yield();
     }
@@ -88,7 +88,7 @@ const char* HoldReport()
 int Contention(bool fatal)
 {
     std::thread owner([] { (void)LUDUS_CHECK(false, HoldReport()); });
-    while (!gEntered.load(std::memory_order_acquire))
+    while (gEntered.load(std::memory_order_acquire) == false)
     {
         std::this_thread::yield();
     }
@@ -100,7 +100,7 @@ int Contention(bool fatal)
     gRelease.store(true, std::memory_order_release);
     owner.join();
     const bool again = LUDUS_CHECK(false, "next-owner");
-    return !failed && !again && gMessages == 0 ? 0 : 82;
+    return failed == false && again == false && gMessages == 0 ? 0 : 82;
 }
 
 int Budget(bool fatal)
@@ -115,7 +115,7 @@ int Budget(bool fatal)
         }
     }
     const bool successful_check = LUDUS_CHECK((++conditions, true));
-    if (!successful_check || conditions != 81 || messages != 63)
+    if (successful_check == false || conditions != 81 || messages != 63)
     {
         return 84;
     }
@@ -164,7 +164,7 @@ int main(int argc, char** argv)
     {
         const bool result = LUDUS_CHECK(false, RecursiveCheck());
         const bool next = LUDUS_CHECK(false, "after-recursion");
-        return !result && !next && gMessages == 0 ? 0 : 86;
+        return result == false && next == false && gMessages == 0 ? 0 : 86;
     }
     if (std::strcmp(mode, "text") == 0)
     {
@@ -176,7 +176,7 @@ int main(int argc, char** argv)
         text[sizeof(text) - 1] = '\0';
         const bool result = LUDUS_CHECK(false, text);
         const bool escaped = LUDUS_CHECK(false, "line\n\t\x1b\\end");
-        return !result && !escaped ? 0 : 87;
+        return result == false && escaped == false ? 0 : 87;
     }
     if (std::strcmp(mode, "metadata") == 0)
     {
@@ -207,12 +207,12 @@ int main(int argc, char** argv)
     if (std::strcmp(mode, "primary-secondary") == 0)
     {
         std::thread primary([] { LUDUS_FATAL(HoldReport()); });
-        while (!gEntered.load(std::memory_order_acquire))
+        while (gEntered.load(std::memory_order_acquire) == false)
         {
             std::this_thread::yield();
         }
         const auto& packet = diagnostics::internal::gFatalPacket;
-        if (!packet.MinimalReady.load(std::memory_order_acquire) ||
+        if (packet.MinimalReady.load(std::memory_order_acquire) == false ||
             packet.CompleteReady.load(std::memory_order_acquire) ||
             std::strstr(packet.Minimal, "<unconditional>") == nullptr)
         {
@@ -229,7 +229,7 @@ int main(int argc, char** argv)
         }
         long_text[1024] = '\0';
         const diagnostics::AssertionSite site{long_text, "retained-function", long_text, 987};
-        if (!diagnostics::detail::BeginCheck(site))
+        if (diagnostics::detail::BeginCheck(site) == false)
         {
             return 71;
         }
@@ -247,7 +247,7 @@ int main(int argc, char** argv)
                 start.arrive_and_wait();
                 std::mutex application_mutex;
                 const std::lock_guard lock(application_mutex);
-                if (!LUDUS_CHECK((conditions.fetch_add(1), false), "synchronized Check"))
+                if (LUDUS_CHECK((conditions.fetch_add(1), false), "synchronized Check") == false)
                 {
                     failures.fetch_add(1);
                 }
@@ -269,7 +269,7 @@ int main(int argc, char** argv)
         // resumed (condition+message ran exactly once). A terminal ASSERT never
         // returns here. The driver decides which outcome to expect.
         Mark("ASSERT-RETURNED\n");
-        if (!LUDUS_ENABLE_ASSERTS)
+        if (LUDUS_ENABLE_ASSERTS == 0)
         {
             return gConditions == 0 && gMessages == 0 ? 0 : 67;
         }
@@ -297,7 +297,7 @@ int main(int argc, char** argv)
         // Reached only when disabled or when an enabled ASSERT resumed. A
         // terminal ASSERT never returns here.
         Mark("ASSERT-RETURNED\n");
-        if (!LUDUS_ENABLE_ASSERTS)
+        if (LUDUS_ENABLE_ASSERTS == 0)
         {
             return gConditions == 0 && gMessages == 0 ? 0 : 89;
         }
@@ -330,13 +330,13 @@ int main(int argc, char** argv)
     {
         LUDUS_FATAL(([] {
             const auto& packet = diagnostics::internal::gFatalPacket;
-            if (!packet.MinimalReady.load(std::memory_order_acquire) ||
+            if (packet.MinimalReady.load(std::memory_order_acquire) == false ||
                 packet.CompleteReady.load(std::memory_order_acquire) || packet.MinimalSize == 0)
             {
                 std::_Exit(91);
             }
             std::thread reader([] {
-                if (!packet.MinimalReady.load(std::memory_order_acquire) ||
+                if (packet.MinimalReady.load(std::memory_order_acquire) == false ||
                     packet.Minimal[packet.MinimalSize] != '\0' ||
                     std::strstr(packet.Minimal, "<unconditional>") == nullptr)
                 {

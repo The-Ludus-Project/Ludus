@@ -66,10 +66,11 @@ Platform [frame pacer](high-resolution-time.md#native-frame-pacing) after each
 frame, before the next frame reads its timestamp. The pacer waits for an absolute
 target with an operating-system wait and resets missed schedules beyond a bounded
 lateness. In the reference game, the FIFO swapchain paces presented frames;
-frames that present nothing (startup, loading, minimized) wait at an idle rate,
-and an optional frame-rate cap paces every frame. Session activation resets the
-pacer with the clock debt. Pause stops ticks but keeps presentation on its
-schedule.
+frames that present nothing (startup, loading) wait at an idle rate, and an
+optional frame-rate cap paces every frame. While the window is minimized or
+occluded, every frame waits at a low hidden rate and the simulation drops time,
+as for a hidden browser page. Session activation and each visibility change reset
+the pacer. Pause stops ticks but keeps presentation on its schedule.
 
 The session selects an explicit simulation mode. Menus and overlays route input
 before the gameplay bridge; an overlay cannot accidentally resume simulation.

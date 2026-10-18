@@ -109,7 +109,7 @@ struct SimState
 void* DeferredWork(void* argument) noexcept
 {
     auto* state = static_cast<SimState*>(argument);
-    while (!state->WorkerExit.load(std::memory_order_acquire))
+    while (state->WorkerExit.load(std::memory_order_acquire) == false)
     {
         const timespec delay = {0, 1000000};
         (void)::nanosleep(&delay, nullptr);
@@ -119,7 +119,7 @@ void* DeferredWork(void* argument) noexcept
 
 bool JoinWork(SimState* state) noexcept
 {
-    if (!state->WorkerLive)
+    if (state->WorkerLive == false)
     {
         return true;
     }
@@ -235,7 +235,7 @@ void DestroyState(SimState* state) noexcept
     {
         return;
     }
-    if (!JoinWork(state))
+    if (JoinWork(state) == false)
     {
         return;
     }
@@ -270,7 +270,7 @@ Status FixtureCreate(const CreateInfo* info, GameInstance** outInstance) noexcep
         bool valid = reader.Start(info->AuthoredDocument, info->GameId);
         while (valid && reader.Next(record))
         {
-            valid = !seen && record.Object == kObjectId && record.Property == kPropSpeed &&
+            valid = seen == false && record.Object == kObjectId && record.Property == kPropSpeed &&
                     record.Kind == static_cast<uint32>(PropertyKind::Float32) && record.Value.Size == 4;
             if (valid)
             {
@@ -280,7 +280,7 @@ Status FixtureCreate(const CreateInfo* info, GameInstance** outInstance) noexcep
                 seen = true;
             }
         }
-        if (!valid || !reader.Complete())
+        if (valid == false || reader.Complete() == false)
         {
             DestroyState(state);
             return Status::InvalidArgument;
@@ -298,7 +298,7 @@ void FixtureDestroy(GameInstance* instance) noexcept
         std::abort(); // Native destructor failure / unsafe worker destruction probe.
     }
     HostLog(AsState(instance), LogSeverity::Debug, "fixture destroy");
-    if (!ShouldFail("retire"))
+    if (ShouldFail("retire") == false)
     {
         DestroyState(AsState(instance));
     }
@@ -322,12 +322,12 @@ Status FixtureUpdate(GameInstance* instance, const FrameInput* input, RenderPara
     {
         return Status::InvalidArgument;
     }
-    if (ShouldFail("work_pending") && !state->WorkerLive)
+    if (ShouldFail("work_pending") && state->WorkerLive == false)
     {
         const HostServices* services = state->Services;
         if (services == nullptr || services->StructSize < sizeof(HostServices) ||
             services->AcquireWorkLease == nullptr || services->ReleaseWorkLease == nullptr ||
-            !services->AcquireWorkLease(services->Context))
+            services->AcquireWorkLease(services->Context) == false)
         {
             return Status::Internal;
         }
@@ -389,7 +389,7 @@ Status FixtureQuiesce(GameInstance* instance) noexcept
     {
         return Status::Internal; // must leave A resumable (not mutated here)
     }
-    if (!ShouldFail("work_pending") && !JoinWork(state))
+    if (ShouldFail("work_pending") == false && JoinWork(state) == false)
     {
         return Status::Internal;
     }
@@ -424,7 +424,7 @@ bool WriteScalar(CheckpointWriter& writer, uint32 id, T value) noexcept
         std::memcpy(&bits, &value, sizeof(value));
     }
     uint8 bytes[8] = {};
-    if (!WriteCheckpointUint({bytes, sizeof(value)}, bits))
+    if (WriteCheckpointUint({bytes, sizeof(value)}, bits) == false)
     {
         return false;
     }
@@ -495,7 +495,7 @@ Status FixtureWriteCheckpoint(GameInstance* instance,
     {
         ok = WriteScalar(writer, 12, state->Energy) && ok;
     }
-    if (!ok)
+    if (ok == false)
     {
         return Status::BufferTooSmall;
     }
@@ -544,7 +544,7 @@ Status FixtureCreateCandidate(const CreateInfo* info,
     {
         uint32 tag = 0;
         ByteView payload = {};
-        if (!reader.Next(tag, payload) || tag > 12 || (seen & (1U << tag)) != 0)
+        if (reader.Next(tag, payload) == false || tag > 12 || (seen & (1U << tag)) != 0)
         {
             ok = false;
             break;
@@ -606,7 +606,7 @@ Status FixtureCreateCandidate(const CreateInfo* info,
         std::isfinite(state->SimTime) && std::isfinite(state->TintR) && std::isfinite(state->TintG) &&
         std::isfinite(state->TintB) && std::isfinite(state->Energy) && state->Speed >= 0.0F && state->Speed <= 10.0F &&
         state->Bounces >= 0 && state->PositionX >= 0.0F && state->PositionX <= 1.0F && state->Revision != 0;
-    if (!ok || reader.Offset != body.Size || seen != required || !valuesValid)
+    if (ok == false || reader.Offset != body.Size || seen != required || valuesValid == false)
     {
         DestroyState(state);
         return Status::InvalidArgument;
@@ -648,7 +648,7 @@ Status FixtureCommitCandidate(GameCandidate* candidate, GameInstance** outInstan
 
 void FixtureDiscardCandidate(GameCandidate* candidate) noexcept
 {
-    if (!ShouldFail("discard"))
+    if (ShouldFail("discard") == false)
     {
         DestroyState(reinterpret_cast<SimState*>(candidate));
     }

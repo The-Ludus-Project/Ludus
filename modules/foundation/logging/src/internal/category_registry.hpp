@@ -58,7 +58,7 @@ public:
             if (mEntries[i].Id.load(std::memory_order_relaxed) == id)
             {
                 // Collision guard: same id, different name => refuse to merge.
-                if (!NamesEqual(mEntries[i], name))
+                if (NamesEqual(mEntries[i], name) == false)
                 {
                     return false;
                 }

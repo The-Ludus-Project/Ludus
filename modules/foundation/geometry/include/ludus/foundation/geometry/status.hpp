@@ -28,7 +28,7 @@ enum class GeometryStatus : uint8
     NonFiniteInput,  ///< A NaN or infinity where a finite value is required.
     InvalidArgument, ///< Malformed request or profile: negative tolerance, unknown policy, Wrap on an open path.
     InvalidDomain,   ///< Outside the domain under Reject; nonincreasing keys; coincident consecutive waypoints.
-    InvalidTopology, ///< Unsupported or inconsistent adjacency, such as disconnected consecutive spans.
+    InvalidTopology, ///< Unsupported or inconsistent adjacency, edge or corner records, such as disconnected spans.
     MissingCache,    ///< The snapshot lacks the cache the request needs; sampling never builds it.
     StaleRevision,   ///< A cursor, view or cache revision does not match its snapshot.
     Degenerate,      ///< A requested direction or normal is undefined there; position may still be valid.
@@ -173,6 +173,7 @@ struct WorkLimits final
     usize MaxSubdivisions = 0;  ///< Total leaf splits during refinement.
     usize MaxIterations = 0;    ///< Iterations of one query's refinement loop.
     usize MaxPreparedBytes = 0; ///< Bytes owned by one prepared owner or cache, checked before allocation.
+    usize MaxPatches = 0;       ///< Source patches accepted by a surface preparation.
 };
 
 /// @brief Float32 position floor 2 * ulp32(E) for chunk-relative controls of largest absolute component E.

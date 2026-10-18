@@ -111,7 +111,7 @@ RasterStatus NativeReserve(StorageTable<T>& records, usize& slot) noexcept
     bool exhausted = false;
     for (slot = 0; slot < limit; ++slot)
     {
-        if (slot == records.GetSize() && !records.EnsureSlots(slot + NATIVE_SLOT_OFFSET))
+        if (slot == records.GetSize() && records.EnsureSlots(slot + NATIVE_SLOT_OFFSET) == false)
         {
             return StorageFailure();
         }
@@ -148,7 +148,7 @@ RasterStatus CloseNativeRead(NativeTextureRead& handle, bool wait) noexcept
         return RasterStatus::InvalidState;
     }
     const auto slot = NativeInteropAccess::Slot(handle);
-    if (!read->Releasing)
+    if (read->Releasing == false)
     {
         const auto released = backend::NativeTextureRelease(slot);
         if (released != RasterStatus::Ready && released != RasterStatus::Pending &&
@@ -170,7 +170,7 @@ RasterStatus CloseNativeRead(NativeTextureRead& handle, bool wait) noexcept
     --gNativeDevices[read->Device].Reads;
     NativeReset(*read);
     handle = {};
-    if (!gNativeRetiring)
+    if (gNativeRetiring == false)
     {
         Collect();
     }
@@ -203,7 +203,7 @@ const NativeDeviceDescription* NativeDeviceRequest() noexcept
 }
 void ReleaseNativeDeviceSource() noexcept
 {
-    if (!gNativeSourcePinned)
+    if (gNativeSourcePinned == false)
     {
         return;
     }
@@ -217,11 +217,11 @@ void ReleaseNativeDeviceSource() noexcept
 DeviceStatus PrepareNativeDeviceSource(const NativeDeviceDescription& description) noexcept
 {
     const auto& identity = description.Identity;
-    if (!backend::NativeInteropSupported() || identity.Api != backend::Kind())
+    if (backend::NativeInteropSupported() == false || identity.Api != backend::Kind())
     {
         return DeviceStatus::Unsupported;
     }
-    if (!description.SerializedOwnerQueue)
+    if (description.SerializedOwnerQueue == false)
     {
         return DeviceStatus::Unsupported;
     }
@@ -242,15 +242,15 @@ DeviceStatus PrepareNativeDeviceSource(const NativeDeviceDescription& descriptio
             return DeviceStatus::Unsupported;
         }
     }
-    else if (!identity.Instance.IsNull() || !identity.PhysicalDevice.IsNull() || identity.QueueFamily != 0 ||
-             identity.QueueIndex != 0 || description.InstanceApiVersion != 0)
+    else if (identity.Instance.IsNull() == false || identity.PhysicalDevice.IsNull() == false ||
+             identity.QueueFamily != 0 || identity.QueueIndex != 0 || description.InstanceApiVersion != 0)
     {
         return DeviceStatus::InvalidDescription;
     }
     gNativeCallback = true;
     const bool retained = description.Lifetime.Retain(description.Lifetime.Context);
     gNativeCallback = false;
-    if (!retained)
+    if (retained == false)
     {
         return DeviceStatus::Failed;
     }
@@ -272,7 +272,7 @@ RasterStatus GetNativeInteropCapabilities(DeviceHandle device, NativeInteropCapa
     {
         return admission;
     }
-    if (!backend::NativeInteropSupported())
+    if (backend::NativeInteropSupported() == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -290,7 +290,7 @@ RasterStatus AcquireNativeDevice(DeviceHandle device, NativeDeviceLease& output)
     {
         return RasterStatus::InvalidState;
     }
-    if (!backend::NativeInteropSupported())
+    if (backend::NativeInteropSupported() == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -373,7 +373,7 @@ RasterStatus AcquireNativeTextureRead(NativeDeviceLease device,
     {
         return RasterStatus::InvalidState;
     }
-    if (!SameNativeContext(native->Info.Identity, consumer))
+    if (SameNativeContext(native->Info.Identity, consumer) == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -387,13 +387,13 @@ RasterStatus AcquireNativeTextureRead(NativeDeviceLease device,
         return texture->Status == RasterStatus::Pending ? RasterStatus::NotReady : texture->Status;
     }
     const auto& description = texture->Texture;
-    if (!description.Attachment || description.Format != RasterFormat::Rgba8Unorm ||
+    if (description.Attachment == false || description.Format != RasterFormat::Rgba8Unorm ||
         description.Dimension != TextureDimension::D2 || description.MipLevels != 1 || description.DepthOrLayers != 1 ||
         description.SampleCount != 1)
     {
         return RasterStatus::Unsupported;
     }
-    if (!texture->ColorDefined)
+    if (texture->ColorDefined == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -494,6 +494,6 @@ RasterStatus GetStatus(NativeTextureRead handle) noexcept
         return RasterStatus::DeviceLost;
     }
     const auto status = backend::NativeTexturePoll(NativeInteropAccess::Slot(handle), false);
-    return !read->Releasing && status == RasterStatus::Pending ? RasterStatus::Ready : status;
+    return read->Releasing == false && status == RasterStatus::Pending ? RasterStatus::Ready : status;
 }
 } // namespace ludus::graphics::rhi

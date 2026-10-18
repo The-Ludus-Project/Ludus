@@ -56,7 +56,7 @@ int main(int argc, char** argv)
     config.EnableDebugger = false;
     config.EnableFile = false;
     LogSystem::Initialize(config);
-    if (!LogSystem::IsInitialized())
+    if (LogSystem::IsInitialized() == false)
     {
         return 4;
     }

@@ -68,15 +68,15 @@ public:
     }
     [[nodiscard]] bool CanSave() const noexcept
     {
-        return Document_.Loaded() && !DemoDocument_.Previewing() && !SceneBusy();
+        return Document_.Loaded() && DemoDocument_.Previewing() == false && SceneBusy() == false;
     }
     [[nodiscard]] bool CanUndo() const noexcept
     {
-        return !Pending_ && !DemoDocument_.Previewing() && !SceneBusy() && Document_.CanUndo();
+        return Pending_ == false && DemoDocument_.Previewing() == false && SceneBusy() == false && Document_.CanUndo();
     }
     [[nodiscard]] bool CanRedo() const noexcept
     {
-        return !Pending_ && !DemoDocument_.Previewing() && !SceneBusy() && Document_.CanRedo();
+        return Pending_ == false && DemoDocument_.Previewing() == false && SceneBusy() == false && Document_.CanRedo();
     }
     void StopPreview() noexcept;
     void ResumePreview();

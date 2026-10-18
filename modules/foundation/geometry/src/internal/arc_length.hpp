@@ -10,37 +10,22 @@
 // cubics) is only an Estimated value; Ludus bounds use the chord/polygon
 // interval with outward rounding and a whole-path gap budget.
 //
-// Subspan controls come from the polar form (blossom) of the cubic, following
-// Lyle Ramshaw, "Blossoming: A Connect-the-Dots Approach to Splines", Digital
-// Systems Research Center Report 19, 1987: the controls of the subspan [a, b]
-// are f(a,a,a), f(a,a,b), f(a,b,b) and f(b,b,b). Each blossom value is three
-// rounds of linear interpolation evaluated with enclosures, so the boxes
-// contain the exact subspan controls for exact float64 parameters a and b.
+// Subspan controls are enclosed with the blossoms in internal/control_box.hpp,
+// so the boxes contain the exact subspan controls for exact parameters.
 
 #include <ludus/foundation/base/core.h>
+
+#include "internal/control_box.hpp"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/geometry/path.hpp>
 #include <ludus/foundation/geometry/status.hpp>
 #include <ludus/foundation/math/enclosure.hpp>
-#include <ludus/foundation/math/status.hpp>
 
 namespace ludus::foundation::geometry::internal
 {
 using core::StaticArray;
 using math::Enclosure;
-using math::Vector3;
-
-/// Axis enclosures of one exact control point.
-struct ControlBox final
-{
-    Enclosure X;
-    Enclosure Y;
-    Enclosure Z;
-};
-
-/// Translate a FoundationMath status at the Geometry boundary (ADR 0024).
-[[nodiscard]] GeometryStatus ToGeometryStatus(math::MathStatus status) noexcept;
 
 /// Boxes that contain the exact controls of span restricted to [a, b], 0 <= a <= b <= 1.
 [[nodiscard]] GeometryStatus

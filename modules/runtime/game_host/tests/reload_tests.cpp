@@ -181,7 +181,8 @@ TEST_CASE("Stop retains code and instance when a module worker cannot drain", "[
     if (child == 0)
     {
         HostSession session(1, 1, -1);
-        if (!session.LoadInitial(LUDUS_FIXTURE_A_PATH) || ::setenv("LUDUS_FIXTURE_FAIL", "work_pending", 1) != 0)
+        if (session.LoadInitial(LUDUS_FIXTURE_A_PATH) == false ||
+            ::setenv("LUDUS_FIXTURE_FAIL", "work_pending", 1) != 0)
         {
             ::_exit(1);
         }
@@ -507,7 +508,7 @@ TEST_CASE("100 distinct successful generations bound allocations mappings and RS
         peakRss = rss > peakRss ? rss : peakRss;
         if (measurements.is_open())
         {
-            measurements << "{\"attempt\":" << i << ",\"accepted\":" << (!inject ? "true" : "false")
+            measurements << "{\"attempt\":" << i << ",\"accepted\":" << (inject == false ? "true" : "false")
                          << ",\"active_generation\":" << session.ActiveGeneration()
                          << ",\"host_allocations\":" << session.OutstandingHostAllocations()
                          << ",\"mapped_generations\":" << mapped << ",\"rss_bytes\":" << rss

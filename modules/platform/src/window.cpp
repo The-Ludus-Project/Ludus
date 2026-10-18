@@ -38,7 +38,7 @@ bool WindowManager::CreateWindow(const WindowBase::CreateInfo& info,
 #if defined(LUDUS_PLATFORM_COCOA)
     // Reject before Reset(): destroying an existing Cocoa window off the main
     // thread would violate AppKit ownership even if creation itself is rejected.
-    if (!cocoa::OnMainThread())
+    if (cocoa::OnMainThread() == false)
     {
         return false;
     }
@@ -54,7 +54,7 @@ bool WindowManager::CreateWindow(const WindowBase::CreateInfo& info,
 #elif defined(LUDUS_PLATFORM_HEADLESS)
     auto window = headless::CreateWindow(info);
 #endif
-    if (!window)
+    if (window.Get() == nullptr)
     {
         outWindow.Reset();
         return false;

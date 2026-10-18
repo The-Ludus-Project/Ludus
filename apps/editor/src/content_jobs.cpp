@@ -25,7 +25,7 @@ void Run(JobState& state)
 {
     auto& result = state.Result;
     const auto& request = result.Request;
-    if (!request.Id.isEmpty())
+    if (request.Id.isEmpty() == false)
     {
         const auto imported = ImportAudioSource({ .Root = request.Root, .File = request.File, .Id = request.Id },
                                                 state.Gate,
@@ -118,7 +118,7 @@ ContentJobs::~ContentJobs()
 #if !defined(Q_OS_WASM)
     if (Impl_ != nullptr && Impl_->Thread != nullptr)
     {
-        if (!Impl_->Thread->isFinished())
+        if (Impl_->Thread->isFinished() == false)
         {
             connect(Impl_->Thread, &QThread::finished, Impl_->Thread, &QObject::deleteLater);
         }
@@ -156,7 +156,7 @@ bool ContentJobs::Start(const ContentRequest& request)
     Impl_->State = state;
     Impl_->Thread = thread;
     thread->start();
-    if (!thread->isRunning() && !state->Done.load(std::memory_order_acquire))
+    if (thread->isRunning() == false && state->Done.load(std::memory_order_acquire) == false)
     {
         delete thread;
         Impl_->Thread = nullptr;
@@ -181,7 +181,7 @@ bool ContentJobs::Start(const ContentRequest& request)
 }
 bool ContentJobs::Cancel()
 {
-    return Impl_ != nullptr && Impl_->State != nullptr && !Impl_->State->Done.load(std::memory_order_acquire) &&
+    return Impl_ != nullptr && Impl_->State != nullptr && Impl_->State->Done.load(std::memory_order_acquire) == false &&
            Impl_->State->Gate.Cancel();
 }
 void ContentJobs::Shutdown()
@@ -195,20 +195,20 @@ bool ContentJobs::Busy() const noexcept
 }
 bool ContentJobs::Importing() const noexcept
 {
-    return Busy() && !Impl_->State->Result.Request.Id.isEmpty();
+    return Busy() && Impl_->State->Result.Request.Id.isEmpty() == false;
 }
 bool ContentJobs::Finished() const noexcept
 {
-    return !Busy();
+    return Busy() == false;
 }
 void ContentJobs::Poll()
 {
-    if (!Busy() || !Impl_->State->Done.load(std::memory_order_acquire))
+    if (Busy() == false || Impl_->State->Done.load(std::memory_order_acquire) == false)
     {
         return;
     }
 #if !defined(Q_OS_WASM)
-    if (Impl_->Thread != nullptr && !Impl_->Thread->isFinished())
+    if (Impl_->Thread != nullptr && Impl_->Thread->isFinished() == false)
     {
         return;
     }

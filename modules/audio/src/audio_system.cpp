@@ -79,13 +79,13 @@ Status AudioSystem::Impl::ValidateConfig(const SystemConfig& cfg) const noexcept
                 return Status::InvalidArgument;
             }
         }
-        if (!IsFinite(b.BaseGain) || !IsFinite(b.UserGain) || b.BaseGain < 0.0F || b.BaseGain > 1.0F ||
+        if (IsFinite(b.BaseGain) == false || IsFinite(b.UserGain) == false || b.BaseGain < 0.0F || b.BaseGain > 1.0F ||
             b.UserGain < 0.0F || b.UserGain > 1.0F)
         {
             return Status::InvalidArgument;
         }
     }
-    if (!cfg.Buses.empty() && roots != 1)
+    if (cfg.Buses.empty() == false && roots != 1)
     {
         return Status::InvalidArgument;
     }
@@ -115,11 +115,11 @@ bool AudioSystem::Impl::ValidatePlay(const PlayParams& p) const noexcept
     {
         return false;
     }
-    if (!IsFinite(p.Gain) || p.Gain < 0.0F || p.Gain > 1.0F)
+    if (IsFinite(p.Gain) == false || p.Gain < 0.0F || p.Gain > 1.0F)
     {
         return false;
     }
-    if (!IsFinite(p.Rate) || p.Rate < RATE_MIN || p.Rate > RATE_MAX)
+    if (IsFinite(p.Rate) == false || p.Rate < RATE_MIN || p.Rate > RATE_MAX)
     {
         return false;
     }
@@ -133,7 +133,8 @@ bool AudioSystem::Impl::ValidatePlay(const PlayParams& p) const noexcept
     }
     if (p.Positional)
     {
-        if (!IsFinite(p.EmitterPosition) || !IsFinite(p.MinDistance) || !IsFinite(p.MaxDistance))
+        if (IsFinite(p.EmitterPosition) == false || IsFinite(p.MinDistance) == false ||
+            IsFinite(p.MaxDistance) == false)
         {
             return false;
         }
@@ -142,7 +143,7 @@ bool AudioSystem::Impl::ValidatePlay(const PlayParams& p) const noexcept
             return false;
         }
     }
-    else if (!IsFinite(p.ExplicitPan) || p.ExplicitPan < -1.0F || p.ExplicitPan > 1.0F)
+    else if (IsFinite(p.ExplicitPan) == false || p.ExplicitPan < -1.0F || p.ExplicitPan > 1.0F)
     {
         return false;
     }
@@ -157,9 +158,9 @@ uint32 AudioSystem::Impl::ReserveVoiceSlot() noexcept
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         VoiceSlot& v = Voices[i];
-        if (!v.InUse && !v.Generation.IsExhausted())
+        if (v.InUse == false && v.Generation.IsExhausted() == false)
         {
-            if (!v.Generation.Advance())
+            if (v.Generation.Advance() == false)
             {
                 continue;
             }
@@ -177,7 +178,7 @@ void AudioSystem::Impl::ReleaseVoiceSlot(uint32 index) noexcept
     {
         Streams[v.StreamSlotIndex].Data->Cancel.store(true, std::memory_order_release);
     }
-    if (!v.IsStream)
+    if (v.IsStream == false)
     {
         internal::ClipSlot& c = Clips[v.ClipSlotIndex];
         if (c.Pins > 0)
@@ -191,12 +192,12 @@ void AudioSystem::Impl::ReleaseVoiceSlot(uint32 index) noexcept
 
 uint32 AudioSystem::Impl::FindClipSlot(ClipHandle h) const noexcept
 {
-    if (!h.IsValid() || h.Session != Session || h.Slot >= LogicalCapacity)
+    if (h.IsValid() == false || h.Session != Session || h.Slot >= LogicalCapacity)
     {
         return LogicalCapacity;
     }
     const internal::ClipSlot& c = Clips[h.Slot];
-    if (!c.InUse || c.Generation.Value != h.Generation || c.Retiring)
+    if (c.InUse == false || c.Generation.Value != h.Generation || c.Retiring)
     {
         // A retiring clip accepts no new admission; existing voices keep their
         // pin (held on the voice slot, not re-looked-up) so their bytes stay
@@ -208,7 +209,7 @@ uint32 AudioSystem::Impl::FindClipSlot(ClipHandle h) const noexcept
 
 uint32 AudioSystem::Impl::FindVoiceSlot(VoiceHandle h) const noexcept
 {
-    if (!h.IsValid() || h.Session != Session || h.Slot >= LogicalCapacity)
+    if (h.IsValid() == false || h.Session != Session || h.Slot >= LogicalCapacity)
     {
         return LogicalCapacity;
     }
@@ -222,12 +223,12 @@ uint32 AudioSystem::Impl::FindVoiceSlot(VoiceHandle h) const noexcept
 
 uint32 AudioSystem::Impl::FindModifierSlot(ModifierHandle h) const noexcept
 {
-    if (!h.IsValid() || h.Session != Session || h.Slot >= MODIFIER_CAPACITY)
+    if (h.IsValid() == false || h.Session != Session || h.Slot >= MODIFIER_CAPACITY)
     {
         return MODIFIER_CAPACITY;
     }
     const internal::ModifierState& m = Modifiers[h.Slot];
-    if (!m.InUse || m.Generation.Value != h.Generation)
+    if (m.InUse == false || m.Generation.Value != h.Generation)
     {
         return MODIFIER_CAPACITY;
     }
@@ -256,7 +257,7 @@ void AudioSystem::Impl::RecomputeBusGains() noexcept
         for (uint32 m = 0; m < MODIFIER_CAPACITY; ++m)
         {
             const internal::ModifierState& mod = Modifiers[m];
-            if (!mod.InUse || !mod.HasBus[b])
+            if (mod.InUse == false || mod.HasBus[b] == false)
             {
                 continue;
             }

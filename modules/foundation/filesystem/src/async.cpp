@@ -107,7 +107,7 @@ struct AsyncReader::Impl
         for (uint32 index = 0; index < Config.MaxRequests; ++index)
         {
             auto& slot = Slots[index];
-            if (!slot.Occupied || slot.State != RequestState::Queued)
+            if (slot.Occupied == false || slot.State != RequestState::Queued)
             {
                 continue;
             }
@@ -159,7 +159,7 @@ struct AsyncReader::Impl
         {
             state.Gate.Lock();
             Slot* slot = nullptr;
-            while ((slot = state.Select(AsyncNow())) == nullptr && !state.Stopping)
+            while ((slot = state.Select(AsyncNow())) == nullptr && state.Stopping == false)
             {
                 state.Gate.Wait();
             }
@@ -201,7 +201,7 @@ struct AsyncReader::Impl
             for (uint32 index = 0; index < Config.MaxRequests; ++index)
             {
                 auto& slot = Slots[index];
-                if (slot.Occupied && slot.State == RequestState::Queued && !slot.Cancellation)
+                if (slot.Occupied && slot.State == RequestState::Queued && slot.Cancellation == false)
                 {
                     slot.Cancellation = true;
                     slot.CancelledAt = AsyncNow();
@@ -260,7 +260,7 @@ AsyncStatus AsyncReader::Initialize(AsyncConfig config) noexcept
     }
     uint64 identity = gNextScheduler.load(std::memory_order_relaxed);
     while (identity != MAX_COUNTER &&
-           !gNextScheduler.compare_exchange_weak(identity, identity + 1, std::memory_order_relaxed))
+           gNextScheduler.compare_exchange_weak(identity, identity + 1, std::memory_order_relaxed) == false)
     {
     }
     if (identity == MAX_COUNTER)
@@ -269,7 +269,7 @@ AsyncStatus AsyncReader::Initialize(AsyncConfig config) noexcept
         return AsyncStatus::IdentityExhausted;
     }
     state->Identity = identity;
-    if (LUDUS_ASYNC_FAIL(Gate) || !state->Gate.Initialize())
+    if (LUDUS_ASYNC_FAIL(Gate) || state->Gate.Initialize() == false)
     {
         delete state;
         return AsyncStatus::ThreadCreationFailed;
@@ -277,7 +277,7 @@ AsyncStatus AsyncReader::Initialize(AsyncConfig config) noexcept
     state->GateReady = true;
     for (uint32 index = 0; index < config.WorkerCount; ++index)
     {
-        if (LUDUS_ASYNC_FAIL(Start) || !state->Workers[index].Start(Impl::Run, state))
+        if (LUDUS_ASYNC_FAIL(Start) || state->Workers[index].Start(Impl::Run, state) == false)
         {
             state->Stop();
             delete state;
@@ -309,7 +309,8 @@ AsyncStatus AsyncReader::Submit(const VirtualFile& file,
     {
         return reject(AsyncStatus::Stopped);
     }
-    if (!file.IsOpen() || offset > file.Size() || (options.TracePath != nullptr && !options.TracePath->IsValid()))
+    if (file.IsOpen() == false || offset > file.Size() ||
+        (options.TracePath != nullptr && options.TracePath->IsValid() == false))
     {
         return reject(AsyncStatus::InvalidArgument);
     }
@@ -333,7 +334,7 @@ AsyncStatus AsyncReader::Submit(const VirtualFile& file,
             continue;
         }
         // Clone is a retain, not a descriptor duplication or allocation.
-        if (!file.Clone(slot.File).Succeeded())
+        if (file.Clone(slot.File).Succeeded() == false)
         {
             return reject(AsyncStatus::InvalidArgument);
         }
@@ -385,7 +386,7 @@ AsyncStatus AsyncReader::Cancel(RequestHandle handle) noexcept
     {
         return AsyncStatus::InvalidHandle;
     }
-    if (slot->State != RequestState::Completing && !slot->Cancellation)
+    if (slot->State != RequestState::Completing && slot->Cancellation == false)
     {
         slot->Cancellation = true;
         slot->CancelledAt = AsyncNow();

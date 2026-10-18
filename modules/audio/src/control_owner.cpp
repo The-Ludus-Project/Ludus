@@ -99,7 +99,7 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
                     v.FadeTarget = 1;
                     v.PlayDrained = false;
                     v.PhysicalIndex = 0xFFFFFFFFU;
-                    if (!cmd.IsStream)
+                    if (cmd.IsStream == false)
                     {
                         auto& c = Clips[v.ClipSlotIndex];
                         c.Pcm = const_cast<float32*>(cmd.Pcm);
@@ -114,7 +114,7 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
                     }
                 }
                 // Reject a stale command targeting a reused slot.
-                if (v.Generation.Value != cmd.VoiceGeneration || !v.InUse)
+                if (v.Generation.Value != cmd.VoiceGeneration || v.InUse == false)
                 {
                     ++StaleCommands;
                     break;
@@ -153,7 +153,7 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
             }
             case CommandKind::UpdateVoice: {
                 VoiceSlot& v = Voices[cmd.VoiceSlotIndex];
-                if (v.Generation.Value != cmd.VoiceGeneration || !v.InUse)
+                if (v.Generation.Value != cmd.VoiceGeneration || v.InUse == false)
                 {
                     ++StaleCommands;
                     break;
@@ -184,7 +184,7 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
             }
             case CommandKind::StopVoice: {
                 VoiceSlot& v = Voices[cmd.VoiceSlotIndex];
-                if (v.Generation.Value != cmd.VoiceGeneration || !v.InUse)
+                if (v.Generation.Value != cmd.VoiceGeneration || v.InUse == false)
                 {
                     ++StaleCommands;
                     break;
@@ -224,7 +224,7 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
                     m.InUse = true;
                     m.Removing = false;
                 }
-                if (m.Generation.Value != cmd.ModifierGeneration || !m.InUse)
+                if (m.Generation.Value != cmd.ModifierGeneration || m.InUse == false)
                 {
                     ++StaleCommands;
                     break;
@@ -248,7 +248,7 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
             }
             case CommandKind::UpdateModifier: {
                 internal::ModifierState& m = Modifiers[cmd.ModifierSlotIndex];
-                if (m.Generation.Value != cmd.ModifierGeneration || !m.InUse)
+                if (m.Generation.Value != cmd.ModifierGeneration || m.InUse == false)
                 {
                     ++StaleCommands;
                     break;
@@ -259,7 +259,7 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
             }
             case CommandKind::RemoveModifier: {
                 internal::ModifierState& m = Modifiers[cmd.ModifierSlotIndex];
-                if (m.Generation.Value != cmd.ModifierGeneration || !m.InUse)
+                if (m.Generation.Value != cmd.ModifierGeneration || m.InUse == false)
                 {
                     ++StaleCommands;
                     break;
@@ -281,7 +281,7 @@ void AudioSystem::Impl::ResolveScheduledStarts() noexcept
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         VoiceSlot& v = Voices[i];
-        if (!v.InUse || v.State != VoiceState::Scheduled)
+        if (v.InUse == false || v.State != VoiceState::Scheduled)
         {
             continue;
         }
@@ -316,7 +316,7 @@ void AudioSystem::Impl::SelectAndCharge() noexcept
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         VoiceSlot& v = Voices[i];
-        if (!v.InUse || v.IsStream)
+        if (v.InUse == false || v.IsStream)
         {
             continue;
         }
@@ -359,7 +359,7 @@ void AudioSystem::Impl::SelectAndCharge() noexcept
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         VoiceSlot& v = Voices[i];
-        if (!v.InUse || v.IsStream)
+        if (v.InUse == false || v.IsStream)
         {
             continue;
         }
@@ -406,7 +406,7 @@ void AudioSystem::Impl::SelectAndCharge() noexcept
                     iBefore = i < order[pos - 1];
                 }
             }
-            if (!iBefore)
+            if (iBefore == false)
             {
                 break;
             }
@@ -506,7 +506,7 @@ void AudioSystem::Impl::SelectAndCharge() noexcept
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         const VoiceSlot& v = Voices[i];
-        if (!v.InUse || v.IsStream)
+        if (v.InUse == false || v.IsStream)
         {
             continue;
         }
@@ -522,7 +522,7 @@ void AudioSystem::Impl::AcknowledgeTerminals() noexcept
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         VoiceSlot& v = Voices[i];
-        if (!v.InUse)
+        if (v.InUse == false)
         {
             continue;
         }
@@ -534,7 +534,7 @@ void AudioSystem::Impl::AcknowledgeTerminals() noexcept
         const uint32 termGen = v.Terminal.TerminalGeneration.load(std::memory_order_acquire);
         if (termGen != 0 && termGen == v.Generation.Value)
         {
-            if (!v.IsStream && v.GroupIndex < GroupCount && Groups[v.GroupIndex].Admitted > 0)
+            if (v.IsStream == false && v.GroupIndex < GroupCount && Groups[v.GroupIndex].Admitted > 0)
             {
                 --Groups[v.GroupIndex].Admitted;
             }
@@ -573,7 +573,7 @@ void AudioSystem::Impl::ApplyStopMailboxes() noexcept
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         VoiceSlot& v = Voices[i];
-        if (!v.InUse || v.State == VoiceState::Terminal)
+        if (v.InUse == false || v.State == VoiceState::Terminal)
         {
             continue;
         }
@@ -652,7 +652,7 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
 
     // Preinitialize physical voice DSP (resamplers) once, outside the per-span
     // loop (still cold relative to steady rendering; first call only).
-    if (!EnsurePhysicalInitialized())
+    if (EnsurePhysicalInitialized() == false)
     {
         for (uint64 i = 0; i < required; ++i)
         {
@@ -698,7 +698,7 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
         for (uint32 i = 0; i < LogicalCapacity; ++i)
         {
             VoiceSlot& v = Voices[i];
-            if (!v.InUse)
+            if (v.InUse == false)
             {
                 continue;
             }
@@ -715,7 +715,7 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
                     const bool terminal = rendered.Terminal, error = rendered.Error;
                     v.CursorFrame += rendered.Frames;
                     v.FadeGain = stream->Fade;
-                    if (rendered.Frames < span && !terminal && v.State != VoiceState::Stopping)
+                    if (rendered.Frames < span && terminal == false && v.State != VoiceState::Stopping)
                     {
                         ++StreamStarvations;
                     }
@@ -740,7 +740,7 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
             {
                 // Bind a physical slot if needed.
                 uint32 phys = v.PhysicalIndex;
-                if (phys >= MixedCapacity || !Physical[phys].Bound || Physical[phys].LogicalSlot != i)
+                if (phys >= MixedCapacity || Physical[phys].Bound == false || Physical[phys].LogicalSlot != i)
                 {
                     phys = FindPhysicalFor(i);
                     if (phys >= MixedCapacity)
@@ -772,7 +772,7 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
                 const float32 fade = v.FadeTarget;
                 const float32 targetL = v.TargetGainL * fade;
                 const float32 targetR = v.TargetGainR * fade;
-                if (!ph.HasTarget || targetL != ph.LastTargetL || targetR != ph.LastTargetR)
+                if (ph.HasTarget == false || targetL != ph.LastTargetL || targetR != ph.LastTargetR)
                 {
                     const float32 denom = rampFrames == 0 ? 1.0F : static_cast<float32>(rampFrames);
                     float32 dl = targetL - ph.CurrentGainL;
@@ -836,7 +836,7 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
                 v.FadeGain = ph.CurrentGainL > ph.CurrentGainR ? ph.CurrentGainL : ph.CurrentGainR;
 
                 // Natural EOF of a finite nonloop voice.
-                if (in.Dsp->AtEof && !v.Looping)
+                if (in.Dsp->AtEof && v.Looping == false)
                 {
                     ++EofEvents;
                     UnbindPhysical(phys);
@@ -877,7 +877,7 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
                                                                  c.LoopBegin,
                                                                  c.LoopEnd,
                                                                  span);
-                if (!alive)
+                if (alive == false)
                 {
                     ++EofEvents;
                     TerminateVoice(i, TerminalReason::Expired, StateCause::Expired);
@@ -897,12 +897,12 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
         {
             float32 l = rootL[f];
             float32 r = rootR[f];
-            if (!std::isfinite(l))
+            if (std::isfinite(l) == false)
             {
                 l = 0.0F;
                 ++NonFiniteFaults;
             }
-            if (!std::isfinite(r))
+            if (std::isfinite(r) == false)
             {
                 r = 0.0F;
                 ++NonFiniteFaults;
@@ -979,7 +979,7 @@ void AudioSystem::Impl::FillSnapshot(SystemSnapshot& out) const noexcept
     for (uint32 i = 0; i < LogicalCapacity; ++i)
     {
         const VoiceSlot& v = Voices[i];
-        if (!v.InUse)
+        if (v.InUse == false)
         {
             continue;
         }
@@ -1046,7 +1046,7 @@ void AudioSystem::Impl::PublishSnapshot() noexcept
     internal::SnapshotRecord rec{};
     FillSnapshot(rec.System);
     std::span<const internal::SnapshotRecord> one(&rec, 1);
-    if (!SnapshotRing.TryPublishBatch(one))
+    if (SnapshotRing.TryPublishBatch(one) == false)
     {
         ++SnapshotLosses;
     }

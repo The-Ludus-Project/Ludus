@@ -33,7 +33,7 @@ namespace
 std::string read_file(const std::filesystem::path& path)
 {
     std::ifstream stream(path, std::ios::binary);
-    if (!stream)
+    if (stream.fail() == true)
     {
         return {};
     }

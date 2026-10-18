@@ -349,7 +349,7 @@ void onGlobalRegistry([[maybe_unused]] void* data,
         xdg_wm_base_add_listener(xdgWmBase, &gXdgWmBaseListener, nullptr);
         gXdgWmBase = UniquePtr<xdg_wm_base>(xdgWmBase);
     }
-    if (std::strcmp(interface, wl_seat_interface.name) == 0 && !gSeatSelected)
+    if (std::strcmp(interface, wl_seat_interface.name) == 0 && gSeatSelected == false)
     {
         // Select the first (lowest registry name) seat deterministically and keep
         // it until removal. Bound the version to what the build headers support.
@@ -444,7 +444,7 @@ void onSeatCapabilities([[maybe_unused]] void* data, wl_seat* seat, uint32_t cap
         wl_keyboard_add_listener(keyboard, &gKeyboardListener, nullptr);
         LUDUS_LOG_INFO(LOG_PLATFORM, "Wayland keyboard acquired");
     }
-    else if (!hasKeyboard && gKeyboard != nullptr)
+    else if (hasKeyboard == false && gKeyboard != nullptr)
     {
         // Capability lost: cancel input and release the keyboard; window stays
         // usable without a keyboard (K10).
@@ -536,7 +536,7 @@ void onKeyboardKey([[maybe_unused]] void* data,
     // Shared, unit-tested normalization. An unsupported/vendor/media code yields
     // false and is dropped with no state change (K01).
     ludus::input::KeyboardRecord record;
-    if (!BuildKeyRecord(key, state == WL_KEYBOARD_KEY_STATE_PRESSED, time, record))
+    if (BuildKeyRecord(key, state == WL_KEYBOARD_KEY_STATE_PRESSED, time, record) == false)
     {
         return;
     }
@@ -731,7 +731,7 @@ static bool pumpDisplayOnce(WindowWayland* self) noexcept
     {
         const foundation::int32 pollError = errno;
         wl_display_cancel_read(display);
-        return pollError == EINTR && !self->IsClosed();
+        return pollError == EINTR && self->IsClosed() == false;
     }
     if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
     {
@@ -761,13 +761,13 @@ static bool pumpDisplayOnce(WindowWayland* self) noexcept
         return false;
     }
 
-    return !self->IsClosed();
+    return self->IsClosed() == false;
 }
 
 bool WindowWayland::HandleEvent([[maybe_unused]] const Event& event) noexcept
 {
     const bool alive = pumpDisplayOnce(this);
-    if (!alive)
+    if (alive == false)
     {
         // The window is closing or the display pump failed terminally. Submit a
         // final reset to this window's sink (if attached and focused) so a held

@@ -85,7 +85,7 @@ void Stop(bool failed) noexcept
 bool Accepted(rhi::RasterStatus status) noexcept
 {
     const bool accepted = status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
-    if (!accepted)
+    if (accepted == false)
     {
         LUDUS_LOG_ERROR(LOG_R6, "R6 creation rejected with status {}", static_cast<uint32>(status));
     }
@@ -132,29 +132,33 @@ bool Create() noexcept
         return false;
     }
     gCompute = info.Enabled.Compute;
-    if (!Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Vertex, sizeof(points)}, Bytes(points), gVertices)) ||
-        !Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Vertex, sizeof(offsets)}, Bytes(offsets), gInstances)) ||
-        !Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Index32, sizeof(indices)}, Bytes(indices), gIndices)) ||
-        !Accepted(rhi::CreateRasterShader(gDevice, fragment, gFragment)))
+    if (Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Vertex, sizeof(points)}, Bytes(points), gVertices)) ==
+            false ||
+        Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Vertex, sizeof(offsets)}, Bytes(offsets), gInstances)) ==
+            false ||
+        Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Index32, sizeof(indices)}, Bytes(indices), gIndices)) ==
+            false ||
+        Accepted(rhi::CreateRasterShader(gDevice, fragment, gFragment)) == false)
     {
         return false;
     }
     if (gCompute)
     {
         const auto kernel = ludus::shaders::cull::Compute();
-        if (!Accepted(rhi::CreateRasterShader(gDevice, kernel, gComputeShader)) ||
-            !Accepted(rhi::CreateBindingLayout(gDevice, kernel.Bindings, gComputeLayout)))
+        if (Accepted(rhi::CreateRasterShader(gDevice, kernel, gComputeShader)) == false ||
+            Accepted(rhi::CreateBindingLayout(gDevice, kernel.Bindings, gComputeLayout)) == false)
         {
             return false;
         }
     }
     for (usize i = 0; i < OBJECTS; ++i)
     {
-        if (!Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Uniform, sizeof(tint)}, Bytes(tint), gBuffers[i])) ||
-            !Accepted(rhi::CreateTexture(gDevice, {2, 2}, {image, 8}, gTextures[i])) ||
-            !Accepted(rhi::CreateSampler(gDevice, {}, gSamplers[i])) ||
-            !Accepted(rhi::CreateRasterShader(gDevice, vertex, gShaders[i])) ||
-            !Accepted(rhi::CreateBindingLayout(gDevice, fragment.Bindings, gLayouts[i])))
+        if (Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Uniform, sizeof(tint)}, Bytes(tint), gBuffers[i])) ==
+                false ||
+            Accepted(rhi::CreateTexture(gDevice, {2, 2}, {image, 8}, gTextures[i])) == false ||
+            Accepted(rhi::CreateSampler(gDevice, {}, gSamplers[i])) == false ||
+            Accepted(rhi::CreateRasterShader(gDevice, vertex, gShaders[i])) == false ||
+            Accepted(rhi::CreateBindingLayout(gDevice, fragment.Bindings, gLayouts[i])) == false)
         {
             return false;
         }
@@ -165,15 +169,15 @@ bool Create() noexcept
 }
 bool IndependentReady() noexcept
 {
-    if (!Ready(gVertices) || !Ready(gInstances) || !Ready(gIndices) || !Ready(gFragment) ||
-        (gCompute && (!Ready(gComputeShader) || !Ready(gComputeLayout))))
+    if (Ready(gVertices) == false || Ready(gInstances) == false || Ready(gIndices) == false ||
+        Ready(gFragment) == false || (gCompute && (Ready(gComputeShader) == false || Ready(gComputeLayout) == false)))
     {
         return false;
     }
     for (usize i = 0; i < OBJECTS; ++i)
     {
-        if (!Ready(gBuffers[i]) || !Ready(gTextures[i]) || !Ready(gSamplers[i]) || !Ready(gShaders[i]) ||
-            !Ready(gLayouts[i]))
+        if (Ready(gBuffers[i]) == false || Ready(gTextures[i]) == false || Ready(gSamplers[i]) == false ||
+            Ready(gShaders[i]) == false || Ready(gLayouts[i]) == false)
         {
             return false;
         }
@@ -187,7 +191,7 @@ bool Link() noexcept
         const rhi::RasterBindingResource resources[]{{ .Buffer = gBuffers[i], .Size = 16 },
                                                      { .Binding = 1, .Texture = gViews[i] },
                                                      { .Binding = 2, .Sampler = gSamplers[i] }};
-        if (!Accepted(rhi::CreateBindingSet(gDevice, gLayouts[i], resources, gSets[i])))
+        if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[i], resources, gSets[i])) == false)
         {
             return false;
         }
@@ -195,13 +199,14 @@ bool Link() noexcept
         const rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
                                                       {1, 0, 12, rhi::RasterVertexFormat::Float2},
                                                       {2, 1, 0, rhi::RasterVertexFormat::Float2}};
-        if (!Accepted(rhi::CreateRasterPipeline(gDevice,
-                                                {gShaders[i], gFragment, gLayouts[i], streams, attributes, false},
-                                                gPipelines[i])))
+        if (Accepted(rhi::CreateRasterPipeline(gDevice,
+                                               {gShaders[i], gFragment, gLayouts[i], streams, attributes, false},
+                                               gPipelines[i])) == false)
         {
             return false;
         }
-        if (gCompute && !Accepted(rhi::CreateComputePipeline(gDevice, {gComputeShader, gComputeLayout}, gKernels[i])))
+        if (gCompute &&
+            Accepted(rhi::CreateComputePipeline(gDevice, {gComputeShader, gComputeLayout}, gKernels[i])) == false)
         {
             return false;
         }
@@ -215,15 +220,16 @@ bool Link() noexcept
 }
 bool AllReady() noexcept
 {
-    if (!Ready(gVertices) || !Ready(gInstances) || !Ready(gIndices) || !Ready(gFragment))
+    if (Ready(gVertices) == false || Ready(gInstances) == false || Ready(gIndices) == false ||
+        Ready(gFragment) == false)
     {
         return false;
     }
     for (usize i = 0; i < OBJECTS; ++i)
     {
-        if (!Ready(gBuffers[i]) || !Ready(gTextures[i]) || !Ready(gViews[i]) || !Ready(gSamplers[i]) ||
-            !Ready(gShaders[i]) || !Ready(gLayouts[i]) || !Ready(gSets[i]) || !Ready(gPipelines[i]) ||
-            (gCompute && !Ready(gKernels[i])))
+        if (Ready(gBuffers[i]) == false || Ready(gTextures[i]) == false || Ready(gViews[i]) == false ||
+            Ready(gSamplers[i]) == false || Ready(gShaders[i]) == false || Ready(gLayouts[i]) == false ||
+            Ready(gSets[i]) == false || Ready(gPipelines[i]) == false || (gCompute && Ready(gKernels[i]) == false))
         {
             return false;
         }
@@ -261,15 +267,15 @@ bool DrawGraph() noexcept
 {
     gStage = 61;
     rhi::OrderedGraph graph;
-    if (!Checked(rhi::CreateOrderedGraph(gDevice, graph)))
+    if (Checked(rhi::CreateOrderedGraph(gDevice, graph)) == false)
     {
         return false;
     }
     rhi::GraphUse uses[147];
     rhi::GraphVersion vertex, instance, indices;
-    if (!Checked(rhi::ImportGraphBuffer(gDevice, graph, gVertices, vertex)) ||
-        !Checked(rhi::ImportGraphBuffer(gDevice, graph, gInstances, instance)) ||
-        !Checked(rhi::ImportGraphBuffer(gDevice, graph, gIndices, indices)))
+    if (Checked(rhi::ImportGraphBuffer(gDevice, graph, gVertices, vertex)) == false ||
+        Checked(rhi::ImportGraphBuffer(gDevice, graph, gInstances, instance)) == false ||
+        Checked(rhi::ImportGraphBuffer(gDevice, graph, gIndices, indices)) == false)
     {
         return false;
     }
@@ -280,14 +286,14 @@ bool DrawGraph() noexcept
     {
         rhi::GraphVersion uniform, texture;
         rhi::RasterTextureState state;
-        if (!Checked(rhi::ImportGraphBuffer(gDevice, graph, gBuffers[i], uniform)) ||
-            !Checked(rhi::GetTextureState(gDevice, gTextures[i], state)) ||
-            !Checked(rhi::ImportGraphTexture(gDevice,
-                                             graph,
-                                             gTextures[i],
-                                             state,
-                                             rhi::RasterTextureUse::SampledBoth,
-                                             texture)))
+        if (Checked(rhi::ImportGraphBuffer(gDevice, graph, gBuffers[i], uniform)) == false ||
+            Checked(rhi::GetTextureState(gDevice, gTextures[i], state)) == false ||
+            Checked(rhi::ImportGraphTexture(gDevice,
+                                            graph,
+                                            gTextures[i],
+                                            state,
+                                            rhi::RasterTextureUse::SampledBoth,
+                                            texture)) == false)
         {
             return false;
         }
@@ -305,7 +311,7 @@ bool DrawGraph() noexcept
         pass.UseCount = 147;
         pass.Draws = gDraws + usize{i} * 10;
         pass.DrawCount = i == 39 ? 15 : 10;
-        if (!Checked(rhi::AddGraphPass(gDevice, graph, pass)))
+        if (Checked(rhi::AddGraphPass(gDevice, graph, pass)) == false)
         {
             return false;
         }
@@ -313,9 +319,9 @@ bool DrawGraph() noexcept
     gStage = 64;
     rhi::GraphReport report;
     rhi::GraphPassDiagnostic last;
-    if (!Checked(rhi::CompileOrderedGraph(gDevice, graph, report)) || report.PassCount != 40 ||
-        report.ResourceCount != 147 || report.DrawCount != 405 || !report.DiagnosticsTruncated ||
-        !Checked(rhi::GetGraphPassDiagnostic(gDevice, graph, 39, last)) || last.Line != 40)
+    if (Checked(rhi::CompileOrderedGraph(gDevice, graph, report)) == false || report.PassCount != 40 ||
+        report.ResourceCount != 147 || report.DrawCount != 405 || report.DiagnosticsTruncated == false ||
+        Checked(rhi::GetGraphPassDiagnostic(gDevice, graph, 39, last)) == false || last.Line != 40)
     {
         return false;
     }
@@ -344,27 +350,27 @@ void Tick() noexcept
         }
         return;
     }
-    if (!gCreated)
+    if (gCreated == false)
     {
         gStage = 1;
-        if (!Create())
+        if (Create() == false)
         {
             Stop(true);
             return;
         }
         gCreated = true;
     }
-    if (!gViewsCreated)
+    if (gViewsCreated == false)
     {
         gStage = 2;
-        if (!IndependentReady())
+        if (IndependentReady() == false)
         {
             return;
         }
         gStage = 3;
         for (usize i = 0; i < OBJECTS; ++i)
         {
-            if (!Accepted(rhi::CreateTextureView(gDevice, gTextures[i], gViews[i])))
+            if (Accepted(rhi::CreateTextureView(gDevice, gTextures[i], gViews[i])) == false)
             {
                 Stop(true);
                 return;
@@ -372,17 +378,17 @@ void Tick() noexcept
         }
         gViewsCreated = true;
     }
-    if (!gLinked)
+    if (gLinked == false)
     {
         for (const auto view : gViews)
         {
-            if (!Ready(view))
+            if (Ready(view) == false)
             {
                 return;
             }
         }
         gStage = 4;
-        if (!Link())
+        if (Link() == false)
         {
             Stop(true);
             return;
@@ -390,7 +396,7 @@ void Tick() noexcept
         gLinked = true;
     }
     gStage = 5;
-    if (!AllReady())
+    if (AllReady() == false)
     {
         return;
     }
@@ -402,7 +408,7 @@ void Tick() noexcept
     gStage = 6;
     gRetry = false;
     const bool drawn = gFrames == 0 && Reference() == 0 ? DrawGraph() : DrawBatch(gFrames == 1 ? 1100 : 405);
-    if (!drawn)
+    if (drawn == false)
     {
         if (gRetry)
         {
@@ -438,7 +444,7 @@ int main()
     windowDescription.Height = 64;
     windowDescription.CanvasSelector = "#canvas";
     windowDescription.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(windowDescription, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(windowDescription, gWindow) == false)
     {
         return 1;
     }
@@ -464,11 +470,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto started = time::NowTicks();
-    while (!gDone && time::NowTicks() - started < 30 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - started < 30 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

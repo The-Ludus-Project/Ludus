@@ -65,7 +65,7 @@ void Frame() noexcept
     {
         return;
     }
-    if (startup != rhi::StartupState::Ready || !gWindow->HandleEvent({}))
+    if (startup != rhi::StartupState::Ready || gWindow->HandleEvent({}) == false)
     {
         Fail();
         return;
@@ -85,7 +85,7 @@ void Frame() noexcept
         .HeldActions = HeldActions(),
         .Paused = static_cast<uint8>(gPaused),
     };
-    if (!gPaused && gApi.Update(gInstance, &input, &gRender) != game::Status::Ok)
+    if (gPaused == false && gApi.Update(gInstance, &input, &gRender) != game::Status::Ok)
     {
         Fail();
         return;
@@ -137,8 +137,8 @@ int main()
     };
     ludus::platform::WindowManager manager;
     if (LudusGetGameApi(game::kAbiMajor, game::kAbiMinor, &gApi) != game::Status::Ok ||
-        gApi.Create(&info, &gInstance) != game::Status::Ok || !manager.Initialize({}) ||
-        !manager.CreateWindow({ .Name = "Ludus web sample", .Width = 800, .Height = 600 }, gWindow))
+        gApi.Create(&info, &gInstance) != game::Status::Ok || manager.Initialize({}) == false ||
+        manager.CreateWindow({ .Name = "Ludus web sample", .Width = 800, .Height = 600 }, gWindow) == false)
     {
         Fail();
         return 1;

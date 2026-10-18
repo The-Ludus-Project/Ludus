@@ -92,7 +92,7 @@ template <typename ScalarType>
 template <typename ScalarType>
 [[nodiscard]] constexpr ScalarType Clamp(ScalarType value, ScalarType lo, ScalarType hi) noexcept
 {
-    LUDUS_ASSERT(!(hi < lo));
+    LUDUS_ASSERT((hi < lo) == false);
     return value < lo ? lo : (hi < value ? hi : value);
 }
 

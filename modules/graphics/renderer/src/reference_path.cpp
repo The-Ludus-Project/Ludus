@@ -35,7 +35,7 @@ void AddTransport(ReferencePath& path, math::Vector3 contribution, uint32 depth,
     {
         path.Emission = path.Emission + contribution;
     }
-    else if ((emission && depth == 1) || (!emission && depth == 0))
+    else if ((emission && depth == 1) || (emission == false && depth == 0))
     {
         path.Direct = path.Direct + contribution;
     }
@@ -234,8 +234,8 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                    ? rhi::RasterStatus::Ready
                    : Invalid(inoutInfo, path);
     }
-    if (hit.Hit != 1 || hit.Instance >= job.Scene.InstanceCount || !math::IsFinite(hit.Distance) ||
-        !math::IsFinite(hit.U) || !math::IsFinite(hit.V) || hit.Distance < path.Ray.MinDistance ||
+    if (hit.Hit != 1 || hit.Instance >= job.Scene.InstanceCount || math::IsFinite(hit.Distance) == false ||
+        math::IsFinite(hit.U) == false || math::IsFinite(hit.V) == false || hit.Distance < path.Ray.MinDistance ||
         hit.Distance > path.Ray.MaxDistance || hit.U < -1e-5F || hit.V < -1e-5F || hit.U + hit.V > 1.00001F)
     {
         return Invalid(inoutInfo, path);
@@ -253,7 +253,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         (surface.IsEmissionTwoSided == true || math::Dot(triangle.GeometricNormal, view) > 0))
     {
         const auto pdf = AreaPdf(triangle, path.PreviousPoint, point, lights);
-        if (!math::IsFinite(pdf) || pdf < 0)
+        if (math::IsFinite(pdf) == false || pdf < 0)
         {
             return Invalid(inoutInfo, path);
         }
@@ -297,7 +297,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         normal = ApplyReferenceNormal(triangle, surface, normal, parameters.NormalTangent, hit.U, hit.V);
     }
     const auto proposal = SampleLight(job, path, point);
-    if (!math::IsFinite(proposal.Pdf) || proposal.Pdf < 0 || !ValidContribution(proposal.Radiance))
+    if (math::IsFinite(proposal.Pdf) == false || proposal.Pdf < 0 || ValidContribution(proposal.Radiance) == false)
     {
         return Invalid(inoutInfo, path);
     }
@@ -313,7 +313,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         const auto weight = proposal.Delta ? 1 : ReferencePowerWeight(proposal.Pdf, evaluation.Pdf);
         path.PendingDirect = math::Hadamard(path.Throughput, math::Hadamard(evaluation.Value, proposal.Radiance)) *
                              (cosine * weight / proposal.Pdf);
-        if (!ValidContribution(path.PendingDirect))
+        if (ValidContribution(path.PendingDirect) == false)
         {
             return Invalid(inoutInfo, path);
         }
@@ -325,7 +325,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             if (proposal.FiniteEndpoint)
             {
                 auto end = proposal.Point;
-                if (!proposal.Delta &&
+                if (proposal.Delta == false &&
                     math::TryOffsetRayOrigin({proposal.Point, proposal.Error, proposal.Normal, -direction}, end) !=
                         math::MathStatus::Success)
                 {
@@ -333,7 +333,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                 }
                 const auto delta = end - start;
                 distance = math::Length(delta);
-                if (distance <= 0 || !math::IsFinite(distance))
+                if (distance <= 0 || math::IsFinite(distance) == false)
                 {
                     return Invalid(inoutInfo, path);
                 }
@@ -359,18 +359,18 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     {
         return Invalid(inoutInfo, path);
     }
-    if (!sample.Accepted || math::Dot(triangle.GeometricNormal, sample.Direction) <= 0)
+    if (sample.Accepted == false || math::Dot(triangle.GeometricNormal, sample.Direction) <= 0)
     {
         ++inoutInfo.NullBsdfSamples;
         return rhi::RasterStatus::Ready;
     }
     path.Throughput = math::Hadamard(path.Throughput, sample.Evaluation.Value) *
                       (math::Dot(normal, sample.Direction) / sample.Evaluation.Pdf);
-    if (!ValidContribution(path.Throughput))
+    if (ValidContribution(path.Throughput) == false)
     {
         return Invalid(inoutInfo, path);
     }
-    if (!Positive(path.Throughput))
+    if (Positive(path.Throughput) == false)
     {
         return rhi::RasterStatus::Ready;
     }
@@ -389,7 +389,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         path.Throughput = path.Throughput / survival;
     }
     const auto origin = Offset(point, triangle, sample.Direction);
-    if (!math::IsFinite(origin))
+    if (math::IsFinite(origin) == false)
     {
         return Invalid(inoutInfo, path);
     }

@@ -115,7 +115,8 @@ bool CreateTargets(uint32 size, rhi::TextureHandle (&targets)[2]) noexcept
 {
     for (auto& target : targets)
     {
-        if (!Accepted(rhi::CreateTexture(gDevice, {size, size, rhi::RasterFormat::Rgba8Unorm, true}, {}, target)))
+        if (Accepted(rhi::CreateTexture(gDevice, {size, size, rhi::RasterFormat::Rgba8Unorm, true}, {}, target)) ==
+            false)
         {
             Stop(true);
             return false;
@@ -142,9 +143,9 @@ void Tick() noexcept
     }
     if (gStep == 0)
     {
-        if (!Accepted(gRenderer.Initialize(gDevice,
-                                           ludus::shaders::renderer_flat::Vertex(),
-                                           ludus::shaders::renderer_flat::Fragment())))
+        if (Accepted(gRenderer.Initialize(gDevice,
+                                          ludus::shaders::renderer_flat::Vertex(),
+                                          ludus::shaders::renderer_flat::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -157,8 +158,8 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
-                                                ludus::shaders::renderer_composite::Fragment())))
+        if (Accepted(gRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                               ludus::shaders::renderer_composite::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -171,8 +172,8 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gRenderer.CreateMesh({ludus::qa::L1_QUAD, 4, ludus::qa::L1_INDICES, 6}, gMesh)) ||
-            !CreateTargets(48, gTargets))
+        if (Accepted(gRenderer.CreateMesh({ludus::qa::L1_QUAD, 4, ludus::qa::L1_INDICES, 6}, gMesh)) == false ||
+            CreateTargets(48, gTargets) == false)
         {
             Stop(true);
             return;
@@ -199,13 +200,13 @@ void Tick() noexcept
         }
         for (usize i = 0; i < 2; ++i)
         {
-            if (!Accepted(ludus::qa::BuildL1View(gRenderer,
-                                                 gSnapshot,
-                                                 i == 1,
-                                                 i == 1,
-                                                 Reference() != 0,
-                                                 gViews[i],
-                                                 gReports[i])))
+            if (Accepted(ludus::qa::BuildL1View(gRenderer,
+                                                gSnapshot,
+                                                i == 1,
+                                                i == 1,
+                                                Reference() != 0,
+                                                gViews[i],
+                                                gReports[i])) == false)
             {
                 Stop(true);
                 return;
@@ -266,11 +267,11 @@ void Tick() noexcept
         gWaiting = false;
         if (gFrames == 120)
         {
-            Stop(!gZeroSkipped || !gResized);
+            Stop(gZeroSkipped == false || gResized == false);
             return;
         }
     }
-    if (gFrames == 20 && !gZeroSkipped)
+    if (gFrames == 20 && gZeroSkipped == false)
     {
         if (rhi::SetFrameTarget(gDevice, gSurface, {0, 0, 0, 0, 0, 1}) != rhi::DeviceStatus::Ready ||
             rhi::BeginFrame(gDevice, gSurface) != rhi::DeviceStatus::Skipped)
@@ -280,12 +281,12 @@ void Tick() noexcept
         }
         gZeroSkipped = true;
     }
-    if (gFrames == 40 && !gResized)
+    if (gFrames == 40 && gResized == false)
     {
         if (gStep == 6)
         {
             // Allocate complete replacement targets before dropping the old generation.
-            if (!CreateTargets(96, gNextTargets))
+            if (CreateTargets(96, gNextTargets) == false)
             {
                 return;
             }
@@ -386,7 +387,7 @@ int main()
     settings.Height = gHeight;
     settings.CanvasSelector = "#canvas";
     settings.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(settings, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(settings, gWindow) == false)
         return 1;
     window = gWindow->GetNativeWindowInfo();
 #endif
@@ -406,11 +407,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto start = time::NowTicks();
-    while (!gDone && time::NowTicks() - start < 15 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - start < 15 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

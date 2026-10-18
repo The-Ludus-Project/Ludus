@@ -73,7 +73,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
 {
     const auto slot = publication.Lease;
     const auto textureSlot = publication.Texture;
-    if (!gNativeVulkanReads.EnsureSlots(slot + 1))
+    if (gNativeVulkanReads.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }

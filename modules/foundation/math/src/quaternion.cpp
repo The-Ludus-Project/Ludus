@@ -29,7 +29,7 @@ struct Quat4d
 [[nodiscard]] MathStatus NarrowUnit(const Quat4d& q, Quaternion& out) noexcept
 {
     const float64 len = Len4d(q);
-    if (len == 0.0 || !std::isfinite(len))
+    if (len == 0.0 || std::isfinite(len) == false)
     {
         return MathStatus::Degenerate;
     }
@@ -37,7 +37,7 @@ struct Quat4d
     const float32 y = static_cast<float32>(q.y / len);
     const float32 z = static_cast<float32>(q.z / len);
     const float32 w = static_cast<float32>(q.w / len);
-    if (!IsFinite(x) || !IsFinite(y) || !IsFinite(z) || !IsFinite(w))
+    if (IsFinite(x) == false || IsFinite(y) == false || IsFinite(z) == false || IsFinite(w) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -49,7 +49,7 @@ struct Quat4d
 // non-finite.
 [[nodiscard]] bool NormalizeDir(Vector3 v, float64& ox, float64& oy, float64& oz) noexcept
 {
-    if (!IsFinite(v))
+    if (IsFinite(v) == false)
     {
         return false;
     }
@@ -60,7 +60,7 @@ struct Quat4d
     }
     const float64 ux = (float64)v.X / s, uy = (float64)v.Y / s, uz = (float64)v.Z / s;
     const float64 len = std::sqrt(ux * ux + uy * uy + uz * uz);
-    if (len == 0.0 || !std::isfinite(len))
+    if (len == 0.0 || std::isfinite(len) == false)
     {
         return false;
     }
@@ -73,7 +73,7 @@ struct Quat4d
 
 MathStatus TryNormalize(Quaternion q, Quaternion& out) noexcept
 {
-    if (!IsFinite(q))
+    if (IsFinite(q) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -86,12 +86,12 @@ MathStatus TryNormalize(Quaternion q, Quaternion& out) noexcept
 
 MathStatus TryFromAxisAngle(Vector3 axis, float32 angleRadians, Quaternion& out) noexcept
 {
-    if (!IsFinite(axis) || !std::isfinite(angleRadians))
+    if (IsFinite(axis) == false || std::isfinite(angleRadians) == false)
     {
         return MathStatus::NonFiniteInput;
     }
     float64 ax, ay, az;
-    if (!NormalizeDir(axis, ax, ay, az))
+    if (NormalizeDir(axis, ax, ay, az) == false)
     {
         return MathStatus::Degenerate;
     }
@@ -125,12 +125,12 @@ Vector3 Rotate(Quaternion q, Vector3 v) noexcept
 // See docs/architecture/math-research.md for the reviewed source and adaptations.
 MathStatus TryRotationBetween(Vector3 from, Vector3 to, Quaternion& out) noexcept
 {
-    if (!IsFinite(from) || !IsFinite(to))
+    if (IsFinite(from) == false || IsFinite(to) == false)
     {
         return MathStatus::NonFiniteInput;
     }
     float64 fx, fy, fz, tx, ty, tz;
-    if (!NormalizeDir(from, fx, fy, fz) || !NormalizeDir(to, tx, ty, tz))
+    if (NormalizeDir(from, fx, fy, fz) == false || NormalizeDir(to, tx, ty, tz) == false)
     {
         return MathStatus::Degenerate;
     }
@@ -262,7 +262,7 @@ Quaternion SlerpShortest(Quaternion a, Quaternion b, float32 t) noexcept
 
 bool SameRotation(Quaternion a, Quaternion b, float32 toleranceRadians) noexcept
 {
-    if (!IsFinite(a) || !IsFinite(b) || !std::isfinite(toleranceRadians))
+    if (IsFinite(a) == false || IsFinite(b) == false || std::isfinite(toleranceRadians) == false)
     {
         return false;
     }

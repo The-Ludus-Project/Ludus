@@ -48,7 +48,7 @@ void AsyncBackend::DrainBatch() noexcept
     QueuedRecord rec;
     for (int i = 0; i < kBatch; ++i)
     {
-        if (!mQueue.TryDequeue(rec))
+        if (mQueue.TryDequeue(rec) == false)
         {
             break;
         }
@@ -68,7 +68,7 @@ void AsyncBackend::ServiceFlush() noexcept
         durable = mFlushDurable;
         fence = mFlushFence;
     }
-    if (!requested)
+    if (requested == false)
     {
         return;
     }
@@ -182,11 +182,11 @@ AsyncBackend::FlushOutcome AsyncBackend::Flush(bool durable, uint32 timeoutMs) n
     mWakeCv.notify_one();
 
     const bool completed = mFlushDone.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this, fence] {
-        return mFlushAckedPos >= fence && !mFlushRequested;
+        return mFlushAckedPos >= fence && mFlushRequested == false;
     });
 
     outcome.AcknowledgedPos = mFlushAckedPos;
-    outcome.TimedOut = !completed;
+    outcome.TimedOut = completed == false;
     outcome.Ok = completed && mLastFlushOk;
     return outcome;
 }
@@ -195,7 +195,7 @@ bool AsyncBackend::Stop(uint32 joinTimeoutMs) noexcept
 {
     mStop.store(true, std::memory_order_release);
     mWakeCv.notify_all();
-    if (!mWorker.joinable())
+    if (mWorker.joinable() == false)
     {
         return true;
     }
@@ -203,7 +203,7 @@ bool AsyncBackend::Stop(uint32 joinTimeoutMs) noexcept
         std::unique_lock<std::mutex> lock(mControlMutex);
         const bool exited =
             mExitedCv.wait_for(lock, std::chrono::milliseconds(joinTimeoutMs), [this] { return mExited; });
-        if (!exited)
+        if (exited == false)
         {
             return false; // caller retains storage; do not free (requirements R40)
         }

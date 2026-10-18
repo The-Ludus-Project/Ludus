@@ -110,7 +110,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
     }
     State* allocation = new (std::nothrow) State;
     core::UniquePtr<State> candidate{allocation};
-    if (!candidate)
+    if (candidate.Get() == nullptr)
     {
         return Status::OutOfMemory;
     }
@@ -133,7 +133,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
                          ? rhi::RasterFormat::Rgba16Float
                          : rhi::RasterFormat::Rgba8Unorm;
     Status status = rhi::CreateTexture(device, texture, {}, candidate->SceneColor);
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         return status;
     }
@@ -141,7 +141,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
     for (rhi::TextureHandle& image : candidate->Images)
     {
         status = rhi::CreateTexture(device, texture, {}, image);
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             return status;
         }
@@ -162,7 +162,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
     candidate->Exposure = exposure;
     mState = Move(candidate);
     const Status setup = Poll();
-    if (!Accepted(setup))
+    if (Accepted(setup) == false)
     {
         Reset();
     }
@@ -170,7 +170,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
 }
 Status RasterViewport::Poll() noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
     }
@@ -184,14 +184,14 @@ Status RasterViewport::Poll() noexcept
             return status;
         }
     }
-    if (!state.DisplayCreated)
+    if (state.DisplayCreated == false)
     {
         const Status created = state.SceneRenderer->PrepareLightingPresentation(
             state.SceneColor,
             state.Mapping,
             { .Exposure = state.Exposure, .ToneMap = true, .Encode = true },
             state.Display);
-        if (!Accepted(created))
+        if (Accepted(created) == false)
         {
             return created;
         }
@@ -204,7 +204,7 @@ Status RasterViewport::Poll() noexcept
     }
     for (uint32 slot = 0; slot < 2; ++slot)
     {
-        if (!state.Submitted[slot])
+        if (state.Submitted[slot] == false)
         {
             continue;
         }
@@ -243,7 +243,7 @@ Status RasterViewport::Update(Snapshot snapshot, const ViewDescription& view, Vi
     PreparedView candidate;
     ViewReport candidateReport = report;
     const Status status = mState->SceneRenderer->PrepareView(snapshot, view, candidate, candidateReport);
-    if (!Accepted(status))
+    if (Accepted(status) == false)
     {
         return status;
     }
@@ -263,7 +263,7 @@ Status RasterViewport::Update(Snapshot snapshot, const ViewDescription& view, Vi
 }
 Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& completion) noexcept
 {
-    if (!completion.IsNull())
+    if (completion.IsNull() == false)
     {
         return Status::InvalidDescription;
     }
@@ -335,7 +335,7 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
 
 Status RasterViewport::Acquire(ViewportFrame& frame, ViewportImage& image) noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
     }
@@ -345,7 +345,7 @@ Status RasterViewport::Acquire(ViewportFrame& frame, ViewportImage& image) noexc
     }
     State& state = *mState;
     const uint32 index = state.Latest;
-    if (!state.Written[index] || state.Leased[index])
+    if (state.Written[index] == false || state.Leased[index])
     {
         return Status::NotReady;
     }
@@ -367,8 +367,8 @@ Status RasterViewport::Acquire(ViewportFrame& frame, ViewportImage& image) noexc
 }
 Status RasterViewport::Release(ViewportFrame& frame) noexcept
 {
-    if (!mState || frame.Owner != mState->Owner || frame.Slot >= 2 || !mState->Leased[frame.Slot] ||
-        frame.Generation != mState->Generations[frame.Slot])
+    if (mState.Get() == nullptr || frame.Owner != mState->Owner || frame.Slot >= 2 ||
+        mState->Leased[frame.Slot] == false || frame.Generation != mState->Generations[frame.Slot])
     {
         return Status::InvalidHandle;
     }

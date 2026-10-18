@@ -153,8 +153,8 @@ bool VerifyRead(rhi::ReadbackTicket ticket, bool uniform) noexcept
 }
 bool CreateDraw() noexcept
 {
-    if (!Accepted(rhi::CreateTextureView(gDevice, gDestination, gView)) ||
-        !Accepted(rhi::CreateSampler(gDevice, {}, gSampler)))
+    if (Accepted(rhi::CreateTextureView(gDevice, gDestination, gView)) == false ||
+        Accepted(rhi::CreateSampler(gDevice, {}, gSampler)) == false)
     {
         return false;
     }
@@ -199,15 +199,24 @@ void Tick() noexcept
         destination.Width = 4;
         destination.Height = 2;
         destination.MipLevels = 1;
-        if (!Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Uniform, 16}, {zero, 16}, gTint)) ||
-            !Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Vertex, 80}, zero, gVertices)) ||
-            !Accepted(
-                rhi::CreateBuffer(gDevice, {rhi::BufferRole::Vertex, sizeof(offsets)}, Bytes(offsets), gInstances)) ||
-            !Accepted(
-                rhi::CreateBuffer(gDevice, {rhi::BufferRole::Index16, sizeof(indices)}, Bytes(indices), gIndices)) ||
-            !Accepted(rhi::CreateTexture(gDevice, source, {}, gSource)) ||
-            !Accepted(rhi::CreateTexture(gDevice, destination, {}, gDestination)) ||
-            !Accepted(rhi::CreateTexture(gDevice, { .Width = 4, .Height = 2, .Attachment = true }, {}, gTarget)))
+        if (Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Uniform, 16}, {zero, 16}, gTint)) == false ||
+            Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::Vertex, 80}, zero, gVertices)) == false ||
+            Accepted(
+                rhi::CreateBuffer(gDevice, {rhi::BufferRole::Vertex, sizeof(offsets)}, Bytes(offsets), gInstances)) ==
+                false ||
+            Accepted(
+                rhi::CreateBuffer(gDevice, {rhi::BufferRole::Index16, sizeof(indices)}, Bytes(indices), gIndices)) ==
+                false ||
+            Accepted(rhi::CreateTexture(gDevice, source, {}, gSource)) == false ||
+            Accepted(rhi::CreateTexture(gDevice, destination, {}, gDestination)) == false ||
+            Accepted(rhi::CreateTexture(gDevice,
+                                        {
+                                            .Width = 4,
+                                            .Height = 2,
+                                            .Attachment = true,
+                                        },
+                                        {},
+                                        gTarget)) == false)
         {
             Stop(true);
             return;
@@ -216,8 +225,9 @@ void Tick() noexcept
     }
     if (gStage == 1)
     {
-        if (!Complete(gTint) || !Complete(gVertices) || !Complete(gSource) || !Complete(gDestination) ||
-            !Complete(gTarget) || !Complete(gIndices) || !Complete(gInstances))
+        if (Complete(gTint) == false || Complete(gVertices) == false || Complete(gSource) == false ||
+            Complete(gDestination) == false || Complete(gTarget) == false || Complete(gIndices) == false ||
+            Complete(gInstances) == false)
         {
             return;
         }
@@ -243,12 +253,12 @@ void Tick() noexcept
     }
     if (gStage == 2)
     {
-        if (!Complete(gWrites[0]) || !Complete(gWrites[1]))
+        if (Complete(gWrites[0]) == false || Complete(gWrites[1]) == false)
         {
             return;
         }
         if (rhi::Release(gDevice, gWrites[0]) != rhi::RasterStatus::Ready ||
-            rhi::Release(gDevice, gWrites[1]) != rhi::RasterStatus::Ready || !StartMip())
+            rhi::Release(gDevice, gWrites[1]) != rhi::RasterStatus::Ready || StartMip() == false)
         {
             Stop(true);
             return;
@@ -257,7 +267,7 @@ void Tick() noexcept
     }
     if (gStage == 3)
     {
-        if (!Complete(gWrites[0]))
+        if (Complete(gWrites[0]) == false)
         {
             return;
         }
@@ -270,7 +280,8 @@ void Tick() noexcept
         if (gMip < 3)
         {
             rhi::TextureViewHandle forbidden;
-            if (rhi::CreateTextureView(gDevice, gSource, forbidden) != rhi::RasterStatus::InvalidState || !StartMip())
+            if (rhi::CreateTextureView(gDevice, gSource, forbidden) != rhi::RasterStatus::InvalidState ||
+                StartMip() == false)
             {
                 Stop(true);
             }
@@ -290,7 +301,7 @@ void Tick() noexcept
     }
     if (gStage == 4)
     {
-        if (!Complete(gWrites[0]))
+        if (Complete(gWrites[0]) == false)
         {
             return;
         }
@@ -306,13 +317,13 @@ void Tick() noexcept
     }
     if (gStage == 5)
     {
-        if (!Complete(gReads[0]) || !Complete(gReads[1]))
+        if (Complete(gReads[0]) == false || Complete(gReads[1]) == false)
         {
             return;
         }
-        if (!VerifyRead(gReads[0], false) || !VerifyRead(gReads[1], true) ||
+        if (VerifyRead(gReads[0], false) == false || VerifyRead(gReads[1], true) == false ||
             rhi::Release(gDevice, gReads[0]) != rhi::RasterStatus::Ready ||
-            rhi::Release(gDevice, gReads[1]) != rhi::RasterStatus::Ready || !CreateDraw())
+            rhi::Release(gDevice, gReads[1]) != rhi::RasterStatus::Ready || CreateDraw() == false)
         {
             Stop(true);
             return;
@@ -321,7 +332,8 @@ void Tick() noexcept
     }
     if (gStage == 6)
     {
-        if (!Complete(gView) || !Complete(gSampler) || !Complete(gVertex) || !Complete(gFragment) || !Complete(gLayout))
+        if (Complete(gView) == false || Complete(gSampler) == false || Complete(gVertex) == false ||
+            Complete(gFragment) == false || Complete(gLayout) == false)
         {
             return;
         }
@@ -339,14 +351,14 @@ void Tick() noexcept
         pipeline.Streams = streams;
         pipeline.Attributes = attributes;
         pipeline.Depth = false;
-        if (!Accepted(rhi::CreateBindingSet(gDevice, gLayout, resources, gSet)) ||
-            !Accepted(rhi::CreateRasterPipeline(gDevice, pipeline, gPipeline)))
+        if (Accepted(rhi::CreateBindingSet(gDevice, gLayout, resources, gSet)) == false ||
+            Accepted(rhi::CreateRasterPipeline(gDevice, pipeline, gPipeline)) == false)
         {
             Stop(true);
             return;
         }
         pipeline.Target = rhi::RasterTarget::Rgba8Unorm;
-        if (!Accepted(rhi::CreateRasterPipeline(gDevice, pipeline, gOffscreenPipeline)))
+        if (Accepted(rhi::CreateRasterPipeline(gDevice, pipeline, gOffscreenPipeline)) == false)
         {
             Stop(true);
             return;
@@ -363,7 +375,7 @@ void Tick() noexcept
     }
     if (gStage == 7)
     {
-        if (!Complete(gSet) || !Complete(gPipeline) || !Complete(gOffscreenPipeline))
+        if (Complete(gSet) == false || Complete(gPipeline) == false || Complete(gOffscreenPipeline) == false)
         {
             return;
         }
@@ -393,11 +405,11 @@ void Tick() noexcept
     }
     if (gStage == 8)
     {
-        if (!Complete(gReads[0]))
+        if (Complete(gReads[0]) == false)
         {
             return;
         }
-        if (!VerifyRead(gReads[0], false) || rhi::Release(gDevice, gReads[0]) != rhi::RasterStatus::Ready)
+        if (VerifyRead(gReads[0], false) == false || rhi::Release(gDevice, gReads[0]) != rhi::RasterStatus::Ready)
         {
             Stop(true);
             return;
@@ -421,7 +433,7 @@ void Tick() noexcept
     }
     if (gStage == 11)
     {
-        if (!Complete(gWrites[0]))
+        if (Complete(gWrites[0]) == false)
         {
             return;
         }
@@ -445,11 +457,11 @@ void Tick() noexcept
     }
     if (gStage == 12)
     {
-        if (!Complete(gReads[0]))
+        if (Complete(gReads[0]) == false)
         {
             return;
         }
-        if (!VerifyRead(gReads[0], false) || rhi::Release(gDevice, gReads[0]) != rhi::RasterStatus::Ready)
+        if (VerifyRead(gReads[0], false) == false || rhi::Release(gDevice, gReads[0]) != rhi::RasterStatus::Ready)
         {
             Stop(true);
             return;
@@ -491,7 +503,7 @@ int main()
     description.Height = 64;
     description.CanvasSelector = "#canvas";
     description.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(description, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(description, gWindow) == false)
     {
         return 1;
     }
@@ -516,11 +528,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto started = time::NowTicks();
-    while (!gDone && time::NowTicks() - started < 30 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - started < 30 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

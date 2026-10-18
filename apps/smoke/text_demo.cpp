@@ -94,7 +94,7 @@ bool RunDemo() noexcept
     // 1. Create a FontSystem. Passing a default-constructed config selects the
     //    documented budget defaults (8 fonts, 256 layouts, 64 MiB total, ...).
     text::FontSystem* system = nullptr;
-    if (text::Status status = text::CreateFontSystem(text::FontSystemConfig{}, &system); !text::IsOk(status))
+    if (text::Status status = text::CreateFontSystem(text::FontSystemConfig{}, &system); text::IsOk(status) == false)
     {
         LUDUS_LOG_ERROR(LOG_CORE, "text demo: CreateFontSystem failed: {}", text::ToString(status));
         return false;
@@ -118,7 +118,7 @@ bool RunDemo() noexcept
     }
 
     text::FontId font;
-    if (text::Status status = text::LoadFont(system, fontBytes, 0, &font); !text::IsOk(status))
+    if (text::Status status = text::LoadFont(system, fontBytes, 0, &font); text::IsOk(status) == false)
     {
         LUDUS_LOG_ERROR(LOG_CORE, "text demo: LoadFont failed: {}", text::ToString(status));
         (void)text::DestroyFontSystem(system);
@@ -135,7 +135,7 @@ bool RunDemo() noexcept
     constexpr const char* kText = "Ludus Text!";
     constexpr uint32 kPixelHeight = 32;
     text::LayoutId layout;
-    if (text::Status status = text::ShapeLatin(system, font, kText, kPixelHeight, &layout); !text::IsOk(status))
+    if (text::Status status = text::ShapeLatin(system, font, kText, kPixelHeight, &layout); text::IsOk(status) == false)
     {
         LUDUS_LOG_ERROR(LOG_CORE, "text demo: ShapeLatin failed: {}", text::ToString(status));
         (void)text::UnloadFont(system, font);
@@ -189,7 +189,7 @@ bool RunDemo() noexcept
         // 5. Rasterize the first visible glyph into an R8 coverage mask and show
         //    it as ASCII art. The returned Coverage span is borrowed scratch,
         //    valid only until the next raster call, so consume it right away.
-        if (!view.Glyphs.empty())
+        if (view.Glyphs.empty() == false)
         {
             const text::ShapedGlyph& first = view.Glyphs.front();
             text::GlyphBitmap bitmap;
@@ -221,7 +221,7 @@ bool RunDemo() noexcept
     // 6. Tear down in reverse order: layout, then font, then the system.
     (void)text::DestroyLayout(system, layout);
     (void)text::UnloadFont(system, font);
-    if (text::Status status = text::DestroyFontSystem(system); !text::IsOk(status))
+    if (text::Status status = text::DestroyFontSystem(system); text::IsOk(status) == false)
     {
         LUDUS_LOG_ERROR(LOG_CORE, "text demo: DestroyFontSystem failed: {}", text::ToString(status));
         ok = false;

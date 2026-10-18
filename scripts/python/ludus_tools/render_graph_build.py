@@ -232,8 +232,9 @@ def validate_manifest(value):
     bounded_list(value['techniques'], 8, 'techniques')
     for technique in value['techniques']:
         keys(technique, ('id', 'configuration', 'vertex', 'fragment', 'recipes'), 'technique')
-        require(technique['id'] == 'DefaultStaticOpaque.' + technique['configuration'] if type(technique['configuration']) is str else False,
-                'Schema', 'technique', 'RG0 technique identity required')
+        require(type(technique['configuration']) is str and
+                technique['id'] in (family + '.' + technique['configuration'] for family in graph.MATERIALS.values()),
+                'Schema', 'technique', 'RG0 material-family technique identity required')
         enum(technique['configuration'], graph.MODES, 'configuration')
         require(technique['id'] not in techniques, 'Schema', technique['id'], 'duplicate configuration')
         for stage in ('vertex', 'fragment'):
@@ -261,6 +262,12 @@ def validate_manifest(value):
             enum(recipe['blend'], ('Opaque',), 'blend')
         techniques[technique['id']] = technique
     require(techniques, 'Schema', 'techniques', 'nonempty authored techniques required')
+    # A masked depth-only technique must name its own authored coverage function;
+    # the opaque void depth program never stands in for masked coverage.
+    opaque_depth = techniques.get('DefaultStaticOpaque.DepthOnly')
+    masked_depth = techniques.get('DefaultStaticMasked.DepthOnly')
+    require(opaque_depth is None or masked_depth is None or opaque_depth['fragment'] != masked_depth['fragment'],
+            'Schema', 'DefaultStaticMasked.DepthOnly', 'masked coverage requires a separately authored depth function')
     used_programs = {t[s] for t in techniques.values() for s in ('vertex', 'fragment')}
     require(used_programs == programs.keys(), 'Schema', 'programs', 'every program must belong to a declared technique')
     counts = {'configurations': len(techniques), 'programs': len(programs),

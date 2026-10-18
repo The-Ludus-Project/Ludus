@@ -108,7 +108,7 @@ FormatOutcome FormatInto(std::span<char> out, std::string_view fmt, std::span<co
             // "{{" is a literal '{'.
             if (i + 1 < fmt.size() && fmt[i + 1] == '{')
             {
-                truncated = !cursor.Put('{') || truncated;
+                truncated = cursor.Put('{') == false || truncated;
                 ++i;
                 continue;
             }
@@ -133,7 +133,7 @@ FormatOutcome FormatInto(std::span<char> out, std::string_view fmt, std::span<co
             if (j >= fmt.size() || fmt[j] != '}')
             {
                 error = true;
-                truncated = !cursor.Put('{') || truncated;
+                truncated = cursor.Put('{') == false || truncated;
                 continue;
             }
             if (argIndex >= args.size())
@@ -142,7 +142,7 @@ FormatOutcome FormatInto(std::span<char> out, std::string_view fmt, std::span<co
             }
             else
             {
-                truncated = !EmitArg(cursor, args[argIndex], hex) || truncated;
+                truncated = EmitArg(cursor, args[argIndex], hex) == false || truncated;
                 ++argIndex;
             }
             i = j;
@@ -152,16 +152,16 @@ FormatOutcome FormatInto(std::span<char> out, std::string_view fmt, std::span<co
             // "}}" is a literal '}'.
             if (i + 1 < fmt.size() && fmt[i + 1] == '}')
             {
-                truncated = !cursor.Put('}') || truncated;
+                truncated = cursor.Put('}') == false || truncated;
                 ++i;
                 continue;
             }
             error = true; // stray '}'
-            truncated = !cursor.Put('}') || truncated;
+            truncated = cursor.Put('}') == false || truncated;
         }
         else
         {
-            truncated = !cursor.Put(ch) || truncated;
+            truncated = cursor.Put(ch) == false || truncated;
         }
     }
 

@@ -123,9 +123,9 @@ void Tick() noexcept
     }
     if (gStep == 0)
     {
-        if (!Accepted(gRenderer.Initialize(gDevice,
-                                           ludus::shaders::renderer_flat::Vertex(),
-                                           ludus::shaders::renderer_flat::Fragment())))
+        if (Accepted(gRenderer.Initialize(gDevice,
+                                          ludus::shaders::renderer_flat::Vertex(),
+                                          ludus::shaders::renderer_flat::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -138,8 +138,8 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
-                                                ludus::shaders::renderer_composite::Fragment())))
+        if (Accepted(gRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                               ludus::shaders::renderer_composite::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -152,14 +152,14 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gRenderer.PrewarmMaterialProgram(ludus::shaders::renderer_material::Vertex(),
-                                                       ludus::shaders::renderer_material::Fragment(),
-                                                       gProgram)) ||
-            !Accepted(rhi::CreateTexture(gDevice,
-                                         ludus::textures::l3_color::Description(),
-                                         ludus::textures::l3_color::Upload(),
-                                         gTexture)) ||
-            !Accepted(ludus::qa::L3Mesh(gRenderer, gMesh)))
+        if (Accepted(gRenderer.PrewarmMaterialProgram(ludus::shaders::renderer_material::Vertex(),
+                                                      ludus::shaders::renderer_material::Fragment(),
+                                                      gProgram)) == false ||
+            Accepted(rhi::CreateTexture(gDevice,
+                                        ludus::textures::l3_color::Description(),
+                                        ludus::textures::l3_color::Upload(),
+                                        gTexture)) == false ||
+            Accepted(ludus::qa::L3Mesh(gRenderer, gMesh)) == false)
         {
             Stop(true);
             return;
@@ -167,7 +167,7 @@ void Tick() noexcept
         const uint8 bytes[]{255, 255, 255, 0, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, 0};
         rhi::TextureDescription mask{2, 2, rhi::RasterFormat::Rgba8Unorm};
         mask.AsyncUpload = true;
-        if (!Accepted(rhi::CreateTexture(gDevice, mask, {bytes, 8}, gMask)))
+        if (Accepted(rhi::CreateTexture(gDevice, mask, {bytes, 8}, gMask)) == false)
         {
             Stop(true);
             return;
@@ -188,7 +188,7 @@ void Tick() noexcept
         while (gMaterialIndex < ludus::qa::L3_MATERIALS)
         {
             auto description = ludus::qa::L3Material(gMaterialIndex, gMaterialIndex == 4 ? gMask : gTexture);
-            if (!Accepted(gRenderer.CreateMaterial(gProgram, description, gMaterials[gMaterialIndex])))
+            if (Accepted(gRenderer.CreateMaterial(gProgram, description, gMaterials[gMaterialIndex])) == false)
             {
                 Stop(true);
                 return;
@@ -232,11 +232,11 @@ void Tick() noexcept
     }
     if (gStep == 5)
     {
-        if (gFrames == 60 && !gReloaded)
+        if (gFrames == 60 && gReloaded == false)
         {
-            if (!Accepted(gRenderer.PrewarmMaterialProgram(ludus::shaders::renderer_material::Vertex(),
-                                                           ludus::shaders::renderer_material::Fragment(),
-                                                           gReload)))
+            if (Accepted(gRenderer.PrewarmMaterialProgram(ludus::shaders::renderer_material::Vertex(),
+                                                          ludus::shaders::renderer_material::Fragment(),
+                                                          gReload)) == false)
             {
                 Stop(true);
                 return;
@@ -260,7 +260,7 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(prepared))
+        if (Accepted(prepared) == false)
         {
             Stop(true);
             return;
@@ -275,7 +275,7 @@ void Tick() noexcept
         }
         auto description = ludus::qa::L3Material(2, {});
         description.Tint = {0, 1, 0, 1};
-        if (!Accepted(gRenderer.CreateMaterial(gReload, description, gViewMaterial)))
+        if (Accepted(gRenderer.CreateMaterial(gReload, description, gViewMaterial)) == false)
         {
             Stop(true);
             return;
@@ -370,7 +370,7 @@ int main()
     settings.Height = 64;
     settings.CanvasSelector = "#canvas";
     settings.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(settings, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(settings, gWindow) == false)
     {
         return 1;
     }
@@ -391,11 +391,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto start = time::NowTicks();
-    while (!gDone && time::NowTicks() - start < 15 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - start < 15 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

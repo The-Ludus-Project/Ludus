@@ -12,37 +12,37 @@
 /// the CPU interface identity. It contains no source text that needs parsing.
 ///
 /// Layout: a header of HEADER_FIELD_COUNT uint32 values (magic, version,
-/// resource/pass/camera/stage counts) followed by the interface and generation
-/// identities; ResourceCount resource records, CameraCount camera records and
-/// PassCount pass records; then StageCount stage records. A stage record holds
-/// STAGE_FIELD_COUNT uint32 values (role, target, input count, entry bytes,
-/// artifact bytes), its input pairs, the entry name and the artifact bytes, with
-/// the entry and artifact each zero-padded to a four-byte boundary. No trailing
-/// bytes are permitted.
+/// resource/pass/camera counts, uniform value/binding/block/field counts and the
+/// stage count) followed by the interface and generation identities;
+/// ResourceCount resource, CameraCount camera, PassCount pass, UniformBindingCount
+/// binding, UniformBlockCount block and UniformFieldCount field records; then
+/// StageCount stage records. A stage record holds STAGE_FIELD_COUNT uint32 values
+/// (role, target, input count, entry bytes, artifact bytes, block name count), its
+/// input pairs, its GLSL ES uniform block names (slot, byte count, zero-padded
+/// name), the entry name and the artifact bytes, with every byte string zero-padded
+/// to a four-byte boundary. No trailing bytes are permitted.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 1;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 2;
 /// SHA-256 digest width of interface and generation identities.
 inline constexpr foundation::usize IDENTITY_BYTES = 32;
 /// Largest accepted runtime generation.
 inline constexpr foundation::usize MAX_PACKAGE_BYTES = foundation::usize{16} * 1024 * 1024;
 /// Largest single stage artifact, matching the RG1 per-artifact bound.
 inline constexpr foundation::usize MAX_ARTIFACT_BYTES = foundation::usize{2} * 1024 * 1024;
-/// Largest stage entry-point name.
+/// Largest stage entry-point or GLSL ES uniform block name.
 inline constexpr foundation::usize MAX_ENTRY_BYTES = 63;
 /// Number of explicit stage roles (two per technique).
-inline constexpr foundation::usize STAGE_ROLE_COUNT = 4;
-/// Number of artifact targets a generation may carry.
-inline constexpr foundation::usize SHADER_TARGET_COUNT = 4;
+inline constexpr foundation::usize STAGE_ROLE_COUNT = TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT;
 /// Largest stage table: one artifact per role and target.
 inline constexpr foundation::usize MAX_STAGES = STAGE_ROLE_COUNT * SHADER_TARGET_COUNT;
 /// Renderer static vertex/instance interface: position plus four transform rows and color.
 inline constexpr foundation::usize STATIC_INPUT_COUNT = 6;
 /// Fixed uint32 fields before the identities.
-inline constexpr foundation::usize HEADER_FIELD_COUNT = 6;
+inline constexpr foundation::usize HEADER_FIELD_COUNT = 10;
 /// Serialized header width.
 inline constexpr foundation::usize HEADER_BYTES = HEADER_FIELD_COUNT * sizeof(foundation::uint32) + 2 * IDENTITY_BYTES;
 /// Serialized resource record width; matches Resource's six fields.
@@ -51,27 +51,28 @@ inline constexpr foundation::usize RESOURCE_RECORD_BYTES = 6 * sizeof(foundation
 inline constexpr foundation::usize CAMERA_RECORD_BYTES = sizeof(foundation::uint32);
 /// Serialized pass record width; matches Pass's nine fields.
 inline constexpr foundation::usize PASS_RECORD_BYTES = 9 * sizeof(foundation::uint32);
+/// Serialized uniform binding record width; matches UniformBinding's five fields.
+inline constexpr foundation::usize UNIFORM_BINDING_RECORD_BYTES = 5 * sizeof(foundation::uint32);
+/// Serialized uniform block record width; matches UniformBlock's three fields.
+inline constexpr foundation::usize UNIFORM_BLOCK_RECORD_BYTES = 3 * sizeof(foundation::uint32);
+/// Serialized uniform field record width; matches UniformField's five fields.
+inline constexpr foundation::usize UNIFORM_FIELD_RECORD_BYTES = 5 * sizeof(foundation::uint32);
 /// Fixed uint32 fields at the start of each stage record.
-inline constexpr foundation::usize STAGE_FIELD_COUNT = 5;
+inline constexpr foundation::usize STAGE_FIELD_COUNT = 6;
 /// Serialized width of one (location, format) stage input pair.
 inline constexpr foundation::usize INPUT_RECORD_BYTES = 2 * sizeof(foundation::uint32);
-/// Explicit program role; Color* belong to ColorAndDepth, Depth* to DepthOnly.
+/// Explicit program role; two consecutive roles (vertex, fragment) per Technique value.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
 enum class StageRole : foundation::uint32
 {
-    ColorVertex,   ///< ColorAndDepth geometry entry.
-    ColorFragment, ///< ColorAndDepth color entry.
-    DepthVertex,   ///< DepthOnly geometry entry.
-    DepthFragment, ///< DepthOnly void coverage entry.
-};
-/// Artifact representation carried by one stage record.
-// NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
-enum class ShaderTarget : foundation::uint32
-{
-    Metal,  ///< Metal Shading Language source text.
-    Spirv,  ///< SPIR-V words; the byte length is a multiple of four.
-    Wgsl,   ///< WGSL source text.
-    GlslEs, ///< GLSL ES 3.00 source text.
+    ColorVertex,         ///< ColorAndDepth geometry entry.
+    ColorFragment,       ///< ColorAndDepth color entry.
+    DepthVertex,         ///< DepthOnly geometry entry.
+    DepthFragment,       ///< DepthOnly void coverage entry.
+    MaskedColorVertex,   ///< MaskedColorAndDepth geometry entry.
+    MaskedColorFragment, ///< MaskedColorAndDepth color entry with authored coverage.
+    MaskedDepthVertex,   ///< MaskedDepthOnly geometry entry.
+    MaskedDepthFragment, ///< MaskedDepthOnly separately authored void coverage entry.
 };
 /// Float vertex input width of one stage input record.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
@@ -82,8 +83,11 @@ enum class InputFormat : foundation::uint32
     Float3,  ///< Three floats.
     Float4,  ///< Four floats.
 };
-static_assert(HEADER_BYTES == 88);
+static_assert(HEADER_BYTES == 104);
 static_assert(RESOURCE_RECORD_BYTES == sizeof(Resource));
 static_assert(CAMERA_RECORD_BYTES == sizeof(Camera));
 static_assert(PASS_RECORD_BYTES == sizeof(Pass));
+static_assert(UNIFORM_BINDING_RECORD_BYTES == sizeof(UniformBinding));
+static_assert(UNIFORM_BLOCK_RECORD_BYTES == sizeof(UniformBlock));
+static_assert(UNIFORM_FIELD_RECORD_BYTES == sizeof(UniformField));
 } // namespace ludus::content::render_graph_format

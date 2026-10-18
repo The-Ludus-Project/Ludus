@@ -122,11 +122,11 @@ void Tick() noexcept
         Stop(true);
         return;
     }
-    if (!gCreated)
+    if (gCreated == false)
     {
-        if (!Accepted(rhi::CreateShader(gDevice, ludus::shaders::diagnostic::Vertex(), gVertex)) ||
-            !Accepted(rhi::CreateShader(gDevice, ludus::shaders::diagnostic::Fragment(), gFragment)) ||
-            !Accepted(rhi::CreateUniform(gDevice, sizeof(Uniforms), gUniform)))
+        if (Accepted(rhi::CreateShader(gDevice, ludus::shaders::diagnostic::Vertex(), gVertex)) == false ||
+            Accepted(rhi::CreateShader(gDevice, ludus::shaders::diagnostic::Fragment(), gFragment)) == false ||
+            Accepted(rhi::CreateUniform(gDevice, sizeof(Uniforms), gUniform)) == false)
         {
             Stop(true);
             return;
@@ -143,7 +143,7 @@ void Tick() noexcept
             gCreated = false;
             gPipelineCreated = false;
             gCancelPending = false;
-            if (rhi::GetStatus(gDevice, stale) != rhi::ResourceStatus::InvalidHandle || !Start())
+            if (rhi::GetStatus(gDevice, stale) != rhi::ResourceStatus::InvalidHandle || Start() == false)
             {
                 Stop(true);
             }
@@ -163,9 +163,9 @@ void Tick() noexcept
             return;
         }
     }
-    if (!gPipelineCreated)
+    if (gPipelineCreated == false)
     {
-        if (!Accepted(rhi::CreatePipeline(gDevice, {gVertex, gFragment, gUniform}, gPipeline)))
+        if (Accepted(rhi::CreatePipeline(gDevice, {gVertex, gFragment, gUniform}, gPipeline)) == false)
         {
             Stop(true);
             return;
@@ -264,7 +264,7 @@ void Tick() noexcept
         gCreated = false;
         gPipelineCreated = false;
         ++gSession;
-        if (!Start())
+        if (Start() == false)
         {
             Stop(true);
         }
@@ -278,7 +278,7 @@ void Tick() noexcept
 int main(int argc, char** argv)
 {
     gCancelPending = argc > 1 && std::string_view(argv[1]) == "cancel-pending";
-    if (!Start())
+    if (Start() == false)
     {
         Stop(true);
         return 1;
@@ -286,7 +286,7 @@ int main(int argc, char** argv)
 #if defined(LUDUS_PLATFORM_WEB)
     emscripten_set_main_loop(Tick, 0, false);
 #else
-    while (!gDone)
+    while (gDone == false)
     {
         Tick();
     }

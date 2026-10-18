@@ -15,9 +15,14 @@ namespace ludus::foundation
 /// Never persist a runtime NameId or compare indices across dictionaries.
 struct StringIndex final
 {
-    /// Zero-based entry index; the default `0xffffffff` is the reserved invalid value. In a
-    /// StringTable, index zero is the empty spelling. Range checks belong to the owning table.
-    uint32 Value{0xffffffffU};
+    /// @brief Reserved invalid index value (`0xffffffff`); never names an entry.
+    ///
+    /// Tables and dictionaries therefore hold fewer than 2^32 entries. Owners that store indices may
+    /// also use it to mark unused slots.
+    static constexpr uint32 INVALID_VALUE = 0xffffffffU;
+    /// Zero-based entry index; the default is INVALID_VALUE. In a StringTable, index zero is the
+    /// empty spelling. Range checks belong to the owning table.
+    uint32 Value{INVALID_VALUE};
     /// Compares raw index values; meaningful only for indices of the same table or dictionary.
     friend constexpr bool operator==(StringIndex, StringIndex) noexcept = default;
 };
@@ -37,7 +42,7 @@ struct NameId final
     /// TryResolve performs those checks.
     [[nodiscard]] constexpr bool IsValid() const noexcept
     {
-        return TableToken != 0 && Index.Value != 0xffffffffU;
+        return TableToken != 0 && Index.Value != StringIndex::INVALID_VALUE;
     }
     /// @brief Compares token and index.
     ///
@@ -134,39 +139,39 @@ public:
     /// A duplicate succeeds without allocating, even at the entry or byte budget. A new
     /// spelling consumes the next index only on success. Serialized by the table mutex.
     /// @param value Counted bytes, checked against the configured length, UTF-8 and zero-byte rules.
-    /// @param output Receives the table-qualified ID on success; unchanged on failure.
+    /// @param outId Receives the table-qualified ID on success; unchanged on failure.
     /// @return Ok; InvalidHandle for an empty table; TooLarge, InvalidUtf8 or EmbeddedZero for a
     /// rejected spelling; CapacityExceeded, TooLarge or OutOfMemory when growth fails; or
     /// ProbeExhausted when corrupted lookup metadata has neither the spelling nor a free slot.
     /// Failure leaves the logical table unchanged; earlier successful reservations may remain.
-    [[nodiscard]] StringStatus TryIntern(std::string_view value, NameId& output) noexcept;
+    [[nodiscard]] StringStatus TryIntern(std::string_view value, NameId& outId) noexcept;
     /// @brief Looks up an exact spelling without inserting or allocating.
     ///
     /// Serialized by the table mutex.
     /// @param value Counted bytes, checked against the configured spelling rules.
-    /// @param output Receives the table-qualified ID on success; unchanged on failure.
+    /// @param outId Receives the table-qualified ID on success; unchanged on failure.
     /// @return Ok; NotFound when the spelling is absent; InvalidHandle for an empty table;
     /// TooLarge, InvalidUtf8 or EmbeddedZero for a rejected spelling; or ProbeExhausted when
     /// corrupted lookup metadata has neither the spelling nor a free slot.
-    [[nodiscard]] StringStatus TryFind(std::string_view value, NameId& output) const noexcept;
+    [[nodiscard]] StringStatus TryFind(std::string_view value, NameId& outId) const noexcept;
     /// @brief Borrows the stored spelling of an ID issued by this table, without allocating.
     ///
     /// Serialized by the table mutex. The view covers the stored bytes, which never change; see the
     /// class description for its lifetime.
     /// @param id ID to resolve.
-    /// @param output Receives the spelling on success; unchanged on failure.
+    /// @param outSpelling Receives the spelling on success; unchanged on failure.
     /// @return Ok; InvalidHandle for an empty table, a representation-invalid ID or an index beyond
     /// this table's entries; or WrongTable when the ID carries another table's token.
-    [[nodiscard]] StringStatus TryResolve(NameId id, std::string_view& output) const& noexcept;
+    [[nodiscard]] StringStatus TryResolve(NameId id, std::string_view& outSpelling) const& noexcept;
     /// Deleted so a view cannot borrow from a temporary table that is about to be destroyed.
     StringStatus TryResolve(NameId, std::string_view&) const&& = delete;
     /// @brief Caller quiesces ALL concurrent operations.
     ///
-    /// Consumes this table and keeps every token/index stable; output must be empty. No allocation required.
-    /// @param output Receives the table's storage on success; unchanged on failure.
+    /// Consumes this table and keeps every token/index stable; `outTable` must be empty. No allocation required.
+    /// @param outTable Receives the table's storage on success; unchanged on failure.
     /// @return Ok, leaving this table empty; InvalidHandle when this table is empty; or
-    /// InvalidArgument when `output` already owns a table. Failure leaves both objects unchanged.
-    [[nodiscard]] StringStatus TryFreeze(FrozenStringTable& output) noexcept;
+    /// InvalidArgument when `outTable` already owns a table. Failure leaves both objects unchanged.
+    [[nodiscard]] StringStatus TryFreeze(FrozenStringTable& outTable) noexcept;
 
 private:
     struct State;
@@ -208,20 +213,20 @@ public:
     ///
     /// Concurrent calls are safe while the owner lives and is not moved or destroyed.
     /// @param value Counted bytes, checked against the configured spelling rules.
-    /// @param output Receives the table-qualified ID on success; unchanged on failure.
+    /// @param outId Receives the table-qualified ID on success; unchanged on failure.
     /// @return Ok; NotFound when the spelling is absent; InvalidHandle for an empty owner;
     /// TooLarge, InvalidUtf8 or EmbeddedZero for a rejected spelling; or ProbeExhausted when
     /// corrupted lookup metadata has neither the spelling nor a free slot.
-    [[nodiscard]] StringStatus TryFind(std::string_view value, NameId& output) const noexcept;
+    [[nodiscard]] StringStatus TryFind(std::string_view value, NameId& outId) const noexcept;
     /// @brief Borrows the stored spelling of an ID issued before freezing, without locking or allocating.
     ///
     /// Concurrent calls are safe while the owner lives and is not moved or destroyed. The view stays
     /// valid until this owner is destroyed or assigned over.
     /// @param id ID to resolve.
-    /// @param output Receives the spelling on success; unchanged on failure.
+    /// @param outSpelling Receives the spelling on success; unchanged on failure.
     /// @return Ok; InvalidHandle for an empty owner, a representation-invalid ID or an index beyond
     /// the frozen entries; or WrongTable when the ID carries another table's token.
-    [[nodiscard]] StringStatus TryResolve(NameId id, std::string_view& output) const& noexcept;
+    [[nodiscard]] StringStatus TryResolve(NameId id, std::string_view& outSpelling) const& noexcept;
     /// Deleted so a view cannot borrow from a temporary owner that is about to be destroyed.
     StringStatus TryResolve(NameId, std::string_view&) const&& = delete;
 
@@ -229,7 +234,7 @@ private:
     StringTable::State* mState{};
     friend class StringTable;
 };
-/// @brief Empty output required; failure preserves output.
+/// @brief Empty `outTable` required; failure preserves it.
 ///
 /// The runtime token issuer must be linked once into the host; plugins use the host's table API.
 /// It is a process-wide atomic counter, so concurrent calls are safe; each success takes a fresh
@@ -237,12 +242,12 @@ private:
 /// zero. `config` is copied; `domain` is borrowed and must outlive the table and its frozen owner.
 /// @param config Budgets, hash policy and spelling rules.
 /// @param domain Allocation source for the table state, entries, lookup metadata and spelling bytes.
-/// @param output Receives the new table on success; must be empty.
-/// @return Ok; InvalidArgument when `output` is not empty, `MaxEntries` is zero or `0xffffffff`,
+/// @param outTable Receives the new table on success; must be empty.
+/// @return Ok; InvalidArgument when `outTable` is not empty, `MaxEntries` is zero or StringIndex::INVALID_VALUE,
 /// `MaxAllocatedBytes` cannot hold the table state, `MaxSpellingBytes` reaches half the usize range,
 /// `HashPolicy` is not an enumerator, or Untrusted lacks `HasSecretKey`; OutOfMemory when the
 /// domain fails; CapacityExceeded when the byte budget cannot hold the empty entry; or
 /// TokenExhausted after the process has issued every token. Failure releases everything allocated.
 [[nodiscard]] StringStatus
-CreateTable(const StringTableConfig& config, const AllocationDomain& domain, StringTable& output) noexcept;
+CreateTable(const StringTableConfig& config, const AllocationDomain& domain, StringTable& outTable) noexcept;
 } // namespace ludus::foundation

@@ -19,7 +19,7 @@ void* WriteRaceValue(void*) noexcept
     // AtomicLoad/AtomicStore relaxed fast paths, for confirming no clock acquire
     // or release is added for this test-only rendezvous.
     // https://github.com/llvm/llvm-project/blob/llvmorg-18.1.8/compiler-rt/lib/tsan/rtl/tsan_interface_atomic.cpp
-    while (!gParentWritten.load(std::memory_order_relaxed))
+    while (gParentWritten.load(std::memory_order_relaxed) == false)
     {
     }
     for (ludus::foundation::usize i = 0; i < CONTROL_WRITES; ++i)

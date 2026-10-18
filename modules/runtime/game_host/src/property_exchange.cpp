@@ -104,10 +104,10 @@ struct Snapshot
         if (descriptor.ObjectId == 0 || descriptor.PropertyId == 0 || descriptor.Writable > 1 ||
             descriptor.Scope > static_cast<uint32>(PropertyScope::ReadOnly) || descriptor.Reserved0 != 0 ||
             descriptor.Reserved1 != 0 || descriptor.LabelLength > sizeof(descriptor.Label) ||
-            !protocol::ValidUtf8(std::string_view(descriptor.Label, descriptor.LabelLength)) ||
+            protocol::ValidUtf8(std::string_view(descriptor.Label, descriptor.LabelLength)) == false ||
             (descriptor.Scope == static_cast<uint32>(PropertyScope::ReadOnly) && descriptor.Writable != 0) ||
-            !Finite(descriptor.MinFloat) || !Finite(descriptor.MaxFloat) || descriptor.MinFloat > descriptor.MaxFloat ||
-            descriptor.MinInt > descriptor.MaxInt)
+            Finite(descriptor.MinFloat) == false || Finite(descriptor.MaxFloat) == false ||
+            descriptor.MinFloat > descriptor.MaxFloat || descriptor.MinInt > descriptor.MaxInt)
         {
             return false;
         }
@@ -143,7 +143,7 @@ struct Snapshot
             return false;
         }
         std::swap(out.Values[i], out.Values[match]);
-        if (!ValidValue(descriptor, out.Values[i]))
+        if (ValidValue(descriptor, out.Values[i]) == false)
         {
             return false;
         }
@@ -162,9 +162,9 @@ struct Snapshot
 [[nodiscard]] bool DecodeEdit(const Message& record, PropertyEdit& edit) noexcept
 {
     uint64 kind = 0;
-    if (!record.HasOnly({"object", "property", "revision", "kind", "value", "bits"}) ||
-        !record.GetHexId("object", edit.ObjectId) || !record.GetHexId("property", edit.PropertyId) ||
-        !record.GetHexId("revision", edit.ExpectedRevision) || !record.GetUint("kind", kind) ||
+    if (record.HasOnly({"object", "property", "revision", "kind", "value", "bits"}) == false ||
+        record.GetHexId("object", edit.ObjectId) == false || record.GetHexId("property", edit.PropertyId) == false ||
+        record.GetHexId("revision", edit.ExpectedRevision) == false || record.GetUint("kind", kind) == false ||
         kind > static_cast<uint32>(PropertyKind::String))
     {
         return false;
@@ -173,7 +173,7 @@ struct Snapshot
     if (edit.Kind == static_cast<uint32>(PropertyKind::Float32))
     {
         uint64 bits = 0;
-        if (record.Has("value") || !record.GetUint("bits", bits) || bits > 0xFFFFFFFFULL)
+        if (record.Has("value") || record.GetUint("bits", bits) == false || bits > 0xFFFFFFFFULL)
         {
             return false;
         }
@@ -189,7 +189,7 @@ struct Snapshot
     {
         case PropertyKind::Bool: {
             bool value = false;
-            if (!record.GetBool("value", value))
+            if (record.GetBool("value", value) == false)
             {
                 return false;
             }
@@ -198,7 +198,7 @@ struct Snapshot
         }
         case PropertyKind::Int32: {
             protocol::int64 value = 0;
-            if (!record.GetInt("value", value) || value < -2147483648LL || value > 2147483647LL)
+            if (record.GetInt("value", value) == false || value < -2147483648LL || value > 2147483647LL)
             {
                 return false;
             }
@@ -208,7 +208,7 @@ struct Snapshot
         }
         case PropertyKind::Enum: {
             uint64 value = 0;
-            if (!record.GetUint("value", value) || value > 2147483647ULL)
+            if (record.GetUint("value", value) == false || value > 2147483647ULL)
             {
                 return false;
             }
@@ -217,7 +217,8 @@ struct Snapshot
         }
         case PropertyKind::String: {
             std::string value;
-            if (!record.GetString("value", value) || value.size() > sizeof(edit.String) || !protocol::ValidUtf8(value))
+            if (record.GetString("value", value) == false || value.size() > sizeof(edit.String) ||
+                protocol::ValidUtf8(value) == false)
             {
                 return false;
             }
@@ -259,13 +260,14 @@ void EncodeValue(Message& record, const PropertyValue& value)
 
 protocol::CommandStatus HostSession::PublishProperties(uint64 requestId) noexcept
 {
-    if (Instance_ == nullptr || !game_api::HasCapability(Active_.Metadata().Capabilities, Capability::Properties) ||
+    if (Instance_ == nullptr ||
+        game_api::HasCapability(Active_.Metadata().Capabilities, Capability::Properties) == false ||
         (State_ != PlayState::Running && State_ != PlayState::Paused))
     {
         return CommandStatus::InvalidRequest;
     }
     Snapshot snapshot;
-    if (!ReadSnapshot(Active_.Table(), Instance_, snapshot))
+    if (ReadSnapshot(Active_.Table(), Instance_, snapshot) == false)
     {
         return CommandStatus::HostFailed;
     }
@@ -336,18 +338,19 @@ protocol::CommandStatus HostSession::ApplyPropertyEdits(const Message& command) 
 {
     uint64 epoch = 0;
     uint64 schema = 0;
-    if (!command.GetUint("schema_epoch", epoch) || epoch != SchemaEpoch_ ||
-        !command.GetUint("schema_version", schema) || schema != Active_.Metadata().PropertySchemaVersion)
+    if (command.GetUint("schema_epoch", epoch) == false || epoch != SchemaEpoch_ ||
+        command.GetUint("schema_version", schema) == false || schema != Active_.Metadata().PropertySchemaVersion)
     {
         return CommandStatus::SchemaChanged;
     }
-    if (Instance_ == nullptr || !game_api::HasCapability(Active_.Metadata().Capabilities, Capability::Properties) ||
+    if (Instance_ == nullptr ||
+        game_api::HasCapability(Active_.Metadata().Capabilities, Capability::Properties) == false ||
         (State_ != PlayState::Running && State_ != PlayState::Paused))
     {
         return CommandStatus::InvalidRequest;
     }
     Snapshot snapshot;
-    if (!ReadSnapshot(Active_.Table(), Instance_, snapshot))
+    if (ReadSnapshot(Active_.Table(), Instance_, snapshot) == false)
     {
         return CommandStatus::HostFailed;
     }
@@ -368,7 +371,7 @@ protocol::CommandStatus HostSession::ApplyPropertyEdits(const Message& command) 
     for (usize i = 0; i < records.GetSize(); ++i)
     {
         auto& edit = batch.Edits[i];
-        if (!DecodeEdit(records[i], edit))
+        if (DecodeEdit(records[i], edit) == false)
         {
             return CommandStatus::InvalidRequest;
         }
@@ -400,7 +403,7 @@ protocol::CommandStatus HostSession::ApplyPropertyEdits(const Message& command) 
         proposed.Float = edit.Float;
         proposed.StringLength = edit.StringLength;
         std::memcpy(proposed.String, edit.String, sizeof(edit.String));
-        if (!ValidValue(*descriptor, proposed))
+        if (ValidValue(*descriptor, proposed) == false)
         {
             return CommandStatus::InvalidRequest;
         }

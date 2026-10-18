@@ -38,7 +38,7 @@ struct GraphBackend final
         {
             return r::Status::InvalidHandle;
         }
-        if (!self.Complete[job.Node])
+        if (self.Complete[job.Node] == false)
         {
             return r::Status::Pending;
         }
@@ -57,7 +57,7 @@ struct GraphBackend final
         {
             return r::Status::InvalidHandle;
         }
-        if (!self.Drain[job.Node])
+        if (self.Drain[job.Node] == false)
         {
             return r::Status::Pending;
         }
@@ -86,7 +86,7 @@ struct GraphBackend final
             const auto node = Node(resource.Id);
             for (auto& job : self.Jobs)
             {
-                if (!job.Used)
+                if (job.Used == false)
                 {
                     job = {};
                     job.Owner = &self;

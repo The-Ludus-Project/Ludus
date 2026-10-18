@@ -4,6 +4,7 @@
 modules/content/scene_cook
 modules/content/scene_format
 modules/content/identity_records
+modules/content/procedural/environment
 modules/content/string_dictionary
 modules/content/string_dictionary_format
 modules/foundation/identity
@@ -20,6 +21,8 @@ modules/foundation/math/include/ludus/foundation/math/enclosure.hpp
 modules/foundation/math/src/enclosure.cpp
 modules/foundation/math/tests/enclosure_oracle.hpp
 modules/foundation/math/tests/enclosure_tests.cpp
+modules/foundation/math/include/ludus/foundation/math/random_domains.hpp
+modules/foundation/math/tests/random_domains_tests.cpp
 modules/foundation/geometry
 apps/editor/src/internal/import_report.h
 apps/editor/src/import_report.cpp

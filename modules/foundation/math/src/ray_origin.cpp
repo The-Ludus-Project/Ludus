@@ -13,8 +13,8 @@ namespace ludus::foundation::math
 {
 MathStatus TryOffsetRayOrigin(const RayOriginOffset& input, Vector3& output) noexcept
 {
-    if (!IsFinite(input.Position) || !IsFinite(input.Error) || !IsFinite(input.GeometricNormal) ||
-        !IsFinite(input.Direction))
+    if (IsFinite(input.Position) == false || IsFinite(input.Error) == false ||
+        IsFinite(input.GeometricNormal) == false || IsFinite(input.Direction) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -38,7 +38,7 @@ MathStatus TryOffsetRayOrigin(const RayOriginOffset& input, Vector3& output) noe
     for (core::usize axis = 0; axis < 3; ++axis)
     {
         const float64 shifted = float64(position[axis]) + float64(direction[axis]) * distance;
-        if (!std::isfinite(shifted) || std::fabs(shifted) > float64(std::numeric_limits<float32>::max()))
+        if (std::isfinite(shifted) == false || std::fabs(shifted) > float64(std::numeric_limits<float32>::max()))
         {
             return MathStatus::OutOfRange;
         }
@@ -54,7 +54,7 @@ MathStatus TryOffsetRayOrigin(const RayOriginOffset& input, Vector3& output) noe
                     direction[axis] > 0 ? std::numeric_limits<float32>::min() : -std::numeric_limits<float32>::min();
             }
         }
-        if (!std::isfinite(value))
+        if (std::isfinite(value) == false)
         {
             return MathStatus::OutOfRange;
         }

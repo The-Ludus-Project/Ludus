@@ -43,7 +43,7 @@ bool ValidUtf8(std::string_view text) noexcept
 } // namespace
 bool ValidPath(std::string_view path) noexcept
 {
-    if (path.empty() || path.size() > MAX_PATH_BYTES || !ValidUtf8(path))
+    if (path.empty() || path.size() > MAX_PATH_BYTES || ValidUtf8(path) == false)
     {
         return false;
     }

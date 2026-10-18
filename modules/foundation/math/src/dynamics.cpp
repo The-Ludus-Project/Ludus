@@ -24,7 +24,7 @@ constexpr float64 kRoundoff = 64.0 * std::numeric_limits<float64>::epsilon();
 
 MathStatus TryComputeLinearDragStep(float64 rate, float64 dt, LinearDragStep& out) noexcept
 {
-    if (!IsFinite(rate) || !IsFinite(dt))
+    if (IsFinite(rate) == false || IsFinite(dt) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -64,8 +64,8 @@ MathStatus TrySweepRadialBand(Vector3d start,
                               float64 halfWidth,
                               RadialSweepContact& out) noexcept
 {
-    if (!IsFinite(start) || !IsFinite(end) || !IsFinite(origin) || !IsFinite(radiusStart) || !IsFinite(radiusEnd) ||
-        !IsFinite(halfWidth))
+    if (IsFinite(start) == false || IsFinite(end) == false || IsFinite(origin) == false ||
+        IsFinite(radiusStart) == false || IsFinite(radiusEnd) == false || IsFinite(halfWidth) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -75,7 +75,7 @@ MathStatus TrySweepRadialBand(Vector3d start,
     }
     Vector3d relative = start - origin;
     Vector3d travel = end - start;
-    if (!IsFinite(relative) || !IsFinite(travel))
+    if (IsFinite(relative) == false || IsFinite(travel) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -102,7 +102,7 @@ MathStatus TrySweepRadialBand(Vector3d start,
     float64 first = 2.0;
     Vector3d normal;
     const auto candidate = [&](float64 fraction) noexcept {
-        if (!IsFinite(fraction) || fraction < -kRoundoff || fraction > 1.0 + kRoundoff)
+        if (IsFinite(fraction) == false || fraction < -kRoundoff || fraction > 1.0 + kRoundoff)
         {
             return;
         }

@@ -24,7 +24,7 @@ QString SavedWebSdk(const QString& projectDirectory)
     // Display saved metadata only. The shared tooling backend validates it
     // before repair; opening this dialog never runs project code or tools.
     QFile file(QDir(projectDirectory).filePath(QStringLiteral(".ludus/setup.json")));
-    if (!file.open(QIODevice::ReadOnly) || file.size() > foundation::int64{64} * 1024)
+    if (file.open(QIODevice::ReadOnly) == false || file.size() > foundation::int64{64} * 1024)
     {
         return {};
     }
@@ -117,7 +117,7 @@ ProjectSetupDialog::ProjectSetupDialog(const QString& projectDirectory, QWidget*
                                 });
     const QString savedWeb = SavedWebSdk(projectDirectory);
     WebSdk_->setText(savedWeb);
-    Browser_->setChecked(!savedWeb.isEmpty());
+    Browser_->setChecked(savedWeb.isEmpty() == false);
     layout->addWidget(BrowserFields_);
 
     Buttons_ = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -140,7 +140,7 @@ ProjectSetupOptions ProjectSetupDialog::Options() const noexcept
         .Sdk = choice == EngineChoice::Installed ? Sdk_->text().trimmed() : QString(),
         .WebSdk = Browser_->isChecked() ? WebSdk_->text().trimmed() : QString(),
         .PrepareEngine = choice == EngineChoice::Build,
-        .DisableWeb = !Browser_->isChecked(),
+        .DisableWeb = Browser_->isChecked() == false,
     };
 }
 
@@ -168,8 +168,8 @@ void ProjectSetupDialog::Refresh() noexcept
                                                 "headers and libraries; select its installation folder."));
             break;
     }
-    const bool nativeReady = choice != EngineChoice::Installed || !Sdk_->text().trimmed().isEmpty();
-    const bool webReady = !Browser_->isChecked() || !WebSdk_->text().trimmed().isEmpty();
+    const bool nativeReady = choice != EngineChoice::Installed || Sdk_->text().trimmed().isEmpty() == false;
+    const bool webReady = Browser_->isChecked() == false || WebSdk_->text().trimmed().isEmpty() == false;
     Buttons_->button(QDialogButtonBox::Ok)->setEnabled(nativeReady && webReady);
 }
 } // namespace ludus::editor

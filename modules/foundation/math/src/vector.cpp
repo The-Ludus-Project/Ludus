@@ -114,7 +114,7 @@ namespace
 // vector as Degenerate. Returns Success only when a unit result can be formed.
 [[nodiscard]] MathStatus NormalizeCommon(float64 length, float32 minLength, bool finiteInput) noexcept
 {
-    if (!finiteInput || !std::isfinite(minLength))
+    if (finiteInput == false || std::isfinite(minLength) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -140,7 +140,7 @@ MathStatus TryNormalize(Vector2 v, float32 minLength, Vector2& out) noexcept
     }
     const float32 ox = static_cast<float32>(static_cast<float64>(v.X) / length);
     const float32 oy = static_cast<float32>(static_cast<float64>(v.Y) / length);
-    if (!IsFinite(ox) || !IsFinite(oy))
+    if (IsFinite(ox) == false || IsFinite(oy) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -158,7 +158,7 @@ MathStatus TryNormalize(Vector3 v, float32 minLength, Vector3& out) noexcept
     const float32 ox = static_cast<float32>(static_cast<float64>(v.X) / length);
     const float32 oy = static_cast<float32>(static_cast<float64>(v.Y) / length);
     const float32 oz = static_cast<float32>(static_cast<float64>(v.Z) / length);
-    if (!IsFinite(ox) || !IsFinite(oy) || !IsFinite(oz))
+    if (IsFinite(ox) == false || IsFinite(oy) == false || IsFinite(oz) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -177,7 +177,7 @@ MathStatus TryNormalize(Vector4 v, float32 minLength, Vector4& out) noexcept
     const float32 oy = static_cast<float32>(static_cast<float64>(v.Y) / length);
     const float32 oz = static_cast<float32>(static_cast<float64>(v.Z) / length);
     const float32 ow = static_cast<float32>(static_cast<float64>(v.W) / length);
-    if (!IsFinite(ox) || !IsFinite(oy) || !IsFinite(oz) || !IsFinite(ow))
+    if (IsFinite(ox) == false || IsFinite(oy) == false || IsFinite(oz) == false || IsFinite(ow) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -213,7 +213,7 @@ MathStatus TryNormalizeOr(Vector3 v, float32 minLength, Vector3 fallback, float3
     }
     // Degenerate / OutOfRange / InvalidArgument(minLength) -> try the fallback,
     // but validate it is a finite unit vector first; never invent a direction.
-    if (!IsFinite(fallback) || !std::isfinite(unitTol) || unitTol < 0.0f)
+    if (IsFinite(fallback) == false || std::isfinite(unitTol) == false || unitTol < 0.0f)
     {
         return MathStatus::InvalidArgument;
     }

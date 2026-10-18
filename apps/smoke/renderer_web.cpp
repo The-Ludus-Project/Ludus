@@ -63,11 +63,11 @@ State Prepare() noexcept
     {
         return State::Failed;
     }
-    if (!gCreated)
+    if (gCreated == false)
     {
-        if (!Accepted(rhi::CreateShader(ludus::shaders::smoke::Vertex(), gVertex)) ||
-            !Accepted(rhi::CreateShader(ludus::shaders::smoke::Fragment(), gFragment)) ||
-            !Accepted(rhi::CreateUniform(sizeof(SmokeUniforms), gUniform)))
+        if (Accepted(rhi::CreateShader(ludus::shaders::smoke::Vertex(), gVertex)) == false ||
+            Accepted(rhi::CreateShader(ludus::shaders::smoke::Fragment(), gFragment)) == false ||
+            Accepted(rhi::CreateUniform(sizeof(SmokeUniforms), gUniform)) == false)
         {
             gFailed = true;
             return State::Failed;
@@ -81,7 +81,7 @@ State Prepare() noexcept
         {
             return State::Loading;
         }
-        if (!Ready(status))
+        if (Ready(status) == false)
         {
             gFailed = true;
             return State::Failed;
@@ -89,7 +89,7 @@ State Prepare() noexcept
     }
     if (rhi::GetStatus(gPipeline) == rhi::ResourceStatus::InvalidHandle)
     {
-        if (!Accepted(rhi::CreatePipeline({gVertex, gFragment, gUniform}, gPipeline)))
+        if (Accepted(rhi::CreatePipeline({gVertex, gFragment, gUniform}, gPipeline)) == false)
         {
             gFailed = true;
             return State::Failed;
@@ -100,7 +100,7 @@ State Prepare() noexcept
     {
         return State::Loading;
     }
-    if (!Ready(pipeline))
+    if (Ready(pipeline) == false)
     {
         gFailed = true;
         return State::Failed;

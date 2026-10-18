@@ -111,7 +111,7 @@ struct Fd final
 };
 Status Parent(std::string_view root, std::string_view path, Fd& directory, Text<1024>& leaf) noexcept
 {
-    if (root.empty() || root.size() > 4096 || root.find('\0') != std::string_view::npos || !ValidPath(path))
+    if (root.empty() || root.size() > 4096 || root.find('\0') != std::string_view::npos || ValidPath(path) == false)
     {
         return Status::Invalid;
     }
@@ -152,17 +152,17 @@ Status ReadAt(int directory, const char* path, usize cap, Bytes& output) noexcep
         return errno == ENOENT ? Status::NotFound : Status::IoError;
     }
     struct stat info{};
-    if (fstat(fd.Value, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 0)
+    if (fstat(fd.Value, &info) != 0 || S_ISREG(info.st_mode) == false || info.st_size < 0)
     {
         return Status::IoError;
     }
     usize size{};
-    if (!ludus::foundation::TryIntegerCast(info.st_size, size) || size > cap)
+    if (ludus::foundation::TryIntegerCast(info.st_size, size) == false || size > cap)
     {
         return Status::Limit;
     }
     Bytes next;
-    if (!next.Resize(size))
+    if (next.Resize(size) == false)
     {
         return Status::OutOfMemory;
     }
@@ -220,19 +220,19 @@ Status ContentStatus(foundation::filesystem::Status status) noexcept
 } // namespace
 Status ReadFile(std::string_view root, std::string_view path, usize cap, Bytes& output) noexcept
 {
-    if (root.empty() || !ValidPath(path))
+    if (root.empty() || ValidPath(path) == false)
     {
         return Status::Invalid;
     }
     foundation::filesystem::Directory directory;
     auto result = directory.Open(root);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return ContentStatus(result.Code);
     }
     foundation::filesystem::File file;
     result = directory.OpenRead(path, file);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return ContentStatus(result.Code);
     }
@@ -242,16 +242,16 @@ Status ReadFile(std::string_view root, std::string_view path, usize cap, Bytes& 
     }
     Bytes next;
     usize size = 0;
-    if (!foundation::TryIntegerCast(file.Size(), size))
+    if (foundation::TryIntegerCast(file.Size(), size) == false)
     {
         return Status::Limit;
     }
-    if (!next.Resize(size))
+    if (next.Resize(size) == false)
     {
         return Status::OutOfMemory;
     }
     const auto read = file.ReadAt(0, next.Data());
-    if (!read.Outcome.Succeeded())
+    if (read.Outcome.Succeeded() == false)
     {
         return ContentStatus(read.Outcome.Code);
     }
@@ -261,7 +261,7 @@ Status ReadFile(std::string_view root, std::string_view path, usize cap, Bytes& 
 Status
 SaveFile(std::string_view root, std::string_view path, std::span<const uint8> data, const Digest* expected) noexcept
 {
-    if (root.empty() || !ValidPath(path))
+    if (root.empty() || ValidPath(path) == false)
     {
         return Status::Invalid;
     }
@@ -343,7 +343,7 @@ SaveFile(std::string_view root, std::string_view path, std::span<const uint8> da
     {
         status = Status::IoError;
     }
-    if (!file.Close() && status == Status::Ok)
+    if (file.Close() == false && status == Status::Ok)
     {
         status = Status::IoError;
     }
@@ -385,13 +385,13 @@ FileReader::~FileReader() noexcept
 }
 Status FileReader::Open(std::string_view root, std::string_view path) noexcept
 {
-    if (root.empty() || !ValidPath(path))
+    if (root.empty() || ValidPath(path) == false)
     {
         return Status::Invalid;
     }
     foundation::filesystem::Directory directory;
     auto result = directory.Open(root);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         return ContentStatus(result.Code);
     }
@@ -401,7 +401,7 @@ Status FileReader::Open(std::string_view root, std::string_view path) noexcept
         return Status::OutOfMemory;
     }
     result = directory.OpenRead(path, next->File);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         delete next;
         return ContentStatus(result.Code);
@@ -422,7 +422,7 @@ Status FileReader::Clone(FileReader& output) const noexcept
         return Status::OutOfMemory;
     }
     const auto result = mImpl->File.Clone(next->File);
-    if (!result.Succeeded())
+    if (result.Succeeded() == false)
     {
         delete next;
         return ContentStatus(result.Code);
@@ -439,7 +439,7 @@ Status FileReader::Read(std::span<uint8> bytes, usize& count) noexcept
         return Status::Invalid;
     }
     const auto read = mImpl->File.ReadAt(mImpl->Position, bytes);
-    if (!read.Outcome.Succeeded())
+    if (read.Outcome.Succeeded() == false)
     {
         return ContentStatus(read.Outcome.Code);
     }

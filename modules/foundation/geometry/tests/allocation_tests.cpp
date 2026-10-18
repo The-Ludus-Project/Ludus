@@ -10,7 +10,9 @@
 #include <ludus/foundation/geometry/frame.hpp>
 #include <ludus/foundation/geometry/path.hpp>
 #include <ludus/foundation/geometry/query.hpp>
+#include <ludus/foundation/geometry/surface.hpp>
 #include <ludus/foundation/geometry/sweep.hpp>
+#include <ludus/foundation/geometry/tessellation.hpp>
 #include <ludus/foundation/geometry/track.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -29,6 +31,7 @@ namespace
 constexpr usize PROBE_SPAN_COUNT = 2;
 constexpr usize PROBE_KEY_COUNT = 3;
 constexpr usize PROBE_WAYPOINT_COUNT = 4;
+constexpr usize PROBE_PATCH_COUNT = 2;
 constexpr usize PROBE_PROJECTION_ITERATIONS = 2048;
 
 bool isCountingAllocations = false;
@@ -105,6 +108,7 @@ struct CountingScope final
         .MaxSubdivisions = 1U << 16U,
         .MaxIterations = 256,
         .MaxPreparedBytes = 1U << 24U,
+        .MaxPatches = 16,
     };
 }
 
@@ -153,6 +157,45 @@ struct CountingScope final
         .MaxVertexCount = 1U << 20U,
         .MaxIndexCount = 1U << 22U,
         .Limits = limits,
+    };
+}
+
+// Two curved patches joined along the first's u = 1 side and the second's u = 0 side.
+[[nodiscard]] StaticArray<SurfacePatchSource, PROBE_PATCH_COUNT> MakePatches() noexcept
+{
+    StaticArray<SurfacePatchSource, PROBE_PATCH_COUNT> patches;
+    for (usize patch = 0; patch < PROBE_PATCH_COUNT; ++patch)
+    {
+        patches[patch].Id = patch + 1;
+        for (usize i = 0; i < PATCH_CONTROL_ORDER; ++i)
+        {
+            for (usize j = 0; j < PATCH_CONTROL_ORDER; ++j)
+            {
+                const float64 x = static_cast<float64>(3 * patch + i);
+                const float64 y = static_cast<float64>(j);
+                patches[patch].Control[i][j] = Vector3d{x, y, (j == 1 || j == 2) ? 1.0 : 0.0};
+            }
+        }
+    }
+    return patches;
+}
+
+[[nodiscard]] SurfaceMeshProfile MakeMeshProfile() noexcept
+{
+    return SurfaceMeshProfile
+    {
+        .Precision = PrecisionProfile::Strict,
+        .PositionError = 0.05,
+        .Degeneracy = SurfaceDegeneracyPolicy::Report,
+        .Limits =
+            SurfaceMeshLimits
+            {
+                .MaxLevel = 8,
+                .MaxCellTests = 1U << 16U,
+                .MaxVertices = 1U << 16U,
+                .MaxTriangles = 1U << 16U,
+                .MaxOutputBytes = 1U << 24U,
+            },
     };
 }
 } // namespace
@@ -507,4 +550,92 @@ TEST_CASE("Frame evaluation, projection and sweep emission never allocate", "[ge
     }
     REQUIRE(isEverySampleOk == true);
     REQUIRE(allocations == 0);
+}
+
+TEST_CASE("Every surface and mesh allocation failure returns OutOfMemory and preserves the owner", "[geometry][alloc]")
+{
+    const StaticArray<SurfacePatchSource, PROBE_PATCH_COUNT> patches = MakePatches();
+    const SurfaceAdjacencySource adjacency
+    {
+        .FirstPatch = 0,
+        .FirstSide = PatchSide::U1,
+        .SecondPatch = 1,
+        .SecondSide = PatchSide::U0,
+    };
+    const SurfaceSource source
+    {
+        .Patches = BorrowedView<const SurfacePatchSource>(patches.GetData(), patches.GetSize()),
+        .Adjacency = BorrowedView<const SurfaceAdjacencySource>(&adjacency, 1),
+        .Revision = 1,
+    };
+    const SurfacePreparation preparation{ .Tolerance = MakeProfile(), .Limits = MakeLimits() };
+    PreparedSurface active;
+    REQUIRE(TryPrepareSurface(source, preparation, active, nullptr) == GeometryStatus::Success);
+    const usize activeEdgeCount = active.GetView().Edges.GetSize();
+
+    usize surfaceAllocations = 0;
+    {
+        PreparedSurface probe;
+        const CountingScope scope(0);
+        const GeometryStatus status = TryPrepareSurface(source, preparation, probe, nullptr);
+        surfaceAllocations = gAllocationCount;
+        REQUIRE(status == GeometryStatus::Success);
+    }
+    REQUIRE(surfaceAllocations > 0);
+    for (usize failAt = 1; failAt <= surfaceAllocations; ++failAt)
+    {
+        GeometryStatus status = GeometryStatus::Success;
+        {
+            const CountingScope scope(failAt);
+            status = TryPrepareSurface(source, preparation, active, nullptr);
+        }
+        REQUIRE(status == GeometryStatus::OutOfMemory);
+        REQUIRE(active.GetView().Edges.GetSize() == activeEdgeCount);
+    }
+
+    const SurfaceMeshProfile profile = MakeMeshProfile();
+    SurfaceMesh activeMesh;
+    REQUIRE(TryBuildSurfaceMesh(active.GetView(), profile, activeMesh, nullptr) == GeometryStatus::Success);
+    const usize activeVertexCount = activeMesh.GetView().Vertices.GetSize();
+    usize meshAllocations = 0;
+    {
+        SurfaceMesh probe;
+        const CountingScope scope(0);
+        const GeometryStatus status = TryBuildSurfaceMesh(active.GetView(), profile, probe, nullptr);
+        meshAllocations = gAllocationCount;
+        REQUIRE(status == GeometryStatus::Success);
+    }
+    REQUIRE(meshAllocations > 0);
+    for (usize failAt = 1; failAt <= meshAllocations; ++failAt)
+    {
+        GeometryStatus status = GeometryStatus::Success;
+        {
+            const CountingScope scope(failAt);
+            status = TryBuildSurfaceMesh(active.GetView(), profile, activeMesh, nullptr);
+        }
+        REQUIRE(status == GeometryStatus::OutOfMemory);
+        REQUIRE(activeMesh.GetView().Vertices.GetSize() == activeVertexCount);
+    }
+
+    bool isEverySampleOk = true;
+    usize evaluationAllocations = 0;
+    {
+        const CountingScope scope(0);
+        for (usize step = 0; step <= 16; ++step)
+        {
+            const float64 t = static_cast<float64>(step) / 16.0;
+            const SurfaceParameter parameter{ .PatchIndex = 1, .U = t, .V = 1.0 - t };
+            ludus::foundation::math::PatchSample sample;
+            Vector3 normal;
+            SurfaceParameter mapped;
+            isEverySampleOk =
+                isEverySampleOk == true &&
+                TryEvaluateSurface(active.GetView(), parameter, sample) == GeometryStatus::Success &&
+                TryEvaluateSurfaceNormal(active.GetView(), parameter, normal) == GeometryStatus::Success &&
+                TryMapEdgeParameter(active.GetView(), 1, 1, t, mapped) == GeometryStatus::Success;
+        }
+        evaluationAllocations = gAllocationCount;
+    }
+    REQUIRE(isEverySampleOk == true);
+    REQUIRE(evaluationAllocations == 0);
 }

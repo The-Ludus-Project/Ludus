@@ -1,14 +1,16 @@
 # Ludus::FoundationGeometry
 
 Prepared spatial paths, scalar tracks, bounded distance maps, rotation-minimizing
-frames, closest-point projection and sweep meshes above the FoundationMath cubic
-kernel. These are phases G2 and G3 of the
+frames, closest-point projection, sweep meshes, prepared patch surfaces and
+crack-free surface meshes above the FoundationMath cubic and bicubic kernel.
+These are phases G2, G3 and G4 of the
 [curves and surfaces architecture](../../architecture/curves-surfaces.md). Names,
 statuses, domains and guarantee classes follow
 [ADR 0024](../../decisions/0024-curves-surfaces-contracts.md). Validation is
 recorded in the evidence ledger for
-[G2](../../architecture/math-evidence/curves-surfaces.md#g2-prepared-paths-tracks-and-distance-maps)
-and [G3](../../architecture/math-evidence/curves-surfaces.md#g3-frames-projection-and-sweeps).
+[G2](../../architecture/math-evidence/curves-surfaces.md#g2-prepared-paths-tracks-and-distance-maps),
+[G3](../../architecture/math-evidence/curves-surfaces.md#g3-frames-projection-and-sweeps)
+and [G4](../../architecture/math-evidence/curves-surfaces.md#g4-patch-topology-and-cpu-surface-meshes).
 
 The module depends on `Ludus::FoundationBase`, `Ludus::FoundationMath` and
 `Ludus::FoundationContainers`. It is not in `core.h` or the foundational PCH.
@@ -23,9 +25,8 @@ Include the header you use:
 | `frame.hpp` | `FramePreparation`, `TryBuildFrames`, `PreparedFrames`, `TryEvaluateFrame`, seed, singularity, corner and closed-loop policies |
 | `query.hpp` | `ProjectionScratch`, `TryProjectPoint`, `ProjectPointApproximate` |
 | `sweep.hpp` | `SweepRequest`, `TryPlanSweepMesh`, `SweepMeshPlan`, `TryEmitSweepMesh` |
-
-Surfaces and patch tessellation (`surface.hpp`, `tessellation.hpp`) belong to
-G4 and do not exist yet.
+| `surface.hpp` | `SurfaceSource`, `TryPrepareSurface`, `PreparedSurface`, `SurfaceView`, patch/edge/corner records, surface evaluation and normals, `TryMapEdgeParameter` |
+| `tessellation.hpp` | `SurfaceMeshProfile`, `TryBuildSurfaceMesh`, `SurfaceMesh`, `SurfaceMeshView`, `SurfaceMeshReport` |
 
 ## Contracts
 
@@ -79,6 +80,10 @@ invalidated by moving or destroying the owner.
 | `ProjectPointApproximate` result | Approximate |
 | Sweep ring frames and vertices | Rounded |
 | Sweep longitudinal and cross-section error, self-intersection risk | Estimated |
+| Shared-edge matching, corner identity, mesh corner positions | Exact |
+| Surface positions, partials, normals, edge continuity values | Rounded |
+| Mesh cell bounds (`SurfaceMeshPatch::PositionBound`), emitted position error bounds | Certified |
+| Mesh normal-angle estimate | Estimated |
 
 Certified bounds come from FoundationMath's [outward-rounded enclosures](math.md#outward-rounded-enclosures).
 A strict `DistancePreparation` (the default) accepts them; there is no Estimated
@@ -333,9 +338,127 @@ capacities (`CapacityExceeded`) before writing. The report's
 curvature reaches 1. This sampled local check is Estimated: it can flag a risk
 but never proves the surface simple.
 
+## Surfaces
+
+A `SurfaceSource` lists untrimmed bicubic patches, each with a unique author
+`Id` and float64 controls `Control[u][v]`, plus explicit
+`SurfaceAdjacencySource` records that join two whole patch sides. Each side has
+an along-edge parameter s: v for `U0` and `U1`, u for `V0` and `V1`. A join
+declares whether the second side runs opposite to the first (`IsReversed`).
+
+```cpp
+#include <ludus/foundation/geometry/surface.hpp>
+
+SurfacePatchSource patches[2] = {/* Id = 10 and Id = 20, float64 controls */};
+// The first patch's u = 1 side is the second patch's u = 0 side, with v reversed.
+const SurfaceAdjacencySource join{.FirstPatch = 0, .FirstSide = PatchSide::U1,
+                                  .SecondPatch = 1, .SecondSide = PatchSide::U0, .IsReversed = true};
+PreparedSurface surface;
+const GeometryStatus status = TryPrepareSurface(
+    SurfaceSource{.Patches = BorrowedView<const SurfacePatchSource>(patches),
+                  .Adjacency = BorrowedView<const SurfaceAdjacencySource>(&join, 1), .Revision = 1},
+    SurfacePreparation{.Tolerance = tolerance, .Limits = limits}, surface, nullptr);
+```
+
+`TryPrepareSurface` narrows controls as `TryPreparePath` does, then builds the
+topology. V1 accepts only matching whole sides with at most two incident patches
+per edge. The two narrowed control curves must be equal after the declared
+mapping. A mismatched curve, a partial join, a third incidence on a side, a side
+joined to itself, an unknown patch index or a duplicate patch ID is
+`InvalidTopology`; nothing is welded by a distance threshold. A side may join
+another side of the same patch, which closes it into a tube.
+
+The view holds one `SurfaceEdge` per edge and one `SurfaceCorner` per corner.
+An edge's owner is the incidence with the smallest (patch ID, side). Its
+`SurfaceEdgeId` and canonical control curve come from that owner, so they do not
+depend on patch order. `TryMapEdgeParameter` converts a canonical edge
+parameter into each incident patch's (u, v). Corners joined through shared edges
+form one record with one exact position and every incident patch corner.
+Corners that only coincide geometrically remain separate records.
+
+Shared edges also report two properties, without guessing smoothness.
+`IsOrientationConsistent` says whether the two patches traverse the edge in
+opposite directions along their counterclockwise (u, v) boundaries, so their
+`Cross(DU, DV)` normals agree in orientation. `IsC1` compares the outward
+cross-boundary derivative controls; it is a threshold decision on Rounded
+values. G1 tangent-plane classification is not provided.
+
+`TryEvaluateSurface` returns positions or all partials per normalized U and V.
+`TryEvaluateSurfaceNormal` uses the surface's `NormalMinDerivativeLength` and
+`NormalMinSinAngle`. It returns `Degenerate` for zero or parallel partials and
+`IllConditioned` at or below the thresholds; the position remains valid.
+
+## Surface meshes
+
+`TryBuildSurfaceMesh` tessellates every patch as a dyadic grid of
+2^`LevelU` x 2^`LevelV` cells. Each cell becomes two triangles along its
+(u0, v0)-(u1, v1) diagonal, counterclockwise in (u, v). The function builds a
+complete `SurfaceMesh` staging owner and moves it into the output only on
+success.
+
+```cpp
+#include <ludus/foundation/geometry/tessellation.hpp>
+
+const SurfaceMeshProfile profile{
+    .Precision = PrecisionProfile::Strict, .PositionError = 0.01,
+    .Degeneracy = SurfaceDegeneracyPolicy::Report,
+    .Limits = {.MaxLevel = 10, .MaxCellTests = 1 << 20, .MaxVertices = 1 << 20,
+               .MaxTriangles = 1 << 20, .MaxOutputBytes = 64 << 20}};
+SurfaceMesh mesh;
+if (IsSuccess(TryBuildSurfaceMesh(surface.GetView(), profile, mesh, nullptr)))
+{
+    const SurfaceMeshView view = mesh.GetView();
+    // view.Report.PositionBound <= 0.01 (Certified); upload view.Vertices and view.Indices.
+}
+```
+
+The cell bound adds three terms. The first is the largest distance between the
+subpatch controls and the degree-elevated bilinear interpolant of its corners.
+The second is the twisted bilinear quad's distance to its two triangles,
+`Length(P00 - P10 - P01 + P11)/4`. The third is the rounding error of the
+emitted vertices. Each term uses outward-rounded enclosures, so
+`PositionBound` is Certified for the parametric distance between the prepared
+surface and the mesh.
+
+Every patch starts at level (0, 0). While a cell misses the profile, the
+direction whose refinement gives the clearly smaller normalized bound is
+refined. Near-ties refine the coarser direction, then u. Each shared edge then
+takes the larger of its two along-edge levels. Patches whose levels changed are
+rechecked until the network agrees. This can over-tessellate; for example, a
+planar patch beside a curved edge inherits that edge's level.
+
+`SurfaceMeshView::Positions` emits each corner and each edge sample once. Edge
+samples are evaluated on the canonical curve, interior samples on their patch.
+Every `SurfaceMeshVertex` copies its shared position bitwise and names its
+`PositionIndex`, while its normal and `Parameter` belong to its own patch. Two
+patches therefore meet without cracks or T-junctions, and their normal or
+parameter seams stay visible. A surface parameter is never a texture coordinate.
+
+Failure behavior is explicit:
+
+- `Strict` accepts only Certified position bounds. A nonzero
+  `NormalAngleError` is `UnsupportedPrecision`, because only an Estimated
+  normal bound exists. `IsCoarserMeshAccepted` is `InvalidArgument`.
+- `Visual` may request `NormalAngleError`. Refinement then also samples analytic
+  normals at cell corners and centres, skipping singular samples, and reports an
+  Estimated angle. With `IsCoarserMeshAccepted`, a patch that `MaxLevel` stops
+  keeps its finest grid. The mesh then reports `IsWithinPositionError = false`
+  and the achieved Certified bound instead of failing.
+- `MaxCellTests`, `MaxVertices`, `MaxTriangles` and `MaxOutputBytes` always fail
+  with `BudgetExceeded`. Counts are checked before allocation. More than 2^32
+  vertices is `OutOfRange`.
+- `SurfaceDegeneracyPolicy::Reject` fails on a singular vertex normal or a
+  triangle with two equal positions. `Report` emits a zero normal with its
+  status and counts both cases in the report.
+
+`PositionError` must be at least the surface's position floor. Errors are
+measured against the prepared float32 patches; `TryPrepareSurface` checks source
+narrowing separately. Every failure keeps the previous mesh.
+
 ## Not yet provided
 
 Path cursors for coherent traversal, a Visual-only Estimated distance build,
 Approximate table lookup, certified frame angular error, mitred or split sweeps,
-surfaces, patch tessellation, cooked formats and editor adapters are later work.
-Performance and memory budgets are unmeasured.
+G1 surface classification, camera-dependent and displaced meshes, quadtree
+tessellation, cooked formats and editor adapters are later work. Performance
+and memory budgets are unmeasured.

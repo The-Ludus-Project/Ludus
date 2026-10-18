@@ -180,7 +180,7 @@ TEST_CASE("Native publication orders pending producers and rejects stale depende
     CHECK(GetStatus(session.Device, session.Producer) == RasterStatus::Pending);
     const auto info = session.Acquire();
     CHECK(info.ProducerOrdinal != 0);
-    CHECK(!info.VulkanImage.IsNull());
+    CHECK(info.VulkanImage.IsNull() == false);
     CHECK(info.VulkanLayout == 5);
     CHECK(GetStatus(session.Reads[0]) == RasterStatus::Ready);
     NativeTextureInfo preserved;
@@ -298,7 +298,7 @@ TEST_CASE("Shutdown retains native image device and source until consumer comple
     NativeTextureInfo image;
     REQUIRE(GetNativeTextureInfo(session.Reads[0], image) == RasterStatus::Ready);
     CHECK(image.Device.Retiring);
-    CHECK(!image.VulkanImage.IsNull());
+    CHECK(image.VulkanImage.IsNull() == false);
     DeviceHandle replacement;
     SurfaceHandle target;
     CHECK(CreateDevice({}, {}, {}, replacement, target) == DeviceStatus::InvalidState);

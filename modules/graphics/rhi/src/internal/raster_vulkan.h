@@ -159,7 +159,7 @@ VkResult
 RasterVkRenderPass(VkFormat format, bool surface, const RasterPassDescription& state, VkRenderPass& output) noexcept
 {
     const auto limit = internal::CurrentStorageLimits().RasterPassStates;
-    if (!gRasterPasses.EnsureSlots(limit))
+    if (gRasterPasses.EnsureSlots(limit) == false)
     {
         return internal::StorageFailure() == RasterStatus::OutOfMemory ? VK_ERROR_OUT_OF_HOST_MEMORY
                                                                        : VK_ERROR_TOO_MANY_OBJECTS;
@@ -263,7 +263,7 @@ VkAttachmentStoreOp RasterVkStore(RasterStore store) noexcept
 VkResult RasterVkAdvancedPass(const internal::RasterPassInfo& info, VkRenderPass& output) noexcept
 {
     const auto limit = internal::CurrentStorageLimits().RasterPassStates;
-    if (!gRasterPasses.EnsureSlots(limit))
+    if (gRasterPasses.EnsureSlots(limit) == false)
     {
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
@@ -273,7 +273,7 @@ VkResult RasterVkAdvancedPass(const internal::RasterPassInfo& info, VkRenderPass
         auto& cached = gRasterPasses[i];
         if (cached.Object == VK_NULL_HANDLE)
         {
-            if (!available)
+            if (available == nullptr)
             {
                 available = &cached;
             }
@@ -300,7 +300,7 @@ VkResult RasterVkAdvancedPass(const internal::RasterPassInfo& info, VkRenderPass
             return VK_SUCCESS;
         }
     }
-    if (!available)
+    if (available == nullptr)
     {
         return VK_ERROR_TOO_MANY_OBJECTS;
     }
@@ -388,7 +388,7 @@ RasterVkAdvancedFramebuffer(const internal::RasterPassInfo& info, VkRenderPass p
         }
     }
     const auto limit = internal::CurrentStorageLimits().RasterPassStates;
-    if (!gRasterAdvancedFrames.EnsureSlots(limit))
+    if (gRasterAdvancedFrames.EnsureSlots(limit) == false)
     {
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
@@ -398,7 +398,7 @@ RasterVkAdvancedFramebuffer(const internal::RasterPassInfo& info, VkRenderPass p
         auto& frame = gRasterAdvancedFrames[i];
         if (frame.Object == VK_NULL_HANDLE)
         {
-            if (!available)
+            if (available == nullptr)
             {
                 available = &frame;
             }
@@ -416,7 +416,7 @@ RasterVkAdvancedFramebuffer(const internal::RasterPassInfo& info, VkRenderPass p
             return VK_SUCCESS;
         }
     }
-    if (!available)
+    if (available == nullptr)
     {
         return VK_ERROR_TOO_MANY_OBJECTS;
     }
@@ -599,13 +599,14 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
         }
     }
     // Compressed volumes are a separate feature/profile; the R9 BC profile is 2D/array/cube.
-    if (!internal::CompressedTexture(format) && vkGetPhysicalDeviceImageFormatProperties(gPhysical,
-                                                                                         pixel,
-                                                                                         VK_IMAGE_TYPE_3D,
-                                                                                         VK_IMAGE_TILING_OPTIMAL,
-                                                                                         usage,
-                                                                                         0,
-                                                                                         &volume) == VK_SUCCESS)
+    if (internal::CompressedTexture(format) == false &&
+        vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+                                                 pixel,
+                                                 VK_IMAGE_TYPE_3D,
+                                                 VK_IMAGE_TILING_OPTIMAL,
+                                                 usage,
+                                                 0,
+                                                 &volume) == VK_SUCCESS)
     {
         result.MaxDimension3D = volume.maxExtent.width;
         const uint32 bounds[]{volume.maxExtent.width, volume.maxExtent.height, volume.maxExtent.depth};
@@ -719,13 +720,14 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
                                                      depthUsage,
                                                      VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
                                                      &depthCube) == VK_SUCCESS &&
-            (!result.StencilAttachment || vkGetPhysicalDeviceImageFormatProperties(gPhysical,
-                                                                                   VK_FORMAT_D32_SFLOAT_S8_UINT,
-                                                                                   VK_IMAGE_TYPE_2D,
-                                                                                   VK_IMAGE_TILING_OPTIMAL,
-                                                                                   depthUsage,
-                                                                                   VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
-                                                                                   &stencilCube) == VK_SUCCESS))
+            (result.StencilAttachment == false ||
+             vkGetPhysicalDeviceImageFormatProperties(gPhysical,
+                                                      VK_FORMAT_D32_SFLOAT_S8_UINT,
+                                                      VK_IMAGE_TYPE_2D,
+                                                      VK_IMAGE_TILING_OPTIMAL,
+                                                      depthUsage,
+                                                      VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+                                                      &stencilCube) == VK_SUCCESS))
         {
             result.MaxAttachmentCubeDimension = result.MaxAttachmentDimension2D;
             const uint32 cubeBounds[]{colorCube.maxExtent.width,
@@ -866,7 +868,7 @@ RasterCapabilities RasterLimits() noexcept
 {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(gPhysical, &properties);
-    if (!gRasterHdrProbed)
+    if (gRasterHdrProbed == false)
     {
         VkFormatProperties hdr{};
         vkGetPhysicalDeviceFormatProperties(gPhysical, VK_FORMAT_R16G16B16A16_SFLOAT, &hdr);
@@ -904,7 +906,7 @@ RasterCapabilities RasterLimits() noexcept
 }
 ComputeCapabilities ComputeLimits() noexcept
 {
-    if (gPhysical == VK_NULL_HANDLE || !gQueueCompute)
+    if (gPhysical == VK_NULL_HANDLE || gQueueCompute == false)
     {
         return {};
     }
@@ -1377,7 +1379,7 @@ RasterStatus RasterCreateShader(usize slot,
         }
         offset += count;
     }
-    if (!found || !localSize)
+    if (found == false || localSize == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -1917,7 +1919,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     const auto command = gFrames[gFrame].Command;
     const auto extent = gRasterExtent.width == 0 ? gExtent : gRasterExtent;
     internal::RasterArea area;
-    if (!internal::RasterResolveArea(gRasterRegion, extent.width, extent.height, area))
+    if (internal::RasterResolveArea(gRasterRegion, extent.width, extent.height, area) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -1979,7 +1981,7 @@ void RasterFrameExtent() noexcept
 }
 void RasterEndPass() noexcept
 {
-    if (!gEncoding)
+    if (gEncoding == false)
     {
         return;
     }
@@ -2067,7 +2069,7 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
     const auto access =
         color ? VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_SHADER_READ_BIT;
     const auto layout = color ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (texture.ColorLayout == layout && (texture.SampleVisibility & stage) == stage && !color)
+    if (texture.ColorLayout == layout && (texture.SampleVisibility & stage) == stage && color == false)
     {
         texture.ColorStage |= stage;
         return;
@@ -2098,7 +2100,7 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
     texture.ColorLayout = layout;
     texture.ColorStage = color ? stage : texture.ColorStage | stage;
     texture.ColorAccess = access;
-    if (!color)
+    if (color == false)
     {
         texture.SampleVisibility |= stage;
     }
@@ -2152,7 +2154,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     }
     gRasterRegion = info.Description;
     gRasterActiveTexture = info.Texture;
-    if (!surface)
+    if (surface == false)
     {
         RasterTextureBarrier(info.Texture, RasterTextureUse::ColorAttachment);
         auto& texture = gRasterTextures[info.Texture];

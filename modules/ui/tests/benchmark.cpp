@@ -41,7 +41,7 @@ int main()
             r = ui.Route({EventKind::Activate});
             r = ui.Route({EventKind::PointerDown, 40, 12});
             r = ui.Route({EventKind::PointerUp, 40, 12});
-            if (!r.Consumed)
+            if (r.Consumed == false)
             {
                 return 3;
             }

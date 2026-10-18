@@ -65,7 +65,7 @@ public:
     }
     [[nodiscard]] bool CanSave() const noexcept
     {
-        return !Busy_ && !Level_.isEmpty();
+        return Busy_ == false && Level_.isEmpty() == false;
     }
     /// Select a stable World/scene object ID for viewport framing; empty clears it.
     void SetSelection(const QString& id);
@@ -85,7 +85,7 @@ public:
     }
     [[nodiscard]] bool CanCancel() const noexcept
     {
-        return Busy_ && Operation_ != QStringLiteral("save") && !PublishingCatalog_;
+        return Busy_ && Operation_ != QStringLiteral("save") && PublishingCatalog_ == false;
     }
     void CancelOperation()
     {

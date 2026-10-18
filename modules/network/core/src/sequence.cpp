@@ -8,7 +8,7 @@ namespace ludus::network
 {
 SequenceStatus SequenceWindow::Observe(uint32 sequence) noexcept
 {
-    if (!mInitialized)
+    if (mInitialized == false)
     {
         mInitialized = true;
         mNewest = sequence;

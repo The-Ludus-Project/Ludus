@@ -31,8 +31,8 @@ bool ParseDecimal(std::string_view text, uint64& output) noexcept
     for (char character : text)
     {
         uint64 next{};
-        if (character < '0' || character > '9' || !TryMultiply(value, uint64{10}, next) ||
-            !TryAdd(next, static_cast<uint64>(character - '0'), value))
+        if (character < '0' || character > '9' || TryMultiply(value, uint64{10}, next) == false ||
+            TryAdd(next, static_cast<uint64>(character - '0'), value) == false)
         {
             return false;
         }
@@ -77,7 +77,7 @@ void Header(parsing::JsonWriter& writer, std::string_view identity) noexcept
 }
 bool ValidIdentity(std::string_view identity) noexcept
 {
-    return !identity.empty() && identity.size() <= 128 && ValidateCString(identity) == StringStatus::Ok;
+    return identity.empty() == false && identity.size() <= 128 && ValidateCString(identity) == StringStatus::Ok;
 }
 } // namespace
 Status DecodeValue(parsing::JsonValue input, Type type, Value& output) noexcept
@@ -104,16 +104,16 @@ Status DecodeValue(parsing::JsonValue input, Type type, Value& output) noexcept
         case Type::Uint64: {
             std::string_view text;
             uint64 magnitude{};
-            if (!input.String(text))
+            if (input.String(text) == false)
             {
                 break;
             }
-            const bool negative = !text.empty() && text.front() == '-';
+            const bool negative = text.empty() == false && text.front() == '-';
             if (negative && type == Type::Uint64)
             {
                 break;
             }
-            if (!ParseDecimal(negative ? text.substr(1) : text, magnitude) || (negative && magnitude == 0))
+            if (ParseDecimal(negative ? text.substr(1) : text, magnitude) == false || (negative && magnitude == 0))
             {
                 break;
             }
@@ -150,7 +150,7 @@ Status DecodeValue(parsing::JsonValue input, Type type, Value& output) noexcept
         default:
             break;
     }
-    if (!ok)
+    if (ok == false)
     {
         return Status::InvalidValue;
     }
@@ -198,7 +198,8 @@ Status PrepareJson(Context& context,
                    Diagnostic& error) noexcept
 {
     error = {};
-    if (!context.IsValid() || !ValidIdentity(schemaIdentity) || static_cast<usize>(expectedLayer) >= LAYER_COUNT)
+    if (context.IsValid() == false || ValidIdentity(schemaIdentity) == false ||
+        static_cast<usize>(expectedLayer) >= LAYER_COUNT)
     {
         return Fail(error, Status::InvalidState);
     }
@@ -225,10 +226,10 @@ Status PrepareJson(Context& context,
     uint64 version{};
     std::string_view identity, layer;
     const auto values = root.Get("values");
-    if (!root.Fields({"version", "schema", "layer", "values"}) || !root.Get("version").Integer(version) ||
-        version != 1 || !root.Get("schema").String(identity) || identity != schemaIdentity ||
-        !root.Get("layer").String(layer) || layer != LayerName(expectedLayer) || !values.Array() ||
-        values.Count() > context.Schema().size())
+    if (root.Fields({"version", "schema", "layer", "values"}) == false ||
+        root.Get("version").Integer(version) == false || version != 1 || root.Get("schema").String(identity) == false ||
+        identity != schemaIdentity || root.Get("layer").String(layer) == false || layer != LayerName(expectedLayer) ||
+        values.Array() == false || values.Count() > context.Schema().size())
     {
         return Fail(error, Status::InvalidBundle);
     }
@@ -238,7 +239,7 @@ Status PrepareJson(Context& context,
         return context.Prepare(expectedLayer, {}, true, expectedRevision, error);
     }
     usize bytes{};
-    if (!TryMultiply(count, sizeof(Assignment), bytes))
+    if (TryMultiply(count, sizeof(Assignment), bytes) == false)
     {
         return Fail(error, Status::LimitExceeded);
     }
@@ -270,8 +271,9 @@ Status PrepareJson(Context& context,
         const auto record = values.At(i);
         auto& assignment = assignments[i];
         std::string_view type, source;
-        if (!record.Fields({"key", "type", "value", "source", "line"}) || !record.Get("key").String(assignment.Name) ||
-            !record.Get("type").String(type) || !record.Get("source").String(source) || source.size() > 128 ||
+        if (record.Fields({"key", "type", "value", "source", "line"}) == false ||
+            record.Get("key").String(assignment.Name) == false || record.Get("type").String(type) == false ||
+            record.Get("source").String(source) == false || source.size() > 128 ||
             ValidateCString(source) != StringStatus::Ok || assignment.From.Source.TryAssign(source) != StringStatus::Ok)
         {
             return Fail(error, Status::InvalidBundle, assignment.Name, i);
@@ -288,7 +290,7 @@ Status PrepareJson(Context& context,
             return Fail(error, Status::InvalidValue, assignment.Name, i);
         }
         uint64 line{};
-        if (!record.Get("line").Integer(line) || !TryIntegerCast(line, assignment.From.Line))
+        if (record.Get("line").Integer(line) == false || TryIntegerCast(line, assignment.From.Line) == false)
         {
             return Fail(error, Status::InvalidBundle, assignment.Name, i);
         }
@@ -306,7 +308,8 @@ Status WriteLayer(const Context& context,
                   std::span<uint8> buffer,
                   std::span<const uint8>& output) noexcept
 {
-    if (!context.IsValid() || !ValidIdentity(schemaIdentity) || static_cast<usize>(layer) >= LAYER_COUNT)
+    if (context.IsValid() == false || ValidIdentity(schemaIdentity) == false ||
+        static_cast<usize>(layer) >= LAYER_COUNT)
     {
         return Status::InvalidState;
     }
@@ -327,7 +330,7 @@ Status WriteLayer(const Context& context,
         {
             continue;
         }
-        if (!first)
+        if (first == false)
         {
             writer.Raw(",");
         }
@@ -352,7 +355,7 @@ Status WriteSchema(const Context& context,
                    std::span<uint8> buffer,
                    std::span<const uint8>& output) noexcept
 {
-    if (!context.IsValid() || !ValidIdentity(schemaIdentity))
+    if (context.IsValid() == false || ValidIdentity(schemaIdentity) == false)
     {
         return Status::InvalidState;
     }
@@ -362,7 +365,7 @@ Status WriteSchema(const Context& context,
     bool first = true;
     for (const auto& descriptor : context.Schema())
     {
-        if (!first)
+        if (first == false)
         {
             writer.Raw(",");
         }
@@ -387,7 +390,7 @@ Status WriteSchema(const Context& context,
         bool firstChoice = true;
         for (auto choice : descriptor.Choices)
         {
-            if (!firstChoice)
+            if (firstChoice == false)
             {
                 writer.Raw(",");
             }

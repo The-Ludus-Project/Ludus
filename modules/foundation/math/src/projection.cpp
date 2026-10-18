@@ -20,7 +20,7 @@ namespace
         const float32 y = static_cast<float32>(rows[1][c]);
         const float32 z = static_cast<float32>(rows[2][c]);
         const float32 w = static_cast<float32>(rows[3][c]);
-        if (!IsFinite(x) || !IsFinite(y) || !IsFinite(z) || !IsFinite(w))
+        if (IsFinite(x) == false || IsFinite(y) == false || IsFinite(z) == false || IsFinite(w) == false)
         {
             return MathStatus::OutOfRange;
         }
@@ -33,13 +33,13 @@ namespace
 [[nodiscard]] bool NormalizeDouble3(float64 x, float64 y, float64 z, float64& ox, float64& oy, float64& oz) noexcept
 {
     const float64 s = std::fmax(std::fmax(std::fabs(x), std::fabs(y)), std::fabs(z));
-    if (s == 0.0 || !std::isfinite(s))
+    if (s == 0.0 || std::isfinite(s) == false)
     {
         return false;
     }
     const float64 ux = x / s, uy = y / s, uz = z / s;
     const float64 len = std::sqrt(ux * ux + uy * uy + uz * uz);
-    if (len == 0.0 || !std::isfinite(len))
+    if (len == 0.0 || std::isfinite(len) == false)
     {
         return false;
     }
@@ -52,18 +52,18 @@ namespace
 
 MathStatus TryLookAt(Vector3 eye, Vector3 target, Vector3 upHint, Matrix4& outView) noexcept
 {
-    if (!IsFinite(eye) || !IsFinite(target) || !IsFinite(upHint))
+    if (IsFinite(eye) == false || IsFinite(target) == false || IsFinite(upHint) == false)
     {
         return MathStatus::NonFiniteInput;
     }
     // z = normalize(eye - target) (points backward, toward the camera).
     float64 zx, zy, zz;
-    if (!NormalizeDouble3((float64)eye.X - static_cast<float64>(target.X),
-                          (float64)eye.Y - static_cast<float64>(target.Y),
-                          (float64)eye.Z - static_cast<float64>(target.Z),
-                          zx,
-                          zy,
-                          zz))
+    if (NormalizeDouble3((float64)eye.X - static_cast<float64>(target.X),
+                         (float64)eye.Y - static_cast<float64>(target.Y),
+                         (float64)eye.Z - static_cast<float64>(target.Z),
+                         zx,
+                         zy,
+                         zz) == false)
     {
         return MathStatus::Degenerate;
     }
@@ -72,7 +72,7 @@ MathStatus TryLookAt(Vector3 eye, Vector3 target, Vector3 upHint, Matrix4& outVi
     const float64 cy = (float64)upHint.Z * zx - (float64)upHint.X * zz;
     const float64 cz = (float64)upHint.X * zy - (float64)upHint.Y * zx;
     float64 xx, xy, xz;
-    if (!NormalizeDouble3(cx, cy, cz, xx, xy, xz))
+    if (NormalizeDouble3(cx, cy, cz, xx, xy, xz) == false)
     {
         return MathStatus::Degenerate; // parallel/zero upHint
     }
@@ -108,13 +108,13 @@ MathStatus TryPerspectiveReverseZ(float32 verticalFovRadians,
                                   float32 farPlane,
                                   Matrix4& out) noexcept
 {
-    if (!std::isfinite(verticalFovRadians) || !std::isfinite(aspect) || !std::isfinite(nearPlane) ||
-        !std::isfinite(farPlane))
+    if (std::isfinite(verticalFovRadians) == false || std::isfinite(aspect) == false ||
+        std::isfinite(nearPlane) == false || std::isfinite(farPlane) == false)
     {
         return MathStatus::NonFiniteInput;
     }
-    if (!(aspect > 0.0f) || !(nearPlane > 0.0f) || !(farPlane > nearPlane) || !(verticalFovRadians > 0.0f) ||
-        !(verticalFovRadians < kPiF))
+    if ((aspect > 0.0f) == false || (nearPlane > 0.0f) == false || (farPlane > nearPlane) == false ||
+        (verticalFovRadians > 0.0f) == false || (verticalFovRadians < kPiF) == false)
     {
         return MathStatus::InvalidArgument;
     }
@@ -132,11 +132,13 @@ MathStatus TryPerspectiveReverseZ(float32 verticalFovRadians,
 MathStatus
 TryPerspectiveReverseZInfinite(float32 verticalFovRadians, float32 aspect, float32 nearPlane, Matrix4& out) noexcept
 {
-    if (!std::isfinite(verticalFovRadians) || !std::isfinite(aspect) || !std::isfinite(nearPlane))
+    if (std::isfinite(verticalFovRadians) == false || std::isfinite(aspect) == false ||
+        std::isfinite(nearPlane) == false)
     {
         return MathStatus::NonFiniteInput;
     }
-    if (!(aspect > 0.0f) || !(nearPlane > 0.0f) || !(verticalFovRadians > 0.0f) || !(verticalFovRadians < kPiF))
+    if ((aspect > 0.0f) == false || (nearPlane > 0.0f) == false || (verticalFovRadians > 0.0f) == false ||
+        (verticalFovRadians < kPiF) == false)
     {
         return MathStatus::InvalidArgument;
     }
@@ -159,12 +161,13 @@ MathStatus TryOrthographicReverseZ(float32 left,
                                    float32 farPlane,
                                    Matrix4& out) noexcept
 {
-    if (!std::isfinite(left) || !std::isfinite(right) || !std::isfinite(bottom) || !std::isfinite(top) ||
-        !std::isfinite(nearPlane) || !std::isfinite(farPlane))
+    if (std::isfinite(left) == false || std::isfinite(right) == false || std::isfinite(bottom) == false ||
+        std::isfinite(top) == false || std::isfinite(nearPlane) == false || std::isfinite(farPlane) == false)
     {
         return MathStatus::NonFiniteInput;
     }
-    if (!(left < right) || !(bottom < top) || !(nearPlane >= 0.0f) || !(nearPlane < farPlane))
+    if ((left < right) == false || (bottom < top) == false || (nearPlane >= 0.0f) == false ||
+        (nearPlane < farPlane) == false)
     {
         return MathStatus::InvalidArgument;
     }
@@ -182,12 +185,12 @@ MathStatus TryOrthographicReverseZ(float32 left,
 
 MathStatus TryNdcToFramebuffer(Vector3 ndc, Viewport viewport, Vector2& out) noexcept
 {
-    if (!IsFinite(ndc) || !IsFinite(viewport.X) || !IsFinite(viewport.Y) || !IsFinite(viewport.Width) ||
-        !IsFinite(viewport.Height))
+    if (IsFinite(ndc) == false || IsFinite(viewport.X) == false || IsFinite(viewport.Y) == false ||
+        IsFinite(viewport.Width) == false || IsFinite(viewport.Height) == false)
     {
         return MathStatus::NonFiniteInput;
     }
-    if (!(viewport.Width > 0.0f) || !(viewport.Height > 0.0f))
+    if ((viewport.Width > 0.0f) == false || (viewport.Height > 0.0f) == false)
     {
         return MathStatus::InvalidArgument;
     }
@@ -195,7 +198,7 @@ MathStatus TryNdcToFramebuffer(Vector3 ndc, Viewport viewport, Vector2& out) noe
     const float64 py = (float64)viewport.Y + (1.0 - (float64)ndc.Y) * (float64)viewport.Height * 0.5;
     const float32 fx = static_cast<float32>(px);
     const float32 fy = static_cast<float32>(py);
-    if (!IsFinite(fx) || !IsFinite(fy))
+    if (IsFinite(fx) == false || IsFinite(fy) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -205,12 +208,12 @@ MathStatus TryNdcToFramebuffer(Vector3 ndc, Viewport viewport, Vector2& out) noe
 
 MathStatus TryFramebufferToNdc(Vector2 pixel, Viewport viewport, Vector2& out) noexcept
 {
-    if (!IsFinite(pixel) || !IsFinite(viewport.X) || !IsFinite(viewport.Y) || !IsFinite(viewport.Width) ||
-        !IsFinite(viewport.Height))
+    if (IsFinite(pixel) == false || IsFinite(viewport.X) == false || IsFinite(viewport.Y) == false ||
+        IsFinite(viewport.Width) == false || IsFinite(viewport.Height) == false)
     {
         return MathStatus::NonFiniteInput;
     }
-    if (!(viewport.Width > 0.0f) || !(viewport.Height > 0.0f))
+    if ((viewport.Width > 0.0f) == false || (viewport.Height > 0.0f) == false)
     {
         return MathStatus::InvalidArgument;
     }
@@ -218,7 +221,7 @@ MathStatus TryFramebufferToNdc(Vector2 pixel, Viewport viewport, Vector2& out) n
     const float64 ny = 1.0 - ((float64)pixel.Y - static_cast<float64>(viewport.Y)) * 2.0 / (float64)viewport.Height;
     const float32 fx = static_cast<float32>(nx);
     const float32 fy = static_cast<float32>(ny);
-    if (!IsFinite(fx) || !IsFinite(fy))
+    if (IsFinite(fx) == false || IsFinite(fy) == false)
     {
         return MathStatus::OutOfRange;
     }

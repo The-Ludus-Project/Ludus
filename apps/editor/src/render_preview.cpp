@@ -83,8 +83,8 @@ struct RenderPreview::Residency final
         content::Resource resource;
         const auto id = scene.LogicalId.toUtf8();
         const auto path = QByteArray("revisions/") + scene.Identity.toHex() + QByteArray(".luscn");
-        if (!resource.Id.Set({id.constData(), static_cast<usize>(id.size())}) ||
-            !resource.Path.Set({path.constData(), static_cast<usize>(path.size())}))
+        if (resource.Id.Set({id.constData(), static_cast<usize>(id.size())}) == false ||
+            resource.Path.Set({path.constData(), static_cast<usize>(path.size())}) == false)
         {
             return false;
         }
@@ -135,7 +135,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     bool valid = scene.Identity.isEmpty()
                      ? (scene.Meshes.isEmpty() && scene.Textures.isEmpty() && scene.Surfaces.isEmpty() &&
                         scene.Objects.isEmpty() && scene.Cameras.isEmpty())
-                     : (!scene.Meshes.isEmpty() && scene.Meshes.size() <= 6 && scene.Textures.size() <= 8 &&
+                     : (scene.Meshes.isEmpty() == false && scene.Meshes.size() <= 6 && scene.Textures.size() <= 8 &&
                         scene.Surfaces.size() <= 8 && scene.Objects.size() <= 128 && scene.Cameras.size() <= 128);
     for (const auto& surface : scene.Surfaces)
     {
@@ -148,7 +148,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
                 (scene.Lit || object.Texture >= 0 ? object.Surface >= 0 && object.Surface < scene.Surfaces.size()
                                                   : object.Surface == -1);
     }
-    if (!valid)
+    if (valid == false)
     {
         Status_ = QStringLiteral(
             "Preview snapshot exceeds its validated asset/object/material bounds. Previous data retained.");
@@ -175,7 +175,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
         return true;
     }
     const bool sameResources = preview_lighting::MakeKey(Scene_) == preview_lighting::MakeKey(scene);
-    if (Scene_.Identity.isEmpty() && !RestoredOrbit_)
+    if (Scene_.Identity.isEmpty() && RestoredOrbit_ == false)
     {
         OrbitCenter_ = scene.Center;
         OrbitRadius_ = scene.Radius;
@@ -191,7 +191,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     if (scene.Lit)
     {
         residency.Reset(new (std::nothrow) Residency);
-        if (!residency || !scene.Definition || !residency->Initialize(scene))
+        if (residency.Get() == nullptr || scene.Definition == nullptr || residency->Initialize(scene) == false)
         {
             Status_ = QStringLiteral("Resource-manager admission failed; previous scene retained.");
             Q_EMIT Changed();
@@ -201,7 +201,7 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     // Retire the previous lease and provider through the local owner.
     Residency_.Swap(residency);
     Scene_ = scene;
-    if (!CameraId_.isEmpty())
+    if (CameraId_.isEmpty() == false)
     {
         Camera_ = -1;
         for (int32 i = 0; i < Scene_.Cameras.size(); ++i)

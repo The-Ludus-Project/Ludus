@@ -171,7 +171,7 @@ TEST_CASE("Audio import runs away from GUI, preserves ID on reimport and quiesce
     REQUIRE(catalog.Find("source/hit") != nullptr);
     preview.Stop();
     preview.Shutdown();
-    for (int i = 0; i < 500 && !preview.Finished(); ++i)
+    for (int i = 0; i < 500 && preview.Finished() == false; ++i)
     {
         QTest::qWait(10);
     }
@@ -222,7 +222,7 @@ TEST_CASE("Cancelling close preserves the audio draft and does not save workspac
         }
     });
     (void)window.close();
-    QTRY_VERIFY_WITH_TIMEOUT(!window.isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(window.isVisible() == false, 3000);
     CHECK(QFileInfo::exists(preferences));
 }
 

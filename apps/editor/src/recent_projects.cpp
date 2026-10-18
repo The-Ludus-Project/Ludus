@@ -22,8 +22,9 @@ constexpr foundation::int32 MAX_NAME_BYTES = 128;
 
 bool ValidEntry(const QString& path, const QString& name) noexcept
 {
-    return QDir::isAbsolutePath(path) && !path.contains(QChar::Null) && path.toUtf8().size() <= MAX_PATH_BYTES &&
-           !name.isEmpty() && !name.contains(QChar::Null) && name.toUtf8().size() <= MAX_NAME_BYTES;
+    return QDir::isAbsolutePath(path) && path.contains(QChar::Null) == false &&
+           path.toUtf8().size() <= MAX_PATH_BYTES && name.isEmpty() == false && name.contains(QChar::Null) == false &&
+           name.toUtf8().size() <= MAX_NAME_BYTES;
 }
 } // namespace
 
@@ -34,7 +35,7 @@ RecentProjectStore::RecentProjectStore(const QString& path) : Path_(path)
         const QString config = (QDir::isAbsolutePath(qEnvironmentVariable("XDG_CONFIG_HOME"))
                                     ? qEnvironmentVariable("XDG_CONFIG_HOME")
                                     : QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation));
-        if (!config.isEmpty())
+        if (config.isEmpty() == false)
         {
             Path_ = QDir(config).filePath(QStringLiteral("Ludus/Editor/recent-projects.json"));
         }
@@ -49,11 +50,11 @@ bool RecentProjectStore::Load() noexcept
         return false;
     }
     QFile file(Path_);
-    if (!file.exists())
+    if (file.exists() == false)
     {
         return true;
     }
-    if (!file.open(QIODevice::ReadOnly) || file.size() > MAX_HISTORY_BYTES)
+    if (file.open(QIODevice::ReadOnly) == false || file.size() > MAX_HISTORY_BYTES)
     {
         return false;
     }
@@ -63,7 +64,7 @@ bool RecentProjectStore::Load() noexcept
         return false;
     }
     const QJsonDocument document = QJsonDocument::fromJson(bytes);
-    if (!document.isArray())
+    if (document.isArray() == false)
     {
         return false;
     }
@@ -72,7 +73,7 @@ bool RecentProjectStore::Load() noexcept
         const QJsonObject object = value.toObject();
         const QString path = object.value(QStringLiteral("path")).toString();
         const QString name = object.value(QStringLiteral("name")).toString();
-        if (!ValidEntry(path, name))
+        if (ValidEntry(path, name) == false)
         {
             continue;
         }
@@ -82,7 +83,7 @@ bool RecentProjectStore::Load() noexcept
         {
             duplicate = duplicate || entry.DescriptorPath == cleanPath;
         }
-        if (!duplicate)
+        if (duplicate == false)
         {
             Entries_.append({ .DescriptorPath = cleanPath, .Name = name });
         }
@@ -99,7 +100,7 @@ bool RecentProjectStore::Remember(RecentProject project) noexcept
     // Preserve the opening path (including symlink directories): relative
     // descriptor fields must resolve exactly as they do for an ordinary Open.
     const QString path = QDir::cleanPath(QFileInfo(project.DescriptorPath).absoluteFilePath());
-    if (!ValidEntry(path, project.Name))
+    if (ValidEntry(path, project.Name) == false)
     {
         return false;
     }
@@ -121,7 +122,7 @@ bool RecentProjectStore::Clear() noexcept
 
 bool RecentProjectStore::Save() const noexcept
 {
-    if (Path_.isEmpty() || !QDir().mkpath(QFileInfo(Path_).absolutePath()))
+    if (Path_.isEmpty() || QDir().mkpath(QFileInfo(Path_).absolutePath()) == false)
     {
         return false;
     }
@@ -136,7 +137,7 @@ bool RecentProjectStore::Save() const noexcept
     const QByteArray bytes = QJsonDocument(array).toJson(QJsonDocument::Compact);
     QSaveFile file(Path_);
     file.setDirectWriteFallback(false);
-    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size())
+    if (file.open(QIODevice::WriteOnly) == false || file.write(bytes) != bytes.size())
     {
         return false;
     }

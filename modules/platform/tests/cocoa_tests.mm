@@ -147,7 +147,7 @@ TEST_CASE("Cocoa creates owned windows and publishes resized backing-pixel exten
         CHECK(extent.CanvasSelector == nullptr);
         [native miniaturize:nil];
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (!native.miniaturized && std::chrono::steady_clock::now() < deadline)
+        while (native.miniaturized == false && std::chrono::steady_clock::now() < deadline)
         {
             REQUIRE(window->HandleEvent({}));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -156,6 +156,7 @@ TEST_CASE("Cocoa creates owned windows and publishes resized backing-pixel exten
         REQUIRE(window->HandleEvent({}));
         CHECK(window->GetNativeWindowInfo().Width == 0);
         CHECK(window->GetNativeWindowInfo().Height == 0);
+        CHECK(window->GetVisibility() == WindowVisibility::Minimized);
         [native deminiaturize:nil];
         deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
         while (window->GetNativeWindowInfo().Width == 0 && std::chrono::steady_clock::now() < deadline)
@@ -164,13 +165,48 @@ TEST_CASE("Cocoa creates owned windows and publishes resized backing-pixel exten
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         CHECK(window->GetNativeWindowInfo().Width == extent.Width);
+        CHECK(window->GetVisibility() != WindowVisibility::Minimized);
         [native performClose:nil];
         CHECK_FALSE(window->HandleEvent({}));
         CHECK_FALSE(window->HandleEvent({}));
         CHECK(window->GetNativeWindowInfo().CocoaWindow == nullptr);
         CHECK(window->GetNativeWindowInfo().CocoaView == nullptr);
+        CHECK(window->GetVisibility() == WindowVisibility::Occluded);
         window.Reset();
         CHECK_FALSE(native.visible);
+    }
+}
+
+TEST_CASE("Cocoa reports AppKit occlusion as window visibility", "[cocoa][window]")
+{
+    RequireLiveCocoa();
+    @autoreleasepool
+    {
+        UniquePtr<Window> window = MakeWindow();
+        NSWindow* native = Native(*window);
+        const auto waitForVisibility = [&](WindowVisibility visibility) {
+            const std::chrono::steady_clock::time_point deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (window->GetVisibility() != visibility && std::chrono::steady_clock::now() < deadline)
+            {
+                REQUIRE(window->HandleEvent({}));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return window->GetVisibility() == visibility;
+        };
+        // A background test process cannot activate itself (macOS 14+ cooperative activation), so a
+        // normal-level window may open behind an opaque window and correctly report Occluded. Float it
+        // above normal windows so the test controls its starting state. AppKit delivers occlusion
+        // asynchronously; the published value follows its notification.
+        native.level = NSFloatingWindowLevel;
+        REQUIRE(waitForVisibility(WindowVisibility::Visible));
+        CHECK((native.occlusionState & NSWindowOcclusionStateVisible) != 0);
+        // Ordering the window out leaves no visible part: Occluded, not Minimized.
+        [native orderOut:nil];
+        CHECK(waitForVisibility(WindowVisibility::Occluded));
+        CHECK(window->GetNativeWindowInfo().Width != 0);
+        [native orderFront:nil];
+        CHECK(waitForVisibility(WindowVisibility::Visible));
     }
 }
 

@@ -44,9 +44,9 @@ struct StringTable::State final
     // Writes the matching or first empty slot; ProbeExhausted when neither exists
     // within SlotCapacity probes (corrupted metadata) and outSlot is preserved.
     [[nodiscard]] StringStatus FindSlot(std::string_view value, uint64 hash, usize& outSlot) const noexcept;
-    [[nodiscard]] StringStatus Find(std::string_view value, NameId& output) const noexcept;
-    [[nodiscard]] StringStatus Resolve(NameId id, std::string_view& output) const noexcept;
-    [[nodiscard]] StringStatus Intern(std::string_view value, NameId& output) noexcept;
+    [[nodiscard]] StringStatus Find(std::string_view value, NameId& outId) const noexcept;
+    [[nodiscard]] StringStatus Resolve(NameId id, std::string_view& outSpelling) const noexcept;
+    [[nodiscard]] StringStatus Intern(std::string_view value, NameId& outId) noexcept;
     [[nodiscard]] StringStatus EnsureEntries() noexcept;
     [[nodiscard]] StringStatus EnsureSlots() noexcept;
     [[nodiscard]] StringStatus EnsurePage(usize bytes) noexcept;

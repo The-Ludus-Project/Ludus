@@ -22,7 +22,7 @@ public:
     void SetBusy(bool busy);
     [[nodiscard]] bool Active() const noexcept
     {
-        return !Project_.isEmpty();
+        return Project_.isEmpty() == false;
     }
 
 Q_SIGNALS:

@@ -223,8 +223,8 @@ TEST_CASE("SortedMap seeded operations match an independent direct-index model",
         {
             const auto result = map.TryAddInPlace(key, state);
             REQUIRE(result.Value != nullptr);
-            REQUIRE(result.Inserted == !present[key]);
-            if (!present[key])
+            REQUIRE(result.Inserted == (present[key] == false));
+            if (present[key] == false)
             {
                 present[key] = true;
                 values[key] = state;

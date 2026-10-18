@@ -23,7 +23,9 @@ using Status = rhi::RasterStatus;
 namespace
 {
 constexpr uint32 MAX_ASPECT = static_cast<uint32>(format::Aspect::Depth);
-constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::Technique::DepthOnly);
+constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::Technique::MaskedDepthOnly);
+constexpr uint32 MAX_VISIBILITY = static_cast<uint32>(format::Visibility::Both);
+constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
 constexpr uint32 MAX_LOAD = static_cast<uint32>(format::Load::Discard);
 constexpr uint32 MAX_STORE = static_cast<uint32>(format::Store::Discard);
 constexpr uint32 FIRST_ENTRY_CHARACTER = 0x21;
@@ -91,6 +93,19 @@ private:
     usize mOffset = 0;
     bool mIsOk = true;
 };
+/// GLSL ES identifier: a letter or underscore, then letters, digits or underscores.
+bool IsBlockName(std::span<const uint8> name) noexcept
+{
+    bool isValid = name.empty() == false && name.size() <= format::MAX_ENTRY_BYTES &&
+                   ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z') || name[0] == '_');
+    for (const uint8 character : name)
+    {
+        isValid =
+            isValid == true && ((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                                (character >= '0' && character <= '9') || character == '_');
+    }
+    return isValid;
+}
 bool IsEntryName(std::span<const uint8> entry) noexcept
 {
     bool isValid = entry.empty() == false && entry.size() <= format::MAX_ENTRY_BYTES;
@@ -111,17 +126,31 @@ struct RenderGraphPackage::State final
         std::string_view Entry;
         std::string_view Text;
         Array<uint32> Words;
+        /// GLSL ES uniform block names by binding number; empty for other targets.
+        StaticArray<std::string_view, format::UNIFORM_SLOT_COUNT> Blocks{};
     };
     Array<uint8> Bytes;
     format::Header Header{};
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Camera, format::MAX_CAMERAS> Cameras{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
+    // DecodeUniforms validates and writes every active stage before any binding is published.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+    StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
+    StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
+    StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
+    /// Stage binding requirements derived from the uniform records, one table per role.
+    // RasterBinding initializes Visibility to Both, including every nested array element.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+    StaticArray<StaticArray<rhi::RasterBinding, format::UNIFORM_SLOT_COUNT>, format::STAGE_ROLE_COUNT> Bindings{};
+    StaticArray<usize, format::STAGE_ROLE_COUNT> BindingCounts{};
     StaticArray<uint8, format::IDENTITY_BYTES> InterfaceIdentity{};
     StaticArray<uint8, format::IDENTITY_BYTES> GenerationIdentity{};
     StaticArray<rhi::RasterShaderInput, format::STATIC_INPUT_COUNT> Inputs{};
     StaticArray<StaticArray<StageView, format::SHADER_TARGET_COUNT>, format::STAGE_ROLE_COUNT> Stages{};
     RenderGraphPackageStatus DecodeRecords(ByteReader& inoutReader) noexcept;
+    RenderGraphPackageStatus DecodeUniforms(ByteReader& inoutReader) noexcept;
+    void DeriveBindings() noexcept;
     RenderGraphPackageStatus DecodeStages(ByteReader& inoutReader, uint32 stageCount) noexcept;
 };
 RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& inoutReader, uint32 stageCount) noexcept
@@ -133,12 +162,14 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         const uint32 inputCount = inoutReader.ReadWord();
         const uint32 entryBytes = inoutReader.ReadWord();
         const uint32 artifactBytes = inoutReader.ReadWord();
-        if (inoutReader.IsOk() == false || role >= format::STAGE_ROLE_COUNT || target >= format::SHADER_TARGET_COUNT)
+        const uint32 blockCount = inoutReader.ReadWord();
+        if (inoutReader.IsOk() == false || role >= format::STAGE_ROLE_COUNT || target >= format::SHADER_TARGET_COUNT ||
+            blockCount > format::UNIFORM_SLOT_COUNT ||
+            (blockCount != 0 && target != static_cast<uint32>(format::ShaderTarget::GlslEs)))
         {
             return RenderGraphPackageStatus::Malformed;
         }
-        const bool isVertex = role == static_cast<uint32>(format::StageRole::ColorVertex) ||
-                              role == static_cast<uint32>(format::StageRole::DepthVertex);
+        const bool isVertex = role % format::TECHNIQUE_STAGE_COUNT == 0;
         if (inputCount != (isVertex == true ? format::STATIC_INPUT_COUNT : 0))
         {
             return RenderGraphPackageStatus::Malformed;
@@ -153,13 +184,29 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
                 return RenderGraphPackageStatus::Malformed;
             }
         }
+        StageView& view = Stages[role][target];
+        for (uint32 block = 0; block < blockCount; ++block)
+        {
+            const uint32 slot = inoutReader.ReadWord();
+            const uint32 nameBytes = inoutReader.ReadWord();
+            if (inoutReader.IsOk() == false || slot >= format::UNIFORM_SLOT_COUNT ||
+                nameBytes > format::MAX_ENTRY_BYTES || view.Blocks[slot].empty() == false)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+            const std::span<const uint8> name = inoutReader.ReadPadded(nameBytes);
+            if (inoutReader.IsOk() == false || IsBlockName(name) == false)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+            view.Blocks[slot] = {reinterpret_cast<const char*>(name.data()), name.size()};
+        }
         if (artifactBytes > format::MAX_ARTIFACT_BYTES)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
         }
         const std::span<const uint8> entry = inoutReader.ReadPadded(entryBytes);
         const std::span<const uint8> artifact = inoutReader.ReadPadded(artifactBytes);
-        StageView& view = Stages[role][target];
         if (inoutReader.IsOk() == false || IsEntryName(entry) == false || artifact.empty() == true ||
             view.IsPresent == true)
         {
@@ -192,13 +239,95 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     {
         for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
         {
-            if (Stages[technique * 2][target].IsPresent != Stages[technique * 2 + 1][target].IsPresent)
+            if (Stages[technique * format::TECHNIQUE_STAGE_COUNT][target].IsPresent !=
+                Stages[technique * format::TECHNIQUE_STAGE_COUNT + 1][target].IsPresent)
             {
                 return RenderGraphPackageStatus::Malformed;
             }
         }
     }
     return RenderGraphPackageStatus::Ready;
+}
+RenderGraphPackageStatus RenderGraphPackage::State::DecodeUniforms(ByteReader& inoutReader) noexcept
+{
+    for (uint32 i = 0; i < Header.UniformBindingCount; ++i)
+    {
+        format::UniformBinding& binding = UniformBindings[i];
+        const uint32 program = inoutReader.ReadWord();
+        binding.Slot = inoutReader.ReadWord();
+        const uint32 stages = inoutReader.ReadWord();
+        binding.ValueOffset = inoutReader.ReadWord();
+        binding.ValueCount = inoutReader.ReadWord();
+        if (program > MAX_TECHNIQUE || stages == 0 || stages > MAX_VISIBILITY ||
+            binding.Slot >= format::UNIFORM_SLOT_COUNT)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        binding.Program = static_cast<format::Technique>(program);
+        binding.Stages = static_cast<format::Visibility>(stages);
+    }
+    for (uint32 i = 0; i < Header.UniformBlockCount; ++i)
+    {
+        format::UniformBlock& block = UniformBlocks[i];
+        block.Binding = inoutReader.ReadWord();
+        const uint32 target = inoutReader.ReadWord();
+        block.Size = inoutReader.ReadWord();
+        if (target > MAX_TARGET || block.Binding >= Header.UniformBindingCount ||
+            block.Size > format::MAX_UNIFORM_BLOCK_BYTES)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        block.Target = static_cast<format::ShaderTarget>(target);
+    }
+    for (uint32 i = 0; i < Header.UniformFieldCount; ++i)
+    {
+        format::UniformField& field = UniformFields[i];
+        field.Binding = inoutReader.ReadWord();
+        const uint32 target = inoutReader.ReadWord();
+        field.ValueOffset = inoutReader.ReadWord();
+        field.Components = inoutReader.ReadWord();
+        field.ByteOffset = inoutReader.ReadWord();
+        if (target > MAX_TARGET || field.Binding >= Header.UniformBindingCount)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        field.Target = static_cast<format::ShaderTarget>(target);
+    }
+    return inoutReader.IsOk() == true ? RenderGraphPackageStatus::Ready : RenderGraphPackageStatus::Malformed;
+}
+void RenderGraphPackage::State::DeriveBindings() noexcept
+{
+    // The same rule as the compiled header: each stage declares its technique's slots,
+    // with the largest carried block as the uniform range. RenderGraph rechecks the result.
+    for (uint32 i = 0; i < Header.UniformBindingCount; ++i)
+    {
+        const format::UniformBinding& binding = UniformBindings[i];
+        usize bytes = 0;
+        for (uint32 block = 0; block < Header.UniformBlockCount; ++block)
+        {
+            if (UniformBlocks[block].Binding == i && UniformBlocks[block].Size > bytes)
+            {
+                bytes = UniformBlocks[block].Size;
+            }
+        }
+        for (usize stage = 0; stage < format::TECHNIQUE_STAGE_COUNT; ++stage)
+        {
+            const bool isVertex = stage == 0;
+            const bool isRead = binding.Stages == format::Visibility::Both ||
+                                (isVertex == true && binding.Stages == format::Visibility::Vertex) ||
+                                (isVertex == false && binding.Stages == format::Visibility::Fragment);
+            const usize role = static_cast<usize>(binding.Program) * format::TECHNIQUE_STAGE_COUNT + stage;
+            if (isRead == false || BindingCounts[role] == format::UNIFORM_SLOT_COUNT)
+            {
+                continue;
+            }
+            rhi::RasterBinding& entry = Bindings[role][BindingCounts[role]++];
+            entry.Binding = binding.Slot;
+            entry.Kind = rhi::RasterBindingKind::UniformBuffer;
+            entry.Visibility = isVertex == true ? rhi::RasterVisibility::Vertex : rhi::RasterVisibility::Fragment;
+            entry.MinSize = bytes;
+        }
+    }
 }
 RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& inoutReader) noexcept
 {
@@ -286,9 +415,17 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     candidate->Header.ResourceCount = reader.ReadWord();
     candidate->Header.PassCount = reader.ReadWord();
     candidate->Header.CameraCount = reader.ReadWord();
+    candidate->Header.UniformValueCount = reader.ReadWord();
+    candidate->Header.UniformBindingCount = reader.ReadWord();
+    candidate->Header.UniformBlockCount = reader.ReadWord();
+    candidate->Header.UniformFieldCount = reader.ReadWord();
     const uint32 stageCount = reader.ReadWord();
     if (candidate->Header.ResourceCount > format::MAX_RESOURCES || candidate->Header.PassCount > format::MAX_PASSES ||
-        candidate->Header.CameraCount > format::MAX_CAMERAS || stageCount > format::MAX_STAGES)
+        candidate->Header.CameraCount > format::MAX_CAMERAS || stageCount > format::MAX_STAGES ||
+        candidate->Header.UniformValueCount > format::MAX_UNIFORM_VALUES ||
+        candidate->Header.UniformBindingCount > format::MAX_UNIFORM_BINDINGS ||
+        candidate->Header.UniformBlockCount > format::MAX_UNIFORM_BLOCKS ||
+        candidate->Header.UniformFieldCount > format::MAX_UNIFORM_FIELDS)
     {
         return RenderGraphPackageStatus::CapacityExceeded;
     }
@@ -308,6 +445,11 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     {
         return status;
     }
+    status = candidate->DecodeUniforms(reader);
+    if (status != RenderGraphPackageStatus::Ready)
+    {
+        return status;
+    }
     status = candidate->DecodeStages(reader, stageCount);
     if (status != RenderGraphPackageStatus::Ready)
     {
@@ -321,6 +463,7 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     {
         candidate->Inputs[i] = {i, i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4};
     }
+    candidate->DeriveBindings();
     mState.Swap(candidate);
     return RenderGraphPackageStatus::Ready;
 }
@@ -338,7 +481,10 @@ RenderGraphPlan RenderGraphPackage::GetPlan() const noexcept
     return {state.Header,
             {state.Resources.GetData(), state.Header.ResourceCount},
             {state.Cameras.GetData(), state.Header.CameraCount},
-            {state.Passes.GetData(), state.Header.PassCount}};
+            {state.Passes.GetData(), state.Header.PassCount},
+            {state.UniformBindings.GetData(), state.Header.UniformBindingCount},
+            {state.UniformBlocks.GetData(), state.Header.UniformBlockCount},
+            {state.UniformFields.GetData(), state.Header.UniformFieldCount}};
 }
 RenderGraphPrograms
 RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVertex,
@@ -352,8 +498,14 @@ RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVer
         return result;
     }
     const State& state = *mState;
-    StaticArray<rhi::RasterShaderDescription*, format::STAGE_ROLE_COUNT> members{
-        {&result.ColorVertex, &result.ColorFragment, &result.DepthVertex, &result.DepthFragment}};
+    StaticArray<rhi::RasterShaderDescription*, format::STAGE_ROLE_COUNT> members{{&result.ColorVertex,
+                                                                                  &result.ColorFragment,
+                                                                                  &result.DepthVertex,
+                                                                                  &result.DepthFragment,
+                                                                                  &result.MaskedColorVertex,
+                                                                                  &result.MaskedColorFragment,
+                                                                                  &result.MaskedDepthVertex,
+                                                                                  &result.MaskedDepthFragment}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description = *members[role];
@@ -368,12 +520,15 @@ RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVer
         {
             continue;
         }
-        const bool isVertex = role == static_cast<usize>(format::StageRole::ColorVertex) ||
-                              role == static_cast<usize>(format::StageRole::DepthVertex);
+        const bool isVertex = role % format::TECHNIQUE_STAGE_COUNT == 0;
         description.Artifact.Stage = isVertex == true ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment;
         if (isVertex == true)
         {
             description.Inputs = state.Inputs.AsSpan();
+        }
+        if (state.BindingCounts[role] != 0)
+        {
+            description.Bindings = {state.Bindings[role].GetData(), state.BindingCounts[role]};
         }
         const State::StageView& metal = views[static_cast<usize>(format::ShaderTarget::Metal)];
         const State::StageView& spirv = views[static_cast<usize>(format::ShaderTarget::Spirv)];
@@ -398,6 +553,10 @@ RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVer
         {
             description.Artifact.GlslEs = glsl.Text;
             description.Artifact.GlslEsEntry = glsl.Entry;
+            for (usize slot = 0; slot < format::UNIFORM_SLOT_COUNT; ++slot)
+            {
+                description.UniformBlocks[slot] = glsl.Blocks[slot];
+            }
         }
     }
     return result;

@@ -164,7 +164,7 @@ int Close(int descriptor) noexcept
 bool AllocationAllowed() noexcept
 {
     ++gAllocations;
-    return !gFailAllocation;
+    return gFailAllocation == false;
 }
 } // namespace ludus::foundation::filesystem::test
 TEST_CASE("Darwin retries interrupted opens clones metadata and reads with close-on-exec handles")

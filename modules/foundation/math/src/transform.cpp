@@ -15,12 +15,13 @@ namespace
 {
     const float64 m00 = static_cast<float64>(a.Columns[0].X), m10 = static_cast<float64>(a.Columns[0].Y);
     const float64 m01 = static_cast<float64>(a.Columns[1].X), m11 = static_cast<float64>(a.Columns[1].Y);
-    if (!std::isfinite(m00) || !std::isfinite(m10) || !std::isfinite(m01) || !std::isfinite(m11))
+    if (std::isfinite(m00) == false || std::isfinite(m10) == false || std::isfinite(m01) == false ||
+        std::isfinite(m11) == false)
     {
         return MathStatus::NonFiniteInput;
     }
     const float64 det = m00 * m11 - m01 * m10;
-    if (det == 0.0 || !std::isfinite(det))
+    if (det == 0.0 || std::isfinite(det) == false)
     {
         return MathStatus::Degenerate;
     }
@@ -35,7 +36,7 @@ namespace
     const float64 ni =
         std::fmax(std::fabs(inv[0][0]) + std::fabs(inv[0][1]), std::fabs(inv[1][0]) + std::fabs(inv[1][1]));
     const float64 rcond = (na > 0.0 && ni > 0.0) ? 1.0 / (na * ni) : 0.0;
-    if (!(rcond >= static_cast<float64>(policy.MinReciprocalCondition)))
+    if ((rcond >= static_cast<float64>(policy.MinReciprocalCondition)) == false)
     {
         return MathStatus::IllConditioned;
     }
@@ -43,7 +44,7 @@ namespace
     {
         for (int c = 0; c < 2; ++c)
         {
-            if (!std::isfinite(inv[r][c]))
+            if (std::isfinite(inv[r][c]) == false)
             {
                 return MathStatus::OutOfRange;
             }
@@ -68,7 +69,7 @@ MathStatus TryInverse(const Affine2& a, InversePolicy policy, Affine2& out) noex
     const Vector2 c0{static_cast<float32>(inv[0][0]), static_cast<float32>(inv[1][0])};
     const Vector2 c1{static_cast<float32>(inv[0][1]), static_cast<float32>(inv[1][1])};
     const Vector2 t{static_cast<float32>(ntx), static_cast<float32>(nty)};
-    if (!IsFinite(c0) || !IsFinite(c1) || !IsFinite(t))
+    if (IsFinite(c0) == false || IsFinite(c1) == false || IsFinite(t) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -91,7 +92,7 @@ MathStatus TryInverse(const Affine3& a, InversePolicy policy, Affine3& out) noex
     const float64 nty = -((float64)invL.At(1, 0) * tx + (float64)invL.At(1, 1) * ty + (float64)invL.At(1, 2) * tz);
     const float64 ntz = -((float64)invL.At(2, 0) * tx + (float64)invL.At(2, 1) * ty + (float64)invL.At(2, 2) * tz);
     const Vector3 t{static_cast<float32>(ntx), static_cast<float32>(nty), static_cast<float32>(ntz)};
-    if (!IsFinite(t))
+    if (IsFinite(t) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -122,7 +123,7 @@ MathStatus TryNormalMatrix(const Affine3& a, InversePolicy policy, Matrix3& out)
 
 MathStatus TryTransformNormal(const Affine3& a, Vector3 normal, Vector3& out) noexcept
 {
-    if (!IsFinite(a) || !IsFinite(normal))
+    if (IsFinite(a) == false || IsFinite(normal) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -156,8 +157,8 @@ Affine3 ToAffine3(const TransformTRS& trs) noexcept
 
 MathStatus TryToAffine3(const TransformTRS& trs, float32 rotationUnitTol, Affine3& out) noexcept
 {
-    if (!IsFinite(trs.Rotation) || !IsFinite(trs.Scale) || !IsFinite(trs.Translation) ||
-        !std::isfinite(rotationUnitTol))
+    if (IsFinite(trs.Rotation) == false || IsFinite(trs.Scale) == false || IsFinite(trs.Translation) == false ||
+        std::isfinite(rotationUnitTol) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -180,7 +181,7 @@ MathStatus TryToAffine3(const TransformTRS& trs, float32 rotationUnitTol, Affine
 
 MathStatus TryPerspectiveDivide(Vector4 clip, float32 minAbsW, Vector3& out) noexcept
 {
-    if (!IsFinite(clip) || !std::isfinite(minAbsW))
+    if (IsFinite(clip) == false || std::isfinite(minAbsW) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -197,7 +198,7 @@ MathStatus TryPerspectiveDivide(Vector4 clip, float32 minAbsW, Vector3& out) noe
     const float32 x = static_cast<float32>(static_cast<float64>(clip.X) * iw);
     const float32 y = static_cast<float32>(static_cast<float64>(clip.Y) * iw);
     const float32 z = static_cast<float32>(static_cast<float64>(clip.Z) * iw);
-    if (!IsFinite(x) || !IsFinite(y) || !IsFinite(z))
+    if (IsFinite(x) == false || IsFinite(y) == false || IsFinite(z) == false)
     {
         return MathStatus::OutOfRange;
     }

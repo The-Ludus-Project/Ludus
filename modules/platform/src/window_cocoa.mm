@@ -74,7 +74,7 @@ bool MainThread() noexcept
 
 uint32 PixelExtent(CGFloat value) noexcept
 {
-    if (!std::isfinite(value) || value <= 0 || value > std::numeric_limits<uint32>::max())
+    if (std::isfinite(value) == false || value <= 0 || value > std::numeric_limits<uint32>::max())
     {
         return 0;
     }
@@ -109,6 +109,7 @@ public:
     bool Open() noexcept;
     bool HandleEvent(const Event&) noexcept override;
     void RefreshExtent() noexcept;
+    void RefreshVisibility() noexcept;
     void FocusChanged(bool focused) noexcept;
     void Closed() noexcept;
     void SynchronizeSink() noexcept;
@@ -191,7 +192,7 @@ void PumpEvents() noexcept
 
 void DispatchResponderKey(NSEvent* event) noexcept
 {
-    if (!MainThread() || event == gNormalizedEvent)
+    if (MainThread() == false || event == gNormalizedEvent)
     {
         return;
     }
@@ -231,7 +232,7 @@ bool OnMainThread() noexcept
 
 bool Initialize([[maybe_unused]] const WindowManager::InitializeInfo& info) noexcept
 {
-    if (!MainThread())
+    if (MainThread() == false)
     {
         return false;
     }
@@ -254,7 +255,7 @@ bool Initialize([[maybe_unused]] const WindowManager::InitializeInfo& info) noex
         }
         if (gOwnsApplication)
         {
-            if (![application setActivationPolicy:NSApplicationActivationPolicyRegular])
+            if ([application setActivationPolicy:NSApplicationActivationPolicyRegular] == false)
             {
                 return false;
             }
@@ -300,8 +301,8 @@ bool Initialize([[maybe_unused]] const WindowManager::InitializeInfo& info) noex
 
 foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexcept
 {
-    if (!MainThread() || !gInitialized || info.Width == 0 || info.Height == 0 || info.Width > MAX_CONTENT_EXTENT ||
-        info.Height > MAX_CONTENT_EXTENT || info.Name.size() > 4096)
+    if (MainThread() == false || gInitialized == false || info.Width == 0 || info.Height == 0 ||
+        info.Width > MAX_CONTENT_EXTENT || info.Height > MAX_CONTENT_EXTENT || info.Name.size() > 4096)
     {
         return nullptr;
     }
@@ -311,7 +312,7 @@ foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexc
         {
             CocoaWindow* allocated = new (std::nothrow) CocoaWindow(info);
             foundation::UniquePtr<CocoaWindow> window(allocated);
-            if (!window || !window->Open())
+            if (window == nullptr || window->Open() == false)
             {
                 return nullptr;
             }
@@ -389,13 +390,13 @@ CocoaWindow::~CocoaWindow() noexcept
 
 bool CocoaWindow::HandleEvent([[maybe_unused]] const Event& event) noexcept
 {
-    if (!MainThread() || mClosed)
+    if (MainThread() == false || mClosed)
     {
         return false;
     }
     PumpEvents();
     RefreshExtent();
-    return !mClosed;
+    return mClosed == false;
 }
 
 void CocoaWindow::RefreshExtent() noexcept
@@ -408,6 +409,33 @@ void CocoaWindow::RefreshExtent() noexcept
     const bool minimized = mWindow.miniaturized;
     mNativeWindowInfo.Width = minimized ? 0 : PixelExtent(backing.size.width);
     mNativeWindowInfo.Height = minimized ? 0 : PixelExtent(backing.size.height);
+    RefreshVisibility();
+}
+
+void CocoaWindow::RefreshVisibility() noexcept
+{
+    if (mClosed)
+    {
+        return;
+    }
+    // Thanks to Apple, AppKit Release Notes for OS X 10.9 Mavericks, "Application and
+    // Window Occlusion": occlusionState is a bitfield tested with NSWindowOcclusionStateVisible;
+    // a window is occluded when fully covered by opaque windows, ordered off screen,
+    // minimized or on another Space, and partial occlusion counts as visible. Ludus
+    // reports minimization separately because the published extent is then zero.
+    // https://developer.apple.com/library/archive/releasenotes/AppKit/RN-AppKitOlderNotes/index.html
+    if (mWindow.miniaturized == YES)
+    {
+        mVisibility = WindowVisibility::Minimized;
+    }
+    else if ((mWindow.occlusionState & NSWindowOcclusionStateVisible) == 0)
+    {
+        mVisibility = WindowVisibility::Occluded;
+    }
+    else
+    {
+        mVisibility = WindowVisibility::Visible;
+    }
 }
 
 void CocoaWindow::Reset(input::ResetReason reason, bool focused) noexcept
@@ -443,7 +471,7 @@ void CocoaWindow::FocusChanged(bool focused) noexcept
 
 void CocoaWindow::Closed() noexcept
 {
-    if (!mClosed)
+    if (mClosed == false)
     {
         mClosed = true;
         mFocused = false;
@@ -451,18 +479,19 @@ void CocoaWindow::Closed() noexcept
         mNativeWindowInfo.CocoaView = nullptr;
         mNativeWindowInfo.Width = 0;
         mNativeWindowInfo.Height = 0;
+        mVisibility = WindowVisibility::Occluded;
         Reset(input::ResetReason::WindowClosed, false);
     }
 }
 
 void CocoaWindow::KeyEvent(NSEvent* event) noexcept
 {
-    if (!mFocused || mClosed)
+    if (mFocused == false || mClosed)
     {
         return;
     }
     const input::Key key = MapKeyCode(event.keyCode);
-    if (!input::IsValidKey(key))
+    if (input::IsValidKey(key) == false)
     {
         return;
     }
@@ -533,6 +562,14 @@ void CocoaWindow::KeyEvent(NSEvent* event) noexcept
 - (void)windowDidDeminiaturize:(NSNotification*)notification
 {
     [self windowDidResize:notification];
+}
+- (void)windowDidChangeOcclusionState:(NSNotification*)notification
+{
+    (void)notification;
+    if (self.owner != nullptr)
+    {
+        self.owner->RefreshVisibility();
+    }
 }
 @end
 

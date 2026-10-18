@@ -13,8 +13,8 @@ using namespace ludus::foundation::time;
 
 static_assert(sizeof(Duration) == sizeof(uint64));
 static_assert(sizeof(Timestamp) == sizeof(uint64));
-static_assert(!std::is_convertible_v<Duration, Timestamp>);
-static_assert(!std::is_convertible_v<Timestamp, Duration>);
+static_assert(std::is_convertible_v<Duration, Timestamp> == false);
+static_assert(std::is_convertible_v<Timestamp, Duration> == false);
 static_assert(noexcept(Now()));
 static_assert(std::is_trivially_copyable_v<Stopwatch>);
 static_assert(std::is_trivially_copyable_v<FrameClock>);

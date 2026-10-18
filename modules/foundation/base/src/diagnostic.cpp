@@ -103,7 +103,7 @@ void EmergencyReport(DiagnosticSeverity severity,
 
     // Mark truncation explicitly rather than silently losing content
     // (requirements R31; fixes the F8-adjacent silent-truncation gap).
-    if (!fit)
+    if (fit == false)
     {
         // Overwrite the tail with a truncation marker if there is room; otherwise
         // the reader still sees a well-formed (if clipped) line.

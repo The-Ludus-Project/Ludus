@@ -90,7 +90,7 @@ ResolvedText Resolve(const Catalog& catalog, MessageKey key)
 
 template <typename Owner>
 concept TemporaryResolve = requires { Owner{}.ResolveStatic(MessageBinding{}, std::declval<ResolvedText&>()); };
-static_assert(!TemporaryResolve<Catalog>);
+static_assert(TemporaryResolve<Catalog> == false);
 static_assert(std::is_nothrow_copy_constructible_v<Catalog>);
 static_assert(std::is_nothrow_move_constructible_v<Catalog>);
 static_assert(noexcept(std::declval<Catalog&>().BindMessage({}, std::declval<MessageBinding&>())));
@@ -148,11 +148,11 @@ TEST_CASE("bindings reject wrong owners and preserve outputs on failure", "[loca
     Catalog moved = std::move(source);
     // The public contract explicitly guarantees a queryable invalid moved-from owner.
     // NOLINTNEXTLINE(bugprone-use-after-move)
-    REQUIRE(!source.IsValid());
+    REQUIRE(source.IsValid() == false);
     REQUIRE(source.GetMessageCount() == 0);
     REQUIRE(moved.ResolveStatic(binding, result) == Status::Ok);
     moved = std::move(empty);
-    REQUIRE(!moved.IsValid());
+    REQUIRE(moved.IsValid() == false);
 }
 
 TEST_CASE("one allocation prepares a catalog; leases and warm resolution allocate nothing",

@@ -32,7 +32,7 @@ bool WaitForPlay(Predicate&& predicate)
 {
     QElapsedTimer timer;
     timer.start();
-    while (!predicate() && timer.elapsed() < 5000)
+    while (predicate() == false && timer.elapsed() < 5000)
     {
         QTest::qWait(10);
     }
@@ -85,10 +85,10 @@ TEST_CASE("Debugger stop notifications disable reload until Continue", "[editor]
     CHECK_FALSE(controller.CanEditProperties());
     controller.PlayCommand(QStringLiteral("Resume"));
     controller.RefreshSessionDetails();
-    REQUIRE(WaitForPlay([&]() { return !controller.PlayState().DebuggerStopped; }));
+    REQUIRE(WaitForPlay([&]() { return controller.PlayState().DebuggerStopped == false; }));
     CHECK(controller.CanBuildReload());
     play->Close();
-    REQUIRE(WaitForPlay([&]() { return !play->Active(); }));
+    REQUIRE(WaitForPlay([&]() { return play->Active() == false; }));
 }
 
 TEST_CASE("Trusted host cleanup uncertainty blocks edits and permits explicit Stop", "[editor][play][recovery]")
@@ -167,7 +167,7 @@ TEST_CASE("Unexpected Play owner teardown retires callbacks before member destru
         launch.Epoch = 1;
         launch.StartRequest = {{QStringLiteral("type"), QStringLiteral("start")}};
         REQUIRE(play.Start(launch));
-        REQUIRE(WaitForPlay([&]() { return !events.isEmpty(); }));
+        REQUIRE(WaitForPlay([&]() { return events.isEmpty() == false; }));
         REQUIRE(play.Active());
         tearingDown = true;
     }

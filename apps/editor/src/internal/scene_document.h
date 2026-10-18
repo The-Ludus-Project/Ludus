@@ -51,7 +51,7 @@ public:
     }
     [[nodiscard]] bool Dirty() const noexcept
     {
-        return Loaded() && !(Draft_ == Saved_);
+        return Loaded() && (Draft_ == Saved_) == false;
     }
     [[nodiscard]] bool Previewing() const noexcept
     {
@@ -59,11 +59,11 @@ public:
     }
     [[nodiscard]] bool CanUndo() const noexcept
     {
-        return !Gesture_ && History_.CanUndo();
+        return Gesture_ == false && History_.CanUndo();
     }
     [[nodiscard]] bool CanRedo() const noexcept
     {
-        return !Gesture_ && History_.CanRedo();
+        return Gesture_ == false && History_.CanRedo();
     }
     [[nodiscard]] bool Undo() noexcept;
     [[nodiscard]] bool Redo() noexcept;

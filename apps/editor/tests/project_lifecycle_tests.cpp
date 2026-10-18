@@ -128,7 +128,7 @@ TEST_CASE("Close Project confirms dirty settings and preserves them on Cancel or
     window.findChild<QAction*>(QStringLiteral("closeProjectAction"))->trigger();
     CHECK(prompted);
     CHECK((controller.State().Document == DocumentState::NoProject) == closed);
-    if (!closed)
+    if (closed == false)
     {
         CHECK(controller.State().Draft.Name == QStringLiteral("Changed"));
         CHECK(controller.State().Dirty());
@@ -273,7 +273,7 @@ TEST_CASE("Project overview explains setup and reveals build details without edi
     CHECK_FALSE(controller.State().Dirty());
     CHECK(controller.State().ActiveJob == 0);
     const auto capture = qEnvironmentVariable("LUDUS_PROJECT_OVERVIEW_CAPTURE");
-    if (!capture.isEmpty())
+    if (capture.isEmpty() == false)
     {
         REQUIRE(window.grab().save(capture));
     }

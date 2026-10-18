@@ -34,7 +34,7 @@ void Drain(LevelWorkspace& workspace)
 {
     QElapsedTimer timer;
     timer.start();
-    while (!workspace.CanSave() && timer.elapsed() < 10000)
+    while (workspace.CanSave() == false && timer.elapsed() < 10000)
     {
         QTest::qWait(10);
     }

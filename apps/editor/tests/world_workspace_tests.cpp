@@ -798,7 +798,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     const auto drain = [&workspace]() {
         QElapsedTimer timer;
         timer.start();
-        while (!workspace.CanSave() && timer.elapsed() < 15000)
+        while (workspace.CanSave() == false && timer.elapsed() < 15000)
         {
             QTest::qWait(10);
         }
@@ -848,7 +848,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
         QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(QStringLiteral("scenes/room.world.json"))));
     QElapsedTimer timer;
     timer.start();
-    while (!reopened.CanSave() && timer.elapsed() < 15000)
+    while (reopened.CanSave() == false && timer.elapsed() < 15000)
     {
         QTest::qWait(10);
     }
@@ -874,7 +874,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     mixed.SetProject(directory.path(), 3);
     REQUIRE(mixed.Open(mixedPath));
     timer.restart();
-    while (!mixed.CanSave() && timer.elapsed() < 15000)
+    while (mixed.CanSave() == false && timer.elapsed() < 15000)
     {
         QTest::qWait(10);
     }
@@ -889,7 +889,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     Type(Field(mixed, QStringLiteral("transform/x")), QStringLiteral("-1"));
     REQUIRE(mixed.Save()); // Save waits for the newly applied render snapshot.
     timer.restart();
-    while (!mixed.CanSave() && timer.elapsed() < 15000)
+    while (mixed.CanSave() == false && timer.elapsed() < 15000)
     {
         QTest::qWait(10);
     }
@@ -910,7 +910,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     mixed.StopPreview();
     REQUIRE(mixed.Save());
     timer.restart();
-    while (!mixed.CanSave() && timer.elapsed() < 15000)
+    while (mixed.CanSave() == false && timer.elapsed() < 15000)
     {
         QTest::qWait(10);
     }
@@ -919,7 +919,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     CHECK_FALSE(service->Dirty());          // The service owns no second unsaved document.
     REQUIRE(mixed.Open(mixedPath));
     timer.restart();
-    while (!mixed.CanSave() && timer.elapsed() < 15000)
+    while (mixed.CanSave() == false && timer.elapsed() < 15000)
     {
         QTest::qWait(10);
     }
@@ -932,7 +932,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     REQUIRE(QFile::copy(levelPath, second));
     REQUIRE(mixed.Open(second)); // No hidden 3D Levels discard prompt.
     timer.restart();
-    while (!mixed.CanSave() && timer.elapsed() < 15000)
+    while (mixed.CanSave() == false && timer.elapsed() < 15000)
     {
         QTest::qWait(10);
     }

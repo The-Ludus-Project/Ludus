@@ -25,10 +25,10 @@ namespace ludus::audio::internal
     uint64 whole{};
     uint64 remainder{};
     uint64 result{};
-    if (!TryMultiply(frame / sourceRate, static_cast<uint64>(targetRate), whole) ||
-        !TryMultiply(frame % sourceRate, static_cast<uint64>(targetRate), remainder) ||
-        !TryAdd(remainder, static_cast<uint64>(sourceRate / 2), remainder) ||
-        !TryAdd(whole, remainder / sourceRate, result))
+    if (TryMultiply(frame / sourceRate, static_cast<uint64>(targetRate), whole) == false ||
+        TryMultiply(frame % sourceRate, static_cast<uint64>(targetRate), remainder) == false ||
+        TryAdd(remainder, static_cast<uint64>(sourceRate / 2), remainder) == false ||
+        TryAdd(whole, remainder / sourceRate, result) == false)
     {
         return false;
     }

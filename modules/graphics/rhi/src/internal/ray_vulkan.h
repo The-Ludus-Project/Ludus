@@ -289,7 +289,7 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
 } // namespace
 RayCapabilities RayLimits() noexcept
 {
-    if (!gRayEnabled || gDevice == VK_NULL_HANDLE || !gQueueCompute)
+    if (gRayEnabled == false || gDevice == VK_NULL_HANDLE || gQueueCompute == false)
     {
         return {};
     }
@@ -309,7 +309,7 @@ RayCapabilities RayLimits() noexcept
 }
 RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) noexcept
 {
-    if (!gRayVulkanProgram.EnsureSlots(slot + 1))
+    if (gRayVulkanProgram.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -382,7 +382,7 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
 RasterStatus
 RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllocation& allocation) noexcept
 {
-    if (!gRayVulkanGeometry.EnsureSlots(slot + 1))
+    if (gRayVulkanGeometry.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -433,7 +433,7 @@ RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllo
 RasterStatus
 RayCreateScene(usize slot, const internal::NativeRaySceneDescription& description, RayAllocation& allocation) noexcept
 {
-    if (!gRayVulkanScene.EnsureSlots(slot + 1))
+    if (gRayVulkanScene.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -505,7 +505,7 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
 }
 RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submission, RayAllocation& allocation) noexcept
 {
-    if (!gRayVulkanBatch.EnsureSlots(slot + 1))
+    if (gRayVulkanBatch.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }

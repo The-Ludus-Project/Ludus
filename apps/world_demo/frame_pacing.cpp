@@ -1,4 +1,5 @@
 #include "internal/frame_pacing.h"
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/sort.hpp>
 namespace ludus::world_demo
 {
@@ -41,23 +42,40 @@ using platform::PaceOutcome;
 } // namespace
 bool LoopPacing::Configure(uint32 framesPerSecondLimit) noexcept
 {
-    if (framesPerSecondLimit > MAXIMUM_FRAMES_PER_SECOND)
+    if (framesPerSecondLimit > MAXIMUM_FRAMES_PER_SECOND || applyPolicy(framesPerSecondLimit, mIsVisible) == false)
     {
         return false;
     }
-    const uint32 framesPerSecond = framesPerSecondLimit != 0 ? framesPerSecondLimit : IDLE_FRAMES_PER_SECOND;
+    mFramesPerSecondLimit = framesPerSecondLimit;
+    return true;
+}
+void LoopPacing::SetVisible(bool isVisible) noexcept
+{
+    if (isVisible == mIsVisible)
+    {
+        return;
+    }
+    // The active limit was validated by Configure() and the hidden rate is a valid constant, so this cannot fail.
+    const bool isApplied = applyPolicy(mFramesPerSecondLimit, isVisible);
+    LUDUS_ASSERT(isApplied == true, "A validated pacing policy must apply");
+    (void)isApplied;
+    mIsVisible = isVisible;
+}
+bool LoopPacing::applyPolicy(uint32 framesPerSecondLimit, bool isVisible) noexcept
+{
+    uint32 framesPerSecond = framesPerSecondLimit != 0 ? framesPerSecondLimit : IDLE_FRAMES_PER_SECOND;
+    if (isVisible == false && framesPerSecond > HIDDEN_FRAMES_PER_SECOND)
+    {
+        framesPerSecond = HIDDEN_FRAMES_PER_SECOND;
+    }
     // Rounded to the nearest nanosecond: a 60 Hz cap is 16,666,667 ns, about 20 ns/s slower than exact.
     const uint64 interval = (foundation::time::NANOSECONDS_PER_SECOND + framesPerSecond / 2) / framesPerSecond;
-    if (mPacer.Configure(
+    // Configure() drops the schedule, so a policy change never inherits the previous phase.
+    return mPacer.Configure(
     {
         .Interval = {interval},
         .MaximumLateness = {interval * MAXIMUM_LATE_INTERVALS},
-    }) != platform::PacingStatus::Ok)
-    {
-        return false;
-    }
-    mHasLimit = framesPerSecondLimit != 0;
-    return true;
+    }) == platform::PacingStatus::Ok;
 }
 void LoopPacing::Reset() noexcept
 {
@@ -65,10 +83,11 @@ void LoopPacing::Reset() noexcept
 }
 platform::PaceResult LoopPacing::EndFrame(bool hasPresented, const platform::PacingClock& clock) noexcept
 {
-    if (mHasLimit == false && hasPresented == true)
+    if (mFramesPerSecondLimit == 0 && mIsVisible == true && hasPresented == true)
     {
         // The FIFO swapchain paced this frame. Drop the idle schedule so the next
-        // idle frame anchors afresh instead of inheriting a stale phase.
+        // idle frame anchors afresh instead of inheriting a stale phase. A hidden
+        // window is never left to presentation pacing: its presents need not block.
         mPacer.Reset();
         return {};
     }

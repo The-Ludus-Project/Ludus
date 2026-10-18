@@ -58,13 +58,13 @@ lifecycle::StartResult Application::StartWindow(void* context) noexcept
 {
     auto& app = *static_cast<Application*>(context);
     platform::WindowManager manager;
-    if (!manager.Initialize({}) || !manager.CreateWindow(
-                                       {
-                                           .Name = "Ludus demo",
-                                           .Width = 800,
-                                           .Height = 600,
-                                       },
-                                       app.mWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(
+                                               {
+                                                   .Name = "Ludus demo",
+                                                   .Width = 800,
+                                                   .Height = 600,
+                                               },
+                                               app.mWindow) == false)
     {
         return
         {
@@ -195,7 +195,7 @@ State Application::Tick() noexcept
         return mState;
     }
     LUDUS_PROFILE_SCOPE(Frame);
-    if (!mWindow->HandleEvent({}))
+    if (mWindow->HandleEvent({}) == false)
     {
         Shutdown();
         return mState;

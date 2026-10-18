@@ -116,7 +116,7 @@ struct Probe final
         info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         info.size = size;
         info.usage = usage;
-        if (!Check(vkCreateBuffer(Device, &info, nullptr, &buffer)))
+        if (Check(vkCreateBuffer(Device, &info, nullptr, &buffer)) == false)
         {
             return false;
         }
@@ -130,7 +130,7 @@ struct Probe final
 
     bool Initialize(uint32 width, uint32 height, VkFormat format) noexcept
     {
-        if (!Check(volkInitialize()))
+        if (Check(volkInitialize()) == false)
         {
             return false;
         }
@@ -141,18 +141,18 @@ struct Probe final
         VkInstanceCreateInfo instance{};
         instance.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         instance.pApplicationInfo = &app;
-        if (!Check(vkCreateInstance(&instance, nullptr, &Instance)))
+        if (Check(vkCreateInstance(&instance, nullptr, &Instance)) == false)
         {
             return false;
         }
         volkLoadInstance(Instance);
         uint32 count = 0;
-        if (!Check(vkEnumeratePhysicalDevices(Instance, &count, nullptr)) || count == 0 || count > 16)
+        if (Check(vkEnumeratePhysicalDevices(Instance, &count, nullptr)) == false || count == 0 || count > 16)
         {
             return false;
         }
         VkPhysicalDevice physicals[16]{};
-        if (!Check(vkEnumeratePhysicalDevices(Instance, &count, physicals)))
+        if (Check(vkEnumeratePhysicalDevices(Instance, &count, physicals)) == false)
         {
             return false;
         }
@@ -196,17 +196,17 @@ struct Probe final
         device.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         device.queueCreateInfoCount = 1;
         device.pQueueCreateInfos = &queue;
-        if (!Check(vkCreateDevice(Physical, &device, nullptr, &Device)))
+        if (Check(vkCreateDevice(Physical, &device, nullptr, &Device)) == false)
         {
             return false;
         }
         volkLoadDevice(Device);
         vkGetDeviceQueue(Device, QueueFamily, 0, &Queue);
-        if (!CreateBuffer(sizeof(VulkanUniforms), Uniform, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, UniformMemory) ||
-            !CreateBuffer(static_cast<VkDeviceSize>(width) * height * 4,
-                          Readback,
-                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                          ReadbackMemory))
+        if (CreateBuffer(sizeof(VulkanUniforms), Uniform, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, UniformMemory) == false ||
+            CreateBuffer(static_cast<VkDeviceSize>(width) * height * 4,
+                         Readback,
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         ReadbackMemory) == false)
         {
             return false;
         }
@@ -220,13 +220,14 @@ struct Probe final
         image.samples = VK_SAMPLE_COUNT_1_BIT;
         image.tiling = VK_IMAGE_TILING_OPTIMAL;
         image.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (!Check(vkCreateImage(Device, &image, nullptr, &Image)))
+        if (Check(vkCreateImage(Device, &image, nullptr, &Image)) == false)
         {
             return false;
         }
         VkMemoryRequirements requirements{};
         vkGetImageMemoryRequirements(Device, Image, &requirements);
-        if (!Allocate(requirements, 0, ImageMemory) || !Check(vkBindImageMemory(Device, Image, ImageMemory, 0)))
+        if (Allocate(requirements, 0, ImageMemory) == false ||
+            Check(vkBindImageMemory(Device, Image, ImageMemory, 0)) == false)
         {
             return false;
         }
@@ -238,7 +239,7 @@ struct Probe final
         view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         view.subresourceRange.levelCount = 1;
         view.subresourceRange.layerCount = 1;
-        if (!Check(vkCreateImageView(Device, &view, nullptr, &View)))
+        if (Check(vkCreateImageView(Device, &view, nullptr, &View)) == false)
         {
             return false;
         }
@@ -270,7 +271,7 @@ struct Probe final
         pass.pSubpasses = &subpass;
         pass.dependencyCount = 1;
         pass.pDependencies = &dependency;
-        if (!Check(vkCreateRenderPass(Device, &pass, nullptr, &Pass)))
+        if (Check(vkCreateRenderPass(Device, &pass, nullptr, &Pass)) == false)
         {
             return false;
         }
@@ -282,7 +283,7 @@ struct Probe final
         framebuffer.width = width;
         framebuffer.height = height;
         framebuffer.layers = 1;
-        if (!Check(vkCreateFramebuffer(Device, &framebuffer, nullptr, &Framebuffer)))
+        if (Check(vkCreateFramebuffer(Device, &framebuffer, nullptr, &Framebuffer)) == false)
         {
             return false;
         }
@@ -294,7 +295,7 @@ struct Probe final
         bindings.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         bindings.bindingCount = 1;
         bindings.pBindings = &binding;
-        if (!Check(vkCreateDescriptorSetLayout(Device, &bindings, nullptr, &Bindings)))
+        if (Check(vkCreateDescriptorSetLayout(Device, &bindings, nullptr, &Bindings)) == false)
         {
             return false;
         }
@@ -306,7 +307,7 @@ struct Probe final
         pool.maxSets = 1;
         pool.poolSizeCount = 1;
         pool.pPoolSizes = &poolSize;
-        if (!Check(vkCreateDescriptorPool(Device, &pool, nullptr, &Pool)))
+        if (Check(vkCreateDescriptorPool(Device, &pool, nullptr, &Pool)) == false)
         {
             return false;
         }
@@ -315,7 +316,7 @@ struct Probe final
         set.descriptorPool = Pool;
         set.descriptorSetCount = 1;
         set.pSetLayouts = &Bindings;
-        if (!Check(vkAllocateDescriptorSets(Device, &set, &Set)))
+        if (Check(vkAllocateDescriptorSets(Device, &set, &Set)) == false)
         {
             return false;
         }
@@ -333,7 +334,7 @@ struct Probe final
         layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         layout.setLayoutCount = 1;
         layout.pSetLayouts = &Bindings;
-        if (!Check(vkCreatePipelineLayout(Device, &layout, nullptr, &Layout)))
+        if (Check(vkCreatePipelineLayout(Device, &layout, nullptr, &Layout)) == false)
         {
             return false;
         }
@@ -341,13 +342,13 @@ struct Probe final
         shader.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         shader.codeSize = sizeof(VERTEX_SPIRV);
         shader.pCode = VERTEX_SPIRV;
-        if (!Check(vkCreateShaderModule(Device, &shader, nullptr, &Vertex)))
+        if (Check(vkCreateShaderModule(Device, &shader, nullptr, &Vertex)) == false)
         {
             return false;
         }
         shader.codeSize = sizeof(FRAGMENT_SPIRV);
         shader.pCode = FRAGMENT_SPIRV;
-        if (!Check(vkCreateShaderModule(Device, &shader, nullptr, &Fragment)))
+        if (Check(vkCreateShaderModule(Device, &shader, nullptr, &Fragment)) == false)
         {
             return false;
         }
@@ -401,7 +402,7 @@ struct Probe final
         pipeline.pColorBlendState = &blending;
         pipeline.layout = Layout;
         pipeline.renderPass = Pass;
-        if (!Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &Pipeline)))
+        if (Check(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &Pipeline)) == false)
         {
             return false;
         }
@@ -409,7 +410,7 @@ struct Probe final
         commands.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         commands.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         commands.queueFamilyIndex = QueueFamily;
-        if (!Check(vkCreateCommandPool(Device, &commands, nullptr, &Commands)))
+        if (Check(vkCreateCommandPool(Device, &commands, nullptr, &Commands)) == false)
         {
             return false;
         }
@@ -418,7 +419,7 @@ struct Probe final
         command.commandPool = Commands;
         command.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         command.commandBufferCount = 1;
-        if (!Check(vkAllocateCommandBuffers(Device, &command, &Command)))
+        if (Check(vkAllocateCommandBuffers(Device, &command, &Command)) == false)
         {
             return false;
         }
@@ -439,19 +440,19 @@ struct Probe final
             .Tint = {0.6F, 0.4F, 0.2F, 1.0F},
         };
         void* mapped = nullptr;
-        if (!Check(vkMapMemory(Device, UniformMemory, 0, sizeof(uniforms), 0, &mapped)))
+        if (Check(vkMapMemory(Device, UniformMemory, 0, sizeof(uniforms), 0, &mapped)) == false)
         {
             return false;
         }
         std::memcpy(mapped, &uniforms, sizeof(uniforms));
         vkUnmapMemory(Device, UniformMemory);
-        if (!Check(vkResetFences(Device, 1, &Fence)) || !Check(vkResetCommandBuffer(Command, 0)))
+        if (Check(vkResetFences(Device, 1, &Fence)) == false || Check(vkResetCommandBuffer(Command, 0)) == false)
         {
             return false;
         }
         VkCommandBufferBeginInfo begin{};
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        if (!Check(vkBeginCommandBuffer(Command, &begin)))
+        if (Check(vkBeginCommandBuffer(Command, &begin)) == false)
         {
             return false;
         }
@@ -484,7 +485,7 @@ struct Probe final
                              nullptr,
                              0,
                              nullptr);
-        if (!Check(vkEndCommandBuffer(Command)))
+        if (Check(vkEndCommandBuffer(Command)) == false)
         {
             return false;
         }
@@ -492,13 +493,13 @@ struct Probe final
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &Command;
-        if (!Check(vkQueueSubmit(Queue, 1, &submit, Fence)) ||
-            !Check(vkWaitForFences(Device, 1, &Fence, VK_TRUE, 5000000000ULL)))
+        if (Check(vkQueueSubmit(Queue, 1, &submit, Fence)) == false ||
+            Check(vkWaitForFences(Device, 1, &Fence, VK_TRUE, 5000000000ULL)) == false)
         {
             return false;
         }
         const usize size = static_cast<usize>(width) * height * 4;
-        if (!Check(vkMapMemory(Device, ReadbackMemory, 0, size, 0, &mapped)))
+        if (Check(vkMapMemory(Device, ReadbackMemory, 0, size, 0, &mapped)) == false)
         {
             return false;
         }

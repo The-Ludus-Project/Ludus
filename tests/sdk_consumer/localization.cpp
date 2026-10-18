@@ -12,7 +12,7 @@ bool ExerciseInstalledLocalization() noexcept
     ResolvedText text;
     return PrepareCatalog(invalid, ludus::foundation::GetSystemAllocationDomain(), catalog, diagnostic) ==
                Status::Invalid &&
-           !catalog.IsValid() && catalog.GetDomain().empty() && catalog.GetLocale().empty() &&
+           catalog.IsValid() == false && catalog.GetDomain().empty() && catalog.GetLocale().empty() &&
            catalog.BindMessage({"game/ui", "menu/play"}, binding) == Status::Invalid &&
            catalog.ResolveStatic(binding, text) == Status::Invalid;
 }

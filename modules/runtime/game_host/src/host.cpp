@@ -57,7 +57,7 @@ RunResult Run(const HostConfig& config) noexcept
         config.AwaitLoad
             ? session.PrepareInitialLoad(config.ModulePath, config.InitialGeneration, config.AuthoredDocument)
             : session.LoadInitial(config.ModulePath, config.InitialGeneration, config.AuthoredDocument);
-    if (!loaded)
+    if (loaded == false)
     {
         return session.InitialFailure();
     }

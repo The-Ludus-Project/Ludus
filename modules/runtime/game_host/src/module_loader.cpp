@@ -151,7 +151,7 @@ bool LoadedModule::Close() noexcept
         // surfaced so the caller can require a restart rather than assume the
         // image was retired.
         ok = (::dlclose(Handle_) == 0);
-        if (!ok)
+        if (ok == false)
         {
             Pinned_ = true;
             return false;
@@ -171,7 +171,7 @@ LoadStatus LoadModule(std::string_view path,
                       uint32 hostAbiMinor,
                       LoadedModule& outModule) noexcept
 {
-    if (!outModule.Close())
+    if (outModule.Close() == false)
     {
         return LoadStatus::MetadataInconsistent;
     }
@@ -227,8 +227,8 @@ LoadStatus LoadModule(std::string_view path,
         return LoadStatus::AbiRejected;
     }
     // The mandatory callbacks must be present and within the negotiated size.
-    if (!FieldWithin(table.StructSize, &GameApiTable::Update) || table.Query == nullptr || table.Create == nullptr ||
-        table.Destroy == nullptr || table.Update == nullptr)
+    if (FieldWithin(table.StructSize, &GameApiTable::Update) == false || table.Query == nullptr ||
+        table.Create == nullptr || table.Destroy == nullptr || table.Update == nullptr)
     {
         ::dlclose(handle);
         return LoadStatus::AbiRejected;
@@ -261,7 +261,7 @@ LoadStatus LoadModule(std::string_view path,
                            game_api::Capability::AssetReload,
                            game_api::Capability::ScriptDebug})
     {
-        if (game_api::HasCapability(metadata.Capabilities, cap) && !CapabilityComplete(table, cap))
+        if (game_api::HasCapability(metadata.Capabilities, cap) && CapabilityComplete(table, cap) == false)
         {
             ::dlclose(handle);
             return LoadStatus::MetadataInconsistent;
@@ -270,7 +270,7 @@ LoadStatus LoadModule(std::string_view path,
 
     // Reject a module whose embedded identity differs from the host identity
     // (SDK variant / compiler / target / ABI). No Create is attempted.
-    if (!IdentityMatches(metadata, hostIdentity))
+    if (IdentityMatches(metadata, hostIdentity) == false)
     {
         ::dlclose(handle);
         return LoadStatus::IdentityRejected;

@@ -1,7 +1,8 @@
-// Installed-SDK RG3 runtime generations on WebGPU. render_graph_runtime.cpp renders a
-// cooked offscreen graph from its compiled header, then decodes the same graph's
-// WGSL `.lurgrt` generation, activates it twice through RenderGraphActivation and
-// compares every exported RGBA8 byte, read back through the RHI, inside Wasm.
+// Installed-SDK RG3 runtime generations on WebGPU. render_graph_runtime.cpp renders
+// two cooked offscreen graphs (opaque static, and masked with per-draw uniform values)
+// from their compiled headers, then decodes each graph's WGSL `.lurgrt` generation,
+// activates it twice through RenderGraphActivation and compares every exported RGBA8
+// byte, read back through the RHI, inside Wasm.
 import assert from 'node:assert/strict';
 import {readFile, writeFile, mkdir, access} from 'node:fs/promises';
 import {createServer} from 'node:http';
@@ -13,6 +14,8 @@ const root = resolve(process.argv[2]);
 const output = resolve(process.argv[3] || 'out/render-graph-runtime-browser');
 // render_graph_runtime.cpp activates the generation this many times; a shorter run cannot pass.
 const GENERATION_COUNT = 2;
+// The opaque graph, then the masked graph with per-draw uniforms; the run ends on the last one.
+const LAST_FIXTURE = 1;
 await mkdir(output, {recursive:true});
 for (const name of ['render-graph-runtime.html','render-graph-runtime.js','render-graph-runtime.wasm']) await access(resolve(root,name));
 const server = createServer(async (request, response) => {
@@ -48,10 +51,11 @@ try {
   assert.equal(status.state,'passed',JSON.stringify({status,errors}));
   assert.equal(status.backend,'webgpu',JSON.stringify(status));
   assert.equal(Number(status.generation),GENERATION_COUNT,JSON.stringify(status));
+  assert.equal(Number(status.fixture),LAST_FIXTURE,JSON.stringify(status));
   assert.equal(status.mismatches,'0',JSON.stringify(status));
   assert.notEqual(status.center,'0','the compiled graph must draw the triangle');
   assert.deepEqual(errors,[]);
-  report.cases.push({scenario:'render-graph-runtime-webgpu',outcome:'passed',generations:GENERATION_COUNT,mismatches:0,center:Number(status.center)});
+  report.cases.push({scenario:'render-graph-runtime-webgpu',outcome:'passed',fixtures:LAST_FIXTURE + 1,generations:GENERATION_COUNT,mismatches:0,center:Number(status.center)});
   await context.close();
   report.outcome = 'passed';
 } catch (error) {

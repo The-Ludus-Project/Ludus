@@ -13,6 +13,10 @@
 // Renderer", GPU Zen 2, IV.4, sections 4.4-4.6: keep scene interpretation separate
 // from authored techniques and prewarm complete immutable state. This original
 // adapter uses retained Ludus snapshots, not their mutable context stacks.
+// Per-draw uniform values follow Patrick Cozzi, "A Framework for GLSL Engine
+// Uniforms", Game Engine Gems 2, chapter 6, sections 6.2-6.6: typed values are
+// resolved before encoding and cached once per distinct value set, rather than
+// becoming shader configurations; we use plan layout records, not string maps.
 // Contract: docs/architecture/render-graph-authoring.md.
 namespace ludus::graphics::renderer
 {
@@ -28,9 +32,30 @@ constexpr usize BOX_CORNER_COUNT = 8;
 constexpr usize BOX_INDEX_COUNT = 36;
 constexpr usize FLAT_INPUT_COUNT = 6;
 constexpr usize MAX_RETAINED_SCENES = 3;
+constexpr usize MAX_COMPONENTS = 4;
+/// Largest packed uniform bytes of one technique: every slot at its largest block.
+constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
+constexpr usize NO_SET = ~usize{0};
+constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::Technique::MaskedDepthOnly);
+constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
 bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
+}
+bool IsColorTechnique(format::Technique technique) noexcept
+{
+    return technique == format::Technique::ColorAndDepth || technique == format::Technique::MaskedColorAndDepth;
+}
+bool IsMaskedTechnique(format::Technique technique) noexcept
+{
+    return technique == format::Technique::MaskedColorAndDepth || technique == format::Technique::MaskedDepthOnly;
+}
+/// Whether a technique's authored family covers the item's declared static coverage contract.
+bool IsCompatible(format::Technique technique, const RenderGraphItem& item, const RenderGraphMesh& mesh) noexcept
+{
+    return mesh.Layout == RenderGraphLayout::Static &&
+           ((item.Coverage == RenderGraphMaterial::Opaque && IsMaskedTechnique(technique) == false) ||
+            (item.Coverage == RenderGraphMaterial::Masked && IsMaskedTechnique(technique) == true));
 }
 Status MapDeviceStatus(rhi::DeviceStatus status) noexcept
 {
@@ -69,11 +94,84 @@ Status CheckDevice(rhi::DeviceHandle device) noexcept
     }
     return information.FrameOpen == true ? Status::InvalidState : Status::Ready;
 }
-bool HasFlatInterface(const rhi::RasterShaderDescription& vertex, const rhi::RasterShaderDescription& fragment) noexcept
+/// Artifact target whose uniform layout records describe the selected backend's emitted shaders.
+format::ShaderTarget GetTarget(rhi::Backend backend) noexcept
+{
+    switch (backend)
+    {
+        case rhi::Backend::Metal:
+            return format::ShaderTarget::Metal;
+        case rhi::Backend::WebGPU:
+            return format::ShaderTarget::Wgsl;
+        case rhi::Backend::WebGL2:
+            return format::ShaderTarget::GlslEs;
+        case rhi::Backend::Vulkan:
+            break;
+    }
+    return format::ShaderTarget::Spirv;
+}
+/// Largest carried block of one binding: the uniform range the layout must admit on every target.
+usize GetBindingBytes(const RenderGraphPlan& plan, usize binding) noexcept
+{
+    usize bytes = 0;
+    for (usize i = 0; i < plan.UniformBlocks.GetSize(); ++i)
+    {
+        const format::UniformBlock& block = plan.UniformBlocks[i];
+        if (block.Binding == binding && block.Size > bytes)
+        {
+            bytes = block.Size;
+        }
+    }
+    return bytes;
+}
+bool IsReadByStage(format::Visibility stages, rhi::ShaderStage stage) noexcept
+{
+    return stages == format::Visibility::Both ||
+           (stages == format::Visibility::Vertex && stage == rhi::ShaderStage::Vertex) ||
+           (stages == format::Visibility::Fragment && stage == rhi::ShaderStage::Fragment);
+}
+/// One stage must declare exactly the plan's bindings for its technique, as read-only uniform buffers.
+bool HasPlanBindings(const rhi::RasterShaderDescription& description,
+                     const RenderGraphPlan& plan,
+                     format::Technique technique) noexcept
+{
+    usize expected = 0;
+    for (usize i = 0; i < plan.UniformBindings.GetSize(); ++i)
+    {
+        const format::UniformBinding& binding = plan.UniformBindings[i];
+        if (binding.Program != technique || IsReadByStage(binding.Stages, description.Artifact.Stage) == false)
+        {
+            continue;
+        }
+        ++expected;
+        const rhi::RasterVisibility visibility = description.Artifact.Stage == rhi::ShaderStage::Vertex
+                                                     ? rhi::RasterVisibility::Vertex
+                                                     : rhi::RasterVisibility::Fragment;
+        bool isFound = false;
+        for (const rhi::RasterBinding& declared : description.Bindings)
+        {
+            isFound = isFound == true ||
+                      (declared.Binding == binding.Slot && declared.Kind == rhi::RasterBindingKind::UniformBuffer &&
+                       declared.Visibility == visibility && declared.MinSize == GetBindingBytes(plan, i) &&
+                       declared.Count == 1 && declared.HasDynamicOffset == false &&
+                       declared.Indexing == rhi::RasterBindingIndexing::Constant && declared.IsRuntimeSized == false &&
+                       declared.HasPartialBinding == false);
+        }
+        if (isFound == false)
+        {
+            return false;
+        }
+    }
+    return description.Bindings.size() == expected;
+}
+bool HasFlatInterface(const rhi::RasterShaderDescription& vertex,
+                      const rhi::RasterShaderDescription& fragment,
+                      const RenderGraphPlan& plan,
+                      format::Technique technique) noexcept
 {
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        vertex.Inputs.size() != FLAT_INPUT_COUNT || vertex.Bindings.empty() == false ||
-        fragment.Bindings.empty() == false)
+        vertex.Inputs.size() != FLAT_INPUT_COUNT || HasPlanBindings(vertex, plan, technique) == false ||
+        HasPlanBindings(fragment, plan, technique) == false)
     {
         return false;
     }
@@ -88,25 +186,147 @@ bool HasFlatInterface(const rhi::RasterShaderDescription& vertex, const rhi::Ras
     }
     return true;
 }
-bool HasMatchingGeometry(const RenderGraphPrograms& programs) noexcept
+bool AreArtifactsEqual(const rhi::ShaderDescription& left, const rhi::ShaderDescription& right) noexcept
 {
-    const rhi::ShaderDescription& color = programs.ColorVertex.Artifact;
-    const rhi::ShaderDescription& depth = programs.DepthVertex.Artifact;
-    if (color.Wgsl != depth.Wgsl || color.Msl != depth.Msl || color.GlslEs != depth.GlslEs ||
-        color.WgslEntry != depth.WgslEntry || color.MslEntry != depth.MslEntry ||
-        color.GlslEsEntry != depth.GlslEsEntry || color.SpirvEntry != depth.SpirvEntry ||
-        color.Spirv.size() != depth.Spirv.size())
+    if (left.Wgsl != right.Wgsl || left.Msl != right.Msl || left.GlslEs != right.GlslEs ||
+        left.WgslEntry != right.WgslEntry || left.MslEntry != right.MslEntry || left.GlslEsEntry != right.GlslEsEntry ||
+        left.SpirvEntry != right.SpirvEntry || left.Spirv.size() != right.Spirv.size())
     {
         return false;
     }
-    for (usize i = 0; i < color.Spirv.size(); ++i)
+    for (usize i = 0; i < left.Spirv.size(); ++i)
     {
-        if (color.Spirv[i] != depth.Spirv[i])
+        if (left.Spirv[i] != right.Spirv[i])
         {
             return false;
         }
     }
     return true;
+}
+/// The authored vertex and fragment of one technique; Composite entries are not techniques.
+const rhi::RasterShaderDescription&
+GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::ShaderStage stage) noexcept
+{
+    const bool isVertex = stage == rhi::ShaderStage::Vertex;
+    switch (technique)
+    {
+        case format::Technique::ColorAndDepth:
+            return isVertex == true ? programs.ColorVertex : programs.ColorFragment;
+        case format::Technique::DepthOnly:
+            return isVertex == true ? programs.DepthVertex : programs.DepthFragment;
+        case format::Technique::MaskedColorAndDepth:
+            return isVertex == true ? programs.MaskedColorVertex : programs.MaskedColorFragment;
+        case format::Technique::MaskedDepthOnly:
+            break;
+    }
+    return isVertex == true ? programs.MaskedDepthVertex : programs.MaskedDepthFragment;
+}
+Status ValidateUniforms(const RenderGraphPlan& plan, StaticArray<bool, format::TECHNIQUE_COUNT> isUsed) noexcept
+{
+    const format::Header& header = plan.Description;
+    if (plan.UniformBindings.IsValid() == false || plan.UniformBlocks.IsValid() == false ||
+        plan.UniformFields.IsValid() == false || header.UniformBindingCount != plan.UniformBindings.GetSize() ||
+        header.UniformBlockCount != plan.UniformBlocks.GetSize() ||
+        header.UniformFieldCount != plan.UniformFields.GetSize() ||
+        header.UniformValueCount > format::MAX_UNIFORM_VALUES ||
+        plan.UniformBindings.GetSize() > format::MAX_UNIFORM_BINDINGS ||
+        plan.UniformBlocks.GetSize() > format::MAX_UNIFORM_BLOCKS ||
+        plan.UniformFields.GetSize() > format::MAX_UNIFORM_FIELDS ||
+        (header.UniformValueCount == 0) != plan.UniformBindings.IsEmpty())
+    {
+        return Status::InvalidDescription;
+    }
+    for (usize i = 0; i < plan.UniformBindings.GetSize(); ++i)
+    {
+        const format::UniformBinding& binding = plan.UniformBindings[i];
+        const uint32 program = static_cast<uint32>(binding.Program);
+        const uint32 stages = static_cast<uint32>(binding.Stages);
+        // Strict (technique, slot) order matches the Renderer's ascending layout concatenation.
+        const bool isOrdered =
+            i == 0 || static_cast<uint32>(plan.UniformBindings[i - 1].Program) < program ||
+            (plan.UniformBindings[i - 1].Program == binding.Program && plan.UniformBindings[i - 1].Slot < binding.Slot);
+        if (program > MAX_TECHNIQUE || isUsed[program] == false || binding.Slot >= format::UNIFORM_SLOT_COUNT ||
+            stages == 0 || stages > static_cast<uint32>(format::Visibility::Both) || binding.ValueCount == 0 ||
+            binding.ValueOffset > header.UniformValueCount ||
+            binding.ValueCount > header.UniformValueCount - binding.ValueOffset || isOrdered == false)
+        {
+            return Status::InvalidDescription;
+        }
+    }
+    for (usize i = 0; i < plan.UniformBlocks.GetSize(); ++i)
+    {
+        const format::UniformBlock& block = plan.UniformBlocks[i];
+        if (block.Binding >= plan.UniformBindings.GetSize() || static_cast<uint32>(block.Target) > MAX_TARGET ||
+            block.Size == 0 || block.Size > format::MAX_UNIFORM_BLOCK_BYTES || block.Size % sizeof(float32) != 0)
+        {
+            return Status::InvalidDescription;
+        }
+        for (usize earlier = 0; earlier < i; ++earlier)
+        {
+            if (plan.UniformBlocks[earlier].Binding == block.Binding &&
+                plan.UniformBlocks[earlier].Target == block.Target)
+            {
+                return Status::InvalidDescription;
+            }
+        }
+    }
+    for (usize i = 0; i < plan.UniformFields.GetSize(); ++i)
+    {
+        const format::UniformField& field = plan.UniformFields[i];
+        if (field.Binding >= plan.UniformBindings.GetSize() || static_cast<uint32>(field.Target) > MAX_TARGET ||
+            field.Components == 0 || field.Components > MAX_COMPONENTS || field.ByteOffset % sizeof(float32) != 0 ||
+            field.ValueOffset > plan.UniformBindings[field.Binding].ValueCount ||
+            field.Components > plan.UniformBindings[field.Binding].ValueCount - field.ValueOffset)
+        {
+            return Status::InvalidDescription;
+        }
+        bool hasBlock = false;
+        for (usize block = 0; block < plan.UniformBlocks.GetSize(); ++block)
+        {
+            const format::UniformBlock& candidate = plan.UniformBlocks[block];
+            hasBlock = hasBlock == true || (candidate.Binding == field.Binding && candidate.Target == field.Target &&
+                                            field.ByteOffset <= candidate.Size &&
+                                            field.Components * sizeof(float32) <= candidate.Size - field.ByteOffset);
+        }
+        if (hasBlock == false)
+        {
+            return Status::InvalidDescription;
+        }
+    }
+    return Status::Ready;
+}
+/// The selected target must carry a complete layout: one block per binding and fields
+/// that write every logical value exactly once, in schema order.
+Status ValidateTargetUniforms(const RenderGraphPlan& plan, format::ShaderTarget target) noexcept
+{
+    for (usize binding = 0; binding < plan.UniformBindings.GetSize(); ++binding)
+    {
+        bool hasBlock = false;
+        for (usize i = 0; i < plan.UniformBlocks.GetSize(); ++i)
+        {
+            hasBlock = hasBlock == true ||
+                       (plan.UniformBlocks[i].Binding == binding && plan.UniformBlocks[i].Target == target);
+        }
+        uint32 covered = 0;
+        for (usize i = 0; i < plan.UniformFields.GetSize(); ++i)
+        {
+            const format::UniformField& field = plan.UniformFields[i];
+            if (field.Binding != binding || field.Target != target)
+            {
+                continue;
+            }
+            if (field.ValueOffset != covered)
+            {
+                return Status::Unsupported;
+            }
+            covered += field.Components;
+        }
+        if (hasBlock == false || covered != plan.UniformBindings[binding].ValueCount)
+        {
+            return Status::Unsupported;
+        }
+    }
+    return Status::Ready;
 }
 Status ValidatePlan(const RenderGraphPlan& plan) noexcept
 {
@@ -124,6 +344,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     StaticArray<bool, format::MAX_RESOURCES> colorDefined{};
     StaticArray<bool, format::MAX_RESOURCES> depthDefined{};
     StaticArray<bool, format::MAX_CAMERAS> hasCameraRoute{};
+    StaticArray<bool, format::TECHNIQUE_COUNT> isUsed{};
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
         const format::Resource& resource = plan.Resources[i];
@@ -171,9 +392,8 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
     {
         const format::Pass& pass = plan.Passes[passIndex];
-        if ((pass.Program != format::Technique::ColorAndDepth && pass.Program != format::Technique::DepthOnly) ||
-            pass.Camera >= plan.Description.CameraCount || pass.Depth >= plan.Resources.GetSize() ||
-            pass.AllowsRepeatedCoverage > 1 ||
+        if (static_cast<uint32>(pass.Program) > MAX_TECHNIQUE || pass.Camera >= plan.Description.CameraCount ||
+            pass.Depth >= plan.Resources.GetSize() || pass.AllowsRepeatedCoverage > 1 ||
             static_cast<uint32>(pass.ColorLoad) > static_cast<uint32>(format::Load::Discard) ||
             static_cast<uint32>(pass.DepthLoad) > static_cast<uint32>(format::Load::Discard) ||
             static_cast<uint32>(pass.ColorStore) > static_cast<uint32>(format::Store::Discard) ||
@@ -181,6 +401,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
+        isUsed[static_cast<usize>(pass.Program)] = true;
         const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
         hasCameraRoute[pass.Camera] =
             hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
@@ -193,7 +414,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         depthDefined[depth.Backing] = pass.DepthStore == format::Store::Store &&
                                       (pass.DepthLoad == format::Load::Clear ||
                                        (pass.DepthLoad == format::Load::Load && depthDefined[depth.Backing] == true));
-        if (pass.Program == format::Technique::ColorAndDepth)
+        if (IsColorTechnique(pass.Program) == true)
         {
             if (pass.Color >= plan.Resources.GetSize())
             {
@@ -240,25 +461,41 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             return Status::InvalidDescription;
         }
     }
-    return Status::Ready;
+    return ValidateUniforms(plan, isUsed);
 }
 } // namespace
 struct RenderGraph::State final
 {
     rhi::DeviceHandle Device{};
     format::Header Header{};
+    format::ShaderTarget Target = format::ShaderTarget::Spirv;
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
+    // Only the validated active prefix is copied and read; unused capacity has no stage.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
+    StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
+    StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
+    StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
+    /// Uniform range of each binding: its largest carried block, matching the stage MinSize.
+    StaticArray<usize, format::MAX_UNIFORM_BINDINGS> BindingBytes{};
     StaticArray<rhi::TextureHandle, format::MAX_RESOURCES> Textures{};
     StaticArray<Renderer, format::TECHNIQUE_COUNT> Contexts{};
     StaticArray<bool, format::TECHNIQUE_COUNT> IsUsed{};
     StaticArray<bool, format::TECHNIQUE_COUNT> HasViews{};
+    StaticArray<bool, format::TECHNIQUE_COUNT> IsBound{};
     RenderGraphPrograms Programs{};
+    /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
+    StaticArray<StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES>, format::MAX_UNIFORM_SETS> Packed{};
+    StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES> Candidate{};
     struct Scene final
     {
         State* OwnerOrNull = nullptr;
         StaticArray<StaticArray<Mesh, format::MAX_MESHES>, format::TECHNIQUE_COUNT> Meshes{};
         StaticArray<bool, format::MAX_MESHES> HasMeshes{};
+        StaticArray<StaticArray<UniformSet, format::MAX_UNIFORM_SETS>, format::TECHNIQUE_COUNT> UniformSets{};
+        StaticArray<usize, format::TECHNIQUE_COUNT> UniformSetCounts{};
+        /// Distinct value set drawn for each item by each bound technique, or NO_SET.
+        StaticArray<StaticArray<usize, format::MAX_ITEMS>, format::TECHNIQUE_COUNT> ItemSets{};
         StaticArray<Snapshot, format::MAX_PASSES> Snapshots{};
         StaticArray<PreparedView, format::MAX_PASSES> Views{};
         StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
@@ -284,6 +521,10 @@ struct RenderGraph::State final
                     {
                         static_cast<void>(OwnerOrNull->Contexts[i].Release(Meshes[i][mesh]));
                     }
+                    for (usize set = 0; set < UniformSetCounts[i]; ++set)
+                    {
+                        static_cast<void>(OwnerOrNull->Contexts[i].Release(UniformSets[i][set]));
+                    }
                 }
             }
         }
@@ -303,6 +544,49 @@ struct RenderGraph::State final
     Status RecordingStatus = Status::Ready;
     rhi::SurfaceHandle RecordingSurface{};
     rhi::SubmissionToken Producer{};
+    /// Whether the opaque color context can draw the editor's magenta marker: it reads instance color
+    /// and binds no uniforms. Bound or masked-only color techniques never pretend to provide markers.
+    [[nodiscard]] bool HasDiagnosticContext() const noexcept
+    {
+        constexpr usize COLOR = static_cast<usize>(format::Technique::ColorAndDepth);
+        return IsUsed[COLOR] == true && IsBound[COLOR] == false;
+    }
+    /// Pack one item's logical values into the technique's concatenated target blocks.
+    usize PackUniforms(format::Technique technique, BorrowedView<const float32> values) noexcept
+    {
+        usize size = 0;
+        for (usize binding = 0; binding < Header.UniformBindingCount; ++binding)
+        {
+            if (UniformBindings[binding].Program != technique)
+            {
+                continue;
+            }
+            for (usize i = 0; i < BindingBytes[binding]; ++i)
+            {
+                Candidate[size + i] = 0;
+            }
+            for (usize index = 0; index < Header.UniformFieldCount; ++index)
+            {
+                const format::UniformField& field = UniformFields[index];
+                if (field.Binding != binding || field.Target != Target)
+                {
+                    continue;
+                }
+                for (usize component = 0; component < field.Components; ++component)
+                {
+                    const float32 value = values[UniformBindings[binding].ValueOffset + field.ValueOffset + component];
+                    // Native-endian float32, matching the RHI upload and generated packers.
+                    const uint8* bytes = reinterpret_cast<const uint8*>(&value);
+                    for (usize byte = 0; byte < sizeof(float32); ++byte)
+                    {
+                        Candidate[size + field.ByteOffset + component * sizeof(float32) + byte] = bytes[byte];
+                    }
+                }
+            }
+            size += BindingBytes[binding];
+        }
+        return size;
+    }
     Status PollScene(Scene& inoutScene) noexcept
     {
         for (usize context = 0; context < format::TECHNIQUE_COUNT; ++context)
@@ -320,6 +604,14 @@ struct RenderGraph::State final
                     {
                         return status;
                     }
+                }
+            }
+            for (usize set = 0; set < inoutScene.UniformSetCounts[context]; ++set)
+            {
+                const Status status = Contexts[context].GetStatus(inoutScene.UniformSets[context][set]);
+                if (status != Status::Ready)
+                {
+                    return status;
                 }
             }
         }
@@ -451,16 +743,34 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         return status;
     }
-    bool hasColor = false;
-    bool hasDepth = false;
+    StaticArray<bool, format::TECHNIQUE_COUNT> isUsed{};
     for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
     {
-        hasColor = hasColor == true || plan.Passes[pass].Program == format::Technique::ColorAndDepth;
-        hasDepth = hasDepth == true || plan.Passes[pass].Program == format::Technique::DepthOnly;
+        isUsed[static_cast<usize>(plan.Passes[pass].Program)] = true;
     }
-    if ((hasColor == true && HasFlatInterface(programs.ColorVertex, programs.ColorFragment) == false) ||
-        (hasDepth == true && HasFlatInterface(programs.DepthVertex, programs.DepthFragment) == false) ||
-        (hasColor == true && hasDepth == true && HasMatchingGeometry(programs) == false))
+    for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
+    {
+        const format::Technique technique = static_cast<format::Technique>(i);
+        if (isUsed[i] == true && HasFlatInterface(GetStage(programs, technique, rhi::ShaderStage::Vertex),
+                                                  GetStage(programs, technique, rhi::ShaderStage::Fragment),
+                                                  plan,
+                                                  technique) == false)
+        {
+            return Status::Unsupported;
+        }
+    }
+    // A depth-only technique shares its family's exact geometry stage, and masked coverage
+    // is never the opaque void depth function: both are checked, not inferred from names.
+    constexpr usize COLOR = static_cast<usize>(format::Technique::ColorAndDepth);
+    constexpr usize DEPTH = static_cast<usize>(format::Technique::DepthOnly);
+    constexpr usize MASKED_COLOR = static_cast<usize>(format::Technique::MaskedColorAndDepth);
+    constexpr usize MASKED_DEPTH = static_cast<usize>(format::Technique::MaskedDepthOnly);
+    if ((isUsed[COLOR] == true && isUsed[DEPTH] == true &&
+         AreArtifactsEqual(programs.ColorVertex.Artifact, programs.DepthVertex.Artifact) == false) ||
+        (isUsed[MASKED_COLOR] == true && isUsed[MASKED_DEPTH] == true &&
+         AreArtifactsEqual(programs.MaskedColorVertex.Artifact, programs.MaskedDepthVertex.Artifact) == false) ||
+        (isUsed[DEPTH] == true && isUsed[MASKED_DEPTH] == true &&
+         AreArtifactsEqual(programs.DepthFragment.Artifact, programs.MaskedDepthFragment.Artifact) == true))
     {
         return Status::Unsupported;
     }
@@ -468,6 +778,12 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     if (rhi::GetDeviceInfo(device, information) != rhi::DeviceStatus::Ready)
     {
         return Status::NotReady;
+    }
+    const format::ShaderTarget target = GetTarget(information.Startup.SelectedBackend);
+    status = ValidateTargetUniforms(plan, target);
+    if (status != Status::Ready)
+    {
+        return status;
     }
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
@@ -485,7 +801,9 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     }
     candidate->Device = device;
     candidate->Header = plan.Description;
+    candidate->Target = target;
     candidate->Programs = programs;
+    candidate->IsUsed = isUsed;
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
         candidate->Resources[i] = plan.Resources[i];
@@ -493,7 +811,20 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     for (usize i = 0; i < plan.Passes.GetSize(); ++i)
     {
         candidate->Passes[i] = plan.Passes[i];
-        candidate->IsUsed[static_cast<usize>(plan.Passes[i].Program)] = true;
+    }
+    for (usize i = 0; i < plan.UniformBindings.GetSize(); ++i)
+    {
+        candidate->UniformBindings[i] = plan.UniformBindings[i];
+        candidate->BindingBytes[i] = GetBindingBytes(plan, i);
+        candidate->IsBound[static_cast<usize>(plan.UniformBindings[i].Program)] = true;
+    }
+    for (usize i = 0; i < plan.UniformBlocks.GetSize(); ++i)
+    {
+        candidate->UniformBlocks[i] = plan.UniformBlocks[i];
+    }
+    for (usize i = 0; i < plan.UniformFields.GetSize(); ++i)
+    {
+        candidate->UniformFields[i] = plan.UniformFields[i];
     }
     for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
     {
@@ -501,14 +832,17 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             continue;
         }
-        const rhi::RasterShaderDescription& vertex = i == 0 ? programs.ColorVertex : programs.DepthVertex;
-        const rhi::RasterShaderDescription& fragment = i == 0 ? programs.ColorFragment : programs.DepthFragment;
+        const format::Technique technique = static_cast<format::Technique>(i);
         Limits limits;
         limits.Objects = static_cast<uint32>(format::MAX_ITEMS);
         limits.Meshes = static_cast<uint32>(format::MAX_MESHES * MAX_RETAINED_SCENES);
         limits.Snapshots = static_cast<uint32>(format::MAX_PASSES * MAX_RETAINED_SCENES);
         limits.Views = static_cast<uint32>(format::MAX_PASSES * MAX_RETAINED_SCENES);
-        status = candidate->Contexts[i].Initialize(device, vertex, fragment, limits);
+        limits.UniformSets = static_cast<uint32>(format::MAX_UNIFORM_SETS * MAX_RETAINED_SCENES);
+        status = candidate->Contexts[i].Initialize(device,
+                                                   GetStage(programs, technique, rhi::ShaderStage::Vertex),
+                                                   GetStage(programs, technique, rhi::ShaderStage::Fragment),
+                                                   limits);
         if (IsAccepted(status) == false)
         {
             return status;
@@ -658,9 +992,23 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
     {
         const RenderGraphItem& item = items[itemIndex];
-        if (item.SourceId == 0 || item.MeshIndex >= meshes.GetSize())
+        if (item.SourceId == 0 || item.MeshIndex >= meshes.GetSize() || item.Uniforms.IsValid() == false)
         {
             return Status::InvalidDescription;
+        }
+        // Every drawn item supplies the complete logical table; an excluded item may omit it.
+        const bool hasValues = item.Uniforms.IsEmpty() == false;
+        if ((hasValues == true && item.Uniforms.GetSize() != state.Header.UniformValueCount) ||
+            (hasValues == false && state.Header.UniformValueCount != 0 && item.IsIntentionallyExcluded == false))
+        {
+            return Status::InvalidDescription;
+        }
+        for (usize value = 0; value < item.Uniforms.GetSize(); ++value)
+        {
+            if (math::IsFinite(item.Uniforms[value]) == false)
+            {
+                return Status::InvalidDescription;
+            }
         }
     }
     state.CoverageCount = 0;
@@ -671,15 +1019,11 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         for (usize role = 0; role < ROLE_COUNT; ++role)
         {
             usize routeCount = 0;
-            bool isRepeatedAllowed = true;
             for (usize pass = 0; pass < state.Header.PassCount; ++pass)
             {
                 const format::Pass& operation = state.Passes[pass];
-                if (operation.Camera == camera && (role == 1 || operation.Program == format::Technique::ColorAndDepth))
-                {
-                    ++routeCount;
-                    isRepeatedAllowed = isRepeatedAllowed == true && operation.AllowsRepeatedCoverage == 1;
-                }
+                routeCount +=
+                    operation.Camera == camera && (role == 1 || IsColorTechnique(operation.Program) == true) ? 1U : 0U;
             }
             if (routeCount == 0)
             {
@@ -689,6 +1033,20 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             {
                 const RenderGraphItem& item = items[i];
                 const RenderGraphMesh& mesh = meshes[item.MeshIndex];
+                // Only routes of the item's own material family count; another family's route
+                // is neither coverage nor a conflicting repetition.
+                usize compatibleCount = 0;
+                bool isRepeatedAllowed = true;
+                for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+                {
+                    const format::Pass& operation = state.Passes[pass];
+                    if (operation.Camera == camera && (role == 1 || IsColorTechnique(operation.Program) == true) &&
+                        IsCompatible(operation.Program, item, mesh) == true)
+                    {
+                        ++compatibleCount;
+                        isRepeatedAllowed = isRepeatedAllowed == true && operation.AllowsRepeatedCoverage == 1;
+                    }
+                }
                 RenderGraphCoverageRecord record;
                 record.SourceId = item.SourceId;
                 record.Camera = static_cast<uint32>(camera);
@@ -703,19 +1061,20 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                     record.Status = RenderGraphCoverage::IntentionallyExcluded;
                     ++state.Report.Excluded;
                 }
-                else if (hasDuplicate == true || (routeCount > 1 && isRepeatedAllowed == false))
+                else if (hasDuplicate == true || (compatibleCount > 1 && isRepeatedAllowed == false))
                 {
                     record.Status = RenderGraphCoverage::Conflicting;
                     record.Reason = RenderGraphReason::Duplicate;
                     ++state.Report.Conflicting;
                 }
-                else if (mesh.Layout != RenderGraphLayout::Static || item.Coverage != RenderGraphMaterial::Opaque)
+                else if (compatibleCount == 0)
                 {
                     record.Status = RenderGraphCoverage::Unsupported;
                     record.Reason = mesh.Layout != RenderGraphLayout::Static ? RenderGraphReason::Layout
                                                                              : RenderGraphReason::Material;
                     record.HasDiagnosticRoute =
                         role == 0 && policy == RenderGraphCoveragePolicy::DiagnosticColor &&
+                        state.HasDiagnosticContext() == true &&
                         (mesh.Layout == RenderGraphLayout::Static || mesh.HasDiagnosticBounds == true);
                     ++state.Report.Unsupported;
                 }
@@ -748,6 +1107,28 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         candidate->Cameras[camera] = cameras[camera];
         candidate->Cameras[camera].OverlayToClip = cameras[camera].WorldToClip;
     }
+    const auto drawsItem = [&state](const RenderGraphItem& item, const RenderGraphMesh& mesh) noexcept {
+        bool isDrawn = false;
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            isDrawn = isDrawn == true || IsCompatible(state.Passes[pass].Program, item, mesh) == true;
+        }
+        return isDrawn;
+    };
+    const auto hasColorRoute = [&state](const RenderGraphItem& item,
+                                        const RenderGraphMesh& mesh,
+                                        uint32 camera) noexcept {
+        bool hasRoute = false;
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            const format::Pass& operation = state.Passes[pass];
+            hasRoute = hasRoute == true || (operation.Camera == camera && IsColorTechnique(operation.Program) == true &&
+                                            IsCompatible(operation.Program, item, mesh) == true);
+        }
+        return hasRoute;
+    };
+    const bool hasDiagnostic =
+        policy == RenderGraphCoveragePolicy::DiagnosticColor && state.HasDiagnosticContext() == true;
     for (usize meshIndex = 0; meshIndex < meshes.GetSize(); ++meshIndex)
     {
         const RenderGraphMesh& mesh = meshes[meshIndex];
@@ -755,13 +1136,10 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
         {
             const RenderGraphItem& item = items[itemIndex];
-            const bool isCompatible =
-                mesh.Layout == RenderGraphLayout::Static && item.Coverage == RenderGraphMaterial::Opaque;
-            const bool hasDiagnostic = policy == RenderGraphCoveragePolicy::DiagnosticColor &&
-                                       state.IsUsed[0] == true &&
-                                       (mesh.Layout == RenderGraphLayout::Static || mesh.HasDiagnosticBounds == true);
+            const bool isDiagnostic =
+                hasDiagnostic == true && (mesh.Layout == RenderGraphLayout::Static || mesh.HasDiagnosticBounds == true);
             isRequired = isRequired == true || (item.MeshIndex == meshIndex && item.IsIntentionallyExcluded == false &&
-                                                (isCompatible == true || hasDiagnostic == true));
+                                                (drawsItem(item, mesh) == true || isDiagnostic == true));
         }
         if (isRequired == false)
         {
@@ -774,7 +1152,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         MeshDescription description = mesh.Geometry;
         if (mesh.Layout != RenderGraphLayout::Static)
         {
-            if (mesh.HasDiagnosticBounds == false || policy != RenderGraphCoveragePolicy::DiagnosticColor)
+            if (mesh.HasDiagnosticBounds == false || hasDiagnostic == false)
             {
                 continue;
             }
@@ -810,6 +1188,60 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             }
         }
     }
+    // Pack and deduplicate per-draw values for every bound technique. Each distinct value
+    // set becomes one immutable uniform set; equal values share it and stay instanced.
+    for (usize context = 0; context < format::TECHNIQUE_COUNT; ++context)
+    {
+        StaticArray<usize, format::MAX_ITEMS>& itemSets = candidate->ItemSets[context];
+        for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
+        {
+            itemSets[itemIndex] = NO_SET;
+        }
+        if (state.IsUsed[context] == false || state.IsBound[context] == false)
+        {
+            continue;
+        }
+        const format::Technique technique = static_cast<format::Technique>(context);
+        for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
+        {
+            const RenderGraphItem& item = items[itemIndex];
+            if (item.IsIntentionallyExcluded == true || IsCompatible(technique, item, meshes[item.MeshIndex]) == false)
+            {
+                continue;
+            }
+            const usize size = state.PackUniforms(technique, item.Uniforms);
+            usize& count = candidate->UniformSetCounts[context];
+            usize match = NO_SET;
+            for (usize set = 0; set < count && match == NO_SET; ++set)
+            {
+                bool isEqual = true;
+                for (usize byte = 0; byte < size && isEqual == true; ++byte)
+                {
+                    isEqual = state.Packed[set][byte] == state.Candidate[byte];
+                }
+                match = isEqual == true ? set : NO_SET;
+            }
+            if (match == NO_SET)
+            {
+                if (count == format::MAX_UNIFORM_SETS)
+                {
+                    return Status::CapacityExceeded;
+                }
+                const Status created = state.Contexts[context].CreateUniformSet({state.Candidate.GetData(), size},
+                                                                                candidate->UniformSets[context][count]);
+                if (IsAccepted(created) == false)
+                {
+                    return created;
+                }
+                for (usize byte = 0; byte < size; ++byte)
+                {
+                    state.Packed[count][byte] = state.Candidate[byte];
+                }
+                match = count++;
+            }
+            itemSets[itemIndex] = match;
+        }
+    }
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         const format::Pass& operation = state.Passes[pass];
@@ -822,11 +1254,12 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             {
                 continue;
             }
-            const bool isCompatible =
-                mesh.Layout == RenderGraphLayout::Static && item.Coverage == RenderGraphMaterial::Opaque;
-            if (isCompatible == false &&
-                (operation.Program == format::Technique::DepthOnly ||
-                 policy != RenderGraphCoveragePolicy::DiagnosticColor || candidate->HasMeshes[item.MeshIndex] == false))
+            const bool isCompatible = IsCompatible(operation.Program, item, mesh);
+            const bool isDiagnostic = isCompatible == false && hasDiagnostic == true &&
+                                      operation.Program == format::Technique::ColorAndDepth &&
+                                      candidate->HasMeshes[item.MeshIndex] == true &&
+                                      hasColorRoute(item, mesh, operation.Camera) == false;
+            if (isCompatible == false && isDiagnostic == false)
             {
                 continue;
             }
@@ -835,6 +1268,10 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             drawing.Geometry = candidate->Meshes[context][item.MeshIndex];
             drawing.Transform = item.MeshToWorld;
             drawing.Material = item.Material;
+            if (candidate->ItemSets[context][itemIndex] != NO_SET)
+            {
+                drawing.Uniforms = candidate->UniformSets[context][candidate->ItemSets[context][itemIndex]];
+            }
             if (isCompatible == false)
             {
                 // Existing authored flat color is runtime data, not a new shader.

@@ -137,11 +137,11 @@ void OpenEditorDocument(QWidget* owner,
         if (state)
         {
             state->Input.call<void>("remove");
-            if (!state->Admitted)
+            if (state->Admitted == false)
             {
                 ImportedBytes -= state->ChargedBytes;
                 state->ChargedBytes = 0;
-                if (!state->Directory.isEmpty())
+                if (state->Directory.isEmpty() == false)
                 {
                     (void)QDir(state->Directory).removeRecursively();
                 }
@@ -158,14 +158,14 @@ void OpenEditorDocument(QWidget* owner,
     state->Change =
         QSharedPointer<qstdweb::EventCallback>::create(state->Input, "change", [weak, finish](const emscripten::val&) {
             const auto state = weak.toStrongRef();
-            if (!state || state->Owner.isNull())
+            if (state == nullptr || state->Owner.isNull())
             {
                 finish();
                 return;
             }
             const auto files = state->Input["files"];
             const auto count = files["length"].as<foundation::uint32>();
-            if (count == 0 || count > 100000 || (!state->Folder && count != 1))
+            if (count == 0 || count > 100000 || (state->Folder == false && count != 1))
             {
                 Report(state->Owner,
                        QStringLiteral("Choose a source project folder with at most 4096 imported files."));
@@ -186,7 +186,7 @@ void OpenEditorDocument(QWidget* owner,
                 total += file.size();
                 if (file.size() > static_cast<foundation::uint64>(MAX_IMPORT_BYTES) ||
                     total > static_cast<foundation::uint64>(MAX_IMPORT_BYTES - ImportedBytes) ||
-                    (!state->Folder &&
+                    (state->Folder == false &&
                      (file.size() == 0 || file.size() > static_cast<foundation::uint64>(MAX_DOCUMENT_BYTES))))
                 {
                     Report(state->Owner,
@@ -197,7 +197,7 @@ void OpenEditorDocument(QWidget* owner,
                 state->Paths.append(path);
                 state->Indices.append(index);
             }
-            if (!ValidateEditorImportPaths(state->Paths, state->Folder, state->Descriptor))
+            if (ValidateEditorImportPaths(state->Paths, state->Folder, state->Descriptor) == false)
             {
                 Report(state->Owner,
                        QStringLiteral(
@@ -214,7 +214,7 @@ void OpenEditorDocument(QWidget* owner,
             state->Reader = QSharedPointer<qstdweb::FileReader>::create();
             auto failed = [weak, finish](const emscripten::val&) {
                 const auto state = weak.toStrongRef();
-                if (state && !state->Owner.isNull())
+                if (state && state->Owner.isNull() == false)
                 {
                     Report(state->Owner, QStringLiteral("Import failed; the current document was retained."));
                 }
@@ -224,7 +224,7 @@ void OpenEditorDocument(QWidget* owner,
             state->Reader->onAbort(failed);
             state->Reader->onLoad([weak, finish](const emscripten::val&) {
                 const auto state = weak.toStrongRef();
-                if (!state || state->Owner.isNull())
+                if (state == nullptr || state->Owner.isNull())
                 {
                     finish();
                     return;
@@ -240,8 +240,9 @@ void OpenEditorDocument(QWidget* owner,
                 const auto path = QDir(state->Directory).filePath(state->Name);
                 QSaveFile output(path);
                 output.setDirectWriteFallback(false);
-                if (!QDir().mkpath(QFileInfo(path).absolutePath()) || !output.open(QIODevice::WriteOnly) ||
-                    output.write(bytes) != bytes.size() || !output.commit())
+                if (QDir().mkpath(QFileInfo(path).absolutePath()) == false ||
+                    output.open(QIODevice::WriteOnly) == false || output.write(bytes) != bytes.size() ||
+                    output.commit() == false)
                 {
                     Report(state->Owner, QStringLiteral("Import failed; the current document was retained."));
                     finish();
@@ -269,10 +270,10 @@ void OpenEditorDocument(QWidget* owner,
     const auto selection = dialog.ProjectFolder
                                ? QFileDialog::getExistingDirectory(owner, dialog.Title, dialog.Directory)
                                : QFileDialog::getOpenFileName(owner, dialog.Title, dialog.Directory, dialog.Filter);
-    const auto path = dialog.ProjectFolder && !selection.isEmpty()
-                          ? QDir(selection).filePath(QStringLiteral("ludus.project.json"))
-                          : selection;
-    if (!path.isEmpty())
+    const QString path = dialog.ProjectFolder && selection.isEmpty() == false
+                             ? QDir(selection).filePath(QStringLiteral("ludus.project.json"))
+                             : selection;
+    if (path.isEmpty() == false)
     {
         loaded(path);
     }
@@ -546,7 +547,7 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
 
 bool ValidateEditorImportPaths(const QStringList& paths, bool folder, QString& descriptor)
 {
-    if (paths.isEmpty() || paths.size() > 4096 || (!folder && paths.size() != 1))
+    if (paths.isEmpty() || paths.size() > 4096 || (folder == false && paths.size() != 1))
     {
         return false;
     }
@@ -557,7 +558,7 @@ bool ValidateEditorImportPaths(const QStringList& paths, bool folder, QString& d
     {
         const auto parts = path.split(QLatin1Char('/'));
         if (path.toUtf8().size() > 4096 || QDir::isAbsolutePath(path) || path.contains(QLatin1Char('\\')) ||
-            path.contains(QChar(0)) || unique.contains(path) || (!folder && parts.size() != 1))
+            path.contains(QChar(0)) || unique.contains(path) || (folder == false && parts.size() != 1))
         {
             return false;
         }
@@ -570,7 +571,7 @@ bool ValidateEditorImportPaths(const QStringList& paths, bool folder, QString& d
         }
         if (folder)
         {
-            if (parts.size() < 2 || (!root.isEmpty() && parts.first() != root))
+            if (parts.size() < 2 || (root.isEmpty() == false && parts.first() != root))
             {
                 return false;
             }
@@ -593,7 +594,7 @@ bool ValidateEditorImportPaths(const QStringList& paths, bool folder, QString& d
 bool EncodeEditorProjectArchive(const QString& directory, QByteArray& archive)
 {
     constexpr foundation::int64 maxBytes = 32LL * 1024 * 1024;
-    if (!QDir(directory).exists())
+    if (QDir(directory).exists() == false)
     {
         return false;
     }
@@ -617,7 +618,7 @@ bool EncodeEditorProjectArchive(const QString& directory, QByteArray& archive)
             continue;
         }
         QFile input(path);
-        if (++count > 4096 || QFileInfo(path).isSymLink() || !input.open(QIODevice::ReadOnly) ||
+        if (++count > 4096 || QFileInfo(path).isSymLink() || input.open(QIODevice::ReadOnly) == false ||
             input.size() > maxBytes || result.size() + input.size() + 2048 > maxBytes)
         {
             return false;
@@ -684,13 +685,13 @@ bool CopyEditorSample(const QString& id, QString& descriptor, const QString& des
     for (foundation::uint32 serial = 1; serial <= 10000; ++serial)
     {
         const auto candidate = QDir(base).filePath(id + QLatin1Char('-') + QString::number(serial));
-        if (!QFileInfo::exists(candidate))
+        if (QFileInfo::exists(candidate) == false)
         {
             destination = candidate;
             break;
         }
     }
-    if (destination.isEmpty() || !QDir().mkpath(destination))
+    if (destination.isEmpty() || QDir().mkpath(destination) == false)
     {
         return false;
     }
@@ -699,22 +700,22 @@ bool CopyEditorSample(const QString& id, QString& descriptor, const QString& des
     {
         const auto input = files.next();
         const auto output = QDir(destination).filePath(QDir(source).relativeFilePath(input));
-        if (!QDir().mkpath(QFileInfo(output).absolutePath()) || !QFile::copy(input, output) ||
-            !QFile::setPermissions(output, QFileDevice::ReadOwner | QFileDevice::WriteOwner))
+        if (QDir().mkpath(QFileInfo(output).absolutePath()) == false || QFile::copy(input, output) == false ||
+            QFile::setPermissions(output, QFileDevice::ReadOwner | QFileDevice::WriteOwner) == false)
         {
             (void)QDir(destination).removeRecursively();
             return false;
         }
     }
     const auto result = QDir(destination).filePath(QStringLiteral("ludus.project.json"));
-    if (!QFileInfo::exists(result))
+    if (QFileInfo::exists(result) == false)
     {
         (void)QDir(destination).removeRecursively();
         return false;
     }
 #if defined(Q_OS_MACOS)
     QFile original(result);
-    if (!original.open(QIODevice::ReadOnly))
+    if (original.open(QIODevice::ReadOnly) == false)
     {
         (void)QDir(destination).removeRecursively();
         return false;
@@ -726,7 +727,8 @@ bool CopyEditorSample(const QString& id, QString& descriptor, const QString& des
         document.insert(QStringLiteral("preset"), QStringLiteral("macos-clang-development"));
         QSaveFile output(result);
         const auto bytes = QJsonDocument(document).toJson();
-        if (!output.open(QIODevice::WriteOnly) || output.write(bytes) != bytes.size() || !output.commit())
+        if (output.open(QIODevice::WriteOnly) == false || output.write(bytes) != bytes.size() ||
+            output.commit() == false)
         {
             (void)QDir(destination).removeRecursively();
             return false;
@@ -742,7 +744,7 @@ bool DownloadEditorProject(QWidget* owner, const QString& descriptor)
 {
     QByteArray bytes;
     const auto directory = QFileInfo(descriptor).absolutePath();
-    if (!QFileInfo::exists(descriptor) || !EncodeEditorProjectArchive(directory, bytes))
+    if (QFileInfo::exists(descriptor) == false || EncodeEditorProjectArchive(directory, bytes) == false)
     {
         Report(
             owner,
@@ -760,7 +762,7 @@ bool DownloadEditorProject(QWidget* owner, const QString& descriptor)
 bool DownloadEditorDocument(QWidget* owner, const QString& path)
 {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > MAX_DOCUMENT_BYTES)
+    if (file.open(QIODevice::ReadOnly) == false || file.size() <= 0 || file.size() > MAX_DOCUMENT_BYTES)
     {
         Report(owner, QStringLiteral("Could not read the document for download."));
         return false;

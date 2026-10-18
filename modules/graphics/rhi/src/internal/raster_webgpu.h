@@ -83,7 +83,7 @@ void RasterPipelineCreated(WGPUCreatePipelineAsyncStatus status,
             break;
         }
     }
-    if (!adopted && object != nullptr)
+    if (adopted == false && object != nullptr)
     {
         wgpuRenderPipelineRelease(object);
     }
@@ -113,7 +113,7 @@ void ComputePipelineCreated(WGPUCreatePipelineAsyncStatus status,
             break;
         }
     }
-    if (!adopted && object != nullptr)
+    if (adopted == false && object != nullptr)
     {
         wgpuComputePipelineRelease(object);
     }
@@ -148,7 +148,7 @@ void RasterDone(WGPUQueueWorkDoneStatus status, WGPUStringView, void* userdata, 
     const auto session = completion.Session;
     const auto ordinal = completion.Ordinal;
     completion = {};
-    if (!internal::Current(session))
+    if (internal::Current(session) == false)
     {
         return;
     }
@@ -233,8 +233,8 @@ RasterCapabilities RasterLimits() noexcept
 // no storage/copy/MSAA or R8/RG8 attachment path is advertised.
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {
-    if (gDevice == nullptr ||
-        (internal::CompressedTexture(format) && !wgpuDeviceHasFeature(gDevice, WGPUFeatureName_TextureCompressionBC)))
+    if (gDevice == nullptr || (internal::CompressedTexture(format) &&
+                               wgpuDeviceHasFeature(gDevice, WGPUFeatureName_TextureCompressionBC) == false))
     {
         return {};
     }
@@ -394,7 +394,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     auto texture = wgpuDeviceCreateTexture(gDevice, &descriptor);
     gRasterTextures[slot] = texture;
     gRasterTextureDescriptions[slot] = info;
-    if (texture != nullptr && !info.Attachment && !info.DeferredInitialization)
+    if (texture != nullptr && info.Attachment == false && info.DeferredInitialization == false)
     {
         uint32 width = info.Width, height = info.Height;
         for (uint32 level = 0; level < info.MipLevels; ++level)
@@ -883,7 +883,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     // The browser bridge forwards this value even for read-only depth. Keep
     // the ignored value finite instead of forwarding the C API's NaN default.
     depth.depthClearValue = state.ClearDepth;
-    if (!state.DepthReadOnly)
+    if (state.DepthReadOnly == false)
     {
         depth.depthLoadOp = state.DepthLoad == RasterLoad::Load ? WGPULoadOp_Load : WGPULoadOp_Clear;
         depth.depthStoreOp = state.DepthStore == RasterStore::Store ? WGPUStoreOp_Store : WGPUStoreOp_Discard;
@@ -915,7 +915,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     {
         depth.stencilReadOnly = state.StencilReadOnly;
         depth.stencilClearValue = state.ClearStencil;
-        if (!state.StencilReadOnly)
+        if (state.StencilReadOnly == false)
         {
             depth.stencilLoadOp = state.StencilLoad == RasterLoad::Load ? WGPULoadOp_Load : WGPULoadOp_Clear;
             depth.stencilStoreOp = state.StencilStore == RasterStore::Store ? WGPUStoreOp_Store : WGPUStoreOp_Discard;
@@ -926,7 +926,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     pass.depthStencilAttachment = &depth;
     const auto width = surface ? gTarget.Width : info.Width;
     const auto height = surface ? gTarget.Height : info.Height;
-    if (!internal::RasterResolveArea(state, width, height, gRasterArea))
+    if (internal::RasterResolveArea(state, width, height, gRasterArea) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -956,7 +956,7 @@ RasterStatus RasterReserveSubmission() noexcept
     for (usize i = 0; i < internal::CurrentStorageLimits().Submissions; ++i)
     {
         auto& completion = gRasterCompletions[i];
-        if (!completion.Busy)
+        if (completion.Busy == false)
         {
             completion = {0, gSession, true, false};
             gRasterReserved = &completion;

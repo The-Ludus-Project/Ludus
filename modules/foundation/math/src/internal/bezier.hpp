@@ -28,7 +28,7 @@ using core::usize;
 [[nodiscard]] inline bool Narrow(Vector3d value, float32& out) noexcept
 {
     constexpr float64 kLimit = static_cast<float64>(std::numeric_limits<float32>::max());
-    if (!IsFinite(value.X) || Abs(value.X) > kLimit)
+    if (IsFinite(value.X) == false || Abs(value.X) > kLimit)
     {
         return false;
     }
@@ -38,7 +38,7 @@ using core::usize;
 [[nodiscard]] inline bool Narrow(Vector3d value, Vector2& out) noexcept
 {
     Vector2 result;
-    if (!Narrow({value.X, 0, 0}, result.X) || !Narrow({value.Y, 0, 0}, result.Y))
+    if (Narrow({value.X, 0, 0}, result.X) == false || Narrow({value.Y, 0, 0}, result.Y) == false)
     {
         return false;
     }
@@ -48,7 +48,8 @@ using core::usize;
 [[nodiscard]] inline bool Narrow(Vector3d value, Vector3& out) noexcept
 {
     Vector3 result;
-    if (!Narrow({value.X, 0, 0}, result.X) || !Narrow({value.Y, 0, 0}, result.Y) || !Narrow({value.Z, 0, 0}, result.Z))
+    if (Narrow({value.X, 0, 0}, result.X) == false || Narrow({value.Y, 0, 0}, result.Y) == false ||
+        Narrow({value.Z, 0, 0}, result.Z) == false)
     {
         return false;
     }
@@ -57,7 +58,7 @@ using core::usize;
 }
 [[nodiscard]] inline MathStatus CheckParameter(float64 value) noexcept
 {
-    if (!IsFinite(value))
+    if (IsFinite(value) == false)
     {
         return MathStatus::NonFiniteInput;
     }

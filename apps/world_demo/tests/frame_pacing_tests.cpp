@@ -16,6 +16,7 @@ constexpr uint64 EPOCH = uint64{1} << 62U;
 constexpr uint64 MILLISECOND = NANOSECONDS_PER_SECOND / 1000;
 constexpr uint64 IDLE_INTERVAL = 16'666'667;
 constexpr uint64 CAP_30_INTERVAL = 33'333'333;
+constexpr uint64 HIDDEN_INTERVAL = 100'000'000;
 /// CPU time spent inside one synthetic frame.
 constexpr uint64 FRAME_WORK = 4 * MILLISECOND;
 struct SyntheticClock final
@@ -71,6 +72,9 @@ TEST_CASE("Loop pacing validates its cap and keeps idle pacing by default", "[wo
     CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == CAP_30_INTERVAL);
     REQUIRE(pacing.Configure(MAXIMUM_FRAMES_PER_SECOND));
     CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == 1'000'000);
+    CHECK(pacing.IsVisible() == true);
+    CHECK(HIDDEN_FRAMES_PER_SECOND < IDLE_FRAMES_PER_SECOND);
+    CHECK(NANOSECONDS_PER_SECOND / HIDDEN_FRAMES_PER_SECOND == HIDDEN_INTERVAL);
 }
 TEST_CASE("Without a cap only frames that present nothing wait", "[world-demo][pacing]")
 {
@@ -193,6 +197,123 @@ TEST_CASE("Session replacement and suspension restart pacing from a baseline", "
     CHECK(stalled.WaitCount == 0);
     synthetic.Now += FRAME_WORK;
     CHECK(pacing.EndFrame(false, clock).Outcome == PaceOutcome::Waited);
+}
+TEST_CASE("A hidden window waits at the hidden rate, even for presented frames", "[world-demo][pacing][visibility]")
+{
+    LoopPacing pacing;
+    REQUIRE(pacing.Configure(0));
+    SyntheticClock synthetic;
+    const PacingClock clock = MakeClock(synthetic);
+    const auto countWaitsPerSecond = [&](bool hasPresented) {
+        const uint32 waits = synthetic.WaitCount;
+        const uint64 end = synthetic.Now + NANOSECONDS_PER_SECOND;
+        while (synthetic.Now < end)
+        {
+            synthetic.Now += FRAME_WORK;
+            const PaceResult result = pacing.EndFrame(hasPresented, clock);
+            REQUIRE((result.Outcome == PaceOutcome::Waited || result.Outcome == PaceOutcome::Baseline));
+        }
+        return synthetic.WaitCount - waits;
+    };
+    // A visible window that presents nothing (loading) waits at the idle rate.
+    const uint32 visibleIdleWaits = countWaitsPerSecond(false);
+    CHECK(visibleIdleWaits >= IDLE_FRAMES_PER_SECOND - 1);
+    CHECK(visibleIdleWaits <= IDLE_FRAMES_PER_SECOND);
+    // Hiding switches policy and drops the visible schedule.
+    pacing.SetVisible(false);
+    CHECK(pacing.IsVisible() == false);
+    CHECK(pacing.GetPacer().IsScheduled() == false);
+    CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == HIDDEN_INTERVAL);
+    CHECK(pacing.GetPacer().GetPolicy().MaximumLateness.Nanoseconds == HIDDEN_INTERVAL * MAXIMUM_LATE_INTERVALS);
+    // An occluded window may still present; the hidden schedule paces it instead of the swapchain.
+    const PaceResult baseline = pacing.EndFrame(true, clock);
+    CHECK(baseline.Outcome == PaceOutcome::Baseline);
+    CHECK(baseline.WaitCount == 0);
+    const uint64 anchor = synthetic.Now;
+    for (uint64 frame = 1; frame <= 3; ++frame)
+    {
+        synthetic.Now += FRAME_WORK;
+        const PaceResult result = pacing.EndFrame(true, clock);
+        CHECK(result.Outcome == PaceOutcome::Waited);
+        CHECK(result.Wake.Nanoseconds == anchor + frame * HIDDEN_INTERVAL);
+    }
+    // One simulated second hidden wakes HIDDEN_FRAMES_PER_SECOND times, presenting or not.
+    CHECK(countWaitsPerSecond(true) == HIDDEN_FRAMES_PER_SECOND);
+    CHECK(countWaitsPerSecond(false) == HIDDEN_FRAMES_PER_SECOND);
+    // Repeating the current visibility keeps the schedule and its phase.
+    const uint64 target = pacing.GetPacer().GetNextTarget().Nanoseconds;
+    pacing.SetVisible(false);
+    CHECK(pacing.GetPacer().IsScheduled() == true);
+    CHECK(pacing.GetPacer().GetNextTarget().Nanoseconds == target);
+}
+TEST_CASE("Showing the window again restarts pacing without the hidden phase", "[world-demo][pacing][visibility]")
+{
+    LoopPacing pacing;
+    REQUIRE(pacing.Configure(0));
+    SyntheticClock synthetic;
+    const PacingClock clock = MakeClock(synthetic);
+    Session session;
+    Load(session);
+    pacing.SetVisible(false);
+    REQUIRE(pacing.EndFrame(false, clock).Outcome == PaceOutcome::Baseline);
+    REQUIRE(session.Driver.Advance(session.World(), {synthetic.Now}, {}) == Status::Success);
+    const uint64 tick = session.World().GetTick();
+    for (uint32 frame = 0; frame < 5; ++frame)
+    {
+        synthetic.Now += FRAME_WORK;
+        REQUIRE(pacing.EndFrame(false, clock).Outcome == PaceOutcome::Waited);
+        // Hidden frames drop simulation time, like a hidden browser page.
+        REQUIRE(session.Driver.Advance(session.World(), {synthetic.Now}, {}, false) == Status::Success);
+    }
+    CHECK(session.World().GetTick() == tick);
+    // The window is shown 30 ms into a hidden interval. Its first frame starts at once
+    // instead of waiting out the old 100 ms target, and the visible policy returns.
+    synthetic.Now += 30 * MILLISECOND;
+    const uint64 hiddenTarget = pacing.GetPacer().GetNextTarget().Nanoseconds;
+    REQUIRE(synthetic.Now < hiddenTarget);
+    pacing.SetVisible(true);
+    CHECK(pacing.GetPacer().IsScheduled() == false);
+    CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == IDLE_INTERVAL);
+    const uint64 shown = synthetic.Now;
+    const PaceResult first = pacing.EndFrame(false, clock);
+    CHECK(first.Outcome == PaceOutcome::Baseline);
+    CHECK(first.Wake.Nanoseconds == shown);
+    CHECK(first.WaitCount == 0);
+    // Later idle frames follow the visible phase anchored at the reveal.
+    synthetic.Now += FRAME_WORK;
+    const PaceResult second = pacing.EndFrame(false, clock);
+    CHECK(second.Outcome == PaceOutcome::Waited);
+    CHECK(second.Wake.Nanoseconds == shown + IDLE_INTERVAL);
+    // Presented frames return to swapchain pacing.
+    CHECK(pacing.EndFrame(true, clock).Outcome == PaceOutcome::Disabled);
+    // The hidden gap is not simulated: the first visible frame is the driver's new baseline.
+    REQUIRE(session.Driver.Advance(session.World(), {synthetic.Now}, {}) == Status::Success);
+    CHECK(session.World().GetTick() == tick);
+}
+TEST_CASE("The hidden rate never raises a lower cap and survives a cap change", "[world-demo][pacing][visibility]")
+{
+    LoopPacing pacing;
+    REQUIRE(pacing.Configure(30));
+    pacing.SetVisible(false);
+    CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == HIDDEN_INTERVAL);
+    // A cap below the hidden rate keeps its own, longer interval while hidden.
+    REQUIRE(pacing.Configure(5));
+    CHECK(pacing.IsVisible() == false);
+    CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == NANOSECONDS_PER_SECOND / 5);
+    // A cap chosen while hidden applies once the window is shown.
+    REQUIRE(pacing.Configure(120));
+    CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == HIDDEN_INTERVAL);
+    CHECK(pacing.Configure(MAXIMUM_FRAMES_PER_SECOND + 1) == false);
+    CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == HIDDEN_INTERVAL);
+    pacing.SetVisible(true);
+    CHECK(pacing.HasLimit() == true);
+    CHECK(pacing.GetPacer().GetPolicy().Interval.Nanoseconds == 8'333'333);
+    // With a cap, hidden presented frames wait too; shown again, the cap paces them.
+    SyntheticClock synthetic;
+    const PacingClock clock = MakeClock(synthetic);
+    REQUIRE(pacing.EndFrame(true, clock).Outcome == PaceOutcome::Baseline);
+    synthetic.Now += FRAME_WORK;
+    CHECK(pacing.EndFrame(true, clock).Outcome == PaceOutcome::Waited);
 }
 TEST_CASE("The pacing report summarizes wake lateness and intervals", "[world-demo][pacing]")
 {

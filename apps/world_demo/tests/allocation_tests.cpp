@@ -57,7 +57,7 @@ TEST_CASE("Prepared ticks, commands, completions and render extraction never all
     REQUIRE(ReadLevel(ExampleLevel(), level).Error == LevelError::None);
     GameWorld world;
     REQUIRE(world.Prepare(level) == Status::Success);
-    while (!world.IsBuilt())
+    while (world.IsBuilt() == false)
     {
         REQUIRE(world.BuildNext() == Status::Success);
     }

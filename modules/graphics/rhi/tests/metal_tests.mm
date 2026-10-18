@@ -244,7 +244,7 @@ TEST_CASE("Metal detaches a borrowed Cocoa view before retained device retiremen
         rhi::NativeDeviceInfo info;
         REQUIRE(rhi::GetNativeDeviceInfo(retained.Lease, info) == rhi::RasterStatus::Ready);
         CHECK(info.Retiring);
-        CHECK(!info.Identity.Device.IsNull());
+        CHECK(info.Identity.Device.IsNull() == false);
         REQUIRE(rhi::ReleaseNativeDevice(retained.Lease) == rhi::RasterStatus::Ready);
         REQUIRE(rhi::Start({}, {}) == rhi::StartStatus::Ready);
     }

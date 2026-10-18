@@ -46,14 +46,14 @@ bool Representable(const Value& value) noexcept
 }
 bool Ordered(const Value& low, const Value& high) noexcept
 {
-    if (low.Type != high.Type || !Representable(low) || !Representable(high))
+    if (low.Type != high.Type || Representable(low) == false || Representable(high) == false)
     {
         return false;
     }
     switch (low.Type)
     {
         case Kind::Bool:
-            return !low.Boolean || high.Boolean;
+            return low.Boolean == false || high.Boolean;
         case Kind::Int32:
         case Kind::Int64:
             return low.Signed <= high.Signed;
@@ -81,8 +81,8 @@ Status ValidateSchema(const Schema& schema, Diagnostic& error) noexcept
     {
         hasId |= byte != 0;
     }
-    if (!hasId || schema.Version == 0 || schema.Name.empty() || schema.Name.size() > 256 || !ValidText(schema.Name) ||
-        schema.Fields.empty() || schema.Fields.size() > MAX_FIELDS)
+    if (hasId == false || schema.Version == 0 || schema.Name.empty() || schema.Name.size() > 256 ||
+        ValidText(schema.Name) == false || schema.Fields.empty() || schema.Fields.size() > MAX_FIELDS)
     {
         return Fail(error, Status::InvalidSchema);
     }
@@ -90,8 +90,8 @@ Status ValidateSchema(const Schema& schema, Diagnostic& error) noexcept
     {
         const auto& field = schema.Fields[index];
         if (field.Id == 0 || field.Key.empty() || field.Key.size() > 64 || field.Label.empty() ||
-            field.Label.size() > 64 || !ValidText(field.Key) || !ValidText(field.Label) ||
-            !Ordered(field.Min, field.Max) || ValidateValue(field, field.Default) != Status::Ok)
+            field.Label.size() > 64 || ValidText(field.Key) == false || ValidText(field.Label) == false ||
+            Ordered(field.Min, field.Max) == false || ValidateValue(field, field.Default) != Status::Ok)
         {
             return Fail(error, Status::InvalidSchema, field.Id);
         }
@@ -179,7 +179,7 @@ Status PrepareValues(const Schema& schema,
                 return Fail(error, Status::DuplicateField, edit.FieldId);
             }
         }
-        if (!field->Editable)
+        if (field->Editable == false)
         {
             return Fail(error, Status::ReadOnly, edit.FieldId);
         }

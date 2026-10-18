@@ -28,7 +28,7 @@ struct Session final
     rhi::NativeTextureRead Read;
     ~Session()
     {
-        if (!native_fixture::RetireConsumers(Foreign))
+        if (native_fixture::RetireConsumers(Foreign) == false)
         {
             LUDUS_LOG_ERROR(LOG_NATIVE,
                             "Foreign GPU borrower could not retire; retain its source for safe failure exit");

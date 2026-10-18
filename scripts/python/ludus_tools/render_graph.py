@@ -34,6 +34,8 @@ MAX_PASSES = 256
 TYPES = ("Scene", "View", "ColorTexture", "DepthTexture")
 TEXTURES = TYPES[2:]
 MODES = ("ColorAndDepth", "DepthOnly")
+# Authored material families; each selects its own explicitly declared technique set.
+MATERIALS = {"DefaultOpaque": "DefaultStaticOpaque", "DefaultMasked": "DefaultStaticMasked"}
 FORMATS = {"ColorTexture": ("RGBA8Unorm",), "DepthTexture": ("Depth32Float",)}
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,62}\Z")
 
@@ -154,7 +156,7 @@ def _validate_node(node, where):
     elif kind == "Raster":
         _enum(node["mode"], MODES, where)
         _enum(node["vertex_layout"], ("RendererStatic",), where)
-        _enum(node["material"], ("DefaultOpaque",), where)
+        _enum(node["material"], tuple(MATERIALS), where)
         for aspect in ("depth", "color") if node["mode"] == "ColorAndDepth" else ("depth",):
             _enum(node[aspect + "_load"], ("Clear", "Load", "Discard"), where)
             _enum(node[aspect + "_store"], ("Store", "Discard"), where)
@@ -526,7 +528,7 @@ class _Compiler:
                              "AttachmentMismatch", where, "color/depth extent and samples must agree")
                 for aspect in ("depth", "color") if node["mode"] == "ColorAndDepth" else ("depth",):
                     outputs[aspect] = self.write(inputs[aspect], node, aspect, where, inputs["view"].cameras)
-                technique = "DefaultStaticOpaque." + node["mode"]
+                technique = MATERIALS[node["material"]] + "." + node["mode"]
                 self.techniques.add(technique)
                 entry = {"id": where, "kind": "Raster", "configuration": node["mode"],
                          "technique": technique, "source": self.library.label(path), "asset": self.library.assets[path]["id"],

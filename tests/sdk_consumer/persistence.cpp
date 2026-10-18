@@ -44,8 +44,8 @@ int ExerciseInstalledPersistence() noexcept
     Directory reads;
     File retained;
     WatchHandle handle;
-    if (!writer.Open(root).Succeeded() || !reads.Open(root).Succeeded() || !watcher.Init(root, {1, 1, 0}).Succeeded() ||
-        !watcher.Add("data", 13, handle).Succeeded())
+    if (writer.Open(root).Succeeded() == false || reads.Open(root).Succeeded() == false ||
+        watcher.Init(root, {1, 1, 0}).Succeeded() == false || watcher.Add("data", 13, handle).Succeeded() == false)
     {
         return 13;
     }
@@ -53,15 +53,15 @@ int ExerciseInstalledPersistence() noexcept
     WriteOptions options;
     options.Condition = WriteCondition::Missing;
     const auto first = writer.Publish("data", original, options);
-    if (!first.Published || !first.Outcome.Succeeded() || !first.FileSynced || !first.DirectorySynced ||
-        !first.Cleanup.Succeeded() || !reads.OpenRead("data", retained).Succeeded() ||
-        !watcher.Advance(1, 1).Succeeded())
+    if (first.Published == false || first.Outcome.Succeeded() == false || first.FileSynced == false ||
+        first.DirectorySynced == false || first.Cleanup.Succeeded() == false ||
+        reads.OpenRead("data", retained).Succeeded() == false || watcher.Advance(1, 1).Succeeded() == false)
     {
         return 13;
     }
     WatchHint hint;
-    if (!watcher.Poll(hint).Available || hint.Handle != handle || hint.PathView() != "data" ||
-        !hint.Observation.Succeeded() || hint.Stamp.Size != 2)
+    if (watcher.Poll(hint).Available == false || hint.Handle != handle || hint.PathView() != "data" ||
+        hint.Observation.Succeeded() == false || hint.Stamp.Size != 2)
     {
         return 13;
     }
@@ -69,14 +69,14 @@ int ExerciseInstalledPersistence() noexcept
     options.Expected = hint.Stamp;
     const auto second = writer.Publish("data", replacement, options);
     uint8 bytes[2]{};
-    if (!second.Published || !second.Outcome.Succeeded() ||
+    if (second.Published == false || second.Outcome.Succeeded() == false ||
         writer.Publish("data", original, options).Outcome.Code != Status::Conflict ||
-        retained.ReadAt(0, bytes).BytesRead != 2 || bytes[0] != 1 || !watcher.BeginRescan().Succeeded())
+        retained.ReadAt(0, bytes).BytesRead != 2 || bytes[0] != 1 || watcher.BeginRescan().Succeeded() == false)
     {
         return 13;
     }
     return watcher.NextRescan(hint).Available && hint.Kind == WatchHintKind::RescanEntry && hint.Stamp.Size == 1 &&
-                   !watcher.NextRescan(hint).Available && !watcher.NeedsRescan()
+                   watcher.NextRescan(hint).Available == false && watcher.NeedsRescan() == false
                ? 0
                : 13;
 #else
@@ -87,9 +87,10 @@ int ExerciseInstalledPersistence() noexcept
     WatchHint hint;
     hint.Tag = 13;
     return writer.Open("root").Code == Status::Unsupported &&
-                   writer.Publish("data", byte).Outcome.Code == Status::Unsupported && !writer.IsOpen() &&
+                   writer.Publish("data", byte).Outcome.Code == Status::Unsupported && writer.IsOpen() == false &&
                    reads.Observe("data", stamp).Code == Status::Unsupported && stamp.Size == 19 &&
-                   watcher.Init("root").Code == Status::Unsupported && !watcher.Poll(hint).Available && hint.Tag == 13
+                   watcher.Init("root").Code == Status::Unsupported && watcher.Poll(hint).Available == false &&
+                   hint.Tag == 13
                ? 0
                : 13;
 #endif

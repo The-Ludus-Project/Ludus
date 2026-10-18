@@ -1,4 +1,5 @@
 #include <ludus/foundation/base/config.h>
+
 #include <ludus/diagnostics/session.hpp>
 
 #include <ludus/foundation/base/assert_config.hpp>
@@ -114,7 +115,7 @@ bool HasGraphicalDisplay() noexcept
         }
     }
 
-    if (!available)
+    if (available == false)
     {
         if (const char* display = ::getenv("DISPLAY"); display != nullptr && display[0] == ':')
         {
@@ -184,7 +185,7 @@ SessionResult InitializeDiagnosticSession(Interactivity requested) noexcept
         opt_out = true; // Local headless Debug opts out explicitly.
     }
 
-    const bool interactive_intended = BUILD_ELIGIBLE && !result.DetectedCi && !opt_out;
+    const bool interactive_intended = BUILD_ELIGIBLE && result.DetectedCi == false && opt_out == false;
 
     if (interactive_intended)
     {

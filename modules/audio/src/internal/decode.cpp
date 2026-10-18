@@ -44,7 +44,7 @@ DecodeResidentClip(std::span<const ludus::foundation::uint8> encoded, SourceForm
                      encoded[11] == 'E';
     const bool flac =
         encoded.size() >= 4 && encoded[0] == 'f' && encoded[1] == 'L' && encoded[2] == 'a' && encoded[3] == 'C';
-    if ((format == SourceFormat::Wav && !wav) || (format == SourceFormat::Flac && !flac))
+    if ((format == SourceFormat::Wav && wav == false) || (format == SourceFormat::Flac && flac == false))
     {
         out.Result = Status::DecodeError;
         return out;
@@ -147,7 +147,7 @@ DecodeResidentClip(std::span<const ludus::foundation::uint8> encoded, SourceForm
     for (uint64 i = 0; i < actualSamples; ++i)
     {
         const float32 s = pcm[i];
-        if (!std::isfinite(s))
+        if (std::isfinite(s) == false)
         {
             ::operator delete[](pcm, std::nothrow);
             out.Result = Status::DecodeError;

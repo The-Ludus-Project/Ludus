@@ -40,7 +40,7 @@ GameWorld Build(uint32 capacity = 48)
     REQUIRE(ReadLevel(ExampleLevel(), level).Error == LevelError::None);
     GameWorld world;
     REQUIRE(world.Prepare(level, capacity) == Status::Success);
-    while (!world.IsBuilt())
+    while (world.IsBuilt() == false)
     {
         REQUIRE(world.BuildNext() == Status::Success);
     }
@@ -667,7 +667,7 @@ TEST_CASE("Gameplay command overflow retains failure context without publishing"
     level.Entities[1].Health = 1;
     GameWorld world;
     REQUIRE(world.Prepare(level) == Status::Success);
-    while (!world.IsBuilt())
+    while (world.IsBuilt() == false)
     {
         REQUIRE(world.BuildNext() == Status::Success);
     }
@@ -692,7 +692,7 @@ TEST_CASE("A failed tick cannot publish a newly reached level outcome", "[world-
     level.Entities[2].Position = level.Entities[0].Position;
     GameWorld world;
     REQUIRE(world.Prepare(level, 3) == Status::Success);
-    while (!world.IsBuilt())
+    while (world.IsBuilt() == false)
     {
         REQUIRE(world.BuildNext() == Status::Success);
     }
@@ -824,7 +824,7 @@ TEST_CASE("Compiled definitions run the same gameplay with enter/stay/exit trigg
     };
     GameWorld world;
     REQUIRE(world.Prepare(level) == Status::Success);
-    while (!world.IsBuilt())
+    while (world.IsBuilt() == false)
     {
         REQUIRE(world.BuildNext() == Status::Success);
     }

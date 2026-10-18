@@ -16,10 +16,10 @@ import subprocess
 import sys
 
 SOURCE_TOOLS = Path(__file__).resolve().parents[2] / 'scripts/python'
-# Mirrors render_graph_format/runtime_package.h: six uint32 header fields, then the identities.
+# Mirrors render_graph_format/runtime_package.h: ten uint32 header fields, then the identities.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 1
-HEADER_FIELDS = 6
+PACKAGE_VERSION = 2
+HEADER_FIELDS = 10
 IDENTITY_BYTES = 32
 
 
@@ -120,7 +120,7 @@ def verify_runtime_package(output, header, runtime, package):
     subprocess.run([sys.executable, '-m', 'ludus_tools', '--json', 'render-graph', 'cook-runtime', str(package), str(source)],
                    check=True, cwd=output, env=environment, stdout=subprocess.DEVNULL)
     assert source.read_bytes() == cli, 'installed and source-tree runtime generations differ'
-    magic, version, _, _, _, stages = struct.unpack_from('<' + 'I' * HEADER_FIELDS, cli)
+    magic, version, *_, stages = struct.unpack_from('<' + 'I' * HEADER_FIELDS, cli)
     assert (magic, version) == (PACKAGE_MAGIC, PACKAGE_VERSION) and stages == runtime['stages'], runtime
     identity = cli[HEADER_FIELDS * 4:HEADER_FIELDS * 4 + IDENTITY_BYTES]
     generation = cli[HEADER_FIELDS * 4 + IDENTITY_BYTES:HEADER_FIELDS * 4 + 2 * IDENTITY_BYTES]

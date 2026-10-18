@@ -81,7 +81,7 @@ struct AudioPreview::Impl final
         bool hasLease = false, pending = false;
         audio::VoiceHandle voice{};
         uint64 tick = 0;
-        while (!Closing.load(std::memory_order_acquire))
+        while (Closing.load(std::memory_order_acquire) == false)
         {
             bool command = false, stop = false, isMusic = false, import = false;
             QString root, file, importId;
@@ -281,7 +281,7 @@ bool AudioPreview::Start()
         },
         Impl_);
     Impl_->Started = result == 0;
-    if (!Impl_->Started)
+    if (Impl_->Started == false)
     {
         Impl_->Done.store(true, std::memory_order_release);
     }
@@ -301,7 +301,7 @@ AudioPreview::~AudioPreview()
 }
 void AudioPreview::Play(const QString& root, const audio::content::Sound& sound)
 {
-    if (!Start())
+    if (Start() == false)
     {
         Q_EMIT Message(QStringLiteral("Preview worker unavailable."));
         return;
@@ -317,7 +317,7 @@ void AudioPreview::Play(const QString& root, const audio::content::Sound& sound)
 }
 void AudioPreview::Play(const QString& root, const audio::content::Music& music)
 {
-    if (!Start())
+    if (Start() == false)
     {
         Q_EMIT Message(QStringLiteral("Preview worker unavailable."));
         return;
@@ -333,7 +333,7 @@ void AudioPreview::Play(const QString& root, const audio::content::Music& music)
 }
 void AudioPreview::Import(const ContentImportSource& source)
 {
-    if (!Start())
+    if (Start() == false)
     {
         return;
     }
@@ -372,7 +372,7 @@ bool AudioPreview::Finished() const noexcept
 
 bool ludus::editor::AudioPreview::Reset()
 {
-    if (!Finished())
+    if (Finished() == false)
     {
         return false;
     }

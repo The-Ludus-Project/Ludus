@@ -38,8 +38,9 @@ bool CheckCamera() noexcept
         cornell::CameraRays rays;
         const auto aspect = static_cast<float32>(viewport[0]) / static_cast<float32>(viewport[1]);
         if (cornell::TryBuildCameraRays(sample, viewport[0], viewport[1], rays) != CameraStatus::Success ||
-            !Near(rays.Eye.Y, 1) || !Near(rays.Eye.Z, 3.6F) || !Near(rays.Right.X, 0.4F * aspect) ||
-            !Near(rays.Up.Y, 0.4F) || !Near(rays.Forward.Z, -1))
+            Near(rays.Eye.Y, 1) == false || Near(rays.Eye.Z, 3.6F) == false ||
+            Near(rays.Right.X, 0.4F * aspect) == false || Near(rays.Up.Y, 0.4F) == false ||
+            Near(rays.Forward.Z, -1) == false)
         {
             return false;
         }
@@ -58,7 +59,7 @@ bool CheckCamera() noexcept
                                           1};
             math::Vector3 ndc;
             if (math::TryPerspectiveDivide(projection * direction, 0, ndc) != math::MathStatus::Success ||
-                !Near(ndc.X, point.X) || !Near(ndc.Y, point.Y))
+                Near(ndc.X, point.X) == false || Near(ndc.Y, point.Y) == false)
             {
                 return false;
             }
@@ -69,19 +70,20 @@ bool CheckCamera() noexcept
         return false;
     }
     cornell::CameraRays rotated;
-    if (cornell::TryBuildCameraRays(sample, 720, 720, rotated) != CameraStatus::Success || !Near(rotated.Forward.X, -1))
+    if (cornell::TryBuildCameraRays(sample, 720, 720, rotated) != CameraStatus::Success ||
+        Near(rotated.Forward.X, -1) == false)
     {
         return false;
     }
     auto preserved = rotated;
     if (cornell::TryBuildCameraRays(sample, 0, 720, preserved) != CameraStatus::InvalidInput ||
-        !Same(preserved, rotated))
+        Same(preserved, rotated) == false)
     {
         return false;
     }
     sample.Lens.Projection = CameraProjection::OrthographicFinite;
     if (cornell::TryBuildCameraRays(sample, 720, 720, preserved) != CameraStatus::InvalidInput ||
-        !Same(preserved, rotated))
+        Same(preserved, rotated) == false)
     {
         return false;
     }
@@ -93,7 +95,7 @@ bool CheckCamera() noexcept
     const auto finite = preserved;
     sample.Lens.VerticalFov = -1;
     if (cornell::TryBuildCameraRays(sample, 720, 720, preserved) != CameraStatus::InvalidInput ||
-        !Same(preserved, finite))
+        Same(preserved, finite) == false)
     {
         return false;
     }

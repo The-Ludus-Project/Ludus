@@ -102,7 +102,7 @@ bool ParseOptions(int32 count, const char* const* arguments, Options& options) n
             return false;
         }
     }
-    return !options.Headless || options.Frames != 0 || options.Help;
+    return options.Headless == false || options.Frames != 0 || options.Help;
 }
 
 class Renderer final
@@ -150,13 +150,13 @@ public:
         const auto vertex = rhi::CreateShader(ludus::shaders::cornell::Vertex(), mVertex);
         const auto fragment = rhi::CreateShader(ludus::shaders::cornell::Fragment(), mFragment);
         const auto uniform = rhi::CreateUniform(sizeof(Uniforms), mUniform);
-        if (!ready(mVertex, vertex) || !ready(mFragment, fragment) || !ready(mUniform, uniform))
+        if (ready(mVertex, vertex) == false || ready(mFragment, fragment) == false || ready(mUniform, uniform) == false)
         {
             return false;
         }
         const auto pipeline =
             rhi::CreatePipeline({ .Vertex = mVertex, .Fragment = mFragment, .Uniform = mUniform }, mPipeline);
-        if (!ready(mPipeline, pipeline))
+        if (ready(mPipeline, pipeline) == false)
         {
             LUDUS_LOG_ERROR(LOG_SAMPLE, "Could not create Cornell box shaders, uniform or pipeline.");
             return false;
@@ -231,17 +231,17 @@ int32 Run(const Options& options) noexcept
     rhi::WindowInfo native;
     native.Width = 720;
     native.Height = 720;
-    if (!options.Headless)
+    if (options.Headless == false)
     {
         ludus::platform::WindowManager manager;
-        if (!manager.Initialize({}) ||
-            !manager.CreateWindow(
+        if (manager.Initialize({}) == false ||
+            manager.CreateWindow(
                 {
                     .Name = options.Flat ? "Ludus Cornell Box - Materials" : "Ludus Cornell Box - Direct Lighting",
                     .Width = 720,
                     .Height = 720,
                 },
-                window))
+                window) == false)
         {
             LUDUS_LOG_ERROR(LOG_SAMPLE, "Could not open a native window. Use a macOS desktop or a Wayland session.");
             return 1;
@@ -255,7 +255,7 @@ int32 Run(const Options& options) noexcept
         }
     }
     Renderer renderer;
-    if (!renderer.Start(native))
+    if (renderer.Start(native) == false)
     {
         return 1;
     }
@@ -270,7 +270,7 @@ int32 Run(const Options& options) noexcept
 #endif
         if (window)
         {
-            if (!window->HandleEvent({}))
+            if (window->HandleEvent({}) == false)
             {
                 break;
             }
@@ -313,7 +313,7 @@ int main(int argc, char** argv)
     LogSystem::Initialize(config);
     Options options;
     int result = 2;
-    if (!ParseOptions(argc, argv, options))
+    if (ParseOptions(argc, argv, options) == false)
     {
         LUDUS_LOG_ERROR(LOG_SAMPLE, "Usage: cornell_box [--flat] [--frames=1..10000] [--headless --frames=N]");
     }

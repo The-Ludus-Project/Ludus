@@ -330,7 +330,7 @@ rhi::RasterStatus NormalizeDirectLights(const DirectLight* lights, usize count, 
     for (usize i = 0; i < count; ++i)
     {
         auto light = lights[i];
-        if (!NormalizeLight(light))
+        if (NormalizeLight(light) == false)
         {
             return rhi::RasterStatus::InvalidDescription;
         }
@@ -367,7 +367,7 @@ rhi::RasterStatus SelectDirectLights(const DirectLight* lights, usize count, Lig
     for (usize i = 0; i < count; ++i)
     {
         auto light = lights[i];
-        if (!NormalizeLight(light))
+        if (NormalizeLight(light) == false)
         {
             return rhi::RasterStatus::InvalidDescription;
         }
@@ -409,14 +409,14 @@ rhi::RasterStatus BuildLightClusters(const LightClusterDescription& description,
     {
         return rhi::RasterStatus::CapacityExceeded;
     }
-    if ((count != 0 && lights == nullptr) || !math::IsFinite(description.WorldToGrid) ||
-        !math::IsFinite(description.Bounds) || math::IsEmpty(description.Bounds))
+    if ((count != 0 && lights == nullptr) || math::IsFinite(description.WorldToGrid) == false ||
+        math::IsFinite(description.Bounds) == false || math::IsEmpty(description.Bounds))
     {
         return rhi::RasterStatus::InvalidDescription;
     }
     const auto extent = description.Bounds.Max - description.Bounds.Min;
-    if (!Bounded(extent, 0.01F, 2000000) || !Bounded(description.Bounds.Min, -1000000, 1000000) ||
-        !Bounded(description.Bounds.Max, -1000000, 1000000))
+    if (Bounded(extent, 0.01F, 2000000) == false || Bounded(description.Bounds.Min, -1000000, 1000000) == false ||
+        Bounded(description.Bounds.Max, -1000000, 1000000) == false)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -435,7 +435,7 @@ rhi::RasterStatus BuildLightClusters(const LightClusterDescription& description,
     for (usize i = 0; i < count; ++i)
     {
         auto validated = lights[i];
-        if (!NormalizeLight(validated))
+        if (NormalizeLight(validated) == false)
         {
             return rhi::RasterStatus::InvalidDescription;
         }
@@ -473,10 +473,10 @@ rhi::RasterStatus BuildLightClusters(const LightClusterDescription& description,
         {
             const auto& light = result.Lights[i];
             bool intersects = light.Kind == LightKind::Directional;
-            if (!intersects)
+            if (intersects == false)
             {
                 const auto center = math::TransformPoint(description.WorldToGrid, light.Position);
-                if (!math::IsFinite(center))
+                if (math::IsFinite(center) == false)
                 {
                     return rhi::RasterStatus::InvalidDescription;
                 }
@@ -502,7 +502,7 @@ rhi::RasterStatus BuildLightClusters(const LightClusterDescription& description,
                                  static_cast<float64>(dz) * static_cast<float64>(dz) <=
                              radius * radius;
             }
-            if (!intersects)
+            if (intersects == false)
             {
                 continue;
             }
@@ -513,7 +513,7 @@ rhi::RasterStatus BuildLightClusters(const LightClusterDescription& description,
                 ++written;
                 ++result.Assignments;
             }
-            else if (!result.Overflow[cell])
+            else if (result.Overflow[cell] == false)
             {
                 result.Overflow[cell] = true;
                 ++result.OverflowCells;
@@ -535,8 +535,8 @@ rhi::RasterStatus EvaluateLitBrdf(math::Vector3 baseColor,
                                   math::Vector3 light,
                                   math::Vector3& output) noexcept
 {
-    if (!Bounded(baseColor, 0, 1) || !math::IsFinite(metallic) || metallic < 0 || metallic > 1 ||
-        !math::IsFinite(roughness) || roughness < 0.045F || roughness > 1 ||
+    if (Bounded(baseColor, 0, 1) == false || math::IsFinite(metallic) == false || metallic < 0 || metallic > 1 ||
+        math::IsFinite(roughness) == false || roughness < 0.045F || roughness > 1 ||
         math::TryNormalize(normal, normal) != math::MathStatus::Success ||
         math::TryNormalize(view, view) != math::MathStatus::Success ||
         math::TryNormalize(light, light) != math::MathStatus::Success)
@@ -581,7 +581,7 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
                                                uint32 resolution,
                                                math::Matrix4& output) noexcept
 {
-    if (!math::IsFinite(bounds) || math::IsEmpty(bounds) || resolution < 4 || resolution > 2048 ||
+    if (math::IsFinite(bounds) == false || math::IsEmpty(bounds) || resolution < 4 || resolution > 2048 ||
         math::TryNormalize(direction, direction) != math::MathStatus::Success)
     {
         return rhi::RasterStatus::InvalidDescription;
@@ -608,7 +608,7 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
                    math::Max(maximum.Z, projected.Z)};
     }
     auto width = maximum.X - minimum.X, height = maximum.Y - minimum.Y;
-    if (!math::IsFinite(width) || !math::IsFinite(height) || width <= 1e-5F || height <= 1e-5F)
+    if (math::IsFinite(width) == false || math::IsFinite(height) == false || width <= 1e-5F || height <= 1e-5F)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -620,7 +620,7 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
     width += 2 * step;
     height += 2 * step;
     const auto near = minimum.Z - step, depth = maximum.Z - minimum.Z + 2 * step;
-    if (!math::IsFinite(near) || !math::IsFinite(depth) || depth <= 0)
+    if (math::IsFinite(near) == false || math::IsFinite(depth) == false || depth <= 0)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -632,7 +632,7 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
         matrix.Columns[column] = {2 * x[column] / width, 2 * y[column] / height, z[column] / depth, 0};
     }
     matrix.Columns[3] = {-2 * cx / width, -2 * cy / height, -near / depth, 1};
-    if (!math::IsFinite(matrix))
+    if (math::IsFinite(matrix) == false)
     {
         return rhi::RasterStatus::InvalidDescription;
     }

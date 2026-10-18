@@ -166,6 +166,21 @@ def test_continue(binary):
     print("  ContinueOnce resumes the ASSERT (report text + expression visible) OK")
 
 
+def test_invalid_descriptor_environment(binary):
+    for value in (None, "", "garbage", "0suffix", "-1", "+1", " 1",
+                  "2147483648", "18446744073709551616", "9" * 1025):
+        env = {key: item for key, item in CLEAN_ENV.items()
+               if key not in ("LUDUS_DIAGNOSTIC_REPORT_FD", "LUDUS_DIAGNOSTIC_CONTROL_FD")}
+        if value is not None:
+            env.update(LUDUS_DIAGNOSTIC_REPORT_FD=value, LUDUS_DIAGNOSTIC_CONTROL_FD=value)
+        result = subprocess.run([binary, "check"], capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, timeout=8, env=env)
+        assert result.returncode == 0, (value, result.returncode, result.stdout, result.stderr)
+        assert "CHECK-FALSE" in result.stdout, (value, result.stdout)
+        assert "CONTROL-NOT-READY" not in result.stdout, (value, result.stdout)
+    print("  Missing, malformed and out-of-range descriptor values never select a transport OK")
+
+
 def test_terminate(binary):
     def responder(control):
         assert expect_hello(control)
@@ -392,6 +407,7 @@ def test_stream_oversized_reply(binary):
 
 def main():
     binary = sys.argv[1]
+    test_invalid_descriptor_environment(binary)
     test_report_drain_after_exit()
     test_closed_peer_on_next_request(binary)
     test_stream_fragmentation(binary)

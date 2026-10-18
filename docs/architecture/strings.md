@@ -538,9 +538,10 @@ so a stale ID cannot resolve accidentally in a new owner at the same address.
 Token or entry-index exhaustion returns a status and never wraps. Testing uses
 a reduced-width issuer to reach exhaustion deterministically.
 
-For compact records, `StringIndex` has no table token. `0xffffffff` is reserved
-as invalid, index zero represents the empty entry, and stored values are checked
-against their enclosing dictionary's entry count. This reserves fewer than
+For compact records, `StringIndex` has no table token. `0xffffffff`
+(`StringIndex::INVALID_VALUE`) is reserved as invalid, index zero represents
+the empty entry, and stored values are checked against their enclosing
+dictionary's entry count. This reserves fewer than
 2^32 usable entries; budget limits will be far smaller. A public `NameId` keeps
 the same index validity rule for consistency. Numeric sorting of IDs reflects
 registration order, not lexicographic order. Use explicit byte comparison for

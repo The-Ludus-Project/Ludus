@@ -100,7 +100,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
                 matches = true;
             }
         }
-        if (state.Saved.Target != QStringLiteral("ludus_world_demo") || !matches)
+        if (state.Saved.Target != QStringLiteral("ludus_world_demo") || matches == false)
         {
             StatusLabel_->setText(
                 QStringLiteral("For this World adapter, set the executable target to ludus_world_demo and run "
@@ -126,7 +126,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
             FocusRedoConnection_ =
                 connect(plain, &QPlainTextEdit::redoAvailable, this, &MainWindow::RenderDocumentActions);
         }
-        if (!Rendering_ && before == TargetBox_->lineEdit())
+        if (Rendering_ == false && before == TargetBox_->lineEdit())
         {
             RenderFields();
         }
@@ -164,12 +164,12 @@ void MainWindow::BuildMenus()
     {
         auto* action = samples->addAction(id);
         connect(action, &QAction::triggered, this, [this, id]() {
-            if (!Controller_->Caps().CanOpen)
+            if (Controller_->Caps().CanOpen == false)
             {
                 return;
             }
             QString descriptor;
-            if (!CopyEditorSample(id, descriptor))
+            if (CopyEditorSample(id, descriptor) == false)
             {
                 QMessageBox::warning(this,
                                      QStringLiteral("Open Sample"),
@@ -222,7 +222,7 @@ void MainWindow::BuildMenus()
     SaveAction_->setText(QStringLiteral("Save and &Download Project Folder"));
     ExportProjectAction_ = fileMenu->addAction(QStringLiteral("Download Project Folder..."));
     connect(ExportProjectAction_, &QAction::triggered, this, [this]() {
-        if ((Scripts_->Dirty() && !Scripts_->Save()))
+        if ((Scripts_->Dirty() && Scripts_->Save() == false))
         {
             return;
         }
@@ -230,7 +230,7 @@ void MainWindow::BuildMenus()
         {
             Controller_->Save();
         }
-        if (!Controller_->State().Dirty())
+        if (Controller_->State().Dirty() == false)
         {
             (void)DownloadEditorProject(this, Controller_->State().DescriptorPath);
         }
@@ -288,7 +288,7 @@ void MainWindow::BuildMenus()
                                                        QStringLiteral("Frame-clear configuration"),
                                                        directory,
                                                        QStringLiteral("JSON configuration (*.json)"));
-        if (!path.isEmpty())
+        if (path.isEmpty() == false)
         {
             Controller_->ReloadClearConfiguration(path);
         }
@@ -401,7 +401,7 @@ void MainWindow::LaunchAfterPreview(LaunchAction action, const QString& debugger
     auto* timer = new QTimer(this);
     timer->setInterval(20);
     connect(timer, &QTimer::timeout, this, [this, timer, epoch, digest, action, debugger, setup]() {
-        if (!Audio_->PreviewFinished())
+        if (Audio_->PreviewFinished() == false)
         {
             return;
         }
@@ -490,7 +490,7 @@ void MainWindow::OnRemoveArgument()
 
 void MainWindow::OnOpenRequested()
 {
-    if (!Controller_->Caps().CanOpen)
+    if (Controller_->Caps().CanOpen == false)
     {
         return;
     }
@@ -515,14 +515,14 @@ void MainWindow::OnOpenRequested()
 
 void MainWindow::OpenProjectPath(const QString& path)
 {
-    if (path.isEmpty() || !Controller_->Caps().CanOpen || Content_->Importing() || AudioClosing_ ||
+    if (path.isEmpty() || Controller_->Caps().CanOpen == false || Content_->Importing() || AudioClosing_ ||
         (Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
          World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false))
     {
         return;
     }
     Audio_->StopPreview();
-    if (!ConfirmProjectChange(QStringLiteral("opening another project")))
+    if (ConfirmProjectChange(QStringLiteral("opening another project")) == false)
     {
         return;
     }
@@ -583,12 +583,12 @@ bool MainWindow::SaveProjectSettings()
     }
     Controller_->Save();
 #if defined(Q_OS_WASM)
-    if (!Controller_->State().Dirty())
+    if (Controller_->State().Dirty() == false)
     {
         (void)DownloadEditorProject(this, Controller_->State().DescriptorPath);
     }
 #endif
-    return !Controller_->State().Dirty();
+    return Controller_->State().Dirty() == false;
 }
 
 void MainWindow::OnReloadRequested()
@@ -631,9 +631,9 @@ void MainWindow::OnStateChanged()
     RenderStatus();
     const auto& state = Controller_->State();
     const bool loaded = state.Document == DocumentState::ProjectLoaded;
-    const bool enteringWelcome = !loaded && !WorkTabs_->isTabVisible(WorkTabs_->indexOf(Welcome_));
+    const bool enteringWelcome = loaded == false && WorkTabs_->isTabVisible(WorkTabs_->indexOf(Welcome_)) == false;
     const bool enteringProject = loaded && WorkTabs_->isTabVisible(WorkTabs_->indexOf(Welcome_));
-    WorkTabs_->setTabVisible(WorkTabs_->indexOf(Welcome_), !loaded);
+    WorkTabs_->setTabVisible(WorkTabs_->indexOf(Welcome_), loaded == false);
     for (int index = 0; index < WorkTabs_->count(); ++index)
     {
         if (WorkTabs_->widget(index) != Welcome_)
@@ -654,7 +654,8 @@ void MainWindow::OnStateChanged()
     Audio_->setEnabled(false);
     Audio_->setToolTip(QStringLiteral("Audio authoring and preview require the desktop editor."));
 #else
-    Audio_->setEnabled(state.Document == DocumentState::ProjectLoaded && !AudioClosing_ && !AudioLaunchPending_);
+    Audio_->setEnabled(state.Document == DocumentState::ProjectLoaded && AudioClosing_ == false &&
+                       AudioLaunchPending_ == false);
 #endif
     if (state.Document == DocumentState::ProjectLoaded)
     {
@@ -688,10 +689,10 @@ void MainWindow::OnStateChanged()
         Content_->SetProject(QString(), state.ProjectEpoch);
     }
 
-    if (ResumeViewport_ && state.OperationPhase == Phase::Idle && !AudioLaunchPending_)
+    if (ResumeViewport_ && state.OperationPhase == Phase::Idle && AudioLaunchPending_ == false)
     {
         ResumeViewport_ = false;
-        if (!CloseConfirmed_ && loaded && state.ProjectEpoch == ResumeViewportEpoch_)
+        if (CloseConfirmed_ == false && loaded && state.ProjectEpoch == ResumeViewportEpoch_)
         {
             World_->ResumePreview();
         }
@@ -716,7 +717,7 @@ void MainWindow::RenderRecentProjects()
         stamp.append(QFileInfo(project.DescriptorPath).isFile() ? QString() : QStringLiteral("Missing"));
     }
     RecentEmptyLabel_->setVisible(projects.isEmpty());
-    RecentList_->setVisible(!projects.isEmpty());
+    RecentList_->setVisible(projects.isEmpty() == false);
     if (stamp == RecentProjectsStamp_)
     {
         return;
@@ -729,7 +730,7 @@ void MainWindow::RenderRecentProjects()
     RecentMenu_->clear();
     for (const RecentProject& project : projects)
     {
-        const bool missing = !QFileInfo(project.DescriptorPath).isFile();
+        const bool missing = QFileInfo(project.DescriptorPath).isFile() == false;
         const QString name = missing ? QStringLiteral("%1 (missing)").arg(project.Name) : project.Name;
         auto* item = new QListWidgetItem(name + QStringLiteral("\n") + project.DescriptorPath, RecentList_);
         item->setIcon(windowIcon());
@@ -805,7 +806,7 @@ void MainWindow::RenderFields()
     // target stays visible until corrected.
     const QStringList& discovered = Controller_->State().DiscoveredTargets;
     const QString current = draft.Target;
-    if (identityChanged || (RenderedTargets_ != discovered && !TargetBox_->lineEdit()->hasFocus()))
+    if (identityChanged || (RenderedTargets_ != discovered && TargetBox_->lineEdit()->hasFocus() == false))
     {
         TargetBox_->clear();
         TargetBox_->addItems(discovered);
@@ -827,7 +828,7 @@ void MainWindow::RenderFields()
             auto* item = new QListWidgetItem(arg, ArgsList_);
             item->setFlags(item->flags() | Qt::ItemIsEditable);
         }
-        if (!identityChanged && selected >= 0 && selected < ArgsList_->count())
+        if (identityChanged == false && selected >= 0 && selected < ArgsList_->count())
         {
             ArgsList_->setCurrentRow(selected);
         }
@@ -845,19 +846,20 @@ void MainWindow::RenderFields()
 void MainWindow::RenderCapabilities()
 {
     const Capabilities caps = Controller_->Caps();
-    PlayAction_->setEnabled(Controller_->CanPlay() && !AudioLaunchPending_);
+    PlayAction_->setEnabled(Controller_->CanPlay() && AudioLaunchPending_ == false);
     BuildReloadAction_->setEnabled(Controller_->CanBuildReload());
     const auto play = Controller_->PlayState().Phase;
     const bool debuggerStopped = Controller_->PlayState().DebuggerStopped;
     AutoReloadAction_->setEnabled(play == PlayPhase::Running || play == PlayPhase::Paused);
-    ReloadAssetAction_->setEnabled(!debuggerStopped && (play == PlayPhase::Running || play == PlayPhase::Paused));
+    ReloadAssetAction_->setEnabled(debuggerStopped == false &&
+                                   (play == PlayPhase::Running || play == PlayPhase::Paused));
     {
         const QSignalBlocker blocker(AutoReloadAction_);
         AutoReloadAction_->setChecked(Controller_->AutoReloadEnabled());
     }
-    PauseAction_->setEnabled(!debuggerStopped && play == PlayPhase::Running);
-    ResumeAction_->setEnabled(!debuggerStopped && play == PlayPhase::Paused);
-    StepAction_->setEnabled(!debuggerStopped && play == PlayPhase::Paused);
+    PauseAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Running);
+    ResumeAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Paused);
+    StepAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Paused);
     RefreshPropertiesAction_->setEnabled(play == PlayPhase::Running || play == PlayPhase::Paused);
     ApplySessionButton_->setEnabled(Controller_->CanEditProperties());
     ApplyDocumentButton_->setEnabled(Controller_->CanApplyToTuningDocument(Properties_->currentRow()));
@@ -868,25 +870,27 @@ void MainWindow::RenderCapabilities()
     RedoTuningAction_->setEnabled(playState.TuningDocumentAvailable && playState.TuningCanRedo);
     SaveTuningAction_->setEnabled(Controller_->CanSaveTuningDocument());
     DiscardTuningAction_->setEnabled(playState.TuningDocumentAvailable && playState.TuningDocumentDirty);
-    NewProjectAction_->setEnabled(caps.CanProjectCreate && !Content_->Importing());
-    WelcomeNewButton_->setEnabled(caps.CanProjectCreate && !Content_->Importing());
-    CloseProjectAction_->setEnabled(caps.CanCloseProject && !Content_->Importing() && !AudioLaunchPending_ &&
-                                    !AudioClosing_);
+    NewProjectAction_->setEnabled(caps.CanProjectCreate && Content_->Importing() == false);
+    WelcomeNewButton_->setEnabled(caps.CanProjectCreate && Content_->Importing() == false);
+    CloseProjectAction_->setEnabled(caps.CanCloseProject && Content_->Importing() == false &&
+                                    AudioLaunchPending_ == false && AudioClosing_ == false);
     CloseProjectAction_->setToolTip(QStringLiteral("Close the project and return to Welcome. Stop active work first."));
     CheckSetupAction_->setEnabled(caps.CanProjectCheck);
     SetupProjectAction_->setEnabled(caps.CanProjectSetup);
-    OpenAction_->setEnabled(caps.CanOpen && !Content_->Importing());
-    RecentMenu_->setEnabled(caps.CanOpen && !Content_->Importing() && !Controller_->RecentProjects().isEmpty());
-    RecentList_->setEnabled(caps.CanOpen && !Content_->Importing());
-    RecentOpenButton_->setEnabled(caps.CanOpen && !Content_->Importing() && RecentList_->currentItem() != nullptr);
-    BrowseProjectButton_->setEnabled(caps.CanOpen && !Content_->Importing());
-    ClearRecentAction_->setEnabled(caps.CanOpen && !Controller_->RecentProjects().isEmpty());
+    OpenAction_->setEnabled(caps.CanOpen && Content_->Importing() == false);
+    RecentMenu_->setEnabled(caps.CanOpen && Content_->Importing() == false &&
+                            Controller_->RecentProjects().isEmpty() == false);
+    RecentList_->setEnabled(caps.CanOpen && Content_->Importing() == false);
+    RecentOpenButton_->setEnabled(caps.CanOpen && Content_->Importing() == false &&
+                                  RecentList_->currentItem() != nullptr);
+    BrowseProjectButton_->setEnabled(caps.CanOpen && Content_->Importing() == false);
+    ClearRecentAction_->setEnabled(caps.CanOpen && Controller_->RecentProjects().isEmpty() == false);
     RenderDocumentActions();
-    ReloadAction_->setEnabled(caps.CanReload && !Content_->Importing());
+    ReloadAction_->setEnabled(caps.CanReload && Content_->Importing() == false);
     ConfigureAction_->setEnabled(caps.CanConfigure);
     BuildAction_->setEnabled(caps.CanBuild);
-    BuildRunAction_->setEnabled(caps.CanBuildRun && !AudioLaunchPending_);
-    BuildDebugAction_->setEnabled(caps.CanBuildDebug && !AudioLaunchPending_);
+    BuildRunAction_->setEnabled(caps.CanBuildRun && AudioLaunchPending_ == false);
+    BuildDebugAction_->setEnabled(caps.CanBuildDebug && AudioLaunchPending_ == false);
     StopAction_->setEnabled(caps.CanStop);
     SetupReleaseAction_->setEnabled(caps.CanReleaseInit);
     PackageReleaseAction_->setEnabled(caps.CanPackage);
@@ -925,7 +929,7 @@ void MainWindow::RenderCapabilities()
     ProjectRunButton_->setEnabled(BuildRunAction_->isEnabled());
     ProjectRunButton_->setToolTip(BuildRunAction_->toolTip());
     ProjectStopButton_->setEnabled(StopAction_->isEnabled());
-    ProjectSaveButton_->setEnabled(caps.CanSave && !Content_->Importing());
+    ProjectSaveButton_->setEnabled(caps.CanSave && Content_->Importing() == false);
 #if defined(Q_OS_WASM)
     ProjectSaveButton_->setText(QStringLiteral("Save and download"));
 #endif
@@ -1034,7 +1038,7 @@ void MainWindow::RenderStatus()
     if (state.Result.Kind != Outcome::None)
     {
         status += QStringLiteral("  —  last result: %1").arg(QString::fromLatin1(ResultCodeName(state.Result.Code)));
-        if (!state.Result.Message.isEmpty())
+        if (state.Result.Message.isEmpty() == false)
         {
             status += QStringLiteral(" (%1)").arg(state.Result.Message.section(QLatin1Char('\n'), 0, 0));
         }
@@ -1043,7 +1047,7 @@ void MainWindow::RenderStatus()
     {
         status += QStringLiteral("  —  operator recovery required; see Copy Job Details");
     }
-    if (!state.SetupStatus.isEmpty())
+    if (state.SetupStatus.isEmpty() == false)
     {
         status += QStringLiteral("\n") + state.SetupStatus.section(QLatin1Char('\n'), 0, 0);
     }
@@ -1078,7 +1082,7 @@ void MainWindow::RenderStatus()
 
 void MainWindow::OnDebuggerSetupRequested()
 {
-    if (!Controller_->Caps().CanBuildDebug)
+    if (Controller_->Caps().CanBuildDebug == false)
     {
         return;
     }
@@ -1104,7 +1108,7 @@ void MainWindow::OnDebuggerSetupRequested()
             return Controller_->Caps().CanBuildDebug && Controller_->State().ProjectEpoch == epoch &&
                    Controller_->State().SavedDigest == digest;
         };
-        if (!current())
+        if (current() == false)
         {
             return;
         }
@@ -1147,7 +1151,7 @@ void MainWindow::OnSetupProject()
 bool MainWindow::ConfirmProjectChange(const QString& action)
 {
     CommitProjectFields();
-    if (Controller_->State().Document != DocumentState::ProjectLoaded || !Controller_->State().Dirty())
+    if (Controller_->State().Document != DocumentState::ProjectLoaded || Controller_->State().Dirty() == false)
     {
         return true;
     }
@@ -1164,10 +1168,10 @@ bool MainWindow::ConfirmProjectChange(const QString& action)
 
 void MainWindow::OnNewProject()
 {
-    if (!Controller_->Caps().CanProjectCreate || Content_->Importing() ||
+    if (Controller_->Caps().CanProjectCreate == false || Content_->Importing() ||
         (Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
          World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
-        !ConfirmProjectChange(QStringLiteral("creating another project")))
+        ConfirmProjectChange(QStringLiteral("creating another project")) == false)
     {
         return;
     }
@@ -1180,10 +1184,10 @@ void MainWindow::OnNewProject()
 
 void MainWindow::OnCloseProject()
 {
-    if (!Controller_->Caps().CanCloseProject || Content_->Importing() || AudioLaunchPending_ || AudioClosing_ ||
+    if (Controller_->Caps().CanCloseProject == false || Content_->Importing() || AudioLaunchPending_ || AudioClosing_ ||
         (Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
          World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
-        !ConfirmProjectChange(QStringLiteral("closing the project")))
+        ConfirmProjectChange(QStringLiteral("closing the project")) == false)
     {
         return;
     }
@@ -1318,22 +1322,22 @@ void MainWindow::OnPackageRelease()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (!AudioClosing_)
+    if (AudioClosing_ == false)
     {
-        if (!ConfirmProjectChange(QStringLiteral("quitting")))
+        if (ConfirmProjectChange(QStringLiteral("quitting")) == false)
         {
             event->ignore();
             return;
         }
         if ((Audio_->ConfirmDiscard() == false || Scripts_->ConfirmDiscard() == false ||
              World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
-            !Configuration_->ConfirmDiscard())
+            Configuration_->ConfirmDiscard() == false)
         {
             event->ignore();
             return;
         }
-        const bool busy = !Controller_->Caps().CanCloseImmediately || Content_->Importing();
-        if (busy && !CloseConfirmed_)
+        const bool busy = Controller_->Caps().CanCloseImmediately == false || Content_->Importing();
+        if (busy && CloseConfirmed_ == false)
         {
             const auto choice = QMessageBox::question(
                 this,
@@ -1351,12 +1355,12 @@ void MainWindow::closeEvent(QCloseEvent* event)
         AudioClosing_ = true;
         Audio_->ShutdownPreview();
         Content_->Shutdown();
-        if (!Controller_->Caps().CanCloseImmediately)
+        if (Controller_->Caps().CanCloseImmediately == false)
         {
             (void)Controller_->RequestClose();
         }
     }
-    if (!Audio_->PreviewFinished() || !Content_->Finished())
+    if (Audio_->PreviewFinished() == false || Content_->Finished() == false)
     {
         event->ignore();
         QTimer::singleShot(20, this, [this]() { close(); });
@@ -1409,7 +1413,7 @@ void MainWindow::RenderProperties()
         auto* name = new QTableWidgetItem(property.value(QStringLiteral("label")).toString());
         auto* value = new QTableWidgetItem(text);
         const bool writable = property.value(QStringLiteral("writable")).toBool();
-        if (!writable)
+        if (writable == false)
         {
             value->setFlags(value->flags() & ~Qt::ItemIsEditable);
         }

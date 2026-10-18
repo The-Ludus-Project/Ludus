@@ -264,6 +264,8 @@ add_subdirectory(modules/content/string_dictionary_format)
 add_subdirectory(modules/content/string_dictionary)
 # Versioned UUID authoring records and the one-time World ID migration manifest.
 add_subdirectory(modules/content/identity_records)
+# Headless procedural scatter kernel (P0); Foundation-only, native and web.
+add_subdirectory(modules/content/procedural/environment)
 # Scene cooker (pbrt-reference-v1). The library builds for every target; its
 # file I/O reports Unsupported where Ludus::Content has no native file access,
 # and the ludus-cook CLI plus golden tests are native-host only.

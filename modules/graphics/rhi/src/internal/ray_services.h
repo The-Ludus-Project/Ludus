@@ -27,7 +27,7 @@ bool RayTransform(const float32* values) noexcept
 {
     for (usize i = 0; i < 12; ++i)
     {
-        if (!RayPosition(values[i]))
+        if (RayPosition(values[i]) == false)
         {
             return false;
         }
@@ -40,7 +40,7 @@ bool RayTransform(const float32* values) noexcept
 }
 bool RayRecord(Record& record) noexcept
 {
-    if (!ReserveHostStorage(sizeof(RayRecordInfo)))
+    if (ReserveHostStorage(sizeof(RayRecordInfo)) == false)
     {
         return false;
     }
@@ -110,7 +110,7 @@ bool ValidRay(const RayInput& ray) noexcept
     float64 lengthSquared = 0;
     for (usize axis = 0; axis < 3; ++axis)
     {
-        if (!RayPosition(ray.Origin[axis]) || !RayFinite(ray.Direction[axis]))
+        if (RayPosition(ray.Origin[axis]) == false || RayFinite(ray.Direction[axis]) == false)
         {
             return false;
         }
@@ -144,7 +144,7 @@ CreateRayQueryProgram(DeviceHandle device, const ShaderDescription& description,
     {
         return admission;
     }
-    if (!backend::RayLimits().InlineQueries)
+    if (backend::RayLimits().InlineQueries == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -165,7 +165,7 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
         return admission;
     }
     const auto limits = backend::RayLimits();
-    if (!limits.StaticTriangles)
+    if (limits.StaticTriangles == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -180,13 +180,13 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
     {
         for (usize axis = 0; axis < 3; ++axis)
         {
-            if (!RayPosition(RayScalar(d.Positions, i * 3 + axis)))
+            if (RayPosition(RayScalar(d.Positions, i * 3 + axis)) == false)
             {
                 return RasterStatus::InvalidDescription;
             }
         }
-        if (d.Texcoords != nullptr &&
-            (!RayPosition(RayScalar(d.Texcoords, i * 2)) || !RayPosition(RayScalar(d.Texcoords, i * 2 + 1))))
+        if (d.Texcoords != nullptr && (RayPosition(RayScalar(d.Texcoords, i * 2)) == false ||
+                                       RayPosition(RayScalar(d.Texcoords, i * 2 + 1)) == false))
         {
             return RasterStatus::InvalidDescription;
         }
@@ -216,7 +216,7 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
         }
     }
     return Publish(RasterKind::RayGeometry, output, [&d](usize slot, Record& record) noexcept {
-        if (!RayRecord(record) || !record.Ray->TriangleUvs.TryResize(d.IndexCount * 2))
+        if (RayRecord(record) == false || record.Ray->TriangleUvs.TryResize(d.IndexCount * 2) == false)
         {
             return StorageFailure();
         }
@@ -239,7 +239,7 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         return admission;
     }
     const auto limits = backend::RayLimits();
-    if (!limits.StaticTriangles)
+    if (limits.StaticTriangles == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -258,12 +258,12 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
     {
         return RasterStatus::CapacityExceeded;
     }
-    if (!instances.TryResize(description.Count) || !opacity.TryResize(description.Count * 12))
+    if (instances.TryResize(description.Count) == false || opacity.TryResize(description.Count * 12) == false)
     {
         return StorageFailure();
     }
     StorageArray<usize> uvOffsets;
-    if (!uvOffsets.TryResize(gRecords[static_cast<usize>(RasterKind::RayGeometry)].GetSize()))
+    if (uvOffsets.TryResize(gRecords[static_cast<usize>(RasterKind::RayGeometry)].GetSize()) == false)
     {
         return StorageFailure();
     }
@@ -279,14 +279,14 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         {
             return geometry->Status == RasterStatus::Pending ? RasterStatus::NotReady : geometry->Status;
         }
-        if (!RayTransform(input.Transform) || input.Mask == 0 || input.Mask > 255 || !RayUnitInterval(input.Opacity) ||
-            !RayUnitInterval(input.AlphaCutoff))
+        if (RayTransform(input.Transform) == false || input.Mask == 0 || input.Mask > 255 ||
+            RayUnitInterval(input.Opacity) == false || RayUnitInterval(input.AlphaCutoff) == false)
         {
             return RasterStatus::InvalidDescription;
         }
         for (auto value : input.UvTransform)
         {
-            if (!RayPosition(value))
+            if (RayPosition(value) == false)
             {
                 return RasterStatus::InvalidDescription;
             }
@@ -313,7 +313,7 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
             {
                 return RasterStatus::CapacityExceeded;
             }
-            if (!opacity.TryResize(begin + appended))
+            if (opacity.TryResize(begin + appended) == false)
             {
                 return StorageFailure();
             }
@@ -333,13 +333,13 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         {
             return RasterStatus::CapacityExceeded;
         }
-        if (!opacity.TryResize(alphaOffset + padded))
+        if (opacity.TryResize(alphaOffset + padded) == false)
         {
             return StorageFailure();
         }
         for (usize texel = 0; texel < texels; ++texel)
         {
-            if (!RayUnitInterval(input.Alpha[texel]))
+            if (RayUnitInterval(input.Alpha[texel]) == false)
             {
                 return RasterStatus::InvalidDescription;
             }
@@ -363,7 +363,8 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
     return Publish(RasterKind::RayScene,
                    output,
                    [&description, &instances, &opacity](usize slot, Record& record) noexcept {
-                       if (!RayRecord(record) || !record.Ray->GeometrySlots.TryResize(description.Count))
+                       if (RayRecord(record) == false ||
+                           record.Ray->GeometrySlots.TryResize(description.Count) == false)
                        {
                            return StorageFailure();
                        }
@@ -396,7 +397,7 @@ RasterStatus SubmitRayQueries(DeviceHandle device,
         return admission;
     }
     const auto limits = backend::RayLimits();
-    if (!limits.InlineQueries)
+    if (limits.InlineQueries == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -418,13 +419,13 @@ RasterStatus SubmitRayQueries(DeviceHandle device,
     }
     for (usize i = 0; i < count; ++i)
     {
-        if (!ValidRay(rays[i]))
+        if (ValidRay(rays[i]) == false)
         {
             return RasterStatus::InvalidDescription;
         }
     }
     return Publish(RasterKind::RayBatch, output, [&rays, count, program, scene](usize slot, Record& record) noexcept {
-        if (!RayRecord(record))
+        if (RayRecord(record) == false)
         {
             return StorageFailure();
         }
@@ -510,7 +511,7 @@ RasterStatus GetRayResourceStats(DeviceHandle device, RayResourceStats& output) 
     {
         return status;
     }
-    if (!backend::RayLimits().InlineQueries)
+    if (backend::RayLimits().InlineQueries == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -522,7 +523,7 @@ RasterStatus GetRayResourceStats(DeviceHandle device, RayResourceStats& output) 
         for (usize slot = 0; slot < pool.GetSize(); ++slot)
         {
             const auto& record = pool[slot];
-            if (record.Owner == 0 || !record.Ray)
+            if (record.Owner == 0 || record.Ray.Get() == nullptr)
             {
                 continue;
             }
@@ -532,7 +533,7 @@ RasterStatus GetRayResourceStats(DeviceHandle device, RayResourceStats& output) 
                 return RasterStatus::CapacityExceeded;
             }
             result.ResidentBytes += bytes;
-            if (!record.Published)
+            if (record.Published == false)
             {
                 result.DetachedBytes += bytes;
             }

@@ -48,7 +48,7 @@ namespace
 
 MathStatus TryToRotation(const Matrix3& basis, RotationExtractionPolicy policy, Quaternion& out) noexcept
 {
-    if (!IsFinite(basis))
+    if (IsFinite(basis) == false)
     {
         return MathStatus::NonFiniteInput;
     }
@@ -165,7 +165,7 @@ template <int N>
             inv[r][c] = (r == c) ? 1.0 : 0.0;
         }
     }
-    if (maxAbs == 0.0 || !std::isfinite(maxAbs))
+    if (maxAbs == 0.0 || std::isfinite(maxAbs) == false)
     {
         return false;
     }
@@ -192,7 +192,7 @@ template <int N>
                 pivot = r;
             }
         }
-        if (best == 0.0 || !std::isfinite(best))
+        if (best == 0.0 || std::isfinite(best) == false)
         {
             return false;
         }
@@ -205,7 +205,7 @@ template <int N>
             }
         }
         const float64 pivotValue = a[col][col];
-        if (pivotValue == 0.0 || !std::isfinite(pivotValue))
+        if (pivotValue == 0.0 || std::isfinite(pivotValue) == false)
         {
             return false;
         }
@@ -241,7 +241,7 @@ template <int N>
         for (int c = 0; c < N; ++c)
         {
             inv[r][c] /= scale;
-            if (!std::isfinite(inv[r][c]))
+            if (std::isfinite(inv[r][c]) == false)
             {
                 return false;
             }
@@ -321,7 +321,7 @@ template <int N, typename MatrixType>
     {
         for (int c = 0; c < N; ++c)
         {
-            if (!std::isfinite(A[r][c]))
+            if (std::isfinite(A[r][c]) == false)
             {
                 return MathStatus::NonFiniteInput;
             }
@@ -329,11 +329,11 @@ template <int N, typename MatrixType>
     }
     float64 inv[N][N];
     float64 rcond = 0.0;
-    if (!InvertDouble<N>(A, inv, rcond))
+    if (InvertDouble<N>(A, inv, rcond) == false)
     {
         return MathStatus::Degenerate;
     }
-    if (!(rcond >= static_cast<float64>(policy.MinReciprocalCondition)))
+    if ((rcond >= static_cast<float64>(policy.MinReciprocalCondition)) == false)
     {
         return MathStatus::IllConditioned;
     }
@@ -345,7 +345,7 @@ template <int N, typename MatrixType>
     {
         for (int c = 0; c < N; ++c)
         {
-            if (!std::isfinite(X[r][c]))
+            if (std::isfinite(X[r][c]) == false)
             {
                 return MathStatus::OutOfRange;
             }
@@ -369,7 +369,7 @@ template <int N, typename MatrixType>
         return MathStatus::OutOfRange;
     }
     const float64 residual = TwoSidedResidual<N>(A, X);
-    if (!(residual <= static_cast<float64>(policy.MaxResidual)))
+    if ((residual <= static_cast<float64>(policy.MaxResidual)) == false)
     {
         return MathStatus::IllConditioned;
     }
