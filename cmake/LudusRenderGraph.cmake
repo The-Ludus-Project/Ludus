@@ -30,15 +30,23 @@ function(ludus_compile_render_graph)
         # Build dependencies read only installed/tool/source files. Writable staging belongs to this target.
         set(helper "${CMAKE_CURRENT_BINARY_DIR}/ludus-graphs/${GRAPH_TARGET}/${GRAPH_NAME}/helper")
         file(MAKE_DIRECTORY "${helper}")
-        foreach(source compile_shader.py compile_raster.py compile_graph_stage.py)
+        foreach(source compile_shader.py compile_raster.py compile_graph_stage.py native_worker.py)
             configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/${source}" "${helper}/${source}" COPYONLY)
         endforeach()
         foreach(lock shader_toolchain.json spirv_cross_toolchain.json)
             configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/${lock}" "${helper}/${lock}" COPYONLY)
         endforeach()
     endif()
-    set(arguments)
     set(tools "${LUDUS_SLANG_COMPILER}")
+    set(arguments)
+    if(LUDUS_SHADER_WORKER_SOCKET)
+        list(APPEND arguments --worker-socket "${LUDUS_SHADER_WORKER_SOCKET}")
+        if(TARGET ludus-shader-worker)
+            list(APPEND tools ludus-shader-worker)
+        elseif(LUDUS_SHADER_WORKER_EXECUTABLE)
+            list(APPEND tools "${LUDUS_SHADER_WORKER_EXECUTABLE}")
+        endif()
+    endif()
     if(LUDUS_SPIRV_VALIDATOR)
         list(APPEND arguments --validator "${LUDUS_SPIRV_VALIDATOR}")
         list(APPEND tools "${LUDUS_SPIRV_VALIDATOR}")
@@ -73,7 +81,7 @@ function(ludus_compile_render_graph)
             --helper "${helper}" --compiler "${LUDUS_SLANG_COMPILER}" ${arguments}
         DEPENDS ${inputs} ${modules} ${tools} "${driver}"
             "${package}/ludus_tools/buildlock.py" "${package}/ludus_tools/errors.py"
-            "${helper}/compile_shader.py" "${helper}/compile_raster.py" "${helper}/compile_graph_stage.py"
+            "${helper}/compile_shader.py" "${helper}/compile_raster.py" "${helper}/compile_graph_stage.py" "${helper}/native_worker.py"
             "${helper}/shader_toolchain.json" "${helper}/spirv_cross_toolchain.json"
         VERBATIM)
     target_sources(${GRAPH_TARGET} PRIVATE "${output}/${GRAPH_NAME}.h")

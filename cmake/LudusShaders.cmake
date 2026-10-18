@@ -69,6 +69,9 @@ function(ludus_compile_shader)
     list(TRANSFORM backend_byproducts PREPEND "${output}/")
     list(TRANSFORM reflection_byproducts PREPEND "${output}/")
     set(args)
+    if(LUDUS_SHADER_WORKER_SOCKET AND (SH_RASTER OR SH_COMPUTE))
+        list(APPEND args --worker-socket "${LUDUS_SHADER_WORKER_SOCKET}")
+    endif()
     # The source and installed helper expose the same RHI-owned interface vocabulary.
     set(rhi_shader_directory "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders")
     if(NOT EXISTS "${rhi_shader_directory}/raster_bindings.slang")
@@ -124,6 +127,14 @@ function(ludus_compile_shader)
             list(APPEND backend_byproducts "${output}/${SH_NAME}.vertex.metal" "${output}/${SH_NAME}.fragment.metal")
         endif()
     endif()
+    set(native_worker_depends)
+    if(LUDUS_SHADER_WORKER_SOCKET AND (SH_RASTER OR SH_COMPUTE))
+        if(TARGET ludus-shader-worker)
+            list(APPEND native_worker_depends ludus-shader-worker)
+        elseif(LUDUS_SHADER_WORKER_EXECUTABLE)
+            list(APPEND native_worker_depends "${LUDUS_SHADER_WORKER_EXECUTABLE}")
+        endif()
+    endif()
     add_custom_command(
         OUTPUT "${output}/${SH_NAME}.h"
         BYPRODUCTS ${backend_byproducts} ${reflection_byproducts} "${output}/manifest.json"
@@ -131,7 +142,7 @@ function(ludus_compile_shader)
         COMMAND "${Python3_EXECUTABLE}" "${driver}" --source "${source}" --output "${output}"
                 --name "${SH_NAME}" ${stage_args}
                 --lock "${lock}" --compiler "${LUDUS_SLANG_COMPILER}" ${backend_args} ${cross_args} ${args}
-        DEPENDS "${source}" "${driver}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/compile_raster.py" "${lock}" "${LUDUS_SLANG_COMPILER}" ${backend_depends} ${cross_depends} ${SH_DEPENDS}
+        DEPENDS "${source}" "${driver}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/compile_raster.py" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/native_worker.py" "${lock}" "${LUDUS_SLANG_COMPILER}" ${backend_depends} ${cross_depends} ${SH_DEPENDS} ${native_worker_depends}
         DEPFILE "${output}/shader.d"
         VERBATIM
     )

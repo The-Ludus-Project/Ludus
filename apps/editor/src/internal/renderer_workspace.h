@@ -8,6 +8,7 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
+#include "internal/render_graph_live_build.h"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -17,6 +18,7 @@
 
 QT_BEGIN_NAMESPACE
 class QComboBox;
+class QCheckBox;
 class QFormLayout;
 class QLabel;
 class QLineEdit;
@@ -67,6 +69,10 @@ public:
     [[nodiscard]] bool Validate();
     /// Build the draft snapshot's sibling .lushader.json into the project's render-graph build tree.
     [[nodiscard]] bool Build();
+    /// Recompile/cook the immutable draft and preview only a current successful result.
+    [[nodiscard]] bool BuildAndPreview();
+    /// Use an existing shared native worker endpoint; empty retains the offline compiler path.
+    void SetWorkerSocket(const QString& endpoint);
     /// Cook the last published build into a runtime generation for atomic activation.
     [[nodiscard]] bool CookRuntime();
     void CancelJob();
@@ -119,7 +125,13 @@ Q_SIGNALS:
     void JobFinished();
 
 private:
-    [[nodiscard]] bool startJob(const QString& action, const QStringList& arguments, bool needsSnapshot);
+    [[nodiscard]] bool startJob(const QString& action,
+                                const QStringList& arguments,
+                                bool shouldCaptureSnapshot,
+                                bool shouldPreview = false);
+    [[nodiscard]] bool startBuild(bool shouldPreview);
+    [[nodiscard]] QByteArray getBuildIdentity() const;
+    void scheduleLiveBuild();
     void renderTree();
     void renderInspector();
     void renderEdges();
@@ -175,6 +187,9 @@ private:
     QLineEdit* mCompiler;
     QLineEdit* mValidator;
     QLineEdit* mSpirvCross;
+    QLineEdit* mWorkerSocket;
+    QCheckBox* mLivePreview;
+    RenderGraphLiveBuild mLiveBuild;
     QListWidget* mDiagnostics;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;

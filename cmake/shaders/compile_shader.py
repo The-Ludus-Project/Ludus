@@ -256,6 +256,8 @@ def main():
     parser.add_argument('--fragment')
     parser.add_argument('--compute')
     parser.add_argument('--validator')
+    parser.add_argument('--worker-socket')
+    parser.add_argument('--worker-identity')
     parser.add_argument('--metal', action='store_true')
     parser.add_argument('--raster', action='store_true')
     parser.add_argument('--native-binding-arrays', action='store_true')
@@ -270,7 +272,7 @@ def main():
     parser.add_argument("--graph-target", choices=("spirv", "wgsl", "metal", "glsl"))
     args = parser.parse_args()
     lock = json.loads(Path(args.lock).read_text())
-    if run([args.compiler, '-version']).strip() != lock['slang']['version']:
+    if not args.worker_socket and run([args.compiler, '-version']).strip() != lock['slang']['version']:
         raise RuntimeError('Slang version differs from SDK pin')
     if not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', args.name):
         raise RuntimeError('Invalid shader name')
@@ -282,6 +284,8 @@ def main():
         from compile_graph_stage import compile_graph_stage
         compile_graph_stage(args, lock)
         return
+    if args.worker_socket and not (args.raster or args.compute):
+        raise RuntimeError('Native worker requires graph, raster or compute stages; fullscreen compatibility stays offline')
     if args.native_binding_arrays and not (args.raster or args.compute):
         raise RuntimeError("Native binding arrays require raster or compute stages")
     if args.compute and (args.vertex or args.fragment or args.raster):

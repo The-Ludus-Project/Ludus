@@ -179,3 +179,24 @@ available. Existing runtime-library usage is retired through focused migrations.
 These restrictions are contributor policy; no new automatic STL gate is added
 by this documentation change. Compiler exception enforcement and existing
 static-analysis checks remain in place.
+
+### Native shader-worker implementation boundary
+
+The optional native shader tooling uses Slang's own COM interfaces and private
+`Slang::ComPtr` helper for Slang-owned compiler objects, blobs and snapshots.
+This is a third-party resource-lifetime adapter, not permission for STL smart
+owners or a Ludus container substitute. Ludus-owned state and buffers continue
+to use `UniquePtr`, `Array`, `StaticArray`, bounded strings and explicit statuses.
+No Slang headers enter the installed client API.
+
+The Linux/macOS `ShaderCompilerClient` implementation and headless worker use
+POSIX Unix-stream sockets, `connect`/`bind`/`listen`/`accept`, `send`/`recv`,
+`read`/`write` for framed protocol bytes, `poll`, `fcntl`, `setsockopt`, `close`,
+`chmod`, `unlink`, and `errno`/`EINTR`/`EAGAIN` handling. The executable uses
+`sigaction`/`sigemptyset` to stop and clean up its endpoint. Native writes here
+are machine-protocol/version output, not ordinary engine diagnostics. The client
+is nonblocking, messages and buffers are bounded, and disconnected sockets
+suppress SIGPIPE. Browser builds return Unavailable without native IPC or Slang.
+Availability, interruption, malformed/disconnected peers and cancellation are
+covered by the native protocol tests. See the
+[native shader-worker contract](../development/render-graph-authoring.md#native-shader-worker-and-live-development-builds).

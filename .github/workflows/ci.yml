@@ -93,7 +93,7 @@ jobs:
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' tools/script-provider/allocator_contract.cpp
       - name: Build all enabled engine and application targets
         run: |
-          out/host-tools/venv/bin/cmake --preset macos-clang-development -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross" -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_WORLD_DEMO=ON
+          out/host-tools/venv/bin/cmake --preset macos-clang-development -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross" -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_WORLD_DEMO=ON -DLUDUS_BUILD_SHADER_WORKER=ON
           ./scripts/build macos-clang-development
       - name: Require complete macOS source inventory
         run: ./scripts/check macos-clang-development --inventory
@@ -102,7 +102,7 @@ jobs:
       - name: Test native Cocoa, Metal, filesystem, threading, Content and Audio
         env:
           LUDUS_TEST_COCOA: "1"
-        run: out/host-tools/venv/bin/ctest --preset macos-clang-development --label-regex 'platform|macos|filesystem|threading|content|audio|build-contract|diagnostic-startup|editor|loader|session|reload|protocol|acceptance' --no-tests=error
+        run: out/host-tools/venv/bin/ctest --preset macos-clang-development --label-regex 'platform|macos|filesystem|threading|content|audio|build-contract|diagnostic-startup|editor|loader|session|reload|protocol|acceptance|shader' --no-tests=error
       - name: Test native Debug helper and explicit assertion decisions
         run: |
           ./init.sh --cli --preset macos-clang-debug --preset-only --locked --with-tests --no-system-install
@@ -778,10 +778,12 @@ jobs:
       - name: Validate portable Vulkan raster pixels with validation layers
         run: |
           out/host-tools/venv/bin/cmake --preset linux-clang-development \
+            -DLUDUS_BUILD_SHADER_WORKER=ON \
             -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" \
             -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val" \
             -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
-          out/host-tools/venv/bin/cmake --build out/build/linux-clang-development --target ludus_rhi_render_tests ludus_renderer_render_tests ludus_rhi_ray_tests ludus_rhi_native_interop_consumer ludus_rhi_r11_consumer ludus_rhi_r9_consumer ludus_rhi_r18c_consumer --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          out/host-tools/venv/bin/cmake --build out/build/linux-clang-development --target ludus_rhi_render_tests ludus_renderer_render_tests ludus_rhi_ray_tests ludus_rhi_native_interop_consumer ludus_rhi_r11_consumer ludus_rhi_r9_consumer ludus_rhi_r18c_consumer ludus-shader-worker ludus_shader_compiler_tests --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/host-tools/venv/bin/ctest --test-dir out/build/linux-clang-development --tests-regex '^ludus_shader_(compiler_tests|worker_protocol|reload_gpu)$' --output-on-failure --no-tests=error
           set -o pipefail
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/build/linux-clang-development/modules/graphics/rhi/ludus_rhi_render_tests 2>&1 | tee out/raster-vulkan-validation.log
           python3 -c 'from pathlib import Path; text=Path("out/raster-vulkan-validation.log").read_text(); assert "Validation Error" not in text and "VUID-" not in text, text'

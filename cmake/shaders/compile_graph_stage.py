@@ -102,7 +102,11 @@ def compile_graph_stage(args, lock):
     command = [args.compiler, args.source, '-target', slang_target, '-profile', profile,
                '-entry', args.name, '-stage', stage, '-o', str(intermediate),
                '-reflection-json', str(reflection), '-depfile', str(depfile)]
-    run(command)
+    if getattr(args, 'worker_socket', None):
+        from native_worker import compile_stage
+        compile_stage(args.worker_socket, args, lock, intermediate, reflection, depfile)
+    else:
+        run(command)
     document = json.loads(reflection.read_text())
     points = document.get('entryPoints', [])
     if len(points) != 1 or points[0].get('stage') != stage or points[0].get('name') != args.name:

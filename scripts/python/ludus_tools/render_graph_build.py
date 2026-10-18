@@ -30,7 +30,7 @@ SHAPES = {'Float32': ('float', 1), 'Float2': ('float2', 2), 'Float3': ('float3',
 RESERVED = {'class', 'struct', 'namespace', 'auto', 'const', 'float', 'int', 'void', 'return', 'for', 'while', 'if', 'else', 'static', 'inline', 'template', 'typename', 'private', 'public', 'protected', 'operator', 'true', 'false', 'nullptr', 'bool', 'break', 'continue', 'switch', 'case', 'default', 'delete', 'new', 'this', 'union', 'enum', 'do', 'sizeof', 'alignof', 'using', 'typedef', 'uniform', 'in', 'out', 'register', 'cbuffer', 'shader', 'rgEntry', 'value'}
 RESERVED.update(('alignas alignof and and_eq asm atomic_cancel atomic_commit atomic_noexcept bitand bitor catch char char8_t char16_t char32_t compl consteval constexpr constinit const_cast co_await co_return co_yield decltype double dynamic_cast explicit export extern friend goto inline int long mutable noexcept not not_eq or or_eq reflexpr reinterpret_cast requires short signed static_assert static_cast template thread_local throw try typeid typename unsigned virtual volatile wchar_t xor xor_eq concept final override float2 float3 float4 uint uint2 uint3 uint4').split())
 NAME = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,62}\Z')
-HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
+HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'native_worker.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
 LIMITS = {'configurations': 8, 'programs': 32, 'artifacts': 128, 'pipelines': 64}
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
@@ -517,7 +517,7 @@ def run_stage(command, cancel):
                     process.wait()
 
 
-def compile_program(program, schemas, closure, snapshot, work, helper, tools, target, cancel):
+def compile_program(program, schemas, closure, snapshot, work, helper, tools, target, cancel, worker_socket=None, worker_identity=None):
     """Compile only captured sources; reject any untracked compiler dependency."""
     source = work / 'source'
     source.mkdir()
@@ -531,6 +531,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     command = [sys.executable, str(helper / 'compile_shader.py'), '--source', str(source / 'wrapper.slang'),
                '--output', str(output), '--name', 'rgEntry', '--compiler', str(tools['tool/slangc']),
                '--lock', str(helper / 'shader_toolchain.json'), '--graph-stage', program['stage'], '--graph-target', target]
+    if worker_socket:
+        command += ['--worker-socket', worker_socket, '--worker-identity', worker_identity]
     if 'tool/spirv-val' in tools:
         command += ['--validator', str(tools['tool/spirv-val'])]
     if target == 'glsl':
@@ -565,7 +567,7 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     return output, result
 
 
-def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None):
+def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None):
     """Build every authored technique/profile and atomically publish current.json.
 
     Sources/tools must remain identical to their captured snapshot at publication.
@@ -584,6 +586,28 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     schemas, programs, techniques, counts = validate_manifest(value)
     helper = Path(helper).resolve()
     tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross)
+    worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
+    worker_identity = None
+    if worker_socket:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('_ludus_native_worker', helper / 'native_worker.py')
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+        try:
+            descriptor = native.exchange(worker_socket, {'version': 1, 'identity': 0})
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+            fail('Tools', 'native worker', str(error))
+        require(descriptor.get('compiler') == document(read(helper / 'shader_toolchain.json'), 'lock')['slang']['version'],
+                'Tools', 'native worker', 'compiler version differs from SDK pin')
+        require(descriptor.get('library_sha256') in tool_hashes.values(), 'Tools', 'native worker', 'loaded API library differs from the selected toolchain')
+        inventory = ''.join(key.removeprefix('slang/') + ':' + value + '\n'
+                            for key, value in sorted(tool_hashes.items()) if key.startswith('slang/'))
+        require(descriptor.get('library_inventory_sha256') == digest(inventory.encode()),
+                'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
+        worker_identity = descriptor.get('implementation')
+        require(isinstance(worker_identity, str) and len(worker_identity) == 64, 'Tools', 'native worker', 'missing implementation identity')
+        # Native compilation is a distinct implementation and owns separate artifact keys.
+        tool_hashes['native/implementation'] = worker_identity
     if any(t in value['profiles'] for t in ('spirv', 'glsl')):
         require(validator, 'Tools', 'profiles', 'SPIR-V/glsl requires --validator')
     if 'glsl' in value['profiles']:
@@ -639,7 +663,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                     if result is None:
                         work = stage / ('compile-' + pid + '-' + target)
                         work.mkdir()
-                        artifacts, result = compile_program(program, schemas, closure, snapshot, work, helper, tool_paths, target, cancel)
+                        artifacts, result = compile_program(program, schemas, closure, snapshot, work, helper, tool_paths, target, cancel, worker_socket, worker_identity)
                         files = {p.name: digest(read(p, 2 * 1024 * 1024)) for p in artifacts.iterdir() if p.is_file()}
                         (artifacts / 'cache.json').write_bytes(encoded({'identity': key_data, 'files': files, 'result': result}))
                         checkpoint(cancel)

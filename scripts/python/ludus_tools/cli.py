@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json as _json
 import sys
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -413,6 +414,20 @@ def cmd_install_butler(args) -> int:
 def cmd_render_graph(args) -> int:
     from . import render_graph
 
+    if args.graph_action == "watch":
+        from . import render_graph_reload
+        if not args.runtime_package or not (args.worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')):
+            raise ToolingError("RenderGraphReload", "watch requires --runtime-package and a native --worker-socket")
+        def emit_event(payload):
+            _emit(args, payload)
+            sys.stdout.flush()
+        try:
+            render_graph_reload.watch(args.manifest, args.output, args.runtime_package, emit_event,
+                configuration=args.configuration, helper=args.helper, compiler=args.compiler,
+                validator=args.validator, spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
+        except KeyboardInterrupt:
+            pass
+        return EXIT_OK
     if args.graph_action in ("schema-diff", "migrate"):
         from . import render_graph_authoring
         if args.graph_action == "schema-diff":
@@ -438,8 +453,14 @@ def cmd_render_graph(args) -> int:
         elif args.graph_action == "verify-package":
             payload = {"package": render_graph_build.verify_package(Path(args.package))}
         else:
-            payload = {"build": render_graph_build.build_package(Path(args.manifest), Path(args.output), helper=args.helper,
-                        compiler=args.compiler, validator=args.validator, spirv_cross=args.spirv_cross, root=args.root)}
+            options = dict(helper=args.helper, compiler=args.compiler, validator=args.validator,
+                           spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
+            if args.runtime_package:
+                from . import render_graph_reload
+                payload = render_graph_reload.rebuild(args.manifest, args.output, args.runtime_package,
+                            configuration=args.configuration, **options)
+            else:
+                payload = {"build": render_graph_build.build_package(args.manifest, args.output, **options)}
         human = _json.dumps(payload, indent=2)
     elif args.graph_action == "new":
         path = render_graph.new_workspace(Path(args.destination), output=args.output)
@@ -503,15 +524,19 @@ def build_parser() -> argparse.ArgumentParser:
     new_build.add_argument("--root", help="containing graph/source package root")
     new_build.add_argument("--renderer-static", action="store_true", help="author the six-location Renderer static/instance profile")
     new_build.set_defaults(func=cmd_render_graph)
-    build_graph = graphs.add_parser("build", help="compile declared schemas/stages/recipes and publish an offline package")
-    build_graph.add_argument("manifest", help=".lushader.json manifest; sibling .lurender.json root")
-    build_graph.add_argument("output", help="owned build tree, cache and immutable generations")
-    build_graph.add_argument("--root", help="source package root (default: manifest directory)")
-    build_graph.add_argument("--helper", required=True, help="installed SDK lib/cmake/Ludus/shaders directory")
-    build_graph.add_argument("--compiler", required=True, help="pinned Slang executable")
-    build_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
-    build_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
-    build_graph.set_defaults(func=cmd_render_graph)
+    for action in ("build", "watch"):
+        build_graph = graphs.add_parser(action, help="headless shader package build and optional runtime publication")
+        build_graph.add_argument("manifest", help=".lushader.json manifest; sibling .lurender.json root")
+        build_graph.add_argument("output", help="owned build tree, cache and immutable generations")
+        build_graph.add_argument("--root", help="source package root (default: manifest directory)")
+        build_graph.add_argument("--helper", required=True, help="installed SDK lib/cmake/Ludus/shaders directory")
+        build_graph.add_argument("--compiler", required=True, help="pinned Slang executable")
+        build_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
+        build_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
+        build_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
+        build_graph.set_defaults(func=cmd_render_graph)
+        build_graph.add_argument("--runtime-package", help="atomically cook/publish a reloadable .lurgrt generation")
+        build_graph.add_argument("--configuration", default="Default")
     verify_graph = graphs.add_parser("verify-package", help="verify complete generation inventory without shader tools")
     verify_graph.add_argument("package")
     verify_graph.set_defaults(func=cmd_render_graph)

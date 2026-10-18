@@ -708,3 +708,32 @@ The initial design above precedes the targeted article review. Source-informed
 refinements and their exact evidence are recorded in the existing
 [renderer reference review](renderer-systems-gems-review.md); detailed contracts
 remain here rather than duplicated in an editor guide or wiki mirror.
+
+## Persistent native compilation boundary
+
+Runtime shader iteration is supported above RHI through one headless native Slang
+worker, shared by editor and native application clients. Build-time and live
+requests use the same compiler core and portable packages. Graph/schema lowering
+and independent layout validation remain in host tooling; neither CI cooking nor
+compiler initialization starts an editor, game session or graphics device.
+
+The compiler owns one thread-confined global session and one bounded immutable
+source snapshot. A byte-identical snapshot may reuse its module/session across
+target requests. Any source edit replaces the session, preventing Slang's module
+cache from returning stale source. A closed in-memory filesystem admits only
+captured dependencies. Wire/version/bounds and request identities are validated;
+source/compiler errors publish no artifacts. Native compiler identity and library
+digest participate in graph cache identity. This follows the Slang authors'
+[compilation API session guidance](https://docs.shader-slang.org/en/latest/compilation-api.html),
+with a deliberately bounded latest-snapshot cache rather than an unbounded set of
+live sessions.
+
+Source preparation, portable artifact publication, runtime-package delivery,
+device pipeline preparation and frame-boundary activation remain separate owners.
+The native development-game `ReloadSession` owns asynchronous file delivery and
+supersession only; Renderer still owns readiness, scene coverage and activation,
+and RHI still owns GPU lifetime retirement. The editor applies a background draft
+only if its captured semantic source/configuration identity is current. Existing
+CPU-interface mismatch continues to mean RestartRequired. Portable shader
+compilation does not guarantee device pipeline readiness or remove driver work.
+See [native worker setup, limits, workflow and measurements](../development/render-graph-authoring.md#native-shader-worker-and-live-development-builds).

@@ -56,6 +56,12 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         if any('used' not in b for b in bindings):
             raise RuntimeError('Raster stage usage is missing; compile stages separately')
         used[resource['name']] = any(b['used'] for b in bindings)
+    if 'nativeEntryPointResourceUsage' in document:
+        usage = document['nativeEntryPointResourceUsage']
+        names = [resource['name'] for resource in document.get('parameters', [])]
+        if not isinstance(usage, dict) or set(usage) != set(names) or any(type(value) is not bool for value in usage.values()):
+            raise RuntimeError('Native raster stage usage is malformed')
+        used = usage
     entries = []
     for resource in document.get('parameters', []):
         if not used.get(resource['name'], False):
@@ -567,6 +573,7 @@ def compile_raster(args, lock):
     extra = [part for path in args.include for part in ('-I', path)] + ['-D' + value for value in args.define]
     roots = [Path(args.source).parent, *args.include]
     commands, dependencies, artifacts, interfaces = [], [], {}, {}
+    native_compilations = []
     stages = [('compute', args.compute)] if getattr(args, 'compute', None) else [('vertex', args.vertex), ('fragment', args.fragment)]
     compute = stages[0][0] == 'compute'
     native_arrays = getattr(args, 'native_binding_arrays', False)
@@ -593,7 +600,12 @@ def compile_raster(args, lock):
         reflection, depfile = output / f'{stage}.reflection.json', output / f'{stage}.d'
         command = [args.compiler, args.source, '-target', target, '-profile', 'sm_6_0' if target == 'metal' else 'spirv_1_3',
                    '-entry', name, '-stage', stage, '-o', str(artifact), '-reflection-json', str(reflection), '-depfile', str(depfile), *extra]
-        commands.append(command); run(command)
+        if getattr(args, 'worker_socket', None):
+            from native_worker import compile_raster_stage
+            native_compilations.append(compile_raster_stage(args.worker_socket, args, lock, stage, name, target, artifact, reflection, depfile, extra))
+        else:
+            commands.append(command)
+            run(command)
         dependencies.append(depfile.read_text().split(':', 1)[1].strip())
         interfaces[(target, stage)] = raster_interface(json.loads(reflection.read_text()), stage, target == 'metal', native_arrays, runtime_arrays)
         if native_arrays:
@@ -661,7 +673,12 @@ def compile_raster(args, lock):
             reflection, depfile = output / f'{stage}.wgsl.reflection.json', output / f'{stage}.wgsl.d'
             command = [args.compiler, args.source, '-target', 'wgsl', '-profile', 'sm_6_0', '-entry', source_entry,
                        '-stage', stage, '-o', str(artifact), '-reflection-json', str(reflection), '-depfile', str(depfile), *extra]
-            commands.append(command); run(command)
+            if getattr(args, 'worker_socket', None):
+                from native_worker import compile_raster_stage
+                native_compilations.append(compile_raster_stage(args.worker_socket, args, lock, stage, source_entry, 'wgsl', artifact, reflection, depfile, extra))
+            else:
+                commands.append(command)
+                run(command)
             dependencies.append(depfile.read_text().split(':', 1)[1].strip())
             interface = raster_interface(json.loads(reflection.read_text()), stage)
             code = wgsl_contract(artifact.read_text(), interface, stage)
@@ -762,7 +779,7 @@ def compile_raster(args, lock):
                 header += ' for (foundation::usize i = 0; i < graphics::rhi::RASTER_BINDING_COUNT; ++i) { result.UniformBlocks[i] = glsl.UniformBlocks[i]; result.TextureNames[i] = glsl.TextureNames[i]; result.TextureSamplers[i] = glsl.TextureSamplers[i]; }\n'
             header += f' return result;\n#else\n return Spirv{stage.title()}();\n#endif\n}}\n'
     header += '}\n'
-    manifest = {'compiler': lock['slang'], 'commands': commands, 'interfaces': {backend + '_' + stage: info for (backend, stage), info in interfaces.items()},
+    manifest = {'compiler': lock['slang'], 'commands': commands, 'native_compilations': native_compilations, 'interfaces': {backend + '_' + stage: info for (backend, stage), info in interfaces.items()},
                 'sha256': {backend + '_' + stage: hashlib.sha256(data if isinstance(data, bytes) else data.encode()).hexdigest() for (backend, stage), (data, _) in artifacts.items()},
                 'layout': 'See separate target reflection JSON. CPU packing must match the selected target; no native cross-target equality is assumed.'}
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

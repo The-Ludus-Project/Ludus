@@ -14,15 +14,23 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
+#include <ludus/foundation/filesystem/persistence.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/runtime/shader_development/reload.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <new>
 #include <string_view>
+#include <thread>
 
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
@@ -783,4 +791,141 @@ TEST_CASE("RG2 masked techniques keep rejecting opaque and transparent items", "
                                    report) == rhi::RasterStatus::Unsupported);
         CHECK(report.Unsupported == 1);
     }
+}
+
+TEST_CASE("Native compiler publications reload a running renderer without losing its drawable generation",
+          "[shader][reload][gpu][.native-reload]")
+{
+    const char* rootOrNull = std::getenv("LUDUS_NATIVE_RELOAD_ROOT");
+    if (rootOrNull == nullptr)
+    {
+        SKIP("Run through ludus_shader_reload_gpu with real native-worker publications");
+    }
+    GraphGpuFixture fixture;
+    filesystem::Directory directory;
+    filesystem::WriteDirectory publication;
+    REQUIRE(directory.Open(rootOrNull).Succeeded() == true);
+    REQUIRE(publication.Open(rootOrNull).Succeeded() == true);
+    const auto readBytes = [&](const char* name) {
+        filesystem::File file;
+        REQUIRE(directory.OpenRead(name, file).Succeeded() == true);
+        Array<uint8> bytes;
+        REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
+        REQUIRE(file.ReadAt(0, bytes.AsSpan()).Outcome.Succeeded() == true);
+        return bytes;
+    };
+    const Array<uint8> initial = readBytes("initial.lurgrt");
+    const Array<uint8> changed = readBytes("changed.lurgrt");
+    renderer::RenderGraphPackage identity;
+    REQUIRE(identity.Decode({initial.GetData(), initial.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    renderer::RenderGraphActivation activation;
+    REQUIRE(activation.Initialize(fixture.Device,
+                                  identity.GetInterfaceIdentity(),
+                                  shaders::renderer_composite::Vertex(),
+                                  shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    REQUIRE(publication.Publish("main.lurgrt", initial.AsSpan()).Published == true);
+    ludus::runtime::shader_development::ReloadSession reload;
+    REQUIRE(reload.Initialize({rootOrNull, std::strlen(rootOrNull)},
+                              {"main.lurgrt", sizeof("main.lurgrt") - 1},
+                              activation) == rhi::RasterStatus::Ready);
+    using ReloadState = ludus::runtime::shader_development::ReloadState;
+    constexpr usize MAX_ATTEMPTS = 5000;
+    uint64 maximumServiceNanoseconds = 0;
+    const auto awaitDelivery = [&](ReloadState expected) {
+        for (usize attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
+        {
+            const uint64 start = time::NowTicks();
+            const ludus::runtime::shader_development::ReloadReport report = reload.Service(start);
+            const uint64 elapsed = time::NowTicks() - start;
+            maximumServiceNanoseconds = elapsed > maximumServiceNanoseconds ? elapsed : maximumServiceNanoseconds;
+            if (report.State == expected)
+            {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+        FAIL("Timed out waiting for runtime publication delivery");
+    };
+    const auto activate = [&](uint64 generation) {
+        renderer::RenderGraphReport sceneReport;
+        for (usize attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
+        {
+            static_cast<void>(activation.Poll());
+            const renderer::RenderGraphActivationReport report = activation.GetReport();
+            REQUIRE(report.Candidate != renderer::RenderGraphCandidateState::Failed);
+            if (report.Candidate == renderer::RenderGraphCandidateState::NeedsUpdate ||
+                (report.ActiveGeneration == generation &&
+                 activation.GetActiveOrNull()->GetDrawableSceneRevision() == 0))
+            {
+                const rhi::RasterStatus updated =
+                    activation.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                      {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                      {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                      generation,
+                                      renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                      sceneReport);
+                REQUIRE((updated == rhi::RasterStatus::Ready || updated == rhi::RasterStatus::Pending ||
+                         updated == rhi::RasterStatus::NotReady));
+            }
+            if (report.ActiveGeneration == generation && activation.GetActiveOrNull()->GetDrawableSceneRevision() != 0)
+            {
+                return;
+            }
+        }
+        FAIL("Timed out waiting for ready pipelines and scene activation");
+    };
+    const auto render = [&]() {
+        REQUIRE(activation.GetActiveOrNull() != nullptr);
+        rhi::SubmissionToken completion;
+        REQUIRE(activation.GetActiveOrNull()->Render(fixture.Surface, WIDTH, HEIGHT, completion) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    };
+    awaitDelivery(ReloadState::Staged);
+    activate(1);
+    render();
+    const usize centerPixel = (usize{32} * WIDTH + 48) * 4;
+    REQUIRE(fixture.Pixels[centerPixel] == 255);
+    REQUIRE(fixture.Pixels[centerPixel + 1] == 0);
+    const StaticArray<uint8, PIXEL_BYTES> firstPixels = fixture.Pixels;
+    // A malformed publication fails before Renderer sees a candidate.
+    REQUIRE(publication.Publish("main.lurgrt", {initial.GetData(), sizeof(uint32)}).Published == true);
+    // Detect the producer's atomic replacement through the watcher itself.
+    awaitDelivery(ReloadState::Failed);
+    CHECK(activation.GetReport().ActiveGeneration == 1);
+    render();
+    CHECK(std::memcmp(firstPixels.GetData(), fixture.Pixels.GetData(), PIXEL_BYTES) == 0);
+    // Supersede a read before collecting it; the stale payload must never stage.
+    REQUIRE(publication.Publish("main.lurgrt", initial.AsSpan()).Published == true);
+    reload.RequestReload();
+    static_cast<void>(reload.Service(time::NowTicks()));
+    CHECK(activation.GetReport().ActiveGeneration == 1);
+    render();
+    CHECK(std::memcmp(firstPixels.GetData(), fixture.Pixels.GetData(), PIXEL_BYTES) == 0);
+    REQUIRE(publication.Publish("main.lurgrt", changed.AsSpan()).Published == true);
+    reload.RequestReload();
+    const uint64 pipelineStart = time::NowTicks();
+    awaitDelivery(ReloadState::Staged);
+    activate(2);
+    const uint64 replacementNanoseconds = time::NowTicks() - pipelineStart;
+    render();
+    REQUIRE(fixture.Pixels[centerPixel] == 0);
+    REQUIRE(fixture.Pixels[centerPixel + 1] == 255);
+    // CPU ABI changes require a restart and preserve the green generation.
+    Array<uint8> incompatible = changed;
+    incompatible[format::HEADER_FIELD_COUNT * sizeof(uint32)] ^= 1;
+    REQUIRE(publication.Publish("main.lurgrt", incompatible.AsSpan()).Published == true);
+    reload.RequestReload();
+    awaitDelivery(ReloadState::RestartRequired);
+    CHECK(activation.GetReport().ActiveGeneration == 2);
+    render();
+    REQUIRE(fixture.Pixels[centerPixel + 1] == 255);
+    const char* metricsOrNull = std::getenv("LUDUS_NATIVE_RELOAD_METRICS");
+    if (metricsOrNull != nullptr)
+    {
+        std::ofstream metrics(metricsOrNull);
+        metrics << "{\"replacement_read_and_pipeline_ns\":" << replacementNanoseconds
+                << ",\"maximum_delivery_service_ns\":" << maximumServiceNanoseconds << "}\n";
+    }
+    activation.Reset();
 }
