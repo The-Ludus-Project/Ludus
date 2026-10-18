@@ -25,6 +25,30 @@
         {
           "legacy_id": "player-start",
           "object": "60c5a647-c8b2-4bf5-bfd7-298254d56942"
+        },
+        {
+          "legacy_id": "scatter",
+          "object": "84d484f9-2311-49e7-b214-cae83b17fc66"
+        },
+        {
+          "legacy_id": "shrub-round",
+          "object": "9e486bdc-bfdd-4451-9c44-b50feabcd359"
+        },
+        {
+          "legacy_id": "shrub-tall",
+          "object": "7bd446c0-908b-4c25-b2b1-45dd7d0c86e1"
+        },
+        {
+          "legacy_id": "shrubs",
+          "object": "be28a255-ea69-459a-8a3d-a0d087319984"
+        },
+        {
+          "legacy_id": "stone",
+          "object": "30200934-4bf2-4b83-bc5e-53fef46b98a6"
+        },
+        {
+          "legacy_id": "stones",
+          "object": "1384393f-65c5-46dd-9940-9d5aefcee699"
         }
       ]
     },
@@ -33,12 +57,32 @@
       "document": "5f6fb820-71b9-4fa9-ba40-cae310cb5fc9",
       "objects": [
         {
+          "legacy_id": "boulder",
+          "object": "c9593109-8b88-483b-9a19-aa6365101337"
+        },
+        {
+          "legacy_id": "boulders",
+          "object": "91808b19-225e-448a-9180-f6ae9a971b90"
+        },
+        {
           "legacy_id": "exit-a",
           "object": "9da03bff-653d-4505-a75b-3d8980ffb2f6"
         },
         {
           "legacy_id": "floor",
           "object": "bfafff76-5f53-4753-a81a-032c2d9f45e6"
+        },
+        {
+          "legacy_id": "grass",
+          "object": "31fd7910-0b27-4071-8092-3ea7f4c5543f"
+        },
+        {
+          "legacy_id": "grass-clump",
+          "object": "fb46ef99-024e-4a14-a418-66e61247d05c"
+        },
+        {
+          "legacy_id": "grass-tuft",
+          "object": "305b7087-cca6-4b51-b25b-3b81563d6538"
         },
         {
           "legacy_id": "guard-a",
@@ -51,6 +95,10 @@
         {
           "legacy_id": "player-start",
           "object": "cd2ec83b-c905-4024-b390-23eeac807d34"
+        },
+        {
+          "legacy_id": "scatter",
+          "object": "93666db1-a1ba-4103-9a6f-5700831f6647"
         }
       ]
     }

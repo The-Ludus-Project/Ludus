@@ -46,6 +46,10 @@ try {
   }
   assert.ok(colors.player>40 && colors.guard>40 && colors.exit>40, 'Presented scene must contain player, guard and exit pixels: '+JSON.stringify(colors));
   report.scenePixels = colors; check('visible player, guard and exit; pause freezes ticks');
+  // The room's scatter placements match the native fixture (apps/world_demo/tests/scatter_tests.cpp) bit for bit.
+  assert.ok(Number(paused.placements) > 0, 'First room must prepare scatter placements');
+  assert.equal(paused.scatter, '599315e43924865a', 'Browser scatter digest must equal the pinned native digest');
+  report.scatter = {placements:Number(paused.placements), digest:paused.scatter}; check('scatter placements match the pinned native digest');
   await page.keyboard.press('n'); await page.waitForTimeout(100); assert.equal(Number((await state()).tick), Number(paused.tick)+1); check('single step advances exactly one neutral tick');
   await page.keyboard.press('p'); await page.waitForTimeout(100);
   const before = await state(); await page.keyboard.down('d');

@@ -105,12 +105,14 @@ ludus::world_demo::Application gApplication;
 EM_JS(bool, FollowCameraRequested, (), {
     return new URLSearchParams(location.search).get('camera') === 'follow';
 });
-EM_JS(void, Present, (ludus::foundation::uint32 state, ludus::foundation::uint32 mode, ludus::foundation::uint32 backend, ludus::foundation::uint32 tick, ludus::foundation::float32 x, ludus::foundation::float32 y), {
+EM_JS(void, Present, (ludus::foundation::uint32 state, ludus::foundation::uint32 mode, ludus::foundation::uint32 backend, ludus::foundation::uint32 tick, ludus::foundation::float32 x, ludus::foundation::float32 y, ludus::foundation::uint32 placements, ludus::foundation::uint32 digestHigh, ludus::foundation::uint32 digestLow), {
     const status = document.getElementById('status');
     status.dataset.state = ['stopped','loading','playing','failed'][state];
     status.dataset.mode = ['playing','paused','faulted'][mode];
     status.dataset.backend = ['vulkan','webgpu','webgl2'][backend];
     status.dataset.tick = tick; status.dataset.x = x; status.dataset.y = y;
+    status.dataset.placements = placements;
+    status.dataset.scatter = (digestHigh >>> 0).toString(16).padStart(8, '0') + (digestLow >>> 0).toString(16).padStart(8, '0');
     status.textContent = state == 3 ? 'Graphics could not start. Reload to retry.' : mode == 2 ? 'Simulation stopped. Press R to restart.' : mode == 1 ? 'Paused. N steps one tick; P resumes.' : 'WASD moves. Space attacks. P pauses. R restarts.';
 });
 // clang-format on
@@ -120,12 +122,17 @@ void Frame() noexcept
     const auto& session = gApplication.GetSession();
     const auto player = session.World().FindAuthored("player-start");
     const auto* transform = session.World().Transforms().Find(player);
+    // The placement digest lets the browser harness compare the room's scatter with the native fixture.
+    const ludus::foundation::uint64 digest = session.World().GetPlacementDigest();
     Present(static_cast<ludus::foundation::uint32>(state),
             static_cast<ludus::foundation::uint32>(session.Driver.GetMode()),
             static_cast<ludus::foundation::uint32>(ludus::graphics::rhi::GetStartup().SelectedBackend),
             static_cast<ludus::foundation::uint32>(session.World().GetTick()),
             transform != nullptr ? transform->Current.X : 0,
-            transform != nullptr ? transform->Current.Y : 0);
+            transform != nullptr ? transform->Current.Y : 0,
+            static_cast<ludus::foundation::uint32>(session.World().GetPlacements().size()),
+            static_cast<ludus::foundation::uint32>(digest >> 32U),
+            static_cast<ludus::foundation::uint32>(digest));
 }
 } // namespace
 #endif
@@ -316,9 +323,13 @@ int main(int argc, char** argv)
             return 1;
         }
         LUDUS_LOG_INFO(ludus::foundation::logging::LOG_CORE,
-                       "Headless reference: ticks={} hash={}",
+                       "Headless reference: ticks={} hash={} world-seed={} room={} placements={} scatter={}",
                        session.World().GetTick(),
-                       session.World().GetReplayHash());
+                       session.World().GetReplayHash(),
+                       session.Seed.Value,
+                       session.World().GetRoom(),
+                       session.World().GetPlacements().size(),
+                       session.World().GetPlacementDigest());
         return WriteRequestedTrace(traceOutput) == true ? 0 : 1;
     }
 #if LUDUS_TARGET_OS == LUDUS_OS_WEB

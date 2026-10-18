@@ -10,13 +10,13 @@ class LayoutTests(unittest.TestCase):
     def layout(self, fields):
         return shader.glsl_es_layout("layout(std140) uniform World {" + fields + "};")
     def test_game_upload(self):
-        result = self.layout("vec4 view; vec4 settings; vec4 geometry[64]; vec4 color[64]; vec4 rotation[64];")
-        self.assertEqual(result['offsets'], dict(view=0, settings=16, geometry=32, color=1056, rotation=2080))
-        self.assertEqual(result['size'], 3104)
+        result = self.layout("vec4 view; vec4 settings; vec4 geometry[192]; vec4 color[192]; vec4 rotation[192];")
+        self.assertEqual(result['offsets'], dict(view=0, settings=16, geometry=32, color=3104, rotation=6176))
+        self.assertEqual(result['size'], 9248)
     def test_compiler_array_wrapper(self):
-        result = shader.glsl_es_layout("struct A { highp vec4 data[64]; }; layout(std140) uniform World { vec4 view; vec4 settings; A geometry; A color; A rotation; } world;")
-        self.assertEqual(result['offsets'], dict(view=0, settings=16, geometry=32, color=1056, rotation=2080))
-        self.assertEqual(result['size'], 3104)
+        result = shader.glsl_es_layout("struct A { highp vec4 data[192]; }; layout(std140) uniform World { vec4 view; vec4 settings; A geometry; A color; A rotation; } world;")
+        self.assertEqual(result['offsets'], dict(view=0, settings=16, geometry=32, color=3104, rotation=6176))
+        self.assertEqual(result['size'], 9248)
         for body in ("vec4 data[64]; float extra;", "mat3 data[64];", "A data[2];"):
             with self.subTest(body=body), self.assertRaises(RuntimeError):
                 shader.glsl_es_layout("struct A {" + body + "}; layout(std140) uniform World { A geometry; } world;")

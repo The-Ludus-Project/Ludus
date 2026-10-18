@@ -3,6 +3,7 @@
 #include <charconv>
 #include <cmath>
 #include <ludus/foundation/base/parse_number.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <span>
 namespace ludus::world_demo
 {
@@ -545,6 +546,183 @@ LevelResult ReadLevel(std::string_view source, Level& output) noexcept
     output = candidate;
     return {};
 }
+namespace
+{
+/// Whether an authored scatter name repeats an entity, collision box, the scatter entity, one of the first
+/// `fullLayers` layers or their variants, or the first `partialVariants` variants (and the ID) of `partialOrNull`.
+bool IsScatterNameTaken(const Level& level,
+                        const Name& name,
+                        usize fullLayers,
+                        const ScatterLayerRecipe* partialOrNull,
+                        usize partialVariants) noexcept
+{
+    for (usize index = 0; index < level.EntityCount; ++index)
+    {
+        if (level.Entities[index].Id == name)
+        {
+            return true;
+        }
+    }
+    for (usize index = 0; index < level.CollisionCount; ++index)
+    {
+        if (level.Collision[index].Id == name)
+        {
+            return true;
+        }
+    }
+    if (level.Scatter.Id == name)
+    {
+        return true;
+    }
+    for (usize layer = 0; layer < fullLayers; ++layer)
+    {
+        const ScatterLayerRecipe& recipe = level.Scatter.Layers[layer];
+        if (recipe.Id == name)
+        {
+            return true;
+        }
+        for (usize variant = 0; variant < recipe.VariantCount; ++variant)
+        {
+            if (recipe.Variants[variant].Id == name)
+            {
+                return true;
+            }
+        }
+    }
+    if (partialOrNull == nullptr)
+    {
+        return false;
+    }
+    if (partialOrNull->Id == name)
+    {
+        return true;
+    }
+    for (usize variant = 0; variant < partialVariants; ++variant)
+    {
+        if (partialOrNull->Variants[variant].Id == name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+/// Conservative candidate count of one layer over the lattice region, or false when the lattice is unusable.
+bool TryCountLayerCandidates(const RoomScatter& scatter, const ScatterLayerRecipe& layer, uint64& outCount) noexcept
+{
+    int32 minimumX = 0;
+    int32 minimumY = 0;
+    int32 maximumX = 0;
+    int32 maximumY = 0;
+    if (TryScaleToLattice(scatter.Minimum.X, scatter.UnitsPerMetre, minimumX) == false ||
+        TryScaleToLattice(scatter.Minimum.Y, scatter.UnitsPerMetre, minimumY) == false ||
+        TryScaleToLattice(scatter.Maximum.X, scatter.UnitsPerMetre, maximumX) == false ||
+        TryScaleToLattice(scatter.Maximum.Y, scatter.UnitsPerMetre, maximumY) == false || minimumX >= maximumX ||
+        minimumY >= maximumY)
+    {
+        return false;
+    }
+    // Every cell overlapping the region, plus one per axis for the partial cells at each edge.
+    const uint64 cellsX = static_cast<uint64>(maximumX - minimumX) / layer.CellSize + 2;
+    const uint64 cellsY = static_cast<uint64>(maximumY - minimumY) / layer.CellSize + 2;
+    outCount = cellsX * cellsY * layer.Candidates;
+    return true;
+}
+LevelError ValidateScatter(const Level& level) noexcept
+{
+    const RoomScatter& scatter = level.Scatter;
+    if (level.HasScatter == false)
+    {
+        return scatter.LayerCount == 0 ? LevelError::None : LevelError::InvalidValue;
+    }
+    if (scatter.LayerCount > MAX_ROOM_SCATTER_LAYERS)
+    {
+        return LevelError::Capacity;
+    }
+    if (Identifier(scatter.Id) == false || scatter.LayerCount == 0 || scatter.UnitsPerMetre == 0 ||
+        scatter.UnitsPerMetre > MAX_SCATTER_UNITS_PER_METRE || Bounded(scatter.Minimum) == false ||
+        Bounded(scatter.Maximum) == false || Bounded(scatter.KeepOutMargin) == false || scatter.KeepOutMargin < 0 ||
+        scatter.KeepOutMargin > MAX_SCATTER_KEEP_OUT_MARGIN || scatter.Minimum.X >= scatter.Maximum.X ||
+        scatter.Minimum.Y >= scatter.Maximum.Y || scatter.Minimum.X < level.Minimum.X ||
+        scatter.Minimum.Y < level.Minimum.Y || scatter.Maximum.X > level.Maximum.X ||
+        scatter.Maximum.Y > level.Maximum.Y)
+    {
+        return LevelError::InvalidValue;
+    }
+    for (usize index = 0; index < level.EntityCount; ++index)
+    {
+        if (level.Entities[index].Id == scatter.Id)
+        {
+            return LevelError::DuplicateField;
+        }
+    }
+    for (usize index = 0; index < level.CollisionCount; ++index)
+    {
+        if (level.Collision[index].Id == scatter.Id)
+        {
+            return LevelError::DuplicateField;
+        }
+    }
+    uint64 candidates = 0;
+    for (usize index = 0; index < scatter.LayerCount; ++index)
+    {
+        const ScatterLayerRecipe& layer = scatter.Layers[index];
+        if (layer.VariantCount > MAX_ROOM_SCATTER_VARIANTS)
+        {
+            return LevelError::Capacity;
+        }
+        for (usize prior = 0; prior < index; ++prior)
+        {
+            if (scatter.Layers[prior].Layer == layer.Layer)
+            {
+                return LevelError::DuplicateField;
+            }
+        }
+        if (Identifier(layer.Id) == false || layer.CellSize == 0 || layer.Candidates == 0 ||
+            layer.Candidates > MAX_ROOM_SCATTER_CANDIDATES_PER_CELL || layer.MinimumScale == 0 ||
+            layer.MaximumScale < layer.MinimumScale || layer.VariantCount == 0)
+        {
+            return LevelError::InvalidValue;
+        }
+        if (IsScatterNameTaken(level, layer.Id, index, nullptr, 0) == true)
+        {
+            return LevelError::DuplicateField;
+        }
+        for (usize variant = 0; variant < layer.VariantCount; ++variant)
+        {
+            const ScatterVariantRecipe& recipe = layer.Variants[variant];
+            if (Identifier(recipe.Id) == false || recipe.ExclusionRadius > layer.CellSize ||
+                Bounded(recipe.HalfExtent) == false || Positive(recipe.HalfExtent) == false ||
+                recipe.HalfExtent.X > level.Maximum.X - level.Minimum.X ||
+                recipe.HalfExtent.Y > level.Maximum.Y - level.Minimum.Y)
+            {
+                return LevelError::InvalidValue;
+            }
+            for (const float32 channel : recipe.Color)
+            {
+                if (Bounded(channel) == false || channel < 0 || channel > 1)
+                {
+                    return LevelError::InvalidValue;
+                }
+            }
+            if (IsScatterNameTaken(level, recipe.Id, index, &layer, variant) == true)
+            {
+                return LevelError::DuplicateField;
+            }
+        }
+        uint64 layerCandidates = 0;
+        if (TryCountLayerCandidates(scatter, layer, layerCandidates) == false)
+        {
+            return LevelError::InvalidValue;
+        }
+        candidates += layerCandidates;
+        if (candidates > MAX_ROOM_SCATTER_CANDIDATES)
+        {
+            return LevelError::Capacity;
+        }
+    }
+    return LevelError::None;
+}
+} // namespace
 LevelError ValidateLevel(const Level& level) noexcept
 {
     if (level.EntityCount > 32 || level.CollisionCount > 16)
@@ -639,7 +817,27 @@ LevelError ValidateLevel(const Level& level) noexcept
             }
         }
     }
-    return players == 1 ? LevelError::None : LevelError::InvalidValue;
+    if (players != 1)
+    {
+        return LevelError::InvalidValue;
+    }
+    return ValidateScatter(level);
+}
+bool TryScaleToLattice(float32 metres, uint32 unitsPerMetre, int32& outLattice) noexcept
+{
+    if (Bounded(metres) == false || unitsPerMetre == 0 || unitsPerMetre > MAX_SCATTER_UNITS_PER_METRE)
+    {
+        return false;
+    }
+    const float64 scaled = static_cast<float64>(metres) * static_cast<float64>(unitsPerMetre);
+    const float64 magnitude = foundation::math::Floor(std::abs(scaled) + 0.5);
+    if (magnitude > static_cast<float64>(MAX_SCATTER_LATTICE_MAGNITUDE))
+    {
+        return false;
+    }
+    const int32 rounded = static_cast<int32>(magnitude);
+    outLattice = scaled < 0 ? -rounded : rounded;
+    return true;
 }
 namespace
 {

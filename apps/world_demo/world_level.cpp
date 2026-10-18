@@ -81,6 +81,85 @@ bool Actor(JsonValue value, Recipe& recipe, bool enemy, bool hasUuidReferences, 
     recipe.Health = static_cast<uint32>(health);
     return true;
 }
+/// Read an unsigned integer member within [minimum, maximum].
+bool BoundedInteger(JsonValue value, uint64 minimum, uint64 maximum, uint64& output) noexcept
+{
+    uint64 number = 0;
+    if (value.Integer(number) == false || number < minimum || number > maximum)
+    {
+        return false;
+    }
+    output = number;
+    return true;
+}
+/// The room-level `scatter` component: lattice conversion, region and keep-out margin.
+bool Scatter(JsonValue value, RoomScatter& scatter) noexcept
+{
+    uint64 units = 0;
+    if (value.Fields({"units_per_metre", "min_x", "min_y", "max_x", "max_y", "keep_out_margin"}) == false ||
+        BoundedInteger(value.Get("units_per_metre"), 1, MAX_SCATTER_UNITS_PER_METRE, units) == false ||
+        Number(value.Get("min_x"), scatter.Minimum.X) == false ||
+        Number(value.Get("min_y"), scatter.Minimum.Y) == false ||
+        Number(value.Get("max_x"), scatter.Maximum.X) == false ||
+        Number(value.Get("max_y"), scatter.Maximum.Y) == false ||
+        Number(value.Get("keep_out_margin"), scatter.KeepOutMargin) == false)
+    {
+        return false;
+    }
+    scatter.UnitsPerMetre = static_cast<uint32>(units);
+    return true;
+}
+/// A `scatter_layer` component: stable ID, cells, candidates and scale range.
+bool ScatterLayer(JsonValue value, ScatterLayerRecipe& layer) noexcept
+{
+    uint64 id = 0;
+    uint64 cellSize = 0;
+    uint64 candidates = 0;
+    uint64 minimumScale = 0;
+    uint64 maximumScale = 0;
+    if (value.Fields({"layer", "cell_size", "candidates", "min_scale", "max_scale"}) == false ||
+        BoundedInteger(value.Get("layer"), 0, 255, id) == false ||
+        BoundedInteger(value.Get("cell_size"), 1, 65535, cellSize) == false ||
+        BoundedInteger(value.Get("candidates"), 1, MAX_ROOM_SCATTER_CANDIDATES_PER_CELL, candidates) == false ||
+        BoundedInteger(value.Get("min_scale"), 1, 65535, minimumScale) == false ||
+        BoundedInteger(value.Get("max_scale"), 1, 65535, maximumScale) == false)
+    {
+        return false;
+    }
+    layer.Layer = static_cast<uint8>(id);
+    layer.CellSize = static_cast<uint16>(cellSize);
+    layer.Candidates = static_cast<uint16>(candidates);
+    layer.MinimumScale = static_cast<uint16>(minimumScale);
+    layer.MaximumScale = static_cast<uint16>(maximumScale);
+    return true;
+}
+/// A `scatter_variant` component; `outLayer` is the stable ID of the layer it joins.
+bool ScatterVariant(JsonValue value, ScatterVariantRecipe& variant, uint8& outLayer) noexcept
+{
+    uint64 layer = 0;
+    uint64 radius = 0;
+    if (value.Fields({"layer", "exclusion_radius", "half_x", "half_y", "red", "green", "blue"}) == false ||
+        BoundedInteger(value.Get("layer"), 0, 255, layer) == false ||
+        BoundedInteger(value.Get("exclusion_radius"), 0, 65535, radius) == false ||
+        Number(value.Get("half_x"), variant.HalfExtent.X) == false ||
+        Number(value.Get("half_y"), variant.HalfExtent.Y) == false ||
+        Number(value.Get("red"), variant.Color[0]) == false || Number(value.Get("green"), variant.Color[1]) == false ||
+        Number(value.Get("blue"), variant.Color[2]) == false)
+    {
+        return false;
+    }
+    variant.ExclusionRadius = static_cast<uint32>(radius);
+    outLayer = static_cast<uint8>(layer);
+    return true;
+}
+/// A variant read before every layer is known; attached to its layer after the entity loop.
+struct PendingVariant final
+{
+    ScatterVariantRecipe Variant{};
+    uint8 Layer = 0;
+};
+/// Most variants one World may author across its layers.
+constexpr usize MAX_WORLD_SCATTER_VARIANTS = MAX_ROOM_SCATTER_LAYERS * MAX_ROOM_SCATTER_VARIANTS;
 bool Settings(JsonValue value, Level& level) noexcept
 {
     std::string_view seed;
@@ -140,6 +219,8 @@ LevelResult ReadWorldLevel(std::string_view source, Level& output) noexcept
     foundation::StaticArray<Uuid, MAX_WORLD_ENTITIES> objects{};
     // Version-2 enemy targets, resolved to labels after every entity's UUID is known.
     foundation::StaticArray<Uuid, MAX_WORLD_ENTITIES> targets{};
+    foundation::StaticArray<PendingVariant, MAX_WORLD_SCATTER_VARIANTS> variants{};
+    usize variantCount = 0;
     const char* const idKey = hasUuidRecords == true ? "label" : "id";
     for (usize i = 0; i < entities.Count(); ++i)
     {
@@ -192,6 +273,51 @@ LevelResult ReadWorldLevel(std::string_view source, Level& output) noexcept
                 return {LevelError::InvalidValue, 0};
             }
         }
+        else if (components.Get("scatter").Valid())
+        {
+            if (candidate.HasScatter == true)
+            {
+                return {LevelError::DuplicateField, 0};
+            }
+            if (components.Fields({"scatter"}) == false ||
+                Scatter(components.Get("scatter"), candidate.Scatter) == false)
+            {
+                return {LevelError::InvalidValue, 0};
+            }
+            candidate.HasScatter = true;
+            candidate.Scatter.Id = ids[i];
+            candidate.Scatter.Object.Value = objects[i];
+        }
+        else if (components.Get("scatter_layer").Valid())
+        {
+            if (candidate.Scatter.LayerCount == MAX_ROOM_SCATTER_LAYERS)
+            {
+                return {LevelError::Capacity, 0};
+            }
+            ScatterLayerRecipe& layer = candidate.Scatter.Layers[candidate.Scatter.LayerCount++];
+            layer.Id = ids[i];
+            layer.Object.Value = objects[i];
+            if (components.Fields({"scatter_layer"}) == false ||
+                ScatterLayer(components.Get("scatter_layer"), layer) == false)
+            {
+                return {LevelError::InvalidValue, 0};
+            }
+        }
+        else if (components.Get("scatter_variant").Valid())
+        {
+            if (variantCount == MAX_WORLD_SCATTER_VARIANTS)
+            {
+                return {LevelError::Capacity, 0};
+            }
+            PendingVariant& pending = variants[variantCount++];
+            pending.Variant.Id = ids[i];
+            pending.Variant.Object.Value = objects[i];
+            if (components.Fields({"scatter_variant"}) == false ||
+                ScatterVariant(components.Get("scatter_variant"), pending.Variant, pending.Layer) == false)
+            {
+                return {LevelError::InvalidValue, 0};
+            }
+        }
         else
         {
             if (candidate.EntityCount == 32)
@@ -235,6 +361,27 @@ LevelResult ReadWorldLevel(std::string_view source, Level& output) noexcept
     if (settingsSeen == false)
     {
         return {LevelError::MissingField, 0};
+    }
+    // Variants join their layer by stable ID in document order; a layer-less variant is an invalid reference.
+    for (usize i = 0; i < variantCount; ++i)
+    {
+        ScatterLayerRecipe* layerOrNull = nullptr;
+        for (usize layer = 0; layer < candidate.Scatter.LayerCount && layerOrNull == nullptr; ++layer)
+        {
+            if (candidate.Scatter.Layers[layer].Layer == variants[i].Layer)
+            {
+                layerOrNull = &candidate.Scatter.Layers[layer];
+            }
+        }
+        if (layerOrNull == nullptr)
+        {
+            return {LevelError::InvalidReference, 0};
+        }
+        if (layerOrNull->VariantCount == MAX_ROOM_SCATTER_VARIANTS)
+        {
+            return {LevelError::Capacity, 0};
+        }
+        layerOrNull->Variants[layerOrNull->VariantCount++] = variants[i].Variant;
     }
     // Version 2 references are UUIDs of entities in the same document; resolve each to its label so
     // runtime lookup, validation and replay hashing are identical for both versions.
