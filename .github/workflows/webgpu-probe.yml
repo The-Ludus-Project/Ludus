@@ -245,6 +245,9 @@ jobs:
             out/build/renderer-web-sdk/render-graph-runtime.js
             out/build/renderer-web-sdk/render-graph-runtime.wasm
             out/build/renderer-web-sdk/render-graph-runtime.html
+            out/build/renderer-web-sdk/render-graph-pooling.js
+            out/build/renderer-web-sdk/render-graph-pooling.wasm
+            out/build/renderer-web-sdk/render-graph-pooling.html
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
@@ -614,7 +617,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [baseline, scaling]
+        suite: [baseline, scaling, pooling]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -643,6 +646,9 @@ jobs:
       - name: Verify L5 renderer scaling browser pixels
         if: matrix.suite == 'scaling'
         run: node tests/sdk_consumer/renderer-scaling-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/renderer-l5
+      - name: Measure RG4 transient pooling against the serial control on WebGPU
+        if: matrix.suite == 'pooling'
+        run: node tests/sdk_consumer/render-graph-pooling-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/render-graph-pooling
       - uses: actions/upload-artifact@v4
         if: always()
         with:

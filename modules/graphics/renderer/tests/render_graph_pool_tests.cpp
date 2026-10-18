@@ -4,6 +4,7 @@
 // exactly rather than by timing.
 #include "internal/lifecycle.h"
 #include "reference_raster.h"
+#include "render_graph_scratch.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -23,7 +24,6 @@ extern uint32 PendingToken;
 extern StartupError ImmediateError;
 extern FrameStatus NextFrame;
 extern Backend ActiveKind;
-extern bool SelectionSupported;
 } // namespace ludus::graphics::rhi::backend
 namespace
 {
@@ -48,8 +48,10 @@ struct ScratchPlan final
     StaticArray<format::Camera, 1> Cameras{{{0}}};
     uint32 ResourceCount = 0;
     uint32 PassCount = 0;
-    ScratchPlan(uint32 scratch, uint32 width, uint32 height) noexcept
+    explicit ScratchPlan(const ludus::render_graph_scratch::ScratchShape& shape) noexcept
     {
+        const uint32 width = shape.Width;
+        const uint32 height = shape.Height;
         const auto addBacking = [&](bool isExported) noexcept {
             const uint32 color = ResourceCount;
             Resources[ResourceCount++] = {width, height, format::Aspect::Color, color, 0, isExported == true ? 1U : 0U};
@@ -57,7 +59,7 @@ struct ScratchPlan final
             return color;
         };
         const uint32 exported = addBacking(true);
-        for (uint32 i = 0; i < scratch; ++i)
+        for (uint32 i = 0; i < shape.Scratch; ++i)
         {
             const uint32 color = addBacking(false);
             Passes[PassCount++] = {format::Technique::ColorAndDepth,
@@ -137,7 +139,6 @@ struct PoolFixture final
         rhi::backend::ImmediateError = rhi::StartupError::None;
         rhi::backend::NextFrame = rhi::FrameStatus::Ready;
         rhi::backend::ActiveKind = rhi::Backend::WebGPU;
-        rhi::backend::SelectionSupported = true;
         REQUIRE(rhi::CreateDevice({}, {}, {}, Device, Surface) == rhi::DeviceStatus::Pending);
         rhi::internal::Complete(rhi::backend::PendingToken, rhi::StartupError::None, {4096, 16384});
     }
@@ -189,7 +190,7 @@ struct PoolFixture final
 TEST_CASE("RG4 scratch transients need approved repeated coverage, which lowering never emits", "[render-graph][pool]")
 {
     PoolFixture fixture;
-    ScratchPlan plan{SCRATCH_COUNT, WIDTH, HEIGHT};
+    ScratchPlan plan{{SCRATCH_COUNT, WIDTH, HEIGHT}};
     for (usize pass = 0; pass < plan.PassCount; ++pass)
     {
         plan.Passes[pass].AllowsRepeatedCoverage = 0;
@@ -208,7 +209,7 @@ TEST_CASE("RG4 scratch transients need approved repeated coverage, which lowerin
 TEST_CASE("RG4 serial control creates every attachment and pools nothing", "[render-graph][pool]")
 {
     PoolFixture fixture;
-    const ScratchPlan plan{SCRATCH_COUNT, WIDTH, HEIGHT};
+    const ScratchPlan plan{{SCRATCH_COUNT, WIDTH, HEIGHT}};
     for (usize generation = 0; generation < 3; ++generation)
     {
         const usize creates = rhi::reference::Creates[TEXTURE];
@@ -230,7 +231,7 @@ TEST_CASE("RG4 serial control creates every attachment and pools nothing", "[ren
 TEST_CASE("RG4 pooled transients are reused only after RHI completion of their last frame", "[render-graph][pool]")
 {
     PoolFixture fixture;
-    const ScratchPlan plan{SCRATCH_COUNT, WIDTH, HEIGHT};
+    const ScratchPlan plan{{SCRATCH_COUNT, WIDTH, HEIGHT}};
     {
         renderer::RenderGraph first;
         REQUIRE(fixture.Initialize(first, plan, &fixture.Pool) == rhi::RasterStatus::Ready);
@@ -266,7 +267,7 @@ TEST_CASE("RG4 pooled transients are reused only after RHI completion of their l
     rhi::TextureAspect aspect;
     CHECK(third.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
     const renderer::RenderGraphPoolReport report = fixture.Pool.GetReport();
-    CHECK(report.CreatedAllocations == 2 * SCRATCH_COUNT);
+    CHECK(report.CreatedAllocations == uint64{2} * SCRATCH_COUNT);
     CHECK(report.ReusedAllocations == SCRATCH_COUNT);
     CHECK(report.LeasedAllocations == SCRATCH_COUNT);
     CHECK(report.IdleAllocations == SCRATCH_COUNT);
@@ -274,8 +275,8 @@ TEST_CASE("RG4 pooled transients are reused only after RHI completion of their l
 TEST_CASE("RG4 pool reuses only exact descriptors across repeated resize", "[render-graph][pool]")
 {
     PoolFixture fixture;
-    const ScratchPlan wide{SCRATCH_COUNT, WIDTH, HEIGHT};
-    const ScratchPlan tall{SCRATCH_COUNT, HEIGHT, WIDTH};
+    const ScratchPlan wide{{SCRATCH_COUNT, WIDTH, HEIGHT}};
+    const ScratchPlan tall{{SCRATCH_COUNT, HEIGHT, WIDTH}};
     constexpr usize CYCLES = 4;
     for (usize cycle = 0; cycle < CYCLES; ++cycle)
     {
@@ -293,7 +294,7 @@ TEST_CASE("RG4 pool reuses only exact descriptors across repeated resize", "[ren
         }
     }
     const renderer::RenderGraphPoolReport report = fixture.Pool.GetReport();
-    CHECK(report.CreatedAllocations == 2 * SCRATCH_COUNT);
+    CHECK(report.CreatedAllocations == uint64{2} * SCRATCH_COUNT);
     CHECK(report.ReusedAllocations == (2 * CYCLES - 2) * SCRATCH_COUNT);
     CHECK(report.DeferredAcquisitions == 0);
     CHECK(report.IdleAllocations == 2 * SCRATCH_COUNT);
@@ -301,7 +302,7 @@ TEST_CASE("RG4 pool reuses only exact descriptors across repeated resize", "[ren
 TEST_CASE("RG4 exported backings are never pooled, whichever aspect is exported", "[render-graph][pool]")
 {
     PoolFixture fixture;
-    ScratchPlan plan{SCRATCH_COUNT, WIDTH, HEIGHT};
+    ScratchPlan plan{{SCRATCH_COUNT, WIDTH, HEIGHT}};
     // Export the first scratch color and the second scratch's private depth instead.
     plan.Resources[2].IsExported = 1;
     plan.Resources[5].IsExported = 1;
@@ -333,7 +334,7 @@ TEST_CASE("RG4 pool evicts the least recently released allocation at capacity", 
     {
         // Distinct extents: no graph's transients match another's, so every release adds an entry.
         renderer::RenderGraph graph;
-        const ScratchPlan plan{SCRATCH_COUNT, WIDTH + static_cast<uint32>(i), HEIGHT};
+        const ScratchPlan plan{{SCRATCH_COUNT, WIDTH + static_cast<uint32>(i), HEIGHT}};
         REQUIRE(fixture.Initialize(graph, plan, &pool) == rhi::RasterStatus::Ready);
         CHECK(graph.GetAllocationReport().ReusedAllocations == 0);
     }
@@ -342,17 +343,19 @@ TEST_CASE("RG4 pool evicts the least recently released allocation at capacity", 
     {
         // The first graph released first, so its entries were the ones evicted.
         renderer::RenderGraph first;
-        REQUIRE(fixture.Initialize(first, {SCRATCH_COUNT, WIDTH, HEIGHT}, &pool) == rhi::RasterStatus::Ready);
+        REQUIRE(fixture.Initialize(first, ScratchPlan{{SCRATCH_COUNT, WIDTH, HEIGHT}}, &pool) ==
+                rhi::RasterStatus::Ready);
         CHECK(first.GetAllocationReport().ReusedAllocations == 0);
     }
     renderer::RenderGraph third;
-    REQUIRE(fixture.Initialize(third, {SCRATCH_COUNT, WIDTH + 2, HEIGHT}, &pool) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Initialize(third, ScratchPlan{{SCRATCH_COUNT, WIDTH + 2, HEIGHT}}, &pool) ==
+            rhi::RasterStatus::Ready);
     CHECK(third.GetAllocationReport().ReusedAllocations == SCRATCH_COUNT);
 }
 TEST_CASE("RG4 trimming destroys idle attachments and leaves leased ones", "[render-graph][pool]")
 {
     PoolFixture fixture;
-    const ScratchPlan plan{SCRATCH_COUNT, WIDTH, HEIGHT};
+    const ScratchPlan plan{{SCRATCH_COUNT, WIDTH, HEIGHT}};
     renderer::RenderGraph kept;
     REQUIRE(fixture.Initialize(kept, plan, &fixture.Pool) == rhi::RasterStatus::Ready);
     {
@@ -371,7 +374,7 @@ TEST_CASE("RG4 trimming destroys idle attachments and leaves leased ones", "[ren
 TEST_CASE("RG4 graphs reject a pool that is unbound or outlived its device", "[render-graph][pool]")
 {
     PoolFixture fixture;
-    const ScratchPlan plan{SCRATCH_COUNT, WIDTH, HEIGHT};
+    const ScratchPlan plan{{SCRATCH_COUNT, WIDTH, HEIGHT}};
     renderer::RenderGraphAttachmentPool unbound;
     renderer::RenderGraph graph;
     CHECK(fixture.Initialize(graph, plan, &unbound) == rhi::RasterStatus::InvalidDescription);
@@ -389,7 +392,7 @@ TEST_CASE("RG4 graphs reject a pool that is unbound or outlived its device", "[r
 TEST_CASE("RG4 pooled and serial-control graphs issue identical commands", "[render-graph][pool]")
 {
     PoolFixture fixture;
-    const ScratchPlan plan{SCRATCH_COUNT, WIDTH, HEIGHT};
+    const ScratchPlan plan{{SCRATCH_COUNT, WIDTH, HEIGHT}};
     constexpr usize GENERATIONS = 3;
     StaticArray<usize, 2> draws{};
     StaticArray<usize, 2> passes{};

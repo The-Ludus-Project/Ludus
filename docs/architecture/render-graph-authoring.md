@@ -4,8 +4,9 @@ Status: RG0 contracts, RG1 bounded offline shader builds and RG2 static opaque
 Renderer execution implemented, October 13, 2026; RG3a editing, mapped
 diagnostics and runtime activation implemented, October 15, 2026; RG3b node canvas
 and trusted in-editor preview implemented, October 16, 2026; execution profile widened
-to per-draw uniform bindings and authored masked coverage, October 17, 2026; RG4
-remains proposed.
+to per-draw uniform bindings and authored masked coverage, October 17, 2026; RG4a
+exact-descriptor transient pooling with a serial control implemented, October 18,
+2026; the remaining RG4 optimizations remain proposed.
 This defines the renderer authoring/compiler contract; it does not claim
 unrestricted shader composition or new RHI capability.
 Baseline design: `5c44d19`. See [usage and source formats](../development/render-graph-authoring.md).
@@ -424,6 +425,31 @@ effect parity, memory measurements and schedule diagnostics. WebGPU pooling
 does not imply physical heap aliasing. Every optimization retains source mapping
 and can be disabled in a diagnostic execution mode that preserves legal commands.
 
+RG4a delivers that first slice in Renderer's `RenderGraphAttachmentPool`. A
+transient backing is an allocation behind logical resources that are neither
+exported nor the presentation surface. A graph given a pool leases each transient
+backing from it and returns it on Reset; `RenderGraphActivation` owns one pool for
+all of its generations. An idle allocation is reused only when its complete RHI
+texture description is equal and the ordered submission of its last frame use
+(`RasterTextureState::Dependency`) has completed; otherwise the acquisition
+creates a new allocation and is reported as deferred. Exports never enter the
+pool, because their consumers may retain views or bindings beyond the graph, and
+surfaces allocate nothing. Idle capacity is explicit and evicts the least recently
+released entry; idle entries keep their RHI records and bytes until reused, evicted
+or trimmed. The null-pool `SerialControl` path is the pre-RG4 allocation behavior
+and encodes the same commands.
+
+The compatibility RGBA8 image of a depth-only backing is kept. RHI attachment
+textures always pair a color image with private depth, `RasterPassDescription`
+has no depth-only form, and every raster pipeline targets one to four color
+formats. Removing it needs a depth-only RHI attachment and color-less pipelines
+on every backend, which is RHI work outside this slice. The admitted RG2 profile
+has no pass that samples a graph resource, and lowering never approves repeated
+camera coverage, so no cooked graph has a transient backing today. Pooling is
+therefore qualified on generations rewritten with unexported scratch backings, and
+is idle for every cooked fixture. See
+[RG4 usage, evidence and limits](../development/render-graph-authoring.md#pool-transient-attachments-rg4).
+
 ## Editor interaction, diagnostics and hot reload
 
 Provide one Renderer workspace over the shared document/command core. The graph
@@ -538,6 +564,7 @@ architecture fits Ludus or that current features exist on our pinned tools.
 | RG3a (delivered) | Typed document/undo/save, source editing, mapped diagnostics, runtime generations and native activation | All RG3 acceptance fixtures above, without visual canvas or in-editor GPU preview |
 | RG3b (delivered) | Node canvas and trusted in-editor preview of the activated generation | Preview/live parity on a frozen fixture; pending/failed preview keeps the last drawable view |
 | RG4: measured scheduling/memory work | Optional pooling improvements, merging/aliasing/parallel paths individually | Identical serial-control pixels/effects and actual retained memory; named native/browser profiles; repeated resize/reload and frames in flight; unsupported paths explicit |
+| RG4a (delivered) | Exact-descriptor transient pooling with completion proof and a serial control | The RG4 acceptance above for pooling alone; no heap aliasing, pass merging, parallel recording or async queues |
 
 RG0 is delivered in `ludus_tools.render_graph` and the installed `ludus
 render-graph` CLI. It saves/imports a reusable raster asset, selects explicit
@@ -615,7 +642,7 @@ GPU uses. It conservatively completion-gates reuse of export allocations; export
 consumers must complete before another render/reset.
 
 Current RHI private depth is physically paired with color: depth-only offscreen
-allocates a compatibility RGBA8 image alongside depth. Renderer contexts also
+allocates a compatibility RGBA8 image alongside depth (kept by RG4a, see above). Renderer contexts also
 prewarm their existing finite surface/offscreen, overlay, reverse-Z and composite
 states; package recipe counts describe authored recipes, not those additional
 physical Renderer PSOs. Export consumers can be prewarmed against allocation/aspect without claiming
@@ -623,8 +650,8 @@ valid pixels. Encode contributes to the caller’s existing frame; that caller
 confirms the actual submission after composing the consumer. Whole-frame Render
 uses existing RHI surface acquisition/clear/presentation rules. Distinct logical
 depth images cannot share one physical depth, and a plan has one surface owner.
-No aliasing, pooling, async scheduling, reduced allocation
-or performance improvement is claimed. See
+RG2 itself claims no aliasing, pooling, async scheduling, reduced allocation or
+performance improvement; RG4a's measured pooling results are recorded separately. See
 [RG2 usage, qualified scope and evidence](../development/render-graph-authoring.md#execute-cooked-static-graphs-rg2).
 
 RG3a is delivered in the shared `render_graph_authoring` service, `render-graph

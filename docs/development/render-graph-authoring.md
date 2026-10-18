@@ -10,7 +10,8 @@ stages. RG1 adds explicit offline shader/schema builds and immutable packages,
 using the same CLI/backend. RG2 adds bounded static opaque Renderer admission and
 execution through cooked headers. RG3a adds the editor's Renderer tab, mapped
 diagnostics, runtime generations and atomic activation; the node canvas and live
-in-editor preview are RG3b.
+in-editor preview are RG3b. RG4a adds measured exact-descriptor pooling of
+transient attachments with a serial control.
 
 **RG0 plans are contract diagnostics, not executable renderer packages.** They
 do not compile shaders, evaluate scene draw-item coverage, negotiate device
@@ -829,7 +830,7 @@ Remaining gaps:
   SwiftShader).
 - RG3b editor preview on Linux/Vulkan is not covered by this evidence.
 - No scheduling, memory or performance claim; RG4 owns measured pooling, aliasing
-  and scheduling. The editor renders runtime generations only through the RG3b
+  and scheduling (see [RG4a pooling](#pool-transient-attachments-rg4)). The editor renders runtime generations only through the RG3b
   preview below.
 
 ## Node canvas and preview (RG3b)
@@ -948,3 +949,176 @@ offscreen Qt platform. They prove the preview's renderer output and publication
 rules, not native Qt presentation of the Preview tab or a live GameHost session.
 Linux/Vulkan and browser execution are not established by these local runs, and
 RG3b makes no scheduling, memory or performance claim.
+
+## Pool transient attachments (RG4)
+
+RG4 is delivered as individually measured optimizations, each with a serial
+control that issues legal commands. RG4a is the first: exact-descriptor pooling
+of transient attachments, with proof of RHI completion before reuse. Physical heap
+aliasing, pass merging, parallel recording and async queues are later, separate
+slices; none of them is part of RG4a. The contract is in the
+[architecture](../architecture/render-graph-authoring.md#pipeline-readiness-and-execution).
+
+### Choose the allocation mode
+
+`RenderGraphActivation::Initialize` takes a `RenderGraphAllocation`:
+
+- `ExactPool` (the default) gives every staged generation one shared
+  `RenderGraphAttachmentPool`.
+- `SerialControl` is the diagnostic control. Each generation creates all of its
+  attachments and destroys them on Reset, exactly as before RG4.
+
+Both modes encode the same commands. `GetPoolReport` copies the pool counters, and
+`TrimPool` destroys idle allocations between frames, for example under memory
+pressure. A directly owned `RenderGraph` takes an optional pool in `Initialize`.
+Pass null for the control; otherwise pass a pool initialized on the same device
+that outlives the graph and is Reset before the device is destroyed.
+`GetAllocationReport` reports a graph's export and transient allocations and how
+many it created or reused.
+
+### What is pooled
+
+A transient backing is an allocation behind logical resources that are neither
+exported nor the presentation surface. On Reset the graph returns it to the pool.
+A later acquisition reuses an idle allocation only when both of these hold:
+
+- Its complete RHI texture description (format, extent, sample count, mips,
+  layers, dimension, attachment usage and private depth/stencil) is equal.
+- `RasterTextureState::Dependency`, the ordered submission of its last frame use,
+  has completed. A completed later submission also covers earlier ones.
+
+If every exact match is still in flight, the acquisition creates an allocation and
+counts as `DeferredAcquisitions`. An entry whose proof fails (failed submission or
+lost device) is destroyed instead of reused. Exports are never pooled, because
+their consumers may keep views or bindings beyond the graph. Surfaces allocate
+nothing. A pool keeps at most its `idleCapacity` idle entries (default and maximum
+`RENDER_GRAPH_POOL_CAPACITY`, 32) and evicts the least recently released one. Idle
+entries keep their RHI texture records and bytes, which count against
+`StorageLimits::ResourcesPerKind` (default 64) and `ResourceBytes`. Choose a
+smaller capacity, or trim, when those budgets are tight.
+
+A depth-only backing keeps its compatibility RGBA8 image, at 4 logical bytes per
+pixel. The RHI private-depth contract cannot express a depth-only attachment:
+
+- Attachment textures always pair a color image with private depth.
+- `RasterPassDescription` has no depth-only form.
+- Every raster pipeline targets one to four color formats.
+
+Removing the image needs RHI support for depth-only attachments and color-less
+pipelines on every backend, which is outside this slice.
+
+### Which graphs benefit
+
+None of the admitted cooked graphs. In the RG2 profile no pass samples a graph
+resource, and lowering never approves repeated camera coverage. A scene pass into
+an unexported target is therefore `Conflicting`, and every cooked fixture's
+backings are exports or the surface. A GPU test checks that each cooked RG2
+fixture leases nothing from the pool.
+
+To qualify the mechanism, `tests/sdk_consumer/render_graph_scratch.h` rewrites
+the cooked offscreen `.lurgrt` into a numeric plan the Renderer does admit:
+
+- every pass approves repeated coverage;
+- unexported scratch color + depth backings follow, each drawn by one more pass;
+- all resources take a chosen extent, so a resize is a reload of a generation with
+  another extent, as a re-cooked graph would be.
+
+Pooling becomes useful for cooked graphs only once a later profile admits sampled
+graph reads or approved pre-Z passes.
+
+### RG4a acceptance evidence
+
+What each fixture establishes:
+
+- Renderer `[render-graph][pool]` unit tests (deterministic reference RHI, where
+  submissions complete only when the test says so):
+  - reuse only after the last frame's completion, with two frames in flight;
+  - exact descriptors under alternating extents;
+  - exports, of either aspect, never pooled;
+  - least-recent eviction, trimming, and an unbound or stale-device pool;
+  - identical draw and pass counts in the pooled and control paths;
+  - generation reloads through `RenderGraphActivation`, including reuse deferred
+    while a retired generation's frame is in flight, a superseded candidate
+    returning its transients, alternating-extent reloads, and the serial control.
+- `[render-graph][gpu][pool]` runs the scratch generation through
+  `RenderGraphActivation` in both modes on the host GPU: six captured reloads
+  alternating two extents, four reloads that each retire a generation with its
+  frame in flight, and a final captured reload. Every exported RGBA8 byte of the
+  pooled run must equal the control's, over an image that differs from the clear
+  color.
+- The installed measurement consumer
+  (`tests/sdk_consumer/render_graph_pooling.cpp`) is built against the installed
+  SDK for the host's single target: Metal, SPIR-V, or WGSL in the browser. Run it
+  natively, or in Chromium with `render-graph-pooling-browser-test.mjs`. It runs
+  two workloads at the named 640×360 profile: export-only (the cooked offscreen
+  generation) and scratch-2 (two scratch backings). Each workload runs first with
+  the serial control, then pooled. A run has six reloads, then six alternating
+  360×640 and 640×360, then six in flight, then one final reload, and then times
+  120 `Encode` calls. Every captured export of the pooled run is compared with the
+  control's byte for byte, and the run fails on any mismatch or on reuse where none
+  is expected.
+
+The consumer logs one `RG4 run` line per run. Its fields are:
+
+- attachments created and reused in each phase (counts include exports);
+- the pool's deferred acquisitions;
+- RHI `GetAllocationTelemetry` logical bytes and, where the backend exposes them,
+  API allocation bytes: sampled after each completed capture (steady) and the
+  maximum sampled after staging (peak);
+- idle pool bytes, measured as the telemetry drop on `TrimPool`;
+- p50/p95 CPU microseconds of `Stage` (graph initialization, including pipeline
+  prewarm and attachment allocation or reuse) and of `Encode`.
+
+Measured on macOS 26.6 / Metal, Apple M5 (10 cores), Clang 23.1.3, installed
+SDK built RelWithDebInfo, five consecutive runs on October 18, 2026. Counts and
+bytes were identical in all five runs except where a range is shown.
+
+| Workload | Mode | Created (reload / resize / in flight) | Reused | Deferred | Logical bytes steady / peak | Metal API bytes steady / peak | Idle pool bytes (logical / API) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| export-only | serial control | 6 / 6 / 7 | 0 | 0 | 1,843,668 / 3,686,892–5,530,536 | 1,982,932 / 3,965,420–5,948,328 | 0 / 0 |
+| export-only | exact pool | 6 / 6 / 7 | 0 | 0 | 1,843,668 / 3,686,892 | 1,982,932 / 3,965,420 | 0 / 0 |
+| scratch-2 | serial control | 18 / 18 / 21 | 0 | 0 | 5,530,452 / 11,060,076 | 5,948,244 / 11,895,660 | 0 / 0 |
+| scratch-2 | exact pool | 10 / 8 / 7 | 8 / 10 / 14 | 0 | 12,903,252 / 14,746,476 | 13,878,100 / 15,860,588 | 7,372,800 / 7,929,856 |
+
+Medians of the per-run p50 / p95 CPU times (µs), with the range of the per-run
+p50 over the five runs in parentheses:
+
+| Workload | Mode | Stage p50 / p95 | Encode p50 / p95 |
+| --- | --- | --- | --- |
+| export-only | serial control | 558 (551–578) / 750 | 17.0 (16.6–17.6) / 20.0 |
+| export-only | exact pool | 564 (545–577) / 635 | 17.1 (16.5–17.8) / 18.8 |
+| scratch-2 | serial control | 604 (598–618) / 641 | 38.8 (38.7–39.1) / 43.1 |
+| scratch-2 | exact pool | 592 (590–603) / 658 | 38.7 (38.6–39.1) / 40.2 |
+
+What these numbers show:
+
+- Allocations: pooling cuts scratch-2's attachment creations from 57 to 25 over
+  the 19 generations. After warm-up, each reload creates only its export.
+- Memory: the cost is retained memory. Steady logical bytes rise from 5.5 MB to
+  12.9 MB because both extents' scratch sets stay idle, and the sampled peak rises
+  from 11.1 MB to 14.7 MB. Trimming returns the 7.4 MB idle pool.
+- CPU time: there is no CPU-time claim. `Stage` is dominated by pipeline prewarm,
+  and the export-only pair, which does identical work in both modes, differs by as
+  much as the scratch pair. `Encode` is unchanged.
+- In flight: no deferred acquisition was observed, because this small workload's
+  frames completed before the next staging. Deferral is covered deterministically
+  by the reference-backend tests.
+
+Platform status:
+
+| Platform | Established | Evidence |
+| --- | --- | --- |
+| macOS / Metal (Apple M5) | Unit, GPU byte parity and the measurement consumer above | Local runs, October 18, 2026; the CI macOS job also runs the consumer and uploads `rg4-pooling-metal` |
+| Linux / Vulkan (Mesa llvmpipe) | GPU byte parity and the measurement consumer under the Khronos validation layer | CI "Development and SDK" job; the log is uploaded as `rg4-pooling-vulkan` |
+| Browser / WebGPU (Chromium SwiftShader) | Byte parity and measurements inside Wasm, with cross-origin isolation for the CPU timer | "Renderer browser tests (pooling)" job; `report.json` records the runs, the Chromium version and the observed `performance.now()` step |
+
+Unsupported or not established:
+
+- No admitted cooked graph benefits (see above). Exports are never pooled.
+- The depth-only compatibility RGBA8 image remains.
+- Physical heap aliasing, pass merging, parallel recording and async queues are
+  separate RG4 slices with their own controls.
+- WebGL 2 / GLSL ES is not measured. Linux and browser evidence uses software
+  adapters, and no physical-GPU numbers exist for Vulkan or WebGPU.
+- Idle entries are bounded by count, not bytes: a large-extent workload retains
+  correspondingly more memory until it is trimmed.

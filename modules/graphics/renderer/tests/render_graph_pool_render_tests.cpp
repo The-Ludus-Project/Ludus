@@ -72,12 +72,18 @@ struct RhiGuard final
         rhi::Shutdown();
     }
 };
-Array<uint8> ReadFile(std::string_view directoryPath, std::string_view name)
+/// Build-tree location of one runtime generation cooked by ludus_compile_render_graph(... RUNTIME_PACKAGE).
+struct PackageLocation final
+{
+    std::string_view Directory; ///< Absolute output directory of the graph.
+    std::string_view File;      ///< `<NAME>.lurgrt` inside Directory.
+};
+Array<uint8> ReadPackage(const PackageLocation& location)
 {
     filesystem::Directory directory;
-    REQUIRE(directory.Open(directoryPath).Succeeded() == true);
+    REQUIRE(directory.Open(location.Directory).Succeeded() == true);
     filesystem::File file;
-    REQUIRE(directory.OpenRead(name, file).Succeeded() == true);
+    REQUIRE(directory.OpenRead(location.File, file).Succeeded() == true);
     Array<uint8> bytes;
     REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
     const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
@@ -109,7 +115,7 @@ struct PoolGpuFixture final
             SKIP("No GPU adapter on this host");
         }
         REQUIRE(started == rhi::DeviceStatus::Ready);
-        Offscreen = ReadFile(LUDUS_RG3_OFFSCREEN_DIRECTORY, "rg2_offscreen.lurgrt");
+        Offscreen = ReadPackage({LUDUS_RG3_OFFSCREEN_DIRECTORY, "rg2_offscreen.lurgrt"});
         Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
         Items[0].SourceId = 1;
         Items[0].Material.Color = {.25F, .5F, .75F, 1};
@@ -118,9 +124,7 @@ struct PoolGpuFixture final
     {
         Array<uint8> bytes;
         REQUIRE(scratch::WriteScratchGeneration({Offscreen.GetData(), Offscreen.GetSize()},
-                                                SCRATCH_COUNT,
-                                                width,
-                                                height,
+                                                {SCRATCH_COUNT, width, height},
                                                 bytes) == true);
         renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
         core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};

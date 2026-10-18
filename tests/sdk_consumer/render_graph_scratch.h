@@ -39,17 +39,25 @@ inline void WriteWord(foundation::Array<uint8>& inoutBytes, uint32 word) noexcep
         inoutBytes.Add(static_cast<uint8>((word >> (8U * i)) & 0xFFU));
     }
 }
-/// Rewrite a cooked offscreen generation with scratch backings and the given extent.
+/// Scratch backings and the extent every resource of a rewritten generation takes.
+struct ScratchShape final
+{
+    uint32 Scratch = 0; ///< Unexported color + private-depth backings to add.
+    uint32 Width = 0;   ///< Physical width of every resource.
+    uint32 Height = 0;  ///< Physical height of every resource.
+};
+/// Rewrite a cooked offscreen generation with scratch backings and the shape's extent.
 /// @param offscreen Complete generation whose header and plan records are well formed.
 /// @param outBytes Receives the rewritten generation; preserved when false is returned.
 /// @return False for a truncated or non-generation input, or when the scratch backings
 /// exceed the plan's resource or pass capacity. Stage records are copied unchanged.
 [[nodiscard]] inline bool WriteScratchGeneration(foundation::BorrowedView<const uint8> offscreen,
-                                                 uint32 scratchCount,
-                                                 uint32 width,
-                                                 uint32 height,
+                                                 const ScratchShape& shape,
                                                  foundation::Array<uint8>& outBytes) noexcept
 {
+    const uint32 scratchCount = shape.Scratch;
+    const uint32 width = shape.Width;
+    const uint32 height = shape.Height;
     constexpr usize RESOURCE_COUNT_FIELD = 2;
     constexpr usize PASS_COUNT_FIELD = 3;
     constexpr usize CAMERA_COUNT_FIELD = 4;

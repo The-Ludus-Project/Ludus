@@ -170,6 +170,7 @@ public:
     RenderGraphAttachmentPool(const RenderGraphAttachmentPool&) = delete;            ///< Ownership is noncopyable.
     RenderGraphAttachmentPool& operator=(const RenderGraphAttachmentPool&) = delete; ///< Ownership is nonassignable.
     /// Bind the pool to a ready device without allocating GPU resources.
+    /// @param device Ready owned device; outlives the pool and every graph initialized with it.
     /// @param idleCapacity Most idle allocations retained, 1..RENDER_GRAPH_POOL_CAPACITY.
     /// @return InvalidState when already initialized, InvalidDescription for a capacity outside
     /// its range, OutOfMemory when bookkeeping cannot be allocated, otherwise the device
@@ -218,6 +219,9 @@ public:
     /// Copy/validate plan and cooked interfaces, prewarm all required contexts and allocate attachments.
     /// Ready/Pending owns setup. Failure of empty initialization leaves it empty;
     /// reinitialization rejects and preserves existing state. No open frame is permitted.
+    /// @param device Ready owned device without an open frame; outlives this graph.
+    /// @param plan Numeric plan; its records are copied before return.
+    /// @param programs Cooked stages; artifact storage stays alive until Initialize/Poll reaches Ready.
     /// @param poolOrNull Optional RG4 attachment pool on the same device; transient backings are
     /// taken from it and returned on Reset. Null selects the serial control: every attachment is
     /// created here and destroyed on Reset. Both paths encode identical commands. An uninitialized

@@ -261,16 +261,15 @@ core::UniquePtr<renderer::RenderGraphPackage> MakePackage(const PackageOptions& 
 constexpr uint32 SCRATCH_COUNT = 2;
 constexpr usize TEXTURE = static_cast<usize>(rhi::internal::RasterKind::Texture);
 core::UniquePtr<renderer::RenderGraphPackage>
-MakeScratchPackage(uint8 generation, uint32 width = WIDTH, uint32 height = HEIGHT)
+MakeScratchPackage(uint8 generation,
+                   const ludus::render_graph_scratch::ScratchShape& shape = {SCRATCH_COUNT, WIDTH, HEIGHT})
 {
     PackageOptions options;
     options.Generation = generation;
     const Array<uint8> offscreen = MakePackageBytes(options);
     Array<uint8> bytes;
     REQUIRE(ludus::render_graph_scratch::WriteScratchGeneration({offscreen.GetData(), offscreen.GetSize()},
-                                                                SCRATCH_COUNT,
-                                                                width,
-                                                                height,
+                                                                shape,
                                                                 bytes) == true);
     renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
     core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
@@ -783,7 +782,7 @@ TEST_CASE("RG3 a bound generation compiled against another uniform interface req
 
 TEST_CASE("RG4 the scratch generation rewrites extents and adds approved unexported backings", "[render-graph][pool]")
 {
-    const core::UniquePtr<renderer::RenderGraphPackage> package = MakeScratchPackage(1, HEIGHT, WIDTH);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = MakeScratchPackage(1, {SCRATCH_COUNT, HEIGHT, WIDTH});
     const renderer::RenderGraphPlan plan = package->GetPlan();
     REQUIRE(plan.Resources.GetSize() == 2 + 2 * SCRATCH_COUNT);
     REQUIRE(plan.Passes.GetSize() == 1 + SCRATCH_COUNT);
@@ -818,7 +817,7 @@ TEST_CASE("RG4 generation reloads reuse the retired generation's transients afte
         CHECK(fixture.Activation.GetActiveOrNull()->GetOutputSceneRevision() == generation);
     }
     const renderer::RenderGraphPoolReport report = fixture.Activation.GetPoolReport();
-    CHECK(report.CreatedAllocations == 2 * SCRATCH_COUNT);
+    CHECK(report.CreatedAllocations == uint64{2} * SCRATCH_COUNT);
     CHECK(report.ReusedAllocations == (RELOADS - 2) * SCRATCH_COUNT);
     CHECK(report.LeasedAllocations == SCRATCH_COUNT);
     CHECK(report.IdleAllocations == SCRATCH_COUNT);
@@ -856,16 +855,16 @@ TEST_CASE("RG4 alternating-extent reloads reuse each extent's own transients", "
     for (usize generation = 1; generation <= RELOADS; ++generation)
     {
         const bool isWide = generation % 2 == 1;
-        fixture.Reload(MakeScratchPackage(static_cast<uint8>(generation),
-                                          isWide == true ? WIDTH : HEIGHT,
-                                          isWide == true ? HEIGHT : WIDTH),
-                       generation);
+        fixture.Reload(
+            MakeScratchPackage(static_cast<uint8>(generation),
+                               {SCRATCH_COUNT, isWide == true ? WIDTH : HEIGHT, isWide == true ? HEIGHT : WIDTH}),
+            generation);
         fixture.Render();
         rhi::reference::Completed = rhi::reference::Submitted;
     }
     const renderer::RenderGraphPoolReport report = fixture.Activation.GetPoolReport();
     // Generation n reuses generation n - 2's set, which has the same extent.
-    CHECK(report.CreatedAllocations == 2 * SCRATCH_COUNT);
+    CHECK(report.CreatedAllocations == uint64{2} * SCRATCH_COUNT);
     CHECK(report.ReusedAllocations == (RELOADS - 2) * SCRATCH_COUNT);
     CHECK(report.DeferredAcquisitions == 0);
 }

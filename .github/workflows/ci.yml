@@ -148,6 +148,9 @@ jobs:
           out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
           out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer
+          mkdir -p out/rg4-evidence
+          out/renderer-sdk/ludus_sdk_render_graph_pooling_consumer 2>&1 | tee out/rg4-evidence/metal.log
+          python3 -c 'from pathlib import Path; text=Path("out/rg4-evidence/metal.log").read_text(); assert "pooling passed" in text, text'
           out/renderer-sdk/ludus_sdk_reference_capture out/reference.luhdr
           python3 scripts/reference-hdr out/reference.luhdr --pfm out/reference.pfm --manifest out/reference.json
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/reference-scene --output-on-failure
@@ -160,6 +163,14 @@ jobs:
           path = Path('examples/reference-scene/src/main.cpp')
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
+      - name: Upload RG4 pooling evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rg4-pooling-metal
+          path: out/rg4-evidence/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Verify installed macOS game-project tooling
         run: |
           ./scripts/install-sdk macos-clang-development
@@ -819,6 +830,10 @@ jobs:
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer 2>&1 | tee out/rg3-sdk-vulkan-validation.log
           python3 -c 'from pathlib import Path; text=Path("out/rg3-sdk-vulkan-validation.log").read_text(); assert "Validation Error" not in text and "VUID-" not in text, text'
+          # RG4 evidence: pooled and serial-control exports, allocation counts, bytes and CPU p50/p95.
+          mkdir -p out/rg4-evidence
+          VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_pooling_consumer 2>&1 | tee out/rg4-evidence/vulkan-validation.log
+          python3 -c 'from pathlib import Path; text=Path("out/rg4-evidence/vulkan-validation.log").read_text(); assert "pooling passed" in text and "Validation Error" not in text and "VUID-" not in text, text'
           out/renderer-sdk/ludus_sdk_reference_capture out/reference.luhdr
           python3 scripts/reference-hdr out/reference.luhdr --pfm out/reference.pfm --manifest out/reference.json
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/reference-scene --output-on-failure
@@ -831,6 +846,14 @@ jobs:
           path = Path('examples/reference-scene/src/main.cpp')
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
+      - name: Upload RG4 pooling evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rg4-pooling-vulkan
+          path: out/rg4-evidence/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Check the reference scene consumer with ASan and UBSan
         run: |
           out/host-tools/venv/bin/cmake -S examples/reference-scene -B out/reference-scene-sanitized -G Ninja \

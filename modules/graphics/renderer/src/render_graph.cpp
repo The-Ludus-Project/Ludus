@@ -742,7 +742,8 @@ struct RenderGraph::State final
         Current.Reset();
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
-            if (IsPooled[i] == true)
+            // A pool reset early (a broken precondition, asserted there) no longer takes leases back.
+            if (IsPooled[i] == true && internal::RenderGraphPoolAccess::IsBound(*PoolOrNull) == true)
             {
                 internal::RenderGraphPoolAccess::Release(*PoolOrNull,
                                                          MakeAttachmentDescription(Resources[i]),

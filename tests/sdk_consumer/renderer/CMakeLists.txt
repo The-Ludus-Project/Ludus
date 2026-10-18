@@ -144,3 +144,17 @@ if(EMSCRIPTEN)
     set_target_properties(ludus_sdk_render_graph_runtime_consumer PROPERTIES OUTPUT_NAME render-graph-runtime SUFFIX ".js")
     configure_file(../render-graph-runtime.html render-graph-runtime.html COPYONLY)
 endif()
+
+# RG4: exact-descriptor transient pooling evidence. The consumer rewrites the embedded offscreen
+# generation into its scratch workload, compares serial-control and pooled exports byte for byte,
+# and logs allocation counts, RHI telemetry bytes and CPU p50/p95 times (render_graph_pooling.cpp).
+add_executable(ludus_sdk_render_graph_pooling_consumer ../render_graph_pooling.cpp "${rg3_embedded}/rg3_runtime_package.h")
+target_link_libraries(ludus_sdk_render_graph_pooling_consumer PRIVATE Ludus::GraphicsRenderer Ludus::FoundationTime)
+target_compile_options(ludus_sdk_render_graph_pooling_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+target_include_directories(ludus_sdk_render_graph_pooling_consumer PRIVATE "${rg3_embedded}")
+ludus_compile_renderer_shaders(TARGET ludus_sdk_render_graph_pooling_consumer SHADERS renderer_composite)
+if(EMSCRIPTEN)
+    target_link_options(ludus_sdk_render_graph_pooling_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
+    set_target_properties(ludus_sdk_render_graph_pooling_consumer PROPERTIES OUTPUT_NAME render-graph-pooling SUFFIX ".js")
+    configure_file(../render-graph-pooling.html render-graph-pooling.html COPYONLY)
+endif()

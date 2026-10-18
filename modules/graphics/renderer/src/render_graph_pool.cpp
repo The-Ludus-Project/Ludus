@@ -153,6 +153,10 @@ bool RenderGraphPoolAccess::IsUsable(const RenderGraphAttachmentPool& pool) noex
     return pool.mState.Get() != nullptr &&
            rhi::GetDeviceInfo(pool.mState->Device, information) == rhi::DeviceStatus::Ready;
 }
+bool RenderGraphPoolAccess::IsBound(const RenderGraphAttachmentPool& pool) noexcept
+{
+    return pool.mState.Get() != nullptr;
+}
 Status RenderGraphPoolAccess::Acquire(RenderGraphAttachmentPool& inoutPool,
                                       const rhi::TextureDescription& description,
                                       rhi::TextureHandle& outTexture,
