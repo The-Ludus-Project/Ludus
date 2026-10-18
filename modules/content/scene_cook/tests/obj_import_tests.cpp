@@ -27,11 +27,11 @@ using ludus::foundation::core::uint32;
 using ludus::foundation::core::usize;
 
 /// Read OBJ text with optional in-memory companion files.
-Status ReadObj(std::string_view text,
-               SceneIr& outScene,
-               DiagnosticLog& outLog,
-               std::span<const MemorySourceFile> files = {},
-               const Cancellation* cancelOrNull = nullptr)
+Status ReadWavefront(std::string_view text,
+                     SceneIr& outScene,
+                     DiagnosticLog& outLog,
+                     std::span<const MemorySourceFile> files = {},
+                     const Cancellation* cancelOrNull = nullptr)
 {
     MemoryByteSource source(AsBytes(text));
     MemorySourceResolver resolver(files);
@@ -209,7 +209,7 @@ TEST_CASE("OBJ faces: fan triangulation, smoothing groups and degenerate corners
     {
         SceneIr scene;
         DiagnosticLog log;
-        REQUIRE(ReadObj("v 0 0 0\nv 1 0 0\nv 2 1 0\nv 1 2 0\nv 0 1 0\nf 1 2 3 4 5\n", scene, log) == Status::Ok);
+        REQUIRE(ReadWavefront("v 0 0 0\nv 1 0 0\nv 2 1 0\nv 1 2 0\nv 0 1 0\nf 1 2 3 4 5\n", scene, log) == Status::Ok);
         REQUIRE(scene.Meshes.GetSize() == 1);
         CHECK(scene.Meshes[0].Indices.GetSize() == 9);
         CHECK(scene.Meshes[0].GetVertexCount() == 5);
@@ -219,18 +219,18 @@ TEST_CASE("OBJ faces: fan triangulation, smoothing groups and degenerate corners
         const std::string_view quad = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 1\nf 1 2 3\nf 1 3 4\n";
         SceneIr flat;
         DiagnosticLog flatLog;
-        REQUIRE(ReadObj("s off\n" + std::string(quad), flat, flatLog) == Status::Ok);
+        REQUIRE(ReadWavefront("s off\n" + std::string(quad), flat, flatLog) == Status::Ok);
         CHECK(flat.Meshes[0].GetVertexCount() == 6);
         SceneIr smooth;
         DiagnosticLog smoothLog;
-        REQUIRE(ReadObj("s 1\n" + std::string(quad), smooth, smoothLog) == Status::Ok);
+        REQUIRE(ReadWavefront("s 1\n" + std::string(quad), smooth, smoothLog) == Status::Ok);
         CHECK(smooth.Meshes[0].GetVertexCount() == 4);
     }
     SECTION("repeated positions are removed and reported")
     {
         SceneIr scene;
         DiagnosticLog log;
-        REQUIRE(ReadObj("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\nf 1 1 2\n", scene, log) == Status::Ok);
+        REQUIRE(ReadWavefront("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\nf 1 1 2\n", scene, log) == Status::Ok);
         CHECK(scene.Meshes[0].Indices.GetSize() == 3);
         CHECK(HasCode(log, codes::GEOMETRY_REPAIRED));
     }
@@ -246,7 +246,7 @@ TEST_CASE("OBJ faces: fan triangulation, smoothing groups and degenerate corners
         text += face + "\nf 1 2 3\n";
         SceneIr scene;
         DiagnosticLog log;
-        REQUIRE(ReadObj(text, scene, log) == Status::Ok);
+        REQUIRE(ReadWavefront(text, scene, log) == Status::Ok);
         CHECK(HasCode(log, codes::PRIMITIVE_SKIPPED));
         CHECK(scene.Meshes[0].Indices.GetSize() == 3);
     }
@@ -254,9 +254,9 @@ TEST_CASE("OBJ faces: fan triangulation, smoothing groups and degenerate corners
     {
         SceneIr scene;
         DiagnosticLog log;
-        REQUIRE(ReadObj("v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvt 0 0\nvn 0 0 1\nf 1/1/1 2/1/1 3/1/1\nf 2 4 3\n",
-                        scene,
-                        log) == Status::Ok);
+        REQUIRE(ReadWavefront("v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvt 0 0\nvn 0 0 1\nf 1/1/1 2/1/1 3/1/1\nf 2 4 3\n",
+                              scene,
+                              log) == Status::Ok);
         CHECK(log.CountOccurrences(codes::ATTRIBUTE_IGNORED) == 2);
         CHECK(scene.Meshes[0].Normals.IsEmpty());
         CHECK(scene.Meshes[0].Uvs.GetSize() == scene.Meshes[0].GetVertexCount() * 2);
@@ -286,7 +286,7 @@ TEST_CASE("OBJ malformed input fails with located errors", "[scene_cook][obj]")
         INFO(item.Text);
         SceneIr scene;
         DiagnosticLog log;
-        CHECK(ReadObj(item.Text, scene, log) == Status::Invalid);
+        CHECK(ReadWavefront(item.Text, scene, log) == Status::Invalid);
         CHECK(HasCode(log, item.Code));
         REQUIRE(log.GetEntries().IsEmpty() == false);
         CHECK(log.GetEntries()[0].File.GetView() == "memory.obj");
@@ -295,12 +295,12 @@ TEST_CASE("OBJ malformed input fails with located errors", "[scene_cook][obj]")
     SceneIr scene;
     DiagnosticLog log;
     const std::string overlong = "v 0 0 0" + std::string(obj::MAX_LINE_BYTES, ' ') + "\n";
-    CHECK(ReadObj(overlong, scene, log) == Status::Invalid);
+    CHECK(ReadWavefront(overlong, scene, log) == Status::Invalid);
     CHECK(HasCode(log, codes::MALFORMED_INPUT));
     // Line continuations join physical lines and keep the first line number.
     SceneIr joined;
     DiagnosticLog joinedLog;
-    CHECK(ReadObj("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 \\\n 2 3\n", joined, joinedLog) == Status::Ok);
+    CHECK(ReadWavefront("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 \\\n 2 3\n", joined, joinedLog) == Status::Ok);
     CHECK(joined.Meshes[0].Indices.GetSize() == 3);
 }
 
@@ -310,11 +310,11 @@ TEST_CASE("OBJ dependencies stay inside the import root and report problems", "[
     const MemorySourceFile files[] = {{"lib.mtl", AsBytes(mtl)}};
     SceneIr scene;
     DiagnosticLog log;
-    REQUIRE(ReadObj("mtllib lib.mtl missing.mtl ../escape.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\n"
-                    "usemtl Red\nf 1 2 3\nusemtl Blue\nf 1 2 3\n",
-                    scene,
-                    log,
-                    files) == Status::Ok);
+    REQUIRE(ReadWavefront("mtllib lib.mtl missing.mtl ../escape.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\n"
+                          "usemtl Red\nf 1 2 3\nusemtl Blue\nf 1 2 3\n",
+                          scene,
+                          log,
+                          files) == Status::Ok);
     CHECK(log.CountOccurrences(codes::DEPENDENCY_UNREADABLE) == 2);
     CHECK(HasCode(log, codes::TEXTURE_UNREADABLE)); // ../outside.png
     CHECK(HasCode(log, codes::NAME_UNDEFINED));     // usemtl Blue
@@ -337,13 +337,13 @@ TEST_CASE("OBJ reading honours cancellation", "[scene_cook][obj]")
     const Cancellation cancel{CancelImmediately, nullptr};
     SceneIr scene;
     DiagnosticLog log;
-    CHECK(ReadObj(text, scene, log, {}, &cancel) == Status::Cancelled);
+    CHECK(ReadWavefront(text, scene, log, {}, &cancel) == Status::Cancelled);
 }
 
 TEST_CASE("OBJ budget: excess materials merge and decorative emitters drop instead of failing", "[scene_cook][obj]")
 {
     ScratchDirectory scratch;
-    std::string obj = "mtllib m.mtl\n";
+    std::string wavefrontText = "mtllib m.mtl\n";
     std::string mtl;
     for (int i = 0; i < 12; ++i)
     {
@@ -354,17 +354,17 @@ TEST_CASE("OBJ budget: excess materials merge and decorative emitters drop inste
         {
             mtl += "Ke " + std::to_string(i + 1) + " 1 1\n";
         }
-        obj += "v ";
-        obj += x;
-        obj += " 0 0\nv ";
-        obj += x;
-        obj += ".5 0 0\nv ";
-        obj += x;
-        obj += " 1 0\nusemtl M";
-        obj += std::to_string(i);
-        obj += "\nf -3 -2 -1\n";
+        wavefrontText += "v ";
+        wavefrontText += x;
+        wavefrontText += " 0 0\nv ";
+        wavefrontText += x;
+        wavefrontText += ".5 0 0\nv ";
+        wavefrontText += x;
+        wavefrontText += " 1 0\nusemtl M";
+        wavefrontText += std::to_string(i);
+        wavefrontText += "\nf -3 -2 -1\n";
     }
-    WriteFile(scratch.Path / "scene.obj", obj);
+    WriteFile(scratch.Path / "scene.obj", wavefrontText);
     WriteFile(scratch.Path / "m.mtl", mtl);
     BestEffortResult result;
     CookError error;
@@ -408,7 +408,7 @@ TEST_CASE("OBJ review regressions: overlong numbers, huge illum, map_Pm, many gr
     {
         SceneIr scene;
         DiagnosticLog log;
-        CHECK(ReadObj("v " + std::string(20000, '1') + " 0 0\n", scene, log) == Status::Invalid);
+        CHECK(ReadWavefront("v " + std::string(20000, '1') + " 0 0\n", scene, log) == Status::Invalid);
         CHECK(HasCode(log, codes::MALFORMED_INPUT));
     }
     SECTION("illum outside the int range is clamped")
@@ -417,7 +417,8 @@ TEST_CASE("OBJ review regressions: overlong numbers, huge illum, map_Pm, many gr
         const MemorySourceFile files[] = {{"a.mtl", AsBytes(mtl)}};
         SceneIr scene;
         DiagnosticLog log;
-        CHECK(ReadObj("mtllib a.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl A\nf 1 2 3\n", scene, log, files) == Status::Ok);
+        CHECK(ReadWavefront("mtllib a.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl A\nf 1 2 3\n", scene, log, files) ==
+              Status::Ok);
     }
     SECTION("map_Pm without Pm carries the metalness itself")
     {
@@ -425,7 +426,7 @@ TEST_CASE("OBJ review regressions: overlong numbers, huge illum, map_Pm, many gr
         const MemorySourceFile files[] = {{"a.mtl", AsBytes(mtl)}};
         SceneIr scene;
         DiagnosticLog log;
-        REQUIRE(ReadObj("mtllib a.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Metal\nf 1 2 3\n", scene, log, files) ==
+        REQUIRE(ReadWavefront("mtllib a.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Metal\nf 1 2 3\n", scene, log, files) ==
                 Status::Ok);
         REQUIRE(scene.Materials.GetSize() == 2);
         CHECK(scene.Materials[0].Metallic == 1.0);
@@ -443,7 +444,7 @@ TEST_CASE("OBJ review regressions: overlong numbers, huge illum, map_Pm, many gr
         }
         SceneIr scene;
         DiagnosticLog log;
-        REQUIRE(ReadObj(text, scene, log) == Status::Ok);
+        REQUIRE(ReadWavefront(text, scene, log) == Status::Ok);
         CHECK(scene.Meshes.GetSize() == 5000);
         CHECK(scene.Meshes[0].Indices.GetSize() == 12); // Four faces of g0, welded into one mesh.
     }

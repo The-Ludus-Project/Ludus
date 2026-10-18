@@ -32,6 +32,25 @@ using foundation::core::float32;
 using foundation::core::float64;
 using foundation::core::uint16;
 
+/// Index of the alpha channel in an RGBA8 texel.
+constexpr usize ALPHA_CHANNEL_INDEX = 3;
+constexpr uint8 OPAQUE_ALPHA = 255;
+/// Bytes inspected for a Radiance "#?RADIANCE"/"#?RGBE" program-type signature.
+constexpr usize RADIANCE_SIGNATURE_SCAN_BYTES = 16;
+/// JPEG start-of-image marker (FF D8) followed by the next marker's FF prefix.
+constexpr usize JPEG_SIGNATURE_BYTES = 3;
+constexpr foundation::StaticArray<uint8, JPEG_SIGNATURE_BYTES> JPEG_SIGNATURE{0xff, 0xd8, 0xff};
+/// stb_image takes the input length as an int.
+constexpr usize MAX_STB_INPUT_BYTES = 0x7fffffff;
+/// Each 2x2 box-filter tap weighs one quarter.
+constexpr float64 BOX_FILTER_TAP_WEIGHT = 0.25;
+/// PFM header words: identifier ("PF" or "Pf"), width, height and scale.
+constexpr usize PFM_IDENTIFIER_WORD = 0;
+constexpr usize PFM_WIDTH_WORD = 1;
+constexpr usize PFM_HEIGHT_WORD = 2;
+constexpr usize PFM_SCALE_WORD = 3;
+constexpr usize PFM_HEADER_WORD_COUNT = 4;
+
 [[nodiscard]] bool HasExtension(std::string_view name, std::string_view extension) noexcept
 {
     if (name.size() < extension.size())
@@ -229,7 +248,7 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
                                         DecodedImage& outImage,
                                         std::string_view& outMessage) noexcept
 {
-    if (data.size() > 0x7fffffffU)
+    if (data.size() > MAX_STB_INPUT_BYTES)
     {
         outMessage = "image file is too large for the decoder";
         return ImageResult::Invalid;
@@ -248,8 +267,12 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
         outMessage = "image dimensions exceed the decoded pixel limit";
         return ImageResult::Invalid;
     }
-    stbi_uc* pixelsOrNull =
-        stbi_load_from_memory(data.data(), static_cast<int>(data.size()), &width, &height, &channels, 4);
+    stbi_uc* pixelsOrNull = stbi_load_from_memory(data.data(),
+                                                  static_cast<int>(data.size()),
+                                                  &width,
+                                                  &height,
+                                                  &channels,
+                                                  static_cast<int>(DECODED_IMAGE_CHANNEL_COUNT));
     if (pixelsOrNull == nullptr)
     {
         if (HasStbRunOutOfMemory() == true)
@@ -272,7 +295,7 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
         outImage.Width = static_cast<uint32>(width);
         outImage.Height = static_cast<uint32>(height);
         outImage.Texels.Clear();
-        const usize byteCount = static_cast<usize>(width) * static_cast<usize>(height) * 4;
+        const usize byteCount = static_cast<usize>(width) * static_cast<usize>(height) * DECODED_IMAGE_CHANNEL_COUNT;
         if (outImage.Texels.TryAddRange(std::span<const uint8>(pixels, byteCount)) == false)
         {
             result = ImageResult::OutOfMemory;
@@ -286,7 +309,9 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
 {
     constexpr usize SIGNATURE_COUNT = 2;
     constexpr foundation::StaticArray<std::string_view, SIGNATURE_COUNT> SIGNATURES{"#?RADIANCE", "#?RGBE"};
-    const std::string_view text(reinterpret_cast<const char*>(data.data()), data.size() < 16 ? data.size() : 16);
+    const std::string_view text(reinterpret_cast<const char*>(data.data()),
+                                data.size() < RADIANCE_SIGNATURE_SCAN_BYTES ? data.size()
+                                                                            : RADIANCE_SIGNATURE_SCAN_BYTES);
     for (const std::string_view signature : SIGNATURES)
     {
         if (text.substr(0, signature.size()) == signature)
@@ -299,14 +324,25 @@ DecodeTga(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
 
 [[nodiscard]] bool HasJpegSignature(std::span<const uint8> data) noexcept
 {
-    return data.size() >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff;
+    if (data.size() < JPEG_SIGNATURE_BYTES)
+    {
+        return false;
+    }
+    for (usize i = 0; i < JPEG_SIGNATURE_BYTES; ++i)
+    {
+        if (data[i] != JPEG_SIGNATURE[i])
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Decode a Radiance RGBE (.hdr) image into linear float RGB, top row first.
 [[nodiscard]] ImageResult
 DecodeRadiance(std::span<const uint8> data, DecodedLightingImage& outImage, std::string_view& outMessage) noexcept
 {
-    if (data.size() > 0x7fffffffU)
+    if (data.size() > MAX_STB_INPUT_BYTES)
     {
         outMessage = "Radiance HDR file is too large for the decoder";
         return ImageResult::Invalid;
@@ -322,8 +358,12 @@ DecodeRadiance(std::span<const uint8> data, DecodedLightingImage& outImage, std:
         outMessage = "Radiance HDR header is malformed or exceeds the image limits";
         return ImageResult::Invalid;
     }
-    float* samplesOrNull =
-        stbi_loadf_from_memory(data.data(), static_cast<int>(data.size()), &width, &height, &channels, 3);
+    float* samplesOrNull = stbi_loadf_from_memory(data.data(),
+                                                  static_cast<int>(data.size()),
+                                                  &width,
+                                                  &height,
+                                                  &channels,
+                                                  static_cast<int>(LIGHTING_IMAGE_CHANNEL_COUNT));
     if (samplesOrNull == nullptr)
     {
         if (HasStbRunOutOfMemory() == true)
@@ -337,7 +377,8 @@ DecodeRadiance(std::span<const uint8> data, DecodedLightingImage& outImage, std:
     DecodedLightingImage candidate;
     candidate.Width = static_cast<uint32>(width);
     candidate.Height = static_cast<uint32>(height);
-    const bool isAllocated = candidate.Rgb.TryResize(usize{candidate.Width} * candidate.Height * 3);
+    const bool isAllocated =
+        candidate.Rgb.TryResize(usize{candidate.Width} * candidate.Height * LIGHTING_IMAGE_CHANNEL_COUNT);
     for (usize i = 0; isAllocated == true && i < candidate.Rgb.GetSize(); ++i)
     {
         candidate.Rgb[i] = samples[i];
@@ -369,14 +410,14 @@ DecodeFloatImage(std::span<const uint8> data, DecodedLightingImage& outImage, st
     outImage.WasHighDynamicRange = true;
     for (usize i = 0; i < usize{source.Width} * source.Height; ++i)
     {
-        for (usize k = 0; k < 3; ++k)
+        for (usize k = 0; k < LIGHTING_IMAGE_CHANNEL_COUNT; ++k)
         {
-            float32 value = source.Rgb[i * 3 + k];
+            float32 value = source.Rgb[i * LIGHTING_IMAGE_CHANNEL_COUNT + k];
             value = math::IsFinite(value) == true ? math::Clamp(value, 0.0F, 1.0F) : 0.0F;
-            outImage.Texels[i * 4 + k] =
-                static_cast<uint8>(math::Floor(static_cast<float64>(math::EncodeSrgb(value)) * 255.0 + 0.5));
+            outImage.Texels[i * DECODED_IMAGE_CHANNEL_COUNT + k] = static_cast<uint8>(
+                math::Floor(static_cast<float64>(math::EncodeSrgb(value)) * DECODED_IMAGE_CHANNEL_MAXIMUM + 0.5));
         }
-        outImage.Texels[i * 4 + 3] = 255;
+        outImage.Texels[i * DECODED_IMAGE_CHANNEL_COUNT + ALPHA_CHANNEL_INDEX] = OPAQUE_ALPHA;
     }
     return ImageResult::Ok;
 }
@@ -387,7 +428,7 @@ DecodeFloatImage(std::span<const uint8> data, DecodedLightingImage& outImage, st
     const uint32 width = inoutImage.Width > 1 ? inoutImage.Width / 2 : 1;
     const uint32 height = inoutImage.Height > 1 ? inoutImage.Height / 2 : 1;
     Array<float32> rgb;
-    if (rgb.TryResize(usize{width} * height * 3) == false)
+    if (rgb.TryResize(usize{width} * height * LIGHTING_IMAGE_CHANNEL_COUNT) == false)
     {
         return false;
     }
@@ -395,7 +436,7 @@ DecodeFloatImage(std::span<const uint8> data, DecodedLightingImage& outImage, st
     {
         for (uint32 x = 0; x < width; ++x)
         {
-            for (usize k = 0; k < 3; ++k)
+            for (usize k = 0; k < LIGHTING_IMAGE_CHANNEL_COUNT; ++k)
             {
                 float64 sum = 0.0;
                 for (uint32 dy = 0; dy < 2; ++dy)
@@ -404,10 +445,12 @@ DecodeFloatImage(std::span<const uint8> data, DecodedLightingImage& outImage, st
                     {
                         const uint32 sx = math::Min(x * 2 + dx, inoutImage.Width - 1);
                         const uint32 sy = math::Min(y * 2 + dy, inoutImage.Height - 1);
-                        sum += static_cast<float64>(inoutImage.Rgb[(usize{sy} * inoutImage.Width + sx) * 3 + k]);
+                        sum += static_cast<float64>(
+                            inoutImage.Rgb[(usize{sy} * inoutImage.Width + sx) * LIGHTING_IMAGE_CHANNEL_COUNT + k]);
                     }
                 }
-                rgb[(usize{y} * width + x) * 3 + k] = static_cast<float32>(sum * 0.25);
+                rgb[(usize{y} * width + x) * LIGHTING_IMAGE_CHANNEL_COUNT + k] =
+                    static_cast<float32>(sum * BOX_FILTER_TAP_WEIGHT);
             }
         }
     }
@@ -423,7 +466,7 @@ DecodePfm(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
     // Header: "PF" or "Pf", width height, scale (negative = little-endian), each
     // followed by whitespace; rows run bottom to top.
     const std::string_view text(reinterpret_cast<const char*>(data.data()), data.size() < 256 ? data.size() : 256);
-    std::string_view words[4];
+    std::string_view words[PFM_HEADER_WORD_COUNT];
     usize at = 0;
     for (std::string_view& word : words)
     {
@@ -442,10 +485,11 @@ DecodePfm(std::span<const uint8> data, DecodedImage& outImage, std::string_view&
     float64 width = 0.0;
     float64 height = 0.0;
     float64 scale = 0.0;
-    const bool isColour = words[0] == "PF";
-    if ((isColour == false && words[0] != "Pf") || ParseNumber(words[1], width) == false ||
-        ParseNumber(words[2], height) == false || ParseNumber(words[3], scale) == false || width < 1.0 ||
-        height < 1.0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION || scale == 0.0)
+    const bool isColour = words[PFM_IDENTIFIER_WORD] == "PF";
+    if ((isColour == false && words[PFM_IDENTIFIER_WORD] != "Pf") ||
+        ParseNumber(words[PFM_WIDTH_WORD], width) == false || ParseNumber(words[PFM_HEIGHT_WORD], height) == false ||
+        ParseNumber(words[PFM_SCALE_WORD], scale) == false || width < 1.0 || height < 1.0 ||
+        width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION || scale == 0.0)
     {
         outMessage = "malformed PFM header";
         return ImageResult::Invalid;
@@ -555,7 +599,7 @@ ImageResult DecodeLightingImage(std::string_view fileName,
         while (candidate.Width > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
                candidate.Height > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
                usize{candidate.Width} * candidate.Height >
-                   content::scene_format::MAX_BUNDLE_BYTES / (3 * sizeof(float32)))
+                   content::scene_format::MAX_BUNDLE_BYTES / (LIGHTING_IMAGE_CHANNEL_COUNT * sizeof(float32)))
         {
             if (HalveLightingImage(candidate) == false)
             {
@@ -637,10 +681,12 @@ ImageResult DecodeLightingImage(std::string_view fileName,
         float64 width = 0;
         float64 height = 0;
         float64 scale = 0;
-        const bool isColour = words[0] == "PF";
-        if ((isColour == false && words[0] != "Pf") || ParseNumber(words[1], width) == false ||
-            ParseNumber(words[2], height) == false || ParseNumber(words[3], scale) == false || width < 1 ||
-            height < 1 || width > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
+        const bool isColour = words[PFM_IDENTIFIER_WORD] == "PF";
+        if ((isColour == false && words[PFM_IDENTIFIER_WORD] != "Pf") ||
+            ParseNumber(words[PFM_WIDTH_WORD], width) == false ||
+            ParseNumber(words[PFM_HEIGHT_WORD], height) == false ||
+            ParseNumber(words[PFM_SCALE_WORD], scale) == false || width < 1 || height < 1 ||
+            width > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
             height > content::scene_format::MAX_ENVIRONMENT_DIMENSION || math::Floor(width) != width ||
             math::Floor(height) != height || scale == 0)
         {

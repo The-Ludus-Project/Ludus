@@ -22,7 +22,34 @@ constexpr uint32 CANCEL_POLL_LINES = 4096;
 /// Smoothing keys from here up are unique per face, so unsmoothed faces never share
 /// a welded vertex and the cook's generated normals stay flat.
 constexpr uint32 FLAT_SMOOTHING_KEY_BASE = uint32{1} << 31;
-constexpr usize RGB_COMPONENTS = 3;
+constexpr usize RGB_COMPONENTS = IR_RGB_CHANNEL_COUNT;
+/// Components stored per texture coordinate (u, v).
+constexpr usize UV_COMPONENTS = 2;
+/// Most components of a `v` record: x y z and the rational weight w.
+constexpr usize MAX_POSITION_COMPONENTS = 4;
+/// Largest admitted face-index magnitude, so the signed result and relative-index
+/// arithmetic cannot overflow.
+constexpr uint64 MAX_INDEX_MAGNITUDE = uint64{1} << 62;
+/// Map options -o, -s and -t take up to three numbers (u, v and w).
+constexpr usize MAX_MAP_VECTOR_ARGUMENTS = 3;
+/// `-imfchan m` selects the matte channel, stored after red, green and blue.
+constexpr uint8 MATTE_CHANNEL = 3;
+/// Prefix of the MTL texture-map statements (map_Kd, map_Ns, ...).
+constexpr std::string_view MAP_KEYWORD_PREFIX = "map_";
+/// Largest Phong exponent considered; higher values are already a perfect mirror.
+constexpr float64 MAX_SPECULAR_EXPONENT = 100000.0;
+/// A diffuse colour whose largest channel is below this (linear) has no diffuse term;
+/// with a strong specular colour the material is mapped to a conductor.
+constexpr float64 CONDUCTOR_MAX_DIFFUSE = .04;
+/// Illumination models are small integers (0-10); the clamp keeps the cast defined.
+constexpr float64 MAX_ILLUMINATION_MODEL = 100.0;
+/// MTL illumination models with transparency or refraction (MTL appendix B2, illum):
+/// 4 glass with ray-traced reflection, 6 refraction, 7 refraction with Fresnel,
+/// 9 glass without ray-traced reflection.
+constexpr int32 ILLUMINATION_GLASS_RAY_TRACED = 4;
+constexpr int32 ILLUMINATION_REFRACTION = 6;
+constexpr int32 ILLUMINATION_REFRACTION_FRESNEL = 7;
+constexpr int32 ILLUMINATION_GLASS = 9;
 /// Default diffuse colour when an MTL material has no Kd (SceneIR's default grey).
 constexpr float64 DEFAULT_DIFFUSE = .5;
 
@@ -264,13 +291,13 @@ struct MapOptions final
     bool HasChannel = false;
 };
 
-class ObjReader final
+class WavefrontReader final
 {
 public:
-    ObjReader(SourceResolver& inoutResolver,
-              SceneIr& outScene,
-              DiagnosticLog& inoutLog,
-              const Cancellation* cancelOrNull) noexcept
+    WavefrontReader(SourceResolver& inoutResolver,
+                    SceneIr& outScene,
+                    DiagnosticLog& inoutLog,
+                    const Cancellation* cancelOrNull) noexcept
         : mResolver(inoutResolver), mScene(outScene), mLog(inoutLog), mCancelOrNull(cancelOrNull)
     {
     }
@@ -359,7 +386,7 @@ private:
     uint64 magnitude = 0;
     if (digits.empty() == true ||
         foundation::ParseUint64(digits.data(), digits.size(), magnitude) != foundation::NumberParseStatus::Success ||
-        magnitude > uint64{1} << 62)
+        magnitude > MAX_INDEX_MAGNITUDE)
     {
         return false;
     }
@@ -387,7 +414,7 @@ private:
     return true;
 }
 
-bool ObjReader::resolveIndex(std::string_view text, usize count, uint32& outIndex) noexcept
+bool WavefrontReader::resolveIndex(std::string_view text, usize count, uint32& outIndex) noexcept
 {
     int64 value = 0;
     if (ParseInteger(text, value) == false || value == 0)
@@ -403,12 +430,12 @@ bool ObjReader::resolveIndex(std::string_view text, usize count, uint32& outInde
     return true;
 }
 
-Status ObjReader::readVector(WordCursor& inoutWords, VertexPool pool, uint32 lineNumber) noexcept
+Status WavefrontReader::readVector(WordCursor& inoutWords, VertexPool pool, uint32 lineNumber) noexcept
 {
     // v x y z [w], vt u [v [w]], vn x y z.
     const bool isUv = pool == VertexPool::TextureCoordinate;
-    const usize minimum = isUv == true ? 1 : 3;
-    const usize maximum = pool == VertexPool::Position ? 4 : 3;
+    const usize minimum = isUv == true ? 1 : IR_VECTOR_COMPONENT_COUNT;
+    const usize maximum = pool == VertexPool::Position ? MAX_POSITION_COMPONENTS : IR_VECTOR_COMPONENT_COUNT;
     Array<float32>& target = pool == VertexPool::Position ? mPositions : isUv == true ? mUvs : mNormals;
     constexpr usize MAX_COMPONENTS = 7;
     foundation::StaticArray<float64, MAX_COMPONENTS> values{};
@@ -434,23 +461,22 @@ Status ObjReader::readVector(WordCursor& inoutWords, VertexPool pool, uint32 lin
         // v x y z r g b: per-vertex colours are a common, unofficial extension.
         inform(codes::ATTRIBUTE_IGNORED, lineNumber, "extra vertex components (colours or weights) ignored");
     }
-    if (target.GetSize() / (isUv == true ? 2 : 3) >= MAX_POOL_ENTRIES)
+    const usize storedCount = isUv == true ? UV_COMPONENTS : IR_VECTOR_COMPONENT_COUNT;
+    if (target.GetSize() / storedCount >= MAX_POOL_ENTRIES)
     {
         fail(codes::LIMIT_EXCEEDED, lineNumber, "vertex pool exceeds the OBJ profile limit");
         return Status::Ok;
     }
-    constexpr usize STORED_COMPONENTS = 3;
-    const foundation::StaticArray<float32, STORED_COMPONENTS> stored{
+    const foundation::StaticArray<float32, IR_VECTOR_COMPONENT_COUNT> stored{
         static_cast<float32>(values[0]),
         isUv == true ? static_cast<float32>(1.0 - values[1]) : static_cast<float32>(values[1]),
         static_cast<float32>(values[2]),
     };
-    return target.TryAddRange(std::span<const float32>(stored.GetData(), isUv == true ? 2 : 3)) == true
-               ? Status::Ok
-               : Status::OutOfMemory;
+    return target.TryAddRange(std::span<const float32>(stored.GetData(), storedCount)) == true ? Status::Ok
+                                                                                               : Status::OutOfMemory;
 }
 
-Status ObjReader::selectBuilder(uint32 lineNumber) noexcept
+Status WavefrontReader::selectBuilder(uint32 lineNumber) noexcept
 {
     if (mCurrentBuilder != IR_NONE)
     {
@@ -486,7 +512,7 @@ Status ObjReader::selectBuilder(uint32 lineNumber) noexcept
     return Status::Ok;
 }
 
-Status ObjReader::readFace(WordCursor& inoutWords, uint32 lineNumber) noexcept
+Status WavefrontReader::readFace(WordCursor& inoutWords, uint32 lineNumber) noexcept
 {
     foundation::StaticArray<Corner, MAX_FACE_CORNERS> corners{};
     usize count = 0;
@@ -515,9 +541,10 @@ Status ObjReader::readFace(WordCursor& inoutWords, uint32 lineNumber) noexcept
             normalText = secondSlash == std::string_view::npos ? std::string_view() : rest.substr(secondSlash + 1);
         }
         Corner& corner = corners[count];
-        if (resolveIndex(positionText, mPositions.GetSize() / 3, corner.Position) == false ||
-            (uvText.empty() == false && resolveIndex(uvText, mUvs.GetSize() / 2, corner.Uv) == false) ||
-            (normalText.empty() == false && resolveIndex(normalText, mNormals.GetSize() / 3, corner.Normal) == false))
+        if (resolveIndex(positionText, mPositions.GetSize() / IR_VECTOR_COMPONENT_COUNT, corner.Position) == false ||
+            (uvText.empty() == false && resolveIndex(uvText, mUvs.GetSize() / UV_COMPONENTS, corner.Uv) == false) ||
+            (normalText.empty() == false &&
+             resolveIndex(normalText, mNormals.GetSize() / IR_VECTOR_COMPONENT_COUNT, corner.Normal) == false))
         {
             fail(codes::MALFORMED_INPUT, lineNumber, "face index is zero, malformed or out of range");
             return Status::Ok;
@@ -528,12 +555,13 @@ Status ObjReader::readFace(WordCursor& inoutWords, uint32 lineNumber) noexcept
         hasMissingNormal = hasMissingNormal == true || normalText.empty() == true;
         ++count;
     }
-    if (count < 3)
+    if (count < IR_TRIANGLE_CORNER_COUNT)
     {
         warn(codes::PRIMITIVE_SKIPPED, lineNumber, "face with fewer than three corners skipped");
         return Status::Ok;
     }
-    mTotalCorners += (count - 2) * 3;
+    // A fan over count corners has count - 2 triangles.
+    mTotalCorners += (count - 2) * IR_TRIANGLE_CORNER_COUNT;
     if (mTotalCorners > MAX_TOTAL_CORNERS)
     {
         fail(codes::LIMIT_EXCEEDED, lineNumber, "face corners exceed the OBJ profile limit");
@@ -582,7 +610,7 @@ Status ObjReader::readFace(WordCursor& inoutWords, uint32 lineNumber) noexcept
     return Status::Ok;
 }
 
-bool ObjReader::normalizePath(std::string_view raw, uint32 lineNumber, String& outPath) noexcept
+bool WavefrontReader::normalizePath(std::string_view raw, uint32 lineNumber, String& outPath) noexcept
 {
     outPath.Clear();
     usize start = 0;
@@ -610,7 +638,7 @@ bool ObjReader::normalizePath(std::string_view raw, uint32 lineNumber, String& o
     return true;
 }
 
-Status ObjReader::loadLibraries(WordCursor& inoutWords, uint32 lineNumber) noexcept
+Status WavefrontReader::loadLibraries(WordCursor& inoutWords, uint32 lineNumber) noexcept
 {
     // The statement lists one or more file names; a single name with spaces is
     // tried as a whole first.
@@ -643,7 +671,7 @@ Status ObjReader::loadLibraries(WordCursor& inoutWords, uint32 lineNumber) noexc
     return Status::Ok;
 }
 
-Status ObjReader::loadLibrary(std::string_view name, uint32 lineNumber) noexcept
+Status WavefrontReader::loadLibrary(std::string_view name, uint32 lineNumber) noexcept
 {
     String normalized;
     if (normalizePath(name, lineNumber, normalized) == false)
@@ -701,18 +729,18 @@ Status ObjReader::loadLibrary(std::string_view name, uint32 lineNumber) noexcept
     return status;
 }
 
-uint32 ObjReader::findMaterial(std::string_view name) const noexcept
+uint32 WavefrontReader::findMaterial(std::string_view name) const noexcept
 {
     const uint32 index = mMaterials.Find(name);
     return index == NameIndex::NOT_FOUND ? IR_NONE : index;
 }
 
-Status ObjReader::registerTexture(std::string_view raw,
-                                  TextureEncoding encoding,
-                                  std::string_view directory,
-                                  const MapOptions& options,
-                                  uint32 lineNumber,
-                                  uint32& outTexture) noexcept
+Status WavefrontReader::registerTexture(std::string_view raw,
+                                        TextureEncoding encoding,
+                                        std::string_view directory,
+                                        const MapOptions& options,
+                                        uint32 lineNumber,
+                                        uint32& outTexture) noexcept
 {
     outTexture = IR_NONE;
     String normalized;
@@ -752,10 +780,10 @@ Status ObjReader::registerTexture(std::string_view raw,
     return mScene.Textures.TryAdd(static_cast<IrTexture&&>(texture)) == true ? Status::Ok : Status::OutOfMemory;
 }
 
-Status ObjReader::readMap(WordCursor& inoutWords,
-                          std::string_view keyword,
-                          uint32 lineNumber,
-                          std::string_view directory) noexcept
+Status WavefrontReader::readMap(WordCursor& inoutWords,
+                                std::string_view keyword,
+                                uint32 lineNumber,
+                                std::string_view directory) noexcept
 {
     MapOptions options;
     std::string_view file;
@@ -778,7 +806,7 @@ Status ObjReader::readMap(WordCursor& inoutWords,
         {
             // Up to three numbers; a non-number ends the list.
             bool hasNonDefault = false;
-            for (usize i = 0; i < 3; ++i)
+            for (usize i = 0; i < MAX_MAP_VECTOR_ARGUMENTS; ++i)
             {
                 const usize before = inoutWords.GetPosition();
                 float64 value = 0.0;
@@ -817,7 +845,7 @@ Status ObjReader::readMap(WordCursor& inoutWords,
             if (inoutWords.Next(argument) == true)
             {
                 options.HasChannel = true;
-                options.Channel = argument == "g" ? 1 : argument == "b" ? 2 : argument == "m" ? 3 : 0;
+                options.Channel = argument == "g" ? 1 : argument == "b" ? 2 : argument == "m" ? MATTE_CHANNEL : 0;
             }
         }
         else if (word == "-blendu" || word == "-blendv" || word == "-boost" || word == "-texres" || word == "-type" ||
@@ -921,7 +949,7 @@ Status ObjReader::readMap(WordCursor& inoutWords,
 // Beckmann-width relation alpha_b = sqrt(2 / (Ns + 2)). The perceptual
 // roughness stored here is sqrt(alpha_b), treating the Beckmann width as the
 // GGX alpha (= roughness^2) of the engine's metallic-roughness model.
-Status ObjReader::finishMaterial(const MtlTerms& terms, uint32 line) noexcept
+Status WavefrontReader::finishMaterial(const MtlTerms& terms, uint32 line) noexcept
 {
     IrMaterial& material = mScene.Materials[mOpenMaterial];
     const bool isPbr = terms.HasPbrRoughness == true || terms.HasPbrMetallic == true;
@@ -940,14 +968,14 @@ Status ObjReader::finishMaterial(const MtlTerms& terms, uint32 line) noexcept
     }
     else
     {
-        const float64 exponent = math::Clamp(terms.SpecularExponent, 0.0, 100000.0);
+        const float64 exponent = math::Clamp(terms.SpecularExponent, 0.0, MAX_SPECULAR_EXPONENT);
         const bool hasSpecular = terms.Illumination != 0 && terms.Illumination != 1;
         material.Roughness = hasSpecular == true ? math::Sqrt(math::Sqrt(2.0 / (exponent + 2.0))) : 1.0;
         const float64 diffuseMaximum = math::Max(terms.Diffuse[0], math::Max(terms.Diffuse[1], terms.Diffuse[2]));
         const float64 specularMaximum = math::Max(terms.Specular[0], math::Max(terms.Specular[1], terms.Specular[2]));
         // A surface with no diffuse term and a strong specular colour (mirrors, polished
         // metals) becomes a conductor whose base colour is the specular colour.
-        if (hasSpecular == true && diffuseMaximum < .04 && specularMaximum > .5 &&
+        if (hasSpecular == true && diffuseMaximum < CONDUCTOR_MAX_DIFFUSE && specularMaximum > .5 &&
             material.BaseColourTexture == IR_NONE)
         {
             material.Metallic = 1.0;
@@ -970,7 +998,8 @@ Status ObjReader::finishMaterial(const MtlTerms& terms, uint32 line) noexcept
         material.AlphaMode = IrAlphaMode::Blend;
         warn(codes::ALPHA_APPROXIMATED, line, "MTL dissolve/opacity cooked as opaque");
     }
-    if (terms.Illumination == 4 || terms.Illumination == 6 || terms.Illumination == 7 || terms.Illumination == 9)
+    if (terms.Illumination == ILLUMINATION_GLASS_RAY_TRACED || terms.Illumination == ILLUMINATION_REFRACTION ||
+        terms.Illumination == ILLUMINATION_REFRACTION_FRESNEL || terms.Illumination == ILLUMINATION_GLASS)
     {
         warn(codes::TRANSMISSION_DROPPED, line, "MTL refraction/glass illumination model cooked as opaque");
     }
@@ -993,7 +1022,7 @@ Status ObjReader::finishMaterial(const MtlTerms& terms, uint32 line) noexcept
     return Status::Ok;
 }
 
-Status ObjReader::readLibrary(std::span<const uint8> bytes, std::string_view directory) noexcept
+Status WavefrontReader::readLibrary(std::span<const uint8> bytes, std::string_view directory) noexcept
 {
     MemoryByteSource source(bytes);
     LineReader lines(source);
@@ -1055,8 +1084,9 @@ Status ObjReader::readLibrary(std::span<const uint8> bytes, std::string_view dir
             mOpenLine = lineNumber;
             continue;
         }
-        if (keyword.size() >= 4 && (AreNamesEqual(keyword.substr(0, 4), "map_") == true || keyword == "bump" ||
-                                    keyword == "norm" || keyword == "disp" || keyword == "decal" || keyword == "refl"))
+        if (keyword.size() >= MAP_KEYWORD_PREFIX.size() &&
+            (AreNamesEqual(keyword.substr(0, MAP_KEYWORD_PREFIX.size()), MAP_KEYWORD_PREFIX) == true ||
+             keyword == "bump" || keyword == "norm" || keyword == "disp" || keyword == "decal" || keyword == "refl"))
         {
             if (AreNamesEqual(keyword, "map_Ka") == true || keyword == "decal" || keyword == "refl" ||
                 AreNamesEqual(keyword, "map_aat") == true || AreNamesEqual(keyword, "map_Ps") == true)
@@ -1198,7 +1228,7 @@ Status ObjReader::readLibrary(std::span<const uint8> bytes, std::string_view dir
             else
             {
                 // Illumination models are small integers; anything else is out of range.
-                mOpenTerms.Illumination = static_cast<int32>(math::Clamp(values[0], -1.0, 100.0));
+                mOpenTerms.Illumination = static_cast<int32>(math::Clamp(values[0], -1.0, MAX_ILLUMINATION_MODEL));
             }
             continue;
         }
@@ -1219,7 +1249,7 @@ Status ObjReader::readLibrary(std::span<const uint8> bytes, std::string_view dir
     return Status::Ok;
 }
 
-Status ObjReader::readLine(std::string_view line, uint32 lineNumber) noexcept
+Status WavefrontReader::readLine(std::string_view line, uint32 lineNumber) noexcept
 {
     const usize comment = line.find('#');
     WordCursor words(line.substr(0, comment));
@@ -1321,7 +1351,7 @@ Status ObjReader::readLine(std::string_view line, uint32 lineNumber) noexcept
     return Status::Ok;
 }
 
-Status ObjReader::ReadEntry(ByteSource& inoutEntry) noexcept
+Status WavefrontReader::ReadEntry(ByteSource& inoutEntry) noexcept
 {
     LineReader lines(inoutEntry);
     uint32 linesRead = 0;
@@ -1361,7 +1391,7 @@ Status ObjReader::ReadEntry(ByteSource& inoutEntry) noexcept
     }
 }
 
-Status ObjReader::buildMesh(MeshBuilder& inoutBuilder) noexcept
+Status WavefrontReader::buildMesh(MeshBuilder& inoutBuilder) noexcept
 {
     const Array<Corner>& corners = inoutBuilder.Corners;
     Array<uint32> order;
@@ -1394,23 +1424,23 @@ Status ObjReader::buildMesh(MeshBuilder& inoutBuilder) noexcept
         const Corner& corner = corners[order[i]];
         if (i == 0 || AreCornersEqual(corner, corners[order[i - 1]]) == false)
         {
-            const float32* position = mPositions.GetData() + usize{corner.Position} * 3;
-            if (mesh.Positions.TryAddRange(std::span<const float32>(position, 3)) == false)
+            const float32* position = mPositions.GetData() + usize{corner.Position} * IR_VECTOR_COMPONENT_COUNT;
+            if (mesh.Positions.TryAddRange(std::span<const float32>(position, IR_VECTOR_COMPONENT_COUNT)) == false)
             {
                 return Status::OutOfMemory;
             }
             if (hasUvs == true)
             {
-                const float32 missing[2] = {0.0F, 0.0F};
-                const float32* uv = corner.Uv != IR_NONE ? mUvs.GetData() + usize{corner.Uv} * 2 : missing;
-                if (mesh.Uvs.TryAddRange(std::span<const float32>(uv, 2)) == false)
+                const float32 missing[UV_COMPONENTS] = {0.0F, 0.0F};
+                const float32* uv = corner.Uv != IR_NONE ? mUvs.GetData() + usize{corner.Uv} * UV_COMPONENTS : missing;
+                if (mesh.Uvs.TryAddRange(std::span<const float32>(uv, UV_COMPONENTS)) == false)
                 {
                     return Status::OutOfMemory;
                 }
             }
-            if (hasNormals == true &&
-                mesh.Normals.TryAddRange(std::span<const float32>(mNormals.GetData() + usize{corner.Normal} * 3, 3)) ==
-                    false)
+            if (hasNormals == true && mesh.Normals.TryAddRange(std::span<const float32>(
+                                          mNormals.GetData() + usize{corner.Normal} * IR_VECTOR_COMPONENT_COUNT,
+                                          IR_VECTOR_COMPONENT_COUNT)) == false)
             {
                 return Status::OutOfMemory;
             }
@@ -1452,7 +1482,7 @@ Status ObjReader::buildMesh(MeshBuilder& inoutBuilder) noexcept
     return Status::Ok;
 }
 
-Status ObjReader::Finish() noexcept
+Status WavefrontReader::Finish() noexcept
 {
     mCurrentFile = 0;
     for (MeshBuilder& builder : mBuilders)
@@ -1508,7 +1538,7 @@ Status ReadScene(ByteSource& inoutEntry,
         return Status::OutOfMemory;
     }
     HashingByteSource source(inoutEntry);
-    ObjReader reader(inoutResolver, outScene, inoutLog, cancelOrNull);
+    WavefrontReader reader(inoutResolver, outScene, inoutLog, cancelOrNull);
     Status status = reader.ReadEntry(source);
     // Hash the unread tail too, so the digest names the whole entry file.
     if (status == Status::Ok || status == Status::Invalid)

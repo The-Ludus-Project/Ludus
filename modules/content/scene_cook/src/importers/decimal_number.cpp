@@ -6,6 +6,10 @@ namespace ludus::content::scene_cook::importers
 {
 namespace
 {
+/// Headroom for the characters normalisation inserts (a leading '0' before a bare
+/// '.'), so a MAX_DECIMAL_TEXT_BYTES word always fits with its terminator.
+constexpr usize NORMALISED_SLACK_BYTES = 8;
+
 [[nodiscard]] bool IsDigit(char value) noexcept
 {
     return value >= '0' && value <= '9';
@@ -22,7 +26,7 @@ bool ParseNumber(std::string_view text, float64& outValue) noexcept
     {
         return false;
     }
-    char normalised[MAX_DECIMAL_TEXT_BYTES + 8];
+    char normalised[MAX_DECIMAL_TEXT_BYTES + NORMALISED_SLACK_BYTES];
     usize length = 0;
     usize at = 0;
     bool isNegative = false;

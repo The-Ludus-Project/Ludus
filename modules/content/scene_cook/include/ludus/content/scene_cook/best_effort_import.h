@@ -165,11 +165,12 @@ struct BestEffortResult final
 /// @return true on success.
 /// @note Same platform and determinism contract as ImportPbrtBestEffort. The entry is
 /// streamed; memory grows with the retained geometry, not the file size.
-[[nodiscard]] bool ImportObjBestEffort(std::string_view entryFile,
-                                       const BestEffortOptions& options,
-                                       BestEffortResult& outResult,
-                                       CookError& outError,
-                                       const Cancellation* cancelOrNull = nullptr) noexcept;
+[[nodiscard]] bool
+ImportObjBestEffort(std::string_view entryFile, // ludus-style: abbreviation OBJ names the Wavefront file format
+                    const BestEffortOptions& options,
+                    BestEffortResult& outResult,
+                    CookError& outError,
+                    const Cancellation* cancelOrNull = nullptr) noexcept;
 
 /// Classify a scene source from its first bytes, falling back to the file name extension
 /// only when the content is not decisive (for example a comment-only prefix).

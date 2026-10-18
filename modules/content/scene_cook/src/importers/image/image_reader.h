@@ -18,6 +18,7 @@ namespace ludus::content::scene_cook::importers
 {
 using foundation::Array;
 using foundation::core::float32;
+using foundation::core::float64;
 using foundation::core::uint32;
 using foundation::core::uint8;
 using foundation::core::usize;
@@ -28,12 +29,19 @@ inline constexpr uint32 MAX_IMAGE_DIMENSION = 16384;
 /// decoding so a small file cannot declare a huge image (JPEG, PNG, Radiance, OpenEXR).
 inline constexpr usize MAX_DECODED_IMAGE_PIXELS = usize{8192} * 8192;
 
+/// Channels per pixel in DecodedImage::Texels (RGBA8).
+inline constexpr usize DECODED_IMAGE_CHANNEL_COUNT = 4;
+/// Full-scale value of an 8-bit DecodedImage channel.
+inline constexpr float64 DECODED_IMAGE_CHANNEL_MAXIMUM = 255.0;
+/// Channels per pixel in DecodedLightingImage::Rgb (linear float RGB).
+inline constexpr usize LIGHTING_IMAGE_CHANNEL_COUNT = 3;
+
 /// Decoded RGBA8 image.
 struct DecodedImage final
 {
     uint32 Width = 0;
     uint32 Height = 0;
-    /// Width * Height * 4 bytes, top row first.
+    /// Width * Height * DECODED_IMAGE_CHANNEL_COUNT bytes, top row first.
     Array<uint8> Texels;
     /// True when the source stored linear (HDR) values that were tone-mapped and sRGB-encoded.
     bool WasHighDynamicRange = false;
@@ -44,6 +52,7 @@ struct DecodedLightingImage final
 {
     uint32 Width = 0;
     uint32 Height = 0;
+    /// Width * Height * LIGHTING_IMAGE_CHANNEL_COUNT samples, top row first.
     Array<float32> Rgb;
 };
 

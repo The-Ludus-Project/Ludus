@@ -3,6 +3,7 @@
 #include "../front_end_support.h"
 #include "../transform_utilities.h"
 
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/parsing/json.hpp>
@@ -25,12 +26,24 @@ using foundation::parsing::ParseError;
 using foundation::parsing::ParseStatus;
 namespace math = foundation::math;
 
+// GLB container layout (glTF 2.0 section 4.4): magic, version and total length
+// as little-endian uint32 words, then chunks of (length, type, data).
 constexpr uint32 GLB_MAGIC = 0x46546c67;
 constexpr uint32 GLB_VERSION = 2;
 constexpr uint32 GLB_CHUNK_JSON = 0x4e4f534a;
 constexpr uint32 GLB_CHUNK_BIN = 0x004e4942;
 constexpr usize GLB_HEADER_BYTES = 12;
+/// Most vertices a non-indexed primitive may address with the IR's uint32 indices.
+constexpr usize MAX_IMPLICIT_INDEX_VERTICES = usize{~uint32{0}};
 constexpr usize GLB_CHUNK_HEADER_BYTES = 8;
+constexpr usize GLB_WORD_BYTES = sizeof(uint32);
+constexpr usize GLB_MAGIC_OFFSET = 0;
+constexpr usize GLB_VERSION_OFFSET = 4;
+constexpr usize GLB_LENGTH_OFFSET = 8;
+/// Offset of a chunk's type after its length word.
+constexpr usize GLB_CHUNK_TYPE_OFFSET = 4;
+/// Chunk data is padded to this alignment (section 4.4.3).
+constexpr usize GLB_CHUNK_ALIGNMENT = 4;
 /// yyjson's DOM needs several times the input; bound it explicitly.
 constexpr usize MAX_JSON_WORKSPACE_BYTES = usize{2048} * 1024 * 1024;
 constexpr uint32 COMPONENT_BYTE = 5120;
@@ -45,9 +58,56 @@ constexpr uint32 MODE_TRIANGLE_FAN = 6;
 constexpr uint32 WRAP_REPEAT = 10497;
 constexpr uint32 WRAP_CLAMP_TO_EDGE = 33071;
 constexpr uint32 WRAP_MIRRORED_REPEAT = 33648;
+/// Accessor element sizes and byteStride rules (section 3.6.2.4): strides are
+/// multiples of the 4-byte component alignment between 4 and 252 bytes.
+constexpr usize ACCESSOR_STRIDE_ALIGNMENT = 4;
+constexpr uint64 MIN_BYTE_STRIDE = 4;
+constexpr uint64 MAX_BYTE_STRIDE = 252;
+constexpr usize UINT16_COMPONENT_BYTES = sizeof(uint16);
+constexpr usize UINT32_COMPONENT_BYTES = sizeof(uint32);
+/// Components per accessor type (section 3.6.2.1, "type").
+constexpr usize VECTOR4_COMPONENTS = 4;
+constexpr usize MATRIX2_COMPONENTS = 4;
+constexpr usize MATRIX3_COMPONENTS = 9;
 constexpr usize MATRIX_ELEMENTS = 16;
-constexpr usize RGB_COMPONENTS = 3;
+/// Divisors of normalized signed/unsigned integer components (section 3.11).
+constexpr float32 INT8_NORMALIZATION = 127.0F;
+constexpr float32 UINT8_NORMALIZATION = 255.0F;
+constexpr float32 INT16_NORMALIZATION = 32767.0F;
+constexpr float32 UINT16_NORMALIZATION = 65535.0F;
+/// Largest integer every float64 represents exactly (2^53): integral JSON reals above it
+/// may have been rounded and are rejected as unsigned values.
+constexpr float64 MAX_EXACT_INTEGER_REAL = 9007199254740992.0;
+constexpr usize RGB_COMPONENTS = IR_RGB_CHANNEL_COUNT;
 constexpr usize RGBA_COMPONENTS = 4;
+/// Index of the alpha factor in an RGBA colour.
+constexpr usize ALPHA_COMPONENT = 3;
+/// Node rotation quaternion (x, y, z, w) and the index of w.
+constexpr usize QUATERNION_COMPONENTS = 4;
+constexpr usize QUATERNION_W = 3;
+/// UV pairs per vertex in IrMesh::Uvs.
+constexpr usize UV_COMPONENTS = 2;
+/// Column-major 4x4 matrix layout of math::Matrix4d (Elements[4 * column + row]).
+constexpr usize MATRIX_DIMENSION = 4;
+constexpr usize TRANSLATION_COLUMN = 3;
+/// RFC 4648 base64: four 6-bit digits encode three bytes; alphabet offsets of a-z,
+/// 0-9 and the two symbol digits (standard '+' '/' or URL-safe '-' '_').
+constexpr usize BASE64_DIGITS_PER_GROUP = 4;
+constexpr usize BASE64_BYTES_PER_GROUP = 3;
+constexpr uint32 BASE64_DIGIT_BITS = 6;
+constexpr uint32 BITS_PER_BYTE = 8;
+constexpr uint32 BYTE_MASK = 0xffU;
+constexpr int32 BASE64_LOWERCASE_OFFSET = 26;
+constexpr int32 BASE64_DECIMAL_OFFSET = 52;
+constexpr int32 BASE64_PLUS_DIGIT = 62;
+constexpr int32 BASE64_SLASH_DIGIT = 63;
+/// RFC 3986 percent-encoding: "%" followed by two hexadecimal digits.
+constexpr int32 HEXADECIMAL_RADIX = 16;
+constexpr int32 HEXADECIMAL_LETTER_OFFSET = 10;
+/// Prefix of an RFC 2397 data URI.
+constexpr std::string_view DATA_URI_PREFIX = "data:";
+/// Largest spot outer cone (KHR_lights_punctual: outerConeAngle <= pi / 2).
+constexpr float64 MAX_OUTER_CONE_DEGREES = 90.0;
 /// Default spot outer cone (pi / 4) from KHR_lights_punctual.
 constexpr float64 DEFAULT_OUTER_CONE_RADIANS = 0.7853981633974483;
 /// Smallest spot outer cone and separation from the inner cone. LUSCN needs the
@@ -84,7 +144,8 @@ enum class Field : uint8
     }
     // Some writers emit integral reals such as 0.0.
     float64 number = 0.0;
-    if (value.Number(number) == true && number >= 0.0 && number <= 9007199254740992.0 && math::Floor(number) == number)
+    if (value.Number(number) == true && number >= 0.0 && number <= MAX_EXACT_INTEGER_REAL &&
+        math::Floor(number) == number)
     {
         outValue = static_cast<uint64>(number);
         return Field::Ok;
@@ -159,10 +220,20 @@ enum class Field : uint8
     return value.Valid() == true && value.Array() == true ? value.Count() : 0;
 }
 
+/// Little-endian word at offset at; callers check the bounds first (zero otherwise).
 [[nodiscard]] uint32 ReadUint32(std::span<const uint8> bytes, usize at) noexcept
 {
-    return static_cast<uint32>(bytes[at]) | (static_cast<uint32>(bytes[at + 1]) << 8) |
-           (static_cast<uint32>(bytes[at + 2]) << 16) | (static_cast<uint32>(bytes[at + 3]) << 24);
+    uint32 value = 0;
+    return at <= bytes.size() && foundation::core::TryReadLittleEndian(bytes.subspan(at), value) == true ? value : 0;
+}
+
+/// Little-endian 16-bit component at the start of bytes.
+[[nodiscard]] uint16 ReadUint16(const uint8* bytes) noexcept
+{
+    uint16 value = 0;
+    return foundation::core::TryReadLittleEndian(std::span<const uint8>(bytes, UINT16_COMPONENT_BYTES), value) == true
+               ? value
+               : 0;
 }
 
 [[nodiscard]] int32 DecodeBase64Digit(char value) noexcept
@@ -173,19 +244,19 @@ enum class Field : uint8
     }
     if (value >= 'a' && value <= 'z')
     {
-        return value - 'a' + 26;
+        return value - 'a' + BASE64_LOWERCASE_OFFSET;
     }
     if (value >= '0' && value <= '9')
     {
-        return value - '0' + 52;
+        return value - '0' + BASE64_DECIMAL_OFFSET;
     }
     if (value == '+' || value == '-')
     {
-        return 62;
+        return BASE64_PLUS_DIGIT;
     }
     if (value == '/' || value == '_')
     {
-        return 63;
+        return BASE64_SLASH_DIGIT;
     }
     return -1;
 }
@@ -198,11 +269,14 @@ enum class Field : uint8
     {
         text.remove_suffix(1);
     }
-    if (text.size() % 4 == 1)
+    // A trailing group of one digit carries fewer than eight bits.
+    const usize trailingDigits = text.size() % BASE64_DIGITS_PER_GROUP;
+    if (trailingDigits == 1)
     {
         return Status::Invalid;
     }
-    const usize size = text.size() / 4 * 3 + (text.size() % 4 == 0 ? 0 : text.size() % 4 - 1);
+    const usize size =
+        text.size() / BASE64_DIGITS_PER_GROUP * BASE64_BYTES_PER_GROUP + (trailingDigits == 0 ? 0 : trailingDigits - 1);
     if (size > maximumBytes)
     {
         return Status::Limit;
@@ -222,12 +296,12 @@ enum class Field : uint8
         {
             return Status::Invalid;
         }
-        accumulator = (accumulator << 6) | static_cast<uint32>(digit);
-        bits += 6;
-        if (bits >= 8)
+        accumulator = (accumulator << BASE64_DIGIT_BITS) | static_cast<uint32>(digit);
+        bits += BASE64_DIGIT_BITS;
+        if (bits >= BITS_PER_BYTE)
         {
-            bits -= 8;
-            bytes[written++] = static_cast<uint8>((accumulator >> bits) & 0xffU);
+            bits -= BITS_PER_BYTE;
+            bytes[written++] = static_cast<uint8>((accumulator >> bits) & BYTE_MASK);
         }
     }
     outBytes.Swap(bytes);
@@ -250,11 +324,11 @@ enum class Field : uint8
                 }
                 if (digit >= 'a' && digit <= 'f')
                 {
-                    return digit - 'a' + 10;
+                    return digit - 'a' + HEXADECIMAL_LETTER_OFFSET;
                 }
                 if (digit >= 'A' && digit <= 'F')
                 {
-                    return digit - 'A' + 10;
+                    return digit - 'A' + HEXADECIMAL_LETTER_OFFSET;
                 }
                 return -1;
             };
@@ -262,7 +336,7 @@ enum class Field : uint8
             {
                 return false;
             }
-            value = static_cast<char>(decode(uri[i + 1]) * 16 + decode(uri[i + 2]));
+            value = static_cast<char>(decode(uri[i + 1]) * HEXADECIMAL_RADIX + decode(uri[i + 2]));
             i += 2;
         }
         if (value == '\0' || value == '?' || value == '#' ||
@@ -305,10 +379,10 @@ enum class Field : uint8
             return 1;
         case COMPONENT_SHORT:
         case COMPONENT_UNSIGNED_SHORT:
-            return 2;
+            return UINT16_COMPONENT_BYTES;
         case COMPONENT_UNSIGNED_INT:
         case COMPONENT_FLOAT:
-            return 4;
+            return UINT32_COMPONENT_BYTES;
         default:
             break;
     }
@@ -327,19 +401,23 @@ enum class Field : uint8
     }
     if (type == "VEC3")
     {
-        return 3;
+        return IR_VECTOR_COMPONENT_COUNT;
     }
-    if (type == "VEC4" || type == "MAT2")
+    if (type == "VEC4")
     {
-        return 4;
+        return VECTOR4_COMPONENTS;
+    }
+    if (type == "MAT2")
+    {
+        return MATRIX2_COMPONENTS;
     }
     if (type == "MAT3")
     {
-        return 9;
+        return MATRIX3_COMPONENTS;
     }
     if (type == "MAT4")
     {
-        return 16;
+        return MATRIX_ELEMENTS;
     }
     return 0;
 }
@@ -351,51 +429,52 @@ enum class Field : uint8
     {
         case COMPONENT_BYTE: {
             const float32 value = static_cast<float32>(static_cast<signed char>(bytes[0]));
-            return isNormalized == true ? math::Max(value / 127.0F, -1.0F) : value;
+            return isNormalized == true ? math::Max(value / INT8_NORMALIZATION, -1.0F) : value;
         }
         case COMPONENT_UNSIGNED_BYTE: {
             const float32 value = static_cast<float32>(bytes[0]);
-            return isNormalized == true ? value / 255.0F : value;
+            return isNormalized == true ? value / UINT8_NORMALIZATION : value;
         }
         case COMPONENT_SHORT: {
-            const float32 value =
-                static_cast<float32>(static_cast<int16>(static_cast<uint16>(bytes[0] | (bytes[1] << 8))));
-            return isNormalized == true ? math::Max(value / 32767.0F, -1.0F) : value;
+            const float32 value = static_cast<float32>(static_cast<int16>(ReadUint16(bytes)));
+            return isNormalized == true ? math::Max(value / INT16_NORMALIZATION, -1.0F) : value;
         }
         case COMPONENT_UNSIGNED_SHORT: {
-            const float32 value = static_cast<float32>(static_cast<uint16>(bytes[0] | (bytes[1] << 8)));
-            return isNormalized == true ? value / 65535.0F : value;
+            const float32 value = static_cast<float32>(ReadUint16(bytes));
+            return isNormalized == true ? value / UINT16_NORMALIZATION : value;
         }
         case COMPONENT_UNSIGNED_INT:
-            return static_cast<float32>(ReadUint32({bytes, 4}, 0));
+            return static_cast<float32>(ReadUint32({bytes, UINT32_COMPONENT_BYTES}, 0));
         default:
             break;
     }
-    return std::bit_cast<float32>(ReadUint32({bytes, 4}, 0));
+    return std::bit_cast<float32>(ReadUint32({bytes, UINT32_COMPONENT_BYTES}, 0));
 }
 
 /// glTF node TRS: translation, unit quaternion (x, y, z, w) and scale, as T * R * S.
-[[nodiscard]] math::Matrix4d
-ComposeTransform(const float64 (&translation)[3], const float64 (&rotation)[4], const float64 (&scale)[3]) noexcept
+[[nodiscard]] math::Matrix4d ComposeTransform(const float64 (&translation)[IR_VECTOR_COMPONENT_COUNT],
+                                              const float64 (&rotation)[QUATERNION_COMPONENTS],
+                                              const float64 (&scale)[IR_VECTOR_COMPONENT_COUNT]) noexcept
 {
     const float64 x = rotation[0];
     const float64 y = rotation[1];
     const float64 z = rotation[2];
-    const float64 w = rotation[3];
+    const float64 w = rotation[QUATERNION_W];
+    // Rotation matrix rows of the unit quaternion, scaled per column.
+    const float64 rotationRows[IR_VECTOR_COMPONENT_COUNT][IR_VECTOR_COMPONENT_COUNT] = {
+        {1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)},
+        {2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)},
+        {2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)},
+    };
     math::Matrix4d matrix = math::Matrix4d::Identity();
-    // Column-major: Elements[4 * column + row].
-    matrix.Elements[0] = (1.0 - 2.0 * (y * y + z * z)) * scale[0];
-    matrix.Elements[1] = (2.0 * (x * y + z * w)) * scale[0];
-    matrix.Elements[2] = (2.0 * (x * z - y * w)) * scale[0];
-    matrix.Elements[4] = (2.0 * (x * y - z * w)) * scale[1];
-    matrix.Elements[5] = (1.0 - 2.0 * (x * x + z * z)) * scale[1];
-    matrix.Elements[6] = (2.0 * (y * z + x * w)) * scale[1];
-    matrix.Elements[8] = (2.0 * (x * z + y * w)) * scale[2];
-    matrix.Elements[9] = (2.0 * (y * z - x * w)) * scale[2];
-    matrix.Elements[10] = (1.0 - 2.0 * (x * x + y * y)) * scale[2];
-    matrix.Elements[12] = translation[0];
-    matrix.Elements[13] = translation[1];
-    matrix.Elements[14] = translation[2];
+    for (usize column = 0; column < IR_VECTOR_COMPONENT_COUNT; ++column)
+    {
+        for (usize row = 0; row < IR_VECTOR_COMPONENT_COUNT; ++row)
+        {
+            matrix.Elements[MATRIX_DIMENSION * column + row] = rotationRows[row][column] * scale[column];
+        }
+        matrix.Elements[MATRIX_DIMENSION * TRANSLATION_COLUMN + column] = translation[column];
+    }
     return matrix;
 }
 
@@ -418,26 +497,29 @@ ComposeTransform(const float64 (&translation)[3], const float64 (&rotation)[4], 
     const usize corners = inoutMesh.Indices.GetSize();
     const bool hasUvs = inoutMesh.Uvs.IsEmpty() == false;
     const bool hasTangents = inoutMesh.Tangents.IsEmpty() == false;
-    if (split.Positions.TryResize(corners * 3) == false || split.Indices.TryResize(corners) == false ||
-        (hasUvs == true && split.Uvs.TryResize(corners * 2) == false) ||
-        (hasTangents == true && split.Tangents.TryResize(corners * 4) == false))
+    if (split.Positions.TryResize(corners * IR_VECTOR_COMPONENT_COUNT) == false ||
+        split.Indices.TryResize(corners) == false ||
+        (hasUvs == true && split.Uvs.TryResize(corners * UV_COMPONENTS) == false) ||
+        (hasTangents == true && split.Tangents.TryResize(corners * IR_TANGENT_COMPONENT_COUNT) == false))
     {
         return Status::OutOfMemory;
     }
     for (usize corner = 0; corner < corners; ++corner)
     {
         const usize vertex = inoutMesh.Indices[corner];
-        for (usize k = 0; k < 3; ++k)
+        for (usize k = 0; k < IR_VECTOR_COMPONENT_COUNT; ++k)
         {
-            split.Positions[corner * 3 + k] = inoutMesh.Positions[vertex * 3 + k];
+            split.Positions[corner * IR_VECTOR_COMPONENT_COUNT + k] =
+                inoutMesh.Positions[vertex * IR_VECTOR_COMPONENT_COUNT + k];
         }
-        for (usize k = 0; hasUvs == true && k < 2; ++k)
+        for (usize k = 0; hasUvs == true && k < UV_COMPONENTS; ++k)
         {
-            split.Uvs[corner * 2 + k] = inoutMesh.Uvs[vertex * 2 + k];
+            split.Uvs[corner * UV_COMPONENTS + k] = inoutMesh.Uvs[vertex * UV_COMPONENTS + k];
         }
-        for (usize k = 0; hasTangents == true && k < 4; ++k)
+        for (usize k = 0; hasTangents == true && k < IR_TANGENT_COMPONENT_COUNT; ++k)
         {
-            split.Tangents[corner * 4 + k] = inoutMesh.Tangents[vertex * 4 + k];
+            split.Tangents[corner * IR_TANGENT_COMPONENT_COUNT + k] =
+                inoutMesh.Tangents[vertex * IR_TANGENT_COMPONENT_COUNT + k];
         }
         split.Indices[corner] = static_cast<uint32>(corner);
     }
@@ -596,7 +678,7 @@ private:
 
 Status GltfReader::readContainer(std::span<const uint8> entryBytes, std::string_view& outJson) noexcept
 {
-    if (entryBytes.size() < 4 || ReadUint32(entryBytes, 0) != GLB_MAGIC)
+    if (entryBytes.size() < GLB_WORD_BYTES || ReadUint32(entryBytes, GLB_MAGIC_OFFSET) != GLB_MAGIC)
     {
         if (entryBytes.size() > MAX_JSON_BYTES)
         {
@@ -607,12 +689,13 @@ Status GltfReader::readContainer(std::span<const uint8> entryBytes, std::string_
         return Status::Ok;
     }
     // GLB: 12-byte header, a JSON chunk, then an optional BIN chunk (glTF 2.0 section 4.4).
-    if (entryBytes.size() < GLB_HEADER_BYTES + GLB_CHUNK_HEADER_BYTES || ReadUint32(entryBytes, 4) != GLB_VERSION)
+    if (entryBytes.size() < GLB_HEADER_BYTES + GLB_CHUNK_HEADER_BYTES ||
+        ReadUint32(entryBytes, GLB_VERSION_OFFSET) != GLB_VERSION)
     {
         fail(codes::MALFORMED_INPUT, "GLB header is truncated or not version 2");
         return Status::Invalid;
     }
-    const usize length = ReadUint32(entryBytes, 8);
+    const usize length = ReadUint32(entryBytes, GLB_LENGTH_OFFSET);
     if (length > entryBytes.size() || length < GLB_HEADER_BYTES + GLB_CHUNK_HEADER_BYTES)
     {
         fail(codes::MALFORMED_INPUT, "GLB length does not match the file");
@@ -623,7 +706,7 @@ Status GltfReader::readContainer(std::span<const uint8> entryBytes, std::string_
     while (length - at >= GLB_CHUNK_HEADER_BYTES)
     {
         const usize chunkLength = ReadUint32(entryBytes, at);
-        const uint32 chunkType = ReadUint32(entryBytes, at + 4);
+        const uint32 chunkType = ReadUint32(entryBytes, at + GLB_CHUNK_TYPE_OFFSET);
         at += GLB_CHUNK_HEADER_BYTES;
         if (chunkLength > length - at)
         {
@@ -653,7 +736,8 @@ Status GltfReader::readContainer(std::span<const uint8> entryBytes, std::string_
             mHasBinaryChunk = true;
         }
         // Unknown chunk types are skipped (section 4.4.3).
-        at += (chunkLength + 3) / 4 * 4 > length - at ? length - at : (chunkLength + 3) / 4 * 4;
+        const usize paddedLength = (chunkLength + GLB_CHUNK_ALIGNMENT - 1) / GLB_CHUNK_ALIGNMENT * GLB_CHUNK_ALIGNMENT;
+        at += paddedLength > length - at ? length - at : paddedLength;
     }
     if (hasJson == false)
     {
@@ -760,7 +844,7 @@ Status GltfReader::loadBuffer(usize index, const LoadedBuffer*& outBufferOrNull)
         }
         buffer.Bytes = mBinaryChunk;
     }
-    else if (uri.substr(0, 5) == "data:")
+    else if (uri.starts_with(DATA_URI_PREFIX) == true)
     {
         const usize comma = uri.find(',');
         if (comma == std::string_view::npos || uri.substr(0, comma).find(";base64") == std::string_view::npos)
@@ -835,7 +919,8 @@ Status GltfReader::getBufferView(usize index, BufferViewSlice& outSlice) noexcep
     const Field strideField = GetUnsigned(view, "byteStride", stride);
     if (GetUnsigned(view, "buffer", buffer) != Field::Ok || GetUnsigned(view, "byteLength", length) != Field::Ok ||
         GetUnsigned(view, "byteOffset", offset) == Field::Invalid || strideField == Field::Invalid ||
-        (strideField == Field::Ok && (stride < 4 || stride > 252 || stride % 4 != 0)))
+        (strideField == Field::Ok &&
+         (stride < MIN_BYTE_STRIDE || stride > MAX_BYTE_STRIDE || stride % ACCESSOR_STRIDE_ALIGNMENT != 0)))
     {
         failAt("bufferViews", index, "buffer, byteOffset, byteLength or byteStride is invalid");
         return Status::Ok;
@@ -1011,13 +1096,13 @@ Status GltfReader::readIndices(usize accessor, Array<uint32>& outIndices, usize 
     {
         const uint8* element = view.Bytes.data() + i * view.Stride;
         uint32 value = element[0];
-        if (componentBytes == 2)
+        if (componentBytes == UINT16_COMPONENT_BYTES)
         {
-            value = static_cast<uint32>(element[0] | (element[1] << 8));
+            value = ReadUint16(element);
         }
-        else if (componentBytes == 4)
+        else if (componentBytes == UINT32_COMPONENT_BYTES)
         {
-            value = ReadUint32({element, 4}, 0);
+            value = ReadUint32({element, UINT32_COMPONENT_BYTES}, 0);
         }
         if (value >= vertexCount)
         {
@@ -1050,7 +1135,7 @@ Status GltfReader::getImage(usize index, IrTexture& inoutTexture, bool& outIsUsa
     std::string_view mimeType;
     (void)GetString(image, "mimeType", mimeType);
     const Field hasUri = GetString(image, "uri", uri);
-    if (hasUri == Field::Ok && uri.substr(0, 5) != "data:")
+    if (hasUri == Field::Ok && uri.starts_with(DATA_URI_PREFIX) == false)
     {
         String path;
         String relative;
@@ -1279,7 +1364,7 @@ Status GltfReader::loadMaterial(usize index, uint32& outMaterial) noexcept
     {
         material.BaseColour[k] = math::Clamp(baseColour[k], 0.0, 1.0);
     }
-    material.Opacity = math::Clamp(baseColour[3], 0.0, 1.0);
+    material.Opacity = math::Clamp(baseColour[ALPHA_COMPONENT], 0.0, 1.0);
     material.Metallic = math::Clamp(metallic, 0.0, 1.0);
     material.Roughness = math::Clamp(roughness, 0.0, 1.0);
     float64 normalScale = 1.0;
@@ -1482,7 +1567,11 @@ Status GltfReader::loadPrimitive(JsonValue primitive) noexcept
     }
     IrMesh mesh;
     bool isUsable = false;
-    Status status = readFloats(static_cast<usize>(positionAccessor), "POSITION", 3, mesh.Positions, isUsable);
+    Status status = readFloats(static_cast<usize>(positionAccessor),
+                               "POSITION",
+                               IR_VECTOR_COMPONENT_COUNT,
+                               mesh.Positions,
+                               isUsable);
     if (status != Status::Ok || isUsable == false)
     {
         return status;
@@ -1509,14 +1598,14 @@ Status GltfReader::loadPrimitive(JsonValue primitive) noexcept
         }
         return read;
     };
-    status = readOptional("NORMAL", 3, mesh.Normals);
+    status = readOptional("NORMAL", IR_VECTOR_COMPONENT_COUNT, mesh.Normals);
     if (status == Status::Ok)
     {
-        status = readOptional("TEXCOORD_0", 2, mesh.Uvs);
+        status = readOptional("TEXCOORD_0", UV_COMPONENTS, mesh.Uvs);
     }
     if (status == Status::Ok)
     {
-        status = readOptional("TANGENT", 4, mesh.Tangents);
+        status = readOptional("TANGENT", IR_TANGENT_COMPONENT_COUNT, mesh.Tangents);
     }
     if (status != Status::Ok)
     {
@@ -1540,7 +1629,7 @@ Status GltfReader::loadPrimitive(JsonValue primitive) noexcept
     }
     else
     {
-        if (vertexCount > 0xffffffffU || indices.TryResize(vertexCount) == false)
+        if (vertexCount > MAX_IMPLICIT_INDEX_VERTICES || indices.TryResize(vertexCount) == false)
         {
             return Status::OutOfMemory;
         }
@@ -1552,11 +1641,13 @@ Status GltfReader::loadPrimitive(JsonValue primitive) noexcept
     // Strips and fans become lists (section 3.7.2.1); a short list is skipped.
     if (mode == MODE_TRIANGLES)
     {
-        if (indices.GetSize() % 3 != 0)
+        if (indices.GetSize() % IR_TRIANGLE_CORNER_COUNT != 0)
         {
             warn(codes::GEOMETRY_REPAIRED, "triangle list length is not a multiple of three; tail ignored");
         }
-        if (mesh.Indices.TryAddRange(std::span<const uint32>(indices.GetData(), indices.GetSize() / 3 * 3)) == false)
+        if (mesh.Indices.TryAddRange(std::span<const uint32>(indices.GetData(),
+                                                             indices.GetSize() / IR_TRIANGLE_CORNER_COUNT *
+                                                                 IR_TRIANGLE_CORNER_COUNT)) == false)
         {
             return Status::OutOfMemory;
         }
@@ -1645,9 +1736,9 @@ bool GltfReader::getLocalTransform(usize node, JsonValue object, math::Matrix4d&
 {
     float64 matrix[MATRIX_ELEMENTS] = {};
     const Field hasMatrix = GetNumbers(object, "matrix", matrix);
-    float64 translation[3] = {0.0, 0.0, 0.0};
-    float64 rotation[4] = {0.0, 0.0, 0.0, 1.0};
-    float64 scale[3] = {1.0, 1.0, 1.0};
+    float64 translation[IR_VECTOR_COMPONENT_COUNT] = {0.0, 0.0, 0.0};
+    float64 rotation[QUATERNION_COMPONENTS] = {0.0, 0.0, 0.0, 1.0};
+    float64 scale[IR_VECTOR_COMPONENT_COUNT] = {1.0, 1.0, 1.0};
     const Field hasTranslation = GetNumbers(object, "translation", translation);
     const Field hasRotation = GetNumbers(object, "rotation", rotation);
     const Field hasScale = GetNumbers(object, "scale", scale);
@@ -1667,7 +1758,7 @@ bool GltfReader::getLocalTransform(usize node, JsonValue object, math::Matrix4d&
         return true;
     }
     const float64 length = math::Sqrt(rotation[0] * rotation[0] + rotation[1] * rotation[1] +
-                                      rotation[2] * rotation[2] + rotation[3] * rotation[3]);
+                                      rotation[2] * rotation[2] + rotation[QUATERNION_W] * rotation[QUATERNION_W]);
     if (length <= 0.0)
     {
         failAt("nodes", node, "rotation is a zero quaternion");
@@ -1781,7 +1872,8 @@ Status GltfReader::readLight(JsonValue lightIndex, const math::Matrix4d& world) 
             (void)GetNumber(spot, "innerConeAngle", inner);
             (void)GetNumber(spot, "outerConeAngle", outer);
         }
-        analytic.OuterAngleDegrees = math::Clamp(math::RadiansToDegrees(outer), MIN_OUTER_CONE_DEGREES, 90.0);
+        analytic.OuterAngleDegrees =
+            math::Clamp(math::RadiansToDegrees(outer), MIN_OUTER_CONE_DEGREES, MAX_OUTER_CONE_DEGREES);
         analytic.InnerAngleDegrees = math::Clamp(math::RadiansToDegrees(inner), 0.0, analytic.OuterAngleDegrees);
         if (analytic.InnerAngleDegrees >= analytic.OuterAngleDegrees - MIN_CONE_SEPARATION_DEGREES)
         {

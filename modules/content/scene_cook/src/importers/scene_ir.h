@@ -34,6 +34,21 @@ namespace math = foundation::math;
 
 /// Index value for "no entry" in IR cross references.
 inline constexpr uint32 IR_NONE = ~uint32{0};
+/// Channels of an IR linear RGB colour (BaseColour, Emission, Radiance, Scale).
+inline constexpr usize IR_RGB_CHANNEL_COUNT = 3;
+/// Components of an IR position, normal or direction (IrMesh::Positions/Normals stride).
+inline constexpr usize IR_VECTOR_COMPONENT_COUNT = 3;
+/// Components of an IR tangent: xyz and the bitangent sign w (IrMesh::Tangents stride).
+inline constexpr usize IR_TANGENT_COMPONENT_COUNT = 4;
+/// Corners of an IR triangle (IrMesh::Indices stride).
+inline constexpr usize IR_TRIANGLE_CORNER_COUNT = 3;
+/// Default decoding exponent for TextureEncoding::Gamma textures.
+inline constexpr float64 IR_DEFAULT_TEXTURE_GAMMA = 2.2;
+/// Default vertical field of view: 45 degrees in radians.
+inline constexpr float64 IR_DEFAULT_VERTICAL_FOV_RADIANS = 0.785398163397448;
+/// Default spot cone angles in degrees (pbrt spot coneangle 30, conedelta 5).
+inline constexpr float64 IR_DEFAULT_SPOT_INNER_DEGREES = 25.0;
+inline constexpr float64 IR_DEFAULT_SPOT_OUTER_DEGREES = 30.0;
 
 /// Colour encoding of a texture's source texels.
 enum class TextureEncoding : uint8
@@ -68,9 +83,9 @@ struct IrTexture final
     /// Source texture coordinate set (glTF texCoord); only set 0 reaches the IR meshes.
     uint32 TexCoordSet = 0;
     /// Constant colour for constant-valued textures, or the multiplier for images.
-    float64 Scale[3] = {1.0, 1.0, 1.0};
+    float64 Scale[IR_RGB_CHANNEL_COUNT] = {1.0, 1.0, 1.0};
     TextureEncoding Encoding = TextureEncoding::Srgb;
-    float64 Gamma = 2.2;
+    float64 Gamma = IR_DEFAULT_TEXTURE_GAMMA;
     bool IsInverted = false;
     bool IsRepeated = true;
     /// Source location of the declaration.
@@ -103,7 +118,7 @@ struct IrMaterial final
     /// Source material type (diffuse, conductor, ...), kept for the report.
     String SourceType;
     /// Linear RGB base colour (multiplied with the texture when present).
-    float64 BaseColour[3] = {.5, .5, .5};
+    float64 BaseColour[IR_RGB_CHANNEL_COUNT] = {.5, .5, .5};
     /// Index into SceneIr::Textures or IR_NONE.
     uint32 BaseColourTexture = IR_NONE;
     float64 Metallic = 0.0;
@@ -118,7 +133,7 @@ struct IrMaterial final
     /// Linear RGB emitted radiance factor in nits (glTF emissiveFactor x
     /// KHR_materials_emissive_strength, MTL Ke); zero for non-emitters. Front-ends copy
     /// it to the shapes that use the material as optional emission.
-    float64 Emission[3] = {0.0, 0.0, 0.0};
+    float64 Emission[IR_RGB_CHANNEL_COUNT] = {0.0, 0.0, 0.0};
     /// Emission texture multiplying Emission; not stored by LUSCN v3.
     uint32 EmissionTexture = IR_NONE;
     /// Normal or height detail texture; not stored by LUSCN v3.
@@ -163,7 +178,7 @@ struct IrMesh final
 
     [[nodiscard]] usize GetVertexCount() const noexcept
     {
-        return Positions.GetSize() / 3;
+        return Positions.GetSize() / IR_VECTOR_COMPONENT_COUNT;
     }
 };
 
@@ -174,7 +189,7 @@ struct IrShape final
     /// Index into SceneIr::Materials (IR_NONE selects the default material).
     uint32 Material = IR_NONE;
     /// Linear RGB radiance from an enclosing AreaLightSource; zero otherwise.
-    float64 Emission[3] = {0.0, 0.0, 0.0};
+    float64 Emission[IR_RGB_CHANNEL_COUNT] = {0.0, 0.0, 0.0};
     /// Source area-light identity; IR_NONE means no enclosing area light.
     uint32 AreaLight = IR_NONE;
     /// PBRT diffuse emitters default to front-side emission only.
@@ -220,7 +235,7 @@ struct IrCamera final
     math::Vector3d Target{0.0, 0.0, 1.0};
     math::Vector3d Up{0.0, 1.0, 0.0};
     /// Vertical field of view in radians.
-    float64 VerticalFov = 0.785398163397448;
+    float64 VerticalFov = IR_DEFAULT_VERTICAL_FOV_RADIANS;
     /// Declared width / height, or zero when the source leaves it to the viewport;
     /// not stored by LUSCN v3.
     float64 AspectRatio = 0.0;
@@ -234,7 +249,7 @@ struct IrEnvironment final
 {
     bool IsPresent = false;
     /// Mean linear RGB radiance (L x scale; image maps are averaged when decodable).
-    float64 Radiance[3] = {0.0, 0.0, 0.0};
+    float64 Radiance[IR_RGB_CHANNEL_COUNT] = {0.0, 0.0, 0.0};
     float64 Scale = 1.0;
     bool HasIlluminance = false;
     float64 IlluminanceLux = 0.0;
@@ -261,8 +276,8 @@ struct IrAnalyticLight final
     /// World-space origin in source meters; direction points from the light into the scene.
     math::Vector3d PositionWorld{};
     math::Vector3d DirectionWorld{0.0, 0.0, 1.0};
-    float64 InnerAngleDegrees = 25.0;
-    float64 OuterAngleDegrees = 30.0;
+    float64 InnerAngleDegrees = IR_DEFAULT_SPOT_INNER_DEGREES;
+    float64 OuterAngleDegrees = IR_DEFAULT_SPOT_OUTER_DEGREES;
     /// Declared attenuation range in metres (glTF range); zero means unbounded.
     /// Not stored by LUSCN v3, whose cook derives one range from the scene extent.
     float64 RangeMetres = 0.0;

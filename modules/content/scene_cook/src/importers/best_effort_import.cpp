@@ -247,14 +247,15 @@ struct CookedMesh final
     {
         return decoded == ImageResult::OutOfMemory ? Status::OutOfMemory : Status::Invalid;
     }
-    const usize component = channel < 4 ? channel : 0;
+    const usize component = channel < DECODED_IMAGE_CHANNEL_COUNT ? channel : 0;
     uint64 sum = 0;
-    for (usize i = component; i < image.Texels.GetSize(); i += 4)
+    for (usize i = component; i < image.Texels.GetSize(); i += DECODED_IMAGE_CHANNEL_COUNT)
     {
         sum += image.Texels[i];
     }
-    const usize count = image.Texels.GetSize() / 4;
-    outMean = count != 0 ? static_cast<float64>(sum) / (255.0 * static_cast<float64>(count)) : 1.0;
+    const usize count = image.Texels.GetSize() / DECODED_IMAGE_CHANNEL_COUNT;
+    outMean =
+        count != 0 ? static_cast<float64>(sum) / (DECODED_IMAGE_CHANNEL_MAXIMUM * static_cast<float64>(count)) : 1.0;
     return Status::Ok;
 }
 
@@ -1408,14 +1409,16 @@ constexpr usize DETECTION_PREFIX_BYTES = 4096;
 
 SceneSourceFormat DetectSceneSourceFormat(std::span<const uint8> prefix, std::string_view fileName) noexcept
 {
-    if (prefix.size() >= 4 && prefix[0] == 'g' && prefix[1] == 'l' && prefix[2] == 'T' && prefix[3] == 'F')
+    std::string_view text(reinterpret_cast<const char*>(prefix.data()), prefix.size());
+    // GLB header magic (glTF 2.0 section 4.4.3.1).
+    if (StartsWith(text, "glTF") == true)
     {
         return SceneSourceFormat::Gltf;
     }
-    std::string_view text(reinterpret_cast<const char*>(prefix.data()), prefix.size());
-    if (StartsWith(text, "\xEF\xBB\xBF") == true)
+    constexpr std::string_view UTF8_BYTE_ORDER_MARK = "\xEF\xBB\xBF";
+    if (StartsWith(text, UTF8_BYTE_ORDER_MARK) == true)
     {
-        text.remove_prefix(3);
+        text.remove_prefix(UTF8_BYTE_ORDER_MARK.size());
     }
     // The first meaningful token decides: '{' opens glTF JSON, OBJ records are
     // lower-case keywords, pbrt directives are capitalised words.
@@ -1446,10 +1449,10 @@ SceneSourceFormat DetectSceneSourceFormat(std::span<const uint8> prefix, std::st
             ++end;
         }
         const std::string_view word = text.substr(at, end - at);
-        constexpr usize OBJ_KEYWORD_COUNT = 11;
-        constexpr foundation::StaticArray<std::string_view, OBJ_KEYWORD_COUNT>
-            OBJ_KEYWORDS{"v", "vt", "vn", "vp", "f", "o", "g", "s", "mtllib", "usemtl", "l"};
-        for (const std::string_view keyword : OBJ_KEYWORDS)
+        constexpr usize WAVEFRONT_KEYWORD_COUNT = 11;
+        constexpr foundation::StaticArray<std::string_view, WAVEFRONT_KEYWORD_COUNT>
+            WAVEFRONT_KEYWORDS{"v", "vt", "vn", "vp", "f", "o", "g", "s", "mtllib", "usemtl", "l"};
+        for (const std::string_view keyword : WAVEFRONT_KEYWORDS)
         {
             if (word == keyword)
             {
@@ -1531,7 +1534,7 @@ bool ImportPbrtBestEffort(std::string_view entryFile,
                              cancelOrNull);
 }
 
-bool ImportObjBestEffort(std::string_view entryFile,
+bool ImportObjBestEffort(std::string_view entryFile, // ludus-style: abbreviation OBJ names the Wavefront file format
                          const BestEffortOptions& options,
                          BestEffortResult& outResult,
                          CookError& outError,

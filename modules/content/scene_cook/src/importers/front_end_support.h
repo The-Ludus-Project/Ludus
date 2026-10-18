@@ -20,7 +20,7 @@ namespace ludus::content::scene_cook::importers
 [[nodiscard]] bool IsCancelled(const Cancellation* cancelOrNull) noexcept;
 
 /// Rec. 709 luminance of linear RGB.
-[[nodiscard]] float64 ComputeRec709Luminance(const float64 (&rgb)[3]) noexcept;
+[[nodiscard]] float64 ComputeRec709Luminance(const float64 (&rgb)[IR_RGB_CHANNEL_COUNT]) noexcept;
 
 /// Fixed-capacity text for diagnostic messages; overlong text is truncated.
 class MessageBuilder final

@@ -23,9 +23,9 @@ extern "C" int LLVMFuzzerTestOneInput(const ludus::foundation::core::uint8* data
         }
     }
     MemoryByteSource source(input);
-    SceneIr objScene;
-    DiagnosticLog objLog;
-    (void)obj::ReadScene(source, "fuzz.obj", resolver, objScene, objLog);
+    SceneIr wavefrontScene;
+    DiagnosticLog wavefrontLog;
+    (void)obj::ReadScene(source, "fuzz.obj", resolver, wavefrontScene, wavefrontLog);
     std::string_view message;
     DecodedLightingImage lighting;
     (void)DecodeExr(input, lighting, message);

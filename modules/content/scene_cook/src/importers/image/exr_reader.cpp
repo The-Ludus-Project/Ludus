@@ -28,8 +28,21 @@ using foundation::core::int64;
 using foundation::core::uint16;
 using foundation::core::uint64;
 
+/// Magic number 20000630 as its four little-endian file bytes.
+constexpr usize EXR_MAGIC_BYTES = 4;
+constexpr foundation::StaticArray<uint8, EXR_MAGIC_BYTES> EXR_MAGIC{0x76, 0x2f, 0x31, 0x01};
+/// Width of int, unsigned int and float header fields (and the version field).
+constexpr usize EXR_INT_BYTES = 4;
+/// Width of an offset-table entry (unsigned long).
+constexpr usize EXR_OFFSET_BYTES = 8;
+/// box2i attribute: xMin, yMin, xMax and yMax ints.
+constexpr usize EXR_BOX2I_BYTES = 4 * EXR_INT_BYTES;
+/// tiledesc attribute: xSize and ySize unsigned ints, then the level/rounding mode byte.
+constexpr usize EXR_TILEDESC_BYTES = 2 * EXR_INT_BYTES + 1;
+constexpr usize BITS_PER_BYTE = 8;
 /// Version field: format version 2 in the low byte, feature flags above it.
 constexpr uint32 EXR_FORMAT_VERSION = 2;
+constexpr uint32 EXR_VERSION_NUMBER_MASK = 0xff;
 constexpr uint32 EXR_FLAG_TILED = 0x200;
 constexpr uint32 EXR_FLAG_LONG_NAMES = 0x400;
 constexpr uint32 EXR_FLAG_DEEP = 0x800;
@@ -46,15 +59,40 @@ constexpr uint8 COMPRESSION_NONE = 0;
 constexpr uint8 COMPRESSION_RLE = 1;
 constexpr uint8 COMPRESSION_ZIPS = 2;
 constexpr uint8 COMPRESSION_ZIP = 3;
+/// Scanlines per chunk: ZIP compresses 16 lines together; NONE, RLE and ZIPS one.
+constexpr uint32 ZIP_LINES_PER_BLOCK = 16;
+/// The RLE/ZIP predictor stores each byte as (difference + 128) modulo 256.
+constexpr int32 PREDICTOR_BIAS = 128;
+/// RLE run headers are two's-complement bytes: values from SIGNED_BYTE_LIMIT up wrap to
+/// negative literal counts by subtracting BYTE_VALUE_COUNT.
+constexpr int32 SIGNED_BYTE_LIMIT = 128;
+constexpr int32 BYTE_VALUE_COUNT = 256;
+/// Bytes per sample: HALF is two, UINT and FLOAT are four.
+constexpr usize HALF_SAMPLE_BYTES = 2;
+constexpr usize WORD_SAMPLE_BYTES = 4;
+/// IEEE 754 binary16 (sign 1, exponent 5, mantissa 10 bits) widened to binary32
+/// (exponent 8, mantissa 23 bits); exponent biases 15 and 127.
+constexpr uint32 HALF_SIGN_MASK = 0x8000;
+constexpr uint32 HALF_MANTISSA_BITS = 10;
+constexpr uint32 HALF_MANTISSA_MASK = 0x3ff;
+constexpr uint32 HALF_IMPLICIT_BIT = 0x400;
+constexpr uint32 HALF_EXPONENT_MASK = 0x1f;
+constexpr uint32 HALF_EXPONENT_BIAS = 15;
+constexpr uint32 FLOAT_MANTISSA_BITS = 23;
+constexpr uint32 FLOAT_EXPONENT_BIAS = 127;
+constexpr uint32 FLOAT_INFINITY_BITS = 0x7f800000;
+/// Moves the half sign bit (15) to the binary32 sign bit (31).
+constexpr uint32 HALF_TO_FLOAT_SIGN_SHIFT = 16;
+constexpr uint32 HALF_TO_FLOAT_MANTISSA_SHIFT = FLOAT_MANTISSA_BITS - HALF_MANTISSA_BITS;
+constexpr uint32 HALF_TO_FLOAT_EXPONENT_REBIAS = FLOAT_EXPONENT_BIAS - HALF_EXPONENT_BIAS;
 /// Largest uncompressed chunk admitted (the inflater takes int sizes).
 constexpr usize MAX_CHUNK_BYTES = usize{256} * 1024 * 1024;
-constexpr usize RGB_COMPONENTS = 3;
 
 struct ExrChannel final
 {
     std::string_view Name;
     uint32 PixelType = PIXEL_HALF;
-    usize SampleBytes = 2;
+    usize SampleBytes = HALF_SAMPLE_BYTES;
 };
 
 struct ExrHeader final
@@ -98,14 +136,14 @@ public:
         uint64 value = 0;
         for (usize i = 0; i < byteCount; ++i)
         {
-            value |= static_cast<uint64>(mData[mOffset + i]) << (8 * i);
+            value |= static_cast<uint64>(mData[mOffset + i]) << (BITS_PER_BYTE * i);
         }
         mOffset += byteCount;
         return value;
     }
     [[nodiscard]] int32 ReadInt32() noexcept
     {
-        return std::bit_cast<int32>(static_cast<uint32>(ReadUnsigned(4)));
+        return std::bit_cast<int32>(static_cast<uint32>(ReadUnsigned(EXR_INT_BYTES)));
     }
     /// NUL-terminated name of at most maximumBytes bytes (the terminator excluded).
     [[nodiscard]] std::string_view ReadName(usize maximumBytes) noexcept
@@ -144,9 +182,9 @@ private:
 
 [[nodiscard]] float32 DecodeHalf(uint16 bits) noexcept
 {
-    const uint32 sign = static_cast<uint32>(bits & 0x8000U) << 16;
-    const uint32 exponent = (bits >> 10) & 0x1fU;
-    uint32 mantissa = bits & 0x3ffU;
+    const uint32 sign = (bits & HALF_SIGN_MASK) << HALF_TO_FLOAT_SIGN_SHIFT;
+    const uint32 exponent = (uint32{bits} >> HALF_MANTISSA_BITS) & HALF_EXPONENT_MASK;
+    uint32 mantissa = bits & HALF_MANTISSA_MASK;
     uint32 result = sign;
     if (exponent == 0)
     {
@@ -154,21 +192,23 @@ private:
         {
             // Subnormal half: normalise into the binary32 exponent range.
             uint32 shift = 0;
-            while ((mantissa & 0x400U) == 0)
+            while ((mantissa & HALF_IMPLICIT_BIT) == 0)
             {
                 mantissa <<= 1;
                 ++shift;
             }
-            result = sign | ((113U - shift) << 23) | ((mantissa & 0x3ffU) << 13);
+            result = sign | ((HALF_TO_FLOAT_EXPONENT_REBIAS + 1 - shift) << FLOAT_MANTISSA_BITS) |
+                     ((mantissa & HALF_MANTISSA_MASK) << HALF_TO_FLOAT_MANTISSA_SHIFT);
         }
     }
-    else if (exponent == 0x1fU)
+    else if (exponent == HALF_EXPONENT_MASK)
     {
-        result = sign | 0x7f800000U | (mantissa << 13);
+        result = sign | FLOAT_INFINITY_BITS | (mantissa << HALF_TO_FLOAT_MANTISSA_SHIFT);
     }
     else
     {
-        result = sign | ((exponent + 112U) << 23) | (mantissa << 13);
+        result = sign | ((exponent + HALF_TO_FLOAT_EXPONENT_REBIAS) << FLOAT_MANTISSA_BITS) |
+                 (mantissa << HALF_TO_FLOAT_MANTISSA_SHIFT);
     }
     return std::bit_cast<float32>(result);
 }
@@ -188,8 +228,8 @@ private:
         {
             break;
         }
-        const uint32 pixelType = static_cast<uint32>(cursor.ReadUnsigned(4));
-        (void)cursor.ReadUnsigned(4); // pLinear and three reserved bytes.
+        const uint32 pixelType = static_cast<uint32>(cursor.ReadUnsigned(EXR_INT_BYTES));
+        (void)cursor.ReadUnsigned(EXR_INT_BYTES); // pLinear and three reserved bytes.
         const int32 samplingX = cursor.ReadInt32();
         const int32 samplingY = cursor.ReadInt32();
         if (cursor.IsOk() == false || pixelType > PIXEL_FLOAT || inoutHeader.ChannelCount == MAX_CHANNELS ||
@@ -200,7 +240,7 @@ private:
         ExrChannel& channel = inoutHeader.Channels[inoutHeader.ChannelCount++];
         channel.Name = name;
         channel.PixelType = pixelType;
-        channel.SampleBytes = pixelType == PIXEL_HALF ? 2 : 4;
+        channel.SampleBytes = pixelType == PIXEL_HALF ? HALF_SAMPLE_BYTES : WORD_SAMPLE_BYTES;
     }
     return inoutHeader.ChannelCount != 0;
 }
@@ -242,7 +282,7 @@ ParseHeader(ByteCursor& inoutCursor, usize nameBytes, ExrHeader& inoutHeader, st
             inoutHeader.Compression = value[0];
             inoutHeader.HasCompression = true;
         }
-        else if (name == "dataWindow" && type == "box2i" && value.size() == 16)
+        else if (name == "dataWindow" && type == "box2i" && value.size() == EXR_BOX2I_BYTES)
         {
             ByteCursor box(value, 0);
             inoutHeader.MinimumX = box.ReadInt32();
@@ -251,11 +291,11 @@ ParseHeader(ByteCursor& inoutCursor, usize nameBytes, ExrHeader& inoutHeader, st
             inoutHeader.MaximumY = box.ReadInt32();
             inoutHeader.HasDataWindow = true;
         }
-        else if (name == "tiles" && type == "tiledesc" && value.size() == 9)
+        else if (name == "tiles" && type == "tiledesc" && value.size() == EXR_TILEDESC_BYTES)
         {
             ByteCursor tiles(value, 0);
-            inoutHeader.TileWidth = static_cast<uint32>(tiles.ReadUnsigned(4));
-            inoutHeader.TileHeight = static_cast<uint32>(tiles.ReadUnsigned(4));
+            inoutHeader.TileWidth = static_cast<uint32>(tiles.ReadUnsigned(EXR_INT_BYTES));
+            inoutHeader.TileHeight = static_cast<uint32>(tiles.ReadUnsigned(EXR_INT_BYTES));
             inoutHeader.HasTiles = true;
         }
     }
@@ -263,7 +303,7 @@ ParseHeader(ByteCursor& inoutCursor, usize nameBytes, ExrHeader& inoutHeader, st
 
 [[nodiscard]] uint32 GetLinesPerBlock(uint8 compression) noexcept
 {
-    return compression == COMPRESSION_ZIP ? 16U : 1U;
+    return compression == COMPRESSION_ZIP ? ZIP_LINES_PER_BLOCK : 1U;
 }
 
 /// Undo the RLE/ZIP byte predictor and the two-half interleaving into outBytes.
@@ -272,7 +312,7 @@ void ReconstructBytes(Array<uint8>& inoutScratch, usize size, uint8* outBytes) n
     uint8* bytes = inoutScratch.GetData();
     for (usize i = 1; i < size; ++i)
     {
-        bytes[i] = static_cast<uint8>(bytes[i - 1] + bytes[i] - 128);
+        bytes[i] = static_cast<uint8>(bytes[i - 1] + bytes[i] - PREDICTOR_BIAS);
     }
     const uint8* first = bytes;
     const uint8* second = bytes + (size + 1) / 2;
@@ -316,7 +356,7 @@ void ReconstructBytes(Array<uint8>& inoutScratch, usize size, uint8* outBytes) n
         {
             // The run header is a signed byte: negative counts literal bytes.
             const int32 header = packed[at++];
-            const int32 count = header < 128 ? header : header - 256;
+            const int32 count = header < SIGNED_BYTE_LIMIT ? header : header - BYTE_VALUE_COUNT;
             if (count < 0)
             {
                 const usize literal = static_cast<usize>(-count);
@@ -372,14 +412,23 @@ void ReconstructBytes(Array<uint8>& inoutScratch, usize size, uint8* outBytes) n
     return ImageResult::Ok;
 }
 
+[[nodiscard]] uint32 LoadLittleEndian(const uint8* bytes, usize byteCount) noexcept
+{
+    uint32 value = 0;
+    for (usize i = 0; i < byteCount; ++i)
+    {
+        value |= static_cast<uint32>(bytes[i]) << (BITS_PER_BYTE * i);
+    }
+    return value;
+}
+
 [[nodiscard]] float32 ReadSample(const uint8* bytes, uint32 pixelType) noexcept
 {
     if (pixelType == PIXEL_HALF)
     {
-        return DecodeHalf(static_cast<uint16>(bytes[0] | (bytes[1] << 8)));
+        return DecodeHalf(static_cast<uint16>(LoadLittleEndian(bytes, HALF_SAMPLE_BYTES)));
     }
-    const uint32 bits = static_cast<uint32>(bytes[0]) | (static_cast<uint32>(bytes[1]) << 8) |
-                        (static_cast<uint32>(bytes[2]) << 16) | (static_cast<uint32>(bytes[3]) << 24);
+    const uint32 bits = LoadLittleEndian(bytes, WORD_SAMPLE_BYTES);
     return pixelType == PIXEL_UINT ? static_cast<float32>(bits) : std::bit_cast<float32>(bits);
 }
 
@@ -394,7 +443,7 @@ struct BlockRegion final
 
 /// Scatter one decoded block (lines, then channels, then samples) into the RGB output.
 void StoreBlock(const ExrHeader& header,
-                const foundation::StaticArray<usize, RGB_COMPONENTS>& sources,
+                const foundation::StaticArray<usize, LIGHTING_IMAGE_CHANNEL_COUNT>& sources,
                 const BlockRegion& region,
                 const Array<uint8>& block,
                 uint32 width,
@@ -407,7 +456,7 @@ void StoreBlock(const ExrHeader& header,
         for (usize channel = 0; channel < header.ChannelCount; ++channel)
         {
             const ExrChannel& description = header.Channels[channel];
-            for (usize k = 0; k < RGB_COMPONENTS; ++k)
+            for (usize k = 0; k < LIGHTING_IMAGE_CHANNEL_COUNT; ++k)
             {
                 if (sources[k] != channel)
                 {
@@ -415,7 +464,8 @@ void StoreBlock(const ExrHeader& header,
                 }
                 for (usize column = 0; column < columns; ++column)
                 {
-                    const usize target = (usize{row} * width + region.FirstColumn + column) * RGB_COMPONENTS + k;
+                    const usize target =
+                        (usize{row} * width + region.FirstColumn + column) * LIGHTING_IMAGE_CHANNEL_COUNT + k;
                     inoutRgb[target] =
                         ReadSample(block.GetData() + at + column * description.SampleBytes, description.PixelType);
                 }
@@ -428,20 +478,32 @@ void StoreBlock(const ExrHeader& header,
 
 bool HasExrMagic(std::span<const uint8> data) noexcept
 {
-    return data.size() >= 4 && data[0] == 0x76 && data[1] == 0x2f && data[2] == 0x31 && data[3] == 0x01;
+    if (data.size() < EXR_MAGIC_BYTES)
+    {
+        return false;
+    }
+    for (usize i = 0; i < EXR_MAGIC_BYTES; ++i)
+    {
+        if (data[i] != EXR_MAGIC[i])
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 ImageResult
 DecodeExr(std::span<const uint8> data, DecodedLightingImage& outImage, std::string_view& outMessage) noexcept
 {
-    if (HasExrMagic(data) == false || data.size() < 8)
+    if (HasExrMagic(data) == false || data.size() < EXR_MAGIC_BYTES + EXR_INT_BYTES)
     {
         outMessage = "not an OpenEXR file";
         return ImageResult::Invalid;
     }
-    ByteCursor cursor(data, 4);
-    const uint32 version = static_cast<uint32>(cursor.ReadUnsigned(4));
-    if ((version & 0xffU) != EXR_FORMAT_VERSION || (version & ~(0xffU | EXR_KNOWN_FLAGS)) != 0)
+    ByteCursor cursor(data, EXR_MAGIC_BYTES);
+    const uint32 version = static_cast<uint32>(cursor.ReadUnsigned(EXR_INT_BYTES));
+    if ((version & EXR_VERSION_NUMBER_MASK) != EXR_FORMAT_VERSION ||
+        (version & ~(EXR_VERSION_NUMBER_MASK | EXR_KNOWN_FLAGS)) != 0)
     {
         outMessage = "unsupported OpenEXR version";
         return ImageResult::Unsupported;
@@ -481,7 +543,7 @@ DecodeExr(std::span<const uint8> data, DecodedLightingImage& outImage, std::stri
     const uint32 width = static_cast<uint32>(width64);
     const uint32 height = static_cast<uint32>(height64);
     // R, G and B by name, or one Y channel for all three.
-    foundation::StaticArray<usize, RGB_COMPONENTS> sources{MAX_CHANNELS, MAX_CHANNELS, MAX_CHANNELS};
+    foundation::StaticArray<usize, LIGHTING_IMAGE_CHANNEL_COUNT> sources{MAX_CHANNELS, MAX_CHANNELS, MAX_CHANNELS};
     usize pixelBytes = 0;
     for (usize i = 0; i < header.ChannelCount; ++i)
     {
@@ -520,7 +582,7 @@ DecodeExr(std::span<const uint8> data, DecodedLightingImage& outImage, std::stri
     const usize chunkCount = columnsOfBlocks * rowsOfBlocks;
     // Level-0 tiles come first in the offset table of mipmapped/ripmapped files.
     const usize tableOffset = cursor.GetOffset();
-    if ((data.size() - tableOffset) / 8 < chunkCount)
+    if ((data.size() - tableOffset) / EXR_OFFSET_BYTES < chunkCount)
     {
         outMessage = "EXR offset table is truncated";
         return ImageResult::Invalid;
@@ -528,7 +590,7 @@ DecodeExr(std::span<const uint8> data, DecodedLightingImage& outImage, std::stri
     DecodedLightingImage candidate;
     candidate.Width = width;
     candidate.Height = height;
-    if (candidate.Rgb.TryResize(usize{width} * height * RGB_COMPONENTS, 0.0F) == false)
+    if (candidate.Rgb.TryResize(usize{width} * height * LIGHTING_IMAGE_CHANNEL_COUNT, 0.0F) == false)
     {
         return ImageResult::OutOfMemory;
     }
@@ -536,9 +598,9 @@ DecodeExr(std::span<const uint8> data, DecodedLightingImage& outImage, std::stri
     Array<uint8> block;
     for (usize chunk = 0; chunk < chunkCount; ++chunk)
     {
-        ByteCursor table(data, tableOffset + chunk * 8);
-        const uint64 offset = table.ReadUnsigned(8);
-        if (offset < tableOffset + chunkCount * 8 || offset >= data.size())
+        ByteCursor table(data, tableOffset + chunk * EXR_OFFSET_BYTES);
+        const uint64 offset = table.ReadUnsigned(EXR_OFFSET_BYTES);
+        if (offset < tableOffset + chunkCount * EXR_OFFSET_BYTES || offset >= data.size())
         {
             outMessage = "EXR chunk offset is out of range";
             return ImageResult::Invalid;

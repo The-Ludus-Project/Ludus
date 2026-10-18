@@ -52,6 +52,9 @@ private:
 class HashingByteSource final : public ByteSource
 {
 public:
+    /// Stack chunk Drain reads unconsumed input through.
+    static constexpr usize DRAIN_CHUNK_BYTES = 4096;
+
     explicit HashingByteSource(ByteSource& inoutSource) noexcept : mSource(inoutSource) {}
     [[nodiscard]] Status Read(std::span<uint8> outBuffer, usize& outCount) noexcept override
     {
@@ -65,7 +68,7 @@ public:
     /// Hash the bytes the reader left unread (a reader may stop at an error).
     [[nodiscard]] Status Drain() noexcept
     {
-        uint8 buffer[4096];
+        uint8 buffer[DRAIN_CHUNK_BYTES];
         while (true)
         {
             usize count = 0;
