@@ -1248,6 +1248,43 @@ jobs:
         if: always()
         run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
 
+  # One cached Linux compile for integration PRs: the default development preset
+  # with the Editor and its trusted render preview, plus the fast unit tests. Batch
+  # validation runs the fuller Development and Optional editor jobs instead.
+  integration-compile:
+    needs: changes
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'integration'
+    name: Integration compile (Linux Clang, Editor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      # Restores the Conan and compiler caches the batch Optional editor job saves
+      # on main; pull requests never write them, so they cannot evict that baseline.
+      - uses: ./.github/actions/native-setup
+        with:
+          preset: linux-clang-development
+          editor: 'true'
+          cache-variant: editor
+          conan-cache-writer: 'false'
+          compiler-cache-writer: 'false'
+      - name: Prepare and configure trusted authoring shaders
+        run: |
+          ./scripts/shader-probe bootstrap
+          out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
+      - name: Build every default target with the Editor
+        run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
+      - name: Run the fast unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^unit$' --no-tests=error
+      - name: Report compiler cache
+        if: always()
+        run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
+
   # Debug runtime already runs the complete Debug assertion/build contracts.
   assertion-policy:
     needs: [changes, formatting]
@@ -1346,7 +1383,7 @@ jobs:
     # A cancelled pull-request run passes only when a newer, uncancelled run of
     # this workflow covers the same head commit; that run's gate owns the result.
     name: Ubuntu Clang
-    needs: [changes, macos-compile, macos-sanitizers, macos-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
+    needs: [changes, macos-compile, macos-sanitizers, macos-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, integration-compile, assertion-policy, pch, build-budget, scripting-qualification]
     if: always()
     runs-on: ubuntu-24.04
     permissions:

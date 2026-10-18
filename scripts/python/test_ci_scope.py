@@ -215,6 +215,7 @@ class RequiredGateTests(unittest.TestCase):
             condition = conditions.get(name, "")
             self.assertEqual("validation_tier != 'pull-request'" in condition, name in ci_scope.MERGE_QUEUE_JOBS)
             self.assertEqual("validation_tier == 'nightly'" in condition, name in ci_scope.NIGHTLY_JOBS)
+            self.assertEqual("validation_tier == 'integration'" in condition, name in ci_scope.INTEGRATION_ONLY_JOBS)
 
     def test_advisory_analyzers_run_nightly_and_required_inventory_runs_in_the_queue(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
@@ -301,17 +302,21 @@ class RequiredGateTests(unittest.TestCase):
         for name in ci_scope.NATIVE_JOBS:
             condition = conditions.get(name, "")
             self.assertEqual("validation_tier" in condition, name != "formatting", name)
-        results = self.results()
-        results["changes"]["outputs"]["validation_tier"] = ci_scope.INTEGRATION_TIER
-        for name in ci_scope.INTEGRATION_JOBS:
-            results[name]["result"] = "skipped"
+        results = self.results(tier=ci_scope.INTEGRATION_TIER)
         self.assertEqual(ci_scope.gate_failures(results), [])
         for name in ci_scope.INTEGRATION_JOBS:
+            self.assertEqual(results[name]["result"], "skipped", name)
             results[name]["result"] = "success"
             self.assertTrue(ci_scope.gate_failures(results), name)
             results[name]["result"] = "skipped"
-        results["formatting"]["result"] = "skipped"
-        self.assertTrue(ci_scope.gate_failures(results))
+        # The cached compile is required on integration PRs and nowhere else.
+        for name in ("formatting", *ci_scope.INTEGRATION_ONLY_JOBS):
+            for status in ("skipped", "failure", "cancelled"):
+                results[name]["result"] = status
+                self.assertTrue(ci_scope.gate_failures(results), (name, status))
+            results[name]["result"] = "success"
+        self.assertEqual(ci_scope.gate_failures(results), [])
+        self.assertEqual(ci_scope.gate_failures(self.results(False, ci_scope.INTEGRATION_TIER)), [])
 
     def test_pull_requests_leave_macos_tooling_jobs_to_the_queue(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
@@ -328,6 +333,8 @@ class RequiredGateTests(unittest.TestCase):
     def results(self, native_required=True, tier=ci_scope.FULL_TIER):
         def expected(name):
             deferred = ((tier == ci_scope.PULL_REQUEST_TIER and name in ci_scope.MERGE_QUEUE_JOBS)
+                        or (tier == ci_scope.INTEGRATION_TIER and name in ci_scope.INTEGRATION_JOBS)
+                        or (tier != ci_scope.INTEGRATION_TIER and name in ci_scope.INTEGRATION_ONLY_JOBS)
                         or (tier != ci_scope.NIGHTLY_TIER and name in ci_scope.NIGHTLY_JOBS))
             return "success" if native_required and not deferred else "skipped"
         return {
@@ -342,7 +349,9 @@ class RequiredGateTests(unittest.TestCase):
 
     def test_failed_cancelled_or_skipped_native_jobs_fail_full_validation(self):
         for name in ci_scope.NATIVE_JOBS:
-            statuses = ("failure", "cancelled", "success") if name in ci_scope.NIGHTLY_JOBS else ("failure", "cancelled", "skipped")
+            statuses = (("failure", "cancelled", "success")
+                        if name in (*ci_scope.NIGHTLY_JOBS, *ci_scope.INTEGRATION_ONLY_JOBS)
+                        else ("failure", "cancelled", "skipped"))
             for status in statuses:
                 with self.subTest(name=name, status=status):
                     results = self.results()
@@ -353,7 +362,8 @@ class RequiredGateTests(unittest.TestCase):
         self.assertEqual(ci_scope.gate_failures(self.results(tier=ci_scope.PULL_REQUEST_TIER)), [])
         self.assertEqual(ci_scope.gate_failures(self.results(False, ci_scope.PULL_REQUEST_TIER)), [])
         for name in ci_scope.NATIVE_JOBS:
-            statuses = ("failure", "cancelled", "success") if name in (*ci_scope.MERGE_QUEUE_JOBS, *ci_scope.NIGHTLY_JOBS) else (
+            statuses = ("failure", "cancelled", "success") if name in (
+                *ci_scope.MERGE_QUEUE_JOBS, *ci_scope.NIGHTLY_JOBS, *ci_scope.INTEGRATION_ONLY_JOBS) else (
                 "failure", "cancelled", "skipped")
             for status in statuses:
                 with self.subTest(name=name, status=status):
@@ -365,9 +375,15 @@ class RequiredGateTests(unittest.TestCase):
         results = self.results(tier=ci_scope.NIGHTLY_TIER)
         self.assertEqual(ci_scope.gate_failures(results), [])
         for name in ci_scope.NATIVE_JOBS:
+            if name in ci_scope.INTEGRATION_ONLY_JOBS:
+                continue
             results[name]["result"] = "skipped"
             self.assertTrue(ci_scope.gate_failures(results), name)
             results[name]["result"] = "success"
+        for name in ci_scope.INTEGRATION_ONLY_JOBS:
+            results[name]["result"] = "success"
+            self.assertTrue(ci_scope.gate_failures(results), name)
+            results[name]["result"] = "skipped"
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         for name in ("ci.yml", "wiki.yml", "project-sdk.yml"):
             triggers = root.joinpath(name).read_text().split("\npermissions:", 1)[0]

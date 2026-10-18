@@ -30,7 +30,7 @@ DOCUMENTATION_FILES = frozenset({
 })
 NATIVE_JOBS = (
     "macos-compile", "macos-sanitizers", "macos-analysis", "formatting", "debug-runtime", "development",
-    "sanitizers", "filesystem-fuzz", "threading-races", "analysis", "editor",
+    "sanitizers", "filesystem-fuzz", "threading-races", "analysis", "editor", "integration-compile",
     "assertion-policy", "pch", "build-budget", "scripting-qualification",
 )
 # Slow native jobs deferred from ordinary pull-request runs to the merge queue,
@@ -44,8 +44,12 @@ INTEGRATION_TIER = "integration"
 NIGHTLY_TIER = "nightly"
 NIGHTLY_JOBS = ("macos-analysis",)
 TIERS = frozenset({FULL_TIER, PULL_REQUEST_TIER, INTEGRATION_TIER, NIGHTLY_TIER})
-# Integration PRs keep source/tooling checks; every compiled variant runs once per batch.
-INTEGRATION_JOBS = tuple(name for name in NATIVE_JOBS if name != "formatting")
+# Integration PRs add one cached Linux compile with the Editor and the fast unit tests so
+# native and Editor build breaks fail before merge. Every other tier runs the fuller
+# Development and Optional editor jobs that supersede it.
+INTEGRATION_ONLY_JOBS = ("integration-compile",)
+# Integration PRs keep source/tooling checks; every other compiled variant runs once per batch.
+INTEGRATION_JOBS = tuple(name for name in NATIVE_JOBS if name not in ("formatting", *INTEGRATION_ONLY_JOBS))
 # A pull request carrying this label runs the full tier before entering the queue.
 FULL_VALIDATION_LABEL = "ci:full"
 # Bounded GitHub run metadata read by a cancelled pull-request gate.
@@ -141,6 +145,7 @@ def gate_failures(results: dict) -> list[str]:
     for name in NATIVE_JOBS:
         deferred = ((tier == PULL_REQUEST_TIER and name in MERGE_QUEUE_JOBS)
                     or (tier == INTEGRATION_TIER and name in INTEGRATION_JOBS)
+                    or (tier != INTEGRATION_TIER and name in INTEGRATION_ONLY_JOBS)
                     or (tier != NIGHTLY_TIER and name in NIGHTLY_JOBS))
         expected = "success" if required == "true" and not deferred else "skipped"
         actual = results.get(name, {}).get("result")
