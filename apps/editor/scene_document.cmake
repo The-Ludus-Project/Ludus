@@ -3,7 +3,8 @@
 # Included by apps/editor/CMakeLists.txt when the Editor is enabled, and by the
 # top-level CMakeLists.txt for native Editor-OFF builds. The second include keeps
 # the document's size budgets (static_asserts in internal/scene_document.h) and
-# its unit tests in the default pull-request build, which never configures Qt.
+# its unit tests in the default build (CI's Development, Debug runtime and
+# sanitizer jobs), which never configures Qt.
 add_library(ludus_editor_scene STATIC "${CMAKE_CURRENT_LIST_DIR}/src/scene_document.cpp")
 target_include_directories(ludus_editor_scene PUBLIC "${CMAKE_CURRENT_LIST_DIR}/src")
 target_link_libraries(ludus_editor_scene PUBLIC ludus_world_level PRIVATE Ludus::FoundationMath)

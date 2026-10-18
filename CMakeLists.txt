@@ -369,7 +369,7 @@ if(LUDUS_BUILD_EDITOR)
     add_subdirectory(apps/editor)
 elseif(NOT EMSCRIPTEN)
     # The Qt-free scene document still builds, so its size budgets and tests run
-    # in pull-request CI, which does not enable the Editor.
+    # in every default native build, not only in the optional Editor job.
     include(apps/editor/scene_document.cmake)
 endif()
 
