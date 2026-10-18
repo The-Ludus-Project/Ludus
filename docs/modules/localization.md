@@ -1,4 +1,4 @@
-# Localization: catalogs and release cooking
+# Localization: catalogs, release cooking and formatting
 
 `Ludus::Localization` builds on native and Emscripten. It delivers exact authored
 identities, offline translation validation, immutable catalog leases and a
@@ -16,10 +16,14 @@ portable cooked format for two profiles:
   and per-domain descriptors bind keys and schemas exactly. See
   [release cooking](#release-cooking-ludus-icu-mf1-v1).
 
-Typed ICU formatting of messages with arguments (L2), locale negotiation,
-schema-preserving language switches and Text paragraph integration remain later
-phases. The runtime never links ICU. UTF-8 validity does not imply font coverage,
-bidi or rendering.
+Phase L2 formats messages with arguments through typed, schema-validated calls
+and the pinned ICU4C backend in the opt-in [`Ludus::Unicode`](foundation/unicode.md)
+owner; see [formatting](#formatting-messages-with-arguments). Builds without
+`LUDUS_BUILD_UNICODE` keep the same API, never link ICU and report
+`BackendUnavailable`. Locale negotiation, schema-preserving language switches,
+consumer presentation caches (`LocalizedText`) and Text paragraph integration
+remain later phases. UTF-8 validity does not imply font coverage, bidi or
+rendering.
 
 ## Author and cook
 
@@ -113,7 +117,8 @@ empty-schema case, so a message with arguments returns `SchemaMismatch`.
 `ResolveStatic` checks a non-reused process token and accesses one record in O(1),
 with no allocation, hash table, formatting or locks. It returns
 `RequiresArguments` for a message that declares arguments, even when one
-translation happens to omit them all; L2 formatting will serve those records.
+translation happens to omit them all; [`Format`](#formatting-messages-with-arguments)
+serves those records.
 `ResolvedText` reports `Origin` (`Source`, `Translation`, `SourceFallback` or, for
 an intermediate catalog on the manifest's fallback path, `Fallback`) and the
 provider's locale label. Keep bindings and leases in
@@ -168,8 +173,9 @@ For an argument-free message, the checker decodes ICU's apostrophe syntax by
 walking ICU's parsed parts and cross-checks the result against ICU
 `MessageFormat` with zero arguments; the package stores that text. A message whose
 source schema declares arguments is stored as its pattern plus the full schema,
-in every locale. ICU stays in the host tool: it is never installed, linked by the
-engine or built for the browser. Following the L0 allocation-failure findings, an
+in every locale. The checker is a cooking-host tool: it is never installed or
+built for the browser. Runtime formatting uses the same pinned build through the
+opt-in `Ludus::Unicode` owner. Following the L0 allocation-failure findings, an
 ICU allocation failure in the checker is fatal rather than reported as a verdict.
 
 ### Recorded verdicts
@@ -216,18 +222,122 @@ its exact key and complete argument schema:
 ludus::localization::MessageBinding count;
 if (lease.BindMessage(game::l10n::ui::kInventoryItemCount, count) == Status::Ok)
 {
-    // L2 formats through this binding; ResolveStatic returns RequiresArguments.
+    // ResolveStatic returns RequiresArguments; format through a prepared context.
 }
 ```
 
+Each message with arguments also gets a typed helper that erases its parameters
+to the non-template `Format` (no pattern parsing or templates in the header):
+
+```cpp
+ludus::localization::FormatResult result;
+char text[256];
+const Status status = game::l10n::ui::FormatInventoryItemCount(context, count, 3, text, result);
+```
+
+Helper parameters follow the schema: `text` and `enum` become `std::string_view`,
+`count` becomes `int64` and `number` becomes `float64`. Snake-case names become
+camelCase (`picker_gender` is `pickerGender`); a name that would be a C++ keyword
+or a helper parameter (`context`, `binding`, `output`, `outResult`, `arguments`)
+gains an `Argument` suffix.
+
 Symbols derive from keys as in the static profile (`inventory/item-count` becomes
 `kInventoryItemCount`, its arguments `kInventoryItemCountArguments`, an enum's
-tokens `kInventoryItemCount<Argument>Values`), or from a source `symbol`. Any
+tokens `kInventoryItemCount<Argument>Values`, its helper `FormatInventoryItemCount`),
+or from a source `symbol`. Any
 symbol collision fails generation. The header depends only on the source keys and
 argument schemas: wording, context, revision and translation edits leave it
 byte-identical. Binding compares the name and type of every argument, plus
 `origin`/`max_bytes` for text, `min`/`max` for count and number, and `unknown` and
 the ordered `values` for enums; any difference returns `SchemaMismatch`.
+
+## Formatting messages with arguments
+
+Phase L2 of the [architecture](../architecture/localization.md#runtime-api-and-lifetime).
+Configure with `-DLUDUS_BUILD_UNICODE=ON` after `./scripts/icu-probe bootstrap`
+(see [Unicode](foundation/unicode.md#acquiring-icu)), start the host once, then
+prepare a formatter context for the dynamic messages a view will show before it
+becomes visible:
+
+```cpp
+#include <ludus/foundation/unicode/unicode.hpp>
+#include <ludus/localization/formatter.hpp>
+#include "bindings/game/ui.hpp" // generated
+
+using namespace ludus::localization;
+// Host startup: memory hooks, embedded data, warm-up (see the Unicode page).
+static_cast<void>(ludus::foundation::unicode::InitializeUnicodeHost(ludus::foundation::GetSystemAllocationDomain()));
+
+MessageBinding count;
+MessageBinding loot;
+// lease.BindMessage(game::l10n::ui::kInventoryItemCount, count), ... as above.
+const MessageBinding visible[] = {count, loot};
+FormatterContext context;
+if (PrepareFormatterContext(lease, visible, ludus::foundation::GetSystemAllocationDomain(), context) == Status::Ok)
+{
+    char text[256];
+    FormatResult result;
+    if (game::l10n::ui::FormatLootPickedUp(context, loot, "feminine", 3, text, result) == Status::Ok)
+    {
+        // std::string_view(text, result.Written); result.ProviderLocale names the grammar used.
+    }
+}
+```
+
+`PrepareFormatterContext` is the cold step: it checks the lease (a version 2
+package), every binding, the running host and the package's linguistic-data
+label against the runtime's (`LinguisticDataMismatch` otherwise), then parses
+each dynamic pattern once with ICU `MessageFormat` in its **provider** locale,
+so a fallback message keeps the grammar of the catalog that provided it (an
+`fr-CA` package formats an `fr-FR` fallback with French plural rules and reports
+`Origin::Fallback`). Static bindings and duplicates need no preparation. At most
+`MAX_PREPARED_MESSAGES` (4096) bindings fit one context. The context copies the
+lease, so its `FormatResult::ProviderLocale` views stay valid while it lives.
+
+`Format` validates the complete source schema before ICU sees a value, following
+the [L0 boundary rules](../architecture/localization-l0.md#message-profile-ludus-icu-mf1-v1):
+
+| Schema type | Accepted value | Rejected with `InvalidArguments` |
+| --- | --- | --- |
+| `text` | `MakeTextArgument`: UTF-8 without NUL within `max_bytes` | Invalid UTF-8, NUL, too long; for `user` origin also C0/C1 controls, U+202A–U+202E and U+2066–U+2069 |
+| `count` | `MakeCountArgument` within `min`/`max` | Another kind (including a `float64`), out of range |
+| `number` | `MakeNumberArgument` (finite) or an integral `MakeCountArgument`, within `min`/`max` | NaN, infinity, out of range, text |
+| `enum` | `MakeEnumArgument` with a declared token; any valid token selects `other` for `unknown: other` | Undeclared token for `unknown: reject` |
+
+Every declared argument must appear exactly once, in any order; missing,
+duplicate and undeclared names fail, even when this locale's translation omits
+an argument. Inserted text is wrapped in FSI (U+2068) … PDI (U+2069); keep those
+invisible controls for bidi (L4) and show them explicitly in tools. Number
+display rounds half-even (`0.25` with `::.0` is `0.2`). A static record copies its
+cooked text without ICU and still rejects arguments.
+
+Output is copied only when complete: `BufferTooSmall` reports
+`FormatResult::RequiredBytes` and leaves the caller's bytes unchanged, every
+failure leaves them unchanged and resets the result, results above
+`MAX_FORMATTED_BYTES` (64 KiB) return `Limit`, and output is counted, never
+NUL-terminated or truncated. Other statuses: `WrongCatalog` for another lease's
+binding, `NotPrepared` for an unprepared dynamic message, `BackendFailure` if ICU
+rejects what cooking accepted, and `OutOfMemory` when the context's own
+`AllocationDomain` storage fails (the output context is then unchanged). An ICU
+allocation failure is never reported: ICU4C 78.3 cannot recover, so it terminates
+through FoundationBase's emergency path.
+
+A context owns mutable ICU formatters and UTF-16 scratch. It is neither reentrant
+nor shareable: one thread uses it at a time, and a worker prepares its own. There
+is no implicit global or thread-local cache. Destroy every context before
+`ShutdownUnicodeHost`. Retained presentation (`LocalizedText`, argument revisions
+and cached results) is consumer-owned and remains later work, as do date, money
+and other typed formatters.
+
+**Measured cost (diagnostics, not budgets).** `ludus_localization_format_probe`
+measures the nested Arabic select/plural message on macOS arm64 Development
+under a loaded machine. Allocation counts were stable across runs and match the
+L0 shape: host initialization 45 ICU allocations; the cold first preparation
+and format 162; preparing one message with warm caches 7; reformatting a changed
+count 3; a static record 0. Peak ICU heap was about 48 KB. Wall times varied by
+an order of magnitude between runs (for example reformat 3–5 µs, preparation
+8–31 µs), so they are not estimates. Each run also prints a digest of every
+corpus status and output byte; native and wasm32 print the same value.
 
 ## Cooked wire format, v1
 
@@ -344,10 +454,26 @@ ICU built, `ludus_localization_profile` additionally regenerates both recordings
 checks every [profile rejection fixture](../../modules/localization/corpus/profile-rejections.json),
 static decoding, missing locale data and a malformed request.
 
+L2 adds, with `LUDUS_BUILD_UNICODE`: all 125 [corpus expectations](../../modules/localization/corpus/expectations.json)
+(109 outputs and 16 argument failures) formatted from the cooked version 2
+packages, natively in Catch2 and through `ludus_localization_format_probe` on
+native and wasm32 with byte equality against the same expected bytes; typed
+helpers; provider-locale fallback grammar; nonfinite, invalid-UTF-8, NUL, control,
+override, isolate and duplicate arguments; enum unknown policies; the output and
+result-reset contract; unprepared, foreign and version 1 bindings; preparation
+limits and transactional `OutOfMemory`; linguistic-data mismatch on a relabelled
+package; lease retention and moves; host shutdown after contexts. The probe's
+driver ([`test_format_probe.py`](../../modules/localization/tests/test_format_probe.py))
+denies each ICU allocation of host initialization, preparation and the first
+format in a fresh process and requires every point to terminate through the
+emergency path (207 of 207 natively). Without the option, the tests check the
+`BackendUnavailable` path instead.
+
 ```sh
 python3 -m unittest discover -s scripts/python -p test_localization.py -v
 python3 -m unittest discover -s scripts/python -p test_localization_release.py -v
-./scripts/icu-probe run --preset linux-clang-development   # also runs ludus_localization_profile
+./scripts/icu-probe run --preset linux-clang-development   # profile checker, Unicode and L2 format tests
+./scripts/icu-probe run --preset web-emscripten-release    # L2 format probe under wasm32
 ./scripts/test linux-clang-development
 ./scripts/test linux-clang-asan-ubsan
 ./scripts/check linux-clang-development --all

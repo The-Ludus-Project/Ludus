@@ -35,3 +35,12 @@ modules/runtime/game_host/tests/timing_tests.cpp
 
 modules/content/render_graph_format
 modules/foundation/threading
+modules/foundation/unicode
+modules/localization/include/ludus/localization/formatter.hpp
+modules/localization/src/formatter.cpp
+modules/localization/src/formatter_icu.cpp
+modules/localization/src/formatter_unavailable.cpp
+modules/localization/src/internal/catalog_access.hpp
+modules/localization/src/internal/formatter_backend.hpp
+modules/localization/tests/formatter_tests.cpp
+modules/localization/tests/format_probe.cpp

@@ -62,6 +62,8 @@ on:
       - 'scripts/python/localization_corpus.py'
       - 'tools/icu-probe/**'
       - 'config/icu_toolchain.json'
+      - 'modules/foundation/unicode/**'
+      - 'scripts/python/localization_release.py'
       - 'modules/physics/fluid/**'
       - 'tools/web-fluid-probe/**'
       - 'modules/foundation/containers/**'
@@ -509,7 +511,7 @@ jobs:
             out/icu-probe/host-build
             out/icu-probe/data
           key: icu-probe-v1-${{ runner.os }}-${{ hashFiles('config/icu_toolchain.json', 'tools/icu-probe/data-filter.json', 'scripts/icu-probe') }}
-      - name: Validate L0 ICU backend, corpus and allocation-failure sweep in wasm
+      - name: Validate L0 ICU backend, L2 formatting and allocation-failure sweeps in wasm
         run: |
           ./scripts/icu-probe bootstrap
           ./scripts/icu-probe cook
@@ -523,6 +525,8 @@ jobs:
             out/build/web-emscripten-development/tools/icu-probe/evidence.json
             out/build/web-emscripten-release/tools/icu-probe/evidence.json
             out/build/web-emscripten-release/tools/icu-probe/ICU-LICENSE.txt
+            out/build/web-emscripten-development/modules/localization/format-evidence.json
+            out/build/web-emscripten-release/modules/localization/format-evidence.json
           if-no-files-found: error
 
   browser-software-gpu:
