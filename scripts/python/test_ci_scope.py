@@ -415,6 +415,18 @@ class RequiredGateTests(unittest.TestCase):
             results["changes"]["outputs"]["native_required"] = output
             self.assertTrue(ci_scope.gate_failures(results))
 
+    def test_older_batch_coordinators_may_omit_only_integration_only_jobs(self):
+        for tier in (ci_scope.FULL_TIER, ci_scope.PULL_REQUEST_TIER, ci_scope.NIGHTLY_TIER):
+            with self.subTest(tier=tier):
+                results = self.results(tier=tier)
+                for name in ci_scope.INTEGRATION_ONLY_JOBS:
+                    del results[name]
+                self.assertEqual(ci_scope.gate_failures(results), [])
+        results = self.results(tier=ci_scope.INTEGRATION_TIER)
+        for name in ci_scope.INTEGRATION_ONLY_JOBS:
+            del results[name]
+        self.assertTrue(ci_scope.gate_failures(results))
+
     def test_missing_or_unexpected_native_jobs_fail(self):
         results = self.results()
         del results["sanitizers"]

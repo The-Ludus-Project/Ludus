@@ -140,7 +140,13 @@ def gate_failures(results: dict) -> list[str]:
     tier = outputs.get("validation_tier")
     if tier not in TIERS:
         return ["Change classification did not report a valid validation_tier output."]
-    if set(results) != {"changes", *NATIVE_JOBS}:
+    inventory = {"changes", *NATIVE_JOBS}
+    # Batches run main's workflow definitions against a newer candidate, so a
+    # coordinator that predates an integration-only job does not list it.
+    absent_allowed = set() if tier == INTEGRATION_TIER else set(INTEGRATION_ONLY_JOBS)
+    if (inventory - absent_allowed) <= set(results) <= inventory:
+        results = {name: {"result": "skipped"} for name in absent_allowed} | results
+    else:
         failures.append("Required native job inventory is incomplete or unexpected.")
     for name in NATIVE_JOBS:
         deferred = ((tier == PULL_REQUEST_TIER and name in MERGE_QUEUE_JOBS)
