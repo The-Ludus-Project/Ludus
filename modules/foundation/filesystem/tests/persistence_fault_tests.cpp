@@ -90,7 +90,7 @@ int Error(int error = EIO) noexcept
 }
 bool Once(Fault fault) noexcept
 {
-    if (gFault == fault && !gInjected)
+    if (gFault == fault && gInjected == false)
     {
         gInjected = true;
         return true;

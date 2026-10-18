@@ -16,13 +16,15 @@ int ExerciseInstalledAudio() noexcept
     constexpr uint32 frames = 32768;
     uint8 wav[44 + frames * 2] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' '};
     std::span<uint8> bytes(wav);
-    if (!TryWriteLittleEndian(uint32{36 + frames * 2}, bytes.subspan(4)) ||
-        !TryWriteLittleEndian(uint32{16}, bytes.subspan(16)) || !TryWriteLittleEndian(uint16{1}, bytes.subspan(20)) ||
-        !TryWriteLittleEndian(uint16{1}, bytes.subspan(22)) ||
-        !TryWriteLittleEndian(uint32{48000}, bytes.subspan(24)) ||
-        !TryWriteLittleEndian(uint32{96000}, bytes.subspan(28)) ||
-        !TryWriteLittleEndian(uint16{2}, bytes.subspan(32)) || !TryWriteLittleEndian(uint16{16}, bytes.subspan(34)) ||
-        !TryWriteLittleEndian(uint32{frames * 2}, bytes.subspan(40)))
+    if (TryWriteLittleEndian(uint32{36 + frames * 2}, bytes.subspan(4)) == false ||
+        TryWriteLittleEndian(uint32{16}, bytes.subspan(16)) == false ||
+        TryWriteLittleEndian(uint16{1}, bytes.subspan(20)) == false ||
+        TryWriteLittleEndian(uint16{1}, bytes.subspan(22)) == false ||
+        TryWriteLittleEndian(uint32{48000}, bytes.subspan(24)) == false ||
+        TryWriteLittleEndian(uint32{96000}, bytes.subspan(28)) == false ||
+        TryWriteLittleEndian(uint16{2}, bytes.subspan(32)) == false ||
+        TryWriteLittleEndian(uint16{16}, bytes.subspan(34)) == false ||
+        TryWriteLittleEndian(uint32{frames * 2}, bytes.subspan(40)) == false)
     {
         return 30;
     }
@@ -32,7 +34,7 @@ int ExerciseInstalledAudio() noexcept
     wav[39] = 'a';
     for (usize i = 44; i < bytes.size(); i += 2)
     {
-        if (!TryWriteLittleEndian(uint16{3276}, bytes.subspan(i)))
+        if (TryWriteLittleEndian(uint16{3276}, bytes.subspan(i)) == false)
         {
             return 31;
         }
@@ -71,7 +73,7 @@ int ExerciseInstalledAudio() noexcept
         const timespec wait{0, 1000000};
         nanosleep(&wait, nullptr);
     }
-    if (!completed || audio.RetireStream(stream) != Status::Ok)
+    if (completed == false || audio.RetireStream(stream) != Status::Ok)
     {
         return 36;
     }

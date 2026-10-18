@@ -36,7 +36,7 @@ WireStatus BitWriter::WriteBits(uint32 value, uint8 count) noexcept
     {
         return WireStatus::InvalidArgument;
     }
-    if (!HasBits(mBytes, mBitCount, count))
+    if (HasBits(mBytes, mBitCount, count) == false)
     {
         return WireStatus::BufferTooSmall;
     }
@@ -70,7 +70,7 @@ WireStatus BitWriter::WriteBytes(std::span<const uint8> bytes) noexcept
     {
         return WireStatus::InvalidArgument;
     }
-    if (!bytes.empty())
+    if (bytes.empty() == false)
     {
         std::memcpy(mBytes.data() + offset, bytes.data(), bytes.size());
     }
@@ -87,7 +87,7 @@ WireStatus BitReader::ReadBits(uint8 count, uint32& value) noexcept
     {
         return WireStatus::InvalidArgument;
     }
-    if (!HasBits(mBytes, mBitCount, count))
+    if (HasBits(mBytes, mBitCount, count) == false)
     {
         return WireStatus::BufferTooSmall;
     }
@@ -133,7 +133,7 @@ WireStatus BitReader::ReadBytes(std::span<uint8> bytes) noexcept
     {
         return WireStatus::InvalidArgument;
     }
-    if (!bytes.empty())
+    if (bytes.empty() == false)
     {
         std::memcpy(bytes.data(), mBytes.data() + offset, bytes.size());
     }
@@ -166,7 +166,7 @@ WireStatus EncodeMessage(const MessageHeader& header,
     (void)ludus::foundation::TryWriteLittleEndian(header.Sequence, destination.subspan(16, 4));
     (void)ludus::foundation::TryWriteLittleEndian(static_cast<uint16>(payload.size()), destination.subspan(20, 2));
     (void)ludus::foundation::TryWriteLittleEndian(uint16{0}, destination.subspan(22, 2));
-    if (!payload.empty())
+    if (payload.empty() == false)
     {
         std::memcpy(destination.data() + MESSAGE_HEADER_BYTES, payload.data(), payload.size());
     }
@@ -191,11 +191,11 @@ WireStatus DecodeMessage(std::span<const uint8> bytes, MessageView& view) noexce
     header.Lane = static_cast<Channel>(bytes[5]);
     uint16 payloadBytes = 0;
     uint16 reserved = 0;
-    if (!ludus::foundation::TryReadLittleEndian(bytes.subspan(6, 2), header.Kind) ||
-        !ludus::foundation::TryReadLittleEndian(bytes.subspan(8, 8), header.Session) ||
-        !ludus::foundation::TryReadLittleEndian(bytes.subspan(16, 4), header.Sequence) ||
-        !ludus::foundation::TryReadLittleEndian(bytes.subspan(20, 2), payloadBytes) ||
-        !ludus::foundation::TryReadLittleEndian(bytes.subspan(22, 2), reserved) || bytes[5] >= CHANNEL_COUNT ||
+    if (ludus::foundation::TryReadLittleEndian(bytes.subspan(6, 2), header.Kind) == false ||
+        ludus::foundation::TryReadLittleEndian(bytes.subspan(8, 8), header.Session) == false ||
+        ludus::foundation::TryReadLittleEndian(bytes.subspan(16, 4), header.Sequence) == false ||
+        ludus::foundation::TryReadLittleEndian(bytes.subspan(20, 2), payloadBytes) == false ||
+        ludus::foundation::TryReadLittleEndian(bytes.subspan(22, 2), reserved) == false || bytes[5] >= CHANNEL_COUNT ||
         header.Kind == 0 || header.Session == 0 || reserved != 0 || payloadBytes != bytes.size() - MESSAGE_HEADER_BYTES)
     {
         return WireStatus::MalformedMessage;

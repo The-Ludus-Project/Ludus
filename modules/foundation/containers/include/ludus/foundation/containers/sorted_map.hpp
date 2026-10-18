@@ -175,7 +175,7 @@ public:
     [[nodiscard]] bool Remove(const KeyType& key) noexcept
     {
         const usize index = LowerBound(key);
-        if (!Matches(index, key))
+        if (Matches(index, key) == false)
         {
             return false;
         }
@@ -241,7 +241,7 @@ private:
     [[nodiscard]] bool Matches(usize index, const KeyType& key) const noexcept
     {
         // LowerBound already proves stored key is not less than the query.
-        return index != GetSize() && !Compare{}(key, mEntries[index].Key);
+        return index != GetSize() && Compare{}(key, mEntries[index].Key) == false;
     }
 
     Array<Entry> mEntries;

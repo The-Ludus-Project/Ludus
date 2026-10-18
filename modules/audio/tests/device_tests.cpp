@@ -26,7 +26,7 @@ TEST_CASE("Native device renders resident and streaming voices and joins on shut
         config.DevicePeriodFrames = 256;
         config.Buses = {&bus, 1};
         const auto result = system.Initialize(config);
-        if (result == Status::DeviceError && !requireDevice)
+        if (result == Status::DeviceError && requireDevice == false)
         {
             REQUIRE_FALSE(system.IsValid());
             REQUIRE(system.GetState() == SystemState::Disabled);

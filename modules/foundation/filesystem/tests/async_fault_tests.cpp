@@ -169,7 +169,7 @@ TEST_CASE("Warm async submission cancellation delivery tracing and metrics alloc
     RequestHandle warmup;
     REQUIRE(reader.Submit(file, 0, bytes, warmup) == AsyncStatus::Ok);
     ReadCompletion completion;
-    while (!reader.Poll(completion))
+    while (reader.Poll(completion) == false)
     {
         std::this_thread::yield();
     }
@@ -185,7 +185,7 @@ TEST_CASE("Warm async submission cancellation delivery tracing and metrics alloc
         valid &= reader.Cancel(handle) == AsyncStatus::Ok;
         const auto until = AsyncNow() + 5'000'000'000ULL;
         bool polled = false;
-        while (!(polled = reader.Poll(completion)) && AsyncNow() < until)
+        while ((polled = reader.Poll(completion)) == false && AsyncNow() < until)
         {
             std::this_thread::yield();
         }

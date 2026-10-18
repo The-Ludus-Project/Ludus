@@ -95,7 +95,7 @@ CommandResult RequestDoorOpen(Transaction& transaction, EntityRef entity, uint32
     {
         return { .Code = Result::MissingCapability };
     }
-    if (!IsActive(world, entity))
+    if (IsActive(world, entity) == false)
     {
         return { .Code = Result::InvalidEntity };
     }
@@ -121,7 +121,7 @@ CommandResult RequestDoorOpen(Transaction& transaction, EntityRef entity, uint32
 Result Publish(Transaction& transaction) noexcept
 {
     World& world = *transaction.Owner;
-    if (!Validate(transaction.CandidateState))
+    if (Validate(transaction.CandidateState) == false)
     {
         return Result::InvalidValue;
     }
@@ -134,7 +134,7 @@ Result Publish(Transaction& transaction) noexcept
     // occurs between publishing state and copying this fixed command batch.
     for (usize i = 0; i < transaction.PendingCount; ++i)
     {
-        if (!IsActive(world, transaction.Pending[i].Target))
+        if (IsActive(world, transaction.Pending[i].Target) == false)
         {
             return Result::InvalidEntity;
         }
@@ -178,7 +178,7 @@ Result Dispatch(World& world, const EventRecord* events, usize count, Handler ha
     {
         return Result::InvalidPhase;
     }
-    if (events == nullptr || count > 8 || handler == nullptr || !Validate(world.Configuration))
+    if (events == nullptr || count > 8 || handler == nullptr || Validate(world.Configuration) == false)
     {
         return Result::InvalidValue;
     }
@@ -187,7 +187,7 @@ Result Dispatch(World& world, const EventRecord* events, usize count, Handler ha
     {
         const EventRecord record = events[i];
         if (record.Tick != world.Tick || record.At != Phase::Gameplay || record.InstanceOrder >= 2 ||
-            !Validate(record.Value))
+            Validate(record.Value) == false)
         {
             return Result::InvalidValue;
         }
@@ -203,7 +203,7 @@ Result Dispatch(World& world, const EventRecord* events, usize count, Handler ha
     }
     for (usize i = 1; i < count; ++i)
     {
-        if (!Before(captured[i - 1], captured[i]))
+        if (Before(captured[i - 1], captured[i]) == false)
         {
             return Result::InvalidValue; // Ambiguous order is invalid.
         }
@@ -277,7 +277,7 @@ Result NativeInteraction(Transaction& transaction, void* /*user*/) noexcept
     }
     transaction.CandidateState.Interactions += amount;
     if (transaction.CandidateState.Interactions >= transaction.Configuration.Threshold &&
-        !transaction.CandidateState.OpenRequested)
+        transaction.CandidateState.OpenRequested == false)
     {
         const CommandResult result = RequestDoorOpen(transaction, transaction.Event.Target, amount);
         if (result.Code == Result::Accepted)

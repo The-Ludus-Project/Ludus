@@ -115,14 +115,14 @@ mutation, weak references or shared slice owner.
 
 Create a table at an explicit initialization boundary, intern exact spellings,
 and cache the returned IDs. This function publishes an ID only when freezing
-succeeds; `output` must initially be an empty `FrozenStringTable`.
+succeeds; `outTable` must initially be an empty `FrozenStringTable`.
 
 ```cpp
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/strings/string_table.hpp>
 
-[[nodiscard]] ludus::foundation::StringStatus BindPlayer(ludus::foundation::FrozenStringTable& output,
-                                                         ludus::foundation::NameId& outputId) noexcept
+[[nodiscard]] ludus::foundation::StringStatus BindPlayer(ludus::foundation::FrozenStringTable& outTable,
+                                                         ludus::foundation::NameId& outId) noexcept
 {
     using namespace ludus::foundation;
     StringTable table;
@@ -142,10 +142,10 @@ succeeds; `output` must initially be an empty `FrozenStringTable`.
     {
         return status;
     }
-    status = table.TryFreeze(output);
+    status = table.TryFreeze(outTable);
     if (status == StringStatus::Ok)
     {
-        outputId = id;
+        outId = id;
     }
     return status;
 }

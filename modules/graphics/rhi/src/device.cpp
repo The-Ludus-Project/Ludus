@@ -88,7 +88,7 @@ DeviceStatus FrameResult(FrameStatus status) noexcept
 }
 ResourceStatus ResourceAdmission(DeviceHandle device) noexcept
 {
-    if (!Valid(device))
+    if (Valid(device) == false)
     {
         return ResourceStatus::InvalidHandle;
     }
@@ -109,9 +109,9 @@ DeviceStatus ValidateDeviceDescription(const DeviceDescription& description) noe
     {
         return DeviceStatus::InvalidDescription;
     }
-    if (!internal::ValidStorageLimits(description.Storage) ||
-        !internal::ValidProfileRequirements(description.RequiredProfile) ||
-        !internal::ValidProfileRequirements(description.PreferredProfile))
+    if (internal::ValidStorageLimits(description.Storage) == false ||
+        internal::ValidProfileRequirements(description.RequiredProfile) == false ||
+        internal::ValidProfileRequirements(description.PreferredProfile) == false)
     {
         return DeviceStatus::InvalidDescription;
     }
@@ -126,7 +126,7 @@ DeviceStatus ValidateDeviceDescription(const DeviceDescription& description) noe
         return DeviceStatus::Unsupported;
     }
     if (description.Required.RayQueries &&
-        ((!compiled.Metal && !compiled.Vulkan) || description.Selection == BackendSelection::WebGPU ||
+        ((compiled.Metal == false && compiled.Vulkan == false) || description.Selection == BackendSelection::WebGPU ||
          description.Selection == BackendSelection::WebGL2))
     {
         return DeviceStatus::Unsupported;
@@ -203,7 +203,7 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
         Shutdown();
         return DeviceStatus::Failed;
     }
-    if (result == StartStatus::Ready && description.Required.RayQueries && !backend::RayLimits().InlineQueries)
+    if (result == StartStatus::Ready && description.Required.RayQueries && backend::RayLimits().InlineQueries == false)
     {
         Shutdown();
         return DeviceStatus::Unsupported;
@@ -267,7 +267,7 @@ DeviceStatus CreateNativeDevice(const ApplicationInfo& application,
 }
 DeviceStatus GetDeviceInfo(DeviceHandle device, DeviceInfo& info) noexcept
 {
-    if (!Valid(device))
+    if (Valid(device) == false)
     {
         return DeviceStatus::InvalidHandle;
     }
@@ -298,12 +298,12 @@ DeviceStatus GetDeviceInfo(DeviceHandle device, DeviceInfo& info) noexcept
         info.Enabled.IndirectRendering = info.Supported.IndirectRendering;
         info.UnmetPreferences =
         {
-            .FullscreenRaster = gDescription.Preferred.FullscreenRaster && !info.Enabled.FullscreenRaster,
-            .PortableRaster = gDescription.Preferred.PortableRaster && !info.Enabled.PortableRaster,
-            .Compute = gDescription.Preferred.Compute && !info.Enabled.Compute,
-            .IndirectRendering = gDescription.Preferred.IndirectRendering && !info.Enabled.IndirectRendering,
-            .RayQueries = gDescription.Preferred.RayQueries && !info.Enabled.RayQueries,
-            .OrderedRasterGraph = gDescription.Preferred.OrderedRasterGraph && !info.Enabled.OrderedRasterGraph,
+            .FullscreenRaster = gDescription.Preferred.FullscreenRaster && info.Enabled.FullscreenRaster == false,
+            .PortableRaster = gDescription.Preferred.PortableRaster && info.Enabled.PortableRaster == false,
+            .Compute = gDescription.Preferred.Compute && info.Enabled.Compute == false,
+            .IndirectRendering = gDescription.Preferred.IndirectRendering && info.Enabled.IndirectRendering == false,
+            .RayQueries = gDescription.Preferred.RayQueries && info.Enabled.RayQueries == false,
+            .OrderedRasterGraph = gDescription.Preferred.OrderedRasterGraph && info.Enabled.OrderedRasterGraph == false,
             .BindlessTextureIndexing =
                 gDescription.Preferred.BindlessTextureIndexing == true && info.Enabled.BindlessTextureIndexing == false,
             .HasRuntimeTextureArrays =
@@ -315,7 +315,7 @@ DeviceStatus GetDeviceInfo(DeviceHandle device, DeviceInfo& info) noexcept
 }
 RasterStatus GetMeasurementAdapter(DeviceHandle device, MeasurementAdapter& output) noexcept
 {
-    if (!Valid(device))
+    if (Valid(device) == false)
     {
         return RasterStatus::InvalidHandle;
     }
@@ -333,7 +333,7 @@ RasterStatus GetMeasurementAdapter(DeviceHandle device, MeasurementAdapter& outp
 }
 RasterStatus ArmGpuTiming(DeviceHandle device) noexcept
 {
-    if (!Valid(device))
+    if (Valid(device) == false)
     {
         return RasterStatus::InvalidHandle;
     }
@@ -349,7 +349,7 @@ RasterStatus ArmGpuTiming(DeviceHandle device) noexcept
     {
         return RasterStatus::InvalidState;
     }
-    if (!internal::GpuTimingRequested())
+    if (internal::GpuTimingRequested() == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -360,7 +360,7 @@ RasterStatus ArmGpuTiming(DeviceHandle device) noexcept
 }
 RasterStatus GetGpuTiming(DeviceHandle device, GpuTiming& output) noexcept
 {
-    if (!Valid(device))
+    if (Valid(device) == false)
     {
         return RasterStatus::InvalidHandle;
     }
@@ -398,7 +398,7 @@ bool GpuTimingRequested() noexcept
 } // namespace internal
 DeviceStatus DestroyDevice(DeviceHandle& device) noexcept
 {
-    if (!Valid(device))
+    if (Valid(device) == false)
     {
         return DeviceStatus::InvalidHandle;
     }
@@ -420,7 +420,7 @@ DeviceStatus EndFrame(DeviceHandle device) noexcept
 }
 DeviceStatus GetFrameInfo(DeviceHandle device, SurfaceHandle surface, FrameInfo& info) noexcept
 {
-    if (!Valid(device, surface))
+    if (Valid(device, surface) == false)
     {
         return DeviceStatus::InvalidHandle;
     }

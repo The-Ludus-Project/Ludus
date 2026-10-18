@@ -572,7 +572,7 @@ TEST_CASE("Native World preview renders authored assets, cameras, culling, updat
     CHECK(pixels[0] < 100);
     CHECK(pixels[1] < 100);
     CHECK(pixels[2] < 100);
-    if (!qEnvironmentVariable("LUDUS_RENDER_NATIVE_IMAGE").isEmpty())
+    if (qEnvironmentVariable("LUDUS_RENDER_NATIVE_IMAGE").isEmpty() == false)
     {
         const QImage image(pixels, 96, 64, QImage::Format_RGBA8888);
         REQUIRE(image.save(qEnvironmentVariable("LUDUS_RENDER_NATIVE_IMAGE")));

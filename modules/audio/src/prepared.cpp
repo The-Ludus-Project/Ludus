@@ -40,8 +40,9 @@ Status PreparedClip::Decode(std::span<const uint8> encoded, const ClipDescriptor
     if (descriptor.SourceLoopEnd != 0)
     {
         if (descriptor.SourceLoopEnd > decoded.SourceFrames ||
-            !internal::TryResampleFrame(descriptor.SourceLoopBegin, decoded.SourceRate, rate, next->LoopBegin) ||
-            !internal::TryResampleFrame(descriptor.SourceLoopEnd, decoded.SourceRate, rate, next->LoopEnd) ||
+            internal::TryResampleFrame(descriptor.SourceLoopBegin, decoded.SourceRate, rate, next->LoopBegin) ==
+                false ||
+            internal::TryResampleFrame(descriptor.SourceLoopEnd, decoded.SourceRate, rate, next->LoopEnd) == false ||
             next->LoopBegin >= next->LoopEnd || next->LoopEnd > decoded.Frames)
         {
             delete next;

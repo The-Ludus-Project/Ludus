@@ -75,7 +75,7 @@ struct Gate final
         AllowExit();
         if (Started)
         {
-            while (!Exited.load(std::memory_order_acquire))
+            while (Exited.load(std::memory_order_acquire) == false)
             {
                 WaitTurn();
             }
@@ -157,7 +157,7 @@ TEST_CASE("Cancellation drains without waiting or accepting a replacement reques
     REQUIRE(loader.Begin(fixture.Root, "sound/hit") == content::Status::Pending);
     gate.Started = true;
     REQUIRE(Wait(gate.Entered));
-    if (!cancelAfterWork)
+    if (cancelAfterWork == false)
     {
         loader.RequestCancel();
         loader.RequestCancel();

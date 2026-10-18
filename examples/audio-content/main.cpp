@@ -84,7 +84,7 @@ bool Run(std::string_view root, bool native) noexcept
     ludus::content::Catalog catalog;
     ludus::content::Diagnostic diagnostic;
     ludus::content::Text<4096> resourceRoot;
-    if (!resourceRoot.Set(root) ||
+    if (resourceRoot.Set(root) == false ||
         ludus::content::ReadFile(root, "catalog.json", ludus::content::MAX_DOCUMENT_BYTES, catalogBytes) !=
             ludus::content::Status::Ok ||
         catalog.Read(catalogBytes.String(), diagnostic) != ludus::content::Status::Ok)
@@ -99,7 +99,8 @@ bool Run(std::string_view root, bool native) noexcept
     ludus::resources::AssetHandle soundAsset;
     ludus::resources::RequestHandle gameRequest, previewRequest;
     ludus::content::ResourceId gameName, previewName, soundId;
-    if (!gameName.Set("level/audio-demo") || !previewName.Set("preview/audio-demo") || !soundId.Set("sound/impact") ||
+    if (gameName.Set("level/audio-demo") == false || previewName.Set("preview/audio-demo") == false ||
+        soundId.Set("sound/impact") == false ||
         resources.Initialize(catalog, &resourceAdapter, 1) != ludus::resources::Status::Ok ||
         resources.OpenScope(gameName, gameScope) != ludus::resources::Status::Ok ||
         resources.OpenScope(previewName, previewScope) != ludus::resources::Status::Ok ||
@@ -131,7 +132,7 @@ bool Run(std::string_view root, bool native) noexcept
     const auto& descriptor = payload.Descriptor;
     audio::content::Loader loader(system);
     audio::content::Lease musicLease;
-    if (!Acquire(loader, root, "music/theme", routing, musicLease))
+    if (Acquire(loader, root, "music/theme", routing, musicLease) == false)
     {
         return false;
     }
@@ -207,7 +208,7 @@ bool Run(std::string_view root, bool native) noexcept
                 return false;
             }
         }
-        if (!native)
+        if (native == false)
         {
             if (system.RenderOffline(output, audio::ChannelLayout::Stereo, audio::BufferLayout::Interleaved, 512) !=
                 audio::Status::Ok)
@@ -216,7 +217,7 @@ bool Run(std::string_view root, bool native) noexcept
             }
             for (const auto sample : output)
             {
-                if (!ludus::foundation::math::IsFinite(sample))
+                if (ludus::foundation::math::IsFinite(sample) == false)
                 {
                     return false;
                 }
@@ -233,7 +234,7 @@ bool Run(std::string_view root, bool native) noexcept
         const timespec wait{0, native ? 16666667L : 1000000L};
         nanosleep(&wait, nullptr);
     }
-    if (!native && peak < 0.05F)
+    if (native == false && peak < 0.05F)
     {
         return false;
     }

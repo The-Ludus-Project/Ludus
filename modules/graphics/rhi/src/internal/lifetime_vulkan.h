@@ -119,7 +119,7 @@ VkBufferMemoryBarrier LifetimeVulkanBarrier(VkBuffer buffer) noexcept
 } // namespace
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
-    return !gLifetimeVulkan[readback ? 1 : 0][slot].Busy;
+    return gLifetimeVulkan[readback ? 1 : 0][slot].Busy == false;
 }
 RasterStatus LifetimeUpload(usize transferSlot,
                             const BufferDescription& info,
@@ -357,7 +357,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
         }
     }
     constexpr VkAccessFlags memory = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    if (!update)
+    if (update == false)
     {
         const auto& source = gRasterTextures[info.Source];
         LifetimeVkImageBarrier(transfer.Command,
@@ -369,7 +369,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
                                    .DestinationAccess = VK_ACCESS_TRANSFER_READ_BIT,
                                });
     }
-    if (!readback)
+    if (readback == false)
     {
         const auto& destination = gRasterTextures[info.Destination];
         LifetimeVkImageBarrier(transfer.Command,
@@ -435,7 +435,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
                        1,
                        &copy);
     }
-    if (!update)
+    if (update == false)
     {
         const auto& source = gRasterTextures[info.Source];
         LifetimeVkImageBarrier(transfer.Command,
@@ -447,7 +447,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
                                    .DestinationAccess = memory,
                                });
     }
-    if (!readback)
+    if (readback == false)
     {
         const auto& destination = gRasterTextures[info.Destination];
         LifetimeVkImageBarrier(transfer.Command,
@@ -462,12 +462,12 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     result = LifetimeVulkanSubmit(transfer);
     if (result == VK_SUCCESS)
     {
-        if (!update)
+        if (update == false)
         {
             gRasterTextures[info.Source].ColorStage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
             gRasterTextures[info.Source].ColorAccess |= VK_ACCESS_TRANSFER_READ_BIT;
         }
-        if (!readback)
+        if (readback == false)
         {
             auto& destination = gRasterTextures[info.Destination];
             destination.ColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -483,7 +483,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
 {
     auto& transfer = gLifetimeVulkan[readback ? 1 : 0][slot];
-    if (!transfer.Busy || gDevice == VK_NULL_HANDLE)
+    if (transfer.Busy == false || gDevice == VK_NULL_HANDLE)
     {
         return RasterStatus::Failed;
     }

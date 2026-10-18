@@ -37,7 +37,7 @@ public:
     }
     [[nodiscard]] Status TryInitialize(const EntityRegistry& registry) noexcept
     {
-        if (mWorld != 0 || !registry.CanMutateStructure())
+        if (mWorld != 0 || registry.CanMutateStructure() == false)
         {
             return Status::InvalidConfiguration;
         }
@@ -45,8 +45,8 @@ public:
         foundation::core::Array<foundation::uint32> sparse;
         foundation::core::Array<EntityId> owners;
         foundation::core::Array<T> values;
-        if (!sparse.TryResize(count, MissingIndex()) || !owners.TryEnsureCapacity(count) ||
-            !values.TryEnsureCapacity(count))
+        if (sparse.TryResize(count, MissingIndex()) == false || owners.TryEnsureCapacity(count) == false ||
+            values.TryEnsureCapacity(count) == false)
         {
             return Status::AllocationFailure;
         }
@@ -71,11 +71,11 @@ public:
     }
     [[nodiscard]] Status TryInsert(const EntityRegistry& registry, EntityId entity, T value) noexcept
     {
-        if (!registry.CanMutateStructure())
+        if (registry.CanMutateStructure() == false)
         {
             return Status::InvalidPhase;
         }
-        if (registry.GetWorld() != mWorld || !registry.IsAlive(entity))
+        if (registry.GetWorld() != mWorld || registry.IsAlive(entity) == false)
         {
             return Status::InvalidEntity;
         }
@@ -102,11 +102,11 @@ public:
     }
     [[nodiscard]] Status TryRemove(const EntityRegistry& registry, EntityId entity) noexcept
     {
-        if (!registry.CanMutateStructure())
+        if (registry.CanMutateStructure() == false)
         {
             return Status::InvalidPhase;
         }
-        if (registry.GetWorld() != mWorld || !registry.IsAlive(entity))
+        if (registry.GetWorld() != mWorld || registry.IsAlive(entity) == false)
         {
             return Status::InvalidEntity;
         }

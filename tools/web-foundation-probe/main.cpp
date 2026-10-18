@@ -49,7 +49,7 @@ bool transportContract() noexcept
     using namespace diagnostics;
     char frame[CONTROL_HEADER_SIZE]{};
     ControlHeader header{};
-    return !ConfigureEmergencySocket(-1) && ControlEndpointState() == ControlState::Unconfigured &&
+    return ConfigureEmergencySocket(-1) == false && ControlEndpointState() == ControlState::Unconfigured &&
            ConfigureControlEndpoint(-1) == ControlState::Failed &&
            RequestAssertDecision(1, nullptr, 0) == ControlDecision::Terminate &&
            TryWriteEmergencyBytes(nullptr, 1) == DeliveryStatus::Failed &&
@@ -78,13 +78,13 @@ constexpr bool PrimitiveContract(ludus::foundation::usize increment = 1) noexcep
     uint32 length = 42;
     int64 signedProduct = 42;
     uint8 bytes[4]{};
-    return !TryAdd(~usize{0}, increment, size) && size == 42 && !TryMultiply(~usize{0}, increment + 1, size) &&
-           size == 42 &&
-           !TryMultiply(-int64{9223372036854775807} - 1, static_cast<int64>(increment) + 1, signedProduct) &&
-           signedProduct == 42 && !TryIntegerCast(int32{-1}, length) && length == 42 &&
+    return TryAdd(~usize{0}, increment, size) == false && size == 42 &&
+           TryMultiply(~usize{0}, increment + 1, size) == false && size == 42 &&
+           TryMultiply(-int64{9223372036854775807} - 1, static_cast<int64>(increment) + 1, signedProduct) == false &&
+           signedProduct == 42 && TryIntegerCast(int32{-1}, length) == false && length == 42 &&
            TryWriteLittleEndian(word, bytes) && bytes[0] == increment && bytes[3] == 0x12 &&
            TryReadLittleEndian(bytes, length) && length == word &&
-           !TryReadBigEndian(std::span<const uint8>{bytes, 3}, length) && length == word;
+           TryReadBigEndian(std::span<const uint8>{bytes, 3}, length) == false && length == word;
 }
 static_assert(PrimitiveContract());
 
@@ -106,18 +106,18 @@ int main(int argc, char** argv)
     {
         return result;
     }
-    if (!ExerciseInstalledStrings())
+    if (ExerciseInstalledStrings() == false)
     {
         return 9;
     }
-    if (!PrimitiveContract(static_cast<usize>(argc)))
+    if (PrimitiveContract(static_cast<usize>(argc)) == false)
     {
         return 8;
     }
     const std::string_view mode = argc > 1 ? argv[1] : "normal";
     filesystem::Directory directory;
     filesystem::File file;
-    if (!filesystem::ValidPath("audio/音.wav") || filesystem::ValidPath("../escape") ||
+    if (filesystem::ValidPath("audio/音.wav") == false || filesystem::ValidPath("../escape") ||
         directory.Open("assets").Code != filesystem::Status::Unsupported ||
         directory.OpenRead("asset", file).Code != filesystem::Status::Unsupported ||
         file.ReadAt(0, {}).Outcome.Code != filesystem::Status::Unsupported ||
@@ -125,7 +125,7 @@ int main(int argc, char** argv)
     {
         return 8;
     }
-    if (version_string().empty() || !transportContract())
+    if (version_string().empty() || transportContract() == false)
     {
         return 2;
     }

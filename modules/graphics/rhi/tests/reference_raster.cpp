@@ -203,7 +203,7 @@ BindingCapabilities BindingLimits() noexcept
 }
 RasterCapabilities RasterLimits() noexcept
 {
-    if (!reference::ProfileAvailable)
+    if (reference::ProfileAvailable == false)
     {
         return {};
     }
@@ -228,7 +228,7 @@ RasterCreateBuffer(usize slot, const BufferDescription&, std::span<const uint8> 
     {
         return RasterStatus::OutOfMemory;
     }
-    if (!reference::BufferBytes[slot].TryResize(bytes.size()))
+    if (reference::BufferBytes[slot].TryResize(bytes.size()) == false)
     {
         return RasterStatus::OutOfMemory;
     }
@@ -251,12 +251,12 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
     if (info.Format == RasterFormat::Rgba8Unorm && info.Dimension == TextureDimension::D2 &&
         size <= internal::LIFETIME_TRANSFER_BYTES)
     {
-        if (!reference::TextureBytes[slot].TryResize(size))
+        if (reference::TextureBytes[slot].TryResize(size) == false)
         {
             return RasterStatus::OutOfMemory;
         }
         std::memset(reference::TextureBytes[slot].GetData(), 0, size);
-        if (!info.Attachment && !info.DeferredInitialization)
+        if (info.Attachment == false && info.DeferredInitialization == false)
         {
             width = info.Width;
             height = info.Height;
@@ -353,7 +353,7 @@ void RasterDiscardSubmission() noexcept
 }
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
-    return !reference::TransferOccupied[readback ? 1 : 0][slot];
+    return reference::TransferOccupied[readback ? 1 : 0][slot] == false;
 }
 RasterStatus LifetimeUpload(usize transfer,
                             const BufferDescription&,
@@ -364,7 +364,7 @@ RasterStatus LifetimeUpload(usize transfer,
     const auto buffer = uploadTarget.Buffer;
     const auto request = uploadTarget.Request;
 
-    if (!LifetimeTransferAvailable(false, transfer))
+    if (LifetimeTransferAvailable(false, transfer) == false)
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -372,7 +372,7 @@ RasterStatus LifetimeUpload(usize transfer,
     {
         return reference::TransferStart;
     }
-    if (!reference::BufferBytes[buffer].TryResize(size))
+    if (reference::BufferBytes[buffer].TryResize(size) == false)
     {
         return RasterStatus::OutOfMemory;
     }
@@ -388,7 +388,7 @@ RasterStatus LifetimeReadback(usize transfer, BufferRole, const internal::Lifeti
     const auto buffer = range.Buffer;
     const auto offset = range.Offset;
     const auto size = range.Size;
-    if (!LifetimeTransferAvailable(true, transfer))
+    if (LifetimeTransferAvailable(true, transfer) == false)
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -479,7 +479,7 @@ void LifetimeReleaseTransfer(bool readback, usize slot) noexcept
 }
 void LifetimeReset() noexcept
 {
-    if (!reference::RetainTransfersOnReset)
+    if (reference::RetainTransfersOnReset == false)
     {
         for (auto& direction : reference::TransferOccupied)
         {
@@ -548,7 +548,7 @@ bool NativeInteropSupported() noexcept
 }
 RasterStatus NativeDeviceSnapshot(NativeDeviceInfo& output) noexcept
 {
-    if (!NativeInteropSupported())
+    if (NativeInteropSupported() == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -582,7 +582,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
     {
         return reference::NativePublishResult;
     }
-    if (!reference::NativeReadReleased.EnsureSlots(slot + 1))
+    if (reference::NativeReadReleased.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -594,7 +594,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
 }
 RasterStatus NativeTextureRelease(usize slot) noexcept
 {
-    if (!reference::NativeReadReleased[slot])
+    if (reference::NativeReadReleased[slot] == false)
     {
         reference::NativeReadReleased[slot] = true;
         ++reference::NativeReleases;
@@ -607,11 +607,11 @@ RasterStatus NativeTexturePoll(usize slot, bool wait) noexcept
     {
         return RasterStatus::DeviceLost;
     }
-    if (!reference::NativeReadReleased[slot])
+    if (reference::NativeReadReleased[slot] == false)
     {
         return RasterStatus::Pending;
     }
-    return wait || !reference::NativePending ? RasterStatus::Ready : RasterStatus::Pending;
+    return wait || reference::NativePending == false ? RasterStatus::Ready : RasterStatus::Pending;
 }
 void NativeTextureDestroy(usize) noexcept
 {

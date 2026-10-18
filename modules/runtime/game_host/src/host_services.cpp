@@ -259,7 +259,7 @@ HostServiceProvider& HostServiceProvider::operator=(HostServiceProvider&& other)
         {
             PinUntilProcessExit();
         }
-        if (Context_ != nullptr && !Context_->Pinned && OutstandingAllocations() == 0 && OutstandingWork() == 0)
+        if (Context_ != nullptr && Context_->Pinned == false && OutstandingAllocations() == 0 && OutstandingWork() == 0)
         {
             delete Context_;
         }
@@ -278,7 +278,7 @@ HostServiceProvider::~HostServiceProvider() noexcept
     }
     // A failed retirement keeps the table/context alive until process exit.
     // It must never leave an outstanding caller with dangling service storage.
-    if (Context_ != nullptr && !Context_->Pinned && OutstandingAllocations() == 0 && OutstandingWork() == 0)
+    if (Context_ != nullptr && Context_->Pinned == false && OutstandingAllocations() == 0 && OutstandingWork() == 0)
     {
         delete Context_;
     }
@@ -294,7 +294,7 @@ const HostServices& HostServiceProvider::Services() const noexcept
 void HostServiceProvider::PinUntilProcessExit() noexcept
 {
     Retire();
-    if (Context_ != nullptr && !Context_->Pinned)
+    if (Context_ != nullptr && Context_->Pinned == false)
     {
         Context_->Pinned = true;
         Context_->NextPinned = pinnedContexts;
@@ -321,7 +321,7 @@ void HostServiceProvider::GateWork() noexcept
 
 void HostServiceProvider::Activate() noexcept
 {
-    if (Context_ != nullptr && !Context_->Retired)
+    if (Context_ != nullptr && Context_->Retired == false)
     {
         Context_->Work.fetch_and(~kWorkClosed, std::memory_order_acq_rel);
     }
@@ -340,7 +340,7 @@ bool HostServiceProvider::CopyResourcesFrom(const HostServiceProvider& source) n
     }
     // Stage independently. Failure leaves the destination registry untouched.
     ludus::foundation::SortedMap<uint64, uint64> copy;
-    if (!copy.TryEnsureCapacity(source.Context_->Resources.GetSize()))
+    if (copy.TryEnsureCapacity(source.Context_->Resources.GetSize()) == false)
     {
         return false;
     }

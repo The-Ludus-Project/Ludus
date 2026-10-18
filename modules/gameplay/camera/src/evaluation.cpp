@@ -10,11 +10,11 @@ CameraStatus ValidateCameraSample(const CameraSample& sample) noexcept
 {
     const auto& pose = sample.Pose;
     const auto& lens = sample.Lens;
-    if (!math::IsFinite(pose.Position) || !math::IsFinite(pose.Orientation) ||
+    if (math::IsFinite(pose.Position) == false || math::IsFinite(pose.Orientation) == false ||
         math::Abs(math::Dot(pose.Orientation, pose.Orientation) - 1.0F) > 1e-4F || sample.OutputId == 0 ||
         sample.DefinitionRevision == 0 || sample.PreviousTick > sample.CurrentTick ||
-        !math::IsFinite(sample.RenderAlpha) || sample.RenderAlpha < 0 || sample.RenderAlpha > 1 ||
-        !math::IsFinite(lens.NearPlane))
+        math::IsFinite(sample.RenderAlpha) == false || sample.RenderAlpha < 0 || sample.RenderAlpha > 1 ||
+        math::IsFinite(lens.NearPlane) == false)
     {
         return CameraStatus::InvalidInput;
     }
@@ -22,15 +22,15 @@ CameraStatus ValidateCameraSample(const CameraSample& sample) noexcept
     {
         case CameraProjection::PerspectiveFinite:
         case CameraProjection::PerspectiveInfinite:
-            if (!math::IsFinite(lens.VerticalFov) || lens.VerticalFov <= 0 || lens.VerticalFov >= math::kPiF ||
+            if (math::IsFinite(lens.VerticalFov) == false || lens.VerticalFov <= 0 || lens.VerticalFov >= math::kPiF ||
                 lens.NearPlane <= 0)
             {
                 return CameraStatus::InvalidInput;
             }
             break;
         case CameraProjection::OrthographicFinite:
-            if (!math::IsFinite(lens.VerticalSpan) || lens.VerticalSpan <= 0 ||
-                !math::IsFinite(lens.MinimumVisibleWidth) || lens.MinimumVisibleWidth < 0 || lens.NearPlane < 0)
+            if (math::IsFinite(lens.VerticalSpan) == false || lens.VerticalSpan <= 0 ||
+                math::IsFinite(lens.MinimumVisibleWidth) == false || lens.MinimumVisibleWidth < 0 || lens.NearPlane < 0)
             {
                 return CameraStatus::InvalidInput;
             }
@@ -39,7 +39,7 @@ CameraStatus ValidateCameraSample(const CameraSample& sample) noexcept
             return CameraStatus::InvalidInput;
     }
     if (lens.Projection != CameraProjection::PerspectiveInfinite &&
-        (!math::IsFinite(lens.FarPlane) || lens.FarPlane <= lens.NearPlane))
+        (math::IsFinite(lens.FarPlane) == false || lens.FarPlane <= lens.NearPlane))
     {
         return CameraStatus::InvalidInput;
     }
@@ -80,7 +80,7 @@ CameraStatus TryEvaluateCamera(const CameraRigDefinition& definition,
             break;
         case CameraRecipe::OrthographicFollow:
             if (definition.Lens.Projection != CameraProjection::OrthographicFinite ||
-                !math::IsFinite(definition.FollowOffset) || definition.Pose.Orientation.X != 0 ||
+                math::IsFinite(definition.FollowOffset) == false || definition.Pose.Orientation.X != 0 ||
                 definition.Pose.Orientation.Y != 0 || definition.Pose.Orientation.Z != 0)
             {
                 return CameraStatus::InvalidInput;
@@ -89,7 +89,7 @@ CameraStatus TryEvaluateCamera(const CameraRigDefinition& definition,
             {
                 return CameraStatus::MissingTarget;
             }
-            if (!math::IsFinite(target->Position) || target->BindingId == 0)
+            if (math::IsFinite(target->Position) == false || target->BindingId == 0)
             {
                 return CameraStatus::InvalidInput;
             }
@@ -97,7 +97,7 @@ CameraStatus TryEvaluateCamera(const CameraRigDefinition& definition,
                 target->Position.X + static_cast<foundation::float64>(definition.FollowOffset.X);
             candidate.Pose.Position.Y =
                 target->Position.Y + static_cast<foundation::float64>(definition.FollowOffset.Y);
-            if (!math::IsFinite(candidate.Pose.Position))
+            if (math::IsFinite(candidate.Pose.Position) == false)
             {
                 return CameraStatus::OutOfRange;
             }

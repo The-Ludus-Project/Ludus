@@ -29,7 +29,7 @@ int ExerciseInstalledFilesystem() noexcept
         std::ofstream file(std::filesystem::path(path) / "asset", std::ios::binary);
         file << "asset";
         file.close();
-        if (!file.good())
+        if (file.good() == false)
         {
             return 10;
         }
@@ -37,20 +37,21 @@ int ExerciseInstalledFilesystem() noexcept
     Directory directory;
     File file, clone;
     uint8 bytes[5]{};
-    if (!directory.Open(path).Succeeded() || !directory.OpenRead("asset", file).Succeeded() ||
-        !file.Clone(clone).Succeeded())
+    if (directory.Open(path).Succeeded() == false || directory.OpenRead("asset", file).Succeeded() == false ||
+        file.Clone(clone).Succeeded() == false)
     {
         return 10;
     }
     const auto read = clone.ReadAt(1, bytes);
-    if (!read.Outcome.Succeeded() || read.BytesRead != 4 || bytes[0] != 's')
+    if (read.Outcome.Succeeded() == false || read.BytesRead != 4 || bytes[0] != 's')
     {
         return 10;
     }
     ProviderHandle memory, native;
     const uint8 memoryBytes[]{1, 2, 3};
     const MemoryEntry entry{"data", memoryBytes};
-    if (!CreateMemoryProvider({&entry, 1}, memory).Succeeded() || !CreateDirectoryProvider(path, native).Succeeded())
+    if (CreateMemoryProvider({&entry, 1}, memory).Succeeded() == false ||
+        CreateDirectoryProvider(path, native).Succeeded() == false)
     {
         return 10;
     }
@@ -58,9 +59,10 @@ int ExerciseInstalledFilesystem() noexcept
     MountSnapshot snapshot;
     VirtualPath logical;
     VirtualFile opened, retained;
-    if (!MountSnapshot::Create(mounts, 1, snapshot).Succeeded() || !logical.Set(Root::Assets, "asset").Succeeded() ||
-        !snapshot.OpenRead(logical, opened).Outcome.Succeeded() || opened.MountId() != 2 ||
-        !opened.Clone(retained).Succeeded() || !MountSnapshot::Create({}, 2, snapshot).Succeeded())
+    if (MountSnapshot::Create(mounts, 1, snapshot).Succeeded() == false ||
+        logical.Set(Root::Assets, "asset").Succeeded() == false ||
+        snapshot.OpenRead(logical, opened).Outcome.Succeeded() == false || opened.MountId() != 2 ||
+        opened.Clone(retained).Succeeded() == false || MountSnapshot::Create({}, 2, snapshot).Succeeded() == false)
     {
         return 10;
     }

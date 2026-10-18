@@ -50,12 +50,13 @@ bool ResourceId(const QJsonValue& value, const QString& kind)
 }
 bool Text(const QJsonValue& value, foundation::int64 limit)
 {
-    if (!value.isString())
+    if (value.isString() == false)
     {
         return false;
     }
     const auto text = value.toString();
-    return text.toUtf8().size() <= limit && !text.contains(QChar(0)) && QString::fromUtf8(text.toUtf8()) == text;
+    return text.toUtf8().size() <= limit && text.contains(QChar(0)) == false &&
+           QString::fromUtf8(text.toUtf8()) == text;
 }
 // Mint a fresh entity ID. World-demo IDs keep their legacy `entity-` prefix and
 // the first ENTITY_UUID_CHARACTERS of the UUID text, so that they fit the
@@ -75,7 +76,7 @@ bool Fields(const QJsonObject& object, const QStringList& allowed)
 {
     for (auto i = object.begin(); i != object.end(); ++i)
     {
-        if (!allowed.contains(i.key()))
+        if (allowed.contains(i.key()) == false)
         {
             return false;
         }
@@ -101,7 +102,7 @@ bool Decode(const QByteArray& bytes, foundation::int64 limit, QJsonObject& out, 
     limits.MaxStringBytes = 2048;
     if (document.Read({bytes.constData(), static_cast<foundation::usize>(bytes.size())}, diagnostic, limits) !=
             parsing::ParseStatus::Ok ||
-        !document.Root().Object())
+        document.Root().Object() == false)
     {
         return Fail(error, QStringLiteral("Invalid JSON, duplicate keys, or document limits exceeded."));
     }
@@ -160,20 +161,22 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
         return Fail(error, QStringLiteral("Close the current world before loading another schema."));
     }
     QJsonObject schema;
-    if (!Decode(bytes, 65536, schema, error))
+    if (Decode(bytes, 65536, schema, error) == false)
     {
         return false;
     }
-    if (!Fields(schema,
-                {QStringLiteral("version"),
-                 QStringLiteral("id"),
-                 QStringLiteral("label"),
-                 QStringLiteral("components"),
-                 QStringLiteral("assets"),
-                 QStringLiteral("scene_transform")}) ||
+    if (Fields(schema,
+               {QStringLiteral("version"),
+                QStringLiteral("id"),
+                QStringLiteral("label"),
+                QStringLiteral("components"),
+                QStringLiteral("assets"),
+                QStringLiteral("scene_transform")}) == false ||
         schema.value(QStringLiteral("version")) != QJsonValue(1) ||
-        !Id(schema.value(QStringLiteral("id")).toString()) || !Text(schema.value(QStringLiteral("label")), 128) ||
-        !schema.value(QStringLiteral("components")).isArray() || !schema.value(QStringLiteral("assets")).isArray())
+        Id(schema.value(QStringLiteral("id")).toString()) == false ||
+        Text(schema.value(QStringLiteral("label")), 128) == false ||
+        schema.value(QStringLiteral("components")).isArray() == false ||
+        schema.value(QStringLiteral("assets")).isArray() == false)
     {
         return Fail(error, QStringLiteral("Schema needs version 1, stable id, label, components and assets arrays."));
     }
@@ -187,16 +190,17 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
     {
         const auto c = value.toObject();
         const auto id = c.value(QStringLiteral("id")).toString();
-        if (!value.isObject() ||
-            !Fields(c,
-                    {QStringLiteral("id"),
-                     QStringLiteral("label"),
-                     QStringLiteral("help"),
-                     QStringLiteral("required"),
-                     QStringLiteral("properties")}) ||
-            !Id(id) || ids.contains(id) || !Text(c.value(QStringLiteral("label")), 128) ||
-            !Text(c.value(QStringLiteral("help")), 512) || !c.value(QStringLiteral("required")).isBool() ||
-            !c.value(QStringLiteral("properties")).isArray())
+        if (value.isObject() == false ||
+            Fields(c,
+                   {QStringLiteral("id"),
+                    QStringLiteral("label"),
+                    QStringLiteral("help"),
+                    QStringLiteral("required"),
+                    QStringLiteral("properties")}) == false ||
+            Id(id) == false || ids.contains(id) || Text(c.value(QStringLiteral("label")), 128) == false ||
+            Text(c.value(QStringLiteral("help")), 512) == false ||
+            c.value(QStringLiteral("required")).isBool() == false ||
+            c.value(QStringLiteral("properties")).isArray() == false)
         {
             return Fail(error, QStringLiteral("Invalid or duplicate component definition: %1").arg(id));
         }
@@ -212,20 +216,22 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
             const auto p = field.toObject();
             const auto key = p.value(QStringLiteral("id")).toString();
             const auto type = p.value(QStringLiteral("type")).toString();
-            if (!field.isObject() ||
-                !Fields(p,
-                        {QStringLiteral("id"),
-                         QStringLiteral("label"),
-                         QStringLiteral("type"),
-                         QStringLiteral("default"),
-                         QStringLiteral("min"),
-                         QStringLiteral("max"),
-                         QStringLiteral("choices"),
-                         QStringLiteral("help"),
-                         QStringLiteral("unit"),
-                         QStringLiteral("asset_kind")}) ||
-                !Id(key) || propertiesSeen.contains(key) || !Text(p.value(QStringLiteral("label")), 128) ||
-                !Text(p.value(QStringLiteral("help")), 512) || !Text(p.value(QStringLiteral("unit")), 32))
+            if (field.isObject() == false ||
+                Fields(p,
+                       {QStringLiteral("id"),
+                        QStringLiteral("label"),
+                        QStringLiteral("type"),
+                        QStringLiteral("default"),
+                        QStringLiteral("min"),
+                        QStringLiteral("max"),
+                        QStringLiteral("choices"),
+                        QStringLiteral("help"),
+                        QStringLiteral("unit"),
+                        QStringLiteral("asset_kind")}) == false ||
+                Id(key) == false || propertiesSeen.contains(key) ||
+                Text(p.value(QStringLiteral("label")), 128) == false ||
+                Text(p.value(QStringLiteral("help")), 512) == false ||
+                Text(p.value(QStringLiteral("unit")), 32) == false)
             {
                 return Fail(error, QStringLiteral("Invalid or duplicate property definition: %1.%2").arg(id, key));
             }
@@ -236,8 +242,9 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 const auto high = p.value(QStringLiteral("max"));
                 const auto limit =
                     type == QStringLiteral("integer") ? foundation::float64{2147483647} : foundation::float64{1e30};
-                if (!low.isDouble() || !high.isDouble() || !foundation::math::IsFinite(low.toDouble()) ||
-                    !foundation::math::IsFinite(high.toDouble()) || low.toDouble() > high.toDouble() ||
+                if (low.isDouble() == false || high.isDouble() == false ||
+                    foundation::math::IsFinite(low.toDouble()) == false ||
+                    foundation::math::IsFinite(high.toDouble()) == false || low.toDouble() > high.toDouble() ||
                     low.toDouble() < -limit || high.toDouble() > limit)
                 {
                     return Fail(error, QStringLiteral("Numeric properties need finite, ordered min/max bounds."));
@@ -247,26 +254,26 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
             {
                 const auto choices = p.value(QStringLiteral("choices")).toArray();
                 QSet<QString> unique;
-                if (!p.value(QStringLiteral("choices")).isArray() || choices.isEmpty() || choices.size() > 64)
+                if (p.value(QStringLiteral("choices")).isArray() == false || choices.isEmpty() || choices.size() > 64)
                 {
                     return Fail(error, QStringLiteral("Enums need 1–64 named choices."));
                 }
                 for (const auto choice : choices)
                 {
-                    if (!Text(choice, 128) || unique.contains(choice.toString()))
+                    if (Text(choice, 128) == false || unique.contains(choice.toString()))
                     {
                         return Fail(error, QStringLiteral("Invalid or duplicate enum choice."));
                     }
                     unique.insert(choice.toString());
                 }
             }
-            if ((type == QStringLiteral("asset") && !Id(p.value(QStringLiteral("asset_kind")).toString())) ||
+            if ((type == QStringLiteral("asset") && Id(p.value(QStringLiteral("asset_kind")).toString()) == false) ||
                 (type != QStringLiteral("asset") && p.contains(QStringLiteral("asset_kind"))))
             {
                 return Fail(error,
                             QStringLiteral("Asset properties need an asset_kind; other property types must omit it."));
             }
-            if (!Value(p, p.value(QStringLiteral("default")), error))
+            if (Value(p, p.value(QStringLiteral("default")), error) == false)
             {
                 return false;
             }
@@ -284,10 +291,10 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
     {
         const auto asset = value.toObject();
         const auto id = asset.value(QStringLiteral("id")).toString();
-        if (!value.isObject() ||
-            !Fields(asset, {QStringLiteral("id"), QStringLiteral("label"), QStringLiteral("kind")}) || !Id(id) ||
-            ids.contains(id) || !Text(asset.value(QStringLiteral("label")), 128) ||
-            !Id(asset.value(QStringLiteral("kind")).toString()))
+        if (value.isObject() == false ||
+            Fields(asset, {QStringLiteral("id"), QStringLiteral("label"), QStringLiteral("kind")}) == false ||
+            Id(id) == false || ids.contains(id) || Text(asset.value(QStringLiteral("label")), 128) == false ||
+            Id(asset.value(QStringLiteral("kind")).toString()) == false)
         {
             return Fail(error, QStringLiteral("Invalid or duplicate declared asset."));
         }
@@ -296,12 +303,12 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
     if (schema.contains(QStringLiteral("scene_transform")))
     {
         const auto binding = schema.value(QStringLiteral("scene_transform")).toObject();
-        if (!schema.value(QStringLiteral("scene_transform")).isObject() || binding.size() != 4 ||
-            !Fields(binding,
-                    {QStringLiteral("component"),
-                     QStringLiteral("position"),
-                     QStringLiteral("rotation"),
-                     QStringLiteral("scale")}))
+        if (schema.value(QStringLiteral("scene_transform")).isObject() == false || binding.size() != 4 ||
+            Fields(binding,
+                   {QStringLiteral("component"),
+                    QStringLiteral("position"),
+                    QStringLiteral("rotation"),
+                    QStringLiteral("scale")}) == false)
         {
             return Fail(error, QStringLiteral("Invalid scene transform binding."));
         }
@@ -314,7 +321,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 break;
             }
         }
-        if (!definition.value(QStringLiteral("required")).toBool())
+        if (definition.value(QStringLiteral("required")).toBool() == false)
         {
             return Fail(error, QStringLiteral("Scene transform binding needs a required component."));
         }
@@ -322,7 +329,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
         for (const auto& key : {QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
         {
             const auto axes = binding.value(key).toArray();
-            if (!binding.value(key).isArray() || axes.size() != 3)
+            if (binding.value(key).isArray() == false || axes.size() != 3)
             {
                 return Fail(error, QStringLiteral("Scene transform bindings need three property IDs per group."));
             }
@@ -337,7 +344,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                         break;
                     }
                 }
-                if (!axis.isString() || names.contains(axis.toString()) ||
+                if (axis.isString() == false || names.contains(axis.toString()) ||
                     property.value(QStringLiteral("type")) != QJsonValue(QStringLiteral("number")))
                 {
                     return Fail(error, QStringLiteral("Scene placement needs nine distinct numeric properties."));
@@ -376,15 +383,15 @@ QJsonObject WorldDocument::Entity(const QString& id) const
 }
 bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
 {
-    if (!HasSchema() ||
-        !Fields(candidate,
-                {QStringLiteral("version"),
-                 QStringLiteral("schema"),
-                 QStringLiteral("entities"),
-                 QStringLiteral("scene")}) ||
+    if (HasSchema() == false ||
+        Fields(candidate,
+               {QStringLiteral("version"),
+                QStringLiteral("schema"),
+                QStringLiteral("entities"),
+                QStringLiteral("scene")}) == false ||
         candidate.value(QStringLiteral("version")) != QJsonValue(1) ||
         candidate.value(QStringLiteral("schema")) != Schema_.value(QStringLiteral("id")) ||
-        !candidate.value(QStringLiteral("entities")).isArray())
+        candidate.value(QStringLiteral("entities")).isArray() == false)
     {
         return Fail(error, QStringLiteral("World version/schema does not match this project's authoring contract."));
     }
@@ -403,15 +410,15 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     {
         const auto e = value.toObject();
         const auto id = e.value(QStringLiteral("id")).toString();
-        if (!value.isObject() ||
-            !Fields(e,
-                    {QStringLiteral("id"),
-                     QStringLiteral("name"),
-                     QStringLiteral("components"),
-                     QStringLiteral("scene")}) ||
-            !Id(id) || ids.contains(id) || !Text(e.value(QStringLiteral("name")), 128) ||
+        if (value.isObject() == false ||
+            Fields(e,
+                   {QStringLiteral("id"),
+                    QStringLiteral("name"),
+                    QStringLiteral("components"),
+                    QStringLiteral("scene")}) == false ||
+            Id(id) == false || ids.contains(id) || Text(e.value(QStringLiteral("name")), 128) == false ||
             e.value(QStringLiteral("name")).toString().trimmed().isEmpty() ||
-            !e.value(QStringLiteral("components")).isObject())
+            e.value(QStringLiteral("components")).isObject() == false)
         {
             return Fail(error, QStringLiteral("Every entity needs a unique stable ID, name and components object."));
         }
@@ -425,7 +432,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         {
             const auto c = definition.toObject();
             if (c.value(QStringLiteral("required")).toBool() &&
-                !components.contains(c.value(QStringLiteral("id")).toString()))
+                components.contains(c.value(QStringLiteral("id")).toString()) == false)
             {
                 return Fail(
                     error,
@@ -436,7 +443,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         for (auto c = components.begin(); c != components.end(); ++c)
         {
             const auto definition = Component(c.key());
-            if (definition.isEmpty() || !c.value().isObject())
+            if (definition.isEmpty() || c.value().isObject() == false)
             {
                 return Fail(error, QStringLiteral("Unknown component %1; the world was preserved.").arg(c.key()));
             }
@@ -450,15 +457,16 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             {
                 const auto p = field.toObject();
                 const auto v = props.value(p.value(QStringLiteral("id")).toString());
-                if (!Value(p, v, error))
+                if (Value(p, v, error) == false)
                 {
                     error = e.value(QStringLiteral("name")).toString() + QStringLiteral(" / ") +
                             definition.value(QStringLiteral("label")).toString() + QStringLiteral(" / ") + error;
                     return false;
                 }
                 const auto type = p.value(QStringLiteral("type")).toString();
-                if (!v.toString().isEmpty() && ((type == QStringLiteral("entity") && !ids.contains(v.toString())) ||
-                                                (type == QStringLiteral("asset") && !assets.contains(v.toString()))))
+                if (v.toString().isEmpty() == false &&
+                    ((type == QStringLiteral("entity") && ids.contains(v.toString()) == false) ||
+                     (type == QStringLiteral("asset") && assets.contains(v.toString()) == false)))
                 {
                     return Fail(error,
                                 QStringLiteral("%1 / %2: reference %3 is not in this world or the declared asset list.")
@@ -466,7 +474,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                          p.value(QStringLiteral("label")).toString(),
                                          v.toString()));
                 }
-                if (type == QStringLiteral("asset") && !v.toString().isEmpty())
+                if (type == QStringLiteral("asset") && v.toString().isEmpty() == false)
                 {
                     for (const auto entry : Schema_.value(QStringLiteral("assets")).toArray())
                     {
@@ -487,26 +495,28 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     if (candidate.contains(QStringLiteral("scene")))
     {
         const auto scene = candidate.value(QStringLiteral("scene")).toObject();
-        if (!candidate.value(QStringLiteral("scene")).isObject() ||
-            !Fields(scene,
-                    {QStringLiteral("version"),
-                     QStringLiteral("id"),
-                     QStringLiteral("name"),
-                     QStringLiteral("profile"),
-                     QStringLiteral("camera"),
-                     QStringLiteral("imports")}) ||
+        if (candidate.value(QStringLiteral("scene")).isObject() == false ||
+            Fields(scene,
+                   {QStringLiteral("version"),
+                    QStringLiteral("id"),
+                    QStringLiteral("name"),
+                    QStringLiteral("profile"),
+                    QStringLiteral("camera"),
+                    QStringLiteral("imports")}) == false ||
             scene.size() != 6 || scene.value(QStringLiteral("version")) != QJsonValue(1) ||
             QUuid(scene.value(QStringLiteral("id")).toString()).isNull() ||
             scene.value(QStringLiteral("profile")) != QJsonValue(QStringLiteral("resident-reference-v1")) ||
-            !Text(scene.value(QStringLiteral("name")), 128) || !scene.value(QStringLiteral("camera")).isObject() ||
-            !scene.value(QStringLiteral("imports")).isArray())
+            Text(scene.value(QStringLiteral("name")), 128) == false ||
+            scene.value(QStringLiteral("camera")).isObject() == false ||
+            scene.value(QStringLiteral("imports")).isArray() == false)
         {
             return Fail(error, QStringLiteral("Invalid cooked-scene metadata."));
         }
         const auto camera = scene.value(QStringLiteral("camera")).toObject();
         if (camera.size() != 4 ||
-            !Fields(camera,
-                    {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up"), QStringLiteral("fov")}))
+            Fields(camera,
+                   {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up"), QStringLiteral("fov")}) ==
+                false)
         {
             return Fail(error, QStringLiteral("Invalid scene camera."));
         }
@@ -515,14 +525,14 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         for (const auto& key : {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up")})
         {
             const auto values = camera.value(key).toArray();
-            if (!camera.value(key).isArray() || values.size() != 3)
+            if (camera.value(key).isArray() == false || values.size() != 3)
             {
                 return Fail(error, QStringLiteral("Invalid camera vector."));
             }
             for (const auto number : values)
             {
-                if (!number.isDouble() || !foundation::math::IsFinite(number.toDouble()) || number.toDouble() < -1e12 ||
-                    number.toDouble() > 1e12)
+                if (number.isDouble() == false || foundation::math::IsFinite(number.toDouble()) == false ||
+                    number.toDouble() < -1e12 || number.toDouble() > 1e12)
                 {
                     return Fail(error, QStringLiteral("Nonfinite or oversized camera vector."));
                 }
@@ -534,7 +544,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         const auto fov = camera.value(QStringLiteral("fov"));
         const auto forward = vectors[1] - vectors[0];
         const auto cross = foundation::math::Cross(forward, vectors[2]);
-        if (!fov.isDouble() || !foundation::math::IsFinite(fov.toDouble()) || fov.toDouble() <= 0 ||
+        if (fov.isDouble() == false || foundation::math::IsFinite(fov.toDouble()) == false || fov.toDouble() <= 0 ||
             fov.toDouble() >= 3.141592653589793 || foundation::math::Dot(forward, forward) <= 1e-12F ||
             foundation::math::Dot(cross, cross) <= 1e-12F)
         {
@@ -547,7 +557,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         }
         for (const auto resource : imports)
         {
-            if (!ResourceId(resource, QStringLiteral("scene")))
+            if (ResourceId(resource, QStringLiteral("scene")) == false)
             {
                 return Fail(error, QStringLiteral("Invalid import provenance."));
             }
@@ -556,24 +566,25 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     for (const auto value : entities)
     {
         const auto entity = value.toObject();
-        if (!entity.contains(QStringLiteral("scene")))
+        if (entity.contains(QStringLiteral("scene")) == false)
         {
             continue;
         }
         const auto scene = entity.value(QStringLiteral("scene")).toObject();
-        if (!candidate.contains(QStringLiteral("scene")) || !entity.value(QStringLiteral("scene")).isObject() ||
-            !Fields(scene,
-                    {QStringLiteral("mesh"),
-                     QStringLiteral("material"),
-                     QStringLiteral("parent"),
-                     QStringLiteral("basis"),
-                     QStringLiteral("position"),
-                     QStringLiteral("rotation"),
-                     QStringLiteral("scale")}) ||
+        if (candidate.contains(QStringLiteral("scene")) == false ||
+            entity.value(QStringLiteral("scene")).isObject() == false ||
+            Fields(scene,
+                   {QStringLiteral("mesh"),
+                    QStringLiteral("material"),
+                    QStringLiteral("parent"),
+                    QStringLiteral("basis"),
+                    QStringLiteral("position"),
+                    QStringLiteral("rotation"),
+                    QStringLiteral("scale")}) == false ||
             scene.size() != (Schema_.contains(QStringLiteral("scene_transform")) ? 4 : 7) ||
-            !ResourceId(scene.value(QStringLiteral("mesh")), QStringLiteral("mesh")) ||
-            !ResourceId(scene.value(QStringLiteral("material")), QStringLiteral("material")) ||
-            !scene.value(QStringLiteral("parent")).isString())
+            ResourceId(scene.value(QStringLiteral("mesh")), QStringLiteral("mesh")) == false ||
+            ResourceId(scene.value(QStringLiteral("material")), QStringLiteral("material")) == false ||
+            scene.value(QStringLiteral("parent")).isString() == false)
         {
             return Fail(error, QStringLiteral("Invalid scene instance."));
         }
@@ -582,15 +593,15 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         {
             const auto placement = ScenePlacement(entity);
             const auto numbers = placement.value(key).toArray();
-            if (!placement.value(key).isArray() || numbers.size() != (key == QStringLiteral("basis") ? 9 : 3))
+            if (placement.value(key).isArray() == false || numbers.size() != (key == QStringLiteral("basis") ? 9 : 3))
             {
                 return Fail(error, QStringLiteral("Invalid instance placement."));
             }
             for (const auto number : numbers)
             {
                 const auto n = number.toDouble();
-                if (!number.isDouble() || !foundation::math::IsFinite(n) || n < -1000000 || n > 1000000 ||
-                    (key == QStringLiteral("scale") && n <= 0) ||
+                if (number.isDouble() == false || foundation::math::IsFinite(n) == false || n < -1000000 ||
+                    n > 1000000 || (key == QStringLiteral("scale") && n <= 0) ||
                     (key == QStringLiteral("rotation") && (n < -360 || n > 360)))
                 {
                     return Fail(error, QStringLiteral("Instance placement is outside its finite bounds."));
@@ -599,7 +610,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         }
         auto parent = scene.value(QStringLiteral("parent")).toString();
         QSet<QString> seen{entity.value(QStringLiteral("id")).toString()};
-        while (!parent.isEmpty())
+        while (parent.isEmpty() == false)
         {
             QJsonObject ancestor;
             for (const auto other : entities)
@@ -610,7 +621,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     break;
                 }
             }
-            if (seen.contains(parent) || !ancestor.value(QStringLiteral("scene")).isObject())
+            if (seen.contains(parent) || ancestor.value(QStringLiteral("scene")).isObject() == false)
             {
                 return Fail(error, QStringLiteral("Scene parent is missing or forms a cycle."));
             }
@@ -624,7 +635,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
 bool WorldDocument::Load(const QByteArray& bytes, QString& error)
 {
     QJsonObject candidate;
-    if (!Decode(bytes, MaxBytes, candidate, error) || !Validate(candidate, error))
+    if (Decode(bytes, MaxBytes, candidate, error) == false || Validate(candidate, error) == false)
     {
         return false;
     }
@@ -638,7 +649,7 @@ bool WorldDocument::New(QString& error)
     QJsonObject candidate{{QStringLiteral("version"), 1},
                           {QStringLiteral("schema"), Schema_.value(QStringLiteral("id"))},
                           {QStringLiteral("entities"), QJsonArray{}}};
-    if (!Validate(candidate, error))
+    if (Validate(candidate, error) == false)
     {
         return false;
     }
@@ -657,7 +668,7 @@ void WorldDocument::Clear()
 }
 bool WorldDocument::Commit(const QJsonObject& candidate, QString& error)
 {
-    if (!Loaded_ || !Validate(candidate, error))
+    if (Loaded_ == false || Validate(candidate, error) == false)
     {
         return false;
     }
@@ -666,7 +677,7 @@ bool WorldDocument::Commit(const QJsonObject& candidate, QString& error)
         error.clear();
         return true;
     }
-    if (!History_.Commit(Draft_, candidate))
+    if (History_.Commit(Draft_, candidate) == false)
     {
         return Fail(error, QStringLiteral("History revision exhausted; save and reopen."));
     }
@@ -814,7 +825,7 @@ bool WorldDocument::Detach(const QString& entity, QString& error, const QString&
 {
     auto e = Entity(entity);
     auto components = e.value(QStringLiteral("components")).toObject();
-    if (e.isEmpty() || !components.contains(component))
+    if (e.isEmpty() || components.contains(component) == false)
     {
         return Fail(error, QStringLiteral("Component no longer exists."));
     }
@@ -843,7 +854,7 @@ bool WorldDocument::Edit(const QString& entity,
 }
 bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
 {
-    if (!level.value(QStringLiteral("objects")).isArray())
+    if (level.value(QStringLiteral("objects")).isArray() == false)
     {
         return Fail(error, QStringLiteral("Missing imported instances."));
     }
@@ -853,9 +864,9 @@ bool WorldDocument::ImportScene(const QJsonObject& level, QString& error)
     {
         const auto object = value.toObject();
         const auto id = object.value(QStringLiteral("id")).toString();
-        if (!Entity(id).isEmpty())
+        if (Entity(id).isEmpty() == false)
         {
-            if (!Entity(id).value(QStringLiteral("scene")).isObject())
+            if (Entity(id).value(QStringLiteral("scene")).isObject() == false)
             {
                 return Fail(error, QStringLiteral("An imported ID collides with an existing gameplay entity."));
             }
@@ -930,7 +941,7 @@ QJsonObject WorldDocument::ScenePlacement(const QJsonObject& entity) const
 {
     auto scene = entity.value(QStringLiteral("scene")).toObject();
     const auto binding = Schema_.value(QStringLiteral("scene_transform")).toObject();
-    if (!binding.isEmpty() && !scene.isEmpty())
+    if (binding.isEmpty() == false && scene.isEmpty() == false)
     {
         const auto values = entity.value(QStringLiteral("components"))
                                 .toObject()
@@ -1066,7 +1077,7 @@ bool WorldDocument::ParseValue(const QJsonObject& p, const QString& text, QJsonV
         }
         candidate = text == QStringLiteral("true");
     }
-    if (!Value(p, candidate, error))
+    if (Value(p, candidate, error) == false)
     {
         return false;
     }

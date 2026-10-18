@@ -45,7 +45,7 @@ struct L5Scene final
             mesh.Normals = normals;
             Operation = 1;
             status = renderer.CreateMesh(mesh, Geometry);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -82,7 +82,7 @@ struct L5Scene final
             rr::LightSelection selected;
             Operation = 2;
             status = renderer.CreateLitMaterial(Program, description, Material, selected);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -105,7 +105,7 @@ struct L5Scene final
             target.Attachment = true;
             Operation = 3;
             status = rhi::CreateTexture(device, target, {}, Target);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -149,7 +149,7 @@ struct L5Scene final
             view.Reference = Reference;
             Operation = 5;
             status = renderer.PrepareView(Current, view, View, Report);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }
@@ -174,7 +174,7 @@ struct L5Scene final
             }
             Operation = 6;
             status = renderer.PrepareLightingPresentation(Target, mapping, {}, Output);
-            if (!Accepted(status))
+            if (Accepted(status) == false)
             {
                 return status;
             }

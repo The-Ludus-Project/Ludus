@@ -49,6 +49,8 @@ public:
         mNativeWindowInfo.CanvasSelector = mSelector.c_str();
         mNativeWindowInfo.Width = 0;
         mNativeWindowInfo.Height = 0;
+        // Mirrors WindowState::Visible, which stays false until the bridge reports the canvas.
+        mVisibility = WindowVisibility::Occluded;
     }
 
     ~BrowserWindow() noexcept override
@@ -89,6 +91,7 @@ public:
             ResetInput();
             mState.Attached = false;
             mState.Visible = false;
+            mVisibility = WindowVisibility::Occluded;
             mState.Focused = false;
             mNativeWindowInfo.Width = 0;
             mNativeWindowInfo.Height = 0;
@@ -145,14 +148,15 @@ public:
                 break;
             case EventKind::Focus:
                 mState.Focused = packet.A != 0;
-                if (!mState.Focused)
+                if (mState.Focused == false)
                 {
                     ResetInput();
                 }
                 break;
             case EventKind::Visibility:
                 mState.Visible = packet.A != 0;
-                if (!mState.Visible)
+                mVisibility = mState.Visible == true ? WindowVisibility::Visible : WindowVisibility::Occluded;
+                if (mState.Visible == false)
                 {
                     ResetInput();
                 }
@@ -256,7 +260,7 @@ UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexcept
     {
         return {};
     }
-    if (!window->Attach(info.CaptureBrowserInput))
+    if (window->Attach(info.CaptureBrowserInput) == false)
     {
         delete window;
         return {};

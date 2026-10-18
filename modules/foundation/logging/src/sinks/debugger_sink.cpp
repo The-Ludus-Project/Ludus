@@ -25,7 +25,7 @@ SinkStatus DebuggerSink::Write([[maybe_unused]] const LogRecordView& record) noe
     // Re-check attachment rather than trusting a stale ctor-time snapshot
     // (fixes F10): a debugger may attach after Initialize().
     mActive = IsDebuggerPresent() != 0;
-    if (!mActive)
+    if (mActive == false)
     {
         return SinkStatus::Disabled;
     }

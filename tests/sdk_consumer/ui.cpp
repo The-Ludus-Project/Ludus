@@ -16,7 +16,7 @@ int ExerciseInstalledUi() noexcept
     {
         return 10;
     }
-    if (!context.TryFocus(42) || context.Route({ludus::ui::EventKind::Activate}).Activated != 42)
+    if (context.TryFocus(42) == false || context.Route({ludus::ui::EventKind::Activate}).Activated != 42)
     {
         return 10;
     }

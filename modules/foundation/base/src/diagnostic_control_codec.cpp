@@ -22,10 +22,11 @@ usize EncodeControlHeader(char* buffer,
         return 0;
     }
     const std::span<uint8> bytes{reinterpret_cast<uint8*>(buffer), CONTROL_HEADER_SIZE};
-    if (!TryWriteLittleEndian(CONTROL_PROTOCOL_MAGIC, bytes) ||
-        !TryWriteLittleEndian(CONTROL_PROTOCOL_VERSION, bytes.subspan(4)) ||
-        !TryWriteLittleEndian(static_cast<uint16>(kind), bytes.subspan(6)) ||
-        !TryWriteLittleEndian(incidentId, bytes.subspan(8)) || !TryWriteLittleEndian(length, bytes.subspan(12)))
+    if (TryWriteLittleEndian(CONTROL_PROTOCOL_MAGIC, bytes) == false ||
+        TryWriteLittleEndian(CONTROL_PROTOCOL_VERSION, bytes.subspan(4)) == false ||
+        TryWriteLittleEndian(static_cast<uint16>(kind), bytes.subspan(6)) == false ||
+        TryWriteLittleEndian(incidentId, bytes.subspan(8)) == false ||
+        TryWriteLittleEndian(length, bytes.subspan(12)) == false)
     {
         return 0;
     }
@@ -42,9 +43,10 @@ bool DecodeControlHeader(const char* buffer, usize size, ControlHeader& header) 
     uint32 magic{};
     uint16 version{};
     ControlHeader next;
-    if (!TryReadLittleEndian(bytes, magic) || !TryReadLittleEndian(bytes.subspan(4), version) ||
-        !TryReadLittleEndian(bytes.subspan(6), next.Kind) || !TryReadLittleEndian(bytes.subspan(8), next.IncidentId) ||
-        !TryReadLittleEndian(bytes.subspan(12), next.Length) || magic != CONTROL_PROTOCOL_MAGIC ||
+    if (TryReadLittleEndian(bytes, magic) == false || TryReadLittleEndian(bytes.subspan(4), version) == false ||
+        TryReadLittleEndian(bytes.subspan(6), next.Kind) == false ||
+        TryReadLittleEndian(bytes.subspan(8), next.IncidentId) == false ||
+        TryReadLittleEndian(bytes.subspan(12), next.Length) == false || magic != CONTROL_PROTOCOL_MAGIC ||
         version != CONTROL_PROTOCOL_VERSION || next.Kind < static_cast<uint16>(ControlMessageType::Hello) ||
         next.Kind > static_cast<uint16>(ControlMessageType::DecisionReply) || next.Length > CONTROL_MAX_PAYLOAD ||
         next.Length > size - CONTROL_HEADER_SIZE)

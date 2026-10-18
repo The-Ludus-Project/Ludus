@@ -190,7 +190,7 @@ TEST_CASE("Concurrent offset reads share one revision without a shared cursor")
         {
             uint8 bytes[2]{};
             const auto read = file.ReadAt(offset, bytes);
-            if (!read.Outcome.Succeeded() || read.BytesRead != 2 || bytes[0] != expected)
+            if (read.Outcome.Succeeded() == false || read.BytesRead != 2 || bytes[0] != expected)
             {
                 valid.store(false);
             }
@@ -329,9 +329,9 @@ TEST_CASE("Separate snapshot handles support concurrent memory opens and shared 
         {
             VirtualFile opened, clone;
             uint8 read[2]{};
-            if (!retained.OpenRead(path, opened).Outcome.Succeeded() || !shared.Clone(clone).Succeeded() ||
-                clone.ReadAt(2, read).BytesRead != 2 || read[0] != 3 || read[1] != 4 ||
-                opened.ReadAt(0, read).BytesRead != 2 || read[0] != 1 || read[1] != 2)
+            if (retained.OpenRead(path, opened).Outcome.Succeeded() == false ||
+                shared.Clone(clone).Succeeded() == false || clone.ReadAt(2, read).BytesRead != 2 || read[0] != 3 ||
+                read[1] != 4 || opened.ReadAt(0, read).BytesRead != 2 || read[0] != 1 || read[1] != 2)
             {
                 valid.store(false);
             }
@@ -401,7 +401,7 @@ TEST_CASE("Concurrent pack clones serialize scratch while preserving independent
     std::atomic<bool> valid{true};
     auto worker = [&](uint64 offset, uint8 expected) {
         VirtualFile clone;
-        if (!shared.Clone(clone).Succeeded())
+        if (shared.Clone(clone).Succeeded() == false)
         {
             valid.store(false);
             return;
@@ -410,7 +410,7 @@ TEST_CASE("Concurrent pack clones serialize scratch while preserving independent
         {
             uint8 read[8]{};
             const auto result = clone.ReadAt(offset, read);
-            if (!result.Outcome.Succeeded() || result.BytesRead != 8 || read[0] != expected)
+            if (result.Outcome.Succeeded() == false || result.BytesRead != 8 || read[0] != expected)
             {
                 valid.store(false);
             }

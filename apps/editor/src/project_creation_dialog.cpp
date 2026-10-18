@@ -149,14 +149,14 @@ void ProjectCreationDialog::Update()
         options.Name.isEmpty() || options.Name == QStringLiteral(".") || options.Name == QStringLiteral("..");
     for (const auto character : options.Name)
     {
-        invalidName =
-            invalidName || !character.isPrint() || character == QLatin1Char('/') || character == QLatin1Char('\\');
+        invalidName = invalidName || character.isPrint() == false || character == QLatin1Char('/') ||
+                      character == QLatin1Char('\\');
     }
     if (invalidName)
     {
         problem = QStringLiteral("Enter a project name without path separators or control characters.");
     }
-    else if (!QDir::isAbsolutePath(Location_->text().trimmed()))
+    else if (QDir::isAbsolutePath(Location_->text().trimmed()) == false)
     {
         problem = QStringLiteral("Choose an absolute parent folder using Browse.");
     }
@@ -170,7 +170,7 @@ void ProjectCreationDialog::Update()
     }
     Destination_->setText(QStringLiteral("New folder: %1").arg(QDir::toNativeSeparators(options.Destination)));
     Validation_->setText(problem);
-    Validation_->setVisible(!problem.isEmpty());
+    Validation_->setVisible(problem.isEmpty() == false);
     Create_->setEnabled(problem.isEmpty());
 }
 } // namespace ludus::editor

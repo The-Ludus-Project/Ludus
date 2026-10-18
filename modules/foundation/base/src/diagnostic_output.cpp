@@ -104,14 +104,14 @@ bool ReadControlFrame(int descriptor, char* frame, usize& size, int timeout_ms) 
         return false;
     }
     const int64 deadline = timeout_ms >= 0 ? now + timeout_ms : -1;
-    if (!ReadStreamBytes(descriptor, {frame, CONTROL_HEADER_SIZE}, deadline))
+    if (ReadStreamBytes(descriptor, {frame, CONTROL_HEADER_SIZE}, deadline) == false)
     {
         return false;
     }
     ControlHeader header{};
     // The decoder reads only header bytes; capacity validates the declared
     // payload bound before receiving any payload into the remaining storage.
-    if (!DecodeControlHeader(frame, CONTROL_HEADER_SIZE + CONTROL_MAX_PAYLOAD, header))
+    if (DecodeControlHeader(frame, CONTROL_HEADER_SIZE + CONTROL_MAX_PAYLOAD, header) == false)
     {
         return false;
     }
@@ -261,7 +261,7 @@ bool WriteEmergencyBytes(const char* data, usize size) noexcept
             }
             else
             {
-                if (written < 0 && errno == EPIPE && !already_pending)
+                if (written < 0 && errno == EPIPE && already_pending == false)
                 {
 #if defined(LUDUS_PLATFORM_MACOS)
                     // Darwin has no sigtimedwait. Drain only a signal confirmed
@@ -304,7 +304,7 @@ bool ReceiveControlMessage(int descriptor, ControlMessageType expected, int time
 #if defined(LUDUS_PLATFORM_MACOS)
     char frame[CONTROL_HEADER_SIZE + CONTROL_MAX_PAYLOAD];
     usize count = 0;
-    if (!ReadControlFrame(descriptor, frame, count, timeout_ms))
+    if (ReadControlFrame(descriptor, frame, count, timeout_ms) == false)
     {
         return false;
     }
@@ -326,7 +326,7 @@ bool ReceiveControlMessage(int descriptor, ControlMessageType expected, int time
     }
 #endif
     ControlHeader header{};
-    if (!DecodeControlHeader(frame, static_cast<usize>(count), header))
+    if (DecodeControlHeader(frame, static_cast<usize>(count), header) == false)
     {
         return false;
     }
@@ -350,14 +350,14 @@ ControlState ConfigureControlEndpoint(int descriptor) noexcept
     const bool valid =
         getsockopt(descriptor, SOL_SOCKET, SO_TYPE, &type, &length) == 0 && type == CONTROL_SOCKET_TYPE &&
         getpeername(descriptor, reinterpret_cast<sockaddr*>(&peer), &peer_length) == 0 && peer.ss_family == AF_UNIX;
-    if (!valid)
+    if (valid == false)
     {
         gControlState = ControlState::Failed;
         errno = saved_errno;
         return gControlState;
     }
     const int owned = fcntl(descriptor, F_DUPFD_CLOEXEC, 3);
-    if (owned == -1 || !SuppressSocketSignal(owned))
+    if (owned == -1 || SuppressSocketSignal(owned) == false)
     {
         if (owned >= 0)
         {
@@ -371,7 +371,7 @@ ControlState ConfigureControlEndpoint(int descriptor) noexcept
 
     char hello[CONTROL_HEADER_SIZE];
     const usize hello_size = EncodeControlHeader(hello, sizeof(hello), ControlMessageType::Hello, 0, 0);
-    if (!SendControlFrame(gControlSocket, hello, hello_size))
+    if (SendControlFrame(gControlSocket, hello, hello_size) == false)
     {
         gControlState = ControlState::Failed;
         errno = saved_errno;
@@ -445,7 +445,7 @@ ControlDecision RequestAssertDecision(uint32 incidentId, const char* report, usi
         frame_size += size;
     }
 
-    if (!SendControlFrame(gControlSocket, frame, frame_size))
+    if (SendControlFrame(gControlSocket, frame, frame_size) == false)
     {
         errno = saved_errno;
         return ControlDecision::Terminate; // Helper gone / short send => never continue.
@@ -459,7 +459,7 @@ ControlDecision RequestAssertDecision(uint32 incidentId, const char* report, usi
         char reply[CONTROL_HEADER_SIZE + CONTROL_MAX_PAYLOAD];
 #if defined(LUDUS_PLATFORM_MACOS)
         usize count = 0;
-        if (!ReadControlFrame(gControlSocket, reply, count, -1))
+        if (ReadControlFrame(gControlSocket, reply, count, -1) == false)
         {
             break;
         }
@@ -479,7 +479,7 @@ ControlDecision RequestAssertDecision(uint32 incidentId, const char* report, usi
         }
 #endif
         ControlHeader header{};
-        if (!DecodeControlHeader(reply, static_cast<usize>(count), header))
+        if (DecodeControlHeader(reply, static_cast<usize>(count), header) == false)
         {
             break; // Malformed => Terminate; do not loop on garbage.
         }

@@ -11,7 +11,7 @@ namespace ludus::editor
 QString BrowserPlayer(const QString& descriptor)
 {
     QFile file(QDir(QFileInfo(descriptor).absolutePath()).filePath(QStringLiteral("ludus.web.json")));
-    if (!file.open(QIODevice::ReadOnly) || file.size() > 1024)
+    if (file.open(QIODevice::ReadOnly) == false || file.size() > 1024)
     {
         return {};
     }

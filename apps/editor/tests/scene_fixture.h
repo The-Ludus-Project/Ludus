@@ -50,7 +50,7 @@ inline bool CookFixture(std::string_view source,
     }
     QFile input(QDir(QString::fromUtf8(source.data(), static_cast<qsizetype>(source.size())))
                     .filePath(QStringLiteral("source")));
-    if (!input.open(QIODevice::ReadOnly))
+    if (input.open(QIODevice::ReadOnly) == false)
     {
         return false;
     }
@@ -69,7 +69,7 @@ inline bool CookFixture(std::string_view source,
 /// Copy a directory tree; used to give a test a source it may delete.
 inline bool CopyTree(const QString& from, const QString& to)
 {
-    if (!QDir().mkpath(to))
+    if (QDir().mkpath(to) == false)
     {
         return false;
     }
@@ -78,7 +78,7 @@ inline bool CopyTree(const QString& from, const QString& to)
     {
         const QString file = files.next();
         const QString target = QDir(to).filePath(QDir(from).relativeFilePath(file));
-        if (!QDir().mkpath(QFileInfo(target).absolutePath()) || !QFile::copy(file, target))
+        if (QDir().mkpath(QFileInfo(target).absolutePath()) == false || QFile::copy(file, target) == false)
         {
             return false;
         }
@@ -97,7 +97,7 @@ inline bool CreateFixtureSource(const QString& source)
 inline bool PrepareImportedLevel(const QString& root, const QString& relative, const QString& source, QString& outError)
 {
     namespace cook = ludus::content::scene_cook;
-    if (!QDir().mkpath(root))
+    if (QDir().mkpath(root) == false)
     {
         outError = QStringLiteral("cannot create project");
         return false;
@@ -122,7 +122,7 @@ inline bool PrepareImportedLevel(const QString& root, const QString& relative, c
     const bool isPrepared = cook::CreateLevel("Room", options, level, error) &&
                             cook::ImportScene(view(project), view(from), span(level), options, imported, error) &&
                             cook::SaveLevel(view(project), view(path), span(imported), nullptr, saved, error);
-    if (!isPrepared)
+    if (isPrepared == false)
     {
         const std::string_view message = error.Message.View();
         outError = QString::fromUtf8(message.data(), static_cast<qsizetype>(message.size()));

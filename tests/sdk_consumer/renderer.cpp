@@ -108,9 +108,9 @@ void Tick() noexcept
     }
     if (gStep == 0)
     {
-        if (!Accept(gRenderer.Initialize(gDevice,
-                                         ludus::shaders::renderer_flat::Vertex(),
-                                         ludus::shaders::renderer_flat::Fragment())))
+        if (Accept(gRenderer.Initialize(gDevice,
+                                        ludus::shaders::renderer_flat::Vertex(),
+                                        ludus::shaders::renderer_flat::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -123,7 +123,7 @@ void Tick() noexcept
         {
             return;
         }
-        if (!ludus::qa::CreateResourceMeshes(gRenderer, gQuad, gTriangle))
+        if (ludus::qa::CreateResourceMeshes(gRenderer, gQuad, gTriangle) == false)
         {
             Stop(true);
             return;
@@ -136,7 +136,8 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accept(ludus::qa::BuildL0Scene(gRenderer, gQuad, gTriangle, Reference() != 0, gSnapshot, gView, gReport)))
+        if (Accept(ludus::qa::BuildL0Scene(gRenderer, gQuad, gTriangle, Reference() != 0, gSnapshot, gView, gReport)) ==
+            false)
         {
             Stop(true);
             return;
@@ -209,7 +210,7 @@ int main()
     settings.Height = 64;
     settings.CanvasSelector = "#canvas";
     settings.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(settings, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(settings, gWindow) == false)
         return 1;
     window = gWindow->GetNativeWindowInfo();
 #endif
@@ -229,11 +230,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto started = time::NowTicks();
-    while (!gDone && time::NowTicks() - started < 15 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - started < 15 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

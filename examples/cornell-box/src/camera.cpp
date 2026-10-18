@@ -66,7 +66,7 @@ CameraStatus TryBuildCameraRays(const CameraSample& sample, uint32 width, uint32
     const auto right = basis.Columns[0] / projection.Columns[0].X;
     const auto up = basis.Columns[1] / projection.Columns[1].Y;
     const auto forward = -basis.Columns[2];
-    if (!math::IsFinite(right) || !math::IsFinite(up) || !math::IsFinite(forward))
+    if (math::IsFinite(right) == false || math::IsFinite(up) == false || math::IsFinite(forward) == false)
     {
         return CameraStatus::OutOfRange;
     }

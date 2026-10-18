@@ -170,7 +170,7 @@ struct Scanner
                         break;
                     case 'u': {
                         uint32 code = 0;
-                        if (!ParseHexQuad(code))
+                        if (ParseHexQuad(code) == false)
                         {
                             return false;
                         }
@@ -182,7 +182,7 @@ struct Scanner
                             }
                             pos += 2;
                             uint32 low = 0;
-                            if (!ParseHexQuad(low) || low < 0xDC00 || low > 0xDFFF)
+                            if (ParseHexQuad(low) == false || low < 0xDC00 || low > 0xDFFF)
                             {
                                 return false;
                             }
@@ -255,7 +255,7 @@ struct Scanner
                 return false;
             }
         }
-        return !out.empty();
+        return out.empty() == false;
     }
 };
 
@@ -266,7 +266,7 @@ struct Scanner
 [[nodiscard]] bool ParseRecords(Scanner& scanner, ludus::foundation::Array<Message>& outRecords)
 {
     outRecords.Clear();
-    if (!scanner.Expect('['))
+    if (scanner.Expect('[') == false)
     {
         return false;
     }
@@ -289,7 +289,7 @@ struct Scanner
             if (c == '"')
             {
                 std::string ignored;
-                if (!scanner.ParseString(ignored))
+                if (scanner.ParseString(ignored) == false)
                 {
                     return false;
                 }
@@ -307,7 +307,7 @@ struct Scanner
             }
         }
         Message record;
-        if (!closed || !Message::Parse(scanner.text.substr(start, scanner.pos - start), record))
+        if (closed == false || Message::Parse(scanner.text.substr(start, scanner.pos - start), record) == false)
         {
             return false;
         }
@@ -319,7 +319,7 @@ struct Scanner
         {
             return true;
         }
-        if (!scanner.Expect(','))
+        if (scanner.Expect(',') == false)
         {
             return false;
         }
@@ -361,7 +361,7 @@ bool ValidUtf8(std::string_view text, bool allowNul) noexcept
     for (usize i = 0; i < text.size();)
     {
         const uint8 first = static_cast<uint8>(text[i++]);
-        if (first == 0 && !allowNul)
+        if (first == 0 && allowNul == false)
         {
             return false;
         }
@@ -489,7 +489,7 @@ bool Message::HasOnly(std::initializer_list<std::string_view> keys) const noexce
         {
             found = found || field.Key == key;
         }
-        if (!found)
+        if (found == false)
         {
             return false;
         }
@@ -569,7 +569,7 @@ bool Message::GetInt(std::string_view key, int64& out) const
     }
     bool negative = false;
     std::string_view digits = f->Value;
-    if (!digits.empty() && digits[0] == '-')
+    if (digits.empty() == false && digits[0] == '-')
     {
         negative = true;
         digits.remove_prefix(1);
@@ -611,7 +611,7 @@ bool Message::GetBool(std::string_view key, bool& out) const
 bool Message::GetHexId(std::string_view key, uint64& out) const
 {
     std::string text;
-    if (!GetString(key, text) || text.size() != 16)
+    if (GetString(key, text) == false || text.size() != 16)
     {
         return false;
     }
@@ -648,7 +648,7 @@ std::string Message::Serialize() const
     bool first = true;
     for (const Field& f : Fields_)
     {
-        if (!first)
+        if (first == false)
         {
             out.push_back(',');
         }
@@ -676,7 +676,7 @@ bool Message::Parse(std::string_view json, Message& out)
         return false;
     }
     Scanner s{json, 0};
-    if (!s.Expect('{'))
+    if (s.Expect('{') == false)
     {
         return false;
     }
@@ -693,7 +693,7 @@ bool Message::Parse(std::string_view json, Message& out)
             return false;
         }
         std::string key;
-        if (!s.ParseString(key))
+        if (s.ParseString(key) == false)
         {
             return false;
         }
@@ -701,7 +701,7 @@ bool Message::Parse(std::string_view json, Message& out)
         {
             return false;
         }
-        if (!s.Expect(':'))
+        if (s.Expect(':') == false)
         {
             return false;
         }
@@ -714,7 +714,7 @@ bool Message::Parse(std::string_view json, Message& out)
         field.Key = key;
         if (s.text[s.pos] == '"')
         {
-            if (!s.ParseString(field.Value))
+            if (s.ParseString(field.Value) == false)
             {
                 return false;
             }
@@ -734,7 +734,7 @@ bool Message::Parse(std::string_view json, Message& out)
         else
         {
             std::string token;
-            if (!s.ParseBare(token))
+            if (s.ParseBare(token) == false)
             {
                 return false;
             }
@@ -782,8 +782,8 @@ bool EncodeFrame(std::string_view payload, ludus::foundation::Array<uint8>& outF
     }
     uint32 length{};
     usize frameSize{};
-    if (!ludus::foundation::TryIntegerCast(payload.size(), length) ||
-        !ludus::foundation::TryAdd(payload.size(), sizeof(length), frameSize))
+    if (ludus::foundation::TryIntegerCast(payload.size(), length) == false ||
+        ludus::foundation::TryAdd(payload.size(), sizeof(length), frameSize) == false)
     {
         return false;
     }

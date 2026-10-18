@@ -371,13 +371,13 @@ void MainWindow::InitializeWorkspace()
         const auto config = (QDir::isAbsolutePath(qEnvironmentVariable("XDG_CONFIG_HOME"))
                                  ? qEnvironmentVariable("XDG_CONFIG_HOME")
                                  : QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation));
-        if (!config.isEmpty())
+        if (config.isEmpty() == false)
         {
             WorkspaceSettingsFile_ = QDir(config).filePath(QStringLiteral("Ludus/Editor/workspace.json"));
         }
     }
     QFile file(WorkspaceSettingsFile_);
-    if (WorkspaceSettingsFile_.isEmpty() || !file.exists())
+    if (WorkspaceSettingsFile_.isEmpty() || file.exists() == false)
     {
         return;
     }
@@ -401,10 +401,10 @@ void MainWindow::InitializeWorkspace()
     const auto defaultGeometry = saveGeometry();
     const bool compatible = document.isObject() && object.value(QStringLiteral("version")).toInt() == LAYOUT_VERSION &&
                             object.value(QStringLiteral("qtVersion")).toString() == QString::fromLatin1(qVersion()) &&
-                            !geometry.isEmpty() && geometry.size() <= 4096 && !state.isEmpty() &&
+                            geometry.isEmpty() == false && geometry.size() <= 4096 && state.isEmpty() == false &&
                             state.size() <= MAX_STATE_BYTES && geometry.toBase64() == geometryEncoded &&
                             state.toBase64() == stateEncoded;
-    if (!compatible || !restoreGeometry(geometry) || !restoreState(state, LAYOUT_VERSION))
+    if (compatible == false || restoreGeometry(geometry) == false || restoreState(state, LAYOUT_VERSION) == false)
     {
         (void)restoreGeometry(defaultGeometry);
         ResetWorkspaceLayout();
@@ -438,7 +438,7 @@ void MainWindow::SaveWorkspaceLayout() const
     const auto state = saveState(LAYOUT_VERSION);
     const auto geometry = saveGeometry();
     if (state.size() > MAX_STATE_BYTES || geometry.size() > 4096 ||
-        !QDir().mkpath(QFileInfo(WorkspaceSettingsFile_).absolutePath()))
+        QDir().mkpath(QFileInfo(WorkspaceSettingsFile_).absolutePath()) == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_LAYOUT, Warning, "Could not save workspace layout; document saves are unaffected.");
         return;
@@ -451,8 +451,8 @@ void MainWindow::SaveWorkspaceLayout() const
     const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
     QSaveFile file(WorkspaceSettingsFile_);
     file.setDirectWriteFallback(false);
-    if (bytes.size() > MAX_SETTINGS_BYTES || !file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() ||
-        !file.commit())
+    if (bytes.size() > MAX_SETTINGS_BYTES || file.open(QIODevice::WriteOnly) == false ||
+        file.write(bytes) != bytes.size() || file.commit() == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_LAYOUT, Warning, "Could not save workspace layout; document saves are unaffected.");
     }
@@ -476,8 +476,8 @@ void MainWindow::SaveProjectWorkspace() const
     const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
-    if (bytes.size() > MAX_SETTINGS_BYTES || !QDir().mkpath(QFileInfo(path).absolutePath()) ||
-        !file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+    if (bytes.size() > MAX_SETTINGS_BYTES || QDir().mkpath(QFileInfo(path).absolutePath()) == false ||
+        file.open(QIODevice::WriteOnly) == false || file.write(bytes) != bytes.size() || file.commit() == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_LAYOUT,
                        Warning,
@@ -487,7 +487,7 @@ void MainWindow::SaveProjectWorkspace() const
 void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
 {
     const auto canonical = root.isEmpty() ? QString() : QFileInfo(root).canonicalFilePath();
-    if (!restore)
+    if (restore == false)
     {
         if (canonical != ProjectLayoutRoot_)
         {
@@ -503,7 +503,7 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     const auto key = QCryptographicHash::hash(canonical.toUtf8(), QCryptographicHash::Sha256).toHex();
     QFile file(QFileInfo(WorkspaceSettingsFile_).absolutePath() + QStringLiteral("/projects/") +
                QString::fromLatin1(key) + QStringLiteral(".json"));
-    if (!file.open(QIODevice::ReadOnly) || file.size() > MAX_SETTINGS_BYTES)
+    if (file.open(QIODevice::ReadOnly) == false || file.size() > MAX_SETTINGS_BYTES)
     {
         return;
     }
@@ -514,7 +514,7 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     }
     const auto document = QJsonDocument::fromJson(bytes);
     const auto object = document.object();
-    if (!document.isObject() || object.value(QStringLiteral("version")).toInt() != LAYOUT_VERSION ||
+    if (document.isObject() == false || object.value(QStringLiteral("version")).toInt() != LAYOUT_VERSION ||
         object.value(QStringLiteral("qtVersion")).toString() != QString::fromLatin1(qVersion()) ||
         object.value(QStringLiteral("root")).toString() != canonical)
     {
@@ -523,8 +523,8 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     const auto encoded = object.value(QStringLiteral("state")).toString().toLatin1();
     const auto state = QByteArray::fromBase64(encoded);
     const auto previous = saveState(LAYOUT_VERSION);
-    if (!state.isEmpty() && state.size() <= MAX_STATE_BYTES && state.toBase64() == encoded &&
-        !restoreState(state, LAYOUT_VERSION))
+    if (state.isEmpty() == false && state.size() <= MAX_STATE_BYTES && state.toBase64() == encoded &&
+        restoreState(state, LAYOUT_VERSION) == false)
     {
         (void)restoreState(previous, LAYOUT_VERSION);
     }

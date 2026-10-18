@@ -1,17 +1,22 @@
 // RG3 runtime generations through the installed SDK, natively and in a browser.
-// The installed ludus_compile_render_graph helper cooks one offscreen graph into a
-// compiled header and a `.lurgrt` runtime generation. This consumer renders the
-// header's graph, then decodes the generation and activates it twice through
-// RenderGraphActivation. Every exported RGBA8 byte of each activated generation
-// must equal the compiled header's bytes; reading back the export avoids comparing
-// browser canvas presentation instead of the graph's own output.
+// The installed ludus_compile_render_graph helper cooks two offscreen graphs into
+// compiled headers and `.lurgrt` runtime generations: the opaque static graph and
+// the masked graph whose authored coverage reads a per-draw uniform value. For each,
+// this consumer renders the header's graph, then decodes the generation and
+// activates it twice through RenderGraphActivation. Every exported RGBA8 byte of
+// each activated generation must equal the compiled header's bytes; reading back
+// the export avoids comparing browser canvas presentation instead of the graph's
+// own output.
 #include "renderer_composite.h"
+#include "rg3_masked.h"
+#include "rg3_masked_package.h"
 #include "rg3_runtime.h"
 #include "rg3_runtime_package.h"
 
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/pointer.hpp>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/time/time.hpp>
@@ -30,21 +35,54 @@ namespace
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
-namespace graph = ludus::render_graph_packages::rg3_runtime;
+namespace opaque = ludus::render_graph_packages::rg3_runtime;
+namespace masked = ludus::render_graph_packages::rg3_masked;
 namespace shaders = ludus::shaders;
 constexpr uint32 WIDTH = 96;
 constexpr uint32 HEIGHT = 64;
 constexpr usize BYTES_PER_PIXEL = 4;
 constexpr usize PIXEL_BYTES = usize{WIDTH} * HEIGHT * BYTES_PER_PIXEL;
-/// The offscreen graph's only exported logical resource: its color target.
+/// Both graphs export their color target as logical resource zero.
 constexpr uint32 EXPORTED_COLOR = 0;
 /// Activate the same generation twice: a first activation and a replacement at a frame boundary.
 constexpr uint64 GENERATION_COUNT = 2;
 constexpr usize VERTEX_COUNT = 3;
 constexpr usize INDEX_COUNT = 3;
 constexpr usize TABLE_COUNT = 1;
+/// Byte offset of pixel (column, row) in the RGBA8 readback.
+constexpr usize GetPixel(usize column, usize row) noexcept
+{
+    return (row * WIDTH + column) * BYTES_PER_PIXEL;
+}
 /// Center of the triangle; the comparison is over every byte, this only proves it is not empty.
-constexpr usize CENTER_PIXEL = (usize{HEIGHT / 2} * WIDTH + WIDTH / 2) * BYTES_PER_PIXEL;
+constexpr usize CENTER_PIXEL = GetPixel(WIDTH / 2, HEIGHT / 2);
+/// Masked graph probes at mid height: mesh x = +0.125 is covered, x = -0.125 is below the threshold.
+constexpr usize KEPT_PIXEL = GetPixel(54, HEIGHT / 2);
+constexpr usize DISCARDED_PIXEL = GetPixel(42, HEIGHT / 2);
+/// One cooked graph: compiled header entry points, host interface and embedded runtime generation.
+struct GraphFixture final
+{
+    renderer::RenderGraphPlan (*MakePlan)() noexcept = nullptr;
+    renderer::RenderGraphPrograms (*MakePrograms)(const rhi::RasterShaderDescription&,
+                                                  const rhi::RasterShaderDescription&) noexcept = nullptr;
+    BorrowedView<const uint8> Identity;
+    BorrowedView<const uint8> Package;
+    bool IsMasked = false;
+};
+constexpr usize FIXTURE_COUNT = 2;
+const StaticArray<GraphFixture, FIXTURE_COUNT> FIXTURES{
+    {{opaque::MakePlan,
+      opaque::MakePrograms,
+      {opaque::INTERFACE_IDENTITY.GetData(), opaque::INTERFACE_IDENTITY.GetSize()},
+      {RG3_RUNTIME_PACKAGE.GetData(), RG3_RUNTIME_PACKAGE.GetSize()},
+      false},
+     {masked::MakePlan,
+      masked::MakePrograms,
+      {masked::INTERFACE_IDENTITY.GetData(), masked::INTERFACE_IDENTITY.GetSize()},
+      {RG3_MASKED_PACKAGE.GetData(), RG3_MASKED_PACKAGE.GetSize()},
+      true}}};
+/// Per-draw Mask values for the masked graph: cover mesh x >= 0.
+StaticArray<float32, masked::UNIFORM_VALUE_COUNT> gMask{};
 /// Steps of the qualification, in order.
 enum class Step : uint8
 {
@@ -77,6 +115,7 @@ rhi::ReadbackTicket gReadback;
 Step gStep = Step::StartCompiled;
 Capture gCapture = Capture::Render;
 uint64 gRevision = 0;
+usize gFixture = 0;
 uint64 gGeneration = 0;
 /// Generation whose first extraction was accepted; its preparation may complete over later frames.
 uint64 gUpdatedGeneration = 0;
@@ -88,11 +127,11 @@ bool gHasFailed = false;
 core::UniquePtr<ludus::platform::Window> gWindow;
 // clang-format off
 EM_JS(int32, Selection, (), { const s = new URL(location.href).searchParams.get('backend'); return s === 'webgpu' ? 1 : s === 'webgl2' ? 2 : 0; });
-EM_JS(void, Report, (int32 state, uint32 step, uint32 capture, uint32 generation, uint32 mismatches, uint32 center, int32 backend, uint32 status), {
+EM_JS(void, Report, (int32 state, uint32 step, uint32 capture, uint32 generation, uint32 mismatches, uint32 center, int32 backend, uint32 status, uint32 fixture), {
     const node = document.querySelector('#status');
     node.dataset.state = state === 2 ? 'failed' : state === 1 ? 'passed' : 'loading';
-    Object.assign(node.dataset, {step, capture, generation, mismatches, center, status, backend: backend === 1 ? 'webgpu' : backend === 2 ? 'webgl2' : 'native'});
-    node.textContent = node.dataset.state + ' generation=' + generation + ' mismatches=' + mismatches;
+    Object.assign(node.dataset, {step, capture, generation, mismatches, center, status, fixture, backend: backend === 1 ? 'webgpu' : backend === 2 ? 'webgl2' : 'native'});
+    node.textContent = node.dataset.state + ' fixture=' + fixture + ' generation=' + generation + ' mismatches=' + mismatches;
 });
 // clang-format on
 #else
@@ -100,7 +139,7 @@ int32 Selection() noexcept
 {
     return 0;
 }
-void Report(int32, uint32, uint32, uint32, uint32, uint32, int32, uint32) noexcept {}
+void Report(int32, uint32, uint32, uint32, uint32, uint32, int32, uint32, uint32) noexcept {}
 #endif
 void Publish(int32 state) noexcept
 {
@@ -111,9 +150,10 @@ void Publish(int32 state) noexcept
            static_cast<uint32>(gCapture),
            static_cast<uint32>(gGeneration),
            static_cast<uint32>(gMismatches),
-           gExpected[CENTER_PIXEL],
+           gExpected[FIXTURES[gFixture].IsMasked == true ? KEPT_PIXEL : CENTER_PIXEL],
            static_cast<int32>(information.Startup.SelectedBackend),
-           static_cast<uint32>(gLastStatus));
+           static_cast<uint32>(gLastStatus),
+           static_cast<uint32>(gFixture));
 }
 void Stop(bool hasPassed) noexcept
 {
@@ -140,11 +180,18 @@ bool IsAccepted(rhi::RasterStatus status) noexcept
 }
 renderer::RenderGraphPrograms MakeCompiledPrograms() noexcept
 {
-    return graph::MakePrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    return FIXTURES[gFixture].MakePrograms(shaders::renderer_composite::Vertex(),
+                                           shaders::renderer_composite::Fragment());
 }
 rhi::RasterStatus UpdateScene(bool isActivation) noexcept
 {
     ++gRevision;
+    // Runtime values select coverage; they never select a shader configuration.
+    const bool isMasked = FIXTURES[gFixture].IsMasked;
+    gItems[0].Coverage =
+        isMasked == true ? renderer::RenderGraphMaterial::Masked : renderer::RenderGraphMaterial::Opaque;
+    gItems[0].Uniforms = isMasked == true ? BorrowedView<const float32>{gMask.GetData(), gMask.GetSize()}
+                                          : BorrowedView<const float32>{};
     renderer::RenderGraphReport report;
     if (isActivation == true)
     {
@@ -167,8 +214,8 @@ bool StageGeneration() noexcept
 {
     renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
     core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
-    if (package.Get() == nullptr || package->Decode({RG3_RUNTIME_PACKAGE.GetData(), RG3_RUNTIME_PACKAGE.GetSize()}) !=
-                                        renderer::RenderGraphPackageStatus::Ready)
+    if (package.Get() == nullptr ||
+        package->Decode(FIXTURES[gFixture].Package) != renderer::RenderGraphPackageStatus::Ready)
     {
         Fail(rhi::RasterStatus::InvalidDescription);
         return false;
@@ -311,7 +358,8 @@ void Tick() noexcept
     Publish(0);
     if (gStep == Step::StartCompiled)
     {
-        const rhi::RasterStatus initialized = gCompiled.Initialize(gDevice, graph::MakePlan(), MakeCompiledPrograms());
+        const rhi::RasterStatus initialized =
+            gCompiled.Initialize(gDevice, FIXTURES[gFixture].MakePlan(), MakeCompiledPrograms());
         if (IsAccepted(initialized) == false)
         {
             Fail(initialized);
@@ -354,11 +402,10 @@ void Tick() noexcept
     }
     if (gStep == Step::StartActivation)
     {
-        const rhi::RasterStatus initialized =
-            gActivation.Initialize(gDevice,
-                                   {graph::INTERFACE_IDENTITY.GetData(), graph::INTERFACE_IDENTITY.GetSize()},
-                                   shaders::renderer_composite::Vertex(),
-                                   shaders::renderer_composite::Fragment());
+        const rhi::RasterStatus initialized = gActivation.Initialize(gDevice,
+                                                                     FIXTURES[gFixture].Identity,
+                                                                     shaders::renderer_composite::Vertex(),
+                                                                     shaders::renderer_composite::Fragment());
         if (initialized != rhi::RasterStatus::Ready || StageGeneration() == false)
         {
             Fail(initialized);
@@ -384,14 +431,28 @@ void Tick() noexcept
         {
             gMismatches += gPixels[i] != gExpected[i] ? 1 : 0;
         }
-        if (gMismatches != 0 || gExpected[CENTER_PIXEL] == 0)
+        // The masked graph keeps the covered half and leaves the discarded half at the cleared background.
+        const bool isDrawn = FIXTURES[gFixture].IsMasked == true
+                                 ? gExpected[KEPT_PIXEL] != 0 && gExpected[DISCARDED_PIXEL] == gExpected[0]
+                                 : gExpected[CENTER_PIXEL] != 0;
+        if (gMismatches != 0 || isDrawn == false)
         {
             Stop(false);
             return;
         }
-        if (gGeneration == GENERATION_COUNT)
+        if (gGeneration == GENERATION_COUNT && gFixture + 1 == FIXTURE_COUNT)
         {
             Stop(true);
+            return;
+        }
+        if (gGeneration == GENERATION_COUNT)
+        {
+            // Qualify the next graph from its compiled header, with a fresh activation.
+            gActivation.Reset();
+            ++gFixture;
+            gGeneration = 0;
+            gUpdatedGeneration = 0;
+            gStep = Step::StartCompiled;
             return;
         }
         if (StageGeneration() == false)

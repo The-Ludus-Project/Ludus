@@ -118,7 +118,7 @@ RasterStatus ReserveLifetime(StorageTable<T>& records, usize& slot, usize limit)
     bool exhausted = false;
     for (slot = 0; slot < limit; ++slot)
     {
-        if (slot == records.GetSize() && !records.EnsureSlots(slot + 1))
+        if (slot == records.GetSize() && records.EnsureSlots(slot + 1) == false)
         {
             return StorageFailure();
         }
@@ -158,7 +158,7 @@ RasterStatus ReserveLifetime(T (&records)[N], usize& slot, bool (*available)(usi
             exhausted = true;
             continue;
         }
-        if (slot >= CurrentStorageLimits().TransferSlices || (available != nullptr && !available(slot)))
+        if (slot >= CurrentStorageLimits().TransferSlices || (available != nullptr && available(slot) == false))
         {
             continue;
         }
@@ -313,7 +313,7 @@ void PollTransfers() noexcept
                 continue;
             }
             record.Status = status;
-            if (!readback && record.Mutable && !record.CompletedMutation)
+            if (readback == false && record.Mutable && record.CompletedMutation == false)
             {
                 auto& destination = At(record.Kind, record.Source);
                 destination.Status = status;
@@ -340,7 +340,7 @@ void PollTransfers() noexcept
                 }
                 record.CompletedMutation = true;
             }
-            if (!readback && !record.Mutable && status == RasterStatus::Ready)
+            if (readback == false && record.Mutable == false && status == RasterStatus::Ready)
             {
                 const auto* buffer = Resolve(record.Upload, RasterKind::Buffer, false);
                 record.Status = buffer != nullptr ? buffer->Status : RasterStatus::Failed;
@@ -349,7 +349,7 @@ void PollTransfers() noexcept
                     continue;
                 }
             }
-            if (!record.Published)
+            if (record.Published == false)
             {
                 RetireTransfer(record, readback, i);
             }
@@ -443,7 +443,7 @@ RasterStatus RecordDraw(DeviceHandle device, CommandBatch batch, const RasterDra
     {
         return valid;
     }
-    if (!record->Packets.TryResize(record->Count + 1))
+    if (record->Packets.TryResize(record->Count + 1) == false)
     {
         return StorageFailure();
     }
@@ -527,7 +527,7 @@ RasterStatus EndFrame(DeviceHandle device, SubmissionToken& completion) noexcept
     {
         return admission;
     }
-    if (!FrameOpen() || LifetimeAccess::Owner(completion) != 0)
+    if (FrameOpen() == false || LifetimeAccess::Owner(completion) != 0)
     {
         return RasterStatus::InvalidState;
     }
@@ -564,7 +564,7 @@ SubmitCommands(DeviceHandle device, SurfaceHandle surface, CommandBatch& batch, 
     {
         return RasterStatus::InvalidHandle;
     }
-    if (!record->Finished || LifetimeAccess::Owner(completion) != 0)
+    if (record->Finished == false || LifetimeAccess::Owner(completion) != 0)
     {
         return RasterStatus::InvalidState;
     }
@@ -657,7 +657,7 @@ RasterStatus PollLifetime(DeviceHandle device) noexcept
     for (usize slot = 0; slot < gRecords[static_cast<usize>(RasterKind::Pipeline)].GetSize(); ++slot)
     {
         auto& pipeline = At(RasterKind::Pipeline, slot);
-        if (!pipeline.QueuedPipeline)
+        if (pipeline.QueuedPipeline == false)
         {
             continue;
         }
@@ -742,7 +742,7 @@ RasterStatus GetStatus(DeviceHandle device, PipelineRequest request) noexcept
     {
         return RasterStatus::InvalidHandle;
     }
-    if (!FrameOpen())
+    if (FrameOpen() == false)
     {
         const auto polled = PollLifetime(device);
         if (polled != RasterStatus::Ready)
@@ -794,7 +794,7 @@ RasterStatus Release(DeviceHandle device, PipelineRequest& request) noexcept
     }
     auto& pipeline = At(RasterKind::Pipeline, slot);
     --pipeline.References;
-    if (!owned)
+    if (owned == false)
     {
         pipeline.Published = false;
         if (pipeline.QueuedPipeline)
@@ -861,7 +861,7 @@ RasterStatus RequestBufferUpload(DeviceHandle device,
             record.Buffer = description;
             if (description.Role == BufferRole::Index16 || description.Role == BufferRole::Index32)
             {
-                if (!record.Indices.TryResize(byteCount))
+                if (record.Indices.TryResize(byteCount) == false)
                 {
                     return StorageFailure();
                 }
@@ -907,7 +907,7 @@ RasterStatus RequestBufferReadback(DeviceHandle device,
     {
         return buffer->Status;
     }
-    if (size == 0 || size % 4 != 0 || offset % 4 != 0 || !Fits(offset, size, buffer->Buffer.Size))
+    if (size == 0 || size % 4 != 0 || offset % 4 != 0 || Fits(offset, size, buffer->Buffer.Size) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -960,7 +960,7 @@ RasterStatus GetStatus(DeviceHandle device, UploadTicket ticket) noexcept
     {
         return RasterStatus::InvalidHandle;
     }
-    if (!FrameOpen())
+    if (FrameOpen() == false)
     {
         const auto polled = PollLifetime(device);
         if (polled != RasterStatus::Ready)
@@ -982,7 +982,7 @@ RasterStatus GetStatus(DeviceHandle device, ReadbackTicket ticket) noexcept
     {
         return RasterStatus::InvalidHandle;
     }
-    if (!FrameOpen())
+    if (FrameOpen() == false)
     {
         const auto polled = PollLifetime(device);
         if (polled != RasterStatus::Ready)

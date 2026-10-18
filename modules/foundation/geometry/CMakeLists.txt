@@ -21,6 +21,9 @@ target_sources(
         src/frame.cpp
         src/query.cpp
         src/sweep.cpp
+        src/control_box.cpp
+        src/surface.cpp
+        src/tessellation.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -34,6 +37,8 @@ target_sources(
             include/ludus/foundation/geometry/frame.hpp
             include/ludus/foundation/geometry/query.hpp
             include/ludus/foundation/geometry/sweep.hpp
+            include/ludus/foundation/geometry/surface.hpp
+            include/ludus/foundation/geometry/tessellation.hpp
 )
 target_include_directories(ludus_foundation_geometry PRIVATE src)
 
@@ -77,6 +82,8 @@ if(LUDUS_BUILD_TESTS)
             tests/frame_tests.cpp
             tests/query_tests.cpp
             tests/sweep_tests.cpp
+            tests/surface_tests.cpp
+            tests/tessellation_tests.cpp
     )
     target_link_libraries(
         ludus_foundation_geometry_tests

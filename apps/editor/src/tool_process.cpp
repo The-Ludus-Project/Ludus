@@ -35,7 +35,7 @@ std::optional<uint64> DecodeHex16(const QString& text)
     }
     bool ok = false;
     const qulonglong value = text.toULongLong(&ok, 16);
-    if (!ok)
+    if (ok == false)
     {
         return std::nullopt;
     }
@@ -234,14 +234,14 @@ void ToolProcess::ConsumeFrames()
             FailProtocol(QStringLiteral("protocol line exceeded 256 KiB"));
             return;
         }
-        if (!line.trimmed().isEmpty())
+        if (line.trimmed().isEmpty() == false)
         {
-            if (!DispatchFrame(line))
+            if (DispatchFrame(line) == false)
             {
                 return; // protocol error already reported
             }
         }
-        if (!Active_)
+        if (Active_ == false)
         {
             return;
         }
@@ -253,7 +253,7 @@ bool ToolProcess::DispatchFrame(const QByteArray& line)
 {
     QJsonParseError error{};
     const QJsonDocument document = QJsonDocument::fromJson(line, &error);
-    if (error.error != QJsonParseError::NoError || !document.isObject())
+    if (error.error != QJsonParseError::NoError || document.isObject() == false)
     {
         FailProtocol(QStringLiteral("malformed protocol frame"));
         return false;
@@ -290,7 +290,7 @@ bool ToolProcess::DispatchFrame(const QByteArray& line)
 
     // Every other event echoes the job; a mismatch is a protocol error.
     const std::optional<uint64> job = DecodeHex16(object.value(QStringLiteral("job")).toString());
-    if (!job.has_value() || job.value() != Job_)
+    if (job.has_value() == false || job.value() != Job_)
     {
         FailProtocol(QStringLiteral("protocol job mismatch"));
         return false;
@@ -349,7 +349,7 @@ bool ToolProcess::DispatchFrame(const QByteArray& line)
         // Each output frame consumes its complete encoded byte count including
         // the newline; end_offset is the cumulative encoded-output total.
         const std::optional<uint64> endOffset = DecodeHex16(object.value(QStringLiteral("end_offset")).toString());
-        if (!endOffset.has_value() || endOffset.value() < OutputBytesSeen_)
+        if (endOffset.has_value() == false || endOffset.value() < OutputBytesSeen_)
         {
             FailProtocol(QStringLiteral("non-monotonic output end_offset"));
             return false;
@@ -463,7 +463,7 @@ bool ToolProcess::DispatchFrame(const QByteArray& line)
 
 void ToolProcess::FailProtocol(const QString& message)
 {
-    if (!Active_)
+    if (Active_ == false)
     {
         return;
     }
@@ -510,7 +510,7 @@ void ToolProcess::OnFinished(int exitCode, QProcess::ExitStatus status)
 
     // A result is provisional until the process finishes AND output drained.
     // Missing result or abnormal bridge exit is never success.
-    if (!TerminalDelivered_)
+    if (TerminalDelivered_ == false)
     {
         ProtocolEvent event;
         event.Kind = ProtocolEvent::Type::Error;

@@ -190,7 +190,7 @@ int main()
     SetCurrentThreadName("Main");
 
     InputSystem system;
-    if (!system.IsValid())
+    if (system.IsValid() == false)
     {
         LUDUS_LOG_FATAL(LOG_DEMO, "Failed to construct InputSystem");
         LogSystem::Shutdown();
@@ -247,7 +247,7 @@ int main()
     }
 
     ludus::platform::WindowManager windowManager;
-    if (!windowManager.Initialize({}))
+    if (windowManager.Initialize({}) == false)
     {
         // No windowing backend available: still demonstrate the reducer end to end.
         LUDUS_LOG_INFO(LOG_DEMO, "Window manager unavailable; synthetic demo only.");
@@ -257,7 +257,7 @@ int main()
     {
         const ludus::platform::Window::CreateInfo createInfo = { .Name = std::string("Ludus Input Demo") };
         ludus::foundation::core::UniquePtr<ludus::platform::Window> window;
-        if (!windowManager.CreateWindow(createInfo, window) || !window)
+        if (windowManager.CreateWindow(createInfo, window) == false || window.Get() == nullptr)
         {
             LUDUS_LOG_INFO(LOG_DEMO, "Window creation failed; synthetic demo only.");
             runSyntheticDemo(system);
@@ -273,7 +273,7 @@ int main()
             ludus::foundation::uint64 step = 1;
             int iterations = 0;
             bool quit = false;
-            while (window->HandleEvent({}) && !quit && iterations < 100000)
+            while (window->HandleEvent({}) && quit == false && iterations < 100000)
             {
                 (void)system.ConsumeStep(step++);
                 ActionState quitAction;
@@ -286,7 +286,7 @@ int main()
             }
             window->DetachKeyboardSink();
 
-            if (!context.everFocused)
+            if (context.everFocused == false)
             {
                 // The window never received keyboard focus (headless/CI). Run the
                 // scripted synthetic demonstration so the behaviors are shown.

@@ -143,7 +143,7 @@ bool Load(const uint8* bytes,
         }
     }
     Array<rr::SceneItem> items;
-    if (!items.TryResize(scene.Objects.GetSize()))
+    if (items.TryResize(scene.Objects.GetSize()) == false)
     {
         return false;
     }
@@ -248,7 +248,7 @@ bool RasterEvidence(rr::Renderer& renderer,
         drawn = renderer.DrawView(views[i], pass) == Status::Ready && drawn;
     }
     rhi::SubmissionToken completion;
-    if (rhi::EndFrame(device, completion) != Status::Ready || !drawn)
+    if (rhi::EndFrame(device, completion) != Status::Ready || drawn == false)
     {
         return false;
     }
@@ -278,9 +278,9 @@ bool RasterEvidence(rr::Renderer& renderer,
             status = rhi::GetStatus(device, readback);
         }
         Array<uint8> pixels;
-        if (status != Status::Ready || !pixels.TryResize(usize(capture.Width) * capture.Height * 4) ||
+        if (status != Status::Ready || pixels.TryResize(usize(capture.Width) * capture.Height * 4) == false ||
             rhi::CopyReadback(device, readback, pixels.GetData(), pixels.GetSize()) != Status::Ready ||
-            !directory.Publish(name, {pixels.GetData(), pixels.GetSize()}).Outcome.Succeeded() ||
+            directory.Publish(name, {pixels.GetData(), pixels.GetSize()}).Outcome.Succeeded() == false ||
             rhi::Release(device, readback) != Status::Ready || renderer.Release(views[i]) != Status::Ready ||
             rhi::Destroy(device, targets[i]) != Status::Ready)
         {
@@ -294,7 +294,7 @@ bool RasterEvidence(rr::Renderer& renderer,
     rhi::MeasurementAdapter adapter;
     if (rhi::GetDeviceInfo(device, deviceInfo) != rhi::DeviceStatus::Ready ||
         rhi::GetMeasurementAdapter(device, adapter) != Status::Ready ||
-        !bytes.TryResize(8 + 14 * 8 + usize(reports[0].Reported + reports[1].Reported) * 8))
+        bytes.TryResize(8 + 14 * 8 + usize(reports[0].Reported + reports[1].Reported) * 8) == false)
     {
         return false;
     }
@@ -303,15 +303,15 @@ bool RasterEvidence(rr::Renderer& renderer,
     {
         ++nameSize;
     }
-    if (!directory.Publish("adapter-name.txt", {reinterpret_cast<const uint8*>(adapter.Name), nameSize})
-             .Outcome.Succeeded())
+    if (directory.Publish("adapter-name.txt", {reinterpret_cast<const uint8*>(adapter.Name), nameSize})
+            .Outcome.Succeeded() == false)
     {
         return false;
     }
     std::memcpy(bytes.GetData(), "LUSAC01\0", 8);
     usize offset = 8;
     const auto append = [&bytes, &offset](uint64 value) noexcept {
-        if (!core::TryWriteLittleEndian<uint64>(value, {bytes.GetData() + offset, 8}))
+        if (core::TryWriteLittleEndian<uint64>(value, {bytes.GetData() + offset, 8}) == false)
         {
             return false;
         }
@@ -320,17 +320,18 @@ bool RasterEvidence(rr::Renderer& renderer,
     };
     for (const auto count : evidence.Counts)
     {
-        if (!append(count))
+        if (append(count) == false)
         {
             return false;
         }
     }
-    if (!append(reports[0].Submitted) || !append(reports[0].Draws) || !append(reports[1].Submitted) ||
-        !append(reports[1].Visible) || !append(reports[1].Culled) || !append(reports[1].Draws))
+    if (append(reports[0].Submitted) == false || append(reports[0].Draws) == false ||
+        append(reports[1].Submitted) == false || append(reports[1].Visible) == false ||
+        append(reports[1].Culled) == false || append(reports[1].Draws) == false)
     {
         return false;
     }
-    if (!append(static_cast<uint64>(deviceInfo.Startup.SelectedBackend)))
+    if (append(static_cast<uint64>(deviceInfo.Startup.SelectedBackend)) == false)
     {
         return false;
     }
@@ -338,7 +339,7 @@ bool RasterEvidence(rr::Renderer& renderer,
     {
         for (usize i = 0; i < report.Reported; ++i)
         {
-            if (!append(report.SourceIds[i]))
+            if (append(report.SourceIds[i]) == false)
             {
                 return false;
             }
@@ -412,9 +413,9 @@ bool ViewportEvidence(rr::Renderer& renderer,
         status = rhi::GetStatus(device, ticket);
     }
     Array<uint8> bytes;
-    if (status != Status::Ready || !bytes.TryResize(usize(image.Width) * image.Height * 4) ||
+    if (status != Status::Ready || bytes.TryResize(usize(image.Width) * image.Height * 4) == false ||
         rhi::CopyReadback(device, ticket, bytes.GetData(), bytes.GetSize()) != Status::Ready ||
-        !directory.Publish("viewport.rgba", {bytes.GetData(), bytes.GetSize()}).Outcome.Succeeded())
+        directory.Publish("viewport.rgba", {bytes.GetData(), bytes.GetSize()}).Outcome.Succeeded() == false)
     {
         return false;
     }
@@ -436,7 +437,7 @@ bool GpuEvidence(rr::Renderer& renderer,
     }
     rr::GpuPreviewInfo info;
     const uint64 started = time::NowTicks();
-    while (!info.Complete && time::NowTicks() - started < 1800 * time::NANOSECONDS_PER_SECOND)
+    while (info.Complete == false && time::NowTicks() - started < 1800 * time::NANOSECONDS_PER_SECOND)
     {
         status = renderer.GetGpuPreviewInfo(preview, info);
         if (status == Status::Pending)
@@ -447,7 +448,7 @@ bool GpuEvidence(rr::Renderer& renderer,
         {
             return false;
         }
-        if (!info.Complete)
+        if (info.Complete == false)
         {
             rhi::SubmissionToken producer;
             if (renderer.AdvanceGpuPreview(preview, surface, producer) != Status::Ready)
@@ -456,7 +457,7 @@ bool GpuEvidence(rr::Renderer& renderer,
             }
         }
     }
-    if (!info.Complete)
+    if (info.Complete == false)
     {
         return false;
     }
@@ -480,19 +481,19 @@ bool GpuEvidence(rr::Renderer& renderer,
         status = rhi::GetStatus(device, ticket);
     }
     Array<uint8> bytes;
-    if (status != Status::Ready || !bytes.TryResize(usize(image.Width) * image.Height * 4) ||
+    if (status != Status::Ready || bytes.TryResize(usize(image.Width) * image.Height * 4) == false ||
         rhi::CopyReadback(device, ticket, bytes.GetData(), bytes.GetSize()) != Status::Ready ||
-        !directory.Publish("gpu-preview.rgba", {bytes.GetData(), bytes.GetSize()}).Outcome.Succeeded())
+        directory.Publish("gpu-preview.rgba", {bytes.GetData(), bytes.GetSize()}).Outcome.Succeeded() == false)
     {
         return false;
     }
     uint8 metadata[32]{};
-    if (!core::TryWriteLittleEndian<uint32>(image.Width, {metadata, 4}) ||
-        !core::TryWriteLittleEndian<uint32>(image.Height, {metadata + 4, 4}) ||
-        !core::TryWriteLittleEndian<uint32>(image.Samples, {metadata + 8, 4}) ||
-        !core::TryWriteLittleEndian<uint64>(info.SceneFingerprintLow, {metadata + 16, 8}) ||
-        !core::TryWriteLittleEndian<uint64>(info.SceneFingerprintHigh, {metadata + 24, 8}) ||
-        !directory.Publish("gpu-preview.bin", {metadata, sizeof(metadata)}).Outcome.Succeeded())
+    if (core::TryWriteLittleEndian<uint32>(image.Width, {metadata, 4}) == false ||
+        core::TryWriteLittleEndian<uint32>(image.Height, {metadata + 4, 4}) == false ||
+        core::TryWriteLittleEndian<uint32>(image.Samples, {metadata + 8, 4}) == false ||
+        core::TryWriteLittleEndian<uint64>(info.SceneFingerprintLow, {metadata + 16, 8}) == false ||
+        core::TryWriteLittleEndian<uint64>(info.SceneFingerprintHigh, {metadata + 24, 8}) == false ||
+        directory.Publish("gpu-preview.bin", {metadata, sizeof(metadata)}).Outcome.Succeeded() == false)
     {
         return false;
     }
@@ -530,12 +531,12 @@ int Run(int argc, char** argv) noexcept
     const bool gpu = argc == 6 && std::string_view(argv[5]) == "gpu";
     const bool native = argc == 6 && std::string_view(argv[5]) == "native";
     const bool acceptance = argc == 6 && (native || std::string_view(argv[5]) == "acceptance");
-    if (argc == 6 && !acceptance && !gpu && !viewport)
+    if (argc == 6 && acceptance == false && gpu == false && viewport == false)
     {
         return 1;
     }
     rr::ReferenceCaptureDescription description;
-    if (!Number(argv[3], 1024, description.Width) || !Number(argv[4], 4096, description.TargetSamples))
+    if (Number(argv[3], 1024, description.Width) == false || Number(argv[4], 4096, description.TargetSamples) == false)
     {
         return 2;
     }
@@ -584,8 +585,8 @@ int Run(int argc, char** argv) noexcept
                                                 512};
     const Status enabled = viewport ? Status::Ready
                            : gpu    ? renderer.EnableGpuPreview(ludus::shaders::renderer_gpu_preview::Compute(),
-                                                             ludus::shaders::renderer_gpu_preview_image::Vertex(),
-                                                             ludus::shaders::renderer_gpu_preview_image::Fragment(),
+                                                                ludus::shaders::renderer_gpu_preview_image::Vertex(),
+                                                                ludus::shaders::renderer_gpu_preview_image::Fragment(),
                                                                 {usize{128} * 1024 * 1024, usize{128} * 1024 * 1024, 1})
                                     : renderer.EnableReferenceRendering(ludus::shaders::ray_query::Query(), options);
     if (enabled != Status::Ready)
@@ -605,29 +606,29 @@ int Run(int argc, char** argv) noexcept
     rr::Snapshot snapshot;
     rr::Snapshot identitySnapshot;
     SceneEvidence evidence;
-    if (!Load(bundle.Data().data(),
-              bundle.Data().size(),
-              renderer,
-              device,
-              program,
-              snapshot,
-              description,
-              evidence,
-              acceptance ? &identitySnapshot : nullptr))
+    if (Load(bundle.Data().data(),
+             bundle.Data().size(),
+             renderer,
+             device,
+             program,
+             snapshot,
+             description,
+             evidence,
+             acceptance ? &identitySnapshot : nullptr) == false)
     {
         return 8;
     }
     filesystem::WriteDirectory directory;
-    if (!directory.Open(argv[2]).Succeeded())
+    if (directory.Open(argv[2]).Succeeded() == false)
     {
         return 14;
     }
-    if (acceptance && !RasterEvidence(renderer, device, surface, snapshot, description, evidence, directory))
+    if (acceptance && RasterEvidence(renderer, device, surface, snapshot, description, evidence, directory) == false)
     {
         return 15;
     }
     if (acceptance &&
-        (!RasterEvidence(renderer, device, surface, identitySnapshot, description, evidence, directory, true) ||
+        (RasterEvidence(renderer, device, surface, identitySnapshot, description, evidence, directory, true) == false ||
          renderer.Release(identitySnapshot) != Status::Ready))
     {
         return 15;
@@ -661,7 +662,7 @@ int Run(int argc, char** argv) noexcept
         return 10;
     }
     rr::ReferenceCaptureInfo info;
-    if (renderer.GetReferenceCaptureInfo(capture, info) != Status::Ready || !info.Complete ||
+    if (renderer.GetReferenceCaptureInfo(capture, info) != Status::Ready || info.Complete == false ||
         info.InvalidContributions != 0 || info.MinimumSamples != description.TargetSamples ||
         info.MaximumSamples != description.TargetSamples ||
         info.CommittedSamples != uint64(description.Width) * description.Height * description.TargetSamples)
@@ -669,7 +670,7 @@ int Run(int argc, char** argv) noexcept
         return 11;
     }
     Array<uint8> bytes;
-    if (!bytes.TryResize(256 + usize(description.Width) * description.Height * 16))
+    if (bytes.TryResize(256 + usize(description.Width) * description.Height * 16) == false)
     {
         return 12;
     }
@@ -678,7 +679,7 @@ int Run(int argc, char** argv) noexcept
     {
         return 13;
     }
-    if (!directory.Publish("capture.luhdr", {bytes.GetData(), written}).Outcome.Succeeded())
+    if (directory.Publish("capture.luhdr", {bytes.GetData(), written}).Outcome.Succeeded() == false)
     {
         return 14;
     }

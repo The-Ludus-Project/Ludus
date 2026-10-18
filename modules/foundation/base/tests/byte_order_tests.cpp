@@ -22,27 +22,28 @@ static_assert(std::bit_cast<uint32>(float32{-0.0f}) == 0x80000000);
 static_assert(std::bit_cast<uint64>(float64{-0.0}) == 0x8000000000000000);
 static_assert(std::bit_cast<uint32>(std::numeric_limits<float32>::denorm_min()) == 1);
 static_assert(std::bit_cast<uint64>(std::numeric_limits<float64>::denorm_min()) == 1);
-static_assert(!UnsignedInteger<int32> && !UnsignedInteger<bool> && !UnsignedInteger<float32>);
+static_assert(UnsignedInteger<int32> == false && UnsignedInteger<bool> == false && UnsignedInteger<float32> == false);
 
 template <typename ValueType>
 concept HasByteCodec = requires(ValueType value, ValueType& out, std::span<uint8> bytes) {
     TryReadLittleEndian(bytes, out);
     TryWriteBigEndian(value, bytes);
 };
-static_assert(!HasByteCodec<int32> && !HasByteCodec<bool> && !HasByteCodec<float32>);
+static_assert(HasByteCodec<int32> == false && HasByteCodec<bool> == false && HasByteCodec<float32> == false);
 
 constexpr bool VerifyConstexprBytes() noexcept
 {
     uint8 bytes[5] = {0x78, 0x56, 0x34, 0x12, 0xAA};
     uint32 out = 42;
-    if (!TryReadLittleEndian(bytes, out) || out != 0x12345678 || !TryWriteBigEndian(out, bytes) || bytes[0] != 0x12 ||
-        bytes[3] != 0x78 || bytes[4] != 0xAA || !TryReadBigEndian(bytes, out) || out != 0x12345678)
+    if (TryReadLittleEndian(bytes, out) == false || out != 0x12345678 || TryWriteBigEndian(out, bytes) == false ||
+        bytes[0] != 0x12 || bytes[3] != 0x78 || bytes[4] != 0xAA || TryReadBigEndian(bytes, out) == false ||
+        out != 0x12345678)
     {
         return false;
     }
     const std::span<uint8> shortBytes{bytes, 3};
-    return !TryReadLittleEndian(shortBytes, out) && out == 0x12345678 && !TryWriteLittleEndian(uint32{0}, shortBytes) &&
-           bytes[0] == 0x12 && bytes[3] == 0x78;
+    return TryReadLittleEndian(shortBytes, out) == false && out == 0x12345678 &&
+           TryWriteLittleEndian(uint32{0}, shortBytes) == false && bytes[0] == 0x12 && bytes[3] == 0x78;
 }
 static_assert(VerifyConstexprBytes());
 static_assert(noexcept(TryReadBigEndian({}, *static_cast<uint64*>(nullptr))));

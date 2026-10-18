@@ -108,7 +108,8 @@ behavior::Status Native(behavior::Transaction& transaction, void* user) noexcept
     }
     project::State state;
     project::Event event;
-    if (!project::TryReadState(transaction.State(), state) || !project::TryReadEvent(transaction.Input().Event, event))
+    if (project::TryReadState(transaction.State(), state) == false ||
+        project::TryReadEvent(transaction.Input().Event, event) == false)
     {
         return behavior::Status::InvalidInput;
     }
@@ -116,7 +117,7 @@ behavior::Status Native(behavior::Transaction& transaction, void* user) noexcept
     {
         state.Interactions += event.Amount;
     }
-    if (role == Role::Operation || (role == Role::Encounter && state.Interactions >= 2 && !state.OpenRequested))
+    if (role == Role::Operation || (role == Role::Encounter && state.Interactions >= 2 && state.OpenRequested == false))
     {
         const auto result = project::RequestDoorOpen(transaction, event.Target, event.Amount);
         if (role == Role::Encounter && result.Status == behavior::CommandStatus::Accepted)
@@ -142,7 +143,7 @@ bool Equal(const behavior::Outcome& left, const behavior::Outcome& right) noexce
     for (uint32 i = 0; i < left.State.Count; ++i)
     {
         if (left.State.Items[i].Id != right.State.Items[i].Id ||
-            !Equal(left.State.Items[i].Data, right.State.Items[i].Data))
+            Equal(left.State.Items[i].Data, right.State.Items[i].Data) == false)
         {
             return false;
         }
@@ -156,7 +157,7 @@ bool Equal(const behavior::Outcome& left, const behavior::Outcome& right) noexce
         }
         for (uint32 j = 0; j < left.Commands[i].Count; ++j)
         {
-            if (!Equal(left.Commands[i].Arguments[j], right.Commands[i].Arguments[j]))
+            if (Equal(left.Commands[i].Arguments[j], right.Commands[i].Arguments[j]) == false)
             {
                 return false;
             }
@@ -172,7 +173,7 @@ bool Load(behavior::LuauProvider& provider) noexcept
 bool Verify() noexcept
 {
     behavior::LuauProvider provider;
-    if (!Load(provider))
+    if (Load(provider) == false)
     {
         return false;
     }
@@ -207,7 +208,7 @@ bool Verify() noexcept
                             behavior::Diagnostic diagnostic;
                             if (provider.Invoke(input, {nullptr, Alive}, actual, diagnostic) !=
                                     behavior::Status::Completed ||
-                                !Equal(native, actual))
+                                Equal(native, actual) == false)
                             {
                                 return false;
                             }
@@ -297,7 +298,7 @@ bool Batch(const Case& item, behavior::LuauProvider& provider, behavior::Record*
 bool Measure(const Case& item) noexcept
 {
     behavior::LuauProvider provider;
-    if (item.Asset != 0 && !Load(provider))
+    if (item.Asset != 0 && Load(provider) == false)
     {
         return false;
     }
@@ -313,7 +314,7 @@ bool Measure(const Case& item) noexcept
     uint64 commands = 0;
     for (uint32 i = 0; i < WARMUP; ++i)
     {
-        if (!Batch(item, provider, states, commands))
+        if (Batch(item, provider, states, commands) == false)
         {
             delete[] states;
             return false;
@@ -332,7 +333,7 @@ bool Measure(const Case& item) noexcept
         const uint64 begin = time::NowTicks();
         const bool ok = Batch(item, provider, states, commands);
         const uint64 end = time::NowTicks();
-        if (!ok || end < begin)
+        if (ok == false || end < begin)
         {
             (void)ludus::s7::EndAllocations();
             delete[] states;
@@ -351,7 +352,7 @@ bool Measure(const Case& item) noexcept
     for (uint32 i = 0; i < TOTAL; ++i)
     {
         project::State state;
-        if (!project::TryReadState(states[i], state))
+        if (project::TryReadState(states[i], state) == false)
         {
             delete[] states;
             return false;
@@ -423,7 +424,7 @@ int main(int argc, char** argv)
 {
     if (argc == 3 && std::strcmp(argv[1], "--observe-edit") == 0)
     {
-        if (!ObserveEdit(argv[2]))
+        if (ObserveEdit(argv[2]) == false)
         {
             return 6;
         }
@@ -431,11 +432,11 @@ int main(int argc, char** argv)
         return 0;
     }
     const bool verifyOnly = argc == 2 && std::strcmp(argv[1], "--verify") == 0;
-    if (argc != 2 || (!verifyOnly && std::strcmp(argv[1], "--measure") != 0))
+    if (argc != 2 || (verifyOnly == false && std::strcmp(argv[1], "--measure") != 0))
     {
         return 2;
     }
-    if (!Verify())
+    if (Verify() == false)
     {
         return 3;
     }
@@ -472,12 +473,12 @@ int main(int argc, char** argv)
     bool first = true;
     for (const auto& item : CASES)
     {
-        if (!first)
+        if (first == false)
         {
             Text(",");
         }
         first = false;
-        if (!Measure(item))
+        if (Measure(item) == false)
         {
             return 4;
         }

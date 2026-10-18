@@ -287,7 +287,7 @@ from host samples. Clock epochs are not persistent save/replay identities.
 | Logging/profiling clock producers | Use the shared source |
 | Frame-loop migration | Implemented in the world reference and smoke applications; one `FrameClock` clamp per loop |
 | Rational integer fixed-step driver | Implemented in the world reference `TickDriver`: checked `uint64` phase, exact tick accounting, separate clamp and catch-up loss |
-| Native frame pacing | Implemented: `Ludus::PlatformPacing` `FramePacer` and system wait; the world reference paces idle frames and an optional cap |
+| Native frame pacing | Implemented: `Ludus::PlatformPacing` `FramePacer` and system wait; the world reference paces idle frames, hidden windows at 10 Hz and an optional cap |
 | Bounded gameplay event queue | Planned separate integration |
 | Editor Timing view and runtime timing telemetry | Implemented: GameHost paces its play loop and reports bounded intervals/status on `Status`; a read-only Timing panel shows them. No timer controls ship |
 | Time scaling, additional platform/worker domains, GPU/audio/network clock integration | Separate requirements and validation needed |

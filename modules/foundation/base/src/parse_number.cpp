@@ -108,7 +108,7 @@ NumberParseStatus ParseUint64(const char* text, usize size, uint64& output) noex
     bool overflow = false;
     for (usize index = 0; index < size; ++index)
     {
-        if (!Digit(text[index]))
+        if (Digit(text[index]) == false)
         {
             return NumberParseStatus::InvalidSyntax;
         }
@@ -117,7 +117,7 @@ NumberParseStatus ParseUint64(const char* text, usize size, uint64& output) noex
         {
             overflow = true;
         }
-        if (!overflow)
+        if (overflow == false)
         {
             value = value * 10 + digit;
         }
@@ -203,7 +203,7 @@ NumberParseStatus ParseFloat32(const char* text, usize size, float32& output) no
     int32 significantDigits = 0;
     for (usize index = integerStart; index < fractionEnd; ++index)
     {
-        if (!Digit(text[index]))
+        if (Digit(text[index]) == false)
         {
             continue;
         }

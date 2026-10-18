@@ -3,7 +3,9 @@
 Status: RG0 contracts, RG1 bounded offline shader builds and RG2 static opaque
 Renderer execution implemented, October 13, 2026; RG3a editing, mapped
 diagnostics and runtime activation implemented, October 15, 2026; RG3b node canvas
-and trusted in-editor preview implemented, October 16, 2026; RG4 remains proposed.
+and trusted in-editor preview implemented, October 16, 2026; execution profile widened
+to per-draw uniform bindings and authored masked coverage, October 17, 2026; RG4
+remains proposed.
 This defines the renderer authoring/compiler contract; it does not claim
 unrestricted shader composition or new RHI capability.
 Baseline design: `5c44d19`. See [usage and source formats](../development/render-graph-authoring.md).
@@ -570,16 +572,37 @@ prewarmed magenta overlay geometry or explicit bounds proxies; these remain
 unsupported and never establish depth coverage. The shipping policy rejects
 incomplete coverage while preserving the prior drawable extraction.
 
-This first execution profile uses RGBA8, Depth32, one sample, conventional Less
-with depth writes, no shader bindings and the Renderer’s six-location static
-instance interface. ColorAndDepth and DepthOnly share the exact geometry stage;
-opaque depth fixtures qualify the authored void coverage function. Masking,
-transparency, deformation, arbitrary material layouts, reverse-Z, imported images
-and history remain explicit admission failures. Thus an exported depth graph is
-not automatically a compatible pre-Z for an arbitrary subsequent shading pass.
-No error shader or output-driven permutation is synthesized. The installed CMake
+The execution profile uses RGBA8, Depth32, one sample, conventional Less with
+depth writes and the Renderer’s six-location static instance interface. Within a
+material family, ColorAndDepth and DepthOnly share the exact geometry stage;
+opaque depth fixtures qualify the authored void coverage function. Transparency,
+deformation, arbitrary vertex layouts, reverse-Z, imported images, resize and
+history remain explicit admission failures. Thus an exported depth graph is not
+automatically a compatible pre-Z for an arbitrary subsequent shading pass. No
+error shader or output-driven permutation is synthesized. The installed CMake
 helper and CLI emit identical typed plans with static shader storage, without a
 runtime JSON parser or shader compiler.
+
+Techniques may read RG1 scalar/vector uniform bindings. Lowering merges each
+technique's per-stage reflected layouts into neutral binding, per-target block
+and per-target field records; a slot shared by both stages must have one schema
+and layout. Items supply logical float values laid out by uniform schema, and the
+generated header names each field's offset. Renderer packs them with the selected
+backend's target layout, deduplicates equal value sets into immutable uniform
+buffers and binding snapshots, and keeps equal sets instanced. Values are runtime
+data: changing them republishes an extraction, never a shader configuration.
+Per-view values, matrices, arrays, textures and storage remain unqualified.
+
+An explicitly authored `DefaultMasked` raster material selects
+`DefaultStaticMasked` techniques. Its DepthOnly fragment is a separately authored
+coverage function. Build, lowering and Renderer admission all reject the opaque
+void depth function in that role, and masked color and depth must share their
+family's geometry stage. Coverage is matched per family: masked techniques cover
+only `Masked` items, opaque techniques only `Opaque` items, and an item is never
+redirected to the other family. Depth parity fixtures compare the two techniques'
+exported depth byte for byte and their color coverage pixel for pixel. Equal-depth
+pre-Z followed by shading still needs an `Equal`/`LessEqual` recipe profile, which
+is not admitted.
 
 Scene/camera replacements publish only when their retained resources are Ready.
 Candidate reports and the last drawable revision are distinct, including when a
@@ -619,6 +642,9 @@ CPU interface identity; decoding copies the bytes, so an unloadable module can
 release its buffer immediately. Activation stages a candidate beside the drawing
 generation, prewarms it, requires it to prepare the latest accepted extraction,
 and publishes it only inside `Poll` between frames with no unconfirmed encoding.
+The CPU interface identity covers the vertex/instance schema, the static inputs,
+and the per-draw uniform schemas with every target layout that packs them, so a
+changed uniform schema or layout returns RestartRequired.
 A pending, failed or coverage-rejecting candidate leaves the active generation,
 its pixels and output revision unchanged; a CPU interface mismatch returns
 RestartRequired and stages nothing. The replaced generation is Reset at the

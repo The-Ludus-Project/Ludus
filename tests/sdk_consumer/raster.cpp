@@ -187,8 +187,8 @@ bool Create() noexcept
         return false;
     rhi::FormatCapabilities format;
     if (rhi::GetFormatCapabilities(gDevice, rhi::RasterFormat::Rgba8Unorm, format) != rhi::RasterStatus::Ready ||
-        !format.Uses.Sampled || !format.Uses.Blendable || (format.SampleCounts & 1U) == 0 || format.Uses.Storage ||
-        !format.Uses.CopySource || !format.Uses.CopyDestination ||
+        format.Uses.Sampled == false || format.Uses.Blendable == false || (format.SampleCounts & 1U) == 0 ||
+        format.Uses.Storage || format.Uses.CopySource == false || format.Uses.CopyDestination == false ||
         info.UnmetProfilePreference.Requirement != rhi::ProfileRequirement::ColorAttachmentCount ||
         info.UnmetProfilePreference.Requested != 5 ||
         info.UnmetProfilePreference.Available != info.Profile.Interface.MaxColorAttachments ||
@@ -203,13 +203,14 @@ bool Create() noexcept
             value = 0;
         const uint32 zero[5]{};
         const auto kernel = ludus::shaders::cull::Compute();
-        if (!Accepted(rhi::CreateBuffer(gDevice,
-                                        {rhi::BufferRole::Storage, 32},
-                                        Bytes(ludus::qa::CULL_CANDIDATES),
-                                        gCandidates)) ||
-            !Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::StorageIndirect, 20}, Bytes(zero), gArguments)) ||
-            !Accepted(rhi::CreateRasterShader(gDevice, kernel, gComputeShader)) ||
-            !Accepted(rhi::CreateBindingLayout(gDevice, kernel.Bindings, gComputeLayout)))
+        if (Accepted(rhi::CreateBuffer(gDevice,
+                                       {rhi::BufferRole::Storage, 32},
+                                       Bytes(ludus::qa::CULL_CANDIDATES),
+                                       gCandidates)) == false ||
+            Accepted(rhi::CreateBuffer(gDevice, {rhi::BufferRole::StorageIndirect, 20}, Bytes(zero), gArguments)) ==
+                false ||
+            Accepted(rhi::CreateRasterShader(gDevice, kernel, gComputeShader)) == false ||
+            Accepted(rhi::CreateBindingLayout(gDevice, kernel.Bindings, gComputeLayout)) == false)
             return false;
     }
     const float32 center[2]{0, 0};
@@ -217,12 +218,14 @@ bool Create() noexcept
     if (mode >= 3)
     {
         const float32 fullscreen[20]{-1, -1, 0, 0, 1, -1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, -1, 0, 1, 1};
-        if (!Accepted(rhi::CreateTexture(gDevice, {96, 64, rhi::RasterFormat::Rgba8Unorm, true}, {}, gOffscreen)) ||
-            !Accepted(rhi::CreateTexture(gDevice, {96, 64, rhi::RasterFormat::Rgba8Unorm, true}, {}, gUnused)) ||
-            !Accepted(rhi::CreateBuffer(gDevice,
-                                        {rhi::BufferRole::Vertex, sizeof(fullscreen)},
-                                        Bytes(fullscreen),
-                                        gFullscreen)))
+        if (Accepted(rhi::CreateTexture(gDevice, {96, 64, rhi::RasterFormat::Rgba8Unorm, true}, {}, gOffscreen)) ==
+                false ||
+            Accepted(rhi::CreateTexture(gDevice, {96, 64, rhi::RasterFormat::Rgba8Unorm, true}, {}, gUnused)) ==
+                false ||
+            Accepted(rhi::CreateBuffer(gDevice,
+                                       {rhi::BufferRole::Vertex, sizeof(fullscreen)},
+                                       Bytes(fullscreen),
+                                       gFullscreen)) == false)
         {
             return false;
         }
@@ -312,7 +315,7 @@ void Tick() noexcept
     }
     if (gHasCompletion)
     {
-        if (!Ready(gCompletion))
+        if (Ready(gCompletion) == false)
         {
             if (gFailed)
             {
@@ -323,9 +326,9 @@ void Tick() noexcept
         gCompletion = {};
         gHasCompletion = false;
     }
-    if (gUseCompute && gFrames > 0 && !gArgumentsVerified)
+    if (gUseCompute && gFrames > 0 && gArgumentsVerified == false)
     {
-        if (!gHasArgumentReadback)
+        if (gHasArgumentReadback == false)
         {
             if (rhi::RequestBufferReadback(gDevice, gArguments, 0, 20, gArgumentReadback) != rhi::RasterStatus::Pending)
             {
@@ -334,7 +337,7 @@ void Tick() noexcept
             }
             gHasArgumentReadback = true;
         }
-        if (!Ready(gArgumentReadback))
+        if (Ready(gArgumentReadback) == false)
         {
             if (gFailed)
                 Stop(true);
@@ -359,7 +362,7 @@ void Tick() noexcept
     }
     if (gStep == 0)
     {
-        if (!Create() || !CheckDelayedUploadCapacity())
+        if (Create() == false || CheckDelayedUploadCapacity() == false)
         {
             Stop(true);
             return;
@@ -372,30 +375,30 @@ void Tick() noexcept
             Ready(gVertex) && Ready(gFragment) && Ready(gLayout) && Ready(gTint) && Ready(gDim) && Ready(gTexture) &&
             Ready(gSampler) && Ready(gVertexUpload) && Ready(gBackground) && Ready(gInstances) && Ready(gCenter) &&
             Ready(gIndexUpload) && (Variant() < 3 || (Ready(gOffscreen) && Ready(gUnused) && Ready(gFullscreen))) &&
-            (!gUseCompute ||
+            (gUseCompute == false ||
              (Ready(gCandidates) && Ready(gArguments) && Ready(gComputeShader) && Ready(gComputeLayout)));
         if (gFailed)
         {
             Stop(true);
             return;
         }
-        if (!ready)
+        if (ready == false)
         {
             return;
         }
         if (rhi::TakeUploadedBuffer(gDevice, gVertexUpload, gVertices) != rhi::RasterStatus::Ready ||
             rhi::TakeUploadedBuffer(gDevice, gIndexUpload, gIndices) != rhi::RasterStatus::Ready ||
-            !Accepted(rhi::RequestBufferReadback(gDevice, gIndices, 0, 24, gReadback)))
+            Accepted(rhi::RequestBufferReadback(gDevice, gIndices, 0, 24, gReadback)) == false)
         {
             Stop(true);
             return;
         }
-        if (!Accepted(rhi::CreateTextureView(gDevice, gTexture, gView)))
+        if (Accepted(rhi::CreateTextureView(gDevice, gTexture, gView)) == false)
         {
             Stop(true);
             return;
         }
-        if (Variant() >= 3 && !Accepted(rhi::CreateTextureView(gDevice, gOffscreen, gOffscreenView)))
+        if (Variant() >= 3 && Accepted(rhi::CreateTextureView(gDevice, gOffscreen, gOffscreenView)) == false)
         {
             Stop(true);
             return;
@@ -404,7 +407,7 @@ void Tick() noexcept
     }
     if (gStep == 2)
     {
-        if (!Ready(gView) || (Variant() >= 3 && !Ready(gOffscreenView)))
+        if (Ready(gView) == false || (Variant() >= 3 && Ready(gOffscreenView) == false))
         {
             if (gFailed)
             {
@@ -417,8 +420,10 @@ void Tick() noexcept
             const rhi::RasterBindingResource computeBindings[]{{0, gCandidates, 0, 32},
                                                                {1, gInstances, 0, 16},
                                                                {2, gArguments, 0, 20}};
-            if (!Accepted(rhi::CreateBindingSet(gDevice, gComputeLayout, computeBindings, gDispatch.Bindings)) ||
-                !Accepted(rhi::CreateComputePipeline(gDevice, {gComputeShader, gComputeLayout}, gDispatch.Pipeline)))
+            if (Accepted(rhi::CreateBindingSet(gDevice, gComputeLayout, computeBindings, gDispatch.Bindings)) ==
+                    false ||
+                Accepted(rhi::CreateComputePipeline(gDevice, {gComputeShader, gComputeLayout}, gDispatch.Pipeline)) ==
+                    false)
             {
                 Stop(true);
                 return;
@@ -431,13 +436,13 @@ void Tick() noexcept
         bindings[1].Texture = gView;
         bindings[2].Binding = 2;
         bindings[2].Sampler = gSampler;
-        if (!Accepted(rhi::CreateBindingSet(gDevice, gLayout, bindings, gSet)))
+        if (Accepted(rhi::CreateBindingSet(gDevice, gLayout, bindings, gSet)) == false)
         {
             Stop(true);
             return;
         }
         bindings[0].Buffer = gDim;
-        if (!Accepted(rhi::CreateBindingSet(gDevice, gLayout, bindings, gBackgroundSet)))
+        if (Accepted(rhi::CreateBindingSet(gDevice, gLayout, bindings, gBackgroundSet)) == false)
         {
             Stop(true);
             return;
@@ -446,7 +451,7 @@ void Tick() noexcept
         {
             bindings[0].Buffer = gTint;
             bindings[1].Texture = gOffscreenView;
-            if (!Accepted(rhi::CreateBindingSet(gDevice, gLayout, bindings, gCompositeSet)))
+            if (Accepted(rhi::CreateBindingSet(gDevice, gLayout, bindings, gCompositeSet)) == false)
             {
                 Stop(true);
                 return;
@@ -468,46 +473,44 @@ void Tick() noexcept
                 return;
             }
         }
-        if (!Accepted(
-                rhi::RequestPipeline(gDevice,
-                                     {gVertex,
-                                      gFragment,
-                                      gLayout,
-                                      streams,
-                                      attributes,
-                                      true,
-                                      Variant() == 2,
-                                      Variant() >= 3 ? rhi::RasterTarget::Rgba8Unorm : rhi::RasterTarget::Surface},
-                                     gPipelineRequest)) ||
-            !Accepted(
-                rhi::RequestPipeline(gDevice,
-                                     {gVertex,
-                                      gFragment,
-                                      gLayout,
-                                      streams,
-                                      attributes,
-                                      true,
-                                      Variant() == 2,
-                                      Variant() >= 3 ? rhi::RasterTarget::Rgba8Unorm : rhi::RasterTarget::Surface},
-                                     gSharedPipelineRequest)))
+        if (Accepted(rhi::RequestPipeline(gDevice,
+                                          {gVertex,
+                                           gFragment,
+                                           gLayout,
+                                           streams,
+                                           attributes,
+                                           true,
+                                           Variant() == 2,
+                                           Variant() >= 3 ? rhi::RasterTarget::Rgba8Unorm : rhi::RasterTarget::Surface},
+                                          gPipelineRequest)) == false ||
+            Accepted(rhi::RequestPipeline(gDevice,
+                                          {gVertex,
+                                           gFragment,
+                                           gLayout,
+                                           streams,
+                                           attributes,
+                                           true,
+                                           Variant() == 2,
+                                           Variant() >= 3 ? rhi::RasterTarget::Rgba8Unorm : rhi::RasterTarget::Surface},
+                                          gSharedPipelineRequest)) == false)
         {
             Stop(true);
             return;
         }
-        if (Variant() >= 3 &&
-            (!Accepted(rhi::RequestPipeline(gDevice,
-                                            {gVertex,
-                                             gFragment,
-                                             gLayout,
-                                             streams,
-                                             attributes,
-                                             Variant() < 9,
-                                             Variant() >= 9,
-                                             rhi::RasterTarget::Rgba8Unorm,
-                                             false},
-                                            gUiRequest)) ||
-             !Accepted(
-                 rhi::RequestPipeline(gDevice, {gVertex, gFragment, gLayout, streams, attributes}, gCompositeRequest))))
+        if (Variant() >= 3 && (Accepted(rhi::RequestPipeline(gDevice,
+                                                             {gVertex,
+                                                              gFragment,
+                                                              gLayout,
+                                                              streams,
+                                                              attributes,
+                                                              Variant() < 9,
+                                                              Variant() >= 9,
+                                                              rhi::RasterTarget::Rgba8Unorm,
+                                                              false},
+                                                             gUiRequest)) == false ||
+                               Accepted(rhi::RequestPipeline(gDevice,
+                                                             {gVertex, gFragment, gLayout, streams, attributes},
+                                                             gCompositeRequest)) == false))
         {
             Stop(true);
             return;
@@ -519,13 +522,13 @@ void Tick() noexcept
         const bool ready = Ready(gSet) && Ready(gBackgroundSet) && Ready(gPipelineRequest) &&
                            Ready(gSharedPipelineRequest) && Ready(gReadback) &&
                            (Variant() < 3 || (Ready(gCompositeSet) && Ready(gUiRequest) && Ready(gCompositeRequest))) &&
-                           (!gUseCompute || (Ready(gDispatch.Bindings) && Ready(gDispatch.Pipeline)));
+                           (gUseCompute == false || (Ready(gDispatch.Bindings) && Ready(gDispatch.Pipeline)));
         if (gFailed)
         {
             Stop(true);
             return;
         }
-        if (!ready)
+        if (ready == false)
         {
             return;
         }
@@ -570,7 +573,7 @@ void Tick() noexcept
         gStep = 4;
     }
     const float64 clear = Variant() == 2 ? .25 : 0;
-    if (Measure() != 0 && !gTimingArmed)
+    if (Measure() != 0 && gTimingArmed == false)
     {
         const auto armed = rhi::ArmGpuTiming(gDevice);
         if (armed != rhi::RasterStatus::Ready && armed != rhi::RasterStatus::Unsupported)
@@ -587,7 +590,7 @@ void Tick() noexcept
     }
     if (Variant() >= 3)
     {
-        if (!gHasGraph)
+        if (gHasGraph == false)
         {
             ludus::qa::OrderedFrameInputs inputs{gVertices,
                                                  gBackground,
@@ -641,7 +644,7 @@ void Tick() noexcept
         Report(gStep, gFrames, 0, static_cast<int32>(info.Startup.SelectedBackend));
         return;
     }
-    if (!gHasBatch)
+    if (gHasBatch == false)
     {
         if (rhi::BeginCommands(gDevice, gBatch) != rhi::RasterStatus::Ready)
         {
@@ -706,7 +709,7 @@ int main()
     windowDescription.Height = 64;
     windowDescription.CanvasSelector = "#canvas";
     windowDescription.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(windowDescription, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(windowDescription, gWindow) == false)
     {
         Stop(true);
         return 1;
@@ -750,11 +753,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto startedTicks = time::NowTicks();
-    while (!gDone && time::NowTicks() - startedTicks < 15 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - startedTicks < 15 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

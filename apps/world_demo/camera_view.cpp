@@ -96,7 +96,7 @@ CameraStatus TryBuildCameraView(const CameraSample& sample,
         return Convert(status);
     }
     candidate.ViewProjection = candidate.Projection * candidate.View;
-    if (!math::IsFinite(candidate.View) || !math::IsFinite(candidate.ViewProjection))
+    if (math::IsFinite(candidate.View) == false || math::IsFinite(candidate.ViewProjection) == false)
     {
         return CameraStatus::OutOfRange;
     }

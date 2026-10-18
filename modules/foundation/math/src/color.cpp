@@ -14,7 +14,7 @@ float32 NextFloatDown(float32 value) noexcept
 }
 float32 DecodeSrgb(float32 value) noexcept
 {
-    if (!IsFinite(value) || value < 0 || value > 1)
+    if (IsFinite(value) == false || value < 0 || value > 1)
     {
         return std::numeric_limits<float32>::quiet_NaN();
     }
@@ -22,7 +22,7 @@ float32 DecodeSrgb(float32 value) noexcept
 }
 float32 EncodeSrgb(float32 value) noexcept
 {
-    if (!IsFinite(value) || value < 0 || value > 1)
+    if (IsFinite(value) == false || value < 0 || value > 1)
     {
         return std::numeric_limits<float32>::quiet_NaN();
     }

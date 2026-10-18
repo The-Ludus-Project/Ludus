@@ -31,7 +31,7 @@ bool IdentityValue(JsonValue value, Uuid& output) noexcept
 bool NameValue(JsonValue value, Name& output, bool empty = false) noexcept
 {
     std::string_view text;
-    if (!value.String(text) || text.size() >= sizeof(output.Text) || (!empty && text.empty()))
+    if (value.String(text) == false || text.size() >= sizeof(output.Text) || (empty == false && text.empty()))
     {
         return false;
     }
@@ -49,7 +49,8 @@ bool NameValue(JsonValue value, Name& output, bool empty = false) noexcept
 bool Number(JsonValue value, float32& output) noexcept
 {
     float64 number = 0;
-    if (!value.Number(number) || !foundation::math::IsFinite(number) || number < -100000 || number > 100000)
+    if (value.Number(number) == false || foundation::math::IsFinite(number) == false || number < -100000 ||
+        number > 100000)
     {
         return false;
     }
@@ -181,10 +182,12 @@ LevelResult ReadWorldLevel(std::string_view source, Level& output) noexcept
             const auto collision = components.Get("collision");
             box.Id = ids[i];
             box.Object.Value = objects[i];
-            if (!components.Fields({"collision"}) || !collision.Fields({"x", "y", "half_x", "half_y"}) ||
-                !Number(collision.Get("x"), box.Center.X) || !Number(collision.Get("y"), box.Center.Y) ||
-                !Number(collision.Get("half_x"), box.HalfExtent.X) ||
-                !Number(collision.Get("half_y"), box.HalfExtent.Y))
+            if (components.Fields({"collision"}) == false ||
+                collision.Fields({"x", "y", "half_x", "half_y"}) == false ||
+                Number(collision.Get("x"), box.Center.X) == false ||
+                Number(collision.Get("y"), box.Center.Y) == false ||
+                Number(collision.Get("half_x"), box.HalfExtent.X) == false ||
+                Number(collision.Get("half_y"), box.HalfExtent.Y) == false)
             {
                 return {LevelError::InvalidValue, 0};
             }
@@ -199,7 +202,7 @@ LevelResult ReadWorldLevel(std::string_view source, Level& output) noexcept
             auto& recipe = candidate.Entities[candidate.EntityCount++];
             recipe.Id = ids[i];
             recipe.Object.Value = objects[i];
-            if (!Transform(components.Get("transform"), recipe))
+            if (Transform(components.Get("transform"), recipe) == false)
             {
                 return {LevelError::InvalidValue, 0};
             }
@@ -207,10 +210,11 @@ LevelResult ReadWorldLevel(std::string_view source, Level& output) noexcept
             {
                 const auto exit = components.Get("exit");
                 recipe.Type = Kind::Exit;
-                if (!components.Fields({"transform", "exit"}) || !exit.Fields({"half_x", "half_y", "next_level"}) ||
-                    !Number(exit.Get("half_x"), recipe.HalfExtent.X) ||
-                    !Number(exit.Get("half_y"), recipe.HalfExtent.Y) ||
-                    !NameValue(exit.Get("next_level"), recipe.NextLevel))
+                if (components.Fields({"transform", "exit"}) == false ||
+                    exit.Fields({"half_x", "half_y", "next_level"}) == false ||
+                    Number(exit.Get("half_x"), recipe.HalfExtent.X) == false ||
+                    Number(exit.Get("half_y"), recipe.HalfExtent.Y) == false ||
+                    NameValue(exit.Get("next_level"), recipe.NextLevel) == false)
                 {
                     return {LevelError::InvalidValue, 0};
                 }

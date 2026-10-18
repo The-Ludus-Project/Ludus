@@ -9,6 +9,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
+
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
@@ -33,6 +35,11 @@ constexpr usize INDEX_COUNT = 3;
 constexpr usize MESH_COUNT = 1;
 constexpr usize ITEM_COUNT = 1;
 constexpr usize CAMERA_COUNT = 1;
+constexpr usize UNIFORM_VALUE_COUNT = 4;
+constexpr usize UNIFORM_BLOCK_COUNT = 2;
+constexpr usize UNIFORM_FIELD_COUNT = 4;
+constexpr usize WGSL_MATERIAL_BYTES = 16;
+constexpr usize METAL_MATERIAL_BYTES = 32;
 struct GraphFixture final
 {
     rhi::DeviceHandle Device{};
@@ -50,6 +57,18 @@ struct GraphFixture final
                                                    format::Store::Store,
                                                    0}}};
     StaticArray<format::Camera, CAMERA_COUNT> Targets{{{0}}};
+    /// Material {Float3 tint; Float32 gain} read by the opaque color fragment at slot 0.
+    StaticArray<format::UniformBinding, 1> UniformBindings{
+        {{format::Technique::ColorAndDepth, 0, format::Visibility::Fragment, 0, UNIFORM_VALUE_COUNT}}};
+    StaticArray<format::UniformBlock, UNIFORM_BLOCK_COUNT> UniformBlocks{
+        {{0, format::ShaderTarget::Wgsl, WGSL_MATERIAL_BYTES}, {0, format::ShaderTarget::Metal, METAL_MATERIAL_BYTES}}};
+    StaticArray<format::UniformField, UNIFORM_FIELD_COUNT> UniformFields{{{0, format::ShaderTarget::Wgsl, 0, 3, 0},
+                                                                          {0, format::ShaderTarget::Wgsl, 3, 1, 12},
+                                                                          {0, format::ShaderTarget::Metal, 0, 3, 0},
+                                                                          {0, format::ShaderTarget::Metal, 3, 1, 16}}};
+    StaticArray<rhi::RasterBinding, 1> MaterialBindings{
+        {{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, METAL_MATERIAL_BYTES}}};
+    bool IsBound = false;
     StaticArray<rhi::RasterShaderInput, INPUT_COUNT> Inputs{};
     StaticArray<rhi::RasterShaderInput, COMPOSITE_INPUT_COUNT> CompositeInputs{{{0, rhi::RasterVertexFormat::Float4}}};
     StaticArray<rhi::RasterBinding, COMPOSITE_BINDING_COUNT> CompositeBindings{
@@ -89,10 +108,30 @@ struct GraphFixture final
     }
     [[nodiscard]] LUDUS_INLINE renderer::RenderGraphPlan MakePlan() const noexcept
     {
-        return {{format::VERSION, RESOURCE_COUNT, PASS_COUNT, CAMERA_COUNT},
+        if (IsBound == false)
+        {
+            return {{format::VERSION, RESOURCE_COUNT, PASS_COUNT, CAMERA_COUNT, 0, 0, 0, 0},
+                    {Resources.GetData(), Resources.GetSize()},
+                    {Targets.GetData(), Targets.GetSize()},
+                    {Passes.GetData(), Passes.GetSize()},
+                    {},
+                    {},
+                    {}};
+        }
+        return {{format::VERSION,
+                 RESOURCE_COUNT,
+                 PASS_COUNT,
+                 CAMERA_COUNT,
+                 UNIFORM_VALUE_COUNT,
+                 1,
+                 UNIFORM_BLOCK_COUNT,
+                 UNIFORM_FIELD_COUNT},
                 {Resources.GetData(), Resources.GetSize()},
                 {Targets.GetData(), Targets.GetSize()},
-                {Passes.GetData(), Passes.GetSize()}};
+                {Passes.GetData(), Passes.GetSize()},
+                {UniformBindings.GetData(), UniformBindings.GetSize()},
+                {UniformBlocks.GetData(), UniformBlocks.GetSize()},
+                {UniformFields.GetData(), UniformFields.GetSize()}};
     }
     [[nodiscard]] renderer::RenderGraphPrograms MakePrograms() const
     {
@@ -106,6 +145,17 @@ struct GraphFixture final
         programs.ColorFragment.Artifact.WgslEntry = "FragmentMain";
         programs.DepthVertex = programs.ColorVertex;
         programs.DepthFragment = programs.ColorFragment;
+        // The masked family has its own authored stages; its depth entry is a distinct coverage function.
+        programs.MaskedColorVertex = programs.ColorVertex;
+        programs.MaskedColorFragment = programs.ColorFragment;
+        programs.MaskedColorFragment.Artifact.Wgsl = "masked color fixture";
+        programs.MaskedDepthVertex = programs.ColorVertex;
+        programs.MaskedDepthFragment = programs.ColorFragment;
+        programs.MaskedDepthFragment.Artifact.Wgsl = "masked coverage fixture";
+        if (IsBound == true)
+        {
+            programs.ColorFragment.Bindings = MaterialBindings.AsSpan();
+        }
         programs.CompositeVertex.Artifact.Stage = rhi::ShaderStage::Vertex;
         programs.CompositeVertex.Artifact.Wgsl = "composite vertex fixture";
         programs.CompositeVertex.Artifact.WgslEntry = "VertexMain";
@@ -527,4 +577,242 @@ TEST_CASE("RG2 excluded items do not require their unneeded geometry uploads", "
     rhi::SubmissionToken completion;
     REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
     CHECK(rhi::reference::Draws == 0);
+}
+TEST_CASE("RG2 bound techniques pack per-draw uniforms and share equal value sets", "[render-graph]")
+{
+    GraphFixture fixture;
+    fixture.IsBound = true;
+    REQUIRE(fixture.Initialize() == rhi::RasterStatus::Ready);
+    constexpr usize BOUND_ITEM_COUNT = 3;
+    StaticArray<float32, UNIFORM_VALUE_COUNT> red{{1, 0, 0, 1}};
+    StaticArray<float32, UNIFORM_VALUE_COUNT> blue{{0, 0, 1, .5F}};
+    StaticArray<renderer::RenderGraphItem, BOUND_ITEM_COUNT> items{
+        {fixture.Items[0], fixture.Items[0], fixture.Items[0]}};
+    for (usize i = 0; i < BOUND_ITEM_COUNT; ++i)
+    {
+        items[i].SourceId = 42 + i;
+        items[i].Uniforms = {(i == 2 ? blue : red).GetData(), UNIFORM_VALUE_COUNT};
+    }
+    const usize buffers = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Buffer)];
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                 {items.GetData(), items.GetSize()},
+                                 {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                 1,
+                                 renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                 report) == rhi::RasterStatus::Ready);
+    CHECK(report.Covered == 2 * BOUND_ITEM_COUNT);
+    // Mesh vertices/indices, two distinct uniform sets and one instance buffer per prepared view.
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Buffer)] == buffers + 2 + 2 + 1);
+    const usize shaderCreates = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)];
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    // Equal values stay one instanced draw; the distinct set is a second packet, never a new shader.
+    CHECK(rhi::reference::Draws == 2);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaderCreates);
+}
+TEST_CASE("RG2 bound uniform values pack the selected target's reflected layout", "[render-graph]")
+{
+    GraphFixture fixture;
+    fixture.IsBound = true;
+    REQUIRE(fixture.Initialize() == rhi::RasterStatus::Ready);
+    StaticArray<float32, UNIFORM_VALUE_COUNT> values{{.25F, .5F, .75F, 2}};
+    fixture.Items[0].Uniforms = {values.GetData(), values.GetSize()};
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    // The reference device is WebGPU: the gain sits at byte 12 of the WGSL block, not Metal's 16.
+    bool hasPackedBlock = false;
+    for (usize slot = 0; slot < rhi::reference::BufferBytes.GetSize(); ++slot)
+    {
+        const Array<uint8>& bytes = rhi::reference::BufferBytes[slot];
+        if (bytes.GetSize() < WGSL_MATERIAL_BYTES)
+        {
+            continue;
+        }
+        StaticArray<float32, UNIFORM_VALUE_COUNT> decoded{};
+        for (usize value = 0; value < UNIFORM_VALUE_COUNT; ++value)
+        {
+            uint8* destination = reinterpret_cast<uint8*>(&decoded[value]);
+            for (usize byte = 0; byte < sizeof(float32); ++byte)
+            {
+                destination[byte] = bytes[value * sizeof(float32) + byte];
+            }
+        }
+        hasPackedBlock = hasPackedBlock == true ||
+                         (decoded[0] == .25F && decoded[1] == .5F && decoded[2] == .75F && decoded[3] == 2);
+    }
+    CHECK(hasPackedBlock == true);
+}
+TEST_CASE("RG2 bound uniform admission rejects incomplete values and mismatched interfaces", "[render-graph]")
+{
+    GraphFixture fixture;
+    fixture.IsBound = true;
+    REQUIRE(fixture.Initialize() == rhi::RasterStatus::Ready);
+    renderer::RenderGraphReport report;
+    // Missing, short and nonfinite values reject before any preparation.
+    CHECK(fixture.Update(report) == rhi::RasterStatus::InvalidDescription);
+    StaticArray<float32, UNIFORM_VALUE_COUNT> values{{1, 1, 1, 1}};
+    fixture.Items[0].Uniforms = {values.GetData(), UNIFORM_VALUE_COUNT - 1};
+    CHECK(fixture.Update(report) == rhi::RasterStatus::InvalidDescription);
+    values[1] = std::numeric_limits<float32>::infinity();
+    fixture.Items[0].Uniforms = {values.GetData(), values.GetSize()};
+    CHECK(fixture.Update(report) == rhi::RasterStatus::InvalidDescription);
+    // An excluded item may omit its values.
+    fixture.Items[0].Uniforms = {};
+    fixture.Items[0].IsIntentionallyExcluded = true;
+    CHECK(fixture.Update(report) == rhi::RasterStatus::Ready);
+    fixture.Graph.Reset();
+    // A stage range that differs from the plan's largest carried block is a different interface.
+    fixture.MaterialBindings[0].MinSize = WGSL_MATERIAL_BYTES;
+    CHECK(fixture.Initialize() == rhi::RasterStatus::Unsupported);
+    fixture.MaterialBindings[0].MinSize = METAL_MATERIAL_BYTES;
+    // Values supplied to an unbound plan are not silently ignored.
+    GraphFixture unbound;
+    REQUIRE(unbound.Initialize() == rhi::RasterStatus::Ready);
+    unbound.Items[0].Uniforms = {values.GetData(), values.GetSize()};
+    values[1] = 1;
+    CHECK(unbound.Update(report) == rhi::RasterStatus::InvalidDescription);
+}
+TEST_CASE("RG2 bound plans reject malformed or incomplete target layouts before GPU setup", "[render-graph]")
+{
+    GraphFixture fixture;
+    fixture.IsBound = true;
+    // A binding for a technique no pass uses is not admitted.
+    fixture.UniformBindings[0].Program = format::Technique::DepthOnly;
+    CHECK(fixture.Initialize() == rhi::RasterStatus::InvalidDescription);
+    fixture.UniformBindings[0].Program = format::Technique::ColorAndDepth;
+    // Unused capacity may have a zero stage; an active record must never publish it.
+    fixture.UniformBindings[0].Stages = static_cast<format::Visibility>(0);
+    CHECK(fixture.Initialize() == rhi::RasterStatus::InvalidDescription);
+    fixture.UniformBindings[0].Stages = format::Visibility::Fragment;
+    // A field outside its block is malformed.
+    fixture.UniformFields[1].ByteOffset = WGSL_MATERIAL_BYTES;
+    CHECK(fixture.Initialize() == rhi::RasterStatus::InvalidDescription);
+    fixture.UniformFields[1].ByteOffset = 12;
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == 0);
+    // The WebGPU device needs WGSL layout records; another target's offsets are never reinterpreted.
+    fixture.UniformBlocks[0].Target = format::ShaderTarget::Spirv;
+    fixture.UniformFields[0].Target = format::ShaderTarget::Spirv;
+    fixture.UniformFields[1].Target = format::ShaderTarget::Spirv;
+    CHECK(fixture.Initialize() == rhi::RasterStatus::Unsupported);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == 0);
+}
+TEST_CASE("RG2 bound techniques bound distinct value sets per extraction", "[render-graph]")
+{
+    GraphFixture fixture;
+    fixture.IsBound = true;
+    REQUIRE(fixture.Initialize() == rhi::RasterStatus::Ready);
+    constexpr usize MANY_ITEM_COUNT = format::MAX_UNIFORM_SETS + 1;
+    StaticArray<StaticArray<float32, UNIFORM_VALUE_COUNT>, MANY_ITEM_COUNT> values{};
+    StaticArray<renderer::RenderGraphItem, MANY_ITEM_COUNT> items{};
+    for (usize i = 0; i < MANY_ITEM_COUNT; ++i)
+    {
+        values[i] = {{static_cast<float32>(i) / MANY_ITEM_COUNT, 0, 0, 1}};
+        items[i] = fixture.Items[0];
+        items[i].SourceId = 100 + i;
+        items[i].Uniforms = {values[i].GetData(), UNIFORM_VALUE_COUNT};
+    }
+    renderer::RenderGraphReport report;
+    CHECK(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                               {items.GetData(), items.GetSize()},
+                               {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                               1,
+                               renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                               report) == rhi::RasterStatus::CapacityExceeded);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 0);
+}
+TEST_CASE("RG2 an explicitly authored masked technique covers masked items only", "[render-graph]")
+{
+    GraphFixture fixture;
+    fixture.Passes[0].Program = format::Technique::MaskedColorAndDepth;
+    REQUIRE(fixture.Initialize() == rhi::RasterStatus::Ready);
+    fixture.Items[0].Coverage = renderer::RenderGraphMaterial::Masked;
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    CHECK(report.Covered == 2);
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Draws == 1);
+    // Opaque and transparent items need their own route; masked coverage is not a substitute.
+    for (const renderer::RenderGraphMaterial material :
+         {renderer::RenderGraphMaterial::Opaque, renderer::RenderGraphMaterial::Transparent})
+    {
+        fixture.Items[0].Coverage = material;
+        CHECK(fixture.Update(report, renderer::RenderGraphCoveragePolicy::RejectIncomplete, 2) ==
+              rhi::RasterStatus::Unsupported);
+        CHECK(report.Unsupported == 2);
+        CHECK(fixture.Graph.GetCoverage()[0].Reason == renderer::RenderGraphReason::Material);
+    }
+    // A masked-only graph has no flat-color context for diagnostic markers.
+    fixture.Items[0].Coverage = renderer::RenderGraphMaterial::Opaque;
+    REQUIRE(fixture.Update(report, renderer::RenderGraphCoveragePolicy::DiagnosticColor, 3) ==
+            rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetCoverage()[0].HasDiagnosticRoute == false);
+}
+TEST_CASE("RG2 opaque and masked passes share a view without conflicting coverage", "[render-graph]")
+{
+    GraphFixture fixture;
+    constexpr usize MIXED_PASS_COUNT = 2;
+    StaticArray<format::Pass, MIXED_PASS_COUNT> passes{{fixture.Passes[0], fixture.Passes[0]}};
+    passes[1].Program = format::Technique::MaskedColorAndDepth;
+    passes[1].ColorLoad = format::Load::Load;
+    passes[1].DepthLoad = format::Load::Load;
+    renderer::RenderGraphPlan plan = fixture.MakePlan();
+    plan.Description.PassCount = MIXED_PASS_COUNT;
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) == rhi::RasterStatus::Ready);
+    constexpr usize MIXED_ITEM_COUNT = 2;
+    StaticArray<renderer::RenderGraphItem, MIXED_ITEM_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
+    items[1].SourceId = 43;
+    items[1].Coverage = renderer::RenderGraphMaterial::Masked;
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                 {items.GetData(), items.GetSize()},
+                                 {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                 1,
+                                 renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                 report) == rhi::RasterStatus::Ready);
+    CHECK(report.Covered == 4);
+    CHECK(report.Conflicting == 0);
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    // Each family draws only its own items.
+    CHECK(rhi::reference::Draws == 2);
+}
+TEST_CASE("RG2 masked depth needs its own authored coverage function and matching geometry", "[render-graph]")
+{
+    GraphFixture fixture;
+    constexpr usize DEPTH_PASS_COUNT = 2;
+    StaticArray<format::Pass, DEPTH_PASS_COUNT> passes{{fixture.Passes[0], fixture.Passes[0]}};
+    for (format::Pass& pass : passes)
+    {
+        pass.Color = format::ABSENT;
+        pass.ColorLoad = format::Load::Discard;
+        pass.ColorStore = format::Store::Discard;
+    }
+    passes[0].Program = format::Technique::DepthOnly;
+    passes[1].Program = format::Technique::MaskedDepthOnly;
+    passes[1].DepthLoad = format::Load::Load;
+    fixture.Resources[0].IsExported = 0;
+    fixture.Resources[1].IsExported = 1;
+    fixture.Targets[0].Target = 1;
+    renderer::RenderGraphPlan plan = fixture.MakePlan();
+    plan.Description.PassCount = DEPTH_PASS_COUNT;
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    renderer::RenderGraphPrograms programs = fixture.MakePrograms();
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Ready);
+    fixture.Graph.Reset();
+    // The opaque void depth function never stands in for masked coverage.
+    programs.MaskedDepthFragment = programs.DepthFragment;
+    CHECK(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Unsupported);
+    programs = fixture.MakePrograms();
+    // A masked pre-Z needs the masked color technique's exact geometry stage.
+    passes[1].Program = format::Technique::MaskedColorAndDepth;
+    passes[1].Color = 0;
+    passes[1].ColorLoad = format::Load::Clear;
+    passes[1].ColorStore = format::Store::Store;
+    passes[0].Program = format::Technique::MaskedDepthOnly;
+    programs.MaskedDepthVertex.Artifact.Wgsl = "other geometry fixture";
+    CHECK(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Unsupported);
+    CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) == rhi::RasterStatus::Ready);
 }

@@ -8,7 +8,9 @@
 // takes the control-endpoint branch. The driver scripts the helper's replies.
 
 #include <ludus/foundation/base/assert_format.hpp>
+#include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/base/diagnostic_output.hpp>
+#include <ludus/foundation/base/parse_number.hpp>
 
 #include <cstdlib>
 #include <cstring>
@@ -38,10 +40,21 @@ bool FailingCondition()
     return false;
 }
 
-int ReadFd(const char* name)
+fb::int32 ReadFileDescriptor(const char* name) noexcept
 {
-    const char* value = std::getenv(name);
-    return value != nullptr ? std::atoi(value) : -1;
+    const char* valueOrNull = std::getenv(name);
+    if (valueOrNull == nullptr)
+    {
+        return -1;
+    }
+    fb::uint64 parsedDescriptor = 0;
+    fb::int32 descriptor = -1;
+    if (fb::ParseUint64(valueOrNull, std::strlen(valueOrNull), parsedDescriptor) != fb::NumberParseStatus::Success ||
+        fb::TryIntegerCast(parsedDescriptor, descriptor) == false)
+    {
+        return -1;
+    }
+    return descriptor;
 }
 } // namespace
 
@@ -49,13 +62,13 @@ int main(int argc, char** argv)
 {
     // Configure transports exactly like the startup integration would. Report is
     // optional here; the control endpoint is what drives the decision.
-    const int report_fd = ReadFd("LUDUS_DIAGNOSTIC_REPORT_FD");
-    if (report_fd >= 0 && !fbd::ConfigureEmergencySocket(report_fd))
+    const fb::int32 reportDescriptor = ReadFileDescriptor("LUDUS_DIAGNOSTIC_REPORT_FD");
+    if (reportDescriptor >= 0 && fbd::ConfigureEmergencySocket(reportDescriptor) == false)
     {
         return 79;
     }
-    const int control_fd = ReadFd("LUDUS_DIAGNOSTIC_CONTROL_FD");
-    if (control_fd >= 0 && fbd::ConfigureControlEndpoint(control_fd) != fbd::ControlState::Ready)
+    const fb::int32 controlDescriptor = ReadFileDescriptor("LUDUS_DIAGNOSTIC_CONTROL_FD");
+    if (controlDescriptor >= 0 && fbd::ConfigureControlEndpoint(controlDescriptor) != fbd::ControlState::Ready)
     {
         // A missing/failed handshake is a valid scenario the driver may assert on.
         Mark("CONTROL-NOT-READY\n");
@@ -118,7 +131,7 @@ int main(int argc, char** argv)
         // opens a dialog or sends a DecisionRequest.
         const bool ok = LUDUS_CHECK(FailingCondition(), "check-recovery-probe");
         Mark(ok ? "CHECK-TRUE\n" : "CHECK-FALSE\n");
-        return !ok && gConditions == 1 ? 0 : 66;
+        return ok == false && gConditions == 1 ? 0 : 66;
     }
 
     Mark("UNKNOWN-MODE\n");

@@ -75,11 +75,12 @@ bool Session::Control(std::string_view input, std::span<uint8> output, usize& wr
     uint64 session = 0;
     uint64 execution = 0;
     uint64 stop = 0;
-    if (!request.Get("version").Integer(version) || version != 1 || !request.Get("action").String(action) ||
-        !request.Get("session").String(sessionText) || !request.Get("execution").String(executionText) ||
-        !request.Get("stop").String(stopText) || !request.Get("revision").Integer(revision) ||
-        !Hex(sessionText, session) || !Hex(executionText, execution) || !Hex(stopText, stop) ||
-        session != mWorld.Session || execution != mWorld.Execution || revision != mActive->Revision ||
+    if (request.Get("version").Integer(version) == false || version != 1 ||
+        request.Get("action").String(action) == false || request.Get("session").String(sessionText) == false ||
+        request.Get("execution").String(executionText) == false || request.Get("stop").String(stopText) == false ||
+        request.Get("revision").Integer(revision) == false || Hex(sessionText, session) == false ||
+        Hex(executionText, execution) == false || Hex(stopText, stop) == false || session != mWorld.Session ||
+        execution != mWorld.Execution || revision != mActive->Revision ||
         stop != (Vm().IsPaused() ? Vm().Inspect().Stop : 0))
     {
         return false;
@@ -87,8 +88,8 @@ bool Session::Control(std::string_view input, std::span<uint8> output, usize& wr
     int32 resolved = -1;
     if (action == "breakpoint")
     {
-        if (!request.Fields(
-                {"version", "action", "session", "execution", "revision", "stop", "asset", "line", "enabled"}))
+        if (request.Fields(
+                {"version", "action", "session", "execution", "revision", "stop", "asset", "line", "enabled"}) == false)
         {
             return false;
         }
@@ -96,8 +97,9 @@ bool Session::Control(std::string_view input, std::span<uint8> output, usize& wr
         uint64 asset = 0;
         uint64 line = 0;
         bool enabled = false;
-        if (!request.Get("asset").String(assetText) || !Hex(assetText, asset) || !request.Get("line").Integer(line) ||
-            line == 0 || line > 65536 || !request.Get("enabled").Boolean(enabled))
+        if (request.Get("asset").String(assetText) == false || Hex(assetText, asset) == false ||
+            request.Get("line").Integer(line) == false || line == 0 || line > 65536 ||
+            request.Get("enabled").Boolean(enabled) == false)
         {
             return false;
         }
@@ -109,13 +111,14 @@ bool Session::Control(std::string_view input, std::span<uint8> output, usize& wr
     }
     else if (action == "reload")
     {
-        if (!request.Fields({"version", "action", "session", "execution", "revision", "stop", "package", "expected"}))
+        if (request.Fields({"version", "action", "session", "execution", "revision", "stop", "package", "expected"}) ==
+            false)
         {
             return false;
         }
         std::string_view name;
         std::string_view expected;
-        if (!request.Get("package").String(name) || !request.Get("expected").String(expected))
+        if (request.Get("package").String(name) == false || request.Get("expected").String(expected) == false)
         {
             return false;
         }
@@ -131,13 +134,13 @@ bool Session::Control(std::string_view input, std::span<uint8> output, usize& wr
     }
     else
     {
-        if (!request.Fields({"version", "action", "session", "execution", "revision", "stop"}))
+        if (request.Fields({"version", "action", "session", "execution", "revision", "stop"}) == false)
         {
             return false;
         }
         if (action != "inspect")
         {
-            if (!Vm().IsPaused())
+            if (Vm().IsPaused() == false)
             {
                 return false;
             }
@@ -150,7 +153,7 @@ bool Session::Control(std::string_view input, std::span<uint8> output, usize& wr
                 return false;
             }
             const Status status = Resume(mode);
-            if (status != Status::Completed && status != Status::Paused && !mWorld.Faulted)
+            if (status != Status::Completed && status != Status::Paused && mWorld.Faulted == false)
             {
                 return false;
             }

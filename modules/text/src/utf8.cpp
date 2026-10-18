@@ -31,7 +31,7 @@ usize DecodeUtf8(std::string_view text, usize offset, uint32* outCodePoint) noex
     // 2-byte sequence (0xC2..0xDF); 0xC0/0xC1 would be overlong.
     if (lead >= 0xC2U && lead <= 0xDFU)
     {
-        if (offset + 1 >= size || !IsContinuation(bytes[offset + 1]))
+        if (offset + 1 >= size || IsContinuation(bytes[offset + 1]) == false)
         {
             return 0;
         }
@@ -47,7 +47,8 @@ usize DecodeUtf8(std::string_view text, usize offset, uint32* outCodePoint) noex
     // 3-byte sequence (0xE0..0xEF). Reject overlong and surrogates.
     if (lead >= 0xE0U && lead <= 0xEFU)
     {
-        if (offset + 2 >= size || !IsContinuation(bytes[offset + 1]) || !IsContinuation(bytes[offset + 2]))
+        if (offset + 2 >= size || IsContinuation(bytes[offset + 1]) == false ||
+            IsContinuation(bytes[offset + 2]) == false)
         {
             return 0;
         }
@@ -69,8 +70,8 @@ usize DecodeUtf8(std::string_view text, usize offset, uint32* outCodePoint) noex
     // 4-byte sequence (0xF0..0xF4). Reject overlong and > U+10FFFF.
     if (lead >= 0xF0U && lead <= 0xF4U)
     {
-        if (offset + 3 >= size || !IsContinuation(bytes[offset + 1]) || !IsContinuation(bytes[offset + 2]) ||
-            !IsContinuation(bytes[offset + 3]))
+        if (offset + 3 >= size || IsContinuation(bytes[offset + 1]) == false ||
+            IsContinuation(bytes[offset + 2]) == false || IsContinuation(bytes[offset + 3]) == false)
         {
             return 0;
         }

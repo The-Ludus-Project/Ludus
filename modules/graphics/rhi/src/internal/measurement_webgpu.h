@@ -119,7 +119,7 @@ RasterStatus TimingArm() noexcept
     {
         return RasterStatus::InvalidState;
     }
-    if (!wgpuDeviceHasFeature(gDevice, WGPUFeatureName_TimestampQuery))
+    if (wgpuDeviceHasFeature(gDevice, WGPUFeatureName_TimestampQuery) == false)
     {
         gTiming = { .State = GpuTimingState::Unavailable };
         return RasterStatus::Unsupported;

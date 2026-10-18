@@ -18,20 +18,32 @@ struct RenderGraphPlan final
     foundation::BorrowedView<const content::render_graph_format::Resource> Resources; ///< Logical attachments.
     foundation::BorrowedView<const content::render_graph_format::Camera> Cameras; ///< Active camera target contracts.
     foundation::BorrowedView<const content::render_graph_format::Pass> Passes;    ///< Authored serial execution order.
+    /// Per-technique uniform bindings; empty when no technique reads uniforms.
+    foundation::BorrowedView<const content::render_graph_format::UniformBinding> UniformBindings;
+    /// Occupied block size of each binding on each carried target.
+    foundation::BorrowedView<const content::render_graph_format::UniformBlock> UniformBlocks;
+    /// Target byte offset of each schema field of each binding.
+    foundation::BorrowedView<const content::render_graph_format::UniformField> UniformFields;
 };
 /// Cooked static-instanced stage pairs. No compiler or shader-source discovery.
 /// Artifact/reflection storage remains immutable and alive until Initialize/Poll
 /// reaches Ready; generated package headers provide static storage.
-/// Each selected vertex uses the six Renderer flat locations; neither stage has
-/// bindings. Color reads instance RGBA; DepthOnly preserves geometry/opaque coverage.
+/// Each selected vertex uses the six Renderer flat locations. Stage bindings, when
+/// present, are read-only uniform buffers that exactly match the plan's uniform
+/// binding records. A depth-only stage pair shares its family's exact geometry
+/// stage; the masked depth fragment is a separately authored coverage function.
 struct RenderGraphPrograms final
 {
-    rhi::RasterShaderDescription ColorVertex{};       ///< Authored ColorAndDepth geometry entry.
-    rhi::RasterShaderDescription ColorFragment{};     ///< Authored color entry.
-    rhi::RasterShaderDescription DepthVertex{};       ///< Authored DepthOnly geometry entry.
-    rhi::RasterShaderDescription DepthFragment{};     ///< Authored void depth entry.
-    rhi::RasterShaderDescription CompositeVertex{};   ///< Installed renderer_composite recipe vertex.
-    rhi::RasterShaderDescription CompositeFragment{}; ///< Installed renderer_composite recipe fragment.
+    rhi::RasterShaderDescription ColorVertex{};         ///< Authored ColorAndDepth geometry entry.
+    rhi::RasterShaderDescription ColorFragment{};       ///< Authored color entry.
+    rhi::RasterShaderDescription DepthVertex{};         ///< Authored DepthOnly geometry entry.
+    rhi::RasterShaderDescription DepthFragment{};       ///< Authored void depth entry.
+    rhi::RasterShaderDescription CompositeVertex{};     ///< Installed renderer_composite recipe vertex.
+    rhi::RasterShaderDescription CompositeFragment{};   ///< Installed renderer_composite recipe fragment.
+    rhi::RasterShaderDescription MaskedColorVertex{};   ///< Authored MaskedColorAndDepth geometry entry.
+    rhi::RasterShaderDescription MaskedColorFragment{}; ///< Authored masked color entry with its coverage function.
+    rhi::RasterShaderDescription MaskedDepthVertex{};   ///< Authored MaskedDepthOnly geometry entry.
+    rhi::RasterShaderDescription MaskedDepthFragment{}; ///< Separately authored void masked coverage entry.
 };
 /// Declared geometry interface of an extracted draw item.
 enum class RenderGraphLayout : foundation::uint8
@@ -42,8 +54,8 @@ enum class RenderGraphLayout : foundation::uint8
 /// Required material/coverage semantics; never disappear in a query filter.
 enum class RenderGraphMaterial : foundation::uint8
 {
-    Opaque,      ///< Static opaque coverage under the authored default-material override.
-    Masked,      ///< Needs qualified alpha/coverage functions; unsupported in this profile.
+    Opaque,      ///< Static opaque coverage; covered only by DefaultStaticOpaque techniques.
+    Masked,      ///< Authored coverage; covered only by explicitly authored DefaultStaticMasked techniques.
     Transparent, ///< Does not implicitly participate in pre-Z.
     Unsupported, ///< Unmatched material or deformation contract.
 };
@@ -64,6 +76,14 @@ struct RenderGraphItem final
     FlatMaterial Material{};                 ///< Runtime color values; never shader permutation inputs.
     RenderGraphMaterial Coverage = RenderGraphMaterial::Opaque; ///< Required coverage/deformation contract.
     bool IsIntentionallyExcluded = false; ///< Authored exclusion, distinct from renderer visibility culling.
+    /// Per-draw logical uniform values, laid out by the plan's uniform schemas (the generated
+    /// header names each field's offset). Exactly UniformValueCount finite values are required
+    /// for every item that is not intentionally excluded when the plan binds uniforms, and must
+    /// be empty otherwise. Copied and packed for the device's target before Update returns;
+    /// runtime data, never a shader permutation input.
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const foundation::float32> Uniforms{};
 };
 /// Scene compatibility for a rendering role, independent of runtime culling.
 enum class RenderGraphCoverage : foundation::uint8
@@ -78,7 +98,7 @@ enum class RenderGraphReason : foundation::uint8
 {
     None,      ///< Compatible route or intentional exclusion.
     Layout,    ///< Unknown mesh position/interface.
-    Material,  ///< Unqualified alpha, transparency, material or deformation.
+    Material,  ///< No route with a matching material family, or transparency/deformation.
     Duplicate, ///< Duplicate source identity or repeated role without author permission.
 };
 /// Per-item/per-camera/role coverage record; owned by the graph until its next Update or Reset.

@@ -13,7 +13,8 @@ int ExerciseInstalledTime() noexcept
     timer.Start(before);
     if (TryElapsed(before, after, elapsed) != TimeStatus::Ok || timer.Pause(after) != TimeStatus::Ok ||
         timer.Read(after, elapsed) != TimeStatus::Ok || deadline.Arm(after, {}) != TimeStatus::Ok ||
-        !deadline.IsExpired(after) || !frame.Sample(before).IsBaseline || frame.Sample(after).Status != TimeStatus::Ok)
+        deadline.IsExpired(after) == false || frame.Sample(before).IsBaseline == false ||
+        frame.Sample(after).Status != TimeStatus::Ok)
     {
         return 8;
     }

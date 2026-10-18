@@ -1,0 +1,72 @@
+{
+  "configurations": [
+    {
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "raster.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "raster.view"
+        },
+        {
+          "from": "depth.texture",
+          "to": "raster.depth"
+        },
+        {
+          "from": "depth.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "raster.depth",
+          "to": "output.texture"
+        }
+      ],
+      "id": "Default",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "DepthTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "Depth32Float",
+          "id": "depth",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "DepthTexture"
+        },
+        {
+          "asset": "rasterize.lurender.json",
+          "configuration": "DepthOnly",
+          "id": "raster",
+          "kind": "Subgraph"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "DepthTexture"
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "default": "Default",
+  "id": "Main",
+  "version": 1
+}

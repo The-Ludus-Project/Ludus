@@ -32,7 +32,7 @@ using namespace ludus::foundation::logging;
 
 bool Verify(bool condition, std::string_view message) noexcept
 {
-    if (!condition)
+    if (condition == false)
     {
         base::EmergencyReport(base::DiagnosticSeverity::Error, "W2", message);
     }
@@ -78,14 +78,14 @@ bool Run() noexcept
     time::Stopwatch stopwatch;
     time::Deadline deadline;
     stopwatch.Start(time::Timestamp{0});
-    if (!Verify(profile >= clockBefore.Nanoseconds && profile <= clockAfter.Nanoseconds &&
-                    time::TryElapsed(clockBefore, clockAfter, elapsed) == time::TimeStatus::Ok &&
-                    frame.Sample(time::Timestamp{100}).IsBaseline &&
-                    frame.Sample(time::Timestamp{120}).Discarded.Nanoseconds == 10 &&
-                    stopwatch.Pause(time::Timestamp{5}) == time::TimeStatus::Ok &&
-                    stopwatch.Read(time::Timestamp{100}, elapsed) == time::TimeStatus::Ok && elapsed.Nanoseconds == 5 &&
-                    deadline.Arm(clockAfter, {}) == time::TimeStatus::Ok && deadline.IsExpired(clockAfter),
-                "FoundationTime clock and helpers"))
+    if (Verify(profile >= clockBefore.Nanoseconds && profile <= clockAfter.Nanoseconds &&
+                   time::TryElapsed(clockBefore, clockAfter, elapsed) == time::TimeStatus::Ok &&
+                   frame.Sample(time::Timestamp{100}).IsBaseline &&
+                   frame.Sample(time::Timestamp{120}).Discarded.Nanoseconds == 10 &&
+                   stopwatch.Pause(time::Timestamp{5}) == time::TimeStatus::Ok &&
+                   stopwatch.Read(time::Timestamp{100}, elapsed) == time::TimeStatus::Ok && elapsed.Nanoseconds == 5 &&
+                   deadline.Arm(clockAfter, {}) == time::TimeStatus::Ok && deadline.IsExpired(clockAfter),
+               "FoundationTime clock and helpers") == false)
     {
         return false;
     }
@@ -96,17 +96,17 @@ bool Run() noexcept
     config.GlobalLevel = LogLevel::Warning;
     config.FlushIntervalMilliseconds = 1000; // no background timer on web
     const LogCategory category = LogCategory{"BrowserProbe"};
-    if (!Verify(LogSystem::Initialize(config).Status == LogStatus::Ok, "initialize"))
+    if (Verify(LogSystem::Initialize(config).Status == LogStatus::Ok, "initialize") == false)
     {
         return false;
     }
     SetCurrentThreadName("BrowserMain");
-    if (!Verify(!ShouldLog(LogLevel::Info, category), "global filtering"))
+    if (Verify(ShouldLog(LogLevel::Info, category) == false, "global filtering") == false)
     {
         return false;
     }
     LogSystem::SetCategoryLevel(category, LogLevel::Debug);
-    if (!Verify(ShouldLog(LogLevel::Info, category), "category override"))
+    if (Verify(ShouldLog(LogLevel::Info, category), "category override") == false)
     {
         return false;
     }
@@ -114,7 +114,7 @@ bool Run() noexcept
     const auto before = LogSystem::Statistics();
     LUDUS_LOG_WARN(category, "formatted {} {}", 42, 1.25);
     const auto delivered = LogSystem::Statistics();
-    if (!Verify(delivered.Written == before.Written + 1, "console delivery"))
+    if (Verify(delivered.Written == before.Written + 1, "console delivery") == false)
     {
         return false;
     }
@@ -122,23 +122,23 @@ bool Run() noexcept
     LUDUS_LOG_WARN(category, "sink failure");
     RestoreConsole();
     const auto failed = LogSystem::Statistics();
-    if (!Verify(failed.Written == delivered.Written && failed.Dropped == delivered.Dropped + 1 &&
-                    !LogSystem::Health().ConsoleHealthy && LogSystem::Flush().Status == LogStatus::SinkFailed,
-                "sink failure accounting"))
+    if (Verify(failed.Written == delivered.Written && failed.Dropped == delivered.Dropped + 1 &&
+                   LogSystem::Health().ConsoleHealthy == false && LogSystem::Flush().Status == LogStatus::SinkFailed,
+               "sink failure accounting") == false)
     {
         return false;
     }
     StaticArray<internal::BreadcrumbRing::Entry, 4> breadcrumbs;
-    if (!Verify(SnapshotBreadcrumbs(breadcrumbs.GetData(), breadcrumbs.GetSize()) >= 2,
-                "breadcrumbs survive failed delivery"))
+    if (Verify(SnapshotBreadcrumbs(breadcrumbs.GetData(), breadcrumbs.GetSize()) >= 2,
+               "breadcrumbs survive failed delivery") == false)
     {
         return false;
     }
     LUDUS_CHECK(false, "W2 logger-independent CHECK");
     LUDUS_LOG_WARN(category, "console recovered");
-    if (!Verify(LogSystem::Health().ConsoleHealthy && LogSystem::Flush().Status == LogStatus::Ok &&
-                    LogSystem::Flush(FlushKind::Durable).Status == LogStatus::Unsupported,
-                "flush semantics"))
+    if (Verify(LogSystem::Health().ConsoleHealthy && LogSystem::Flush().Status == LogStatus::Ok &&
+                   LogSystem::Flush(FlushKind::Durable).Status == LogStatus::Unsupported,
+               "flush semantics") == false)
     {
         return false;
     }
@@ -147,10 +147,9 @@ bool Run() noexcept
     LUDUS_LOG_WARN(category, "outer console callback");
     RestoreConsole();
     const auto afterNested = LogSystem::Statistics();
-    if (!Verify(afterNested.Submitted == beforeNested.Submitted + 2 &&
-                    afterNested.Written == beforeNested.Written + 1 &&
-                    afterNested.Dropped == beforeNested.Dropped + 1 && LogSystem::IsInitialized(),
-                "bounded reentry"))
+    if (Verify(afterNested.Submitted == beforeNested.Submitted + 2 && afterNested.Written == beforeNested.Written + 1 &&
+                   afterNested.Dropped == beforeNested.Dropped + 1 && LogSystem::IsInitialized(),
+               "bounded reentry") == false)
     {
         return false;
     }
@@ -162,7 +161,7 @@ bool Run() noexcept
     CaptureConsole();
     LUDUS_LOG_TEXT(category, Warning, std::string_view(longMessage.GetData(), longMessage.GetSize()));
     RestoreConsole();
-    if (!Verify(CheckBoundedConsole() != 0, "bounded raw message"))
+    if (Verify(CheckBoundedConsole() != 0, "bounded raw message") == false)
     {
         return false;
     }
@@ -170,30 +169,30 @@ bool Run() noexcept
     config.EnableFile = true;
     config.EnableDebugger = true;
     const auto degraded = LogSystem::Initialize(config);
-    if (!Verify(degraded.Status == LogStatus::Degraded && degraded.EffectiveMode == LogMode::Synchronous &&
-                    !LogSystem::Health().FileHealthy && !LogSystem::Health().DebuggerHealthy,
-                "unsupported sinks"))
+    if (Verify(degraded.Status == LogStatus::Degraded && degraded.EffectiveMode == LogMode::Synchronous &&
+                   LogSystem::Health().FileHealthy == false && LogSystem::Health().DebuggerHealthy == false,
+               "unsupported sinks") == false)
     {
         return false;
     }
-    if (!Verify(LogSystem::Shutdown() == LogStatus::Ok && !LogSystem::IsInitialized() &&
-                    LogSystem::Shutdown() == LogStatus::NotInitialized,
-                "shutdown"))
+    if (Verify(LogSystem::Shutdown() == LogStatus::Ok && LogSystem::IsInitialized() == false &&
+                   LogSystem::Shutdown() == LogStatus::NotInitialized,
+               "shutdown") == false)
     {
         return false;
     }
     config = {};
     config.EnableFile = false;
     config.EnableDebugger = false;
-    if (!Verify(LogSystem::Initialize(config).Status == LogStatus::Ok && LogSystem::Shutdown() == LogStatus::Ok,
-                "restart"))
+    if (Verify(LogSystem::Initialize(config).Status == LogStatus::Ok && LogSystem::Shutdown() == LogStatus::Ok,
+               "restart") == false)
     {
         return false;
     }
 
     using namespace ludus::foundation::profiling;
     const uint64 firstTick = NowTicks();
-    if (!Verify(NowTicks() >= firstTick && TicksPerNanosecondDenominator() == 1, "browser clock"))
+    if (Verify(NowTicks() >= firstTick && TicksPerNanosecondDenominator() == 1, "browser clock") == false)
     {
         return false;
     }
@@ -207,27 +206,27 @@ bool Run() noexcept
     }
     EndCapture();
 #if LUDUS_PROFILING_ENABLED
-    if (!Verify(capture && evaluated == 1 && GetTraceHealth().EventsRecorded == 5 &&
-                    GetTraceHealth().ThreadsRegistered == 1 && ExportPerfettoTrace("/trace.json"),
-                "capture/export"))
+    if (Verify(capture && evaluated == 1 && GetTraceHealth().EventsRecorded == 5 &&
+                   GetTraceHealth().ThreadsRegistered == 1 && ExportPerfettoTrace("/trace.json"),
+               "capture/export") == false)
     {
         return false;
     }
     PrintTrace();
-    if (!Verify(BeginCapture(1), "capture restart"))
+    if (Verify(BeginCapture(1), "capture restart") == false)
     {
         return false;
     }
     LUDUS_PROFILE_MARK(SecondCapture);
     EndCapture();
-    if (!Verify(GetTraceHealth().EventsRecorded == 1 && ExportPerfettoTrace("/second.json"), "second capture"))
+    if (Verify(GetTraceHealth().EventsRecorded == 1 && ExportPerfettoTrace("/second.json"), "second capture") == false)
     {
         return false;
     }
 #else
-    if (!Verify(!capture && evaluated == 0 && GetTraceHealth().EventsRecorded == 0 &&
-                    !ExportPerfettoTrace("/trace.json"),
-                "Release compile-out"))
+    if (Verify(capture == false && evaluated == 0 && GetTraceHealth().EventsRecorded == 0 &&
+                   ExportPerfettoTrace("/trace.json") == false,
+               "Release compile-out") == false)
     {
         return false;
     }

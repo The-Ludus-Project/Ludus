@@ -58,8 +58,8 @@ struct CheckpointWriter final
         {
             return false;
         }
-        if (!WriteCheckpointUint({Buffer.Data + Offset, 2}, id) ||
-            !WriteCheckpointUint({Buffer.Data + Offset + 2, 2}, payload.Size))
+        if (WriteCheckpointUint({Buffer.Data + Offset, 2}, id) == false ||
+            WriteCheckpointUint({Buffer.Data + Offset + 2, 2}, payload.Size) == false)
         {
             return false;
         }

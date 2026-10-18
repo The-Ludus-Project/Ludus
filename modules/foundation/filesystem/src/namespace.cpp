@@ -26,7 +26,7 @@ template <typename T, typename... Args>
 T* AllocateObject(Args&&... args) noexcept
 {
 #if defined(LUDUS_FILESYSTEM_NAMESPACE_FAULT_TESTING)
-    if (!test::NamespaceAllocationAllowed())
+    if (test::NamespaceAllocationAllowed() == false)
     {
         return nullptr;
     }
@@ -37,7 +37,7 @@ template <typename T>
 T* AllocateArray(usize count) noexcept
 {
 #if defined(LUDUS_FILESYSTEM_NAMESPACE_FAULT_TESTING)
-    if (!test::NamespaceAllocationAllowed())
+    if (test::NamespaceAllocationAllowed() == false)
     {
         return nullptr;
     }
@@ -56,7 +56,7 @@ bool ValidAllocation(usize size) noexcept
 } // namespace
 Result VirtualPath::Set(Root root, std::string_view relativePath) noexcept
 {
-    if (!ValidRoot(root) || !ValidPath(relativePath))
+    if (ValidRoot(root) == false || ValidPath(relativePath) == false)
     {
         return {Status::InvalidArgument};
     }
@@ -159,7 +159,7 @@ public:
     [[nodiscard]] ReadResult ReadAt(uint64 offset, std::span<uint8> destination) const noexcept override
     {
         usize begin = 0;
-        if (!TryIntegerCast(offset, begin) || begin > mEntry.Length)
+        if (TryIntegerCast(offset, begin) == false || begin > mEntry.Length)
         {
             return {{Status::InvalidArgument}};
         }
@@ -188,7 +188,7 @@ public:
     usize Count = 0;
     [[nodiscard]] Result OpenRead(std::string_view path, ProviderFile*& output) const noexcept override
     {
-        if (!ValidPath(path))
+        if (ValidPath(path) == false)
         {
             return {Status::InvalidArgument};
         }
@@ -243,7 +243,7 @@ public:
             return {Status::OutOfMemory};
         }
         const auto result = NativeRoot.OpenRead(path, next->Revision);
-        if (!result.Succeeded())
+        if (result.Succeeded() == false)
         {
             delete next;
             return result;
@@ -261,7 +261,7 @@ Result CreateMemoryProvider(std::span<const MemoryEntry> entries, ProviderHandle
     }
     for (const auto& entry : entries)
     {
-        if (!ValidPath(entry.Path) || !ValidAllocation(entry.Bytes.size()))
+        if (ValidPath(entry.Path) == false || ValidAllocation(entry.Bytes.size()) == false)
         {
             return {Status::InvalidArgument};
         }
@@ -272,7 +272,7 @@ Result CreateMemoryProvider(std::span<const MemoryEntry> entries, ProviderHandle
         return {Status::OutOfMemory};
     }
     ProviderHandle owner(next);
-    if (!entries.empty())
+    if (entries.empty() == false)
     {
         next->Entries = AllocateArray<StoredEntry>(entries.size());
         next->Index = AllocateArray<const StoredEntry*>(entries.size());
@@ -405,7 +405,8 @@ Result MountSnapshot::Create(std::span<const Mount> mounts, uint64 generation, M
     for (usize i = 0; i < mounts.size(); ++i)
     {
         const auto& mount = mounts[i];
-        if (!ValidRoot(mount.Namespace) || (!mount.Prefix.empty() && !ValidPath(mount.Prefix)) || mount.Id == 0 ||
+        if (ValidRoot(mount.Namespace) == false ||
+            (mount.Prefix.empty() == false && ValidPath(mount.Prefix) == false) || mount.Id == 0 ||
             mount.Source.Get() == nullptr)
         {
             return {Status::InvalidArgument};
@@ -426,7 +427,7 @@ Result MountSnapshot::Create(std::span<const Mount> mounts, uint64 generation, M
     }
     next.mImpl->Generation = generation;
     next.mImpl->Count = mounts.size();
-    if (!mounts.empty())
+    if (mounts.empty() == false)
     {
         next.mImpl->Mounts = AllocateArray<StoredMount>(mounts.size());
         if (next.mImpl->Mounts == nullptr)
@@ -552,7 +553,7 @@ ReadResult VirtualFile::ReadAt(uint64 offset, std::span<uint8> destination) cons
 LookupResult
 MountSnapshot::OpenRead(const VirtualPath& path, VirtualFile& output, std::span<MountAttempt> attempts) const noexcept
 {
-    if (mImpl == nullptr || !path.IsValid())
+    if (mImpl == nullptr || path.IsValid() == false)
     {
         return {{Status::InvalidArgument}};
     }
@@ -567,7 +568,7 @@ MountSnapshot::OpenRead(const VirtualPath& path, VirtualFile& output, std::span<
         }
         if (mount.PrefixSize != 0)
         {
-            if (key.size() <= mount.PrefixSize || !key.starts_with(mount.Key()) || key[mount.PrefixSize] != '/')
+            if (key.size() <= mount.PrefixSize || key.starts_with(mount.Key()) == false || key[mount.PrefixSize] != '/')
             {
                 continue;
             }
@@ -586,7 +587,7 @@ MountSnapshot::OpenRead(const VirtualPath& path, VirtualFile& output, std::span<
             attempts[count] = {mount.Id, result};
         }
         ++count;
-        if (!result.Succeeded())
+        if (result.Succeeded() == false)
         {
             delete revision;
             if (result.Code == Status::NotFound)

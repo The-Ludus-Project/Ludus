@@ -1073,7 +1073,7 @@ TEST_CASE("Ordered graph culls only unobservable work and reference mode retains
     GraphReport report;
     REQUIRE(CompileOrderedGraph(session.Device, graph, report, referenceMode) == RasterStatus::Ready);
     CHECK(report.LivePasses == (referenceMode ? 2 : 1));
-    CHECK(report.Culled[0] == !referenceMode);
+    CHECK(report.Culled[0] == (referenceMode == false));
     CHECK_FALSE(report.Culled[1]);
     CHECK(report.FirstUse[0] == (referenceMode ? 0U : GRAPH_EXTERNAL_INDEX));
     SubmissionToken token;
@@ -1733,7 +1733,7 @@ TEST_CASE("R6 retained batches exceed original draw limits and preflight whole f
     const auto status = SubmitCommands(session.Device, session.Surface, batch, token);
     CHECK(status == (admit ? RasterStatus::Ready : RasterStatus::CapacityExceeded));
     CHECK(reference::Draws == (admit ? 1100U : 0U));
-    if (!admit)
+    if (admit == false)
     {
         REQUIRE(DiscardCommands(session.Device, batch) == RasterStatus::Ready);
     }

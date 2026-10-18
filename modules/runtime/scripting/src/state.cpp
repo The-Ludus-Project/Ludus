@@ -45,7 +45,7 @@ bool Valid(const StateRecord& record) noexcept
 bool EncodeState(const StateRecord& record, std::span<uint8> output, usize& written) noexcept
 {
     const usize size = 16 + static_cast<usize>(record.Count) * 12;
-    if (!Valid(record) || output.size() < size)
+    if (Valid(record) == false || output.size() < size)
     {
         return false;
     }
@@ -69,10 +69,10 @@ bool DecodeState(std::span<const uint8> bytes, StateRecord& output) noexcept
     uint32 magic = 0;
     uint32 version = 0;
     StateRecord result;
-    if (bytes.size() < 16 || !TryReadLittleEndian(bytes, magic) || magic != MAGIC ||
-        !TryReadLittleEndian(bytes.subspan(4), version) || version != 1 ||
-        !TryReadLittleEndian(bytes.subspan(8), result.Schema) ||
-        !TryReadLittleEndian(bytes.subspan(12), result.Count) || result.Count > 16 ||
+    if (bytes.size() < 16 || TryReadLittleEndian(bytes, magic) == false || magic != MAGIC ||
+        TryReadLittleEndian(bytes.subspan(4), version) == false || version != 1 ||
+        TryReadLittleEndian(bytes.subspan(8), result.Schema) == false ||
+        TryReadLittleEndian(bytes.subspan(12), result.Count) == false || result.Count > 16 ||
         bytes.size() != 16 + static_cast<usize>(result.Count) * 12)
     {
         return false;
@@ -90,7 +90,7 @@ bool DecodeState(std::span<const uint8> bytes, StateRecord& output) noexcept
         result.Fields[i].Kind = static_cast<FieldKind>(kind);
         (void)TryReadLittleEndian(field.subspan(8), result.Fields[i].Value);
     }
-    if (!Valid(result))
+    if (Valid(result) == false)
     {
         return false;
     }
@@ -103,7 +103,7 @@ bool MigrateState(const StateRecord& source,
                   std::span<const FieldSpec> fields,
                   StateRecord& output) noexcept
 {
-    if (!Valid(source) || schema == 0 || fields.empty() || fields.size() > 16)
+    if (Valid(source) == false || schema == 0 || fields.empty() || fields.size() > 16)
     {
         return false;
     }
@@ -147,7 +147,7 @@ bool MigrateState(const StateRecord& source,
         {
             found |= spec.Id == source.Fields[i].Id;
         }
-        if (!found)
+        if (found == false)
         {
             return false;
         }

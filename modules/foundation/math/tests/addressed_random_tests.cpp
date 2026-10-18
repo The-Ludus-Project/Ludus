@@ -201,7 +201,7 @@ TEST_CASE("Every bound in a reduced eight-bit mapper has exact equal accepted ma
                         retried = attempt != 0;
                         return attempt == 0 ? source : 1u;
                     }) == MathStatus::Success);
-            if (!retried)
+            if (retried == false)
             {
                 ++counts[static_cast<usize>(out)];
             }

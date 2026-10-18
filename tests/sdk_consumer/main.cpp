@@ -62,7 +62,7 @@ bool ExerciseInstalledLocalization() noexcept;
 static int ExerciseInstalledInput()
 {
     ludus::input::InputSystem system;
-    if (!system.IsValid())
+    if (system.IsValid() == false)
     {
         return 6;
     }
@@ -115,7 +115,7 @@ static int ExerciseInstalledInput()
     {
         return 6;
     }
-    if (!jump.Pressed || !jump.Released || jump.Value != 0.0F)
+    if (jump.Pressed == false || jump.Released == false || jump.Value != 0.0F)
     {
         return 6;
     }
@@ -150,7 +150,7 @@ static int ExerciseInstalledMath()
     }
     const m::Vector3 byQuat = m::Rotate(q, m::Vector3{1.0F, 0.0F, 0.0F});
     const m::Vector3 byMatrix = m::ToMatrix3(q) * m::Vector3{1.0F, 0.0F, 0.0F};
-    if (!(m::Distance(byQuat, byMatrix) < 1e-5F))
+    if ((m::Distance(byQuat, byMatrix) < 1e-5F) == false)
     {
         return 7;
     }
@@ -167,16 +167,16 @@ static int ExerciseInstalledMath()
     // Installed checked dynamics symbols and header are part of the SDK.
     m::LinearDragStep drag;
     m::RadialSweepContact contact;
-    if (!m::IsSuccess(m::TryComputeLinearDragStep(0.0, 0.5, drag)) || drag.DistanceScale != 0.5 ||
-        !m::IsSuccess(m::TrySweepRadialBand({10, 0, 0}, {10, 0, 0}, {}, 0, 20, 2, contact)) || !contact.Hit ||
-        !m::NearlyEqual(contact.Fraction, 0.4, 1e-12, 1e-12))
+    if (m::IsSuccess(m::TryComputeLinearDragStep(0.0, 0.5, drag)) == false || drag.DistanceScale != 0.5 ||
+        m::IsSuccess(m::TrySweepRadialBand({10, 0, 0}, {10, 0, 0}, {}, 0, 20, 2, contact)) == false ||
+        contact.Hit == false || m::NearlyEqual(contact.Fraction, 0.4, 1e-12, 1e-12) == false)
     {
         return 7;
     }
 
     // PCG known-answer (bit-exact contract).
     m::RandomStream rng;
-    if (!rng.TryReseed(42, 54) || rng.NextUInt32() != 0xa15c02b7U)
+    if (rng.TryReseed(42, 54) == false || rng.NextUInt32() != 0xa15c02b7U)
     {
         return 7;
     }
@@ -185,10 +185,10 @@ static int ExerciseInstalledMath()
     m::RandomBlock block;
     ludus::foundation::uint32 ticket = 0;
     const m::RandomAddress address{0x0123456789abcdefULL, 99, 1234};
-    if (!m::IsSuccess(m::TryMakeRandomKey(42, 7, key)) || key.Value != 0xccf635ee9e9e2fa4ULL ||
-        m::SampleUInt32(key, address) != 0x942d2d40u || !m::IsSuccess(m::TryPrepareBound32(1000, bound)) ||
-        !m::IsSuccess(m::TrySampleBounded(key, address, bound, ticket)) || ticket != 578 ||
-        !m::IsSuccess(m::TrySampleBlock(key, {address.Scope, address.Event, 1232}, block)) ||
+    if (m::IsSuccess(m::TryMakeRandomKey(42, 7, key)) == false || key.Value != 0xccf635ee9e9e2fa4ULL ||
+        m::SampleUInt32(key, address) != 0x942d2d40u || m::IsSuccess(m::TryPrepareBound32(1000, bound)) == false ||
+        m::IsSuccess(m::TrySampleBounded(key, address, bound, ticket)) == false || ticket != 578 ||
+        m::IsSuccess(m::TrySampleBlock(key, {address.Scope, address.Event, 1232}, block)) == false ||
         block.Values[2] != 0x942d2d40u)
     {
         return 7;
@@ -214,13 +214,13 @@ constexpr bool PrimitiveContract(ludus::foundation::usize increment = 1) noexcep
     uint32 length = 42;
     int64 signedProduct = 42;
     uint8 bytes[4]{};
-    return !TryAdd(~usize{0}, increment, size) && size == 42 && !TryMultiply(~usize{0}, increment + 1, size) &&
-           size == 42 &&
-           !TryMultiply(-int64{9223372036854775807} - 1, static_cast<int64>(increment) + 1, signedProduct) &&
-           signedProduct == 42 && !TryIntegerCast(int32{-1}, length) && length == 42 &&
+    return TryAdd(~usize{0}, increment, size) == false && size == 42 &&
+           TryMultiply(~usize{0}, increment + 1, size) == false && size == 42 &&
+           TryMultiply(-int64{9223372036854775807} - 1, static_cast<int64>(increment) + 1, signedProduct) == false &&
+           signedProduct == 42 && TryIntegerCast(int32{-1}, length) == false && length == 42 &&
            TryWriteLittleEndian(word, bytes) && bytes[0] == increment && bytes[3] == 0x12 &&
            TryReadLittleEndian(bytes, length) && length == word &&
-           !TryReadBigEndian(std::span<const uint8>{bytes, 3}, length) && length == word;
+           TryReadBigEndian(std::span<const uint8>{bytes, 3}, length) == false && length == word;
 }
 static_assert(PrimitiveContract());
 
@@ -239,15 +239,15 @@ int main()
         return result;
     }
 
-    if (!ExerciseInstalledReflection())
+    if (ExerciseInstalledReflection() == false)
     {
         return 91;
     }
-    if (!ExerciseInstalledCamera())
+    if (ExerciseInstalledCamera() == false)
     {
         return 41;
     }
-    if (!ExerciseInstalledCurves())
+    if (ExerciseInstalledCurves() == false)
     {
         return 31;
     }
@@ -255,24 +255,24 @@ int main()
     {
         return 32;
     }
-    if (!ExerciseInstalledConfiguration())
+    if (ExerciseInstalledConfiguration() == false)
     {
         return 90;
     }
 
-    if (!ExerciseInstalledParsing())
+    if (ExerciseInstalledParsing() == false)
     {
         return 11;
     }
-    if (!ExerciseInstalledLocalization())
+    if (ExerciseInstalledLocalization() == false)
     {
         return 12;
     }
-    if (!ExerciseInstalledFluid())
+    if (ExerciseInstalledFluid() == false)
     {
         return 10;
     }
-    if (!ExerciseInstalledStrings())
+    if (ExerciseInstalledStrings() == false)
     {
         return 9;
     }
@@ -280,7 +280,7 @@ int main()
     {
         return 13;
     }
-    if (!PrimitiveContract())
+    if (PrimitiveContract() == false)
     {
         return 8;
     }
@@ -329,7 +329,7 @@ int main()
     if (ludus::graphics::rhi::CreateDevice({}, {}, explicitRequest, explicitDevice, explicitSurface) !=
             ludus::graphics::rhi::DeviceStatus::Unsupported ||
         ludus::graphics::rhi::DestroyDevice(explicitDevice) != ludus::graphics::rhi::DeviceStatus::InvalidHandle ||
-        !nativeBackendAvailable)
+        nativeBackendAvailable == false)
     {
         return 2;
     }
@@ -353,14 +353,14 @@ int main()
     ludus::graphics::rhi::Shutdown();
     int endpoints[2];
     if (socketpair(AF_UNIX, SOCK_DGRAM, 0, endpoints) != 0 ||
-        !ludus::foundation::diagnostics::ConfigureEmergencySocket(endpoints[0]))
+        ludus::foundation::diagnostics::ConfigureEmergencySocket(endpoints[0]) == false)
     {
         return 4;
     }
     (void)close(endpoints[0]);
     LUDUS_ASSERT(true);
     LUDUS_REQUIRE(true);
-    if (!LUDUS_CHECK(true) || LUDUS_CHECK_F(false, "installed SDK recovery probe {}", 23))
+    if (LUDUS_CHECK(true) == false || LUDUS_CHECK_F(false, "installed SDK recovery probe {}", 23))
     {
         return 3;
     }

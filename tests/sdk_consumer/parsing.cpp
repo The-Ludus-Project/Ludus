@@ -14,7 +14,7 @@ bool ExerciseInstalledParsing() noexcept
     uint32 word = 0;
     ParseError error;
     JsonDocument document;
-    if (!cursor.ReadUint32LittleEndian(word) || word != 0x12345678 || cursor.Remaining() != 0 ||
+    if (cursor.ReadUint32LittleEndian(word) == false || word != 0x12345678 || cursor.Remaining() != 0 ||
         ValidateUtf8("\xf0\x9f\x8e\xae", error) != ParseStatus::Ok ||
         document.Read(R"({"name":"engine","values":[1,2]})", error) != ParseStatus::Ok)
     {
@@ -22,8 +22,8 @@ bool ExerciseInstalledParsing() noexcept
     }
     std::string_view name;
     uint64 value = 0;
-    if (!document.Root().Fields({"name", "values"}) || !document.Root().Get("name").String(name) || name != "engine" ||
-        !document.Root().Get("values").At(1).Integer(value) || value != 2)
+    if (document.Root().Fields({"name", "values"}) == false || document.Root().Get("name").String(name) == false ||
+        name != "engine" || document.Root().Get("values").At(1).Integer(value) == false || value != 2)
     {
         return false;
     }

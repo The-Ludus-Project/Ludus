@@ -115,7 +115,7 @@ public:
     AdmissionStatus ingest(const KeyboardRecord& record) noexcept
     {
         // Reject unknown/fabricated keys with no state change.
-        if (!IsValidKey(record.PhysicalKey))
+        if (IsValidKey(record.PhysicalKey) == false)
         {
             ++mCounters.Unknown;
             ++mCounters.Rejected;
@@ -124,7 +124,7 @@ public:
 
         // Gameplay records for an unfocused system are ignored until a focused
         // baseline arrives (K06). Resets/baselines come through requestReset.
-        if (!mFocused)
+        if (mFocused == false)
         {
             ++mCounters.Rejected;
             return AdmissionStatus::RejectedInvalid;
@@ -159,7 +159,7 @@ public:
         // An Up for a suppressed key clears suppression without a gameplay
         // release (K05/K06). The reducer applies suppression at step time, but
         // live suppression is cleared here so a later Down is a genuine press.
-        if (!down)
+        if (down == false)
         {
             mLiveSuppressed.Reset(index);
         }
@@ -287,7 +287,7 @@ public:
             {
                 return BindingStatus::InvalidAction;
             }
-            if (!IsValidKey(binding.PhysicalKey))
+            if (IsValidKey(binding.PhysicalKey) == false)
             {
                 return BindingStatus::InvalidKey;
             }
@@ -529,7 +529,7 @@ private:
         // Action evaluation uses the EFFECTIVE down state: a suppressed key does
         // not contribute (K06).
         const bool suppressed = mSnapshot.Suppressed[index];
-        updateActionsForKey(pending.PhysicalKey, down && !suppressed);
+        updateActionsForKey(pending.PhysicalKey, down && suppressed == false);
 
         appendStepEvent(StepEvent
         {
@@ -573,7 +573,7 @@ private:
                 continue;
             }
             ActionAggregate& aggregate = mActions[binding.Action];
-            if (!aggregate.Present)
+            if (aggregate.Present == false)
             {
                 continue;
             }
@@ -597,11 +597,11 @@ private:
 
             recomputeValue(aggregate);
             const bool nowActive = isActive(aggregate);
-            if (!wasActive && nowActive)
+            if (wasActive == false && nowActive)
             {
                 aggregate.Pressed = true;
             }
-            if (wasActive && !nowActive)
+            if (wasActive && nowActive == false)
             {
                 aggregate.Released = true;
             }

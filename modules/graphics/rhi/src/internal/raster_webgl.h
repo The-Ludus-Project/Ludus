@@ -128,7 +128,8 @@ bool RasterGlProgram(GLuint program, RasterGlPipeline& pipeline) noexcept
 {
     const auto& vertex = gRasterShaders[pipeline.Info.Vertex].Info;
     const auto& fragment = gRasterShaders[pipeline.Info.Fragment].Info;
-    if (!RasterGlInterface(program, vertex, pipeline) || !RasterGlInterface(program, fragment, pipeline))
+    if (RasterGlInterface(program, vertex, pipeline) == false ||
+        RasterGlInterface(program, fragment, pipeline) == false)
     {
         return false;
     }
@@ -166,7 +167,7 @@ bool RasterGlProgram(GLuint program, RasterGlPipeline& pipeline) noexcept
                 found = true;
             }
         }
-        if (!found)
+        if (found == false)
         {
             return false;
         }
@@ -186,7 +187,7 @@ bool RasterGlProgram(GLuint program, RasterGlPipeline& pipeline) noexcept
                 found = true;
             }
         }
-        if (!found || length <= 0 || length >= static_cast<GLsizei>(sizeof(name) - 1))
+        if (found == false || length <= 0 || length >= static_cast<GLsizei>(sizeof(name) - 1))
         {
             return false;
         }
@@ -225,7 +226,7 @@ bool RasterGlProgram(GLuint program, RasterGlPipeline& pipeline) noexcept
                     for (usize j = 0; j < shader->Layout.Count; ++j)
                     {
                         const auto& entry = shader->Layout.Entries[j];
-                        if (entry.Binding != binding || !internal::TextureBinding(entry.Kind))
+                        if (entry.Binding != binding || internal::TextureBinding(entry.Kind) == false)
                         {
                             continue;
                         }
@@ -238,7 +239,7 @@ bool RasterGlProgram(GLuint program, RasterGlPipeline& pipeline) noexcept
                 }
             }
         }
-        if (!found)
+        if (found == false)
         {
             return false;
         }
@@ -340,7 +341,7 @@ RasterCapabilities RasterLimits() noexcept
     {
         return {};
     }
-    if (!gRasterHdrProbed)
+    if (gRasterHdrProbed == false)
     {
         gRasterHdr = emscripten_webgl_enable_extension(gContext, "EXT_color_buffer_float") == EM_TRUE;
         gRasterHdrProbed = true;
@@ -757,7 +758,7 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     glLinkProgram(pipeline.Object);
     GLint linked = 0;
     glGetProgramiv(pipeline.Object, GL_LINK_STATUS, &linked);
-    if (linked != GL_TRUE || !RasterGlProgram(pipeline.Object, pipeline))
+    if (linked != GL_TRUE || RasterGlProgram(pipeline.Object, pipeline) == false)
     {
         char log[512]{};
         GLsizei length = 0;
@@ -893,13 +894,13 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     const GLenum comparisons[]{GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL, GL_ALWAYS};
     internal::RasterArea area;
     const auto& pass = gRasterGlPass;
-    const bool surface = !gRasterGlPassOpen || pass.Texture == internal::RASTER_INVALID;
+    const bool surface = gRasterGlPassOpen == false || pass.Texture == internal::RASTER_INVALID;
     const auto width = surface ? gTarget.Width : gRasterTextureDescriptions[pass.Texture].Width;
     const auto height = surface ? gTarget.Height : gRasterTextureDescriptions[pass.Texture].Height;
-    if (!internal::RasterResolveArea(gRasterGlPassOpen ? pass.Description : RasterPassDescription{},
-                                     width,
-                                     height,
-                                     area))
+    if (internal::RasterResolveArea(gRasterGlPassOpen ? pass.Description : RasterPassDescription{},
+                                    width,
+                                    height,
+                                    area) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -999,7 +1000,7 @@ uint64 RasterCompleted() noexcept
 void RasterEndPass() noexcept
 {
     glDisable(GL_SCISSOR_TEST);
-    if (!gRasterGlPassOpen)
+    if (gRasterGlPassOpen == false)
     {
         return;
     }
@@ -1155,7 +1156,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     }
     glStencilMask(255);
     glClearStencil(static_cast<GLint>(state.ClearStencil));
-    if (info.Stencil && !state.StencilReadOnly && state.StencilLoad != RasterLoad::Load)
+    if (info.Stencil && state.StencilReadOnly == false && state.StencilLoad != RasterLoad::Load)
     {
         clear |= GL_STENCIL_BUFFER_BIT;
     }
@@ -1175,7 +1176,7 @@ RasterStatus RasterReserveSubmission() noexcept
     for (usize i = 0; i < internal::CurrentStorageLimits().Submissions; ++i)
     {
         auto& completion = gRasterCompletions[i];
-        if (completion.Sync == nullptr && !completion.Reserved)
+        if (completion.Sync == nullptr && completion.Reserved == false)
         {
             completion.Reserved = true;
             gRasterReserved = &completion;
@@ -1210,7 +1211,7 @@ void RasterReset() noexcept
     gRasterGlPassOpen = false;
     gRasterGlPass = {};
     gRasterHdrProbed = gRasterHdr = false;
-    if (gContext > 0 && !emscripten_is_webgl_context_lost(gContext))
+    if (gContext > 0 && emscripten_is_webgl_context_lost(gContext) == false)
     {
         glFinish();
     }
@@ -1267,7 +1268,7 @@ RasterStatus RasterPrepareStorage() noexcept
         internal::Fail(gSession, StartupError::DeviceLost);
         return RasterStatus::DeviceLost;
     }
-    if (!gRasterCompletions.EnsureSlots(internal::CurrentStorageLimits().Submissions))
+    if (gRasterCompletions.EnsureSlots(internal::CurrentStorageLimits().Submissions) == false)
     {
         return internal::StorageFailure();
     }

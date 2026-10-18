@@ -45,7 +45,9 @@ schedule.
 
 The native loop is [paced](../architecture/high-resolution-time.md#native-frame-pacing).
 The FIFO swapchain paces presented frames. Frames that present nothing (startup,
-loading, a minimized window) wait at 60 Hz instead of polling. `--frame-rate N`
+loading) wait at 60 Hz instead of polling. While the window is minimized or
+occluded, every frame waits at 10 Hz (or a lower cap) and the simulation pauses;
+showing the window restarts pacing at once. `--frame-rate N`
 caps every native frame at `N` per second (1 to 1000); with `--headless` it paces
 each tick iteration without changing the ticks run or the replay hash.
 `--pacing-report` logs wake lateness, frame-start intervals and EndFrame-return

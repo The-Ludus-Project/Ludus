@@ -68,7 +68,7 @@ RasterStatus LifetimeGlFence(LifetimeGlTransfer& transfer) noexcept
 } // namespace
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
-    return !gLifetimeGl[readback ? 1 : 0][slot].Busy;
+    return gLifetimeGl[readback ? 1 : 0][slot].Busy == false;
 }
 RasterStatus LifetimeUpload(usize transferSlot,
                             const BufferDescription& info,
@@ -223,7 +223,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glDeleteFramebuffers(1, &framebuffer);
     }
-    if (!readback && gRasterTextureDescriptions[info.Destination].Attachment)
+    if (readback == false && gRasterTextureDescriptions[info.Destination].Attachment)
     {
         const auto& description = gRasterTextureDescriptions[info.Destination];
         const auto width = static_cast<GLint>(description.Width), height = static_cast<GLint>(description.Height);
@@ -238,7 +238,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
 {
     auto& transfer = gLifetimeGl[readback ? 1 : 0][slot];
-    if (!transfer.Busy || transfer.Sync == nullptr)
+    if (transfer.Busy == false || transfer.Sync == nullptr)
     {
         return RasterStatus::Failed;
     }

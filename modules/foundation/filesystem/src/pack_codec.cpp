@@ -46,7 +46,7 @@ bool Length(usize& cursor, std::span<const uint8> source, usize& length) noexcep
             return false;
         }
         byte = source[cursor++];
-        if (!TryAdd(length, static_cast<usize>(byte), length))
+        if (TryAdd(length, static_cast<usize>(byte), length) == false)
         {
             return false;
         }
@@ -62,7 +62,8 @@ bool DecodeLz4(std::span<const uint8> stored, std::span<uint8> decoded) noexcept
     {
         const uint8 token = stored[input++];
         usize literals = token >> 4;
-        if (!Length(input, stored, literals) || literals > stored.size() - input || literals > decoded.size() - output)
+        if (Length(input, stored, literals) == false || literals > stored.size() - input ||
+            literals > decoded.size() - output)
         {
             return false;
         }
@@ -76,7 +77,8 @@ bool DecodeLz4(std::span<const uint8> stored, std::span<uint8> decoded) noexcept
         {
             // The final sequence has no offset/match. Require the LZ4 final
             // literals and last-match-before-end conditions.
-            return output == decoded.size() && (!matched || (literals >= 5 && decoded.size() - lastMatch >= 12));
+            return output == decoded.size() &&
+                   (matched == false || (literals >= 5 && decoded.size() - lastMatch >= 12));
         }
         if (stored.size() - input < 2)
         {
@@ -89,7 +91,8 @@ bool DecodeLz4(std::span<const uint8> stored, std::span<uint8> decoded) noexcept
             return false;
         }
         usize match = token & 15U;
-        if (!Length(input, stored, match) || !TryAdd(match, usize{4}, match) || match > decoded.size() - output)
+        if (Length(input, stored, match) == false || TryAdd(match, usize{4}, match) == false ||
+            match > decoded.size() - output)
         {
             return false;
         }

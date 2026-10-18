@@ -56,7 +56,7 @@ void ShowReady(MainWindow& window, EditorController& controller)
     window.show();
     window.activateWindow();
     QTest::qWait(100);
-    for (ludus::foundation::uint32 attempt = 0; !controller.Caps().CanEdit && attempt < 100; ++attempt)
+    for (ludus::foundation::uint32 attempt = 0; controller.Caps().CanEdit == false && attempt < 100; ++attempt)
     {
         QTest::qWait(50);
     }

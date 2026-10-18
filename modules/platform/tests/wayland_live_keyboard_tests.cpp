@@ -74,7 +74,7 @@ TEST_CASE("Live compositor: window binds seat, routes focus enter to sink", "[pl
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (std::chrono::steady_clock::now() < deadline)
     {
-        if (!window->HandleEvent({}))
+        if (window->HandleEvent({}) == false)
         {
             break;
         }

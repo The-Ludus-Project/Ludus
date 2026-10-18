@@ -77,7 +77,7 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
     mPresentReturn = {};
     mPacing.Reset();
     mHadFocus = false;
-    if (!mInput.IsValid())
+    if (mInput.IsValid() == false)
     {
         mState = AppState::Failed;
         return false;
@@ -108,8 +108,8 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
         return false;
     }
     platform::WindowManager manager;
-    if (!manager.Initialize({}) ||
-        !manager.CreateWindow({ .Name = "Ludus world reference", .Width = 960, .Height = 640 }, mWindow))
+    if (manager.Initialize({}) == false ||
+        manager.CreateWindow({ .Name = "Ludus world reference", .Width = 960, .Height = 640 }, mWindow) == false)
     {
         mState = AppState::Failed;
         return false;
@@ -148,11 +148,11 @@ void Application::Shutdown() noexcept
 }
 bool Application::PrepareRenderer() noexcept
 {
-    if (!mCreated)
+    if (mCreated == false)
     {
-        if (!Accepted(rhi::CreateShader(shaders::world_scene::Vertex(), mVertex)) ||
-            !Accepted(rhi::CreateShader(shaders::world_scene::Fragment(), mFragment)) ||
-            !Accepted(rhi::CreateUniform(sizeof(Uniforms), mUniform)))
+        if (Accepted(rhi::CreateShader(shaders::world_scene::Vertex(), mVertex)) == false ||
+            Accepted(rhi::CreateShader(shaders::world_scene::Fragment(), mFragment)) == false ||
+            Accepted(rhi::CreateUniform(sizeof(Uniforms), mUniform)) == false)
         {
             return false;
         }
@@ -171,7 +171,7 @@ bool Application::PrepareRenderer() noexcept
     }
     if (rhi::GetStatus(mPipeline) == rhi::ResourceStatus::InvalidHandle)
     {
-        if (!Accepted(rhi::CreatePipeline({mVertex, mFragment, mUniform}, mPipeline)))
+        if (Accepted(rhi::CreatePipeline({mVertex, mFragment, mUniform}, mPipeline)) == false)
         {
             return false;
         }
@@ -341,11 +341,14 @@ AppState Application::Frame() noexcept
         return mState;
     }
     LUDUS_PROFILE_SCOPE(WorldFrame);
-    if (!mWindow->HandleEvent({}))
+    if (mWindow->HandleEvent({}) == false)
     {
         Shutdown();
         return mState;
     }
+    // A minimized or occluded window paces at the hidden rate, also during startup and loading.
+    const bool isWindowVisible = mWindow->GetVisibility() == platform::WindowVisibility::Visible;
+    mPacing.SetVisible(isWindowVisible);
     // The one frame timestamp; lifecycle resets below apply before the driver samples it.
     const foundation::time::Timestamp now = foundation::time::Now();
     if (mSession.PollLoad() != Status::Success)
@@ -369,7 +372,7 @@ AppState Application::Frame() noexcept
     {
         return mState;
     }
-    if (!PrepareRenderer())
+    if (PrepareRenderer() == false)
     {
         Shutdown();
         mState = AppState::Failed;
@@ -387,11 +390,12 @@ AppState Application::Frame() noexcept
     else
     {
         const auto native = mWindow->GetNativeWindowInfo();
-        window.Visible = true;
+        // Like a hidden browser page, a hidden native window drops simulation time instead of ticking.
+        window.Visible = isWindowVisible;
         window.FramebufferWidth = native.Width;
         window.FramebufferHeight = native.Height;
     }
-    if (!mRendererReady || !mSession.World().IsBuilt())
+    if (mRendererReady == false || mSession.World().IsBuilt() == false)
     {
         return mState;
     }
@@ -446,7 +450,7 @@ AppState Application::Frame() noexcept
     }
     if (mSession.Driver.GetMode() != Mode::Faulted)
     {
-        if (!mSession.World().Extract(mSession.Driver.GetAlpha(), mFrame, mCameraFollow, mInputFrame))
+        if (mSession.World().Extract(mSession.Driver.GetAlpha(), mFrame, mCameraFollow, mInputFrame) == false)
         {
             LUDUS_LOG_WARN(logging::LOG_CORE, "Camera extraction failed; retaining previous frame");
         }
@@ -462,11 +466,11 @@ AppState Application::Frame() noexcept
                        static_cast<uint32>(event.Kind));
     }
     mSession.World().ConsumeOutbox();
-    if (!mSession.World().GetNextLevel().View().empty() && mSession.GetLoadStage() == LoadStage::Empty)
+    if (mSession.World().GetNextLevel().View().empty() == false && mSession.GetLoadStage() == LoadStage::Empty)
     {
         (void)mSession.RequestLoad(BuiltinLevel(mSession.World().GetNextLevel().View()));
     }
-    if (!Render(window))
+    if (Render(window) == false)
     {
         Shutdown();
         mState = AppState::Failed;

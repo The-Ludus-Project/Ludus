@@ -63,23 +63,24 @@ bool SceneSnapshot::operator==(const SceneSnapshot& other) const noexcept
 {
     const auto& a = Level;
     const auto& b = other.Level;
-    if (!(a.Id == b.Id) || a.Seed != b.Seed || !Equal(a.Minimum, b.Minimum) || !Equal(a.Maximum, b.Maximum) ||
-        !Equal(a.Camera, b.Camera) || a.VerticalExtent != b.VerticalExtent || a.CollisionCount != b.CollisionCount ||
-        a.EntityCount != b.EntityCount)
+    if ((a.Id == b.Id) == false || a.Seed != b.Seed || Equal(a.Minimum, b.Minimum) == false ||
+        Equal(a.Maximum, b.Maximum) == false || Equal(a.Camera, b.Camera) == false ||
+        a.VerticalExtent != b.VerticalExtent || a.CollisionCount != b.CollisionCount || a.EntityCount != b.EntityCount)
     {
         return false;
     }
     for (foundation::usize i = 0; i < a.CollisionCount; ++i)
     {
-        if (!(a.Collision[i].Id == b.Collision[i].Id) || !Equal(a.Collision[i].Center, b.Collision[i].Center) ||
-            !Equal(a.Collision[i].HalfExtent, b.Collision[i].HalfExtent))
+        if ((a.Collision[i].Id == b.Collision[i].Id) == false ||
+            Equal(a.Collision[i].Center, b.Collision[i].Center) == false ||
+            Equal(a.Collision[i].HalfExtent, b.Collision[i].HalfExtent) == false)
         {
             return false;
         }
     }
     for (foundation::usize i = 0; i < a.EntityCount; ++i)
     {
-        if (!Equal(a.Entities[i], b.Entities[i]))
+        if (Equal(a.Entities[i], b.Entities[i]) == false)
         {
             return false;
         }
@@ -139,14 +140,14 @@ foundation::usize SceneDocument::Find(const SceneSnapshot& snapshot, const world
 }
 bool SceneDocument::Commit(const SceneSnapshot& candidate, SceneStamp expected) noexcept
 {
-    if (!Loaded() || Gesture_ || expected.Document != Identity_ || expected.Revision != History_.Revision() ||
+    if (Loaded() == false || Gesture_ || expected.Document != Identity_ || expected.Revision != History_.Revision() ||
         world_demo::ValidateLevel(candidate.Level) != world_demo::LevelError::None)
     {
         return false;
     }
     auto canonical = candidate;
     Canonicalize(canonical.Level);
-    if (!History_.Commit(Draft_, canonical))
+    if (History_.Commit(Draft_, canonical) == false)
     {
         return false;
     }
@@ -155,15 +156,15 @@ bool SceneDocument::Commit(const SceneSnapshot& candidate, SceneStamp expected) 
 }
 bool SceneDocument::Undo() noexcept
 {
-    return !Gesture_ && History_.Undo(Draft_);
+    return Gesture_ == false && History_.Undo(Draft_);
 }
 bool SceneDocument::Redo() noexcept
 {
-    return !Gesture_ && History_.Redo(Draft_);
+    return Gesture_ == false && History_.Redo(Draft_);
 }
 bool SceneDocument::BeginTransform(const world_demo::Name* ids, foundation::usize count, SceneStamp expected) noexcept
 {
-    if (PreviewRevision_ == ~foundation::uint64{0} || !Loaded() || Gesture_ || ids == nullptr || count == 0 ||
+    if (PreviewRevision_ == ~foundation::uint64{0} || Loaded() == false || Gesture_ || ids == nullptr || count == 0 ||
         count > 32 || expected.Document != Identity_ || expected.Revision != History_.Revision())
     {
         return false;
@@ -195,7 +196,7 @@ bool SceneDocument::BeginTransform(const world_demo::Name* ids, foundation::usiz
 }
 bool SceneDocument::PreviewTransform(const SceneTransform* values, foundation::usize count) noexcept
 {
-    if (PreviewRevision_ == ~foundation::uint64{0} || !Gesture_ || values == nullptr || count != TargetCount_)
+    if (PreviewRevision_ == ~foundation::uint64{0} || Gesture_ == false || values == nullptr || count != TargetCount_)
     {
         return false;
     }
@@ -225,7 +226,7 @@ void SceneDocument::CancelTransform() noexcept
 }
 bool SceneDocument::AcceptTransform() noexcept
 {
-    if (!Gesture_)
+    if (Gesture_ == false)
     {
         return false;
     }
@@ -234,7 +235,8 @@ bool SceneDocument::AcceptTransform() noexcept
 }
 bool SceneDocument::AcknowledgeSave(const SceneSnapshot& snapshot, foundation::uint64 identity) noexcept
 {
-    if (identity != Identity_ || !Loaded() || world_demo::ValidateLevel(snapshot.Level) != world_demo::LevelError::None)
+    if (identity != Identity_ || Loaded() == false ||
+        world_demo::ValidateLevel(snapshot.Level) != world_demo::LevelError::None)
     {
         return false;
     }
@@ -253,9 +255,9 @@ bool SceneDocument::Pick(world_demo::Vec2 point,
                          world_demo::Name& out) const noexcept
 {
     namespace math = foundation::math;
-    if (!Loaded() || Gesture_ || !(request == current) || request.Document != Identity_ ||
-        request.Revision != History_.Revision() || request.Preview != PreviewRevision_ || !math::IsFinite(point.X) ||
-        !math::IsFinite(point.Y))
+    if (Loaded() == false || Gesture_ || (request == current) == false || request.Document != Identity_ ||
+        request.Revision != History_.Revision() || request.Preview != PreviewRevision_ ||
+        math::IsFinite(point.X) == false || math::IsFinite(point.Y) == false)
     {
         return false;
     }

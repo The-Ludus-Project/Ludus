@@ -258,20 +258,28 @@ def parse_runtime(data):
         values = struct.unpack_from('<' + 'I' * count, data, offset)
         offset += 4 * count
         return values
-    magic, version, resources, passes, cameras, stages = take(6)
+    magic, version, resources, passes, cameras, values, bindings, blocks, fields, stages = take(10)
     interface, generation = data[offset:offset + 32].hex(), data[offset + 32:offset + 64].hex()
     offset += 64
     result = {'magic': magic, 'version': version, 'interface': interface, 'generation': generation,
               'resources': [take(6) for _ in range(resources)], 'cameras': [take(1) for _ in range(cameras)],
-              'passes': [take(9) for _ in range(passes)], 'stages': []}
+              'passes': [take(9) for _ in range(passes)], 'uniform_values': values,
+              'bindings': [take(5) for _ in range(bindings)], 'blocks': [take(3) for _ in range(blocks)],
+              'fields': [take(5) for _ in range(fields)], 'stages': []}
     for _ in range(stages):
-        role, target, inputs, entry_bytes, artifact_bytes = take(5)
+        role, target, inputs, entry_bytes, artifact_bytes, block_count = take(6)
         stage_inputs = [take(2) for _ in range(inputs)]
+        names = []
+        for _ in range(block_count):
+            slot, name_bytes = take(2)
+            names.append((slot, data[offset:offset + name_bytes].decode()))
+            offset += name_bytes + (-name_bytes % 4)
         entry = data[offset:offset + entry_bytes].decode()
         offset += entry_bytes + (-entry_bytes % 4)
         artifact = data[offset:offset + artifact_bytes]
         offset += artifact_bytes + (-artifact_bytes % 4)
-        result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry, 'artifact': artifact})
+        result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry,
+                                 'artifact': artifact, 'blocks': names})
     assert offset == len(data)
     return result
 
@@ -295,7 +303,7 @@ class RuntimePackageTests(BuildFixture):
         cooked = execution.cook_runtime(package, self.root / 'graph.lurgrt')
         data = (self.root / 'graph.lurgrt').read_bytes()
         parsed = parse_runtime(data)
-        self.assertEqual((execution.PACKAGE_MAGIC, 1), (parsed['magic'], parsed['version']))
+        self.assertEqual((execution.PACKAGE_MAGIC, 2), (parsed['magic'], parsed['version']))
         self.assertEqual(header['interface_identity'], parsed['interface'])
         self.assertEqual(cooked['generation'], parsed['generation'])
         self.assertEqual(package.name, parsed['generation'])
@@ -307,11 +315,34 @@ class RuntimePackageTests(BuildFixture):
         roles = sorted({(s['role'], s['target']) for s in parsed['stages']})
         self.assertEqual(len(roles), len(parsed['stages']))
         for stage in parsed['stages']:
-            if stage['role'] in (0, 2):
+            if stage['role'] % 2 == 0:
                 self.assertEqual([(i, 2 if i == 0 else 3) for i in range(6)], stage['inputs'])
             else:
                 self.assertEqual([], stage['inputs'])
             self.assertEqual('rgEntry', stage['entry'])
+
+    def test_bound_runtime_package_carries_the_header_uniform_tables(self):
+        self.edit(lambda value: execution_fixtures.ExecutionTests.bind_material(self, value))
+        package = Path(self.run_build()['package'])
+        execution.emit_runtime(package, self.root / 'Bound.h', name='Bound')
+        execution.cook_runtime(package, self.root / 'bound.lurgrt')
+        parsed = parse_runtime((self.root / 'bound.lurgrt').read_bytes())
+        text = (self.root / 'Bound.h').read_text()
+        self.assertEqual(4, parsed['uniform_values'])
+        self.assertIn('UNIFORM_VALUE_COUNT = 4;', text)
+        programs = {code: name for name, code in execution.PROGRAM_CODES.items()}
+        visibility = {code: name for name, code in execution.VISIBILITY.items()}
+        targets = {code: execution.TARGET_NAMES[name] for name, code in execution.TARGET_CODES.items()}
+        for program, slot, stages, offset, count in parsed['bindings']:
+            self.assertIn(f'{{format::Technique::{programs[program]}, {slot}, format::Visibility::{visibility[stages]}, '
+                          f'{offset}, {count}}},', text)
+        for binding, target, size in parsed['blocks']:
+            self.assertIn(f'{{{binding}, format::ShaderTarget::{targets[target]}, {size}}},', text)
+        for binding, target, offset, components, byte_offset in parsed['fields']:
+            self.assertIn(f'{{{binding}, format::ShaderTarget::{targets[target]}, {offset}, {components}, {byte_offset}}},',
+                          text)
+        self.assertEqual(len(parsed['fields']), 4)
+        self.assertTrue(all(stage['blocks'] == [] for stage in parsed['stages']))
 
     def test_runtime_package_is_deterministic_and_preserves_destination_on_failure(self):
         package = Path(self.run_build()['package'])

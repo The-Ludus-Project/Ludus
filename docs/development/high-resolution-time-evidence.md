@@ -422,6 +422,75 @@ Confirmation with the adopted wait (one build, sequential, load 44-58):
 The headless replay hash is unchanged by the wait (`7399557020790493750` at 600
 ticks, the same in every arm).
 
+### Hidden-window power policy
+
+October 17, 2026. Scope: the zero-leeway wait above gave up the kernel's timer
+coalescing, so the world reference's minimized window woke 60 times a second for
+frames nobody saw. Platform now reports `WindowVisibility`, and `LoopPacing` waits
+at 10 Hz while the window is minimized or occluded (see
+[native frame pacing](../architecture/high-resolution-time.md#native-frame-pacing)).
+
+**Policy tests** (`apps/world_demo/tests/frame_pacing_tests.cpp`, synthetic clock):
+
+| Behavior | Evidence |
+| --- | --- |
+| Hidden rate | One simulated second waits 59-60 times while visible and loading, and exactly 10 times while hidden, whether or not the frame presented. Hidden targets stay on `anchor + k * 100 ms`. |
+| Lifecycle | Hiding and showing drop the schedule. A window shown 30 ms into a hidden interval starts its next frame at once instead of waiting out the old target, then follows the 60 Hz phase anchored at the reveal. Repeating the current visibility keeps the schedule. |
+| Simulation | Hidden frames drop simulation time: five hidden frames add no tick, and the first visible frame is the driver's new baseline. |
+| Caps | The hidden rate never raises a lower cap (5 Hz stays 200 ms). A cap chosen while hidden applies when the window is shown; an out-of-range cap leaves the hidden policy unchanged. |
+
+The live Cocoa suite (`LUDUS_TEST_COCOA=1`) checks `Minimized` while miniaturized,
+`Occluded` after `orderOut:` and after close, and `Visible` again after
+`orderFront:`. Its windows float above normal windows: on the measured host, a
+background test process could not activate itself, and a centered normal-level
+window opened behind an opaque window and correctly reported `Occluded`.
+
+**Wake measurement.** Method: `ludus_world_demo` Development builds of `origin/develop`
+`ccc6bb537` plus this change ("after"), and the same tree with the world
+reference's `application.cpp` from `ccc6bb537` ("before"), so only the loop policy
+differs. A scratch dynamic library injected with `DYLD_INSERT_LIBRARIES` (not part
+of the repository) floated the window, then measured three consecutive phases of
+about 15 s each after a 3 s settle: visible, minimized with `miniaturize:`, and
+restored with `deminiaturize:`. It read the process's kernel counters with
+`proc_pid_rusage(RUSAGE_INFO_V4)`: `ri_interrupt_wkups` (timer and interrupt
+wake-ups, all threads) and user plus system time, converted from Mach time units
+(125/3 ns on this host). Runs alternated before, after, before, after. Host:
+Apple M5 (10 cores), macOS 26.6, one-minute load average 65-79 from other
+worktrees' builds.
+
+| Phase | Before: wake-ups/s | After: wake-ups/s | Before: CPU ms/s | After: CPU ms/s |
+| --- | ---: | ---: | ---: | ---: |
+| Visible | 2.0, 23.5 | 20.8, 2.1 | 39, 46 | 44, 42 |
+| Minimized | 61.2, 61.4 | 11.3, 11.8 | 5.4, 6.7 | 1.3, 1.3 |
+| Restored | 3.0, 2.1 | 2.1, 2.1 | 40, 40 | 40, 40 |
+
+What the data shows:
+
+- **Minimized wake-ups fell from about 61 to about 11.5 per second**, matching the
+  60 Hz idle schedule before and the 10 Hz hidden schedule after, plus about 1.5
+  per second from other threads. CPU time while minimized fell from 5-7 ms to
+  1.3 ms per second.
+- **Visible and restored windows are unchanged.** Both arms are paced by FIFO
+  presentation, with 2-3 timer wake-ups per second; one visible phase in each arm
+  measured 21-24, so that outlier is not caused by the policy. Restoring returned
+  to presentation pacing and kept presenting in every run.
+
+What it does not show: power or energy (`powermetrics` needs administrator
+rights), an idle host, battery or Low Power Mode, partial occlusion, Linux
+(Wayland reports `Visible` and keeps the 60 Hz idle rate), or the latency from
+`deminiaturize:` to the first new frame beyond the 100 ms hidden interval bound.
+Two runs per arm on a loaded host support only the coarse rates above.
+
+| Validation (macOS arm64 host, pinned Clang 23.1.3 after merging `develop`, warnings as errors) | Result |
+| --- | --- |
+| Development full build with `-DLUDUS_BUILD_WORLD_DEMO=ON` | Passed, warning-clean. |
+| `ctest --preset macos-clang-development` with `LUDUS_TEST_COCOA=1` | 115 of 116 passed. `ludus_renderer_pixels` fails because Metal rejects the `renderer_output` fragment shader; it passed on the Clang 18 base with this same change, which touches no renderer, RHI or shader code. On the Clang 18 base, `ludus_dependency_diagnostics` once exceeded its 120 s timeout under load and passed when run directly. |
+| `ludus_world_demo_pacing_tests`, `ludus_platform_cocoa_tests` | 9 cases (441 assertions) and 7 cases passed; the Cocoa suite also passed three consecutive runs on the Clang 18 base. |
+| `source_policy.py`, `./scripts/check --format` | Passed. |
+| clang-tidy on the changed native sources | No findings. The browser `window_web.cpp` change is compiled by the browser presets in CI. |
+| Documentation: `check-docs`, strict MkDocs build, `test_docs.py`, `test_wiki.py`, `check-wiki --documentation-only` | Passed. |
+| `scripts/build-api` | 185 headers; no new documentation gaps. |
+
 ## Runtime timing telemetry
 
 October 17, 2026. Scope: the inspection half of the

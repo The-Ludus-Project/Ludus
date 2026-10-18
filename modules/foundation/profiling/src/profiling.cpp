@@ -50,7 +50,7 @@ bool CaptureActive() noexcept
 void EmitBegin(const ZoneDescriptor& descriptor) noexcept
 {
     // One relaxed load + predicted-not-taken branch when idle (§19, gate G2).
-    if (!internal::IsCaptureActive())
+    if (internal::IsCaptureActive() == false)
     {
         return;
     }
@@ -65,7 +65,7 @@ void EmitBegin(const ZoneDescriptor& descriptor) noexcept
 
 void EmitEnd(uint32 siteId) noexcept
 {
-    if (!internal::IsCaptureActive())
+    if (internal::IsCaptureActive() == false)
     {
         return;
     }
@@ -75,7 +75,7 @@ void EmitEnd(uint32 siteId) noexcept
 
 void EmitInstant(const ZoneDescriptor& descriptor) noexcept
 {
-    if (!internal::IsCaptureActive())
+    if (internal::IsCaptureActive() == false)
     {
         return;
     }
@@ -85,7 +85,7 @@ void EmitInstant(const ZoneDescriptor& descriptor) noexcept
 
 void EmitFrameMark() noexcept
 {
-    if (!internal::IsCaptureActive())
+    if (internal::IsCaptureActive() == false)
     {
         return;
     }
@@ -96,7 +96,7 @@ void EmitFrameMark() noexcept
 uint64 EmitFlowOut(const ZoneDescriptor& descriptor) noexcept
 {
     const uint64 flowId = gNextFlowId.fetch_add(1, std::memory_order_relaxed);
-    if (!internal::IsCaptureActive())
+    if (internal::IsCaptureActive() == false)
     {
         return flowId;
     }
@@ -109,7 +109,7 @@ uint64 EmitFlowOut(const ZoneDescriptor& descriptor) noexcept
 
 void EmitFlowIn(uint64 flowId) noexcept
 {
-    if (!internal::IsCaptureActive())
+    if (internal::IsCaptureActive() == false)
     {
         return;
     }

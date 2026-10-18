@@ -114,7 +114,7 @@ void Dispatch(LogLevel level,
         return;
     }
     state.Dispatching = true;
-    if (!state.Initialized || level == LogLevel::Fatal)
+    if (state.Initialized == false || level == LogLevel::Fatal)
     {
         internal::EmergencyLog(level, category, message, location);
     }
@@ -157,7 +157,7 @@ bool ShouldLog(LogLevel level, LogCategory category) noexcept
     {
         return true;
     }
-    if (!state.Initialized)
+    if (state.Initialized == false)
     {
         return level >= LogLevel::Warning;
     }
@@ -177,8 +177,8 @@ LogInitResult LogSystem::Initialize(const LogConfig& config)
     state.GlobalLevel = config.GlobalLevel;
     state.ConsoleEnabled = config.EnableConsole;
     state.Health = {};
-    state.Health.FileHealthy = !config.EnableFile;
-    state.Health.DebuggerHealthy = !config.EnableDebugger;
+    state.Health.FileHealthy = config.EnableFile == false;
+    state.Health.DebuggerHealthy = config.EnableDebugger == false;
     state.Initialized = true;
     const bool degraded = config.Mode != LogMode::Synchronous || config.EnableFile || config.EnableDebugger;
     return {degraded ? LogStatus::Degraded : LogStatus::Ok, LogMode::Synchronous};
@@ -191,7 +191,7 @@ LogStatus LogSystem::Shutdown()
     {
         return LogStatus::Incomplete;
     }
-    if (!state.Initialized)
+    if (state.Initialized == false)
     {
         return LogStatus::NotInitialized;
     }
@@ -204,7 +204,7 @@ LogStatus LogSystem::Shutdown()
 FlushResult LogSystem::Flush(FlushKind kind, uint32 /*timeoutMilliseconds*/)
 {
     const BrowserLogger& state = State();
-    if (!state.Initialized)
+    if (state.Initialized == false)
     {
         return {LogStatus::NotInitialized, 0};
     }

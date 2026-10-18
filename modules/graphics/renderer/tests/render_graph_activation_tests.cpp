@@ -83,24 +83,38 @@ struct PackageOptions final
     uint32 Version = format::PACKAGE_VERSION;
     uint32 Backing = 0;
     bool HasDepthStages = true;
+    /// Bind one Material {Float3 tint; Float32 gain} block to the color fragment at slot 0.
+    bool HasUniforms = false;
 };
+constexpr uint32 MATERIAL_VALUE_COUNT = 4;
+constexpr uint32 WGSL_MATERIAL_BYTES = 16;
+constexpr uint32 METAL_MATERIAL_BYTES = 32;
+constexpr std::string_view BLOCK_NAME = "material_block";
 /// Write one stage record; artifact holds the raw bytes for any target, including SPIR-V words.
 void WriteStage(PackageWriter& inoutWriter,
                 format::StageRole role,
                 format::ShaderTarget target,
                 std::string_view artifact,
-                std::string_view entry)
+                std::string_view entry,
+                std::string_view block = {})
 {
-    const bool isVertex = role == format::StageRole::ColorVertex || role == format::StageRole::DepthVertex;
+    const bool isVertex = static_cast<uint32>(role) % format::TECHNIQUE_STAGE_COUNT == 0;
     inoutWriter.WriteWord(static_cast<uint32>(role));
     inoutWriter.WriteWord(static_cast<uint32>(target));
     inoutWriter.WriteWord(isVertex == true ? static_cast<uint32>(format::STATIC_INPUT_COUNT) : 0);
     inoutWriter.WriteWord(static_cast<uint32>(entry.size()));
     inoutWriter.WriteWord(static_cast<uint32>(artifact.size()));
+    inoutWriter.WriteWord(block.empty() == true ? 0 : 1);
     for (uint32 i = 0; isVertex == true && i < format::STATIC_INPUT_COUNT; ++i)
     {
         inoutWriter.WriteWord(i);
         inoutWriter.WriteWord(static_cast<uint32>(i == 0 ? format::InputFormat::Float3 : format::InputFormat::Float4));
+    }
+    if (block.empty() == false)
+    {
+        inoutWriter.WriteWord(0);
+        inoutWriter.WriteWord(static_cast<uint32>(block.size()));
+        inoutWriter.WritePadded(block);
     }
     inoutWriter.WritePadded(entry);
     inoutWriter.WritePadded(artifact);
@@ -117,6 +131,10 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     inoutWriter.WriteWord(2);
     inoutWriter.WriteWord(1);
     inoutWriter.WriteWord(1);
+    inoutWriter.WriteWord(options.HasUniforms == true ? MATERIAL_VALUE_COUNT : 0);
+    inoutWriter.WriteWord(options.HasUniforms == true ? 1 : 0);
+    inoutWriter.WriteWord(options.HasUniforms == true ? 2 : 0);
+    inoutWriter.WriteWord(options.HasUniforms == true ? 4 : 0);
     inoutWriter.WriteWord(stageCount);
     inoutWriter.WriteIdentity(options.Interface);
     inoutWriter.WriteIdentity(options.Generation);
@@ -141,6 +159,41 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
                                0U})
     {
         inoutWriter.WriteWord(value);
+    }
+    if (options.HasUniforms == false)
+    {
+        return;
+    }
+    // Binding: ColorAndDepth fragment slot 0 reads values [0, 4).
+    for (const uint32 value : {static_cast<uint32>(format::Technique::ColorAndDepth),
+                               0U,
+                               static_cast<uint32>(format::Visibility::Fragment),
+                               0U,
+                               MATERIAL_VALUE_COUNT})
+    {
+        inoutWriter.WriteWord(value);
+    }
+    // WGSL packs gain at 12 in 16 bytes; Metal pads tint to 16 bytes, so gain is at 16 of 32.
+    for (const uint32 value : {0U,
+                               static_cast<uint32>(format::ShaderTarget::Wgsl),
+                               WGSL_MATERIAL_BYTES,
+                               0U,
+                               static_cast<uint32>(format::ShaderTarget::Metal),
+                               METAL_MATERIAL_BYTES})
+    {
+        inoutWriter.WriteWord(value);
+    }
+    for (const format::ShaderTarget target : {format::ShaderTarget::Wgsl, format::ShaderTarget::Metal})
+    {
+        for (const uint32 value : {0U, static_cast<uint32>(target), 0U, 3U, 0U})
+        {
+            inoutWriter.WriteWord(value);
+        }
+        for (const uint32 value :
+             {0U, static_cast<uint32>(target), 3U, 1U, target == format::ShaderTarget::Wgsl ? 12U : 16U})
+        {
+            inoutWriter.WriteWord(value);
+        }
     }
 }
 Array<uint8> MakePackageBytes(const PackageOptions& options)
@@ -584,4 +637,112 @@ TEST_CASE("RG3 a newer candidate supersedes an unactivated one", "[render-graph]
     REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
     REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
     CHECK(fixture.Activation.GetReport().ActiveGeneration == 3);
+}
+
+TEST_CASE("RG3 runtime packages decode uniform tables and derive stage bindings", "[render-graph][activation]")
+{
+    PackageOptions options;
+    options.HasUniforms = true;
+    const Array<uint8> bytes = MakePackageBytes(options);
+    renderer::RenderGraphPackage package;
+    REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    const renderer::RenderGraphPlan plan = package.GetPlan();
+    CHECK(plan.Description.UniformValueCount == MATERIAL_VALUE_COUNT);
+    REQUIRE(plan.UniformBindings.GetSize() == 1);
+    CHECK(plan.UniformBindings[0].Program == format::Technique::ColorAndDepth);
+    CHECK(plan.UniformBindings[0].Stages == format::Visibility::Fragment);
+    REQUIRE(plan.UniformBlocks.GetSize() == 2);
+    CHECK(plan.UniformBlocks[1].Target == format::ShaderTarget::Metal);
+    REQUIRE(plan.UniformFields.GetSize() == 4);
+    CHECK(plan.UniformFields[1].ByteOffset == 12);
+    CHECK(plan.UniformFields[3].ByteOffset == 16);
+    const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
+    CHECK(programs.ColorVertex.Bindings.empty() == true);
+    CHECK(programs.DepthFragment.Bindings.empty() == true);
+    REQUIRE(programs.ColorFragment.Bindings.size() == 1);
+    const rhi::RasterBinding& binding = programs.ColorFragment.Bindings[0];
+    CHECK(binding.Binding == 0);
+    CHECK(binding.Kind == rhi::RasterBindingKind::UniformBuffer);
+    CHECK(binding.Visibility == rhi::RasterVisibility::Fragment);
+    // The stage admits the largest carried block, so one layout serves every target.
+    CHECK(binding.MinSize == METAL_MATERIAL_BYTES);
+}
+
+TEST_CASE("RG3 runtime packages carry GLSL ES block names and reject malformed uniform records",
+          "[render-graph][activation]")
+{
+    PackageOptions options;
+    options.HasUniforms = true;
+    options.HasDepthStages = false;
+    const auto makeBytes = [&options](format::ShaderTarget blockTarget, std::string_view block) {
+        PackageWriter writer;
+        WritePlan(writer, options, 4);
+        WriteStage(writer, format::StageRole::ColorVertex, format::ShaderTarget::GlslEs, GLSL_TEXT, "main");
+        WriteStage(writer,
+                   format::StageRole::ColorFragment,
+                   format::ShaderTarget::GlslEs,
+                   GLSL_TEXT,
+                   "main",
+                   blockTarget == format::ShaderTarget::GlslEs ? block : std::string_view{});
+        WriteStage(writer, format::StageRole::ColorVertex, format::ShaderTarget::Wgsl, VERTEX_TEXT, "VertexMain");
+        WriteStage(writer,
+                   format::StageRole::ColorFragment,
+                   format::ShaderTarget::Wgsl,
+                   FRAGMENT_TEXT,
+                   "FragmentMain",
+                   blockTarget == format::ShaderTarget::Wgsl ? block : std::string_view{});
+        return Move(writer.Bytes);
+    };
+    const Array<uint8> valid = makeBytes(format::ShaderTarget::GlslEs, BLOCK_NAME);
+    renderer::RenderGraphPackage package;
+    REQUIRE(package.Decode({valid.GetData(), valid.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
+    CHECK(programs.ColorFragment.UniformBlocks[0] == BLOCK_NAME);
+    CHECK(programs.ColorVertex.UniformBlocks[0].empty() == true);
+    // Block names belong to GLSL ES stages only, and must be identifiers.
+    CHECK(DecodeBytes(makeBytes(format::ShaderTarget::Wgsl, BLOCK_NAME)) ==
+          renderer::RenderGraphPackageStatus::Malformed);
+    CHECK(DecodeBytes(makeBytes(format::ShaderTarget::GlslEs, "9block")) ==
+          renderer::RenderGraphPackageStatus::Malformed);
+    // The binding record follows the pass record; its third word is the stage visibility.
+    const usize binding = format::HEADER_BYTES + 2 * format::RESOURCE_RECORD_BYTES + format::CAMERA_RECORD_BYTES +
+                          format::PASS_RECORD_BYTES;
+    Array<uint8> badVisibility = Array<uint8>::FromRange(valid.AsSpan());
+    badVisibility[binding + 2 * sizeof(uint32)] = 4;
+    CHECK(DecodeBytes(badVisibility) == renderer::RenderGraphPackageStatus::Malformed);
+    Array<uint8> manyValues = Array<uint8>::FromRange(valid.AsSpan());
+    manyValues[5 * sizeof(uint32)] = static_cast<uint8>(format::MAX_UNIFORM_VALUES + 1);
+    CHECK(DecodeBytes(manyValues) == renderer::RenderGraphPackageStatus::CapacityExceeded);
+}
+
+TEST_CASE("RG3 bound generations activate and draw per-draw uniform values", "[render-graph][activation]")
+{
+    ActivationFixture fixture;
+    PackageOptions options;
+    options.HasUniforms = true;
+    REQUIRE(fixture.Activation.Stage(MakePackage(options)) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.GetReport().ActiveGeneration == 1);
+    renderer::RenderGraphReport report;
+    // A bound generation needs the complete logical value table for every drawn item.
+    CHECK(fixture.Update(report) == rhi::RasterStatus::InvalidDescription);
+    StaticArray<float32, MATERIAL_VALUE_COUNT> values{{1, .5F, .25F, 2}};
+    fixture.Items[0].Uniforms = {values.GetData(), values.GetSize()};
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    fixture.Render();
+    CHECK(rhi::reference::Draws == 1);
+}
+
+TEST_CASE("RG3 a bound generation compiled against another uniform interface requires a restart",
+          "[render-graph][activation]")
+{
+    ActivationFixture fixture;
+    fixture.ActivateFirst();
+    PackageOptions bound;
+    bound.HasUniforms = true;
+    bound.Interface = OTHER_INTERFACE;
+    bound.Generation = 2;
+    CHECK(fixture.Activation.Stage(MakePackage(bound)) == rhi::RasterStatus::Unsupported);
+    CHECK(fixture.Activation.GetReport().Candidate == renderer::RenderGraphCandidateState::RestartRequired);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
 }

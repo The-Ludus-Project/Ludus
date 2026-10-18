@@ -225,22 +225,33 @@ leeway tiers. With `NOTE_CRITICAL` the median wake is about 0.03 ms late in both
 modes; the remaining tail under heavy load is CPU scheduling, which a spin would
 compete for rather than remove. The zero-leeway wait gives up the kernel's power
 batching of one wake per frame; a loop that should save power while hidden or idle
-lowers its rate. See the [measurements](../development/high-resolution-time-evidence.md#native-frame-pacing)
+lowers its rate, as the world reference does for hidden windows (below). See the [measurements](../development/high-resolution-time-evidence.md#native-frame-pacing)
 and the [wake leeway trial](../development/high-resolution-time-evidence.md#wake-leeway-trial).
 Adding a spin later requires a strict budget, a power policy and measurements
 showing it removes lateness that the OS wait leaves.
 
 Reset the pacer when the old phase should not carry over: startup, session
-activation and resuming from suspension. Pausing the simulation does not affect
+activation, resuming from suspension and a window becoming visible or hidden. Pausing the simulation does not affect
 presentation pacing; frames keep their schedule while ticks stop. Without an
 explicit reset, the lateness bound re-anchors after any long stall, so a missed
 lifecycle signal costs one unpaced frame, never a catch-up burst.
 
 The world reference loop owns a `LoopPacing` policy. Without a cap, the FIFO
 swapchain paces presented frames, and frames that present nothing wait at 60 Hz.
-Those frames include startup, pending pipelines, loading and minimized windows,
-which the native loop previously polled at full speed. A presented frame drops
-the idle schedule. `--frame-rate N` caps every frame (1 to 1000) with a
+Those frames include startup, pending pipelines and loading, which the native
+loop previously polled at full speed. A presented frame drops the idle schedule.
+
+While the window is not visible, every frame waits at 10 Hz instead, or at a
+lower `--frame-rate` cap. Platform reports `WindowVisibility` from each window:
+Cocoa reports `Minimized` for a miniaturized window and `Occluded` while AppKit's
+occlusion state has no visible part; browser canvases mirror
+`WindowState::Visible`; Wayland and headless report `Visible` because they do not
+observe occlusion. The hidden rate also applies to presented frames, because an
+occluded window's presents need not block. Each visibility change drops the
+schedule, so the first frame after showing the window starts at once and never
+waits out the hidden phase. Like a hidden browser page, a hidden native window
+drops simulation time instead of ticking. The loop still pumps window events at
+10 Hz, so it notices being shown within 100 ms. `--frame-rate N` caps every frame (1 to 1000) with a
 four-interval lateness bound. Intervals are whole nanoseconds, so a 60 Hz cap is
 16,666,667 ns, about 20 ns per second slower than exact; the simulation's
 rational phase is unaffected. A cap that does not divide the display refresh rate

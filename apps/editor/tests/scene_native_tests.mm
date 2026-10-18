@@ -115,7 +115,7 @@ TEST_CASE("Cocoa World authoring presents Metal frames and accepts native keyboa
     REQUIRE(reopened.Open(scenePath));
     CHECK(reopened.Document().Draft() == workspace.Document().Draft());
     const auto player = qEnvironmentVariable("LUDUS_SCENE_TEST_PLAYER");
-    if (!player.isEmpty())
+    if (player.isEmpty() == false)
     {
         QProcess process;
         process.start(player, {QStringLiteral("--level"), scenePath, QStringLiteral("--frames"), QStringLiteral("3")});

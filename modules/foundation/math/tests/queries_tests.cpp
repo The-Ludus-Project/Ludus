@@ -277,7 +277,7 @@ TEST_CASE("Classification agrees with direct clip inequalities (no false-negativ
                 const float w = clip.W;
                 const bool insideClip = (w > 0.0f) && (clip.X >= -w) && (clip.X <= w) && (clip.Y >= -w) &&
                                         (clip.Y <= w) && (clip.Z >= 0.0f) && (clip.Z <= w);
-                if (!insideClip)
+                if (insideClip == false)
                 {
                     continue;
                 }

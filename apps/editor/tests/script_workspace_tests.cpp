@@ -38,7 +38,7 @@ bool Await(Predicate&& predicate)
 {
     QElapsedTimer timer;
     timer.start();
-    while (!predicate() && timer.elapsed() < 90000)
+    while (predicate() == false && timer.elapsed() < 90000)
     {
         QTest::qWait(20);
     }
@@ -242,7 +242,7 @@ TEST_CASE("script document actions save pending graph cells and route history", 
 }
 TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", "[.script-journey]")
 {
-    REQUIRE(!qEnvironmentVariable("LUDUS_SDK_PREFIX").isEmpty());
+    REQUIRE(qEnvironmentVariable("LUDUS_SDK_PREFIX").isEmpty() == false);
     QTemporaryDir project;
     REQUIRE(project.isValid());
     REQUIRE(QDir(project.path()).mkdir(QStringLiteral("src")));
@@ -277,16 +277,16 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
     workspace.resize(1100, 850);
     workspace.show();
     controller.OpenProject(descriptor);
-    REQUIRE(Await([&]() { return !controller.State().Busy() && controller.Caps().CanProjectSetup; }));
+    REQUIRE(Await([&]() { return controller.State().Busy() == false && controller.Caps().CanProjectSetup; }));
     REQUIRE_FALSE(QFile::exists(project.filePath(QStringLiteral("CMakeUserPresets.json"))));
     controller.SetupProject(qEnvironmentVariable("LUDUS_SDK_PREFIX"), {}, false);
-    REQUIRE(Await([&]() { return !controller.State().Busy() && controller.Caps().CanProjectSetup; }));
+    REQUIRE(Await([&]() { return controller.State().Busy() == false && controller.Caps().CanProjectSetup; }));
     INFO(controller.JobDetails().toStdString());
     INFO(controller.Log().Text().toStdString());
     REQUIRE(controller.State().Result.Kind == Outcome::Success);
     workspace.SetProject(project.path(), project.path(), QStringLiteral("linux-clang-development"));
     controller.CookScripts();
-    REQUIRE(Await([&]() { return !controller.State().Busy() && controller.CanPlay(); }));
+    REQUIRE(Await([&]() { return controller.State().Busy() == false && controller.CanPlay(); }));
     INFO(controller.State().Result.Message.toStdString());
     INFO(controller.Log().Text().toStdString());
     REQUIRE(controller.State().Result.Kind == Outcome::Success);
@@ -294,14 +294,14 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
     const bool running = Await([&]() {
         return controller.PlayState().Phase == PlayPhase::Running ||
                (controller.PlayState().Phase == PlayPhase::Stopped &&
-                controller.State().Result.Kind == Outcome::Failed && !controller.State().Busy());
+                controller.State().Result.Kind == Outcome::Failed && controller.State().Busy() == false);
     });
     INFO(controller.JobDetails().toStdString());
     INFO(controller.Log().Text().toStdString());
     REQUIRE(running);
     REQUIRE(controller.PlayState().Phase == PlayPhase::Running);
     workspace.Send(QStringLiteral("inspect"));
-    REQUIRE(Await([&]() { return !controller.PlayState().ScriptStatus.isEmpty(); }));
+    REQUIRE(Await([&]() { return controller.PlayState().ScriptStatus.isEmpty() == false; }));
     auto* nodes = workspace.findChild<QTableWidget*>(QStringLiteral("scriptNodes"));
     REQUIRE(nodes != nullptr);
     ludus::foundation::int32 row = -1;
@@ -317,7 +317,7 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
     nodes->setCurrentCell(row, 2);
     REQUIRE(Button(workspace, QStringLiteral("Set breakpoint"))->isEnabled());
     Button(workspace, QStringLiteral("Set breakpoint"))->click();
-    REQUIRE(Await([&]() { return !controller.PlayState().ScriptBusy; }));
+    REQUIRE(Await([&]() { return controller.PlayState().ScriptBusy == false; }));
     workspace.Send(QStringLiteral("interact"));
     REQUIRE(Await([&]() { return controller.PlayState().ScriptPaused; }));
     REQUIRE(controller.PlayState().ScriptStatus.value(QStringLiteral("interactions")).toInt() == 0);
@@ -327,13 +327,13 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
     workspace.Send(QStringLiteral("into"));
     REQUIRE(Await([&]() { return controller.PlayState().ScriptStatus.value(QStringLiteral("stop")) != oldStop; }));
     REQUIRE(controller.PlayState().ScriptPaused);
-    REQUIRE(!controller.PlayState().ScriptStatus.value(QStringLiteral("frames")).toArray().isEmpty());
+    REQUIRE(controller.PlayState().ScriptStatus.value(QStringLiteral("frames")).toArray().isEmpty() == false);
     REQUIRE(workspace.grab().save(QDir(root).filePath(QStringLiteral("out/s5-workspace.png"))));
     nodes->setCurrentCell(row, 2);
     Button(workspace, QStringLiteral("Clear breakpoint"))->click();
-    REQUIRE(Await([&]() { return !controller.PlayState().ScriptBusy; }));
+    REQUIRE(Await([&]() { return controller.PlayState().ScriptBusy == false; }));
     workspace.Send(QStringLiteral("continue"));
-    REQUIRE(Await([&]() { return !controller.PlayState().ScriptPaused; }));
+    REQUIRE(Await([&]() { return controller.PlayState().ScriptPaused == false; }));
     REQUIRE(controller.PlayState().ScriptStatus.value(QStringLiteral("interactions")).toInt() == 1);
     const auto beforeRestart = controller.PlayState().ScriptStatus.value(QStringLiteral("execution"));
     workspace.Send(QStringLiteral("restart"));
@@ -350,14 +350,14 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
     REQUIRE(workspace.Save());
     REQUIRE_FALSE(Button(workspace, QStringLiteral("Set breakpoint"))->isEnabled());
     controller.CookScripts();
-    REQUIRE(Await([&]() { return !controller.State().Busy() && controller.CanBuildReload(); }));
+    REQUIRE(Await([&]() { return controller.State().Busy() == false && controller.CanBuildReload(); }));
     REQUIRE(controller.State().Result.Kind == Outcome::Success);
     REQUIRE_FALSE(Button(workspace, QStringLiteral("Set breakpoint"))->isEnabled());
     const auto textPath = project.filePath(QStringLiteral("behaviors/encounter.luau"));
     const auto text = ReadScript(textPath);
     WriteScript(textPath, QByteArray("--!strict\nreturn broken syntax\n"));
     controller.BuildReload();
-    REQUIRE(Await([&]() { return !controller.State().Busy() && controller.CanBuildReload(); }));
+    REQUIRE(Await([&]() { return controller.State().Busy() == false && controller.CanBuildReload(); }));
     REQUIRE(controller.State().Result.Kind == Outcome::Failed);
     REQUIRE(controller.PlayState().Generation == generation);
     WriteScript(textPath, text);
@@ -368,7 +368,7 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
     INFO(controller.Log().Text().toStdString());
     REQUIRE(reloaded);
     workspace.Send(QStringLiteral("inspect"));
-    REQUIRE(Await([&]() { return !controller.PlayState().ScriptStatus.isEmpty(); }));
+    REQUIRE(Await([&]() { return controller.PlayState().ScriptStatus.isEmpty() == false; }));
     REQUIRE(controller.PlayState().ScriptStatus.value(QStringLiteral("execution")) != execution);
     REQUIRE(controller.PlayState().ScriptStatus.value(QStringLiteral("interactions")).toInt() == 1);
     REQUIRE(Button(workspace, QStringLiteral("Set breakpoint"))->isEnabled());
@@ -395,7 +395,7 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
     source->setTextCursor(cursor);
     REQUIRE(Button(workspace, QStringLiteral("Set breakpoint"))->isEnabled());
     Button(workspace, QStringLiteral("Set breakpoint"))->click();
-    REQUIRE(Await([&]() { return !controller.PlayState().ScriptBusy; }));
+    REQUIRE(Await([&]() { return controller.PlayState().ScriptBusy == false; }));
     workspace.Send(QStringLiteral("interact"));
     REQUIRE(Await([&]() { return controller.PlayState().ScriptPaused; }));
     REQUIRE(controller.PlayState().ScriptStatus.value(QStringLiteral("interactions")).toInt() == 3);
@@ -406,7 +406,7 @@ TEST_CASE("editor cooks debugs and reloads installed SDK behavior generations", 
     REQUIRE_FALSE(workspace.Dirty());
     REQUIRE_FALSE(source->extraSelections().isEmpty());
     workspace.Send(QStringLiteral("restart"));
-    REQUIRE(Await([&]() { return !controller.PlayState().ScriptPaused; }));
+    REQUIRE(Await([&]() { return controller.PlayState().ScriptPaused == false; }));
     REQUIRE(controller.PlayState().ScriptStatus.value(QStringLiteral("interactions")).toInt() == 0);
     controller.Stop();
     REQUIRE(Await([&]() { return controller.PlayState().Phase == PlayPhase::Stopped && controller.CanPlay(); }));

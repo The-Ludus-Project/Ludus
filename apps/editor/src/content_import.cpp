@@ -53,7 +53,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     {
         return failed(CS::Cancelled, QStringLiteral("Import cancelled before publication."));
     }
-    if (!content::ValidId(idView))
+    if (content::ValidId(idView) == false)
     {
         return failed(CS::Invalid, QStringLiteral("Use a stable lowercase resource ID, with digits, slash or hyphen."));
     }
@@ -63,7 +63,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
         return failed(CS::Unsupported, QStringLiteral("Choose a WAV or FLAC source."));
     }
     QFile input(file);
-    if (!input.open(QIODevice::ReadOnly) || input.size() <= 0 ||
+    if (input.open(QIODevice::ReadOnly) == false || input.size() <= 0 ||
         static_cast<uint64>(input.size()) > audio::BROWSER_ENCODED_CAP_BYTES)
     {
         return failed(CS::IoError, QStringLiteral("Cannot read source, or it exceeds the encoded audio limit."));
@@ -91,7 +91,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     const bool fresh = status == CS::NotFound;
     content::Catalog catalog;
     content::Diagnostic diagnostic;
-    if (!fresh && (status != CS::Ok || catalog.Read(oldCatalog.String(), diagnostic) != CS::Ok))
+    if (fresh == false && (status != CS::Ok || catalog.Read(oldCatalog.String(), diagnostic) != CS::Ok))
     {
         return failed(status == CS::Ok ? CS::Invalid : status,
                       QStringLiteral("Catalog is unreadable or invalid; it has not been replaced."));
@@ -237,7 +237,7 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
     // Revalidate every consulted dependency and the source snapshot before the
     // publication boundary. SaveFile still supplies the final catalog CAS.
     QFile currentInput(file);
-    if (!currentInput.open(QIODevice::ReadOnly) || currentInput.size() != data.size() ||
+    if (currentInput.open(QIODevice::ReadOnly) == false || currentInput.size() != data.size() ||
         currentInput.read(readCap) != data)
     {
         return failed(CS::Conflict, QStringLiteral("Source changed during validation; retry."));
@@ -256,11 +256,11 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
             return failed(CS::Conflict, QStringLiteral("Dependency changed during validation; refresh and retry."));
         }
     }
-    if (cancelled() || !gate.Publish())
+    if (cancelled() || gate.Publish() == false)
     {
         return failed(CS::Cancelled, QStringLiteral("Import cancelled before publication."));
     }
-    if (!QDir().mkpath(root + QStringLiteral("/sources")))
+    if (QDir().mkpath(root + QStringLiteral("/sources")) == false)
     {
         return failed(CS::IoError, QStringLiteral("Cannot create the content source directory."));
     }

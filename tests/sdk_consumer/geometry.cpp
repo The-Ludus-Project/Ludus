@@ -1,13 +1,16 @@
 // Installed Ludus::FoundationGeometry: prepare a path and track, build a
 // Certified distance map and invert a distance, then bake frames, project a
-// point and emit a ribbon sweep through public headers only.
+// point and emit a ribbon sweep, and prepare a twisted patch and build a mesh
+// with a Certified bound, through public headers only.
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/geometry/distance.hpp>
 #include <ludus/foundation/geometry/frame.hpp>
 #include <ludus/foundation/geometry/path.hpp>
 #include <ludus/foundation/geometry/query.hpp>
+#include <ludus/foundation/geometry/surface.hpp>
 #include <ludus/foundation/geometry/sweep.hpp>
+#include <ludus/foundation/geometry/tessellation.hpp>
 #include <ludus/foundation/geometry/track.hpp>
 #include <ludus/foundation/math/enclosure.hpp>
 
@@ -39,6 +42,7 @@ bool ExerciseInstalledGeometry() noexcept
         .MaxSubdivisions = 64,
         .MaxIterations = 128,
         .MaxPreparedBytes = 1U << 16U,
+        .MaxPatches = 4,
     };
     PreparedPath path;
     PreparedDistanceMap map;
@@ -131,6 +135,48 @@ bool ExerciseInstalledGeometry() noexcept
                          plan.GetView(),
                          BorrowedView<SweepVertex>(vertices.GetData(), vertices.GetSize()),
                          BorrowedView<uint32>(indices.GetData(), indices.GetSize())) == GeometryStatus::Success;
+
+    // The saddle z = 9uv as a bicubic patch: one cell's triangle pair deviates by exactly the 9/4 twist bound.
+    SurfacePatchSource patch;
+    patch.Id = 1;
+    for (ludus::foundation::usize i = 0; i < PATCH_CONTROL_ORDER; ++i)
+    {
+        for (ludus::foundation::usize j = 0; j < PATCH_CONTROL_ORDER; ++j)
+        {
+            const ludus::foundation::core::float64 u = static_cast<ludus::foundation::core::float64>(i);
+            const ludus::foundation::core::float64 v = static_cast<ludus::foundation::core::float64>(j);
+            patch.Control[i][j] = Vector3d{u, v, u * v};
+        }
+    }
+    PreparedSurface surface;
+    SurfaceMesh mesh;
+    const SurfaceMeshProfile meshProfile
+    {
+        .PositionError = 2.25 * 1.001,
+        .Degeneracy = SurfaceDegeneracyPolicy::Report,
+        .Limits =
+            SurfaceMeshLimits
+            {
+                .MaxCellTests = 4,
+                .MaxVertices = 16,
+                .MaxTriangles = 16,
+                .MaxOutputBytes = 1U << 16U,
+            },
+    };
+    const bool isSurfaceOk =
+        TryPrepareSurface(
+            SurfaceSource
+            {
+                .Patches = BorrowedView<const SurfacePatchSource>(&patch, 1),
+                .Adjacency = {},
+            },
+            SurfacePreparation{ .Tolerance = tolerance, .Limits = limits },
+            surface,
+            nullptr) == GeometryStatus::Success &&
+        TryBuildSurfaceMesh(surface.GetView(), meshProfile, mesh, nullptr) == GeometryStatus::Success &&
+        mesh.GetView().Report.PositionGuarantee == GuaranteeClass::Certified &&
+        mesh.GetView().Report.PositionBound >= 2.25 && mesh.GetView().Report.PositionBound <= 2.25 * (1.0 + 1e-12) &&
+        mesh.GetView().Indices.GetSize() == 6;
     return isPathOk == true && isTrackOk == true && isFrameOk == true && isProjectionOk == true && isSweepOk == true &&
-           IsStrictGuarantee(GuaranteeClass::Certified) == true;
+           isSurfaceOk == true && IsStrictGuarantee(GuaranteeClass::Certified) == true;
 }

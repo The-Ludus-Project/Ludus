@@ -42,7 +42,8 @@ usize Descriptors()
 #if defined(LUDUS_PLATFORM_LINUX)
     std::error_code error;
     usize count = 0;
-    for (std::filesystem::directory_iterator it("/proc/self/fd", error), end; !error && it != end; it.increment(error))
+    for (std::filesystem::directory_iterator it("/proc/self/fd", error), end; error.value() == 0 && it != end;
+         it.increment(error))
     {
         ++count;
     }
@@ -51,7 +52,8 @@ usize Descriptors()
     // /dev/fd lists live descriptors on Darwin; the iterator itself adds one.
     std::error_code error;
     usize count = 0;
-    for (std::filesystem::directory_iterator it("/dev/fd", error), end; !error && it != end; it.increment(error))
+    for (std::filesystem::directory_iterator it("/dev/fd", error), end; error.value() == 0 && it != end;
+         it.increment(error))
     {
         ++count;
     }
@@ -131,7 +133,7 @@ int main(int argc, char** argv)
     }
     const uint32 workers = static_cast<uint32>(std::strtoul(argv[3], nullptr, 10));
     ProviderHandle storage, provider;
-    if (!CreateDirectoryProvider(argv[1], storage).Succeeded())
+    if (CreateDirectoryProvider(argv[1], storage).Succeeded() == false)
     {
         return 2;
     }
@@ -140,14 +142,14 @@ int main(int argc, char** argv)
     {
         provider = storage;
     }
-    else if (!CreatePackProvider(storage, layout, {}, provider).Succeeded())
+    else if (CreatePackProvider(storage, layout, {}, provider).Succeeded() == false)
     {
         return 3;
     }
     const auto beforeOpen = AsyncNow();
     const Mount mount{Root::Assets, {}, 0, 1, provider};
     MountSnapshot snapshot;
-    if (!MountSnapshot::Create({&mount, 1}, 1, snapshot).Succeeded())
+    if (MountSnapshot::Create({&mount, 1}, 1, snapshot).Succeeded() == false)
     {
         return 4;
     }
@@ -157,7 +159,8 @@ int main(int argc, char** argv)
         char name[32]{};
         std::snprintf(name, sizeof(name), "%s/%02zu", index < 64 ? "small" : "large", index < 64 ? index : index - 64);
         VirtualPath path;
-        if (!path.Set(Root::Assets, name).Succeeded() || !snapshot.OpenRead(path, files[index]).Outcome.Succeeded())
+        if (path.Set(Root::Assets, name).Succeeded() == false ||
+            snapshot.OpenRead(path, files[index]).Outcome.Succeeded() == false)
         {
             return 5;
         }
@@ -190,7 +193,7 @@ int main(int argc, char** argv)
                 const auto begin = AsyncNow();
                 const ReadResult result = files[fileIndex].ReadAt(offset, {buffers.GetData(), length});
                 samples[index] = {AsyncNow() - begin, 0, AsyncNow() - begin};
-                if (!result.Outcome.Succeeded() || result.BytesRead != length)
+                if (result.Outcome.Succeeded() == false || result.BytesRead != length)
                 {
                     return 7;
                 }
@@ -233,7 +236,7 @@ int main(int argc, char** argv)
                 ReadCompletion completion;
                 if (reader.Poll(completion))
                 {
-                    if (!completion.Read.Outcome.Succeeded() || completion.Disposition != ReadDisposition::Read)
+                    if (completion.Read.Outcome.Succeeded() == false || completion.Disposition != ReadDisposition::Read)
                     {
                         return 9;
                     }
@@ -316,7 +319,7 @@ int main(int argc, char** argv)
                 return 12;
             }
             ReadCompletion completion;
-            while (!reader.Poll(completion))
+            while (reader.Poll(completion) == false)
             {
                 std::this_thread::yield();
             }

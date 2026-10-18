@@ -1,9 +1,10 @@
 """Cook verified RG1 packages into typed, numeric Renderer execution headers.
 
 The neutral records belong to Ludus::RenderGraphFormat, not this tool or Renderer.
-Only the static opaque six-location profile is admitted; runtime scene/camera
-values remain separate. Unsupported resource topology and recipes reject before
-writing the output. No shader configurations are synthesized.
+Only the static six-location profile is admitted, with opaque and explicitly
+authored masked technique families and per-draw scalar/vector uniform bindings;
+runtime scene/camera/uniform values remain separate. Unsupported resource topology
+and recipes reject before writing the output. No shader configurations are synthesized.
 """
 from __future__ import annotations
 
@@ -11,13 +12,26 @@ import json
 from pathlib import Path
 import struct
 
+from . import render_graph as graph
 from . import render_graph_build as build
 
 MAX_PASSES = 16
 MAX_RESOURCES = 32
 MAX_CAMERAS = 8
-FORMAT_VERSION = 1
+MAX_UNIFORM_VALUES = 64
+MAX_UNIFORM_BINDINGS = 16
+MAX_UNIFORM_FIELDS = 256
+MAX_UNIFORM_BLOCK_BYTES = 1024
+UNIFORM_SLOT_COUNT = 8
+FORMAT_VERSION = 2
 ABSENT = 0xFFFFFFFF
+# Exact technique identities and their numeric program roles, in format order.
+PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
+            'DefaultStaticMasked.ColorAndDepth': 'MaskedColorAndDepth', 'DefaultStaticMasked.DepthOnly': 'MaskedDepthOnly'}
+PROGRAM_CODES = {name: code for code, name in enumerate(PROGRAMS.values())}
+PROGRAM_MEMBERS = {'ColorAndDepth': 'Color', 'DepthOnly': 'Depth', 'MaskedColorAndDepth': 'MaskedColor',
+                   'MaskedDepthOnly': 'MaskedDepth'}
+VISIBILITY = {'Vertex': 1, 'Fragment': 2, 'Both': 3}
 
 
 def resolve_generation(path):
@@ -40,9 +54,9 @@ def lower_plan(package, configuration):
     rasters = [p for p in plan['passes'] if p['kind'] == 'Raster']
     cameras = sorted({p['view'] for p in rasters})
     build.require(all(p['kind'] in ('Raster', 'Export', 'Present') for p in plan['passes']) and
-                  all(p['configuration'] in ('ColorAndDepth', 'DepthOnly') and
-                      p['technique'] == 'DefaultStaticOpaque.' + p['configuration'] and
-                      p['vertex_layout'] == 'RendererStatic' and p['material'] == 'DefaultOpaque' for p in rasters),
+                  all(p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
+                      p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] and
+                      p['technique'] in PROGRAMS and p['vertex_layout'] == 'RendererStatic' for p in rasters),
                   'Configuration', configuration, 'unqualified operation/layout/material/technique')
     build.require(0 < len(rasters) <= MAX_PASSES and 0 < len(resources) <= MAX_RESOURCES and len(cameras) <= MAX_CAMERAS,
                   'Capacity', configuration, 'Renderer execution limits exceeded')
@@ -86,7 +100,7 @@ def lower_plan(package, configuration):
         color_load = color['load'] if color else ('Load' if color_defined[physical] else 'Discard')
         color_store = color['store'] if color else ('Store' if color_defined[physical] else 'Discard')
         color_defined[physical] = color_store == 'Store' and (color_load == 'Clear' or color_load == 'Load' and color_defined[physical])
-        pass_records.append({'Program': operation['configuration'], 'Camera': cameras.index(operation['view']),
+        pass_records.append({'Program': PROGRAMS[operation['technique']], 'Camera': cameras.index(operation['view']),
                              'Color': resources.index(color['resource']) if color else ABSENT,
                              'Depth': resources.index(depth), 'ColorLoad': color_load, 'ColorStore': color_store,
                              'DepthLoad': attachment['depth']['load'], 'DepthStore': attachment['depth']['store'],
@@ -98,21 +112,108 @@ STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 1
+PACKAGE_VERSION = 2
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
 MAX_ENTRY_BYTES = 63
-ROLES = {('ColorAndDepth', 'vertex'): 0, ('ColorAndDepth', 'fragment'): 1,
-         ('DepthOnly', 'vertex'): 2, ('DepthOnly', 'fragment'): 3}
 TARGET_CODES = {'metal': 0, 'spirv': 1, 'wgsl': 2, 'glsl': 3}
+TARGET_NAMES = {'metal': 'Metal', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 FORMAT_CODES = {'Float32': 0, 'Float2': 1, 'Float3': 2, 'Float4': 3}
+
+
+def role(program, stage):
+    """Numeric StageRole: two consecutive roles (vertex, fragment) per program."""
+    return PROGRAM_CODES[program] * 2 + (0 if stage == 'vertex' else 1)
+
+
+def _lower_uniforms(package, stages):
+    """Merge per-stage reflected layouts into neutral uniform tables.
+
+    Each technique slot reads one schema; a slot declared by both stages must have
+    the identical schema and target layout. Logical values are grouped by schema,
+    in identifier order, so techniques sharing a schema share one value span.
+    """
+    schemas = {s['id']: s for s in package['schemas'] if s['role'] == 'Uniform'}
+    targets = sorted({key[2] for key in stages}, key=TARGET_CODES.get)
+    merged = {}
+    for (program, stage, target), record in sorted(stages.items()):
+        for layout in record['descriptor'].get('layouts', []):
+            slot = layout['slot']
+            build.require(type(slot) is int and 0 <= slot < UNIFORM_SLOT_COUNT and layout['schema'] in schemas,
+                          'Configuration', record['id'], 'uniform binding outside the admitted profile')
+            shape = {'size': layout['size'], 'fields': [(f['id'], f['type'], f['offset']) for f in layout['fields']]}
+            entry = merged.setdefault((program, slot), {'schema': layout['schema'], 'stages': set(), 'layouts': {}})
+            build.require(entry['schema'] == layout['schema'] and entry['layouts'].get(target, shape) == shape,
+                          'Configuration', record['id'], 'one technique slot needs one schema and layout in every stage')
+            entry['stages'].add(stage)
+            entry['layouts'][target] = shape
+    for (program, slot), entry in merged.items():
+        build.require(set(entry['layouts']) == set(targets), 'Configuration', program,
+                      'every carried target needs the binding layout')
+    used = sorted({entry['schema'] for entry in merged.values()})
+    offsets, count = {}, 0
+    for schema in used:
+        offsets[schema] = count
+        count += sum(build.SHAPES[f['type']][1] for f in schemas[schema]['fields'])
+    build.require(count <= MAX_UNIFORM_VALUES and len(merged) <= MAX_UNIFORM_BINDINGS, 'Capacity', 'uniforms',
+                  'per-draw uniform values or bindings exceed the runtime profile')
+    bindings, blocks, fields = [], [], []
+    for index, ((program, slot), entry) in enumerate(sorted(merged.items(), key=lambda x: (PROGRAM_CODES[x[0][0]], x[0][1]))):
+        schema = schemas[entry['schema']]
+        values = sum(build.SHAPES[f['type']][1] for f in schema['fields'])
+        visibility = 'Both' if len(entry['stages']) == 2 else ('Vertex' if 'vertex' in entry['stages'] else 'Fragment')
+        bindings.append({'Program': program, 'Slot': slot, 'Stages': visibility,
+                         'ValueOffset': offsets[entry['schema']], 'ValueCount': values, 'schema': entry['schema'],
+                         'layouts': {t: entry['layouts'][t] for t in targets}})
+        for target in targets:
+            layout = entry['layouts'][target]
+            build.require(type(layout['size']) is int and 0 < layout['size'] <= MAX_UNIFORM_BLOCK_BYTES,
+                          'Configuration', program, 'uniform block size outside the runtime profile')
+            blocks.append({'Binding': index, 'Target': target, 'Size': layout['size']})
+            relative = 0
+            build.require([f[0] for f in layout['fields']] == [f['id'] for f in schema['fields']],
+                          'Configuration', program, 'uniform layout fields differ from schema order')
+            for (fid, kind, offset), source in zip(layout['fields'], schema['fields']):
+                components = build.SHAPES[kind][1]
+                build.require(kind == source['type'] and type(offset) is int and offset % 4 == 0 and
+                              offset + 4 * components <= layout['size'],
+                              'Configuration', program, 'invalid uniform field extent')
+                fields.append({'Binding': index, 'Target': target, 'ValueOffset': relative,
+                               'Components': components, 'ByteOffset': offset})
+                relative += components
+    build.require(len(fields) <= MAX_UNIFORM_FIELDS, 'Capacity', 'uniforms', 'uniform field records exceed the runtime profile')
+    interface = [{'schema': schemas[s], 'value_offset': offsets[s],
+                  'bindings': [{'technique': b['Program'], 'slot': b['Slot'], 'stages': b['Stages'], 'layouts': b['layouts']}
+                               for b in bindings if b['schema'] == s]} for s in used]
+    return count, bindings, blocks, fields, interface
+
+
+def _stage_bindings(program, stage, bindings):
+    """RasterBinding requirements of one stage: its slots, with the largest carried block size."""
+    result = []
+    for binding in bindings:
+        if binding['Program'] == program and (binding['Stages'] == 'Both' or binding['Stages'] == stage.title()):
+            result.append({'slot': binding['Slot'], 'visibility': stage.title(),
+                           'size': max(layout['size'] for layout in binding['layouts'].values())})
+    return result
+
+
+def _block_names(descriptor):
+    """GLSL ES uniform block names by slot, from the verified emitted interface."""
+    names = []
+    for slot, name in sorted((int(k), v) for k, v in descriptor['interface'].get('blocks', {}).items()):
+        build.require(type(name) is str and 0 < len(name) <= MAX_ENTRY_BYTES and name.isascii() and
+                      (name[0].isalpha() or name[0] == '_') and all(c.isalnum() or c == '_' for c in name),
+                      'Package', descriptor.get('entry', 'stage'), 'invalid GLSL ES uniform block name')
+        names.append((slot, name))
+    return names
 
 
 def _runtime_contents(path, configuration):
     """Lower one verified static generation into numeric plan records and stage artifacts.
 
     Shared by the compiled-header and runtime-package emitters, so both carry the
-    same plan, programs and CPU interface identity for a given generation.
+    same plan, uniform tables, programs and CPU interface identity for a generation.
     """
     path = resolve_generation(path)
     package = build.verify_package(path)
@@ -122,20 +223,25 @@ def _runtime_contents(path, configuration):
     stages = {}
     vertex_schemas = []
     for technique in plan['techniques']:
-        mode = technique.split('.')[1]
+        program_name = PROGRAMS[technique]
         recipes = [r for r in package['recipes'] if r['technique'] == technique]
         for recipe in recipes:
             vertex_schemas.append(recipe['vertex_schema'])
             for stage in ('vertex', 'fragment'):
                 matches = [p for p in package['programs'] if p['key'] == recipe[stage] and p['profile'] == recipe['profile']]
                 build.require(len(matches) == 1, 'Package', technique, 'stage identity is ambiguous')
-                key = (mode, stage, recipe['profile'])
+                key = (program_name, stage, recipe['profile'])
                 build.require(key not in stages or stages[key]['key'] == matches[0]['key'],
                               'Configuration', technique, 'multiple stage programs for one static role/profile')
                 stages[key] = matches[0]
-    if 'DefaultStaticOpaque.ColorAndDepth' in plan['techniques'] and 'DefaultStaticOpaque.DepthOnly' in plan['techniques']:
-        build.require(all(stages[('ColorAndDepth', 'vertex', t)]['key'] == stages[('DepthOnly', 'vertex', t)]['key']
-                          for t in package['profiles']), 'Configuration', configuration, 'geometry programs must match exactly')
+    for color, depth in (('ColorAndDepth', 'DepthOnly'), ('MaskedColorAndDepth', 'MaskedDepthOnly')):
+        if any(k[0] == color for k in stages) and any(k[0] == depth for k in stages):
+            build.require(all(stages[(color, 'vertex', t)]['key'] == stages[(depth, 'vertex', t)]['key']
+                              for t in package['profiles']), 'Configuration', configuration, 'geometry programs must match exactly')
+    if any(k[0] == 'MaskedDepthOnly' for k in stages) and any(k[0] == 'DepthOnly' for k in stages):
+        build.require(all(stages[('MaskedDepthOnly', 'fragment', t)]['key'] != stages[('DepthOnly', 'fragment', t)]['key']
+                          for t in package['profiles']), 'Configuration', configuration,
+                      'masked coverage requires a separately authored depth function')
     build.require(vertex_schemas and all(v == vertex_schemas[0] for v in vertex_schemas), 'Configuration', configuration,
                   'selected techniques must share one vertex interface')
     camera_targets = []
@@ -143,11 +249,14 @@ def _runtime_contents(path, configuration):
         choices = [c for c in plan['cameras'] if c['id'] == camera and c['active']]
         build.require(len(choices) == 1, 'Configuration', camera, 'active camera target required')
         camera_targets.append(sorted(plan['resources']).index(choices[0]['target']))
+    value_count, bindings, blocks, fields, uniform_interface = _lower_uniforms(package, stages)
     artifacts = {}
-    for ordinal, (key, program) in enumerate(sorted(stages.items())):
-        mode, stage, target = key
+    for ordinal, (key, program) in enumerate(sorted(stages.items(), key=lambda x: (role(x[0][0], x[0][1]), TARGET_CODES[x[0][2]]))):
+        program_name, stage, target = key
         descriptor = program['descriptor']
-        build.require(not descriptor['interface']['entries'], 'Configuration', program['id'], 'runtime static profile has no shader bindings')
+        build.require(all(e['kind'] == 'UniformBuffer' for e in descriptor['interface']['entries']) and
+                      len(descriptor['interface']['entries']) == len(descriptor.get('layouts', [])),
+                      'Configuration', program['id'], 'runtime profile admits only verified uniform bindings')
         expected = STATIC_INPUTS if stage == 'vertex' else []
         build.require([{k: v for k, v in x.items() if k != 'name'} for x in descriptor['interface']['inputs']] == expected,
                       'Configuration', program['id'], 'static vertex/instance interface mismatch')
@@ -163,13 +272,34 @@ def _runtime_contents(path, configuration):
         entry = descriptor['entry']
         build.require(type(entry) is str and 0 < len(entry.encode()) <= MAX_ENTRY_BYTES and entry.isascii(),
                       'Package', program['id'], 'invalid stage entry name')
-        artifacts[key] = {'ordinal': ordinal, 'descriptor': descriptor, 'bytes': artifact, 'entry': entry}
-    # CPU-visible interface: the logical vertex/instance schema and fixed static inputs.
-    # Uniform schemas join this identity when a bound runtime profile is qualified.
-    interface = {'version': 1, 'vertex_schema': vertex_schemas[0], 'inputs': STATIC_INPUTS, 'uniform_schemas': []}
+        names = _block_names(descriptor) if target == 'glsl' else []
+        build.require(target != 'glsl' or [n[0] for n in names] == sorted(b['slot'] for b in _stage_bindings(program_name, stage, bindings)),
+                      'Package', program['id'], 'GLSL ES uniform blocks differ from the stage bindings')
+        artifacts[key] = {'ordinal': ordinal, 'descriptor': descriptor, 'bytes': artifact, 'entry': entry, 'blocks': names}
+    # CPU-visible interface: the logical vertex/instance schema, fixed static inputs,
+    # and the per-draw uniform schemas with every target layout that packs them.
+    interface = {'version': 1, 'vertex_schema': vertex_schemas[0], 'inputs': STATIC_INPUTS, 'uniform_schemas': uniform_interface}
     return {'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
+            'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
+            'uniform_interface': uniform_interface,
             'interface_identity': build.identity(interface), 'generation': path.name}
+
+
+def _uniform_constants(contents):
+    """Named logical value offsets for host code, one per schema field."""
+    lines, names = [], set()
+    for entry in contents['uniform_interface']:
+        offset = entry['value_offset']
+        for field in entry['schema']['fields']:
+            name = 'UNIFORM_VALUE_' + entry['schema']['id'].upper() + '_' + field['id'].upper()
+            build.require(name not in names, 'Schema', name, 'generated uniform value name collision; rename the field')
+            names.add(name)
+            lines += [f'/// First logical float32 value of {entry["schema"]["id"]}.{field["id"]} '
+                      f'({build.SHAPES[field["type"]][1]} components) in RenderGraphItem::Uniforms.',
+                      f'inline constexpr foundation::usize {name} = {offset};']
+            offset += build.SHAPES[field['type']][1]
+    return lines
 
 
 def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGraph'):
@@ -191,36 +321,58 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
              'namespace format = content::render_graph_format;', 'namespace renderer = graphics::renderer;', 'namespace rhi = graphics::rhi;',
              f'inline constexpr foundation::usize RESOURCE_COUNT = {len(resources)};',
              f'inline constexpr foundation::usize PASS_COUNT = {len(passes)};',
-             f'inline constexpr foundation::usize CAMERA_COUNT = {len(cameras)};']
-    for label, values, ty in [('RESOURCES', resources, 'Resource'), ('PASSES', passes, 'Pass')]:
-        lines += [f'inline constexpr foundation::StaticArray<format::{ty}, {"RESOURCE_COUNT" if label == "RESOURCES" else "PASS_COUNT"}> {label}', '{', '    {']
+             f'inline constexpr foundation::usize CAMERA_COUNT = {len(cameras)};',
+             '/// Logical float32 values each drawn RenderGraphItem supplies; zero when no technique binds uniforms.',
+             f'inline constexpr foundation::usize UNIFORM_VALUE_COUNT = {contents["uniform_values"]};',
+             f'inline constexpr foundation::usize UNIFORM_BINDING_COUNT = {len(contents["bindings"])};',
+             f'inline constexpr foundation::usize UNIFORM_BLOCK_COUNT = {len(contents["blocks"])};',
+             f'inline constexpr foundation::usize UNIFORM_FIELD_COUNT = {len(contents["fields"])};']
+    lines += _uniform_constants(contents)
+    kinds = {'Kind': 'Aspect', 'Program': 'Technique', 'ColorLoad': 'Load', 'DepthLoad': 'Load', 'ColorStore': 'Store',
+             'DepthStore': 'Store', 'Stages': 'Visibility', 'Target': 'ShaderTarget'}
+    tables = [('RESOURCES', resources, 'Resource', 'RESOURCE_COUNT'), ('PASSES', passes, 'Pass', 'PASS_COUNT'),
+              ('UNIFORM_BINDINGS', contents['bindings'], 'UniformBinding', 'UNIFORM_BINDING_COUNT'),
+              ('UNIFORM_BLOCKS', contents['blocks'], 'UniformBlock', 'UNIFORM_BLOCK_COUNT'),
+              ('UNIFORM_FIELDS', contents['fields'], 'UniformField', 'UNIFORM_FIELD_COUNT')]
+    for label, values, ty, count in tables:
+        if not values:
+            continue
+        lines += [f'inline constexpr foundation::StaticArray<format::{ty}, {count}> {label}', '{', '    {']
         for value in values:
             cells = []
             for field, item in value.items():
-                if isinstance(item, str):
-                    kind = {'Kind': 'Aspect', 'Program': 'Technique', 'ColorLoad': 'Load', 'DepthLoad': 'Load', 'ColorStore': 'Store', 'DepthStore': 'Store'}[field]
-                    cells.append('format::' + kind + '::' + item)
+                if field in ('schema', 'layouts'):
+                    continue
+                if field == 'Target':
+                    cells.append('format::ShaderTarget::' + TARGET_NAMES[item])
+                elif isinstance(item, str):
+                    cells.append('format::' + kinds[field] + '::' + item)
                 else:
                     cells.append('format::ABSENT' if item == ABSENT else str(item))
             lines.append('        {' + ', '.join(cells) + '},')
         lines += ['    },', '};']
     lines += ['inline constexpr foundation::StaticArray<format::Camera, CAMERA_COUNT> CAMERAS', '{', '    {']
     lines += ['        {' + str(target) + '},' for target in contents['camera_targets']]
+    view = lambda label, values: '{' + label + '.GetData(), ' + label + '.GetSize()}' if values else '{}'
     lines += ['    },', '};', '/// Return numeric plan and borrowed immutable record tables.',
               '[[nodiscard]] LUDUS_INLINE renderer::RenderGraphPlan MakePlan() noexcept', '{',
-              f'    return {{{{format::VERSION, RESOURCE_COUNT, PASS_COUNT, {len(cameras)}}},',
-              '        {RESOURCES.GetData(), RESOURCES.GetSize()}, {CAMERAS.GetData(), CAMERAS.GetSize()}, {PASSES.GetData(), PASSES.GetSize()}};', '}']
+              '    return {{format::VERSION, RESOURCE_COUNT, PASS_COUNT, CAMERA_COUNT, UNIFORM_VALUE_COUNT,',
+              '             UNIFORM_BINDING_COUNT, UNIFORM_BLOCK_COUNT, UNIFORM_FIELD_COUNT},',
+              '        {RESOURCES.GetData(), RESOURCES.GetSize()}, {CAMERAS.GetData(), CAMERAS.GetSize()}, {PASSES.GetData(), PASSES.GetSize()},',
+              '        ' + ', '.join(view(label, values) for label, values in
+                                    [('UNIFORM_BINDINGS', contents['bindings']), ('UNIFORM_BLOCKS', contents['blocks']),
+                                     ('UNIFORM_FIELDS', contents['fields'])]) + '};', '}']
     identity = bytes.fromhex(contents['interface_identity'])
-    lines += ['/// SHA-256 of the CPU-visible vertex/instance interface this host was compiled against (RG3).',
+    lines += ['/// SHA-256 of the CPU-visible vertex/instance and uniform interface this host was compiled against (RG3).',
               '/// Runtime generations with another identity are rejected with RestartRequired.',
               'inline constexpr foundation::StaticArray<foundation::uint8, format::IDENTITY_BYTES> INTERFACE_IDENTITY', '{', '    {',
               '        ' + ', '.join(hex(b) for b in identity[:16]) + ',',
               '        ' + ', '.join(hex(b) for b in identity[16:]) + ',', '    },', '};']
     artifact_labels = {}
-    for key, item in sorted(contents['artifacts'].items()):
+    for key, item in sorted(contents['artifacts'].items(), key=lambda x: x[1]['ordinal']):
         ordinal = item['ordinal']
         label = 'PROGRAM_' + str(ordinal)
-        artifact_labels[key] = (label, item['descriptor'])
+        artifact_labels[key] = (label, item)
         artifact = item['bytes']
         if key[2] == 'spirv':
             words = struct.unpack('<' + 'I' * (len(artifact) // 4), artifact)
@@ -238,10 +390,10 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '[[nodiscard]] LUDUS_INLINE renderer::RenderGraphPrograms MakePrograms(',
               '    const rhi::RasterShaderDescription& compositeVertex,',
               '    const rhi::RasterShaderDescription& compositeFragment) noexcept', '{', '    renderer::RenderGraphPrograms result;']
-    for mode in ('ColorAndDepth', 'DepthOnly'):
+    for program_name in PROGRAMS.values():
         for stage in ('vertex', 'fragment'):
-            member = ('Color' if mode == 'ColorAndDepth' else 'Depth') + stage.title()
-            keys = [key for key in artifact_labels if key[0] == mode and key[1] == stage]
+            member = PROGRAM_MEMBERS[program_name] + stage.title()
+            keys = [key for key in artifact_labels if key[0] == program_name and key[1] == stage]
             if not keys:
                 continue
             lines.append('    result.' + member + '.Artifact.Stage = rhi::ShaderStage::' + stage.title() + ';')
@@ -251,17 +403,28 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                           f'    static constexpr foundation::StaticArray<rhi::RasterShaderInput, {constant}> {member}Inputs', '{', '        {']
                 lines += ['            {' + str(i) + ', rhi::RasterVertexFormat::' + ('Float3' if i == 0 else 'Float4') + '},' for i in range(6)]
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {member}Inputs.AsSpan();']
-            for key in sorted(keys):
-                label, descriptor = artifact_labels[key]
+            stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
+            if stage_bindings:
+                constant = member.upper() + '_BINDING_COUNT'
+                lines += [f'    static constexpr foundation::usize {constant} = {len(stage_bindings)};',
+                          f'    static constexpr foundation::StaticArray<rhi::RasterBinding, {constant}> {member}Bindings', '{', '        {']
+                lines += ['            {' + str(b['slot']) + ', rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::' +
+                          b['visibility'] + ', ' + str(b['size']) + '},' for b in stage_bindings]
+                lines += ['        },', '    };', f'    result.{member}.Bindings = {member}Bindings.AsSpan();']
+            for key in sorted(keys, key=lambda k: TARGET_CODES[k[2]]):
+                label, item = artifact_labels[key]
                 field = TARGET_FIELDS[key[2]]
                 lines += [f'    result.{member}.Artifact.{field} = ' + (label + '.AsSpan();' if key[2] == 'spirv' else label + ';'),
-                          f'    result.{member}.Artifact.{field}Entry = ' + json.dumps(descriptor['entry']) + ';']
+                          f'    result.{member}.Artifact.{field}Entry = ' + json.dumps(item['entry']) + ';']
+                for slot, block in item['blocks']:
+                    lines.append(f'    result.{member}.UniformBlocks[{slot}] = ' + json.dumps(block) + ';')
     lines += ['    result.CompositeVertex = compositeVertex;', '    result.CompositeFragment = compositeFragment;', '    return result;', '}', '}']
     destination = Path(destination).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     build.atomic(destination, ('\n'.join(lines) + '\n').encode())
     return {'header': str(destination), 'stage': 'RG2', 'configuration': configuration,
             'resources': len(resources), 'passes': len(passes), 'cameras': cameras,
+            'uniform_values': contents['uniform_values'], 'uniform_bindings': len(contents['bindings']),
             'interface_identity': contents['interface_identity'],
             'scene': next(p['scene'] for p in plan['passes'] if p['kind'] == 'Raster')}
 
@@ -269,31 +432,44 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
 def encode_runtime_package(contents):
     """Serialize lowered contents field by field in little-endian order.
 
-    Layout (runtime_package.h): header of six uint32 values (magic, version,
-    resource/pass/camera/stage counts) plus interface and generation identities;
-    resource, camera and pass records; then stage records with their static
-    inputs, entry name and artifact bytes, each zero-padded to four bytes.
+    Layout (runtime_package.h): header of ten uint32 values (magic, version,
+    resource/pass/camera counts, uniform value/binding/block/field counts and the
+    stage count) plus interface and generation identities; resource, camera, pass,
+    uniform binding, block and field records; then stage records with their static
+    inputs, GLSL ES block names, entry name and artifact bytes, each byte string
+    zero-padded to four bytes.
     """
     u32 = lambda *values: struct.pack('<' + 'I' * len(values), *values)
-    aspects, techniques = {'Color': 0, 'Depth': 1}, {'ColorAndDepth': 0, 'DepthOnly': 1}
+    aspects = {'Color': 0, 'Depth': 1}
     loads, stores = {'Clear': 0, 'Load': 1, 'Discard': 2}, {'Store': 0, 'Discard': 1}
-    stages = sorted(contents['artifacts'].items(), key=lambda item: (ROLES[item[0][:2]], TARGET_CODES[item[0][2]]))
+    stages = sorted(contents['artifacts'].items(), key=lambda item: item[1]['ordinal'])
     data = bytearray(u32(PACKAGE_MAGIC, PACKAGE_VERSION, len(contents['resources']), len(contents['passes']),
-                         len(contents['camera_targets']), len(stages)))
+                         len(contents['camera_targets']), contents['uniform_values'], len(contents['bindings']),
+                         len(contents['blocks']), len(contents['fields']), len(stages)))
     data += bytes.fromhex(contents['interface_identity']) + bytes.fromhex(contents['generation'])
     for r in contents['resources']:
         data += u32(r['Width'], r['Height'], aspects[r['Kind']], r['Backing'], r['IsSurface'], r['IsExported'])
     for target in contents['camera_targets']:
         data += u32(target)
     for p in contents['passes']:
-        data += u32(techniques[p['Program']], p['Camera'], p['Color'], p['Depth'], loads[p['ColorLoad']],
+        data += u32(PROGRAM_CODES[p['Program']], p['Camera'], p['Color'], p['Depth'], loads[p['ColorLoad']],
                     stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'])
-    for (mode, stage, target), item in stages:
+    for b in contents['bindings']:
+        data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
+    for b in contents['blocks']:
+        data += u32(b['Binding'], TARGET_CODES[b['Target']], b['Size'])
+    for f in contents['fields']:
+        data += u32(f['Binding'], TARGET_CODES[f['Target']], f['ValueOffset'], f['Components'], f['ByteOffset'])
+    for (program_name, stage, target), item in stages:
         inputs = STATIC_INPUTS if stage == 'vertex' else []
         entry = item['entry'].encode()
-        data += u32(ROLES[(mode, stage)], TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']))
+        data += u32(role(program_name, stage), TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
+                    len(item['blocks']))
         for value in inputs:
             data += u32(value['location'], FORMAT_CODES[value['format']])
+        for slot, block in item['blocks']:
+            encoded = block.encode()
+            data += u32(slot, len(encoded)) + encoded + bytes(-len(encoded) % 4)
         for blob in (entry, item['bytes']):
             data += blob + bytes(-len(blob) % 4)
     build.require(len(data) <= MAX_RUNTIME_BYTES, 'Capacity', 'runtime package', 'runtime generation exceeds 16 MiB')
@@ -309,15 +485,17 @@ def _cook_runtime(path, destination, *, configuration='Default'):
     return {'runtime_package': str(destination), 'stage': 'RG3', 'configuration': configuration,
             'generation': contents['generation'], 'interface_identity': contents['interface_identity'],
             'bytes': len(data), 'resources': len(contents['resources']), 'passes': len(contents['passes']),
+            'uniform_values': contents['uniform_values'], 'uniform_bindings': len(contents['bindings']),
             'stages': len(contents['artifacts']), 'profiles': sorted({key[2] for key in contents['artifacts']})}
 
 
 def cook_runtime(path, destination, *, configuration='Default'):
     """Write a runtime-loadable generation for atomic activation (RG3).
 
-    Contains the same plan records, stage artifacts and interface identity as
-    emit_runtime's header, without a source parser or shader compiler at runtime.
-    The destination is replaced atomically only after full package verification.
+    Contains the same plan records, uniform tables, stage artifacts and interface
+    identity as emit_runtime's header, without a source parser or shader compiler
+    at runtime. The destination is replaced atomically only after full package
+    verification.
     """
     try:
         return _cook_runtime(path, destination, configuration=configuration)

@@ -114,9 +114,9 @@ void Tick() noexcept
     }
     if (gStep == 0)
     {
-        if (!Accepted(gRenderer.Initialize(gDevice,
-                                           ludus::shaders::renderer_flat::Vertex(),
-                                           ludus::shaders::renderer_flat::Fragment())))
+        if (Accepted(gRenderer.Initialize(gDevice,
+                                          ludus::shaders::renderer_flat::Vertex(),
+                                          ludus::shaders::renderer_flat::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -129,8 +129,8 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
-                                                ludus::shaders::renderer_composite::Fragment())))
+        if (Accepted(gRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                               ludus::shaders::renderer_composite::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -143,9 +143,9 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gOverlays.Initialize(gDevice,
-                                           ludus::shaders::renderer_overlay::Vertex(),
-                                           ludus::shaders::renderer_overlay::Fragment())))
+        if (Accepted(gOverlays.Initialize(gDevice,
+                                          ludus::shaders::renderer_overlay::Vertex(),
+                                          ludus::shaders::renderer_overlay::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -160,9 +160,9 @@ void Tick() noexcept
         }
         const math::Vector3 vertices[]{{-.2F, -.2F, .5F}, {.2F, -.2F, .5F}, {.2F, .2F, .5F}, {-.2F, .2F, .5F}};
         const uint32 indices[]{0, 1, 2, 0, 2, 3};
-        if (!Accepted(gRenderer.CreateMesh({vertices, 4, indices, 6}, gMesh)) ||
+        if (Accepted(gRenderer.CreateMesh({vertices, 4, indices, 6}, gMesh)) == false ||
             ludus::qa::BuildL2List(gList, gAtlas) != rhi::RasterStatus::Ready ||
-            !Accepted(gAtlas.Publish(gDevice, gTexture)))
+            Accepted(gAtlas.Publish(gDevice, gTexture)) == false)
         {
             Stop(true);
             return;
@@ -207,7 +207,7 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             Stop(true);
             return;
@@ -221,7 +221,7 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(status))
+        if (Accepted(status) == false)
         {
             Stop(true);
             return;
@@ -282,7 +282,7 @@ int main()
     settings.Height = 64;
     settings.CanvasSelector = "#canvas";
     settings.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(settings, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(settings, gWindow) == false)
     {
         return 1;
     }
@@ -303,11 +303,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto start = time::NowTicks();
-    while (!gDone && time::NowTicks() - start < 15 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - start < 15 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

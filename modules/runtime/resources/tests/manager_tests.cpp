@@ -41,7 +41,7 @@ struct Backend final
         }
         auto& b = *static_cast<Backend*>(p);
         ++b.Polls;
-        if (!b.Complete)
+        if (b.Complete == false)
         {
             return r::Status::Pending;
         }
@@ -59,7 +59,7 @@ struct Backend final
         }
         auto& b = *static_cast<Backend*>(p);
         ++b.Retires;
-        if (!b.Complete || !b.Drain)
+        if (b.Complete == false || b.Drain == false)
         {
             return r::Status::Pending;
         }
@@ -80,7 +80,7 @@ struct Backend final
             }
             for (auto& job : b.Jobs)
             {
-                if (!job.Used)
+                if (job.Used == false)
                 {
                     ++b.Begins;
                     job.Used = true;

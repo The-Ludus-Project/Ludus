@@ -38,6 +38,12 @@ Window delegate notifications track focus, close, resize, backing-scale changes
 and minimization. Cocoa native descriptors report content dimensions in backing
 pixels, using the view's backing conversion rather than assuming a Retina scale.
 Minimized windows publish zero drawable dimensions; restoration refreshes them.
+`GetVisibility()` reports `Minimized` for a miniaturized window and `Occluded`
+while AppKit's window occlusion state has no visible part (fully covered by
+opaque windows, ordered out, a hidden application or another Space); the occlusion
+notification refreshes it. A process that cannot activate itself (macOS 14
+cooperative activation) may open behind another window and correctly start
+`Occluded`. Native loops use it to [lower their pacing rate](high-resolution-time.md#native-frame-pacing).
 `HandleEvent` returns false after close. Quit requests close all Ludus windows
 and let the engine perform teardown instead of exiting inside AppKit.
 

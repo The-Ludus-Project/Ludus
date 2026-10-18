@@ -73,7 +73,7 @@ struct Acquisition final
     void Run() noexcept
     {
         Bytes bytes;
-        if (!HasSnapshot)
+        if (HasSnapshot == false)
         {
             Result = ludus::content::ReadFile(Root.View(), "catalog.json", ludus::content::MAX_DOCUMENT_BYTES, bytes);
             if (Result != ContentStatus::Ok)
@@ -93,12 +93,12 @@ struct Acquisition final
             return;
         }
         IsMusic = entry->Type == ludus::content::Kind::Music;
-        if (entry->Type != ludus::content::Kind::Sound && !IsMusic)
+        if (entry->Type != ludus::content::Kind::Sound && IsMusic == false)
         {
             Result = ContentStatus::Invalid;
             return;
         }
-        if (!Draft && !MusicDraft)
+        if (Draft == false && MusicDraft == false)
         {
             Result =
                 ludus::content::ReadFile(Root.View(), entry->Path.View(), ludus::content::MAX_DOCUMENT_BYTES, bytes);
@@ -113,8 +113,9 @@ struct Acquisition final
                 return;
             }
         }
-        if ((IsMusic && MusicDefinition.Id.View() != Id.View()) || (!IsMusic && Definition.Id.View() != Id.View()) ||
-            (Draft && IsMusic) || (MusicDraft && !IsMusic))
+        if ((IsMusic && MusicDefinition.Id.View() != Id.View()) ||
+            (IsMusic == false && Definition.Id.View() != Id.View()) || (Draft && IsMusic) ||
+            (MusicDraft && IsMusic == false))
         {
             Result = ContentStatus::Invalid;
             return;
@@ -318,7 +319,7 @@ ContentStatus Loader::Begin(std::string_view root,
     {
         return ContentStatus::Pending;
     }
-    if (!ludus::content::ValidId(id) || root.size() > 4096 || (draft != nullptr && musicDraft != nullptr))
+    if (ludus::content::ValidId(id) == false || root.size() > 4096 || (draft != nullptr && musicDraft != nullptr))
     {
         return ContentStatus::Invalid;
     }
@@ -457,7 +458,7 @@ ContentStatus Loader::Poll(const Routing& routing, Lease& output, Diagnostic& di
     {
         return ContentStatus::NotFound;
     }
-    if (!job->Done.load(std::memory_order_acquire))
+    if (job->Done.load(std::memory_order_acquire) == false)
     {
         return ContentStatus::Pending;
     }
@@ -471,15 +472,15 @@ ContentStatus Loader::Poll(const Routing& routing, Lease& output, Diagnostic& di
 #endif
     SystemSnapshot audioState;
     mImpl->Audio.GetSystemSnapshot(audioState);
-    auto result = !job->Cancelled.load(std::memory_order_acquire) && job->Session == mImpl->Audio.GetSession() &&
-                          audioState.State == SystemState::Ready
-                      ? job->Result
-                      : ContentStatus::Cancelled;
+    ContentStatus result = job->Cancelled.load(std::memory_order_acquire) == false &&
+                                   job->Session == mImpl->Audio.GetSession() && audioState.State == SystemState::Ready
+                               ? job->Result
+                               : ContentStatus::Cancelled;
     diagnostic = job->Error;
     uint32 index = 64;
     for (uint32 i = 0; i < 64; ++i)
     {
-        if (!mImpl->Revisions[i].InUse && mImpl->Revisions[i].Generation < 0xFFFFFFFEU)
+        if (mImpl->Revisions[i].InUse == false && mImpl->Revisions[i].Generation < 0xFFFFFFFEU)
         {
             index = i;
             break;
@@ -505,7 +506,7 @@ ContentStatus Loader::Poll(const Routing& routing, Lease& output, Diagnostic& di
         return result;
     }
     revision.Count = 0;
-    if (!job->IsMusic)
+    if (job->IsMusic == false)
     {
         for (usize i = 0; i < job->Definition.VariationCount; ++i)
         {
@@ -526,7 +527,7 @@ ContentStatus Loader::Poll(const Routing& routing, Lease& output, Diagnostic& di
             {
                 for (uint32 j = 0; j < 64; ++j)
                 {
-                    if (!mImpl->Clips[j].InUse)
+                    if (mImpl->Clips[j].InUse == false)
                     {
                         clipIndex = j;
                         break;
@@ -591,14 +592,14 @@ ContentStatus Loader::GetSound(Lease lease, Sound& definition, app::EventDescrip
         return ContentStatus::Invalid;
     }
     const auto& revision = mImpl->Revisions[lease.Slot];
-    if (!revision.InUse || revision.Generation != lease.Generation || revision.Session != mImpl->Audio.GetSession() ||
-        revision.IsMusic)
+    if (revision.InUse == false || revision.Generation != lease.Generation ||
+        revision.Session != mImpl->Audio.GetSession() || revision.IsMusic)
     {
         return ContentStatus::Invalid;
     }
     for (usize i = 0; i < revision.Count; ++i)
     {
-        if (!mImpl->Audio.IsClipReady(revision.Descriptor.Variations[i]))
+        if (mImpl->Audio.IsClipReady(revision.Descriptor.Variations[i]) == false)
         {
             return ContentStatus::Cancelled;
         }
@@ -614,8 +615,8 @@ ContentStatus Loader::GetMusic(Lease lease, Music& definition) const noexcept
         return ContentStatus::Invalid;
     }
     const auto& revision = mImpl->Revisions[lease.Slot];
-    if (!revision.InUse || revision.Generation != lease.Generation || revision.Session != mImpl->Audio.GetSession() ||
-        !revision.IsMusic)
+    if (revision.InUse == false || revision.Generation != lease.Generation ||
+        revision.Session != mImpl->Audio.GetSession() || revision.IsMusic == false)
     {
         return ContentStatus::Invalid;
     }
@@ -633,7 +634,7 @@ Status Loader::PlayMusic(Lease lease, VoiceHandle& voice) noexcept
     Impl::Playing* free = nullptr;
     for (auto& playing : mImpl->Streams)
     {
-        if (!playing.InUse)
+        if (playing.InUse == false)
         {
             free = &playing;
             break;
@@ -677,7 +678,7 @@ ContentStatus Loader::Release(Lease lease) noexcept
         return ContentStatus::Invalid;
     }
     auto& revision = mImpl->Revisions[lease.Slot];
-    if (!revision.InUse || revision.Generation != lease.Generation)
+    if (revision.InUse == false || revision.Generation != lease.Generation)
     {
         return ContentStatus::Invalid;
     }
@@ -700,7 +701,7 @@ void Loader::Service() noexcept
     mImpl->Audio.Service();
     for (auto& playing : mImpl->Streams)
     {
-        if (!playing.InUse)
+        if (playing.InUse == false)
         {
             continue;
         }

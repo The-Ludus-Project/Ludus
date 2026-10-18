@@ -41,7 +41,7 @@ public:
         {
             return audio::Status::InvalidArgument;
         }
-        if (Paused && !request.SingleStep)
+        if (Paused && request.SingleStep == false)
         {
             return audio::Status::NotReady;
         }
@@ -60,7 +60,7 @@ public:
         }
         if (request.Entity.Slot >= 64)
         {
-            if (!request.Required)
+            if (request.Required == false)
             {
                 LastSequence = request.Sequence;
             }
@@ -68,7 +68,7 @@ public:
         }
         auto* mapping = &Owners[request.Entity.Slot];
         if (request.Entity.Generation < mapping->Entity.Generation ||
-            (request.Entity.Generation == mapping->Entity.Generation && !mapping->InUse))
+            (request.Entity.Generation == mapping->Entity.Generation && mapping->InUse == false))
         {
             LastSequence = request.Sequence;
             return audio::Status::Ok;
@@ -92,7 +92,7 @@ public:
         {
             if (NextTag == 0)
             {
-                if (!request.Required)
+                if (request.Required == false)
                 {
                     LastSequence = request.Sequence;
                 }
@@ -114,7 +114,7 @@ public:
                                                      sound.SuppressWhileActive);
         const auto status = result.Suppressed == audio::app::SuppressReason::TableFull ? audio::Status::VoiceCapacity
                                                                                        : result.EngineStatus;
-        if (status == audio::Status::Ok || !request.Required)
+        if (status == audio::Status::Ok || request.Required == false)
         {
             LastSequence = request.Sequence;
         }

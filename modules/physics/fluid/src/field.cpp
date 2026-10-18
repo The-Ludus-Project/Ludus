@@ -68,7 +68,7 @@ struct Field::Storage final
     }
     [[nodiscard]] bool Fluid(usize x, usize y) const noexcept
     {
-        return x < Width && y < Height && !Solid[CellIndex(x, y)];
+        return x < Width && y < Height && Solid[CellIndex(x, y)] == 0;
     }
     [[nodiscard]] bool OpenU(usize x, usize y) const noexcept
     {
@@ -80,7 +80,7 @@ struct Field::Storage final
     }
     [[nodiscard]] bool Wet(Point p) const noexcept
     {
-        if (!math::IsFinite(p.X) || !math::IsFinite(p.Y) || math::Abs(p.X) >= HalfExtent.X ||
+        if (math::IsFinite(p.X) == false || math::IsFinite(p.Y) == false || math::Abs(p.X) >= HalfExtent.X ||
             math::Abs(p.Y) >= HalfExtent.Y)
         {
             return false;
@@ -89,7 +89,7 @@ struct Field::Storage final
     }
     [[nodiscard]] bool ClearSegment(Point start, Point end) const noexcept
     {
-        if (!Wet(start) || !Wet(end))
+        if (Wet(start) == false || Wet(end) == false)
         {
             return false;
         }
@@ -113,7 +113,7 @@ struct Field::Storage final
             const float64 ty = y == endY ? 2.0 : (static_cast<float64>(y + (sy > 0 ? 1 : 0)) - a.Y) / delta.Y;
             if (math::Abs(tx - ty) <= 1e-12)
             {
-                if (!fluid(x + sx, y) || !fluid(x, y + sy))
+                if (fluid(x + sx, y) == false || fluid(x, y + sy) == false)
                 {
                     return false;
                 }
@@ -128,7 +128,7 @@ struct Field::Storage final
             {
                 y += sy;
             }
-            if (!fluid(x, y))
+            if (fluid(x, y) == false)
             {
                 return false;
             }
@@ -160,7 +160,7 @@ struct Field::Storage final
             {
                 const usize index = CellIndex(i == 0 ? ix : nx, j == 0 ? iy : ny);
                 const float64 weight = (i == 0 ? 1.0 - fx : fx) * (j == 0 ? 1.0 - fy : fy);
-                if (!Solid[index])
+                if (Solid[index] == 0)
                 {
                     total += weight;
                     result.Height += Cells[index].Height * weight;
@@ -255,7 +255,7 @@ struct Field::Storage final
             {
                 const usize index = CellIndex(x, y);
                 NextCells[index] = {};
-                if (!Solid[index])
+                if (Solid[index] == 0)
                 {
                     const Point p{(static_cast<float64>(x) + 0.5) * Dx - HalfExtent.X,
                                   (static_cast<float64>(y) + 0.5) * Dy - HalfExtent.Y};
@@ -343,7 +343,7 @@ struct Field::Storage final
             for (usize x = 0; x < Width; ++x)
             {
                 const usize i = CellIndex(x, y);
-                if (!Solid[i])
+                if (Solid[i] == 0)
                 {
                     NextCells[i].Height =
                         Cells[i].Height - dt * ((NextU[y * (Width + 1) + x + 1] - NextU[y * (Width + 1) + x]) / Dx +
@@ -408,7 +408,7 @@ Config Field::GetConfig() const noexcept
 
 Status Field::TryInitialize(const Config& config) noexcept
 {
-    if (!Valid(config))
+    if (Valid(config) == false)
     {
         return Status::InvalidArgument;
     }
@@ -424,12 +424,15 @@ Status Field::TryInitialize(const Config& config) noexcept
         candidate->CellCount = config.Width * config.Height;
         candidate->UFaceCount = (config.Width + 1) * config.Height;
         candidate->VFaceCount = config.Width * (config.Height + 1);
-        if (!candidate->U.TryResize(candidate->UFaceCount) || !candidate->NextU.TryResize(candidate->UFaceCount) ||
-            !candidate->V.TryResize(candidate->VFaceCount) || !candidate->NextV.TryResize(candidate->VFaceCount) ||
-            !candidate->Cells.TryResize(candidate->CellCount) ||
-            !candidate->NextCells.TryResize(candidate->CellCount) ||
-            !candidate->Solid.TryResize(candidate->CellCount) || !candidate->Pressure.TryResize(candidate->CellCount) ||
-            !candidate->DrainScale.TryResize(candidate->CellCount))
+        if (candidate->U.TryResize(candidate->UFaceCount) == false ||
+            candidate->NextU.TryResize(candidate->UFaceCount) == false ||
+            candidate->V.TryResize(candidate->VFaceCount) == false ||
+            candidate->NextV.TryResize(candidate->VFaceCount) == false ||
+            candidate->Cells.TryResize(candidate->CellCount) == false ||
+            candidate->NextCells.TryResize(candidate->CellCount) == false ||
+            candidate->Solid.TryResize(candidate->CellCount) == false ||
+            candidate->Pressure.TryResize(candidate->CellCount) == false ||
+            candidate->DrainScale.TryResize(candidate->CellCount) == false)
         {
             delete candidate;
             return Status::AllocationFailure;
@@ -447,21 +450,22 @@ Status Field::TryInitialize(const Config& config) noexcept
 
 Status Field::TryReset(std::span<const uint8> solids, std::span<const CellState> initial) noexcept
 {
-    if (!IsReady())
+    if (IsReady() == false)
     {
         return Status::NotReady;
     }
     auto& s = *mStorage;
-    if ((!solids.empty() && solids.size() != s.CellCount) || (!initial.empty() && initial.size() != s.CellCount))
+    if ((solids.empty() == false && solids.size() != s.CellCount) ||
+        (initial.empty() == false && initial.size() != s.CellCount))
     {
         return Status::InvalidArgument;
     }
     for (const auto& c : initial)
     {
-        if (!math::IsFinite(c.Height) || c.Height + s.Settings.Depth < s.Settings.MinimumDepth ||
-            math::Abs(c.Height) > s.Settings.Depth * 16.0 || !math::IsFinite(c.Foam) || c.Foam < 0.0 || c.Foam > 1.0 ||
-            !math::IsFinite(c.DisplacementX) || math::Abs(c.DisplacementX) > 12.0 || !math::IsFinite(c.DisplacementY) ||
-            math::Abs(c.DisplacementY) > 12.0)
+        if (math::IsFinite(c.Height) == false || c.Height + s.Settings.Depth < s.Settings.MinimumDepth ||
+            math::Abs(c.Height) > s.Settings.Depth * 16.0 || math::IsFinite(c.Foam) == false || c.Foam < 0.0 ||
+            c.Foam > 1.0 || math::IsFinite(c.DisplacementX) == false || math::Abs(c.DisplacementX) > 12.0 ||
+            math::IsFinite(c.DisplacementY) == false || math::Abs(c.DisplacementY) > 12.0)
         {
             return Status::InvalidArgument;
         }
@@ -488,7 +492,7 @@ Status Field::TryReset(std::span<const uint8> solids, std::span<const CellState>
 
 Status Field::TrySetVelocity(std::span<const float64> u, std::span<const float64> v) noexcept
 {
-    if (!IsReady())
+    if (IsReady() == false)
     {
         return Status::NotReady;
     }
@@ -501,7 +505,7 @@ Status Field::TrySetVelocity(std::span<const float64> u, std::span<const float64
     {
         for (const auto value : values)
         {
-            if (!math::IsFinite(value) || math::Abs(value) > s.Settings.MaxSpeed)
+            if (math::IsFinite(value) == false || math::Abs(value) > s.Settings.MaxSpeed)
             {
                 return Status::InvalidArgument;
             }
@@ -530,18 +534,18 @@ Status Field::TrySetVelocity(std::span<const float64> u, std::span<const float64
 
 Status Field::TrySetPressure(std::span<const float64> pressure) noexcept
 {
-    if (!IsReady())
+    if (IsReady() == false)
     {
         return Status::NotReady;
     }
     auto& s = *mStorage;
-    if (!pressure.empty() && pressure.size() != s.CellCount)
+    if (pressure.empty() == false && pressure.size() != s.CellCount)
     {
         return Status::InvalidArgument;
     }
     for (const auto value : pressure)
     {
-        if (!math::IsFinite(value) || math::Abs(value) > s.Settings.MaxPressure)
+        if (math::IsFinite(value) == false || math::Abs(value) > s.Settings.MaxPressure)
         {
             return Status::InvalidArgument;
         }
@@ -556,15 +560,16 @@ Status Field::TrySetPressure(std::span<const float64> pressure) noexcept
 
 Status Field::TryAddStroke(const Stroke& stroke) noexcept
 {
-    if (!IsReady())
+    if (IsReady() == false)
     {
         return Status::NotReady;
     }
     auto& s = *mStorage;
-    if (!math::IsFinite(stroke.Radius) || stroke.Radius < 1e-6 || stroke.Radius > 2000.0 ||
-        !math::IsFinite(stroke.Spacing) || stroke.Spacing < 1e-6 || stroke.Spacing > 2000.0 ||
-        !math::IsFinite(stroke.Strength) || math::Abs(stroke.Strength) > 1000.0 || !math::IsFinite(stroke.Start.X) ||
-        !math::IsFinite(stroke.Start.Y) || !math::IsFinite(stroke.End.X) || !math::IsFinite(stroke.End.Y))
+    if (math::IsFinite(stroke.Radius) == false || stroke.Radius < 1e-6 || stroke.Radius > 2000.0 ||
+        math::IsFinite(stroke.Spacing) == false || stroke.Spacing < 1e-6 || stroke.Spacing > 2000.0 ||
+        math::IsFinite(stroke.Strength) == false || math::Abs(stroke.Strength) > 1000.0 ||
+        math::IsFinite(stroke.Start.X) == false || math::IsFinite(stroke.Start.Y) == false ||
+        math::IsFinite(stroke.End.X) == false || math::IsFinite(stroke.End.Y) == false)
     {
         return Status::InvalidArgument;
     }
@@ -573,7 +578,7 @@ Status Field::TryAddStroke(const Stroke& stroke) noexcept
     {
         return Status::OutsideDomain;
     }
-    if (!s.Wet(stroke.Start) || !s.Wet(stroke.End))
+    if (s.Wet(stroke.Start) == false || s.Wet(stroke.End) == false)
     {
         return Status::SolidCell;
     }
@@ -588,7 +593,7 @@ Status Field::TryAddStroke(const Stroke& stroke) noexcept
     {
         return Status::WorkLimit;
     }
-    if (!s.ClearSegment(stroke.Start, stroke.End))
+    if (s.ClearSegment(stroke.Start, stroke.End) == false)
     {
         return Status::SolidCell;
     }
@@ -650,7 +655,7 @@ Status Field::TryAddStroke(const Stroke& stroke) noexcept
 
 Status Field::TryGetStepLimit(float64& seconds) const noexcept
 {
-    if (!IsReady())
+    if (IsReady() == false)
     {
         return Status::NotReady;
     }
@@ -665,16 +670,16 @@ Status Field::TryGetStepLimit(float64& seconds) const noexcept
 }
 Status Field::TryAdvance(float64 seconds, StepInfo& info) noexcept
 {
-    if (!IsReady())
+    if (IsReady() == false)
     {
         return Status::NotReady;
     }
-    if (!math::IsFinite(seconds) || seconds < 0.0 || seconds > 0.25)
+    if (math::IsFinite(seconds) == false || seconds < 0.0 || seconds > 0.25)
     {
         return Status::InvalidArgument;
     }
     info = {};
-    if (!IsActive())
+    if (IsActive() == false)
     {
         info.AdvancedSeconds = seconds;
         return Status::Success;
@@ -698,11 +703,11 @@ Status Field::TryAdvance(float64 seconds, StepInfo& info) noexcept
 
 Status Field::TrySample(Point world, Sample& output) const noexcept
 {
-    if (!IsReady())
+    if (IsReady() == false)
     {
         return Status::NotReady;
     }
-    if (!math::IsFinite(world.X) || !math::IsFinite(world.Y))
+    if (math::IsFinite(world.X) == false || math::IsFinite(world.Y) == false)
     {
         return Status::InvalidArgument;
     }
@@ -711,7 +716,7 @@ Status Field::TrySample(Point world, Sample& output) const noexcept
     {
         return Status::OutsideDomain;
     }
-    if (!s.Wet(world))
+    if (s.Wet(world) == false)
     {
         return Status::SolidCell;
     }
@@ -740,7 +745,7 @@ CellState Field::GetCell(usize x, usize y) const noexcept
 Diagnostics Field::GetDiagnostics() const noexcept
 {
     Diagnostics result;
-    if (!IsReady())
+    if (IsReady() == false)
     {
         return result;
     }
@@ -750,7 +755,7 @@ Diagnostics Field::GetDiagnostics() const noexcept
     {
         for (usize x = 0; x < s.Width; ++x)
         {
-            if (!s.Fluid(x, y))
+            if (s.Fluid(x, y) == false)
             {
                 continue;
             }

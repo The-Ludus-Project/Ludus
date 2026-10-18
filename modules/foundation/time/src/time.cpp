@@ -6,7 +6,7 @@ namespace ludus::foundation::time
 {
 TimeStatus TryAdd(Duration left, Duration right, Duration& out) noexcept
 {
-    if (!core::TryAdd(left.Nanoseconds, right.Nanoseconds, out.Nanoseconds))
+    if (core::TryAdd(left.Nanoseconds, right.Nanoseconds, out.Nanoseconds) == false)
     {
         return TimeStatus::Overflow;
     }
@@ -15,7 +15,7 @@ TimeStatus TryAdd(Duration left, Duration right, Duration& out) noexcept
 
 TimeStatus TryAdd(Timestamp start, Duration interval, Timestamp& out) noexcept
 {
-    if (!core::TryAdd(start.Nanoseconds, interval.Nanoseconds, out.Nanoseconds))
+    if (core::TryAdd(start.Nanoseconds, interval.Nanoseconds, out.Nanoseconds) == false)
     {
         return TimeStatus::Overflow;
     }
@@ -24,7 +24,7 @@ TimeStatus TryAdd(Timestamp start, Duration interval, Timestamp& out) noexcept
 
 TimeStatus TryElapsed(Timestamp start, Timestamp end, Duration& out) noexcept
 {
-    if (!core::TrySubtract(end.Nanoseconds, start.Nanoseconds, out.Nanoseconds))
+    if (core::TrySubtract(end.Nanoseconds, start.Nanoseconds, out.Nanoseconds) == false)
     {
         return TimeStatus::ClockRegression;
     }

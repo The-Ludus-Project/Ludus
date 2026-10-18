@@ -50,6 +50,17 @@ private:
     /// Grants the private renderer access to assign and validate this incarnation.
     friend struct internal::Access;
 };
+/// Immutable copied per-draw uniform blocks and binding snapshot of a bound flat program.
+/// Copies do not transfer ownership; Release detaches it and snapshots retain the exact version.
+struct UniformSet final
+{
+private:
+    ludus::foundation::uint64 Owner = 0;
+    ludus::foundation::uint64 Generation = 0;
+    ludus::foundation::uint32 Slot = 0;
+    /// Grants the private renderer access to assign and validate this incarnation.
+    friend struct internal::Access;
+};
 /// Forward declaration of the shared logical/physical mapping contract in views.hpp.
 struct ViewMapping;
 /// Immutable sampled target and presentation geometry retained through GPU completion.
@@ -144,6 +155,9 @@ struct SceneItem final
     /// Optional ready material incarnation replacing FlatMaterial entirely. Null keeps
     /// the L0 flat/error material. Snapshot retains its exact texture/program version.
     MaterialVersion Surface{};
+    /// Optional ready per-draw uniform set of a bound flat program; requires a null Surface.
+    /// Null binds the program's zero-filled defaults. Snapshot retains the exact version.
+    UniformSet Uniforms{};
     /// Exact bake scene revision; zero declares no valid baked chart.
     ludus::foundation::uint64 BakeSceneRevision = 0;
     /// Exact bake dependency revision; mismatch selects environment and dynamic direct lighting.
@@ -245,6 +259,9 @@ struct Limits final
     ludus::foundation::uint32 Materials = 8;
     /// Maximum resident/retained immutable shadow atlases for overlap and replacement.
     ludus::foundation::uint32 ShadowAtlases = 2;
+    /// Maximum live/retained per-draw uniform sets of a bound flat program, each one RHI
+    /// buffer and binding snapshot. Unbound programs reserve the records but never use them.
+    ludus::foundation::uint32 UniformSets = 8;
     /// Positive byte ceiling for State, registry records and all reserved CPU workspaces.
     /// Excludes allocator overhead, transient mesh upload conversion, RT1's separately budgeted
     /// CPU data, RHI resources and driver allocations. Exhaustion returns CapacityExceeded.
@@ -267,9 +284,13 @@ public:
     Renderer(const Renderer&) = delete;
     /// Renderer identity and owner thread cannot be assigned.
     Renderer& operator=(const Renderer&) = delete;
-    /// Initialize on a ready portable-raster device using the shipped renderer_flat.slang program.
+    /// Initialize on a ready portable-raster device using the shipped renderer_flat.slang program
+    /// or an authored program with the same six-location interface.
     /// Ready/Pending publishes renderer ownership; failures leave it uninitialized.
-    /// Shader inputs must match six shipped locations and have no resource bindings.
+    /// Shader inputs must match six shipped locations. Bindings, when present, must be
+    /// constant scalar read-only uniform buffers (a bound flat program): one layout merges
+    /// both stages, a binding number shared by both stages needs an equal MinSize, and
+    /// every flat pipeline uses it. Items then select a UniformSet or zero-filled defaults.
     /// @param device Borrowed ready device, which must outlive this renderer.
     /// @param vertex Cooked vertex description from the installed shader helper.
     /// @param fragment Cooked fragment description from the same flat program.
@@ -494,6 +515,21 @@ public:
     /// Reserved renderer metadata/workspace bytes, zero while uninitialized.
     /// Exclusions match Limits::HostBytes; this is requested storage, not physical memory usage.
     [[nodiscard]] ludus::foundation::usize GetHostBytes() const noexcept;
+    /// Bytes a bound flat program's uniform set copies: each binding's declared stage MinSize,
+    /// concatenated in ascending binding order. Zero for an unbound program or before Initialize.
+    [[nodiscard]] ludus::foundation::usize GetUniformBytes() const noexcept;
+    /// Copy per-draw uniform blocks into an immutable buffer and binding snapshot, between frames.
+    /// @param bytes Exactly GetUniformBytes() target-packed bytes; need only survive the call.
+    /// @param output Null set receiving ownership on Ready/Pending.
+    /// @return NotReady before setup is Ready, InvalidDescription for an unbound program or a
+    /// wrong size, CapacityExceeded when Limits::UniformSets are live; failures preserve output.
+    [[nodiscard]] rhi::RasterStatus
+    CreateUniformSet(ludus::foundation::BorrowedView<const ludus::foundation::uint8> bytes,
+                     UniformSet& output) noexcept;
+    /// Advance uniform buffer/binding creation without blocking; stale or foreign sets reject.
+    [[nodiscard]] rhi::RasterStatus GetStatus(UniformSet handle) noexcept;
+    /// Detach set ownership and clear handle; existing snapshots/views retain the exact version.
+    [[nodiscard]] rhi::RasterStatus Release(UniformSet& handle) noexcept;
     /// Copy geometry and derive exact mesh-local bounds. Null output required.
     /// Ready/Pending publishes mesh ownership; rejected input preserves output.
     [[nodiscard]] rhi::RasterStatus CreateMesh(const MeshDescription& description, Mesh& output) noexcept;

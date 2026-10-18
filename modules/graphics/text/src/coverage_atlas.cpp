@@ -25,7 +25,7 @@ CoverageAtlas::CoverageAtlas() noexcept = default;
 CoverageAtlas::~CoverageAtlas() = default;
 Status CoverageAtlas::Initialize() noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         mState.Reset(new (std::nothrow) State);
     }
@@ -45,7 +45,7 @@ void CoverageAtlas::Reset() noexcept
 }
 Status CoverageAtlas::Find(GlyphKey key, AtlasGlyph& output) const noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -74,7 +74,7 @@ Status CoverageAtlas::Insert(GlyphKey key,
                              int32 bearingTop,
                              AtlasGlyph& output) noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -135,7 +135,7 @@ Status CoverageAtlas::Insert(GlyphKey key,
 }
 Status CoverageAtlas::Publish(rhi::DeviceHandle device, rhi::TextureHandle& output) const noexcept
 {
-    if (!mState)
+    if (mState.Get() == nullptr)
     {
         return Status::NotReady;
     }
@@ -165,8 +165,8 @@ Status AppendText(renderer::OverlayList& list,
                   uint32 height,
                   const renderer::OverlayStyle& style) noexcept
 {
-    if ((count != 0 && quads == nullptr) || count > CoverageAtlas::MAX_GLYPHS || !math::IsFinite(baseline) ||
-        !math::IsFinite(color) || color.X < 0 || color.X > 1 || color.Y < 0 || color.Y > 1 || color.Z < 0 ||
+    if ((count != 0 && quads == nullptr) || count > CoverageAtlas::MAX_GLYPHS || math::IsFinite(baseline) == false ||
+        math::IsFinite(color) == false || color.X < 0 || color.X > 1 || color.Y < 0 || color.Y > 1 || color.Z < 0 ||
         color.Z > 1 || color.W < 0 || color.W > 1 || width == 0 || height == 0 ||
         static_cast<uint8>(style.Depth) > static_cast<uint8>(renderer::OverlayDepth::ReverseZ))
     {
@@ -184,8 +184,8 @@ Status AppendText(renderer::OverlayList& list,
         const auto& r = q.Rectangle;
         const auto& uv = q.Uv;
         const math::Vector4 shifted{r.X + baseline.X, r.Y + baseline.Y, r.Z + baseline.X, r.W + baseline.Y};
-        if (!math::IsFinite(r) || !math::IsFinite(shifted) || !math::IsFinite(uv) || r.Z < r.X || r.W < r.Y ||
-            uv.X < 0 || uv.Y < 0 || uv.Z > 1 || uv.W > 1 || uv.Z < uv.X || uv.W < uv.Y)
+        if (math::IsFinite(r) == false || math::IsFinite(shifted) == false || math::IsFinite(uv) == false ||
+            r.Z < r.X || r.W < r.Y || uv.X < 0 || uv.Y < 0 || uv.Z > 1 || uv.W > 1 || uv.Z < uv.X || uv.W < uv.Y)
         {
             return Status::InvalidDescription;
         }
@@ -193,7 +193,7 @@ Status AppendText(renderer::OverlayList& list,
                                  static_cast<float32>(1 - 2.0 * static_cast<float64>(shifted.Y) / height),
                                  static_cast<float32>(2.0 * static_cast<float64>(shifted.Z) / width - 1),
                                  static_cast<float32>(1 - 2.0 * static_cast<float64>(shifted.W) / height)};
-        if (!math::IsFinite(clip))
+        if (math::IsFinite(clip) == false)
         {
             return Status::InvalidDescription;
         }

@@ -8,8 +8,9 @@
 /// field in little-endian order, never copy host struct bytes. No GPU ownership.
 namespace ludus::content::render_graph_format
 {
-/// Initial static, opaque, instanced raster execution profile.
-inline constexpr foundation::uint32 VERSION = 1;
+/// Static instanced raster execution profile with opaque and authored masked
+/// techniques and per-draw scalar/vector uniform values.
+inline constexpr foundation::uint32 VERSION = 2;
 /// Maximum authored passes in one admitted configuration.
 inline constexpr foundation::usize MAX_PASSES = 16;
 /// Maximum logical resources; depth may alias a color allocation's private aspect.
@@ -21,15 +22,35 @@ inline constexpr foundation::usize MAX_ITEMS = 128;
 /// Largest supported mesh table in one scene replacement.
 inline constexpr foundation::usize MAX_MESHES = 32;
 /// Explicit finite technique count; no output-connectivity specialization.
-inline constexpr foundation::usize TECHNIQUE_COUNT = 2;
+inline constexpr foundation::usize TECHNIQUE_COUNT = 4;
+/// Number of shader stages (vertex and fragment) of one technique.
+inline constexpr foundation::usize TECHNIQUE_STAGE_COUNT = 2;
+/// Number of artifact targets a generation may carry.
+inline constexpr foundation::usize SHADER_TARGET_COUNT = 4;
+/// Largest logical float32 uniform value table supplied by one draw item.
+inline constexpr foundation::usize MAX_UNIFORM_VALUES = 64;
+/// Largest number of uniform bindings across every technique of one plan.
+inline constexpr foundation::usize MAX_UNIFORM_BINDINGS = 16;
+/// Largest uniform binding slot plus one; matches the RG1 build profile (slots 0-7).
+inline constexpr foundation::usize UNIFORM_SLOT_COUNT = 8;
+/// Largest number of per-target block records: one per binding and carried target.
+inline constexpr foundation::usize MAX_UNIFORM_BLOCKS = MAX_UNIFORM_BINDINGS * SHADER_TARGET_COUNT;
+/// Largest number of per-target field records across every binding.
+inline constexpr foundation::usize MAX_UNIFORM_FIELDS = 256;
+/// Largest occupied byte size of one uniform block on any target.
+inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
+/// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
+inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Resource or input index absent from the declared plan.
 inline constexpr foundation::uint32 ABSENT = ~foundation::uint32{0};
 /// Exact compiled program role, independent of graph instance and viewport size.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
 enum class Technique : foundation::uint32
 {
-    ColorAndDepth, ///< Authored color plus depth stage pair.
-    DepthOnly,     ///< Authored void fragment plus identical static geometry path.
+    ColorAndDepth,       ///< Authored opaque color plus depth stage pair.
+    DepthOnly,           ///< Authored opaque void fragment plus identical static geometry path.
+    MaskedColorAndDepth, ///< Authored masked color stage pair with its own coverage function.
+    MaskedDepthOnly,     ///< Separately authored masked coverage function plus identical masked geometry path.
 };
 /// Logical image aspect; physical depth is owned by its Backing allocation.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
@@ -53,6 +74,23 @@ enum class Store : foundation::uint32
     Store,   ///< Preserve defined output.
     Discard, ///< Output becomes undefined.
 };
+/// Artifact representation; also selects the target-specific uniform layout records.
+// NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
+enum class ShaderTarget : foundation::uint32
+{
+    Metal,  ///< Metal Shading Language source text.
+    Spirv,  ///< SPIR-V words; the byte length is a multiple of four.
+    Wgsl,   ///< WGSL source text.
+    GlslEs, ///< GLSL ES 3.00 source text.
+};
+/// Shader stages that read one uniform binding.
+// NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
+enum class Visibility : foundation::uint32
+{
+    Vertex = 1,   ///< Read by the technique's vertex stage only.
+    Fragment = 2, ///< Read by the technique's fragment stage only.
+    Both = 3,     ///< Read by both stages with one identical schema and layout.
+};
 /// Logical image requirement. Extents are pixels; no runtime native handle.
 struct Resource final
 {
@@ -73,24 +111,58 @@ struct Pass final
 {
     Technique Program;         ///< Explicit authored shader choice.
     foundation::uint32 Camera; ///< Index into the current camera extraction.
-    foundation::uint32 Color;  ///< Logical color resource, or ABSENT for DepthOnly.
+    foundation::uint32 Color;  ///< Logical color resource, or ABSENT for a depth-only technique.
     foundation::uint32 Depth;  ///< Logical depth resource.
-    Load ColorLoad;            ///< For DepthOnly, declares compatibility color initialization without a logical output.
-    Store ColorStore;          ///< For DepthOnly, controls compatibility allocation color retention.
+    Load ColorLoad;            ///< For depth-only techniques, declares compatibility color initialization.
+    Store ColorStore;          ///< For depth-only techniques, controls compatibility allocation color retention.
     Load DepthLoad;            ///< Depth initialization.
     Store DepthStore;          ///< Depth validity after this operation.
     foundation::uint32 AllowsRepeatedCoverage; ///< Zero or one; explicitly permits repeated rendering in a role/view.
 };
+/// One read-only uniform binding of a technique, filled per draw from logical values.
+/// Its values occupy [ValueOffset, ValueOffset + ValueCount) of each item's float32
+/// table; bindings of different techniques that use one schema share that span.
+struct UniformBinding final
+{
+    Technique Program;              ///< Technique whose stages read the binding.
+    foundation::uint32 Slot;        ///< Group/set-zero binding number, below UNIFORM_SLOT_COUNT.
+    Visibility Stages;              ///< Stages that declare the binding.
+    foundation::uint32 ValueOffset; ///< First logical float32 value of its schema.
+    foundation::uint32 ValueCount;  ///< Positive logical float32 value count of its schema.
+};
+/// Occupied byte size of one binding on one carried target, from target reflection.
+struct UniformBlock final
+{
+    foundation::uint32 Binding; ///< Index into the plan's uniform binding table.
+    ShaderTarget Target;        ///< Target whose emitted layout this describes.
+    foundation::uint32 Size;    ///< Positive occupied bytes, at most MAX_UNIFORM_BLOCK_BYTES.
+};
+/// Target byte offset of one schema field; fields of a block appear in schema order.
+struct UniformField final
+{
+    foundation::uint32 Binding;     ///< Index into the plan's uniform binding table.
+    ShaderTarget Target;            ///< Target whose emitted layout this describes.
+    foundation::uint32 ValueOffset; ///< First logical value, relative to the binding's ValueOffset.
+    foundation::uint32 Components;  ///< Float32 component count, 1 to 4.
+    foundation::uint32 ByteOffset;  ///< Four-byte aligned offset inside the target block.
+};
 /// Header for a generated configuration; limits include unexecuted root effects.
 struct Header final
 {
-    foundation::uint32 Version;       ///< VERSION.
-    foundation::uint32 ResourceCount; ///< Bounded resource table size.
-    foundation::uint32 PassCount;     ///< Bounded raster operation count.
-    foundation::uint32 CameraCount;   ///< Required current camera input count.
+    foundation::uint32 Version;             ///< VERSION.
+    foundation::uint32 ResourceCount;       ///< Bounded resource table size.
+    foundation::uint32 PassCount;           ///< Bounded raster operation count.
+    foundation::uint32 CameraCount;         ///< Required current camera input count.
+    foundation::uint32 UniformValueCount;   ///< Logical float32 values each drawn item supplies; zero when unbound.
+    foundation::uint32 UniformBindingCount; ///< Bounded uniform binding table size.
+    foundation::uint32 UniformBlockCount;   ///< Bounded per-target block table size.
+    foundation::uint32 UniformFieldCount;   ///< Bounded per-target field table size.
 };
 static_assert(sizeof(Resource) == sizeof(foundation::uint32) * 6);
 static_assert(sizeof(Pass) == sizeof(foundation::uint32) * 9);
 static_assert(sizeof(Camera) == sizeof(foundation::uint32));
-static_assert(sizeof(Header) == sizeof(foundation::uint32) * 4);
+static_assert(sizeof(UniformBinding) == sizeof(foundation::uint32) * 5);
+static_assert(sizeof(UniformBlock) == sizeof(foundation::uint32) * 3);
+static_assert(sizeof(UniformField) == sizeof(foundation::uint32) * 5);
+static_assert(sizeof(Header) == sizeof(foundation::uint32) * 8);
 } // namespace ludus::content::render_graph_format

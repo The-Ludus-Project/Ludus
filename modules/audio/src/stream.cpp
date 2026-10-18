@@ -35,7 +35,8 @@ Status StreamData::Open(std::span<const uint8> bytes, const StreamDescriptor& de
     const bool wav = bytes.size() >= 12 && std::memcmp(bytes.data(), "RIFF", 4) == 0 &&
                      std::memcmp(bytes.data() + 8, "WAVE", 4) == 0;
     const bool flac = bytes.size() >= 4 && std::memcmp(bytes.data(), "fLaC", 4) == 0;
-    if ((descriptor.Format == SourceFormat::Wav && !wav) || (descriptor.Format == SourceFormat::Flac && !flac))
+    if ((descriptor.Format == SourceFormat::Wav && wav == false) ||
+        (descriptor.Format == SourceFormat::Flac && flac == false))
     {
         return Status::DecodeError;
     }
@@ -96,7 +97,7 @@ Status StreamData::Configure(const StreamDescriptor& descriptor, uint32 rate) no
     {
         return Status::DecodeError;
     }
-    if (!descriptor.Looping && (descriptor.SourceLoopBegin != 0 || descriptor.SourceLoopEnd != 0))
+    if (descriptor.Looping == false && (descriptor.SourceLoopBegin != 0 || descriptor.SourceLoopEnd != 0))
     {
         return Status::InvalidArgument;
     }
@@ -108,13 +109,13 @@ Status StreamData::Configure(const StreamDescriptor& descriptor, uint32 rate) no
         {
             return Status::InvalidArgument;
         }
-        if (!TryResampleFrame(descriptor.SourceLoopBegin, sourceRate, rate, Begin) ||
-            !TryResampleFrame(descriptor.SourceLoopEnd, sourceRate, rate, End) || Begin >= End || End > length)
+        if (TryResampleFrame(descriptor.SourceLoopBegin, sourceRate, rate, Begin) == false ||
+            TryResampleFrame(descriptor.SourceLoopEnd, sourceRate, rate, End) == false || Begin >= End || End > length)
         {
             return Status::InvalidArgument;
         }
     }
-    for (uint32 i = 0; i < 4 && !WorkerEof; ++i)
+    for (uint32 i = 0; i < 4 && WorkerEof == false; ++i)
     {
         Refill();
     }
@@ -157,7 +158,7 @@ void StreamData::Refill() noexcept
         }
         if (DecodeCursor >= End)
         {
-            if (!Looping)
+            if (Looping == false)
             {
                 chunk.Eof = true;
                 WorkerEof = true;
@@ -191,7 +192,7 @@ void StreamData::Refill() noexcept
             break;
         }
     }
-    if (!Looping && DecodeCursor == End)
+    if (Looping == false && DecodeCursor == End)
     {
         chunk.Eof = true;
         WorkerEof = true;
@@ -199,7 +200,7 @@ void StreamData::Refill() noexcept
     for (uint32 i = 0; i < chunk.Frames * 2; ++i)
     {
         const auto sample = chunk.Samples[i];
-        if (!ludus::foundation::math::IsFinite(sample))
+        if (ludus::foundation::math::IsFinite(sample) == false)
         {
             chunk.Error = true;
             WorkerEof = true;
@@ -219,7 +220,7 @@ StreamResult StreamData::Render(float32* output, const StreamRequest& request) n
         auto read = Read.load(std::memory_order_relaxed);
         const auto written = Written.load(std::memory_order_acquire);
         const bool available = read != written;
-        const float32 target = available && !stop ? gain : 0.0F;
+        const float32 target = available && stop == false ? gain : 0.0F;
         const float32 step = 1.0F / (static_cast<float32>(Rate) / 200.0F + 1.0F);
         if (Fade < target)
         {
@@ -229,7 +230,7 @@ StreamResult StreamData::Render(float32* output, const StreamRequest& request) n
         {
             Fade = Fade - step > target ? Fade - step : target;
         }
-        if (available && !stop)
+        if (available && stop == false)
         {
             auto& chunk = Chunks[read & (STREAM_CHUNK_COUNT - 1)];
             if (Offset < chunk.Frames)

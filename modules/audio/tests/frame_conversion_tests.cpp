@@ -10,8 +10,8 @@ namespace
 constexpr bool ConstexprConversion() noexcept
 {
     uint64 frame = 42;
-    return TryResampleFrame(441, 44100, 48000, frame) && frame == 480 && !TryResampleFrame(~uint64{0}, 1, 2, frame) &&
-           frame == 480;
+    return TryResampleFrame(441, 44100, 48000, frame) && frame == 480 &&
+           TryResampleFrame(~uint64{0}, 1, 2, frame) == false && frame == 480;
 }
 static_assert(ConstexprConversion());
 } // namespace

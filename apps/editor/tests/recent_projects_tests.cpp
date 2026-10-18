@@ -227,7 +227,7 @@ TEST_CASE("Recent project opening honors Save Discard Cancel and failed Save", "
     open->click();
     CHECK(promptShown);
     CHECK(controller.State().DescriptorPath == (shouldOpen ? first : second));
-    CHECK(controller.State().Dirty() == !shouldOpen);
+    CHECK(controller.State().Dirty() == (shouldOpen == false));
     CHECK(controller.RecentProjects().first().DescriptorPath == (shouldOpen ? first : second));
     ProjectStore store;
     const auto saved = store.Load(second);

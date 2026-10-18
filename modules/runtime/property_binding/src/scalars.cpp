@@ -50,7 +50,7 @@ Status ValidateProjection(const Schema& schema, Diagnostic& error) noexcept
     for (const auto& field : schema.Fields)
     {
         uint32 kind = 0;
-        if (!ProjectKind(field.Default.Type, kind))
+        if (ProjectKind(field.Default.Type, kind) == false)
         {
             return Fail(error, Status::UnsupportedKind, field.Id);
         }
@@ -184,7 +184,8 @@ Status DecodeEdits(const Schema& schema,
     {
         const auto& edit = input[index];
         uint32 id = 0;
-        if (edit.ObjectId != objectId || edit.ExpectedRevision != revision || !TryIntegerCast(edit.PropertyId, id))
+        if (edit.ObjectId != objectId || edit.ExpectedRevision != revision ||
+            TryIntegerCast(edit.PropertyId, id) == false)
         {
             return Fail(error, Status::InvalidArgument);
         }
@@ -193,7 +194,7 @@ Status DecodeEdits(const Schema& schema,
         {
             return Fail(error, Status::UnknownField, id);
         }
-        if (!field->Editable)
+        if (field->Editable == false)
         {
             return Fail(error, Status::ReadOnly, id);
         }

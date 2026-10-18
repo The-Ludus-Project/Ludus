@@ -134,9 +134,9 @@ void Tick() noexcept
             Stop(true);
             return;
         }
-        if (!Accepted(gRenderer.Initialize(gDevice,
-                                           ludus::shaders::renderer_flat::Vertex(),
-                                           ludus::shaders::renderer_flat::Fragment())))
+        if (Accepted(gRenderer.Initialize(gDevice,
+                                          ludus::shaders::renderer_flat::Vertex(),
+                                          ludus::shaders::renderer_flat::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -149,8 +149,8 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
-                                                ludus::shaders::renderer_composite::Fragment())))
+        if (Accepted(gRenderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                               ludus::shaders::renderer_composite::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -163,9 +163,9 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gRenderer.InitializeLighting(ludus::shaders::renderer_output::Vertex(),
-                                                   ludus::shaders::renderer_output::Fragment(),
-                                                   ludus::shaders::renderer_shadow::Fragment())))
+        if (Accepted(gRenderer.InitializeLighting(ludus::shaders::renderer_output::Vertex(),
+                                                  ludus::shaders::renderer_output::Fragment(),
+                                                  ludus::shaders::renderer_shadow::Fragment())) == false)
         {
             Stop(true);
             return;
@@ -178,10 +178,10 @@ void Tick() noexcept
         {
             return;
         }
-        if (!Accepted(gRenderer.PrewarmLitProgram(ludus::shaders::renderer_clustered::Vertex(),
-                                                  ludus::shaders::renderer_clustered::Fragment(),
-                                                  ludus::shaders::renderer_clustered_shadow::Fragment(),
-                                                  gScene.Program)))
+        if (Accepted(gRenderer.PrewarmLitProgram(ludus::shaders::renderer_clustered::Vertex(),
+                                                 ludus::shaders::renderer_clustered::Fragment(),
+                                                 ludus::shaders::renderer_clustered_shadow::Fragment(),
+                                                 gScene.Program)) == false)
         {
             Stop(true);
             return;
@@ -247,7 +247,7 @@ int main()
     settings.Height = 64;
     settings.CanvasSelector = "#canvas";
     settings.CaptureBrowserInput = false;
-    if (!manager.Initialize({}) || !manager.CreateWindow(settings, gWindow))
+    if (manager.Initialize({}) == false || manager.CreateWindow(settings, gWindow) == false)
     {
         return 1;
     }
@@ -268,11 +268,11 @@ int main()
     emscripten_set_main_loop(Tick, 0, 1);
 #else
     const auto start = time::NowTicks();
-    while (!gDone && time::NowTicks() - start < 15 * time::NANOSECONDS_PER_SECOND)
+    while (gDone == false && time::NowTicks() - start < 15 * time::NANOSECONDS_PER_SECOND)
     {
         Tick();
     }
-    if (!gDone)
+    if (gDone == false)
     {
         Stop(true);
     }

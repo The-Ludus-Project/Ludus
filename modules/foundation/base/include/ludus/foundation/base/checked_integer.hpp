@@ -38,7 +38,7 @@ concept Integer =
 template <Integer DestinationType, Integer SourceType>
 [[nodiscard]] constexpr bool TryIntegerCast(SourceType value, DestinationType& out) noexcept
 {
-    if (!std::in_range<DestinationType>(value))
+    if (std::in_range<DestinationType>(value) == false)
     {
         return false;
     }

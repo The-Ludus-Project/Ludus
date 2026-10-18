@@ -84,7 +84,7 @@ resources::Adapter SoundResourceAdapter::Descriptor() noexcept
             }
             self.mPending = false;
         }
-        if (!self.mReleased && self.mLease.Owner != 0)
+        if (self.mReleased == false && self.mLease.Owner != 0)
         {
             if (self.mLoader.Release(self.mLease) != content::Status::Ok)
             {

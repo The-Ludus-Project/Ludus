@@ -60,7 +60,7 @@ public:
         {
             return {{Status::InvalidArgument}};
         }
-        if (!destination.empty() && offset < 4)
+        if (destination.empty() == false && offset < 4)
         {
             destination[0] = 42;
             return {{Status::IoError, 123}, 1};
@@ -85,7 +85,7 @@ public:
     [[nodiscard]] Result OpenRead(std::string_view, ProviderFile*& output) const noexcept override
     {
         ++mState.Opens;
-        if (mOutcome.Succeeded() && !mBroken)
+        if (mOutcome.Succeeded() && mBroken == false)
         {
             auto* next = new (std::nothrow) FaultFile(mState);
             if (next == nullptr)

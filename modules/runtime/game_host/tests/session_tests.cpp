@@ -75,7 +75,7 @@ void SendCommand(int fd, const Message& m)
     if (type == "Pause" || type == "Resume" || type == "Step" || type == "Reload" || type == "ReadProperties" ||
         type == "ApplyEdits")
     {
-        if (!command.Has("expected_generation"))
+        if (command.Has("expected_generation") == false)
         {
             command.SetHexId("expected_generation", CurrentGeneration);
         }
@@ -182,7 +182,7 @@ Array<Message> AwaitEvents(int fd, FrameReader& reader, const Predicate& complet
 {
     Array<Message> events;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (!complete(events) && std::chrono::steady_clock::now() < deadline)
+    while (complete(events) == false && std::chrono::steady_clock::now() < deadline)
     {
         const Array<Message> batch = DrainEvents(fd, reader, 20);
         events.AddRange(batch);

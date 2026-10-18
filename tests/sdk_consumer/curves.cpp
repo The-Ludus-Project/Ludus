@@ -5,17 +5,17 @@ bool ExerciseInstalledCurves() noexcept
 {
     using namespace ludus::foundation::math;
     CubicBezier3 curve;
-    if (!IsSuccess(TryFromHermite(CubicHermite3{{}, {3, 6, 9}, {1, 2, 3}, {1, 2, 3}}, 3, curve)))
+    if (IsSuccess(TryFromHermite(CubicHermite3{{}, {3, 6, 9}, {1, 2, 3}, {1, 2, 3}}, 3, curve)) == false)
     {
         return false;
     }
     CubicSample3 sample;
-    if (!IsSuccess(TryEvaluateCubic(curve, 0.5, sample)) || sample.Position != Vector3{1.5f, 3, 4.5f})
+    if (IsSuccess(TryEvaluateCubic(curve, 0.5, sample)) == false || sample.Position != Vector3{1.5f, 3, 4.5f})
     {
         return false;
     }
     CubicBezier3 left, right;
-    if (!IsSuccess(TrySplitCubic(curve, 0.5, left, right)) || left.Control[3] != right.Control[0])
+    if (IsSuccess(TrySplitCubic(curve, 0.5, left, right)) == false || left.Control[3] != right.Control[0])
     {
         return false;
     }

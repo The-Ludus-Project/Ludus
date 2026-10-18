@@ -37,7 +37,7 @@ Status ResolveViewMapping(VirtualScreen screen,
                           uint32 drawableHeight,
                           ViewMapping& output) noexcept
 {
-    if (!ValidScreen(screen) || drawableWidth > (uint32{1} << 24) || drawableHeight > (uint32{1} << 24) ||
+    if (ValidScreen(screen) == false || drawableWidth > (uint32{1} << 24) || drawableHeight > (uint32{1} << 24) ||
         region.X > drawableWidth || region.Y > drawableHeight || region.Width > drawableWidth - region.X ||
         region.Height > drawableHeight - region.Y)
     {
@@ -63,7 +63,7 @@ Status ResolveViewMapping(VirtualScreen screen,
         {
             const auto whole = math::Floor(scale);
             result.FractionalFallback = whole < 1;
-            if (!result.FractionalFallback)
+            if (result.FractionalFallback == false)
             {
                 scale = whole;
             }
@@ -97,7 +97,7 @@ Status ResolveViewMapping(VirtualScreen screen,
         result.ClipTransform.Columns[0].X = static_cast<float32>(width / region.Width);
         result.ClipTransform.Columns[1].Y = static_cast<float32>(height / region.Height);
     }
-    if (!ValidMapping(result) || !math::IsFinite(result.ClipTransform))
+    if (ValidMapping(result) == false || math::IsFinite(result.ClipTransform) == false)
     {
         return Status::InvalidDescription;
     }
@@ -131,7 +131,7 @@ Status SplitViewRectangle(rhi::RasterRectangle parent,
 }
 Status MapPhysicalToVirtual(const ViewMapping& mapping, math::Vector2 pixel, math::Vector2& output, bool clamp) noexcept
 {
-    if (!ValidMapping(mapping) || !math::IsFinite(pixel))
+    if (ValidMapping(mapping) == false || math::IsFinite(pixel) == false)
     {
         return Status::InvalidDescription;
     }
@@ -140,10 +140,11 @@ Status MapPhysicalToVirtual(const ViewMapping& mapping, math::Vector2 pixel, mat
                 static_cast<float64>(mapping.Scale.X);
     float64 y = (static_cast<float64>(pixel.Y) - static_cast<float64>(mapping.Origin.Y)) /
                 static_cast<float64>(mapping.Scale.Y);
-    if (!clamp && (pixel.X < static_cast<float32>(r.X) || pixel.Y < static_cast<float32>(r.Y) ||
-                   static_cast<float64>(pixel.X) >= static_cast<float64>(r.X) + r.Width ||
-                   static_cast<float64>(pixel.Y) >= static_cast<float64>(r.Y) + r.Height || x < 0 || y < 0 ||
-                   x >= static_cast<float64>(mapping.Screen.Width) || y >= static_cast<float64>(mapping.Screen.Height)))
+    if (clamp == false &&
+        (pixel.X < static_cast<float32>(r.X) || pixel.Y < static_cast<float32>(r.Y) ||
+         static_cast<float64>(pixel.X) >= static_cast<float64>(r.X) + r.Width ||
+         static_cast<float64>(pixel.Y) >= static_cast<float64>(r.Y) + r.Height || x < 0 || y < 0 ||
+         x >= static_cast<float64>(mapping.Screen.Width) || y >= static_cast<float64>(mapping.Screen.Height)))
     {
         return Status::InvalidDescription;
     }
@@ -162,7 +163,7 @@ Status MapPhysicalToVirtual(const ViewMapping& mapping, math::Vector2 pixel, mat
                         static_cast<float64>(mapping.Screen.Height));
     }
     const math::Vector2 result{static_cast<float32>(x), static_cast<float32>(y)};
-    if (!math::IsFinite(result))
+    if (math::IsFinite(result) == false)
     {
         return Status::InvalidDescription;
     }
@@ -175,7 +176,7 @@ Status MapWindowToVirtual(const ViewMapping& mapping,
                           math::Vector2& output,
                           bool clamp) noexcept
 {
-    if (!math::IsFinite(point) || !math::IsFinite(pixelsPerWindowUnit) || pixelsPerWindowUnit.X <= 0 ||
+    if (math::IsFinite(point) == false || math::IsFinite(pixelsPerWindowUnit) == false || pixelsPerWindowUnit.X <= 0 ||
         pixelsPerWindowUnit.Y <= 0)
     {
         return Status::InvalidDescription;
@@ -185,7 +186,7 @@ Status MapWindowToVirtual(const ViewMapping& mapping,
 }
 Status MapVirtualToPhysical(const ViewMapping& mapping, math::Vector2 point, math::Vector2& output) noexcept
 {
-    if (!ValidMapping(mapping) || !math::IsFinite(point))
+    if (ValidMapping(mapping) == false || math::IsFinite(point) == false)
     {
         return Status::InvalidDescription;
     }
@@ -194,7 +195,7 @@ Status MapVirtualToPhysical(const ViewMapping& mapping, math::Vector2 point, mat
                              static_cast<float64>(mapping.Origin.X)),
         static_cast<float32>(static_cast<float64>(point.Y) * static_cast<float64>(mapping.Scale.Y) +
                              static_cast<float64>(mapping.Origin.Y))};
-    if (!math::IsFinite(result))
+    if (math::IsFinite(result) == false)
     {
         return Status::InvalidDescription;
     }
@@ -206,7 +207,7 @@ Status BuildViewDescription(const ProjectionDescription& projection,
                             ViewDescription& output,
                             ProjectionSpace space) noexcept
 {
-    if (!ValidMapping(mapping) || !math::IsFinite(projection.WorldToView) ||
+    if (ValidMapping(mapping) == false || math::IsFinite(projection.WorldToView) == false ||
         (space != ProjectionSpace::LogicalScreen && space != ProjectionSpace::OutputRegion))
     {
         return Status::InvalidDescription;
@@ -217,7 +218,7 @@ Status BuildViewDescription(const ProjectionDescription& projection,
     switch (projection.Kind)
     {
         case ProjectionKind::Orthographic: {
-            if (!math::IsFinite(projection.OrthographicHeight) || projection.OrthographicHeight <= 0)
+            if (math::IsFinite(projection.OrthographicHeight) == false || projection.OrthographicHeight <= 0)
             {
                 return Status::InvalidDescription;
             }
@@ -259,7 +260,7 @@ Status BuildViewDescription(const ProjectionDescription& projection,
     result.InfiniteFar = projection.Kind == ProjectionKind::PerspectiveInfinite;
     // Direct drawing crops geometry and overlays together; composition crops the sampled image.
     result.OverlayToClip = crop;
-    if (!math::IsFinite(result.WorldToClip))
+    if (math::IsFinite(result.WorldToClip) == false)
     {
         return Status::InvalidDescription;
     }

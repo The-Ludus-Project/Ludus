@@ -34,14 +34,13 @@ using ludus::foundation::usize;
 constexpr uint32 kCheckpointSchema = 1;
 constexpr uint32 kPropertySchema = ludus::sample::kBodySchemaVersion;
 using ludus::sample::kBodyFieldCount;
-constexpr uint32 kCapabilities = static_cast<uint32>(Capability::Reload) |
-                                 static_cast<uint32>(Capability::Properties);
+constexpr uint32 kCapabilities = static_cast<uint32>(Capability::Reload) | static_cast<uint32>(Capability::Properties);
 
 constexpr uint64 kObjectId = 0xA001;
 constexpr uint64 kPropSpeed = 0xB001;
 
 #ifndef LUDUS_EXAMPLE_IDENTITY
-#define LUDUS_EXAMPLE_IDENTITY "example-identity-unset"
+#    define LUDUS_EXAMPLE_IDENTITY "example-identity-unset"
 #endif
 constexpr const char* kIdentity = LUDUS_EXAMPLE_IDENTITY;
 
@@ -117,7 +116,7 @@ Status GameCreate(const CreateInfo* info, GameInstance** outInstance) noexcept
         AuthoredReader reader;
         AuthoredRecord record;
         bool hasSpeed = false;
-        if (!reader.Start(info->AuthoredDocument, info->GameId))
+        if (reader.Start(info->AuthoredDocument, info->GameId) == false)
         {
             delete state;
             return Status::InvalidArgument;
@@ -141,7 +140,7 @@ Status GameCreate(const CreateInfo* info, GameInstance** outInstance) noexcept
             }
             hasSpeed = true;
         }
-        if (!reader.Complete())
+        if (reader.Complete() == false)
         {
             delete state;
             return Status::InvalidArgument;
@@ -236,7 +235,7 @@ bool WriteScalar(CheckpointWriter& writer, uint32 id, T value) noexcept
         std::memcpy(&bits, &value, sizeof(value));
     }
     uint8 bytes[8] = {};
-    if (!WriteCheckpointUint({bytes, sizeof(value)}, bits))
+    if (WriteCheckpointUint({bytes, sizeof(value)}, bits) == false)
     {
         return false;
     }
@@ -276,8 +275,8 @@ Status GameCheckpointSize(GameInstance* instance, usize* outBodySize) noexcept
     return Status::Ok;
 }
 
-Status GameWriteCheckpoint(GameInstance* instance, CheckpointHeader* outHeader, ByteSpan body,
-                              usize* outBytesWritten) noexcept
+Status
+GameWriteCheckpoint(GameInstance* instance, CheckpointHeader* outHeader, ByteSpan body, usize* outBytesWritten) noexcept
 {
     State* state = AsState(instance);
     if (state == nullptr || outHeader == nullptr || outBytesWritten == nullptr)
@@ -293,7 +292,10 @@ Status GameWriteCheckpoint(GameInstance* instance, CheckpointHeader* outHeader, 
     ok = WriteScalar(writer, 5, state->Sim.Rng) && ok;
     ok = WriteScalar(writer, 6, state->Sim.SimTime) && ok;
     ok = WriteScalar(writer, 7, state->Revision) && ok;
-    if (!ok) { return Status::BufferTooSmall; }
+    if (ok == false)
+    {
+        return Status::BufferTooSmall;
+    }
     outHeader->FormatVersion = 1;
     outHeader->SchemaVersion = kCheckpointSchema;
     outHeader->ProjectId = state->ProjectId;
@@ -305,8 +307,10 @@ Status GameWriteCheckpoint(GameInstance* instance, CheckpointHeader* outHeader, 
     return Status::Ok;
 }
 
-Status GameCreateCandidate(const CreateInfo* info, const CheckpointHeader* header, ByteView body,
-                              GameCandidate** outCandidate) noexcept
+Status GameCreateCandidate(const CreateInfo* info,
+                           const CheckpointHeader* header,
+                           ByteView body,
+                           GameCandidate** outCandidate) noexcept
 {
     if (info == nullptr || header == nullptr || outCandidate == nullptr || body.Data == nullptr ||
         header->FormatVersion != 1 || header->ProjectId != info->ProjectId || header->GameId != info->GameId ||
@@ -314,9 +318,15 @@ Status GameCreateCandidate(const CreateInfo* info, const CheckpointHeader* heade
     {
         return Status::InvalidArgument;
     }
-    if (header->SchemaVersion != kCheckpointSchema) { return Status::MigrationUnsupported; }
+    if (header->SchemaVersion != kCheckpointSchema)
+    {
+        return Status::MigrationUnsupported;
+    }
     auto* state = new (std::nothrow) State();
-    if (state == nullptr) { return Status::Internal; }
+    if (state == nullptr)
+    {
+        return Status::Internal;
+    }
     state->ProjectId = info->ProjectId;
     state->GameId = info->GameId;
     state->BuildId = info->ModuleGeneration;
@@ -327,7 +337,7 @@ Status GameCreateCandidate(const CreateInfo* info, const CheckpointHeader* heade
     {
         uint32 tag = 0;
         ByteView payload = {};
-        if (!reader.Next(tag, payload) || tag > 7 || (seen & (1U << tag)) != 0)
+        if (reader.Next(tag, payload) == false || tag > 7 || (seen & (1U << tag)) != 0)
         {
             ok = false;
             break;
@@ -335,23 +345,40 @@ Status GameCreateCandidate(const CreateInfo* info, const CheckpointHeader* heade
         seen |= 1U << tag;
         switch (tag)
         {
-            case 1: ok = ReadScalar(payload, state->Sim.PositionX); break;
-            case 2: ok = ReadScalar(payload, state->Sim.Velocity); break;
-            case 3: ok = ReadScalar(payload, state->Sim.Speed); break;
-            case 4: ok = ReadScalar(payload, state->Sim.Bounces); break;
-            case 5: ok = ReadScalar(payload, state->Sim.Rng); break;
-            case 6: ok = ReadScalar(payload, state->Sim.SimTime); break;
-            case 7: ok = ReadScalar(payload, state->Revision); break;
-            default: ok = false; break;
+            case 1:
+                ok = ReadScalar(payload, state->Sim.PositionX);
+                break;
+            case 2:
+                ok = ReadScalar(payload, state->Sim.Velocity);
+                break;
+            case 3:
+                ok = ReadScalar(payload, state->Sim.Speed);
+                break;
+            case 4:
+                ok = ReadScalar(payload, state->Sim.Bounces);
+                break;
+            case 5:
+                ok = ReadScalar(payload, state->Sim.Rng);
+                break;
+            case 6:
+                ok = ReadScalar(payload, state->Sim.SimTime);
+                break;
+            case 7:
+                ok = ReadScalar(payload, state->Revision);
+                break;
+            default:
+                ok = false;
+                break;
         }
     }
     const uint32 required = 254U;
     reflection::Value snapshot[kBodyFieldCount]{};
     reflection::Diagnostic error;
-    if (!ok || reader.Offset != body.Size || seen != required ||
+    if (ok == false || reader.Offset != body.Size || seen != required ||
         ludus::sample::ReadBody(state->Sim, snapshot, error) != reflection::Status::Ok ||
-        !IsFinite(state->Sim.PositionX) || !IsFinite(state->Sim.Velocity) || !IsFinite(state->Sim.SimTime) ||
-        state->Sim.PositionX < 0.0F || state->Sim.PositionX > 1.0F || state->Revision == 0)
+        IsFinite(state->Sim.PositionX) == false || IsFinite(state->Sim.Velocity) == false ||
+        IsFinite(state->Sim.SimTime) == false || state->Sim.PositionX < 0.0F || state->Sim.PositionX > 1.0F ||
+        state->Revision == 0)
     {
         delete state;
         return Status::InvalidArgument;
@@ -367,7 +394,8 @@ Status GameValidateCandidate(GameCandidate* candidate) noexcept
     reflection::Value snapshot[kBodyFieldCount]{};
     reflection::Diagnostic error;
     return s != nullptr && ludus::sample::ReadBody(s->Sim, snapshot, error) == reflection::Status::Ok
-        ? Status::Ok : Status::OutOfRange;
+               ? Status::Ok
+               : Status::OutOfRange;
 }
 
 Status GameCommitCandidate(GameCandidate* candidate, GameInstance** outInstance) noexcept
@@ -489,8 +517,12 @@ Status GamePrepareEdits(GameInstance* instance, ByteView edits, GameEditPlan** o
     }
     reflection::Edit decoded[kMaxEditBatch]{};
     reflection::Diagnostic error;
-    const auto status = property_binding::DecodeEdits(ludus::sample::BodySchema(), {input, header.Count},
-        kObjectId, s->Revision, decoded, error);
+    const reflection::Status status = property_binding::DecodeEdits(ludus::sample::BodySchema(),
+                                                                    {input, header.Count},
+                                                                    kObjectId,
+                                                                    s->Revision,
+                                                                    decoded,
+                                                                    error);
     if (status != reflection::Status::Ok)
     {
         return status == reflection::Status::InvalidValue ? Status::OutOfRange : Status::InvalidArgument;
@@ -565,9 +597,10 @@ const GameApiTable& Table() noexcept
 } // namespace
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters) — fixed ABI entry signature
-extern "C" LUDUS_GAME_API_EXPORT ludus::runtime::game_api::Status LudusGetGameApi(
-    ludus::foundation::uint32 hostAbiMajor, ludus::foundation::uint32 hostAbiMinor,
-    ludus::runtime::game_api::GameApiTable* outTable) noexcept
+extern "C" LUDUS_GAME_API_EXPORT ludus::runtime::game_api::Status
+LudusGetGameApi(ludus::foundation::uint32 hostAbiMajor,
+                ludus::foundation::uint32 hostAbiMinor,
+                ludus::runtime::game_api::GameApiTable* outTable) noexcept
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
     using namespace ludus::runtime::game_api;

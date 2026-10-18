@@ -32,7 +32,7 @@ EventRecord Event(const World& world, uint32 instance, uint64 sequence, uint32 a
 bool CommonAcceptance(Handler handler, void* user) noexcept
 {
     World world;
-    if (!Initialize(world))
+    if (Initialize(world) == false)
     {
         return Check(false, "world-initialization");
     }
@@ -40,19 +40,20 @@ bool CommonAcceptance(Handler handler, void* user) noexcept
     EventRecord first = Event(world, 0, 1);
     passed &=
         Check(Dispatch(world, &first, 1, handler, user) == Result::Accepted && world.States[0].Interactions == 1 &&
-                  !world.States[0].OpenRequested && world.CommandCount == 0 && !world.Open[0],
+                  world.States[0].OpenRequested == false && world.CommandCount == 0 && world.Open[0] == false,
               "explicit-state-before-threshold");
     // Deliberately out of order. Script and native providers obey producer order;
     // instance/language grouping must not change the token/effect order.
     EventRecord batch[] = {Event(world, 0, 4), Event(world, 1, 2, 2)};
-    passed &= Check(
-        Dispatch(world, batch, 2, handler, user) == Result::Accepted && world.States[0].Interactions == 2 &&
-            world.States[1].Interactions == 2 && world.States[0].OpenRequested && world.States[1].OpenRequested &&
-            world.CommandCount == 2 && world.Commands[0].Instance == 1001 && world.Commands[0].Token == 1 &&
-            world.Commands[1].Instance == 1000 && world.Commands[1].Token == 2 && !world.Open[0] && !world.Open[1],
-        "ordered-atomic-command-publication");
+    passed &=
+        Check(Dispatch(world, batch, 2, handler, user) == Result::Accepted && world.States[0].Interactions == 2 &&
+                  world.States[1].Interactions == 2 && world.States[0].OpenRequested && world.States[1].OpenRequested &&
+                  world.CommandCount == 2 && world.Commands[0].Instance == 1001 && world.Commands[0].Token == 1 &&
+                  world.Commands[1].Instance == 1000 && world.Commands[1].Token == 2 && world.Open[0] == false &&
+                  world.Open[1] == false,
+              "ordered-atomic-command-publication");
     world.At = Phase::Intent;
-    passed &= Check(Apply(world) == Result::InvalidPhase && !world.Open[0], "phase-checked-application");
+    passed &= Check(Apply(world) == Result::InvalidPhase && world.Open[0] == false, "phase-checked-application");
     world.At = Phase::Gameplay;
     passed &= Check(Apply(world) == Result::Applied && world.Open[0] && world.Open[1] && world.OutcomeCount == 2 &&
                         world.Outcomes[0].Request.Token == 1 && world.Outcomes[0].Code == Result::Applied &&
@@ -67,7 +68,7 @@ bool CommonAcceptance(Handler handler, void* user) noexcept
 bool CommonFaultAcceptance(Handler handler, void* user) noexcept
 {
     World world;
-    if (!Initialize(world))
+    if (Initialize(world) == false)
     {
         return false;
     }
@@ -81,7 +82,7 @@ bool CommonFaultAcceptance(Handler handler, void* user) noexcept
 bool DomainAcceptance() noexcept
 {
     World world;
-    if (!Initialize(world))
+    if (Initialize(world) == false)
     {
         return false;
     }
@@ -121,8 +122,8 @@ bool DomainAcceptance() noexcept
     passed &= world.Entities.TryRelease(world.Doors[0]) == gameplay::world::Status::Success;
     gameplay::world::EntityId replacement;
     passed &= world.Entities.TryCreate(replacement) == gameplay::world::Status::Success;
-    passed &= Check(!IsActive(world, valid) && Apply(world) == Result::Applied &&
-                        world.Outcomes[0].Code == Result::InvalidEntity && !world.Open[0],
+    passed &= Check(IsActive(world, valid) == false && Apply(world) == Result::Applied &&
+                        world.Outcomes[0].Code == Result::InvalidEntity && world.Open[0] == false,
                     "accepted-command-can-fail-at-application");
     return passed;
 }

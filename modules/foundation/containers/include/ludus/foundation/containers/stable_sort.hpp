@@ -35,7 +35,7 @@ template <typename T, typename Compare>
             usize left = first, right = middle;
             for (usize output = first; output < last; ++output)
             {
-                if (left < middle && (right == last || !less(values[right], values[left])))
+                if (left < middle && (right == last || less(values[right], values[left]) == false))
                 {
                     scratch[output] = values[left++];
                 }

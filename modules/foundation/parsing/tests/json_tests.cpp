@@ -43,7 +43,8 @@ struct TrackedPool final
     {
         auto& pool = *static_cast<TrackedPool*>(context);
         ++pool.Frees;
-        pool.BadCall |= !pool.Live || pointer != pool.Storage || bytes != pool.Bytes || alignment != pool.Alignment;
+        pool.BadCall |=
+            pool.Live == false || pointer != pool.Storage || bytes != pool.Bytes || alignment != pool.Alignment;
         pool.Live = false;
     }
 };

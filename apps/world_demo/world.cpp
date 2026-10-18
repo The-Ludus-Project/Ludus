@@ -35,7 +35,7 @@ void InputBridge::Sample(TickInput input) noexcept
     }
     if (mGate)
     {
-        if (!input.Held && input.Axis.X == 0 && input.Axis.Y == 0)
+        if (input.Held == false && input.Axis.X == 0 && input.Axis.Y == 0)
         {
             mGate = false;
         }
@@ -225,11 +225,11 @@ Status GameWorld::QueueDestroy(EntityId entity) noexcept
     {
         return Status::InvalidPhase;
     }
-    if (!mRegistry.IsAlive(entity))
+    if (mRegistry.IsAlive(entity) == false)
     {
         return Status::InvalidEntity;
     }
-    if (!mRegistry.IsActive(entity))
+    if (mRegistry.IsActive(entity) == false)
     {
         return Status::Success;
     }
@@ -248,7 +248,7 @@ Status GameWorld::QueueSpawn(Recipe recipe, uint64& request) noexcept
     }
     // This game's runtime recipe is an additional guard targeting the existing
     // player. No cross-reference to another queued spawn is supported.
-    if (recipe.Type != Kind::Enemy || !mRegistry.IsActive(mPlayer))
+    if (recipe.Type != Kind::Enemy || mRegistry.IsActive(mPlayer) == false)
     {
         return Status::InvalidConfiguration;
     }
@@ -281,7 +281,7 @@ Status GameWorld::BeginRequest(EntityId entity, Completion& ticket) noexcept
         return Status::InvalidPhase;
     }
     auto* motion = mMotion.Find(entity);
-    if (!mRegistry.IsActive(entity) || motion == nullptr)
+    if (mRegistry.IsActive(entity) == false || motion == nullptr)
     {
         return Status::InvalidEntity;
     }
@@ -333,7 +333,8 @@ Status GameWorld::SubmitCompletion(Completion completion) noexcept
     {
         return Status::InvalidConfiguration;
     }
-    if (!Finite(completion.Velocity) || std::abs(completion.Velocity.X) > 32 || std::abs(completion.Velocity.Y) > 32)
+    if (Finite(completion.Velocity) == false || std::abs(completion.Velocity.X) > 32 ||
+        std::abs(completion.Velocity.Y) > 32)
     {
         return Status::InvalidConfiguration;
     }
@@ -370,7 +371,7 @@ void GameWorld::Intent(TickInput input) noexcept
     // phase/deadline only; structural effects are recorded by Gameplay.
     if (auto* motion = mMotion.Find(mPlayer); motion != nullptr && mRegistry.IsActive(mPlayer))
     {
-        if (!motion->Override)
+        if (motion->Override == false)
         {
             motion->Velocity = {foundation::math::Clamp(input.Axis.X, -1.0F, 1.0F) * motion->Speed,
                                 foundation::math::Clamp(input.Axis.Y, -1.0F, 1.0F) * motion->Speed};
@@ -380,13 +381,13 @@ void GameWorld::Intent(TickInput input) noexcept
     for (usize index = 0; index < owners.size(); ++index)
     {
         const auto entity = owners[index];
-        if (!mRegistry.IsActive(entity))
+        if (mRegistry.IsActive(entity) == false)
         {
             continue;
         }
         auto& enemy = mEnemies.GetValues()[index];
         auto* motion = mMotion.Find(entity);
-        if (!mRegistry.IsActive(enemy.Target))
+        if (mRegistry.IsActive(enemy.Target) == false)
         {
             motion->Velocity = {};
             enemy.Phase = ActionPhase::SelectTarget;
@@ -426,7 +427,7 @@ void GameWorld::MoveAndCollide() noexcept
     for (usize index = 0; index < owners.size(); ++index)
     {
         const auto entity = owners[index];
-        if (!mRegistry.IsActive(entity))
+        if (mRegistry.IsActive(entity) == false)
         {
             continue;
         }
@@ -466,7 +467,7 @@ void GameWorld::MoveAndCollide() noexcept
     mContactCount = 0;
     for (auto entity : mExits.GetOwners())
     {
-        if (!mRegistry.IsActive(entity))
+        if (mRegistry.IsActive(entity) == false)
         {
             continue;
         }
@@ -510,7 +511,7 @@ void GameWorld::Stage(EventKind kind, Vec2 anchor) noexcept
 Status GameWorld::Damage(EntityId entity) noexcept
 {
     auto* health = mHealth.Find(entity);
-    if (!mRegistry.IsActive(entity) || health == nullptr || health->Current == 0)
+    if (mRegistry.IsActive(entity) == false || health == nullptr || health->Current == 0)
     {
         return Status::Success;
     }
@@ -536,7 +537,7 @@ Status GameWorld::Gameplay(TickInput input, Name& nextLevel) noexcept
     if (mRegistry.IsActive(mPlayer))
     {
         auto* player = mPlayers.Find(mPlayer);
-        if (input.Pressed && !input.Cancelled && mTick + 1 >= player->AttackReady)
+        if (input.Pressed && input.Cancelled == false && mTick + 1 >= player->AttackReady)
         {
             if (mTick > std::numeric_limits<uint64>::max() - 31)
             {
@@ -577,7 +578,7 @@ Status GameWorld::Gameplay(TickInput input, Name& nextLevel) noexcept
     });
     for (usize index = 0; index < count; ++index)
     {
-        if (!mRegistry.IsActive(enemies[index]))
+        if (mRegistry.IsActive(enemies[index]) == false)
         {
             continue;
         }
@@ -599,14 +600,14 @@ Status GameWorld::Gameplay(TickInput input, Name& nextLevel) noexcept
     }
     for (const auto& contact : GetContacts())
     {
-        if (contact.Kind != ContactPhase::Enter || !mRegistry.IsActive(contact.First) ||
-            !mRegistry.IsActive(contact.Second))
+        if (contact.Kind != ContactPhase::Enter || mRegistry.IsActive(contact.First) == false ||
+            mRegistry.IsActive(contact.Second) == false)
         {
             continue;
         }
         const auto entity = mExits.Find(contact.First) != nullptr ? contact.First : contact.Second;
         auto* exit = mExits.Find(entity);
-        if (exit != nullptr && !exit->Entered)
+        if (exit != nullptr && exit->Entered == false)
         {
             exit->Entered = true;
             if (nextLevel.View().empty())
@@ -726,11 +727,11 @@ Status GameWorld::Commit() noexcept
 Status GameWorld::RunTick(TickInput input) noexcept
 {
     LUDUS_PROFILE_SCOPE(WorldTick);
-    if (!IsBuilt() || mPhase != Phase::Idle)
+    if (IsBuilt() == false || mPhase != Phase::Idle)
     {
         return Status::InvalidPhase;
     }
-    if (!Finite(input.Axis))
+    if (Finite(input.Axis) == false)
     {
         mPhase = Phase::Faulted;
         return Status::InvalidConfiguration;
@@ -768,7 +769,7 @@ Status GameWorld::RunTick(TickInput input) noexcept
             }
         }
         auto* motion = mMotion.Find(result.Entity);
-        if (!mRegistry.IsActive(result.Entity) || motion == nullptr || result.Request == 0 ||
+        if (mRegistry.IsActive(result.Entity) == false || motion == nullptr || result.Request == 0 ||
             motion->PendingRequest != result.Request || motion->Revision != result.Revision)
         {
             ++mStaleCompletions;
@@ -833,7 +834,7 @@ bool GameWorld::Extract(float32 alpha,
                         uint64 presentationSequence) const noexcept
 {
     LUDUS_PROFILE_SCOPE(WorldExtract);
-    if (!IsBuilt() || mPhase != Phase::Idle || !std::isfinite(alpha) || alpha < 0 || alpha > 1)
+    if (IsBuilt() == false || mPhase != Phase::Idle || std::isfinite(alpha) == false || alpha < 0 || alpha > 1)
     {
         return false;
     }
@@ -862,7 +863,7 @@ bool GameWorld::Extract(float32 alpha,
     camera::CameraTargetSample target;
     if (followPlayer)
     {
-        if (!mRegistry.IsActive(mPlayer))
+        if (mRegistry.IsActive(mPlayer) == false)
         {
             return false;
         }
@@ -895,12 +896,12 @@ bool GameWorld::Extract(float32 alpha,
     };
     for (usize index = 0; index < mLevel.CollisionCount; ++index)
     {
-        if (!add(
+        if (add(
         {
             .Position = mLevel.Collision[index].Center,
             .HalfExtent = mLevel.Collision[index].HalfExtent,
             .Color = {0.2F, 0.25F, 0.35F, 1},
-        }))
+        }) == false)
         {
             return false;
         }
@@ -928,7 +929,7 @@ bool GameWorld::Extract(float32 alpha,
         {
             draw.Color[channel] = visual->Color[channel];
         }
-        if (!add(draw))
+        if (add(draw) == false)
         {
             return false;
         }

@@ -86,7 +86,7 @@ int main(int argc, char** argv)
     {
         int endpoints[2];
         if (socketpair(AF_UNIX, SOCK_DGRAM, 0, endpoints) != 0 ||
-            !ludus::foundation::diagnostics::ConfigureEmergencySocket(endpoints[0]))
+            ludus::foundation::diagnostics::ConfigureEmergencySocket(endpoints[0]) == false)
         {
             return 78;
         }
@@ -100,7 +100,7 @@ int main(int argc, char** argv)
     ludus_assert_test_watching = true;
     LUDUS_ASSERT(true);
     LUDUS_REQUIRE(true);
-    if (!LUDUS_CHECK(true))
+    if (LUDUS_CHECK(true) == false)
     {
         return 97;
     }

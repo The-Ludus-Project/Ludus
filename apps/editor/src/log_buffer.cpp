@@ -30,7 +30,7 @@ void LogBuffer::Append(OutputStream /*stream*/, const QString& text)
 
 void LogBuffer::EnforceBounds()
 {
-    while (!Blocks_.isEmpty() && (RetainedBytes_ > MaxBytes || static_cast<usize>(Blocks_.size()) > MaxBlocks))
+    while (Blocks_.isEmpty() == false && (RetainedBytes_ > MaxBytes || static_cast<usize>(Blocks_.size()) > MaxBlocks))
     {
         const QString oldest = Blocks_.takeFirst();
         const usize bytes = static_cast<usize>(oldest.toUtf8().size());

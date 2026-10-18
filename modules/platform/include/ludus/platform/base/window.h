@@ -17,6 +17,22 @@ struct WindowState;
 struct InputEvent;
 } // namespace browser
 
+/// @brief Whether any part of a window can currently be seen.
+///
+/// A loop that should save power lowers its rate while a window is not Visible
+/// (docs/architecture/high-resolution-time.md, "Native frame pacing").
+enum class WindowVisibility : ludus::foundation::uint8
+{
+    /// Some part of the window may be on screen, or the backend cannot tell.
+    Visible,
+    /// The window is open but no part is on screen: fully covered by opaque windows,
+    /// on another Space, or ordered out (including a hidden application). A closed
+    /// window also reports Occluded.
+    Occluded,
+    /// The window is minimized (miniaturized into the Dock on macOS). Its published extent is zero.
+    Minimized,
+};
+
 class WindowBase
 {
 public:
@@ -73,6 +89,22 @@ public:
         return mNativeWindowInfo;
     }
 
+    /// @brief Return the visibility observed by the latest HandleEvent().
+    ///
+    /// Cocoa reports Minimized for a miniaturized window and Occluded while AppKit's
+    /// occlusion state says no part is visible; it is refreshed by HandleEvent() and
+    /// window-delegate notifications, on the main thread. Browser windows report
+    /// Occluded while the canvas is hidden, detached or zero-sized, matching
+    /// browser::WindowState::Visible. Wayland and headless windows always report
+    /// Visible because those backends do not observe occlusion.
+    /// @note Occlusion is a power hint, not a guarantee: partial or translucent cover
+    /// still reports Visible, and AppKit delivers changes asynchronously, so a newly
+    /// opened window may report Occluded until the window server has placed it.
+    [[nodiscard]] LUDUS_INLINE WindowVisibility GetVisibility() const noexcept
+    {
+        return mVisibility;
+    }
+
     /// @brief Attach a normalized keyboard sink to THIS window (K10).
     ///
     /// The sink and its user data are borrowed: detach (or destroy the window) before the sink's user data goes
@@ -102,6 +134,7 @@ protected:
     std::string mName;
     NativeWindowInfo mNativeWindowInfo = {};
     KeyboardSink mKeyboardSink = {};
+    WindowVisibility mVisibility = WindowVisibility::Visible;
 };
 
 using Window = WindowBase;

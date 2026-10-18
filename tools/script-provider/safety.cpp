@@ -140,7 +140,7 @@ bool SteppingBudget() noexcept
     for (uint32 i = 0; status == Status::Paused && i < 128; ++i)
     {
         DebugSnapshot snapshot;
-        if (!provider.Inspect(snapshot) || !snapshot.Paused || output.Count != 13)
+        if (provider.Inspect(snapshot) == false || snapshot.Paused == false || output.Count != 13)
         {
             return false;
         }
@@ -234,7 +234,7 @@ bool CheckedService(void* user, EntityRef reference) noexcept
                      context.Provider->Invoke(Input(0x1001), {}, output, diagnostic) == Status::Reentrant &&
                      context.Provider->BeginDebug(Input(0x1001), {}, output, diagnostic) == Status::Reentrant &&
                      context.Provider->ResumeDebug(1, DebugMode::Continue, output, diagnostic) == Status::Reentrant &&
-                     context.Provider->Breakpoint(0x1001, 1) == -1 && !context.Provider->Inspect(snapshot);
+                     context.Provider->Breakpoint(0x1001, 1) == -1 && context.Provider->Inspect(snapshot) == false;
     return Alive(nullptr, reference);
 }
 bool ServiceBoundary() noexcept
@@ -260,7 +260,7 @@ Status Journey(LuauProvider& provider, bool debug, Outcome& output, Diagnostic& 
     {
         return status;
     }
-    if (!debug)
+    if (debug == false)
     {
         return provider.Invoke(Input(0x1002), {nullptr, Alive}, output, diagnostic);
     }
@@ -272,7 +272,8 @@ Status Journey(LuauProvider& provider, bool debug, Outcome& output, Diagnostic& 
     for (uint32 stops = 0; status == Status::Paused && stops < 32; ++stops)
     {
         DebugSnapshot snapshot;
-        if (!provider.Inspect(snapshot) || !snapshot.Paused || snapshot.FrameCount == 0 || output.Count != 13)
+        if (provider.Inspect(snapshot) == false || snapshot.Paused == false || snapshot.FrameCount == 0 ||
+            output.Count != 13)
         {
             return Status::InvalidInput;
         }

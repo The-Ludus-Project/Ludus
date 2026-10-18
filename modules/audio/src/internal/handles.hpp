@@ -34,7 +34,7 @@ public:
                 return 0; // exhausted
             }
             next = prev + 1U;
-        } while (!sCounter.compare_exchange_weak(prev, next, std::memory_order_relaxed));
+        } while (sCounter.compare_exchange_weak(prev, next, std::memory_order_relaxed) == false);
         return next;
     }
 };

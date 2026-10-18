@@ -142,7 +142,7 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
     REQUIRE(rhi::CreateBindingSet(device, layout, resources, set) == rhi::RasterStatus::Ready);
     resources[0].Buffer = backgroundUniform;
     REQUIRE(rhi::CreateBindingSet(device, layout, resources, backgroundSet) == rhi::RasterStatus::Ready);
-    if (!graphMode)
+    if (graphMode == false)
     {
         // Public destruction detaches ownership while snapshots still retain records.
         REQUIRE(rhi::Destroy(device, texture) == rhi::RasterStatus::Ready);
@@ -410,7 +410,7 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
         }
         REQUIRE(ludus::qa::BuildOrderedFrame(device, inputs, graph, report, mode == 4) == rhi::RasterStatus::Ready);
         // Plan retention, not public ownership, protects attachments during submit.
-        if (!computeMode)
+        if (computeMode == false)
         {
             REQUIRE(rhi::Destroy(device, offscreen) == rhi::RasterStatus::Ready);
             REQUIRE(rhi::Destroy(device, unused) == rhi::RasterStatus::Ready);

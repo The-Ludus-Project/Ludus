@@ -141,14 +141,14 @@ RasterStatus CreateComputePipeline(DeviceHandle device,
             return dependency->Status == RasterStatus::Pending ? RasterStatus::NotReady : dependency->Status;
         }
     }
-    if (shader->Shader.Stage != ShaderStage::Compute || !ShaderFits(shader->Shader, layout->Layout))
+    if (shader->Shader.Stage != ShaderStage::Compute || ShaderFits(shader->Shader, layout->Layout) == false)
     {
         return RasterStatus::InvalidDescription;
     }
     for (usize i = 0; i < layout->Layout.Count; ++i)
     {
         if (layout->Layout.Entries[i].Visibility != RasterVisibility::Compute ||
-            !BufferBinding(layout->Layout.Entries[i].Kind))
+            BufferBinding(layout->Layout.Entries[i].Kind) == false)
         {
             return RasterStatus::InvalidDescription;
         }

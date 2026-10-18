@@ -23,7 +23,7 @@ template <typename T>
 T* Allocate(usize count) noexcept
 {
 #if defined(LUDUS_FILESYSTEM_WATCH_FAULT_TESTING)
-    if (!watch_test::AllocationAllowed())
+    if (watch_test::AllocationAllowed() == false)
     {
         return nullptr;
     }
@@ -40,7 +40,7 @@ bool Identity(uint64& output) noexcept
         {
             return false;
         }
-    } while (!gOwner.compare_exchange_weak(value, value + 1, std::memory_order_relaxed));
+    } while (gOwner.compare_exchange_weak(value, value + 1, std::memory_order_relaxed) == false);
     output = value;
     return true;
 }
@@ -110,7 +110,7 @@ Result Watcher::Init(std::string_view nativeRoot, const WatchConfig& config) noe
     // Detect unsupported native roots before allocating registration storage.
     Directory root;
     const auto opened = root.Open(nativeRoot);
-    if (!opened.Succeeded())
+    if (opened.Succeeded() == false)
     {
         return opened;
     }
@@ -128,7 +128,7 @@ Result Watcher::Init(std::string_view nativeRoot, const WatchConfig& config) noe
         delete[] next;
         return {Status::OutOfMemory};
     }
-    if (!Identity(next->Owner))
+    if (Identity(next->Owner) == false)
     {
         delete[] next;
         return {Status::LimitExceeded};
@@ -139,7 +139,7 @@ Result Watcher::Init(std::string_view nativeRoot, const WatchConfig& config) noe
 }
 Result Watcher::Add(std::string_view path, uint64 tag, WatchHandle& output) noexcept
 {
-    if (mImpl == nullptr || !ValidPath(path))
+    if (mImpl == nullptr || ValidPath(path) == false)
     {
         return {Status::InvalidArgument};
     }
@@ -156,7 +156,7 @@ Result Watcher::Add(std::string_view path, uint64 tag, WatchHandle& output) noex
         {
             return {Status::InvalidArgument};
         }
-        if (!slot.Active && available == state.Config.MaxPaths)
+        if (slot.Active == false && available == state.Config.MaxPaths)
         {
             available = i;
         }
@@ -167,7 +167,7 @@ Result Watcher::Add(std::string_view path, uint64 tag, WatchHandle& output) noex
     }
     FileStamp stamp;
     const auto observation = state.Root.Observe(path, stamp);
-    if (!Known(observation))
+    if (Known(observation) == false)
     {
         return observation;
     }
@@ -189,7 +189,7 @@ Result Watcher::Add(std::string_view path, uint64 tag, WatchHandle& output) noex
 Result Watcher::Remove(WatchHandle handle) noexcept
 {
     if (mImpl == nullptr || handle.Owner != mImpl->Owner || handle.Slot >= mImpl->Config.MaxPaths ||
-        !mImpl->Slots[handle.Slot].Active || mImpl->Slots[handle.Slot].Baseline.Handle != handle)
+        mImpl->Slots[handle.Slot].Active == false || mImpl->Slots[handle.Slot].Baseline.Handle != handle)
     {
         return {Status::InvalidArgument};
     }
@@ -227,13 +227,13 @@ Result Watcher::Advance(uint64 nowNanoseconds, usize maxSteps) noexcept
     {
         auto& slot = state.Slots[state.Cursor];
         state.Cursor = (state.Cursor + 1) % state.Config.MaxPaths;
-        if (!slot.Active)
+        if (slot.Active == false)
         {
             continue;
         }
         FileStamp stamp;
         const auto observation = state.Root.Observe(slot.Baseline.PathView(), stamp);
-        if (!Known(observation))
+        if (Known(observation) == false)
         {
             state.Invalidate(0);
             return observation;
@@ -243,7 +243,7 @@ Result Watcher::Advance(uint64 nowNanoseconds, usize maxSteps) noexcept
             slot.Pending = false;
             continue;
         }
-        if (!slot.Pending || !Same(observation, stamp, slot.CandidateResult, slot.Candidate))
+        if (slot.Pending == false || Same(observation, stamp, slot.CandidateResult, slot.Candidate) == false)
         {
             slot.Pending = true;
             slot.CandidateResult = observation;
@@ -318,14 +318,14 @@ WatchPollResult Watcher::NextRescan(WatchHint& output) noexcept
         return {{Status::InvalidArgument}};
     }
     auto& state = *mImpl;
-    if (!state.Scanning)
+    if (state.Scanning == false)
     {
         return {{Status::Conflict}};
     }
     while (state.Scan < state.Config.MaxPaths)
     {
         auto& slot = state.Slots[state.Scan++];
-        if (!slot.Active)
+        if (slot.Active == false)
         {
             continue;
         }

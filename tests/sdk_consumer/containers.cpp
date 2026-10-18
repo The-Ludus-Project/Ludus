@@ -8,13 +8,13 @@ int ExerciseInstalledContainers() noexcept
 {
     using namespace ludus::foundation;
     SortedMap<uint64, uint32> resources;
-    if (!resources.TryEnsureCapacity(2) || !resources.TryAddInPlace(30, 300U).Inserted ||
-        !resources.TryAddInPlace(10, 100U).Inserted)
+    if (resources.TryEnsureCapacity(2) == false || resources.TryAddInPlace(30, 300U).Inserted == false ||
+        resources.TryAddInPlace(10, 100U).Inserted == false)
     {
         return 30;
     }
     const uint32* value = resources.Find(30);
-    if (value == nullptr || *value != 300 || resources.AsSpan()[0].Key != 10 || !resources.Remove(10))
+    if (value == nullptr || *value != 300 || resources.AsSpan()[0].Key != 10 || resources.Remove(10) == false)
     {
         return 31;
     }

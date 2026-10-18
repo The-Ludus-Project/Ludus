@@ -59,9 +59,9 @@ bool Valid(const MeshDefinition& mesh) noexcept
     }
     for (usize i = 0; i < mesh.VertexCount; ++i)
     {
-        if (!foundation::math::IsFinite(mesh.Positions[i]) ||
-            (mesh.Texcoords != nullptr && !foundation::math::IsFinite(mesh.Texcoords[i])) ||
-            (mesh.Normals != nullptr && (!foundation::math::IsFinite(mesh.Normals[i]) ||
+        if (foundation::math::IsFinite(mesh.Positions[i]) == false ||
+            (mesh.Texcoords != nullptr && foundation::math::IsFinite(mesh.Texcoords[i]) == false) ||
+            (mesh.Normals != nullptr && (foundation::math::IsFinite(mesh.Normals[i]) == false ||
                                          (mesh.Normals[i].X == 0 && mesh.Normals[i].Y == 0 && mesh.Normals[i].Z == 0))))
         {
             return false;
@@ -132,7 +132,7 @@ MeshDefinitionAdapter::~MeshDefinitionAdapter() noexcept
     {
         for (const auto& job : mState->Jobs)
         {
-            LUDUS_REQUIRE(!job.Used);
+            LUDUS_REQUIRE(job.Used == false);
         }
     }
     delete mState;
@@ -157,7 +157,7 @@ Status MeshDefinitionAdapter::Initialize(const MeshSource* sources, usize count)
     uint64 peak = 0;
     for (usize i = 0; i < count; ++i)
     {
-        if (sources[i].Resource.Type != content::Kind::Mesh || !Valid(sources[i].Geometry))
+        if (sources[i].Resource.Type != content::Kind::Mesh || Valid(sources[i].Geometry) == false)
         {
             return Status::Failed;
         }
@@ -350,7 +350,7 @@ Status MeshDefinitionAdapter::Validate(void* context, const void* payload) noexc
     {
         for (const auto& job : self.mState->Jobs)
         {
-            if (job.Used && !job.Cancelled && payload == &job.Payload && job.Source != nullptr &&
+            if (job.Used && job.Cancelled == false && payload == &job.Payload && job.Source != nullptr &&
                 job.Vertices == job.Source->VertexCount && job.IndicesCopied == job.Source->IndexCount)
             {
                 return Status::Ok;

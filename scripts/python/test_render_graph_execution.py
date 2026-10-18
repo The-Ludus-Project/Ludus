@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import re
+import struct
 import unittest
 
 import test_render_graph_build as fixtures
@@ -23,6 +24,8 @@ class ExecutionTests(unittest.TestCase):
         fixtures.BuildTests.setUp(self)
         self.graph = graph.new_workspace(self.root / 'static')
         self.manifest = build.new_build_sources(self.graph, profiles=('metal', 'wgsl'), renderer_static=True)
+        self.stage_slot = 0
+        self.has_bias = False
 
     def stage(self, command, cancel):
         fixtures.BuildTests.stage(self, command, cancel)
@@ -33,6 +36,12 @@ class ExecutionTests(unittest.TestCase):
                 {'location': i, 'format': 'Float3' if i == 0 else 'Float4', 'name': name}
                 for i, name in enumerate(('PositionMesh', 'MeshToClipRow0', 'MeshToClipRow1',
                                          'MeshToClipRow2', 'MeshToClipRow3', 'Color'))]
+        for entry in descriptor['interface']['entries']:
+            entry['binding'] = self.stage_slot
+            if self.has_bias:
+                entry['shapes']['bias'] = 'Float32'
+                entry['offsets']['bias'] = entry['size']
+                entry['size'] += 16
         (output / 'stage.json').write_bytes(build.encoded(descriptor))
 
     def package(self):
@@ -109,7 +118,8 @@ class ExecutionTests(unittest.TestCase):
 
     def test_neutral_format_limits_match_offline_lowering(self):
         header = (ROOT / 'modules/content/render_graph_format/include/ludus/content/render_graph_format/plan.h').read_text()
-        for name in ('MAX_PASSES', 'MAX_RESOURCES', 'MAX_CAMERAS', 'VERSION'):
+        for name in ('MAX_PASSES', 'MAX_RESOURCES', 'MAX_CAMERAS', 'VERSION', 'MAX_UNIFORM_VALUES',
+                     'MAX_UNIFORM_BINDINGS', 'MAX_UNIFORM_FIELDS', 'MAX_UNIFORM_BLOCK_BYTES', 'UNIFORM_SLOT_COUNT'):
             self.assertEqual(int(re.search(r'\b' + name + r' = (\d+);', header).group(1)),
                              getattr(execution, 'FORMAT_VERSION' if name == 'VERSION' else name))
 
@@ -140,6 +150,133 @@ class ExecutionTests(unittest.TestCase):
         depth = next(p for p in document['programs'] if p['id'] == 'Depth')
         wrapper = (package / 'programs' / depth['key'] / 'wrapper.slang').read_text()
         self.assertLess(wrapper.index('void DepthMain('), wrapper.index('#include "'))
+
+
+    def bind_material(self, value, *, vertex=False):
+        value['schemas'].append({'id': 'Material', 'role': 'Uniform',
+                                 'fields': [{'id': 'tint', 'type': 'Float3'}, {'id': 'gain', 'type': 'Float32'}]})
+        for program in value['programs']:
+            if program['id'] == 'Color' or (vertex and program['id'] == 'Geometry'):
+                program['bindings'] = [{'id': 'material', 'schema': 'Material', 'slot': 0}]
+
+    def mask_techniques(self, value):
+        for technique in value['techniques']:
+            technique['id'] = technique['id'].replace('DefaultStaticOpaque.', 'DefaultStaticMasked.')
+        rasterize = self.graph.parent / 'rasterize.lurender.json'
+        document = json.loads(rasterize.read_text())
+        for configuration in document['configurations']:
+            for node in configuration['nodes']:
+                if node['kind'] == 'Raster':
+                    node['material'] = 'DefaultMasked'
+        rasterize.write_text(json.dumps(document))
+
+    def test_bound_uniforms_lower_to_target_tables_and_named_values(self):
+        self.edit(self.bind_material)
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        self.assertEqual(contents['uniform_values'], 4)
+        self.assertEqual([{k: v for k, v in b.items() if k not in ('schema', 'layouts')} for b in contents['bindings']],
+                         [{'Program': 'ColorAndDepth', 'Slot': 0, 'Stages': 'Fragment', 'ValueOffset': 0, 'ValueCount': 4}])
+        self.assertEqual(contents['blocks'], [{'Binding': 0, 'Target': 'metal', 'Size': 32},
+                                              {'Binding': 0, 'Target': 'wgsl', 'Size': 16}])
+        self.assertEqual([(f['Target'], f['ValueOffset'], f['Components'], f['ByteOffset']) for f in contents['fields']],
+                         [('metal', 0, 3, 0), ('metal', 3, 1, 16), ('wgsl', 0, 3, 0), ('wgsl', 3, 1, 12)])
+        destination = self.root / 'bound.h'
+        result = execution.emit_runtime(self.output, destination, name='BoundGraph')
+        self.assertEqual((result['uniform_values'], result['uniform_bindings']), (4, 1))
+        text = destination.read_text()
+        self.assertIn('UNIFORM_VALUE_COUNT = 4;', text)
+        self.assertIn('UNIFORM_VALUE_MATERIAL_TINT = 0;', text)
+        self.assertIn('UNIFORM_VALUE_MATERIAL_GAIN = 3;', text)
+        self.assertIn('{format::Technique::ColorAndDepth, 0, format::Visibility::Fragment, 0, 4},', text)
+        self.assertIn('{0, format::ShaderTarget::Wgsl, 3, 1, 12},', text)
+        # The stage admits the largest carried block so one layout serves every target.
+        self.assertIn('{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, 32},', text)
+        self.assertIn('result.ColorFragment.Bindings = ColorFragmentBindings.AsSpan();', text)
+        self.assertNotIn('ColorVertexBindings', text)
+        runtime = execution.cook_runtime(self.output, self.root / 'bound.lurgrt')
+        self.assertEqual(runtime['interface_identity'], result['interface_identity'])
+        data = (self.root / 'bound.lurgrt').read_bytes()
+        header = struct.unpack('<10I', data[:40])
+        self.assertEqual(header[:2], (execution.PACKAGE_MAGIC, execution.PACKAGE_VERSION))
+        self.assertEqual(header[5:9], (4, 1, 2, 4))
+        records = 104 + 6 * 4 * 2 + 4 + 9 * 4
+        self.assertEqual(struct.unpack('<5I', data[records:records + 20]), (0, 0, 2, 0, 4))
+
+    def test_vertex_and_fragment_sharing_a_slot_merge_into_one_binding(self):
+        self.edit(lambda value: self.bind_material(value, vertex=True))
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        self.assertEqual([b['Stages'] for b in contents['bindings']], ['Both'])
+        stage = {'id': 'Color', 'descriptor': {'layouts': [{'slot': 0, 'schema': 'Material', 'size': 16,
+                                                             'fields': [{'id': 'tint', 'type': 'Float3', 'offset': 0},
+                                                                        {'id': 'gain', 'type': 'Float32', 'offset': 12}]}]}}
+        other = copy.deepcopy(stage)
+        other['descriptor']['layouts'][0]['fields'][1]['offset'] = 8
+        package = {'schemas': [{'id': 'Material', 'role': 'Uniform',
+                                'fields': [{'id': 'tint', 'type': 'Float3'}, {'id': 'gain', 'type': 'Float32'}]}]}
+        with self.assertRaisesRegex(ToolingError, 'one schema and layout'):
+            execution._lower_uniforms(package, {('ColorAndDepth', 'vertex', 'wgsl'): stage,
+                                                ('ColorAndDepth', 'fragment', 'wgsl'): other})
+
+    def test_interface_identity_changes_with_uniform_schemas_and_layouts(self):
+        self.run_build()
+        unbound = execution._runtime_contents(self.output, 'Default')['interface_identity']
+        self.edit(self.bind_material)
+        self.run_build()
+        bound = execution._runtime_contents(self.output, 'Default')['interface_identity']
+        def add_field(value):
+            value['schemas'][-1]['fields'].append({'id': 'bias', 'type': 'Float32'})
+        self.edit(add_field)
+        self.has_bias = True
+        self.run_build()
+        widened = execution._runtime_contents(self.output, 'Default')['interface_identity']
+        def move_slot(value):
+            next(p for p in value['programs'] if p['id'] == 'Color')['bindings'][0]['slot'] = 1
+        self.edit(move_slot)
+        self.stage_slot = 1
+        self.run_build()
+        moved = execution._runtime_contents(self.output, 'Default')['interface_identity']
+        self.assertEqual(len({unbound, bound, widened, moved}), 4)
+
+    def test_masked_techniques_lower_to_explicit_masked_programs(self):
+        self.edit(self.mask_techniques)
+        self.run_build()
+        _, _, passes, _ = execution.lower_plan(self.package(), 'Default')
+        self.assertEqual(passes[0]['Program'], 'MaskedColorAndDepth')
+        destination = self.root / 'masked.h'
+        execution.emit_runtime(self.output, destination)
+        text = destination.read_text()
+        self.assertIn('format::Technique::MaskedColorAndDepth', text)
+        self.assertIn('result.MaskedColorFragment.Artifact.Wgsl', text)
+        self.assertNotIn('result.ColorFragment', text)
+
+    def test_masked_depth_requires_its_own_authored_coverage_function(self):
+        def declare_both(value):
+            masked = copy.deepcopy(value['techniques'])
+            for technique in masked:
+                technique['id'] = technique['id'].replace('DefaultStaticOpaque.', 'DefaultStaticMasked.')
+            value['techniques'] += masked
+        self.edit(declare_both)
+        with self.assertRaisesRegex(ToolingError, 'separately authored depth function'):
+            self.run_build()
+
+    def test_unqualified_materials_layouts_and_history_still_reject(self):
+        rasterize = self.graph.parent / 'rasterize.lurender.json'
+        original = rasterize.read_text()
+        for field, value in [('material', 'DefaultTransparent'), ('vertex_layout', 'RendererSkinned')]:
+            document = json.loads(original)
+            document['configurations'][0]['nodes'][0][field] = value
+            rasterize.write_text(json.dumps(document))
+            with self.subTest(field=field), self.assertRaises(ToolingError):
+                graph.compile_graph(self.graph)
+        rasterize.write_text(original)
+        package = self.package()
+        for operation in package['plans'][0]['passes']:
+            if operation['kind'] == 'Raster':
+                operation['material'] = 'DefaultMasked'
+        with self.assertRaisesRegex(ToolingError, 'unqualified operation'):
+            execution.lower_plan(package, 'Default')
 
 
 if __name__ == '__main__':

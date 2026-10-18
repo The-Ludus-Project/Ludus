@@ -18,6 +18,9 @@ namespace ludus::content::string_dictionary
 {
 namespace format = string_dictionary_format;
 
+// Every directory index must stay below the shared StringIndex sentinel.
+static_assert(format::MAX_ENTRIES <= foundation::StringIndex::INVALID_VALUE);
+
 namespace
 {
 uint32 ReadWord(const uint8* bytes, usize offset) noexcept

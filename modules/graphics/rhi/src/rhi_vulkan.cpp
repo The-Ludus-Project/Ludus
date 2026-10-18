@@ -185,7 +185,7 @@ void WaitPresents() noexcept
 }
 void RetireAcquiredImage() noexcept
 {
-    if (!gOwnedImage || gDevice == VK_NULL_HANDLE)
+    if (gOwnedImage == false || gDevice == VK_NULL_HANDLE)
     {
         return;
     }
@@ -326,14 +326,14 @@ bool CreateTargets() noexcept
         info.samples = VK_SAMPLE_COUNT_1_BIT;
         info.tiling = VK_IMAGE_TILING_OPTIMAL;
         info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (!Check(vkCreateImage(gDevice, &info, nullptr, &gImages[0])))
+        if (Check(vkCreateImage(gDevice, &info, nullptr, &gImages[0])) == false)
         {
             return false;
         }
         VkMemoryRequirements requirements{};
         vkGetImageMemoryRequirements(gDevice, gImages[0], &requirements);
-        if (!Allocate(requirements, 0, gHeadlessMemory) ||
-            !Check(vkBindImageMemory(gDevice, gImages[0], gHeadlessMemory, 0)))
+        if (Allocate(requirements, 0, gHeadlessMemory) == false ||
+            Check(vkBindImageMemory(gDevice, gImages[0], gHeadlessMemory, 0)) == false)
         {
             return false;
         }
@@ -341,7 +341,7 @@ bool CreateTargets() noexcept
     else
     {
         VkSurfaceCapabilitiesKHR caps{ .currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR };
-        if (!Check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gPhysical, gSurface, &caps)))
+        if (Check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gPhysical, gSurface, &caps)) == false)
         {
             return false;
         }
@@ -357,13 +357,13 @@ bool CreateTargets() noexcept
                 foundation::math::Clamp(gExtent.height, caps.minImageExtent.height, caps.maxImageExtent.height);
         }
         uint32 count = 0;
-        if (!Check(vkGetPhysicalDeviceSurfaceFormatsKHR(gPhysical, gSurface, &count, nullptr)) || count == 0 ||
+        if (Check(vkGetPhysicalDeviceSurfaceFormatsKHR(gPhysical, gSurface, &count, nullptr)) == false || count == 0 ||
             count > 64)
         {
             return false;
         }
         VkSurfaceFormatKHR formats[64]{};
-        if (!Check(vkGetPhysicalDeviceSurfaceFormatsKHR(gPhysical, gSurface, &count, formats)))
+        if (Check(vkGetPhysicalDeviceSurfaceFormatsKHR(gPhysical, gSurface, &count, formats)) == false)
         {
             return false;
         }
@@ -437,14 +437,14 @@ bool CreateTargets() noexcept
         }
         info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
         info.clipped = VK_TRUE;
-        if (!Check(vkCreateSwapchainKHR(gDevice, &info, nullptr, &gSwapchain)) ||
-            !Check(vkGetSwapchainImagesKHR(gDevice, gSwapchain, &gImageCount, nullptr)) || gImageCount > IMAGES ||
-            !Check(vkGetSwapchainImagesKHR(gDevice, gSwapchain, &gImageCount, gImages)))
+        if (Check(vkCreateSwapchainKHR(gDevice, &info, nullptr, &gSwapchain)) == false ||
+            Check(vkGetSwapchainImagesKHR(gDevice, gSwapchain, &gImageCount, nullptr)) == false ||
+            gImageCount > IMAGES || Check(vkGetSwapchainImagesKHR(gDevice, gSwapchain, &gImageCount, gImages)) == false)
         {
             return false;
         }
     }
-    if (!CreatePass())
+    if (CreatePass() == false)
     {
         return false;
     }
@@ -458,13 +458,14 @@ bool CreateTargets() noexcept
     depthImage.samples = VK_SAMPLE_COUNT_1_BIT;
     depthImage.tiling = VK_IMAGE_TILING_OPTIMAL;
     depthImage.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    if (!Check(vkCreateImage(gDevice, &depthImage, nullptr, &gDepthImage)))
+    if (Check(vkCreateImage(gDevice, &depthImage, nullptr, &gDepthImage)) == false)
     {
         return false;
     }
     VkMemoryRequirements depthMemory{};
     vkGetImageMemoryRequirements(gDevice, gDepthImage, &depthMemory);
-    if (!Allocate(depthMemory, 0, gDepthMemory) || !Check(vkBindImageMemory(gDevice, gDepthImage, gDepthMemory, 0)))
+    if (Allocate(depthMemory, 0, gDepthMemory) == false ||
+        Check(vkBindImageMemory(gDevice, gDepthImage, gDepthMemory, 0)) == false)
     {
         return false;
     }
@@ -476,7 +477,7 @@ bool CreateTargets() noexcept
     depthView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     depthView.subresourceRange.levelCount = 1;
     depthView.subresourceRange.layerCount = 1;
-    if (!Check(vkCreateImageView(gDevice, &depthView, nullptr, &gDepthView)))
+    if (Check(vkCreateImageView(gDevice, &depthView, nullptr, &gDepthView)) == false)
     {
         return false;
     }
@@ -490,7 +491,7 @@ bool CreateTargets() noexcept
         view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         view.subresourceRange.levelCount = 1;
         view.subresourceRange.layerCount = 1;
-        if (!Check(vkCreateImageView(gDevice, &view, nullptr, &gViews[i])))
+        if (Check(vkCreateImageView(gDevice, &view, nullptr, &gViews[i])) == false)
         {
             return false;
         }
@@ -503,18 +504,18 @@ bool CreateTargets() noexcept
         target.width = gExtent.width;
         target.height = gExtent.height;
         target.layers = 1;
-        if (!Check(vkCreateFramebuffer(gDevice, &target, nullptr, &gTargets[i])))
+        if (Check(vkCreateFramebuffer(gDevice, &target, nullptr, &gTargets[i])) == false)
         {
             return false;
         }
-        if (!gHeadless)
+        if (gHeadless == false)
         {
             VkSemaphoreCreateInfo semaphore{};
             semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             VkFenceCreateInfo fence{};
             fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-            if (!Check(vkCreateFence(gDevice, &fence, nullptr, &gPresentFences[i])) ||
-                !Check(vkCreateSemaphore(gDevice, &semaphore, nullptr, &gFinished[i])))
+            if (Check(vkCreateFence(gDevice, &fence, nullptr, &gPresentFences[i])) == false ||
+                Check(vkCreateSemaphore(gDevice, &semaphore, nullptr, &gFinished[i])) == false)
             {
                 return false;
             }
@@ -606,7 +607,7 @@ bool Initialize(const ApplicationInfo& app) noexcept
     {
         return true;
     }
-    if (!Check(volkInitialize()))
+    if (Check(volkInitialize()) == false)
     {
         return false;
     }
@@ -615,13 +616,14 @@ bool Initialize(const ApplicationInfo& app) noexcept
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
     extensionCount = 2;
     uint32 availableCount = 0;
-    if (!Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, nullptr)) || availableCount > 128)
+    if (Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, nullptr)) == false ||
+        availableCount > 128)
     {
         volkFinalize();
         return false;
     }
     VkExtensionProperties available[128]{};
-    if (!Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, available)))
+    if (Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, available)) == false)
     {
         volkFinalize();
         return false;
@@ -660,7 +662,7 @@ bool Initialize(const ApplicationInfo& app) noexcept
     info.pApplicationInfo = &application;
     info.enabledExtensionCount = extensionCount;
     info.ppEnabledExtensionNames = extensions;
-    if (!Check(vkCreateInstance(&info, nullptr, &gInstance)))
+    if (Check(vkCreateInstance(&info, nullptr, &gInstance)) == false)
     {
         volkFinalize();
         return false;
@@ -694,7 +696,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
     }
     gWindow = window;
     gHeadless = window.System == platform::WindowSystem::Headless;
-    if (!gHeadless)
+    if (gHeadless == false)
     {
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
         if (window.System != platform::WindowSystem::Wayland || window.Display == nullptr || window.Surface == nullptr)
@@ -705,7 +707,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
         info.display = window.Display;
         info.surface = window.Surface;
-        if (!Check(vkCreateWaylandSurfaceKHR(gInstance, &info, nullptr, &gSurface)))
+        if (Check(vkCreateWaylandSurfaceKHR(gInstance, &info, nullptr, &gSurface)) == false)
         {
             return false;
         }
@@ -714,12 +716,12 @@ bool ConnectWindow(const WindowInfo& window) noexcept
 #endif
     }
     uint32 count = 0;
-    if (!Check(vkEnumeratePhysicalDevices(gInstance, &count, nullptr)) || count == 0 || count > 32)
+    if (Check(vkEnumeratePhysicalDevices(gInstance, &count, nullptr)) == false || count == 0 || count > 32)
     {
         return false;
     }
     VkPhysicalDevice devices[32]{};
-    if (!Check(vkEnumeratePhysicalDevices(gInstance, &count, devices)))
+    if (Check(vkEnumeratePhysicalDevices(gInstance, &count, devices)) == false)
     {
         return false;
     }
@@ -754,11 +756,11 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         uint32 enabledExtensions = gHeadless ? 0U : 2U;
         VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance{};
         maintenance.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
-        if (!gHeadless)
+        if (gHeadless == false)
         {
             uint32 countExtensions = 0;
-            if (!gInstanceMaintenance ||
-                !Check(vkEnumerateDeviceExtensionProperties(gPhysical, nullptr, &countExtensions, nullptr)) ||
+            if (gInstanceMaintenance == false ||
+                Check(vkEnumerateDeviceExtensionProperties(gPhysical, nullptr, &countExtensions, nullptr)) == false ||
                 countExtensions > 512)
             {
                 LUDUS_LOG_ERROR(LOG_RHI,
@@ -766,8 +768,9 @@ bool ConnectWindow(const WindowInfo& window) noexcept
                 return false;
             }
             VkExtensionProperties propertiesExtensions[512]{};
-            if (!Check(
-                    vkEnumerateDeviceExtensionProperties(gPhysical, nullptr, &countExtensions, propertiesExtensions)))
+            if (Check(
+                    vkEnumerateDeviceExtensionProperties(gPhysical, nullptr, &countExtensions, propertiesExtensions)) ==
+                false)
             {
                 return false;
             }
@@ -776,7 +779,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             {
                 supported = supported || std::strcmp(propertiesExtensions[i].extensionName, extensions[1]) == 0;
             }
-            if (!supported)
+            if (supported == false)
             {
                 LUDUS_LOG_ERROR(LOG_RHI, "VK_EXT_swapchain_maintenance1 is required for safe presentation retirement");
                 return false;
@@ -933,7 +936,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             .ppEnabledExtensionNames = extensions,
             .pEnabledFeatures = &enabled,
         };
-        if (!Check(vkCreateDevice(gPhysical, &device, nullptr, &gDevice)))
+        if (Check(vkCreateDevice(gPhysical, &device, nullptr, &gDevice)) == false)
         {
             return false;
         }
@@ -947,7 +950,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             return false;
         }
         gRequestedExtent = { .width = gTarget.Width, .height = gTarget.Height };
-        if (!CreateTargets())
+        if (CreateTargets() == false)
         {
             return false;
         }
@@ -967,8 +970,9 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         for (usize j = 0; j < families; ++j)
         {
             VkBool32 present = VK_TRUE;
-            if (!gHeadless &&
-                !Check(vkGetPhysicalDeviceSurfaceSupportKHR(devices[i], static_cast<uint32>(j), gSurface, &present)))
+            if (gHeadless == false &&
+                Check(vkGetPhysicalDeviceSurfaceSupportKHR(devices[i], static_cast<uint32>(j), gSurface, &present)) ==
+                    false)
             {
                 continue;
             }
@@ -1025,7 +1029,7 @@ bool InitializeRendering() noexcept
     pool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool.queueFamilyIndex = gFamily;
-    if (!Check(vkCreateCommandPool(gDevice, &pool, nullptr, &gCommands)))
+    if (Check(vkCreateCommandPool(gDevice, &pool, nullptr, &gCommands)) == false)
     {
         return false;
     }
@@ -1036,7 +1040,7 @@ bool InitializeRendering() noexcept
         allocate.commandPool = gCommands;
         allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocate.commandBufferCount = 1;
-        if (!Check(vkAllocateCommandBuffers(gDevice, &allocate, &frame.Command)))
+        if (Check(vkAllocateCommandBuffers(gDevice, &allocate, &frame.Command)) == false)
         {
             return false;
         }
@@ -1045,8 +1049,8 @@ bool InitializeRendering() noexcept
         fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         VkSemaphoreCreateInfo semaphore{};
         semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        if (!Check(vkCreateFence(gDevice, &fence, nullptr, &frame.Fence)) ||
-            !Check(vkCreateSemaphore(gDevice, &semaphore, nullptr, &frame.Acquired)))
+        if (Check(vkCreateFence(gDevice, &fence, nullptr, &frame.Fence)) == false ||
+            Check(vkCreateSemaphore(gDevice, &semaphore, nullptr, &frame.Acquired)) == false)
         {
             return false;
         }
@@ -1063,15 +1067,15 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
         return StartupError::InvalidWindow;
     }
     gSession = token;
-    if (!backend::Initialize(app))
+    if (backend::Initialize(app) == false)
     {
         return StartupError::InstanceUnavailable;
     }
-    if (!ConnectWindow(window))
+    if (ConnectWindow(window) == false)
     {
         return StartupError::SurfaceUnavailable;
     }
-    if (!InitializeRendering())
+    if (InitializeRendering() == false)
     {
         return StartupError::RenderingUnavailable;
     }
@@ -1107,7 +1111,7 @@ void Shutdown() noexcept
     {
         vkDestroyRenderPass(gDevice, gPass, nullptr);
         gPass = VK_NULL_HANDLE;
-        if (!gBorrowedDevice)
+        if (gBorrowedDevice == false)
         {
             vkDestroyDevice(gDevice, nullptr);
         }
@@ -1120,7 +1124,7 @@ void Shutdown() noexcept
             vkDestroySurfaceKHR(gInstance, gSurface, nullptr);
         }
         gSurface = VK_NULL_HANDLE;
-        if (!gBorrowedDevice)
+        if (gBorrowedDevice == false)
         {
             vkDestroyInstance(gInstance, nullptr);
         }
@@ -1159,8 +1163,8 @@ bool ValidColor(float64 value) noexcept
 } // namespace
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
-    if (target.Width > gMaxDimension || target.Height > gMaxDimension || !ValidColor(target.Red) ||
-        !ValidColor(target.Green) || !ValidColor(target.Blue) || !ValidColor(target.Alpha))
+    if (target.Width > gMaxDimension || target.Height > gMaxDimension || ValidColor(target.Red) == false ||
+        ValidColor(target.Green) == false || ValidColor(target.Blue) == false || ValidColor(target.Alpha) == false)
     {
         return FrameStatus::InvalidState;
     }
@@ -1180,7 +1184,7 @@ FrameStatus Begin() noexcept
     {
         return FrameStatus::Skipped;
     }
-    if (gResize && !CreateTargets())
+    if (gResize && CreateTargets() == false)
     {
         return Failure();
     }
@@ -1189,7 +1193,7 @@ FrameStatus Begin() noexcept
         return FrameStatus::Skipped;
     }
     auto& frame = gFrames[gFrame];
-    if (!Check(vkWaitForFences(gDevice, 1, &frame.Fence, VK_TRUE, 5000000000ULL)))
+    if (Check(vkWaitForFences(gDevice, 1, &frame.Fence, VK_TRUE, 5000000000ULL)) == false)
     {
         return Failure();
     }
@@ -1206,7 +1210,7 @@ FrameStatus Begin() noexcept
         return FrameStatus::Failed;
     }
     gImage = 0;
-    if (!gHeadless)
+    if (gHeadless == false)
     {
         const auto result =
             vkAcquireNextImageKHR(gDevice, gSwapchain, 5000000000ULL, frame.Acquired, VK_NULL_HANDLE, &gImage);
@@ -1223,33 +1227,33 @@ FrameStatus Begin() noexcept
         {
             gResize = true;
         }
-        else if (!Check(result))
+        else if (Check(result) == false)
         {
             return Failure();
         }
     }
-    if (!gHeadless)
+    if (gHeadless == false)
     {
         gAcquiredWait = true;
         gOwnedImage = true;
         if (gPresented[gImage])
         {
-            if (!Check(vkWaitForFences(gDevice, 1, &gPresentFences[gImage], VK_TRUE, 5000000000ULL)) ||
-                !Check(vkResetFences(gDevice, 1, &gPresentFences[gImage])))
+            if (Check(vkWaitForFences(gDevice, 1, &gPresentFences[gImage], VK_TRUE, 5000000000ULL)) == false ||
+                Check(vkResetFences(gDevice, 1, &gPresentFences[gImage])) == false)
             {
                 return Failure();
             }
             gPresented[gImage] = false;
         }
     }
-    if (!Check(vkResetCommandBuffer(frame.Command, 0)))
+    if (Check(vkResetCommandBuffer(frame.Command, 0)) == false)
     {
         return Failure();
     }
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (!Check(vkBeginCommandBuffer(frame.Command, &begin)))
+    if (Check(vkBeginCommandBuffer(frame.Command, &begin)) == false)
     {
         return Failure();
     }
@@ -1282,7 +1286,7 @@ FrameStatus End() noexcept
     }
     gEncoding = false;
     TimingEnd();
-    if (!Check(vkEndCommandBuffer(frame.Command)) || !Check(vkResetFences(gDevice, 1, &frame.Fence)))
+    if (Check(vkEndCommandBuffer(frame.Command)) == false || Check(vkResetFences(gDevice, 1, &frame.Fence)) == false)
     {
         return Failure();
     }
@@ -1291,7 +1295,7 @@ FrameStatus End() noexcept
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &frame.Command;
-    if (!gHeadless)
+    if (gHeadless == false)
     {
         submit.waitSemaphoreCount = 1;
         submit.pWaitSemaphores = &frame.Acquired;
@@ -1299,7 +1303,7 @@ FrameStatus End() noexcept
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &gFinished[gImage];
     }
-    if (!Check(vkQueueSubmit(gQueue, 1, &submit, frame.Fence)))
+    if (Check(vkQueueSubmit(gQueue, 1, &submit, frame.Fence)) == false)
     {
         return Failure();
     }
@@ -1307,7 +1311,7 @@ FrameStatus End() noexcept
     TimingSubmitted();
     gAcquiredWait = false;
     gFrame = (gFrame + 1) % FRAMES;
-    if (!gHeadless)
+    if (gHeadless == false)
     {
         VkSwapchainPresentFenceInfoEXT fence{};
         fence.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT;
@@ -1334,7 +1338,7 @@ FrameStatus End() noexcept
             gResize = true;
             return result == VK_ERROR_OUT_OF_DATE_KHR ? FrameStatus::Skipped : FrameStatus::Ready;
         }
-        if (!Check(result))
+        if (Check(result) == false)
         {
             return Failure();
         }
@@ -1372,7 +1376,7 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
         }
         offset += count;
     }
-    if (!found)
+    if (found == false)
     {
         return ResourceFailure();
     }
@@ -1406,17 +1410,17 @@ ResourceStatus CreateUniform(usize slot, const UniformDescription& description, 
         info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         info.size = size;
         info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-        if (!Check(vkCreateBuffer(gDevice, &info, nullptr, &uniform.Buffers[i])))
+        if (Check(vkCreateBuffer(gDevice, &info, nullptr, &uniform.Buffers[i])) == false)
         {
             return ResourceFailure();
         }
         VkMemoryRequirements requirements{};
         vkGetBufferMemoryRequirements(gDevice, uniform.Buffers[i], &requirements);
-        if (!Allocate(requirements,
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      uniform.Memory[i]) ||
-            !Check(vkBindBufferMemory(gDevice, uniform.Buffers[i], uniform.Memory[i], 0)) ||
-            !Check(vkMapMemory(gDevice, uniform.Memory[i], 0, size, 0, &uniform.Mapped[i])))
+        if (Allocate(requirements,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     uniform.Memory[i]) == false ||
+            Check(vkBindBufferMemory(gDevice, uniform.Buffers[i], uniform.Memory[i], 0)) == false ||
+            Check(vkMapMemory(gDevice, uniform.Memory[i], 0, size, 0, &uniform.Mapped[i])) == false)
         {
             return ResourceFailure();
         }
@@ -1465,7 +1469,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     bindings.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     bindings.bindingCount = 1;
     bindings.pBindings = &binding;
-    if (!Check(vkCreateDescriptorSetLayout(gDevice, &bindings, nullptr, &pipeline.Bindings)))
+    if (Check(vkCreateDescriptorSetLayout(gDevice, &bindings, nullptr, &pipeline.Bindings)) == false)
     {
         return ResourceFailure();
     }
@@ -1477,7 +1481,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     pool.maxSets = FRAMES;
     pool.poolSizeCount = 1;
     pool.pPoolSizes = &poolSize;
-    if (!Check(vkCreateDescriptorPool(gDevice, &pool, nullptr, &pipeline.Pool)))
+    if (Check(vkCreateDescriptorPool(gDevice, &pool, nullptr, &pipeline.Pool)) == false)
     {
         return ResourceFailure();
     }
@@ -1487,7 +1491,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     allocate.descriptorPool = pipeline.Pool;
     allocate.descriptorSetCount = FRAMES;
     allocate.pSetLayouts = layouts;
-    if (!Check(vkAllocateDescriptorSets(gDevice, &allocate, pipeline.Sets)))
+    if (Check(vkAllocateDescriptorSets(gDevice, &allocate, pipeline.Sets)) == false)
     {
         return ResourceFailure();
     }
@@ -1508,7 +1512,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout.setLayoutCount = 1;
     layout.pSetLayouts = &pipeline.Bindings;
-    if (!Check(vkCreatePipelineLayout(gDevice, &layout, nullptr, &pipeline.Layout)))
+    if (Check(vkCreatePipelineLayout(gDevice, &layout, nullptr, &pipeline.Layout)) == false)
     {
         return ResourceFailure();
     }
@@ -1626,7 +1630,7 @@ ResourceStatus Draw(usize slot) noexcept
 #if defined(LUDUS_RHI_TEST_READBACK)
 bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {
-    if (!gHeadless || gEncoding || pixels.size() != static_cast<usize>(gExtent.width) * gExtent.height * 4)
+    if (gHeadless == false || gEncoding || pixels.size() != static_cast<usize>(gExtent.width) * gExtent.height * 4)
     {
         return false;
     }
@@ -1651,16 +1655,16 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     buffer.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer.size = pixels.size();
     buffer.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (!Check(vkCreateBuffer(gDevice, &buffer, nullptr, &copy.Buffer)))
+    if (Check(vkCreateBuffer(gDevice, &buffer, nullptr, &copy.Buffer)) == false)
     {
         return false;
     }
     VkMemoryRequirements requirements{};
     vkGetBufferMemoryRequirements(gDevice, copy.Buffer, &requirements);
-    if (!Allocate(requirements,
-                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                  copy.Memory) ||
-        !Check(vkBindBufferMemory(gDevice, copy.Buffer, copy.Memory, 0)))
+    if (Allocate(requirements,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 copy.Memory) == false ||
+        Check(vkBindBufferMemory(gDevice, copy.Buffer, copy.Memory, 0)) == false)
     {
         return false;
     }
@@ -1669,13 +1673,13 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     allocate.commandPool = gCommands;
     allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocate.commandBufferCount = 1;
-    if (!Check(vkAllocateCommandBuffers(gDevice, &allocate, &copy.Command)))
+    if (Check(vkAllocateCommandBuffers(gDevice, &allocate, &copy.Command)) == false)
     {
         return false;
     }
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    if (!Check(vkBeginCommandBuffer(copy.Command, &begin)))
+    if (Check(vkBeginCommandBuffer(copy.Command, &begin)) == false)
     {
         return false;
     }
@@ -1698,7 +1702,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
                          nullptr,
                          0,
                          nullptr);
-    if (!Check(vkEndCommandBuffer(copy.Command)))
+    if (Check(vkEndCommandBuffer(copy.Command)) == false)
     {
         return false;
     }
@@ -1706,12 +1710,12 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &copy.Command;
-    if (!Check(vkQueueSubmit(gQueue, 1, &submit, VK_NULL_HANDLE)) || !Check(vkQueueWaitIdle(gQueue)))
+    if (Check(vkQueueSubmit(gQueue, 1, &submit, VK_NULL_HANDLE)) == false || Check(vkQueueWaitIdle(gQueue)) == false)
     {
         return false;
     }
     void* mapped = nullptr;
-    if (!Check(vkMapMemory(gDevice, copy.Memory, 0, pixels.size(), 0, &mapped)))
+    if (Check(vkMapMemory(gDevice, copy.Memory, 0, pixels.size(), 0, &mapped)) == false)
     {
         return false;
     }

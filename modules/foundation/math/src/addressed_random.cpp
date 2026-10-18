@@ -75,8 +75,8 @@ MathStatus TryMakeRandomKey(uint64 rootSeed, uint32 domainId, RandomKey& out) no
 MathStatus TryMakeRandomAddress(RandomAddressInput input, RandomAddress& out) noexcept
 {
     RandomAddress candidate{input.Scope, 0, 0};
-    if (!core::TryIntegerCast(input.Event, candidate.Event) ||
-        !core::TryIntegerCast(input.Dimension, candidate.Dimension))
+    if (core::TryIntegerCast(input.Event, candidate.Event) == false ||
+        core::TryIntegerCast(input.Dimension, candidate.Dimension) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -120,7 +120,7 @@ MathStatus TrySampleBounded(RandomKey key, RandomAddress address, uint32 bound, 
 {
     PreparedBound32 prepared;
     const MathStatus status = TryPrepareBound32(bound, prepared);
-    if (!IsSuccess(status))
+    if (IsSuccess(status) == false)
     {
         return status;
     }

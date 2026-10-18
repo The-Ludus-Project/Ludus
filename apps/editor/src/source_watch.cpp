@@ -17,7 +17,7 @@ SourceWatch::SourceWatch(QObject* parent) : QObject(parent)
     connect(&Watcher_, &QFileSystemWatcher::directoryChanged, this, &SourceWatch::Changed);
     connect(&Watcher_, &QFileSystemWatcher::fileChanged, this, &SourceWatch::Changed);
     connect(&Debounce_, &QTimer::timeout, this, [this]() {
-        if (Active() && Pending_ && !Busy_)
+        if (Active() && Pending_ && Busy_ == false)
         {
             Pending_ = false;
             Q_EMIT BuildRequested();
@@ -28,7 +28,7 @@ bool SourceWatch::Start(const QString& projectDirectory)
 {
     Stop();
     Project_ = QFileInfo(projectDirectory).canonicalFilePath();
-    if (!Project_.isEmpty() && Rearm())
+    if (Project_.isEmpty() == false && Rearm())
     {
         return true;
     }
@@ -38,11 +38,11 @@ bool SourceWatch::Start(const QString& projectDirectory)
 void SourceWatch::Stop()
 {
     Debounce_.stop();
-    if (!Watcher_.files().isEmpty())
+    if (Watcher_.files().isEmpty() == false)
     {
         Watcher_.removePaths(Watcher_.files());
     }
-    if (!Watcher_.directories().isEmpty())
+    if (Watcher_.directories().isEmpty() == false)
     {
         Watcher_.removePaths(Watcher_.directories());
     }
@@ -52,7 +52,7 @@ void SourceWatch::Stop()
 void SourceWatch::SetBusy(bool busy)
 {
     Busy_ = busy;
-    if (!Busy_ && Pending_ && Active() && !Debounce_.isActive())
+    if (Busy_ == false && Pending_ && Active() && Debounce_.isActive() == false)
     {
         Debounce_.start();
     }
@@ -60,13 +60,13 @@ void SourceWatch::SetBusy(bool busy)
 bool SourceWatch::Rearm()
 {
     QFile sidecar(QDir(Project_).filePath(QStringLiteral("ludus.play.json")));
-    if (!sidecar.open(QIODevice::ReadOnly) || sidecar.size() > 262144)
+    if (sidecar.open(QIODevice::ReadOnly) == false || sidecar.size() > 262144)
     {
         return false;
     }
     QJsonParseError error;
     const auto document = QJsonDocument::fromJson(sidecar.readAll(), &error);
-    if (error.error != QJsonParseError::NoError || !document.isObject())
+    if (error.error != QJsonParseError::NoError || document.isObject() == false)
     {
         return false;
     }
@@ -86,13 +86,13 @@ bool SourceWatch::Rearm()
         const auto relative = root.toString();
         const QFileInfo info(project.filePath(relative));
         const auto path = info.canonicalFilePath();
-        if (!root.isString() || relative.isEmpty() || QDir::isAbsolutePath(relative) || info.isSymLink() ||
-            path.isEmpty() || (path != Project_ && !path.startsWith(Project_ + QDir::separator())))
+        if (root.isString() == false || relative.isEmpty() || QDir::isAbsolutePath(relative) || info.isSymLink() ||
+            path.isEmpty() || (path != Project_ && path.startsWith(Project_ + QDir::separator()) == false))
         {
             return false;
         }
         paths.append(path);
-        if (!info.isDir())
+        if (info.isDir() == false)
         {
             continue;
         }
@@ -109,7 +109,7 @@ bool SourceWatch::Rearm()
                 {
                     continue;
                 }
-                if (entry.isSymLink() || (!entry.isDir() && !entry.isFile()))
+                if (entry.isSymLink() || (entry.isDir() == false && entry.isFile() == false))
                 {
                     return false;
                 }
@@ -143,19 +143,19 @@ bool SourceWatch::Rearm()
     QStringList removals;
     for (const auto& path : current)
     {
-        if (!paths.contains(path))
+        if (paths.contains(path) == false)
         {
             removals.append(path);
         }
     }
-    if (!removals.isEmpty())
+    if (removals.isEmpty() == false)
     {
         Watcher_.removePaths(removals);
     }
     QStringList additions;
     for (const auto& path : paths)
     {
-        if (!current.contains(path))
+        if (current.contains(path) == false)
         {
             additions.append(path);
         }
@@ -164,11 +164,11 @@ bool SourceWatch::Rearm()
 }
 void SourceWatch::Changed()
 {
-    if (!Active())
+    if (Active() == false)
     {
         return;
     }
-    if (!Rearm())
+    if (Rearm() == false)
     {
         Stop();
         Q_EMIT Failed(QStringLiteral("Source watch unavailable or over its 4096-path bound; use manual reload"));

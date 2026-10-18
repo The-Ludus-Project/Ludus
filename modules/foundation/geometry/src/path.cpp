@@ -3,6 +3,7 @@
 #include <ludus/foundation/geometry/path.hpp>
 
 #include "internal/arc_length.hpp"
+#include "internal/prepare_support.hpp"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -15,33 +16,16 @@ using math::Vector3d;
 
 namespace
 {
-// Largest finite float32, the narrowing range of chunk-relative controls.
-constexpr float64 FLOAT32_LARGEST = 3.4028234663852886e38;
-
-void WriteDiagnostic(GeometryDiagnostic* outDiagnosticOrNull, const GeometryDiagnostic& diagnostic) noexcept
-{
-    if (outDiagnosticOrNull != nullptr)
-    {
-        *outDiagnosticOrNull = diagnostic;
-    }
-}
-
-[[nodiscard]] GeometryStatus
-Fail(GeometryDiagnostic* outDiagnosticOrNull, GeometryStatus status, usize sourceElement, const char* property) noexcept
-{
-    WriteDiagnostic(outDiagnosticOrNull,
-                    GeometryDiagnostic{ .Code = status, .SourceElement = sourceElement, .Property = property });
-    return status;
-}
+using internal::ComputeRelativeDifference;
+using internal::Fail;
+using internal::GetMaxAbsComponent;
+using internal::ToDouble;
+using internal::TryNarrowVector;
+using internal::WriteDiagnostic;
 
 [[nodiscard]] bool IsFiniteVector(const Vector3d& value) noexcept
 {
     return math::IsFinite(value.X) == true && math::IsFinite(value.Y) == true && math::IsFinite(value.Z) == true;
-}
-
-[[nodiscard]] Vector3d ToDouble(const Vector3& value) noexcept
-{
-    return Vector3d{static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
 }
 
 [[nodiscard]] Vector3d Subtract(const Vector3d& left, const Vector3d& right) noexcept
@@ -52,23 +36,6 @@ Fail(GeometryDiagnostic* outDiagnosticOrNull, GeometryStatus status, usize sourc
 [[nodiscard]] Vector3d Scale(const Vector3d& value, float64 factor) noexcept
 {
     return Vector3d{value.X * factor, value.Y * factor, value.Z * factor};
-}
-
-[[nodiscard]] float64 GetMaxAbsComponent(const Vector3& value) noexcept
-{
-    return math::Max(math::Abs(static_cast<float64>(value.X)),
-                     math::Max(math::Abs(static_cast<float64>(value.Y)), math::Abs(static_cast<float64>(value.Z))));
-}
-
-// Narrow one float64 component; false when it is outside the float32 range.
-[[nodiscard]] bool TryNarrowComponent(float64 value, float32& outValue) noexcept
-{
-    if (math::Abs(value) > FLOAT32_LARGEST)
-    {
-        return false;
-    }
-    outValue = static_cast<float32>(value);
-    return true;
 }
 
 // Derivatives of a span at one end, per normalized u.
@@ -101,13 +68,6 @@ struct EndDerivatives final
         .First = Scale(Subtract(p3, p2), 3.0),
         .Second = Scale(Subtract(Subtract(p3, p2), Subtract(p2, p1)), 6.0),
     };
-}
-
-// |left - right| / max(|left|, |right|); zero when both vanish.
-[[nodiscard]] float64 ComputeRelativeDifference(const Vector3d& left, const Vector3d& right) noexcept
-{
-    const float64 scale = math::Max(math::Length(left), math::Length(right));
-    return scale == 0.0 ? 0.0 : math::Length(Subtract(left, right)) / scale;
 }
 
 [[nodiscard]] JointContinuity
@@ -173,18 +133,6 @@ ClassifyJoint(const PreparedSpan& incoming, const PreparedSpan& outgoing, const 
     };
 }
 
-[[nodiscard]] bool TryNarrowVector(const Vector3d& value, Vector3& outValue) noexcept
-{
-    Vector3 result;
-    const bool isNarrowed = TryNarrowComponent(value.X, result.X) == true &&
-                            TryNarrowComponent(value.Y, result.Y) == true &&
-                            TryNarrowComponent(value.Z, result.Z) == true;
-    if (isNarrowed == true)
-    {
-        outValue = result;
-    }
-    return isNarrowed;
-}
 } // namespace
 
 PathView PreparedPath::GetView() const noexcept
