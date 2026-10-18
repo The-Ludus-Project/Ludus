@@ -175,6 +175,16 @@ instead. Launch it afterwards with `./scripts/editor --preset <preset>`.
 Qt remains an optional editor dependency outside Conan and the installed SDK.
 See [the editor guide](editor-workspace.md).
 
+Editor setup also keeps this checkout's engine installs current. Game projects
+build against an installed engine below `out/install/` (selected in their
+ignored `.ludus/local.json`). After building the editor, init compares each
+install for the same target, flavor and ABI variant with the revision just
+configured. Installs built from another revision are rebuilt and reinstalled
+in place, so a project no longer builds against older engine code than the
+editor runs. Installs outside this checkout are never changed. Pass
+`--no-engine-refresh` to skip this step. Configure also re-runs when `git` HEAD
+moves, so a plain `cmake --build` after a pull records the new revision.
+
 Conan may still build missing third-party packages while preparing the dependency cache; Catch2 is included only when tests are enabled. That is dependency setup, not a Ludus engine target build. If an existing CMake cache points at stale tool paths, init may fresh-configure that generated build tree to repair it, but it still does not compile or link Ludus targets.
 
 VS Code is configured to use the project-managed CMake at `out/host-tools/venv/bin/cmake`. If VS Code was already open while `./init.sh` ran, reload the window before pressing the CMake Tools Build button.

@@ -49,6 +49,49 @@ def prepare_editor_preview(args, engine) -> None:
 def setup_editor(args, engine) -> None:
     if not args.with_editor:
         return
+    build_editor(args, engine)
+    refresh_editor_engine_installs(args, engine)
+
+
+def refresh_editor_engine_installs(args, engine) -> list[Path]:
+    """Reinstall this checkout's engine into its own installs built from another revision.
+
+    Projects pin installs below ``out/install`` through ``.ludus/local.json``.
+    Building only ``ludus_editor`` used to leave those installs at the old
+    revision, so games silently built against an older engine than the Editor.
+    Installs of another ABI variant or another target/flavor are left alone;
+    installs outside this checkout are never touched. Returns refreshed prefixes.
+    """
+    if getattr(args, "skip_engine_refresh", False):
+        print("Skipping the engine install refresh (--no-engine-refresh).")
+        return []
+    from ludus_tools.engine_pin import stale_editor_installs
+    from ludus_tools.errors import ToolingError
+    from ludus_tools.identity import load_manifest_file
+
+    root = engine.repo_root()
+    build_dir = engine.build_dir_for_preset(root, args.preset)
+    try:
+        built = load_manifest_file(build_dir / "cmake/LudusSdkManifest.json")
+    except ToolingError:
+        return []
+    stale = stale_editor_installs(root, target=built.target_triple, flavor=built.flavor,
+                                  revision=built.source_revision, abi_key=built.abi_key())
+    if not stale:
+        return []
+    print("Refreshing engine installs built from an older revision so projects match this editor:")
+    for prefix in stale:
+        print(f"  {prefix}")
+    # Install every engine target, not just the editor's dependencies.
+    engine.cmake_build(root, args.preset)
+    for prefix in stale:
+        engine.run([engine.cmake(root), "--install", build_dir, "--prefix", prefix], cwd=root, env=engine.tool_env(root))
+        engine.bundle_sdk_dependencies(root, args.preset, prefix)
+    print("Engine installs refreshed. Open each project and choose Check Setup; Repair refreshes its build settings.")
+    return stale
+
+
+def build_editor(args, engine) -> None:
     validate_editor_options(args, engine)
     root = engine.repo_root()
     preview_args = [f"-DLUDUS_EDITOR_RENDER_PREVIEW={'ON' if args.with_editor_preview else 'OFF'}"]

@@ -51,6 +51,7 @@ PROTOCOL_VERSION = 1
 OUTPUT_CREDIT_WINDOW = 256 * 1024       # encoded output bytes in flight
 CONTROL_RESERVE_BYTES = 4 * 1024        # reserved for the terminal result frame
 CONTROL_AGGREGATE_CAP = 1 * 1024 * 1024 # aggregate control output per job
+ENGINE_PIN_MAX_BYTES = 8 * 1024        # one engine_pin control frame
 CHILD_READ_CHUNK = 4 * 1024             # raw bytes per child read
 MAX_PROTOCOL_LINE = 256 * 1024          # inbound control line cap (framing)
 STDERR_CAP = 64 * 1024                  # adapter stderr per operation
@@ -286,6 +287,19 @@ class ProtocolWriter:
         if not text or len(text.encode("utf-8")) > 16 * 1024:
             raise ProtocolError("setup details exceeded 16 KiB or were empty")
         self.control({"type": "setup_details", "text": text})
+
+    def engine_pin(self, pin: dict) -> None:
+        # The project's selected engine install versus this editor's checkout
+        # (ludus_tools.engine_pin). Bounded like setup details; sent before the
+        # check runs so a failing check still offers the matching repair.
+        from ludus_tools.engine_pin import PIN_STATES
+        if pin.get("state") not in PIN_STATES:
+            raise ProtocolError("engine pin state is invalid")
+        frame = {"type": "engine_pin", **{key: pin[key] for key in
+                 ("state", "installation", "pinned_revision", "editor_revision", "editor_owned", "message")}}
+        if len(json.dumps(frame, ensure_ascii=False).encode("utf-8")) > ENGINE_PIN_MAX_BYTES:
+            raise ProtocolError("engine pin exceeded its bound")
+        self.control(frame)
 
     def result(self, outcome: str, stage: str, code: str, message: str,
                cleanup_confirmed: bool, exit_code: Optional[int], sig: Optional[int]) -> None:
@@ -1119,6 +1133,11 @@ class Operation:
             finally:
                 self._supervisor.capture_stdout = False
         options = dict(tooling_root=self._context.tooling_root, runner=runner, cancel_check=self._check_release_cancel)
+        if descriptor is not None and self._operation == "project_check":
+            from ludus_tools.engine_pin import diagnose_engine_pin
+            pin = diagnose_engine_pin(self._project_path, tooling_root=self._context.tooling_root)
+            if pin is not None:
+                self._writer.engine_pin(pin.to_json())
         if self._operation == "project_check":
             message = check_project(self._project_path, **options)
         else:

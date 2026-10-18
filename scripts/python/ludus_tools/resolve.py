@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from .errors import SDK_INCOMPATIBLE, SDK_NOT_FOUND, STAMP_CHANGED, UNRESOLVED_LOCK, ToolingError
+from .engine_pin import describe_prefix_problem, validate_install_prefix
 from .identity import SdkIdentity, load_prefix_manifest, require_compatible
 from .lockfile import Lock, LocalSettings
 from .sdkstore import SdkStore
@@ -76,7 +77,7 @@ def resolve_sdk(
     # 1) explicit per-operation override
     if cli_prefix is not None:
         prefix = Path(cli_prefix)
-        identity = load_prefix_manifest(prefix)
+        identity = validate_install_prefix(prefix)
         require_compatible(
             identity, required_flavor=flavor, required_features=required_features, reference=host
         )
@@ -86,6 +87,14 @@ def resolve_sdk(
     override = local_settings.find(target, flavor)
     if override is not None:
         prefix = Path(override.prefix)
+        problem = describe_prefix_problem(prefix)
+        if problem:
+            # A hand-edited or moved .ludus/local.json entry: name the fix, not just the missing file.
+            raise ToolingError(
+                SDK_NOT_FOUND,
+                f"saved engine selection in .ludus/local.json is unusable. {problem} Select an install with "
+                "Project > Repair Project Setup or 'ludus project engine <project> --sdk <install>'.",
+            )
         identity = load_prefix_manifest(prefix)
         require_compatible(
             identity, required_flavor=flavor, required_features=required_features, reference=host

@@ -89,8 +89,17 @@ TEST_CASE("Project repair reuses the selected engine without asking for paths", 
     CHECK(native->isVisible());
     CHECK_FALSE(buttons->button(QDialogButtonBox::Ok)->isEnabled());
     native->setText(QStringLiteral(" /installed/desktop "));
+    CHECK_FALSE(buttons->button(QDialogButtonBox::Ok)->isEnabled()); // missing folders are not installs
+    QTemporaryDir install;
+    REQUIRE(QDir(install.path()).mkpath(QStringLiteral("share/Ludus")));
+    QFile manifest(QDir(install.path()).filePath(QStringLiteral("share/Ludus/LudusSdkManifest.json")));
+    REQUIRE(manifest.open(QIODevice::WriteOnly));
+    const QByteArray manifestBytes = QByteArrayLiteral("{\"name\":\"Ludus\",\"build_flavor\":\"Development\"}");
+    REQUIRE(manifest.write(manifestBytes) == manifestBytes.size());
+    manifest.close();
+    native->setText(QStringLiteral(" %1 ").arg(install.path()));
     CHECK(buttons->button(QDialogButtonBox::Ok)->isEnabled());
-    CHECK(dialog.Options().Sdk == QStringLiteral("/installed/desktop"));
+    CHECK(dialog.Options().Sdk == install.path());
     engine->setCurrentIndex(1);
     CHECK_FALSE(native->isVisible());
     CHECK(dialog.Options().Sdk.isEmpty());

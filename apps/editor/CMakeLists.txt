@@ -102,6 +102,8 @@ add_library(ludus_editor_core STATIC
     src/project_store.cpp
     src/recent_projects.cpp
     src/tool_operation.cpp
+    src/internal/engine_pin.h
+    src/engine_pin.cpp
     ${editor_process_sources}
     src/log_buffer.cpp
     src/internal/timing_view.h
@@ -357,6 +359,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/content_import_gate_tests.cpp
         tests/content_browser_tests.cpp
         tests/project_setup_dialog_tests.cpp
+        tests/engine_pin_tests.cpp
         tests/project_lifecycle_tests.cpp
         tests/workspace_layout_tests.cpp
         tests/recent_projects_tests.cpp

@@ -187,6 +187,23 @@ if(Git_FOUND)
     if(LUDUS_GIT_REVISION_OUTPUT)
         set(LUDUS_GIT_REVISION "${LUDUS_GIT_REVISION_OUTPUT}")
     endif()
+    # The installed manifest, build metadata and Editor setup checks compare this
+    # revision. Re-run configure when HEAD moves (commit, pull, checkout) so a
+    # plain `cmake --build` or IDE build after a pull cannot install an engine
+    # labelled with the previous revision. Worktrees keep HEAD in their own
+    # git directory, so ask git for each path instead of assuming `.git/`.
+    foreach(LUDUS_GIT_HEAD_RELATIVE_PATH IN ITEMS HEAD logs/HEAD packed-refs)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${PROJECT_SOURCE_DIR}" rev-parse --path-format=absolute --git-path
+                    "${LUDUS_GIT_HEAD_RELATIVE_PATH}"
+            OUTPUT_VARIABLE LUDUS_GIT_HEAD_PATH
+            ERROR_QUIET
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(LUDUS_GIT_HEAD_PATH AND EXISTS "${LUDUS_GIT_HEAD_PATH}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${LUDUS_GIT_HEAD_PATH}")
+        endif()
+    endforeach()
 endif()
 
 set(LUDUS_GAME_COMPATIBILITY_IDENTITY

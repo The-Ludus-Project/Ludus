@@ -179,7 +179,7 @@ performs this read-only check: missing/stale presets, tools and SDK inputs are
 reported without downloading, configuring, building or rewriting the game.
 
 Save settings, then choose **Project → Repair Project Setup** and keep
-**Use this project's selected engine** unless changing the engine deliberately.
+**Automatic (recommended)** unless changing the engine deliberately.
 Repair preserves custom presets and unrelated IDE settings, refreshes stale
 owned CMake inputs, and verifies selectable configure/build/test presets plus an
 actual configure/build/native test run. Browser repair requires a matching SDK.
@@ -190,6 +190,38 @@ The installed CLI exposes the same operations:
 ludus project check /path/to/MyGame --tools /path/to/Ludus
 ludus project repair /path/to/MyGame --tools /path/to/Ludus --sdk /path/to/sdk
 ```
+
+### When the project's engine is older than the Editor
+
+The Editor runs from its tooling checkout, but a game builds against the engine
+install recorded in `.ludus/local.json`. Each install's
+`share/Ludus/LudusSdkManifest.json` records the revision it was built from.
+**Check Setup** compares that revision with the checkout's `HEAD`, even when
+the rest of the check fails. When they differ, or when the selection is not an
+install at all (for example a hand-edited path to `out/build/<profile>`), the
+project panel names both revisions and shows **Use this editor's engine**. That
+button builds and installs this checkout's engine, selects it, keeps saved
+browser setup and verifies the project, all in one step.
+
+**Automatic** repair does the same for installs this Editor owns, those below
+`<checkout>/out/install` (or a broken selection inside `<checkout>/out`). An
+install you chose elsewhere is never replaced silently: Check Setup reports it
+and **Use this editor's engine** is the explicit switch. In **Choose a different
+installed engine…**, the dialog lists this checkout's matching installs and
+rejects build folders, folders without a manifest and other build flavors
+before repair runs.
+
+Use the CLI instead of editing `.ludus/local.json` by hand:
+
+```bash
+ludus project engine ./MyGame --status --tools /path/to/Ludus   # current, stale, invalid or unknown
+ludus project engine ./MyGame --list   --tools /path/to/Ludus   # this checkout's installs and revisions
+ludus project engine ./MyGame --sdk /path/to/Ludus/out/install/<profile>-<id>
+```
+
+`--sdk` validates the folder (an install, not a build tree, with the project's
+target, flavor and engine version) before saving it. Existing `local.json` files
+keep working; no migration is needed.
 
 When tools or an SDK move, check and repair explicitly. Keep machine paths in
 ignored `CMakeUserPresets.json` and `.ludus/local.json`; the committed engine

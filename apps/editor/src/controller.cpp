@@ -375,6 +375,11 @@ void EditorController::StartJob(ActionKind kind, ToolOperation operation, const 
     {
         State_.SetupStatus = QStringLiteral("Checking selectable CMake presets and local toolchain…");
     }
+    if (operation == ToolOperation::ProjectCheck || operation == ToolOperation::ProjectSetup)
+    {
+        // A new check reports the pin again; a repair replaces the selection.
+        State_.EnginePin = EnginePinStatus{};
+    }
     Commands_.clear();
     Transitions_.clear();
     LastPid_ = 0;
@@ -456,6 +461,13 @@ void EditorController::SetupProject(const QString& sdk, const QString& webSdk, b
     options.PrepareEngine = prepareEngine;
     options.DisableWeb = disableWeb;
     StartJob(ActionKind::ProjectSetup, ToolOperation::ProjectSetup, options);
+}
+
+void EditorController::UseEditorEngine()
+{
+    // Build and install this editor's engine, select it in .ludus/local.json and
+    // verify the project. Saved browser setup is kept (empty web SDK, not disabled).
+    SetupProject(QString(), QString(), true, false);
 }
 
 void EditorController::CreateProject(const ProjectCreationOptions& creation)
@@ -662,6 +674,12 @@ void EditorController::OnToolEvent(const ProtocolEvent& event)
             if (event.Job == SetupCheckJob_ && State_.StopLatched == false)
             {
                 PendingSetupDetails_ = event.Text;
+            }
+            break;
+        case ProtocolEvent::Type::EnginePin:
+            if (event.Job == SetupCheckJob_ && State_.StopLatched == false)
+            {
+                State_.EnginePin = event.Pin;
             }
             break;
         case ProtocolEvent::Type::Generation:

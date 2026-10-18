@@ -2614,6 +2614,8 @@ def make_parser() -> argparse.ArgumentParser:
     preview.add_argument("--no-editor-preview", dest="with_editor_preview", action="store_false",
                          help="build a lightweight document-only editor without shader tools")
     init_parser.set_defaults(with_editor_preview=True)
+    init_parser.add_argument("--no-engine-refresh", dest="skip_engine_refresh", action="store_true",
+                             help="with --with-editor, do not reinstall this checkout's older engine installs under out/install")
     for name, label in (("tests", "native test targets and Catch2 dependencies"),
                         ("smoke-app", "sample applications (smoke and native input demo)"),
                         ("web-probes", "browser feasibility probes"),
