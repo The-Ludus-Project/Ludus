@@ -35,6 +35,13 @@ Slang 2026.1.2 release for arm64 or x86_64. Configure with
 `<name>.fragment.metal`, reflection JSON, a manifest, a depfile and the same
 generated `Vertex()` / `Fragment()` descriptions used by other backends.
 Source, include and define changes rebuild the artifacts; no-op builds do not.
+Slang's emitted `#line` directives name the source and its includes relative
+to the source directory or an `INCLUDE` directory, never by absolute path, so
+the generated header and manifest hashes are identical in every checkout. A
+compiler cache shared between checkouts (see
+[building](building.md#compiler-cache-across-checkouts)) can otherwise reuse a
+translation unit whose embedded MSL literal has another length. An included
+file outside those directories fails the build; add its directory to `INCLUDE`.
 The macOS header supplies `Msl` and `MslEntry`. Source is compiled as MSL 2.3
 during `CreateShader`; entries and stages are checked against the actual library.
 Pipeline reflection rejects used textures/samplers/storage or buffers outside
