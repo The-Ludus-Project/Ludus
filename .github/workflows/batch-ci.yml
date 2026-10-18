@@ -59,6 +59,10 @@ jobs:
   native:
     needs: snapshot
     if: needs.snapshot.outputs.should_run == 'true'
+    # The reusable native gate reads workflow runs to handle superseded PR checks.
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       batch_sha: ${{ needs.snapshot.outputs.candidate_sha }}
