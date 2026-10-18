@@ -39,7 +39,7 @@ rhi::RasterStatus StaticLightingJob::Start(threading::JobSystem& inoutSystem) no
         return mStatus;
     }
     mBake.Reset(new (std::nothrow) rr::StaticLightingBake);
-    if (mBake.Get() == nullptr || mScene.Definition.isNull() == true)
+    if (mBake.Get() == nullptr || mScene.Definition == nullptr)
     {
         mStatus = rhi::RasterStatus::OutOfMemory;
         return mStatus;
