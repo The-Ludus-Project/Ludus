@@ -929,6 +929,10 @@ void MainWindow::RenderCapabilities()
     ProjectRunButton_->setEnabled(BuildRunAction_->isEnabled());
     ProjectRunButton_->setToolTip(BuildRunAction_->toolTip());
     ProjectStopButton_->setEnabled(StopAction_->isEnabled());
+    // One-click drift repair, gated like Repair Project Setup.
+    const bool shouldOfferEditorEngine = ShouldOfferEditorEngine(Controller_->State().EnginePin);
+    mUseEditorEngineButtonOrNull->setVisible(shouldOfferEditorEngine);
+    mUseEditorEngineButtonOrNull->setEnabled(shouldOfferEditorEngine && SetupProjectAction_->isEnabled());
     ProjectSaveButton_->setEnabled(caps.CanSave && Content_->Importing() == false);
 #if defined(Q_OS_WASM)
     ProjectSaveButton_->setText(QStringLiteral("Save and download"));
@@ -957,9 +961,13 @@ void MainWindow::RenderStatus()
     ProjectIdentity_->setText(
         QStringLiteral("Project folder: %1\n%2\nSaved build profile: %3")
             .arg(QDir::toNativeSeparators(QFileInfo(state.DescriptorPath).absolutePath()), engine, project.Preset));
-    ProjectSetupStatus_->setText(state.SetupStatus.isEmpty()
-                                     ? QStringLiteral("Setup has not been checked for this project.")
-                                     : state.SetupStatus);
+    QString setupStatus = state.SetupStatus.isEmpty() ? QStringLiteral("Setup has not been checked for this project.")
+                                                      : state.SetupStatus;
+    if (state.EnginePin.State != EnginePinState::None && state.EnginePin.State != EnginePinState::Current)
+    {
+        setupStatus += QStringLiteral("\nEngine: %1").arg(state.EnginePin.Message);
+    }
+    ProjectSetupStatus_->setText(setupStatus);
     QString next;
 #if defined(Q_OS_WASM)
     next = QStringLiteral("Download your changes to keep them. Use the desktop editor to repair setup and build "
@@ -1136,7 +1144,13 @@ void MainWindow::OnDebuggerSetupRequested()
 void MainWindow::OnSetupProject()
 {
     const auto epoch = Controller_->State().ProjectEpoch;
-    auto* dialog = new ProjectSetupDialog(QFileInfo(Controller_->State().DescriptorPath).absolutePath(), this);
+    ProjectSetupDialog* dialog =
+        new ProjectSetupDialog(QFileInfo(Controller_->State().DescriptorPath).absolutePath(),
+                               this,
+                               {
+                                   .ExpectedFlavor = GetFlavorForProfile(Controller_->State().Saved.Preset),
+                                   .ToolingRoot = Controller_->Tooling().ToolingRoot,
+                               });
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     connect(dialog, &QDialog::accepted, this, [this, dialog, epoch]() {
         if (Controller_->State().ProjectEpoch == epoch)

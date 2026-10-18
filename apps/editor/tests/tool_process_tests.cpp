@@ -417,3 +417,56 @@ TEST_CASE("Setup identity is bounded and belongs to a setup operation", "[editor
     }
     CHECK(sawError);
 }
+
+TEST_CASE("Engine pin reports are bounded, typed and belong to a setup check", "[editor][project][protocol]")
+{
+    const QString prefix = QStringLiteral("import json, sys\n"
+                                          "print(json.dumps({'protocol':1,'type':'ready'}), flush=True)\n"
+                                          "r=json.loads(sys.stdin.readline())\n"
+                                          "e={'protocol':1,'job':r['job'],'type':'engine_pin','state':'stale',"
+                                          "'installation':'/checkout/out/install/x','pinned_revision':'0361c59',"
+                                          "'editor_revision':'5c74c12','editor_owned':True,'message':'drift'}\n");
+    const QString suffix = QStringLiteral("print(json.dumps(e), flush=True)\n"
+                                          "print(json.dumps({'protocol':1,'job':r['job'],'type':'result',"
+                                          "'outcome':'success','code':'Ok','message':'Setup checked',"
+                                          "'cleanup_confirmed':True}), flush=True)\n");
+    const ludus::foundation::Array<ProtocolEvent> valid = RunAdapter(prefix + suffix, ToolOperation::ProjectCheck);
+    bool hasSeenPin = false;
+    for (const ProtocolEvent& event : valid)
+    {
+        CHECK(event.Kind != ProtocolEvent::Type::Error);
+        if (event.Kind == ProtocolEvent::Type::EnginePin)
+        {
+            CHECK(event.Pin.State == EnginePinState::Stale);
+            CHECK(event.Pin.IsEditorOwned);
+            CHECK(event.Pin.PinnedRevision == QStringLiteral("0361c59"));
+            CHECK(event.Pin.EditorRevision == QStringLiteral("5c74c12"));
+            hasSeenPin = true;
+        }
+    }
+    CHECK(hasSeenPin);
+    struct RejectedCase
+    {
+        QString Body;
+        ToolOperation Operation;
+    };
+    const RejectedCase rejectedCases[] = {
+        {QString(), ToolOperation::Build},
+        {QString(), ToolOperation::ProjectSetup},
+        {QStringLiteral("e['state']='drifted'\n"), ToolOperation::ProjectCheck},
+        {QStringLiteral("e['message']=''\n"), ToolOperation::ProjectCheck},
+        {QStringLiteral("e['message']='m' * 9000\n"), ToolOperation::ProjectCheck},
+    };
+    for (const RejectedCase& rejectedCase : rejectedCases)
+    {
+        const ludus::foundation::Array<ProtocolEvent> rejected =
+            RunAdapter(prefix + rejectedCase.Body + suffix, rejectedCase.Operation);
+        bool hasSeenError = false;
+        for (const ProtocolEvent& event : rejected)
+        {
+            CHECK(event.Kind != ProtocolEvent::Type::EnginePin);
+            hasSeenError = hasSeenError || event.Kind == ProtocolEvent::Type::Error;
+        }
+        CHECK(hasSeenError);
+    }
+}

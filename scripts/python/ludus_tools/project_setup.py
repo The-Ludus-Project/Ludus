@@ -21,6 +21,7 @@ from .operations import PRESET_FLAVOR, locate_project, resolve_project
 from .resolve import compute_stamp, write_stamp
 from .sdkstore import SdkStore
 from .descriptor import parse_descriptor_file
+from .engine_pin import validate_install_prefix
 from .native import validate_target
 from .toolchain import PINNED_LLVM_MAJOR
 
@@ -251,19 +252,21 @@ def setup_for_profile(settings: dict, profile: str) -> dict:
 
 def stale_revision_warning(tooling_root: Path, sdk_revision: str | None, sdk: Path) -> str:
     """Warn when the selected SDK was installed from a different engine revision than this checkout."""
-    if not sdk_revision:
+    from .engine_pin import are_revisions_equal, checkout_revision, is_editor_owned, is_known_revision
+    if not is_known_revision(sdk_revision):
         return ""
-    try:
-        head = subprocess.run(["git", "-C", str(tooling_root), "rev-parse", "HEAD"], capture_output=True,
-                              text=True, check=False, timeout=10).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    head = checkout_revision(tooling_root)
+    if not head or are_revisions_equal(head, sdk_revision):
         return ""
-    if not head or head.startswith(sdk_revision) or sdk_revision.startswith(head):
-        return ""
-    return (f"Warning: the selected engine install ({sdk}) was built from {sdk_revision}, but this checkout is at "
+    if is_editor_owned(sdk, tooling_root):
+        action = ("Use this editor's engine (Project > Repair Project Setup) to rebuild and reinstall it; "
+                  "Automatic repair also refreshes it.")
+    else:
+        action = ("It was selected explicitly, so repair keeps it. Choose Use this editor's engine "
+                  "(Project > Repair Project Setup) to build, install and select this checkout's engine.")
+    return (f"Warning: the selected engine install ({sdk}) was built from {sdk_revision[:7]}, but this checkout is at "
             f"{head[:7]}. The Editor itself runs from this checkout; games build against the older install. "
-            "Reinstall the SDK (Project > Repair Project Setup, or update .ludus/local.json) to use current engine "
-            "code.\n")
+            f"{action}\n")
 
 
 def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
@@ -313,21 +316,29 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
 
 
 def select_repair_sdk(path: Path, *, tooling_root: Path, prepare=None) -> Path:
-    """Reuse selected/locked engines; prepare the editor engine for unresolved projects.
+    """Reuse selected/locked engines; prepare the editor engine when needed.
 
-    Explicit local overrides and release locks retain their existing precedence.
-    A corrupt, moved or incompatible selection requires an explicit replacement;
-    automatic discovery never silently rewrites that selection.
+    Explicit local overrides and release locks retain their existing precedence
+    when they point outside this tooling checkout: a corrupt, moved or
+    incompatible external selection requires an explicit replacement, and an
+    older external install is kept (Check Setup reports it). Installs below
+    ``<tooling>/out/install`` belong to this editor, so a stale or broken one is
+    rebuilt from this checkout and selected instead (``engine_pin``).
     Called only by explicit repair, never by read-only project loading.
     """
+    from .creation_engine import select_creation_sdk
+    from .engine_pin import diagnose_engine_pin, should_refresh_automatically
     _, descriptor, _ = supported_project(path)
+    pin = diagnose_engine_pin(path, tooling_root=tooling_root, profile=descriptor.preset)
+    if should_refresh_automatically(pin):
+        print(f"Refreshing this editor's engine: {pin.message}")
+        return select_creation_sdk(tooling_root, profile=descriptor.preset, prepare=prepare, environ={})
     try:
         return resolve_project(path, store=SdkStore(), profile=descriptor.preset,
                                enforce_host_toolchain=False).resolution.prefix
     except ToolingError as exc:
         if exc.code != "UnresolvedLock":
             raise
-    from .creation_engine import select_creation_sdk
     return select_creation_sdk(tooling_root, profile=descriptor.preset, prepare=prepare)
 
 
@@ -340,6 +351,8 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
     if sdk is None:
         sdk = resolve_project(path, store=SdkStore(), profile=descriptor.preset, enforce_host_toolchain=False).resolution.prefix
     sdk = sdk.resolve()
+    # Reject build folders and empty folders before any project file is touched.
+    validate_install_prefix(sdk)
     resolved = resolve_project(path, store=SdkStore(), cli_sdk_prefix=sdk, profile=descriptor.preset, enforce_host_toolchain=False)
     identity = resolved.resolution.identity
     validate_native_identity(identity, descriptor)

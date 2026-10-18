@@ -1,5 +1,7 @@
 #include "internal/project_setup_dialog.h"
 
+#include "internal/engine_pin.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -62,7 +64,10 @@ QLineEdit* AddDirectoryField(QVBoxLayout* layout, QWidget* parent, const Directo
 }
 } // namespace
 
-ProjectSetupDialog::ProjectSetupDialog(const QString& projectDirectory, QWidget* parent) : QDialog(parent)
+ProjectSetupDialog::ProjectSetupDialog(const QString& projectDirectory,
+                                       QWidget* parentOrNull,
+                                       const ProjectSetupContext& context)
+    : QDialog(parentOrNull), mExpectedFlavor(context.ExpectedFlavor)
 {
     setObjectName(QStringLiteral("projectSetupDialog"));
     setWindowTitle(QStringLiteral("Repair Project Setup"));
@@ -89,13 +94,36 @@ ProjectSetupDialog::ProjectSetupDialog(const QString& projectDirectory, QWidget*
     NativeFields_ = new QWidget(this);
     auto* nativeLayout = new QVBoxLayout(NativeFields_);
     nativeLayout->setContentsMargins(0, 0, 0, 0);
+    // Offer this editor's own installs first, so choosing an engine never needs a typed path.
+    const QStringList detected = DiscoverEngineInstalls(context.ToolingRoot, context.ExpectedFlavor);
+    mDetectedEnginesOrNull = new QComboBox(NativeFields_);
+    mDetectedEnginesOrNull->setObjectName(QStringLiteral("setupDetectedEngines"));
+    mDetectedEnginesOrNull->setAccessibleName(QStringLiteral("Engines installed by this editor"));
+    mDetectedEnginesOrNull->addItem(QStringLiteral("Engines installed by this editor…"));
+    for (const QString& install : detected)
+    {
+        mDetectedEnginesOrNull->addItem(QDir::toNativeSeparators(install), install);
+    }
+    mDetectedEnginesOrNull->setVisible(detected.isEmpty() == false);
+    nativeLayout->addWidget(mDetectedEnginesOrNull);
     Sdk_ = AddDirectoryField(nativeLayout,
                              NativeFields_,
                              {
                                  .Name = QStringLiteral("setupSdk"),
                                  .Hint = QStringLiteral("Folder containing the installed desktop engine"),
                              });
+    mSdkCheckOrNull = new QLabel(NativeFields_);
+    mSdkCheckOrNull->setObjectName(QStringLiteral("setupSdkCheck"));
+    mSdkCheckOrNull->setWordWrap(true);
+    nativeLayout->addWidget(mSdkCheckOrNull);
     layout->addWidget(NativeFields_);
+    connect(mDetectedEnginesOrNull, &QComboBox::currentIndexChanged, this, [this](int index) {
+        const QString install = mDetectedEnginesOrNull->itemData(index).toString();
+        if (install.isEmpty() == false)
+        {
+            Sdk_->setText(install);
+        }
+    });
 
     Browser_ = new QCheckBox(QStringLiteral("Also set up browser builds"), this);
     Browser_->setObjectName(QStringLiteral("setupBrowser"));
@@ -154,6 +182,7 @@ void ProjectSetupDialog::Refresh() noexcept
         case EngineChoice::Current:
             EngineHelp_->setText(
                 QStringLiteral("Reuses the selected engine, or prepares this editor's engine for a new project. "
+                               "An engine this editor installed is rebuilt when it is older than the editor. "
                                "No folders need to be entered. First-time preparation may download tools. "
                                "Incompatible selections need an explicit replacement."));
             break;
@@ -165,11 +194,18 @@ void ProjectSetupDialog::Refresh() noexcept
         case EngineChoice::Installed:
             EngineHelp_->setText(QStringLiteral("Choose a Ludus engine installation that matches your project's "
                                                 "engine version and build profile. An SDK is an installed engine's "
-                                                "headers and libraries; select its installation folder."));
+                                                "headers and libraries; select its installation folder, not a "
+                                                "build folder."));
             break;
     }
-    const bool nativeReady = choice != EngineChoice::Installed || Sdk_->text().trimmed().isEmpty() == false;
-    const bool webReady = Browser_->isChecked() == false || WebSdk_->text().trimmed().isEmpty() == false;
-    Buttons_->button(QDialogButtonBox::Ok)->setEnabled(nativeReady && webReady);
+    // Validate a chosen folder before repair records it in .ludus/local.json.
+    const QString sdk = Sdk_->text().trimmed();
+    const EngineInstallCheck sdkCheck =
+        sdk.isEmpty() ? EngineInstallCheck{} : CheckEngineInstallFolder(sdk, mExpectedFlavor);
+    mSdkCheckOrNull->setText(sdkCheck.Message);
+    mSdkCheckOrNull->setVisible(sdk.isEmpty() == false);
+    const bool isNativeReady = choice != EngineChoice::Installed || sdkCheck.IsInstall == true;
+    const bool isWebReady = Browser_->isChecked() == false || WebSdk_->text().trimmed().isEmpty() == false;
+    Buttons_->button(QDialogButtonBox::Ok)->setEnabled(isNativeReady && isWebReady);
 }
 } // namespace ludus::editor

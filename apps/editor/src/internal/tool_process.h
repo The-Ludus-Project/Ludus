@@ -9,6 +9,7 @@
 // used as a cancellation mechanism. One request per process; cancellation and
 // output-credit are sent on the still-open stdin pipe.
 
+#include "internal/engine_pin.h"
 #include "internal/project_descriptor.h"
 
 #include <ludus/foundation/base/types.h>
@@ -62,6 +63,7 @@ struct ProtocolEvent
         DebuggerStarted,
         Generation,
         SetupDetails,
+        EnginePin,
         Result,
         Error, // local framing/protocol error (not from the adapter)
     };
@@ -89,6 +91,8 @@ struct ProtocolEvent
     qint64 Pid = 0;
     QString Executable;
     QString GenerationPath;
+    // EnginePin
+    EnginePinStatus Pin;
     // Result
     QString Outcome; // success/failed/cancelled
     ResultCode Code = ResultCode::Ok;

@@ -111,12 +111,19 @@ void MainWindow::BuildUi()
     ProjectSaveButton_ = button(QStringLiteral("projectSaveSettings"), QStringLiteral("Save settings"));
     ProjectRunButton_ = button(QStringLiteral("projectBuildRun"), QStringLiteral("Build and run"));
     ProjectStopButton_ = button(QStringLiteral("projectStop"), QStringLiteral("Stop"));
+    mUseEditorEngineButtonOrNull =
+        button(QStringLiteral("projectUseEditorEngine"), QStringLiteral("Use this editor's engine"));
+    mUseEditorEngineButtonOrNull->setToolTip(
+        QStringLiteral("Build and install the engine from this editor's checkout, select it for this project and "
+                       "verify the project build. This can take several minutes."));
+    mUseEditorEngineButtonOrNull->hide();
     projectLayout->addWidget(lifecycle);
     connect(ProjectCheckButton_, &QPushButton::clicked, this, [this]() { CheckSetupAction_->trigger(); });
     connect(ProjectRepairButton_, &QPushButton::clicked, this, [this]() { SetupProjectAction_->trigger(); });
     connect(ProjectSaveButton_, &QPushButton::clicked, this, [this]() { (void)SaveProjectSettings(); });
     connect(ProjectRunButton_, &QPushButton::clicked, this, [this]() { BuildRunAction_->trigger(); });
     connect(ProjectStopButton_, &QPushButton::clicked, this, [this]() { StopAction_->trigger(); });
+    connect(mUseEditorEngineButtonOrNull, &QPushButton::clicked, Controller_, &EditorController::UseEditorEngine);
     auto* basic = new QFormLayout;
     projectLayout->addLayout(basic);
     auto* advanced = new QPushButton(QStringLiteral("Show build and launch details"), form);

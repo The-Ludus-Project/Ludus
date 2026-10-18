@@ -101,6 +101,13 @@ and output credit. The controller publishes it only after a successful setup
 result; failure and cancellation show their own outcome. This private protocol
 requires the matching editor/tooling version.
 
+A setup check also sends one `engine_pin` event (at most 8 KiB) before running:
+the selected engine install compared with the Editor's checkout revision
+(`current`, `stale`, `invalid` or `unknown`). It is accepted only for
+`project_check`, so a failed check can still offer **Use this editor's engine**.
+Starting a check or repair clears the previous report. See
+[engine drift](project-sdk-workflow.md#when-the-projects-engine-is-older-than-the-editor).
+
 Acceptance covers keyboard/mouse disclosure, profile identity and explicit save,
 read-only checks with selected engine evidence, disabled commands, pending
 argument text, history and project switching. Offscreen Qt tests validate behavior;
