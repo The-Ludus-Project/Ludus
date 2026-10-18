@@ -183,30 +183,22 @@ TEST_CASE("Supplied imported World remains visible in solid and albedo GPU views
         REQUIRE(sceneWorkspace->StatusText().contains(
             QStringLiteral("%1 planar area proxies / %2 shadow faces").arg(inputs.AreaCount).arg(inputs.ShadowCount)));
         REQUIRE(awaitPresentation(viewport->PresentedFrames() + 2));
-        QElapsedTimer bakeTimer;
-        bakeTimer.start();
-        while (bakeTimer.elapsed() < 300000 &&
-               sceneWorkspace->StatusText().contains(QStringLiteral("static diffuse baked")) == false &&
-               sceneWorkspace->StatusText().contains(QStringLiteral("bake failed")) == false)
-        {
-            QTest::qWait(20);
-        }
         INFO(sceneWorkspace->StatusText().toStdString());
-        REQUIRE(sceneWorkspace->StatusText().contains(QStringLiteral("static diffuse baked")));
-        REQUIRE(awaitPresentation(viewport->PresentedFrames() + 2));
-        const QImage baked = ReadViewport();
-        REQUIRE(baked.isNull() == false);
+        REQUIRE(sceneWorkspace->StatusText().contains(QStringLiteral("direct lighting")) == true);
+        CHECK(sceneWorkspace->StatusText().contains(QStringLiteral("bake")) == false);
+        const QImage litImage = ReadViewport();
+        REQUIRE(litImage.isNull() == false);
         if (imagePrefix.isEmpty() == false)
         {
-            REQUIRE(baked.save(imagePrefix + QStringLiteral("baked.png")));
+            REQUIRE(litImage.save(imagePrefix + QStringLiteral("direct.png")) == true);
         }
-        const QColor background = baked.pixelColor(0, 0);
+        const QColor background = litImage.pixelColor(0, 0);
         uint32 litPixels = 0;
-        for (int32 y = 0; y < baked.height(); y += 4)
+        for (int32 y = 0; y < litImage.height(); y += 4)
         {
-            for (int32 x = 0; x < baked.width(); x += 4)
+            for (int32 x = 0; x < litImage.width(); x += 4)
             {
-                const QColor color = baked.pixelColor(x, y);
+                const QColor color = litImage.pixelColor(x, y);
                 // Count visible nonsaturated geometry, excluding clear pixels
                 // and the bright emitter patches which were already visible.
                 const int32 sum = color.red() + color.green() + color.blue();
@@ -612,16 +604,13 @@ void AddLightingQuad(ludus::resources::SceneMesh& inoutMesh,
         REQUIRE(inoutMesh.Indices.TryAdd(start + order[i + (isFacingDown == true ? 2 : 1)]));
     }
 }
-// Receiver-mesh defects the bake must handle without retiring the direct snapshot.
+// Receiver-mesh inputs the interactive viewport must accept without static-lighting preparation.
 enum class LightingReceiverDefect : uint8
 {
     None,
     // GPU raster accepts a zero-area receiver primitive; static transport skips it.
     ZeroAreaTriangle,
-    // GPU raster rebuilds the receiver's bake atlas UVs from its chart layout, so it
-    // ignores these authored ones; static transport rejects UVs that disagree with
-    // that layout (Unsupported). (0, 0) is never an interior texel centre, so every
-    // corner disagrees.
+    // Direct lighting ignores authored lightmap coordinates.
     MismatchedBakeTexcoords,
 };
 // Builds the definition privately and publishes it as an immutable snapshot.
@@ -695,8 +684,7 @@ RenderScene MakeLightingScene(LightingReceiverDefect defect = LightingReceiverDe
 }
 } // namespace
 
-TEST_CASE("Native Lit viewport publishes thirteen shadowed area patches and per-instance baked charts",
-          "[.render-native][lighting]")
+TEST_CASE("Native Lit viewport renders thirteen shadowed area patches without baking", "[.render-native][lighting]")
 {
     RenderScene scene = MakeLightingScene();
     const QByteArray key = preview_lighting::MakeKey(scene);
@@ -722,20 +710,15 @@ TEST_CASE("Native Lit viewport publishes thirteen shadowed area patches and per-
     const uint64 beforeCamera = preview.Frames();
     preview.Orbit(2, 0);
     REQUIRE(preview.SetScene(cameraOnly));
-    QElapsedTimer timer;
-    timer.start();
-    while (timer.elapsed() < 40000 && preview.Status().contains(QStringLiteral("static diffuse baked")) == false)
-    {
-        QTest::qWait(20);
-    }
-    INFO(preview.Status().toStdString());
-    REQUIRE(preview.Status().contains(QStringLiteral("13 planar area proxies / 78 shadow faces")));
-    REQUIRE(preview.Status().contains(QStringLiteral("static diffuse baked")));
     REQUIRE(Frames(preview, beforeCamera + 2));
+    INFO(preview.Status().toStdString());
+    REQUIRE(preview.Status().contains(QStringLiteral("13 planar area proxies / 78 shadow faces")) == true);
+    CHECK(preview.Status().contains(QStringLiteral("direct lighting")) == true);
+    CHECK(preview.Status().contains(QStringLiteral("bake")) == false);
     REQUIRE(ReadViewport().isNull() == false);
     preview.Stop();
 }
-TEST_CASE("Native Lit bake failure retains direct lighting and live camera rendering", "[.render-native][lighting]")
+TEST_CASE("Native Lit viewport ignores lightmap UVs and keeps live camera rendering", "[.render-native][lighting]")
 {
     RenderScene scene = MakeLightingScene(LightingReceiverDefect::MismatchedBakeTexcoords);
     RenderPreview preview;
@@ -746,26 +729,17 @@ TEST_CASE("Native Lit bake failure retains direct lighting and live camera rende
     preview.SetShading(PreviewShading::Lit);
     REQUIRE(preview.Start());
     REQUIRE(Frames(preview, 2));
-    QElapsedTimer timer;
-    timer.start();
-    while (timer.elapsed() < 10000 &&
-           preview.Status().contains(QStringLiteral("bake failed; direct lighting retained")) == false)
-    {
-        QTest::qWait(20);
-    }
     INFO(preview.Status().toStdString());
-    REQUIRE(preview.Status().contains(QStringLiteral("bake failed; direct lighting retained")));
-    CHECK(preview.GetBakeState() == PreviewBakeState::Failed);
+    CHECK(preview.Status().contains(QStringLiteral("direct lighting")) == true);
+    CHECK(preview.Status().contains(QStringLiteral("bake")) == false);
     const uint64 previous = preview.Frames();
     preview.Orbit(4, 2);
     REQUIRE(Frames(preview, previous + 2));
     CHECK(viewport.PresentedFrames() > 0);
     preview.Stop();
 }
-TEST_CASE("Native Lit bake skips a zero-area triangle and reports it", "[.render-native][lighting]")
+TEST_CASE("Native Lit viewport accepts zero-area triangles without baking", "[.render-native][lighting]")
 {
-    // Static transport skips the zero-area triangle, still publishes the bake and
-    // reports the skipped triangle.
     RenderScene scene = MakeLightingScene(LightingReceiverDefect::ZeroAreaTriangle);
     RenderPreview preview;
     PreviewViewport viewport(&preview);
@@ -775,20 +749,9 @@ TEST_CASE("Native Lit bake skips a zero-area triangle and reports it", "[.render
     preview.SetShading(PreviewShading::Lit);
     REQUIRE(preview.Start());
     REQUIRE(Frames(preview, 2));
-    QElapsedTimer timer;
-    timer.start();
-    while (timer.elapsed() < 40000 && preview.Status().contains(QStringLiteral("static diffuse baked")) == false)
-    {
-        QTest::qWait(20);
-    }
     INFO(preview.Status().toStdString());
-    REQUIRE(preview.Status().contains(QStringLiteral("static diffuse baked")));
-    CHECK(preview.Status().contains(QStringLiteral("skipped 1 zero-area triangles in 1 object")));
-    CHECK(preview.GetBakeState() == PreviewBakeState::Baked);
-    PreviewBakeNotice notice;
-    REQUIRE(preview.GetBakeNotice(notice));
-    CHECK(notice.SkippedTriangleCount == 1);
-    CHECK(notice.AffectedObjectCount == 1);
+    CHECK(preview.Status().contains(QStringLiteral("direct lighting")) == true);
+    CHECK(preview.Status().contains(QStringLiteral("bake")) == false);
     const uint64 previous = preview.Frames();
     preview.Orbit(4, 2);
     REQUIRE(Frames(preview, previous + 2));

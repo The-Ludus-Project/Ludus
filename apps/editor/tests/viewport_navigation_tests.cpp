@@ -2,6 +2,7 @@
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
+#include "viewport_fixture.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
@@ -14,8 +15,11 @@
 #include <ludus/gameplay/camera/camera.hpp>
 
 #include <QApplication>
+#include <QComboBox>
+#include <QFileInfo>
 #include <QFocusEvent>
 #include <QJsonObject>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QWheelEvent>
 
@@ -287,4 +291,52 @@ TEST_CASE("Orthographic viewport projection agrees with its minimum visible widt
     scene.Cameras[0].Sample.Lens.MinimumVisibleWidth = 0;
     REQUIRE(scene.View(options, equivalent, error) == true);
     CHECK(constrained.WorldToClip == equivalent.WorldToClip);
+}
+
+TEST_CASE("Lit viewport gives the render surface its available height without baking",
+          "[editor][viewport][layout][gpu]")
+{
+    if (PreviewViewport::CanPresent() == false)
+    {
+        SKIP("A native display and GPU presentation path are required");
+    }
+    QTemporaryDir directory;
+    RenderScene scene;
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasCollapsedTriangle = true });
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(800, 600);
+    viewport.show();
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.PresentedFrames() > 0; }, 120000) == true);
+    CHECK(viewport.findChild<QWidget*>(QStringLiteral("viewportBakeAction")) == nullptr);
+    CHECK(viewport.findChild<QWidget*>(QStringLiteral("viewportBakeNotice")) == nullptr);
+    CHECK(preview.Status().contains(QStringLiteral("direct lighting")) == true);
+    CHECK(preview.Status().contains(QStringLiteral("bake")) == false);
+    QWidget* surfaceOrNull = viewport.findChild<QWidget*>(QStringLiteral("viewportRenderSurface"));
+    if (surfaceOrNull == nullptr)
+    {
+        surfaceOrNull = viewport.findChild<QWidget*>(QStringLiteral("LudusOffscreenViewport"));
+    }
+    REQUIRE(surfaceOrNull != nullptr);
+    for (const QSize& size : {QSize(800, 600), QSize(500, 360), QSize(1000, 700)})
+    {
+        const uint64 presented = viewport.PresentedFrames();
+        viewport.resize(size);
+        preview.Orbit(1, 1);
+        REQUIRE(QTest::qWaitFor([&viewport, presented]() { return viewport.PresentedFrames() > presented; }, 30000) ==
+                true);
+        CHECK(surfaceOrNull->height() > viewport.height() / 2);
+        CHECK(surfaceOrNull->width() == viewport.width());
+        CHECK(viewport.rect().contains(surfaceOrNull->geometry()) == true);
+        CHECK(preview.Running() == true);
+    }
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_VIEWPORT_LAYOUT_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(viewport.grab().save(capture) == true);
+    }
+    preview.Stop();
 }

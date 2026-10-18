@@ -59,16 +59,9 @@ PreviewGpuGeneration::PreviewGpuGeneration(rhi::DeviceHandle device, const Rende
 }
 PreviewGpuGeneration::~PreviewGpuGeneration() noexcept
 {
-    // Cancels and drains an in-flight bake before the borrowed scene is released.
-    BakeWorker.Reset();
-    Bake.Reset();
     Viewport.Reset();
     Renderer.Reset();
     Environment.Reset();
-    for (rhi::TextureHandle& texture : BakeTextures)
-    {
-        static_cast<void>(rhi::Destroy(Device, texture));
-    }
     for (rhi::TextureHandle& texture : Textures)
     {
         static_cast<void>(rhi::Destroy(Device, texture));
@@ -110,13 +103,6 @@ PreviewPreparationStatus PreviewGpuGeneration::Prepare(rhi::SurfaceHandle surfac
         return PreviewPreparationStatus::Failed;
     }
     return IsPrepared() == true ? PreviewPreparationStatus::Ready : PreviewPreparationStatus::Pending;
-}
-
-void PreviewGpuGeneration::PublishBakedSnapshot() noexcept
-{
-    static_cast<void>(Renderer.Release(mSnapshot));
-    mSnapshot = BakedSnapshot;
-    IsBakePublished = true;
 }
 
 bool PreviewGpuGeneration::acceptStage(rhi::RasterStatus status, PreparationStage next) noexcept
@@ -255,57 +241,15 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
         {
             const PreviewMesh& mesh = Source.Meshes[i];
             renderer::MeshDescription description;
-            Array<math::Vector3> positionsMesh;
-            Array<math::Vector3> normalsMesh;
-            Array<math::Vector2> textureCoordinatesMaterial;
-            Array<math::Vector2> textureCoordinatesBakeAtlas;
-            Array<uint32> indices;
             if (Source.Lit == true)
             {
                 const resources::SceneMesh& source = Source.Definition->Meshes[static_cast<usize>(i)];
-#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-                // Browser direct lighting does not need the native bake's expanded chart vertices.
                 description.Positions = source.Positions.GetData();
                 description.VertexCount = source.Positions.GetSize();
                 description.Indices = source.Indices.GetData();
                 description.IndexCount = source.Indices.GetSize();
                 description.Texcoords = source.Texcoords.GetData();
                 description.Normals = source.Normals.GetData();
-#    else
-                const usize count = source.Indices.GetSize();
-                content::scene_format::BakeChartLayout layout;
-                if (count > content::scene_format::MAX_VERTICES ||
-                    content::scene_format::TryMakeBakeChartLayout(static_cast<uint32>(count / 3), layout) == false ||
-                    positionsMesh.TryResize(count) == false || normalsMesh.TryResize(count) == false ||
-                    textureCoordinatesMaterial.TryResize(count) == false ||
-                    textureCoordinatesBakeAtlas.TryResize(count) == false || indices.TryResize(count) == false)
-                {
-                    return false;
-                }
-                for (usize vertex = 0; vertex < count; ++vertex)
-                {
-                    const uint32 index = source.Indices[vertex];
-                    positionsMesh[vertex] = source.Positions[index];
-                    normalsMesh[vertex] = source.Normals[index];
-                    textureCoordinatesMaterial[vertex] = source.Texcoords[index];
-                    indices[vertex] = static_cast<uint32>(vertex);
-                    if (content::scene_format::TryGetBakeChartUv(layout,
-                                                                 static_cast<uint32>(vertex / 3),
-                                                                 static_cast<uint32>(vertex % 3),
-                                                                 textureCoordinatesBakeAtlas[vertex].X,
-                                                                 textureCoordinatesBakeAtlas[vertex].Y) == false)
-                    {
-                        return false;
-                    }
-                }
-                description.Positions = positionsMesh.GetData();
-                description.VertexCount = count;
-                description.Indices = indices.GetData();
-                description.IndexCount = count;
-                description.Texcoords = textureCoordinatesMaterial.GetData();
-                description.Normals = normalsMesh.GetData();
-                description.BakeTexcoords = textureCoordinatesBakeAtlas.GetData();
-#    endif
             }
             else
             {
@@ -469,7 +413,6 @@ bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& 
 #endif
 }
 rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex,
-                                                               const renderer::BakedLighting* bakeOrNull,
                                                                bool hasShadows,
                                                                renderer::MaterialVersion& outMaterial) noexcept
 {
@@ -510,15 +453,10 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
         material.EnvironmentIrradiance = radiance * math::kPiF;
         material.EnvironmentRadiance = radiance;
     }
-    if (bakeOrNull != nullptr)
-    {
-        material.Bake = *bakeOrNull;
-    }
     renderer::LightSelection report;
     return resources.Renderer.CreateLitMaterial(mProgram, material, outMaterial, report);
 #else
     static_cast<void>(objectIndex);
-    static_cast<void>(bakeOrNull);
     static_cast<void>(hasShadows);
     static_cast<void>(outMaterial);
     return rhi::RasterStatus::Unsupported;
@@ -596,7 +534,6 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         while (resources.MaterialCursor < count)
         {
             if (IsAccepted(CreateLightingMaterial(resources.MaterialCursor,
-                                                  nullptr,
                                                   false,
                                                   resources.CasterMaterials[resources.MaterialCursor])) == false)
             {
@@ -686,10 +623,9 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         }
         while (resources.MaterialCursor < count)
         {
-            if (IsAccepted(CreateLightingMaterial(resources.MaterialCursor,
-                                                  nullptr,
-                                                  true,
-                                                  mMaterials[resources.MaterialCursor])) == false)
+            if (IsAccepted(
+                    CreateLightingMaterial(resources.MaterialCursor, true, mMaterials[resources.MaterialCursor])) ==
+                false)
             {
                 return false;
             }

@@ -272,7 +272,11 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         Viewport_->show();
         Q_EMIT PreviewStarting();
     });
-    auto* scroll = new QScrollArea(split);
+    QWidget* inspectorPanel = new QWidget(split);
+    QVBoxLayout* inspectorPanelLayout = new QVBoxLayout(inspectorPanel);
+    inspectorPanelLayout->setContentsMargins(0, 0, 0, 0);
+    QScrollArea* scroll = new QScrollArea(inspectorPanel);
+    inspectorPanelLayout->addWidget(scroll, 1);
     scroll->setObjectName(QStringLiteral("worldInspectorScroll"));
     scroll->setWidgetResizable(true);
     QWidget* inspector = new QWidget(scroll);
@@ -292,7 +296,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     split->setStretchFactor(2, 3);
     split->setStretchFactor(3, 1);
     split->setSizes({240, 520, 520, 300});
-    auto* edits = new QHBoxLayout;
+    QVBoxLayout* edits = new QVBoxLayout;
     Components_ = new QComboBox(this);
     Components_->setObjectName(QStringLiteral("worldComponentChoice"));
     Components_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -304,11 +308,11 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     Apply_->setObjectName(QStringLiteral("worldApply"));
     Reset_ = new QPushButton(QStringLiteral("Reset Fields"), this);
     Reset_->setObjectName(QStringLiteral("worldReset"));
-    edits->addWidget(Components_, 1);
+    edits->addWidget(Components_);
     edits->addWidget(Attach_);
     edits->addWidget(Apply_);
     edits->addWidget(Reset_);
-    layout->addLayout(edits);
+    inspectorPanelLayout->addLayout(edits);
     Status_ = new QLabel(this);
     Status_->setObjectName(QStringLiteral("worldStatus"));
     Status_->setTextFormat(Qt::PlainText);

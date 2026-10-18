@@ -760,8 +760,7 @@ TEST_CASE("Reopening projects restores their own embedded viewport and dock layo
         REQUIRE(controller.State().Document == DocumentState::ProjectLoaded);
         auto* world = window.findChild<WorldWorkspace*>();
         REQUIRE(world->Open(a.Path(QStringLiteral("rendering.world.json"))));
-        auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
-        tabs->setCurrentWidget(world);
+        world->setFocus();
         world->findChild<RenderPanel*>()->Preview().Orbit(65, 12);
         world->findChild<RenderPanel*>()->Preview().Pan(17, 8);
         navigation = world->Session().value(QStringLiteral("boundCamera")).toObject();
@@ -790,7 +789,8 @@ TEST_CASE("Reopening projects restores their own embedded viewport and dock layo
         CHECK(world->Document().Loaded());
         CHECK_FALSE(world->Dirty());
         CHECK(world->Session().value(QStringLiteral("boundCamera")).toObject() == navigation);
-        CHECK(window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"))->currentWidget() == world);
+        CHECK(window.centralWidget() == world);
+        CHECK(world->isVisible() == true);
         CHECK(window.dockWidgetArea(window.findChild<QDockWidget*>(QStringLiteral("outputDock"))) ==
               Qt::LeftDockWidgetArea);
         CHECK(window.findChild<QDockWidget*>(QStringLiteral("liveInspectorDock"))->isHidden());

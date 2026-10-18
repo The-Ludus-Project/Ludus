@@ -138,7 +138,6 @@ qt_add_executable(ludus_editor
     src/render_preview.cpp
     src/preview_gpu_generation.cpp
     src/internal/preview_gpu_generation.h
-    src/internal/preview_bake.h
     src/internal/preview_shading.h
     src/editor_camera_controller.cpp
     src/static_lighting_job.cpp
@@ -291,7 +290,6 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_preview.cpp
         src/preview_gpu_generation.cpp
         src/internal/preview_gpu_generation.h
-        src/internal/preview_bake.h
         src/internal/preview_shading.h
         src/editor_camera_controller.cpp
         src/static_lighting_job.cpp

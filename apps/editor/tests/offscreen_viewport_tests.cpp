@@ -1,5 +1,4 @@
 #include "internal/offscreen_frame_reader.h"
-#include "internal/preview_bake.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
@@ -16,7 +15,6 @@
 #include <QFileInfo>
 #include <QLabel>
 #include <QPushButton>
-#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QtGlobal>
@@ -173,7 +171,7 @@ TEST_CASE("Lit shading with many shadowed lights renders through the offscreen V
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
     RenderScene scene;
-    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene);
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasCollapsedTriangle = true });
     RenderPreview preview;
     REQUIRE(preview.SetScene(scene) == true);
     preview.SetShading(PreviewShading::Lit);
@@ -198,164 +196,8 @@ TEST_CASE("Lit shading with many shadowed lights renders through the offscreen V
     CHECK(preview.Status().contains(
               QStringLiteral("%1 shadow faces")
                   .arg(tests::LAMP_COUNT * static_cast<int32>(ludus::graphics::renderer::POINT_SHADOW_FACES))) == true);
-    preview.Stop();
-#else
-    SKIP("Offscreen Vulkan presentation is Linux-only");
-#endif
-}
-
-namespace
-{
-/// Sample cube instances in tests::MakeLitScene: the starter cube plus its copies.
-constexpr uint32 CUBE_INSTANCE_COUNT = 1 + static_cast<uint32>(tests::EXTRA_CASTER_COUNT);
-/// Patch density for a bake that runs long enough to cancel: 2 x 40^2 triangles per instance,
-/// within the authored preview mesh's 12288 index limit.
-constexpr uint32 LONG_BAKE_PATCH_CELLS = 40;
-/// Upper bound for a bake on a software rasterizer's CPU budget.
-constexpr int32 BAKE_TIMEOUT_MILLISECONDS = 180000;
-template <typename Condition>
-bool WaitFor(Condition condition, int32 timeoutMilliseconds)
-{
-    QElapsedTimer timer;
-    timer.start();
-    while (condition() == false && timer.elapsed() < timeoutMilliseconds)
-    {
-        QTest::qWait(POLL_MILLISECONDS);
-    }
-    return condition();
-}
-} // namespace
-
-TEST_CASE("Lit bake skips collapsed triangles and still completes with a notice",
-          "[editor][viewport][offscreen][gpu][lighting]")
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
-    rhi::Shutdown();
-    struct Guard final
-    {
-        ~Guard()
-        {
-            rhi::Shutdown();
-        }
-    } guard;
-    QTemporaryDir directory;
-    REQUIRE(directory.isValid() == true);
-    RenderScene scene;
-    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasCollapsedTriangle = true });
-    RenderPreview preview;
-    QSignalSpy bakeChanges(&preview, &RenderPreview::BakeChanged);
-    REQUIRE(preview.SetScene(scene) == true);
-    preview.SetShading(PreviewShading::Lit);
-    preview.Resize(96, 64);
-    REQUIRE(preview.Start() == true);
-    if (preview.AdmitOffscreenDevice() == false)
-    {
-        SKIP("No Vulkan device (install lavapipe for this smoke test)");
-    }
-    // One collapsed triangle used to reject the whole bake; now it completes.
-    const bool isBaked = WaitFor(
-        [&preview]() { return preview.GetBakeState() == PreviewBakeState::Baked || preview.Running() == false; },
-        BAKE_TIMEOUT_MILLISECONDS);
-    INFO(preview.Status().toStdString());
-    REQUIRE(isBaked == true);
-    REQUIRE(preview.GetBakeState() == PreviewBakeState::Baked);
-    PreviewBakeNotice notice;
-    REQUIRE(preview.GetBakeNotice(notice) == true);
-    CHECK(notice.SkippedTriangleCount == CUBE_INSTANCE_COUNT);
-    CHECK(notice.AffectedObjectCount == CUBE_INSTANCE_COUNT);
-    CHECK(notice.AffectedObjects.contains(QStringLiteral("Caster (1)")) == true);
-    CHECK(bakeChanges.count() > 0);
-    REQUIRE(WaitFor([&preview]() { return preview.Status().contains(QStringLiteral("static diffuse baked")); },
-                    BAKE_TIMEOUT_MILLISECONDS) == true);
-    CHECK(preview.Status().contains(
-              QStringLiteral("skipped %1 zero-area triangles in %1 objects").arg(CUBE_INSTANCE_COUNT)) == true);
-    // Baked lighting has nothing left to cancel or restart.
-    preview.CancelBake();
-    CHECK(preview.GetBakeState() == PreviewBakeState::Baked);
-    CHECK(preview.RestartBake() == false);
-    preview.Stop();
-#else
-    SKIP("Offscreen Vulkan presentation is Linux-only");
-#endif
-}
-
-TEST_CASE("The viewport warns about skipped triangles and lets the user cancel and restart the bake",
-          "[editor][viewport][offscreen][gpu][lighting]")
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
-    rhi::Shutdown();
-    const QByteArray previousPresentation = qgetenv("LUDUS_EDITOR_VIEWPORT");
-    qputenv("LUDUS_EDITOR_VIEWPORT", QByteArrayLiteral("offscreen"));
-    struct Guard final
-    {
-        QByteArray Previous;
-        ~Guard()
-        {
-            rhi::Shutdown();
-            if (Previous.isEmpty() == true)
-            {
-                qunsetenv("LUDUS_EDITOR_VIEWPORT");
-            }
-            else
-            {
-                qputenv("LUDUS_EDITOR_VIEWPORT", Previous);
-            }
-        }
-    } guard{previousPresentation};
-    QTemporaryDir directory;
-    REQUIRE(directory.isValid() == true);
-    RenderScene scene;
-    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(),
-                        scene,
-                        { .HasCollapsedTriangle = true, .ExtraPatchCells = LONG_BAKE_PATCH_CELLS });
-    RenderPreview preview;
-    PreviewViewport viewport(&preview);
-    viewport.resize(320, 240);
-    viewport.show();
-    REQUIRE(preview.SetScene(scene) == true);
-    preview.SetShading(PreviewShading::Lit);
-    REQUIRE(preview.Start() == true);
-    if (preview.HasDevice() == false && WaitFor([&preview]() { return preview.HasDevice(); }, 5000) == false)
-    {
-        SKIP("No Vulkan device (install lavapipe for this smoke test)");
-    }
-    QLabel* notice = viewport.findChild<QLabel*>(QStringLiteral("viewportBakeNotice"));
-    QPushButton* action = viewport.findChild<QPushButton*>(QStringLiteral("viewportBakeAction"));
-    REQUIRE(notice != nullptr);
-    REQUIRE(action != nullptr);
-    // The warning and Cancel appear with preparation, while the bake still runs.
-    const bool isWarned = WaitFor(
-        [&preview, notice]() {
-            return (preview.GetBakeState() == PreviewBakeState::Running && notice->isVisible() == true) ||
-                   preview.Running() == false;
-        },
-        BAKE_TIMEOUT_MILLISECONDS);
-    INFO(preview.Status().toStdString());
-    REQUIRE(isWarned == true);
-    REQUIRE(preview.GetBakeState() == PreviewBakeState::Running);
-    CHECK(notice->text().contains(QString::number(CUBE_INSTANCE_COUNT)) == true);
-    CHECK(notice->toolTip().contains(QStringLiteral("Caster (1)")) == true);
-    REQUIRE(action->isVisible() == true);
-    CHECK(action->text() == QStringLiteral("Cancel bake"));
-    QTest::mouseClick(action, Qt::LeftButton);
-    REQUIRE(preview.GetBakeState() == PreviewBakeState::Cancelled);
-    CHECK(action->text() == QStringLiteral("Bake again"));
-    // Direct lighting keeps presenting; the status says the bake was cancelled.
-    REQUIRE(WaitFor([&preview]() { return preview.Status().contains(QStringLiteral("bake cancelled")); },
-                    BAKE_TIMEOUT_MILLISECONDS) == true);
-    CHECK(preview.Running() == true);
-    // Restarting runs the bake again and reports its notice anew.
-    QTest::mouseClick(action, Qt::LeftButton);
-    const bool isRestarted = WaitFor(
-        [&preview, action]() {
-            return (preview.GetBakeState() == PreviewBakeState::Running &&
-                    action->text() == QStringLiteral("Cancel bake")) ||
-                   preview.Running() == false;
-        },
-        BAKE_TIMEOUT_MILLISECONDS);
-    REQUIRE(isRestarted == true);
-    REQUIRE(preview.GetBakeState() == PreviewBakeState::Running);
-    REQUIRE(WaitFor([notice]() { return notice->isVisible(); }, BAKE_TIMEOUT_MILLISECONDS) == true);
+    CHECK(preview.Status().contains(QStringLiteral("direct lighting")) == true);
+    CHECK(preview.Status().contains(QStringLiteral("bake")) == false);
     preview.Stop();
 #else
     SKIP("Offscreen Vulkan presentation is Linux-only");

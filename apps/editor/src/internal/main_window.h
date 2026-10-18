@@ -84,6 +84,7 @@ private:
     void BuildMenus();
     void InitializeWorkspace();
     void ResetWorkspaceLayout();
+    void resizeToolsDock();
     void SaveWorkspaceLayout() const;
     [[nodiscard]] bool ConfirmProjectChange(const QString& action);
     void OpenProjectPath(const QString& path);
@@ -91,6 +92,9 @@ private:
     void RenderFields();
     void RenderCapabilities();
     void RenderDocumentActions();
+    [[nodiscard]] QWidget* getActiveWorkspace() const noexcept;
+    QWidget* mActiveWorkspaceOrNull = nullptr;
+    QDockWidget* mToolsDockOrNull = nullptr;
     void CommitProjectFields();
     [[nodiscard]] bool SaveProjectSettings();
     void RenderStatus();

@@ -315,6 +315,26 @@ source-checkout builds are the supported editor distribution today.
 ludus project create /path/to/new-game --name MyGame --tools /path/to/Ludus
 ```
 
+## Workspace layout
+
+Opening a project shows **World** in the central workspace immediately. The World
+stays visible when switching between Project, Content, Audio, Scripts, Renderer
+and Configuration in the **Authoring Tools** dock. Runtime Inspector and Timing
+share that dock area. Move, resize or close docks through **View**; **View → Reset
+Layout** restores the default arrangement. Output starts hidden and can be opened
+through **View → Output**. Older saved layouts reset once to this arrangement.
+
+The World hierarchy and component inspector flank the viewport. Component actions
+stay below the scrollable inspector fields. The render surface receives the remaining
+height below its shading, framing and navigation controls, including after resize.
+Save, Undo and Redo follow the focused workspace; switching tool tabs selects that
+tool's document, and returning to World selects the World document.
+
+**Lit** shading previews authored lights and emitting surfaces using direct lighting
+and supported real-time shadows. The interactive viewport does not start static
+lighting bakes or generate lightmaps. Static indirect lighting is not calculated
+for viewport navigation.
+
 ## Closing and shortcuts
 
 **File → Close Project** returns to Welcome without quitting. Save/Discard/Cancel
@@ -535,7 +555,7 @@ Limits: schema 64 KiB, world 512 KiB, 128 entities, 16 component definitions,
 These bounds keep this first slice predictable; large production-world UX,
 hierarchy/parenting, multi-selection, prefab/archetype workflows, schema migrations,
 viewport gizmos, automatic runtime binding and browser import/export are still
-unsupported. The browser World tab explains its native-editor requirement and
+unsupported. The browser World workspace explains its native-editor requirement and
 disables its file actions. Both 2D and 3D authoring use the native World workspace.
 
 ## World renderer and camera preview
@@ -553,7 +573,7 @@ Solid and Albedo remain inspection modes. See the owning
 
 Build the native editor using [Enable the rendered authoring surface](#enable-the-rendered-authoring-surface); the same option cooks the trusted renderer stages.
 
-1. Open a writable **live-edit-game** sample and select **World**.
+1. Open a writable **live-edit-game** sample. World is already visible.
 2. Open `authoring/rendering.world.json`. Its persistent 3D viewport starts inside
    the World workspace. Asset validation runs in an owned worker; the editor
    remains responsive during bounded file reads/decoding. Hold right mouse to look
@@ -831,7 +851,7 @@ directional fill and ambient contribution, so imported rooms remain visible for
 inspection and editing. **Albedo — unlit surface colors** displays base-color textures and material tints; emitting meshes
 with black authored albedo remain black in this view.
 **Lit — scene lighting** displays authored analytic lights, emitting surfaces,
-shadowed area-light proxies and the completed static diffuse/indirect bake. During resource preparation, the viewport retains its last drawable GPU
+shadowed area-light proxies and authored environment lighting. During resource preparation, the viewport retains its last drawable GPU
 image until Qt presents the replacement. A failed replacement reports its error
 without clearing that image; a later scene or shading change can retry preparation.
 When no image remains to retain, the viewport itself shows the failure reason,
@@ -843,27 +863,12 @@ authored materials or add lights to the World. Solid lighting is a navigation
 aid, not the imported scene lighting. Wireframe and normal visualizations are
 not yet available.
 
-Lit first publishes shadowed direct lighting, then prepares static diffuse and
-indirect lighting as cancellable CPU jobs on the preview's three-worker job system
-(the UI thread only polls). The jobs compute illumination charts rather than
-viewport pixels; navigation and Qt presentation continue on the GPU. Completed charts upload once on the device owner thread and replace the
-per-instance materials and snapshot only after they are ready. Analytic direct
-lighting and area specular remain raster; baked area diffuse replaces its proxy
-contribution. HDR/constant authored environments supply the initial irradiance
-and retain specular reflection after the bake. No editor fill is added to Lit.
-
-The status shows planar proxy/shadow counts, bake progress, completion or failure.
-A failed bake retains the direct-lit viewport and camera controls. While the bake
-runs, **Cancel bake** below the shading selector stops it and keeps direct
-lighting; **Bake again** restarts it. When the bake tolerates input flaws, such as
-zero-area triangles in imported meshes, the bake controls show a warning with the
-skipped count, and its tooltip names each affected object, as soon as preparation
-completes. The status line repeats the count, so you can fix the meshes or cancel
-the bake instead of waiting for a rejection. Camera, orbit,
-exposure and layout changes do not restart this view-independent bake; geometry,
-material, light and environment changes create a new exact revision. Saved World
-assets preserve authored lighting through reopen and relocation. Legacy v1/v2
-imports can use the bake without reimport, retaining historical two-sided emission.
+Lit uses raster direct lighting and real-time shadows. HDR or constant authored
+environments supply irradiance and specular reflection. No editor fill is added
+to Lit. Navigation, resize and scene edits never start a static lightmap bake.
+The status shows light, planar proxy and shadow counts. Saved World assets
+preserve authored lighting through reopen and relocation; legacy v1/v2 imports
+retain historical two-sided emission.
 
 This bounded quality profile uses one centroid quadrature proxy per connected
 planar emitter patch and hard cube-map shadows. It supports up to 128 admitted
@@ -872,13 +877,11 @@ spot/directional lights consume one. The 2048-pixel atlas packs guttered cells;
 capacity, malformed or unsupported source topology rejects rather than dropping
 illumination. Zero-area triangles, common in imported meshes, never reject a scene:
 they carry no power and form no area proxy, an authored World mesh gives them an
-inert placeholder normal, and the static bake skips and reports them (for example
-the staircase2 reference scene). Curved or concave sources can exceed this proxy profile. The
-static bake uses 64 cosine samples per triangle, depth four, and separate
-4×4 guttered triangle tiles; it can show spatial discontinuities and sampling
-noise. It includes diffuse bounces, with finite-depth bias, rather than glossy
-indirect transport, soft area shadows or spectral PBRT parity. See the owning
-[renderer contract](../architecture/renderer-systems.md) for transport semantics.
+inert placeholder normal (for example the staircase2 reference scene). Curved or
+concave sources can exceed this proxy profile. The viewport does not calculate
+static indirect transport, soft area shadows or spectral PBRT parity. See the
+owning [renderer contract](../architecture/renderer-systems.md) for the separate
+static-lighting transport API.
 Optional GPU path tracing remains a separate renderer API.
 
 Qt Quick's native surface is embedded in the World splitter and uses the basic
@@ -1299,12 +1302,10 @@ This historical S1 offscreen capture predates the Welcome/recent-project changes
 It records presentation at that stage; use the work-area table above for current
 layout roles. It does not establish native interaction or game-frame acceptance.
 
-Project settings, Content, Audio and Configuration occupy central work areas. Recents
-appear on Welcome and in the File menu; Live Inspector and Output are movable panels; the status bar reports current workspace state.
-The Game toolbar exposes the existing build/debug and Play controls. Toolbar
-and menu actions share controller capability gating. Project settings and Audio
-scroll when available space is small. Ctrl+S routes to the active Project Settings,
-Audio or Configuration document; live tuning retains its explicit save action.
+The current [workspace layout](#workspace-layout) keeps World central and tools
+in a dock. Recents appear on Welcome and in the File menu. The Game toolbar
+exposes the existing build/debug and Play controls; toolbar and menu actions
+share controller capability gating.
 
 Use **View** to recover a hidden panel or Game toolbar. **View → Reset Layout**
 restores the default panel arrangement without changing project drafts or Play.

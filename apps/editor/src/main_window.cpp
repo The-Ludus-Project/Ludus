@@ -64,7 +64,21 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     BuildUi();
     BuildMenus();
     InitializeWorkspace();
-    connect(WorkTabs_, &QTabWidget::currentChanged, this, &MainWindow::RenderDocumentActions);
+    mActiveWorkspaceOrNull = WorkTabs_->currentWidget();
+    connect(WorkTabs_, &QTabWidget::currentChanged, this, [this]() {
+        mActiveWorkspaceOrNull = WorkTabs_->currentWidget();
+        mToolsDockOrNull->show();
+        mToolsDockOrNull->raise();
+        WorkTabs_->setFocus(Qt::OtherFocusReason);
+        RenderDocumentActions();
+    });
+    connect(mToolsDockOrNull, &QDockWidget::visibilityChanged, this, [this](bool isVisible) {
+        if (isVisible == false)
+        {
+            mActiveWorkspaceOrNull = World_;
+        }
+        RenderDocumentActions();
+    });
     connect(Audio_, &AudioWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Content_, &ContentWorkspace::BusyChanged, this, &MainWindow::RenderCapabilities);
     connect(Content_, &ContentWorkspace::CatalogChanged, Audio_, &AudioWorkspace::RefreshCatalog);
@@ -112,6 +126,14 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(Scripts_, &ScriptWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* before, QWidget* after) {
+        if (after == World_ || World_->isAncestorOf(after) == true)
+        {
+            mActiveWorkspaceOrNull = World_;
+        }
+        else if (after == WorkTabs_ || WorkTabs_->isAncestorOf(after) == true)
+        {
+            mActiveWorkspaceOrNull = WorkTabs_->currentWidget();
+        }
         LastEditedField_ = nullptr;
         disconnect(FocusUndoConnection_);
         disconnect(FocusRedoConnection_);
@@ -343,6 +365,7 @@ void MainWindow::BuildMenus()
     CopyAction_ = outputMenu->addAction(QStringLiteral("Copy &Job Details"));
 
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
+    viewMenu->addAction(mToolsDockOrNull->toggleViewAction());
     viewMenu->addAction(InspectorDock_->toggleViewAction());
     viewMenu->addAction(TimingDock_->toggleViewAction());
     viewMenu->addAction(OutputDock_->toggleViewAction());
@@ -531,7 +554,7 @@ void MainWindow::OpenProjectPath(const QString& path)
 
 void MainWindow::OnSaveRequested()
 {
-    auto* area = WorkTabs_->currentWidget();
+    QWidget* area = getActiveWorkspace();
     if (area == World_)
     {
         (void)World_->Save();
@@ -642,13 +665,24 @@ void MainWindow::OnStateChanged()
             WorkTabs_->setTabVisible(index, loaded || WorkTabs_->widget(index) == Configuration_);
         }
     }
+    if (enteringWelcome == true)
+    {
+        // Capture the project's dock sizes before Welcome takes the whole window.
+        SetProjectWorkspace({}, false);
+    }
+    World_->setVisible(loaded);
     if (enteringWelcome)
     {
         WorkTabs_->setCurrentWidget(Welcome_);
+        mToolsDockOrNull->show();
+        mToolsDockOrNull->raise();
     }
     else if (enteringProject)
     {
         WorkTabs_->setCurrentWidget(ProjectSettings_);
+        resizeToolsDock();
+        mActiveWorkspaceOrNull = World_;
+        World_->setFocus();
     }
 #if defined(Q_OS_WASM)
     Audio_->setEnabled(false);
