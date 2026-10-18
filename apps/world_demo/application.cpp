@@ -50,15 +50,16 @@ Key MapKey(platform::browser::Key key) noexcept
 }
 // Independently checked std140/WGSL/SPIR-V: vector array stride 16; view/settings at 0/16,
 // geometry/color/rotation at 32/3104/6176 for MAX_RENDER_DRAWS (192) records, size 9248.
-struct alignas(16) Uniforms final
+constexpr usize UNIFORM_VECTOR_LANES = 4;
+constexpr usize UNIFORM_VECTOR_BYTES = UNIFORM_VECTOR_LANES * sizeof(float32);
+struct alignas(UNIFORM_VECTOR_BYTES) Uniforms final
 {
-    float32 View[4] = {};
-    float32 Settings[4] = {};
-    float32 Geometry[MAX_RENDER_DRAWS][4] = {};
-    float32 Color[MAX_RENDER_DRAWS][4] = {};
-    float32 Rotation[MAX_RENDER_DRAWS][4] = {};
+    float32 View[UNIFORM_VECTOR_LANES] = {};
+    float32 Settings[UNIFORM_VECTOR_LANES] = {};
+    float32 Geometry[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
+    float32 Color[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
+    float32 Rotation[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
 };
-constexpr usize UNIFORM_VECTOR_BYTES = 16;
 constexpr usize UNIFORM_GEOMETRY_OFFSET = 2 * UNIFORM_VECTOR_BYTES;
 constexpr usize UNIFORM_COLOR_OFFSET = UNIFORM_GEOMETRY_OFFSET + MAX_RENDER_DRAWS * UNIFORM_VECTOR_BYTES;
 constexpr usize UNIFORM_ROTATION_OFFSET = UNIFORM_COLOR_OFFSET + MAX_RENDER_DRAWS * UNIFORM_VECTOR_BYTES;

@@ -101,6 +101,8 @@ bool WriteRequestedTrace(std::string_view traceOutput) noexcept
 namespace
 {
 ludus::world_demo::Application gApplication;
+// The browser status element receives the placement digest as two 32-bit halves.
+constexpr ludus::foundation::uint32 DIGEST_HIGH_SHIFT = 32;
 // clang-format off
 EM_JS(bool, FollowCameraRequested, (), {
     return new URLSearchParams(location.search).get('camera') === 'follow';
@@ -112,7 +114,7 @@ EM_JS(void, Present, (ludus::foundation::uint32 state, ludus::foundation::uint32
     status.dataset.backend = ['vulkan','webgpu','webgl2'][backend];
     status.dataset.tick = tick; status.dataset.x = x; status.dataset.y = y;
     status.dataset.placements = placements;
-    status.dataset.scatter = (digestHigh >>> 0).toString(16).padStart(8, '0') + (digestLow >>> 0).toString(16).padStart(8, '0');
+    status.dataset.scatter = (digestHigh >>> 0).toString(16).padStart(8, '0') + (digestLow >>> 0).toString(16).padStart(8, '0'); // ludus-style: magic-number JavaScript hexadecimal formatting of the two 32-bit digest halves
     status.textContent = state == 3 ? 'Graphics could not start. Reload to retry.' : mode == 2 ? 'Simulation stopped. Press R to restart.' : mode == 1 ? 'Paused. N steps one tick; P resumes.' : 'WASD moves. Space attacks. P pauses. R restarts.';
 });
 // clang-format on
@@ -131,7 +133,7 @@ void Frame() noexcept
             transform != nullptr ? transform->Current.X : 0,
             transform != nullptr ? transform->Current.Y : 0,
             static_cast<ludus::foundation::uint32>(session.World().GetPlacements().size()),
-            static_cast<ludus::foundation::uint32>(digest >> 32U),
+            static_cast<ludus::foundation::uint32>(digest >> DIGEST_HIGH_SHIFT),
             static_cast<ludus::foundation::uint32>(digest));
 }
 } // namespace

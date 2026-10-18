@@ -39,6 +39,8 @@ constexpr float64 ROTATION_UNITS_PER_TURN = 65536.0;
 /// FNV-1a parameters shared with the replay hash and the scatter golden digest.
 constexpr uint64 FNV_OFFSET_BASIS = 14695981039346656037ULL;
 constexpr uint64 FNV_PRIME = 1099511628211ULL;
+constexpr usize BITS_PER_BYTE = 8;
+constexpr uint64 BYTE_MASK = 0xffu;
 bool Finite(Vec2 value) noexcept
 {
     return std::isfinite(value.X) && std::isfinite(value.Y);
@@ -69,7 +71,7 @@ void MixBytes(uint64& inoutHash, uint64 value) noexcept
 {
     for (usize byte = 0; byte < ByteCount; ++byte)
     {
-        inoutHash ^= (value >> (byte * 8)) & 255;
+        inoutHash ^= (value >> (byte * BITS_PER_BYTE)) & BYTE_MASK;
         inoutHash *= FNV_PRIME;
     }
 }

@@ -82,35 +82,35 @@ bool Actor(JsonValue value, Recipe& recipe, bool enemy, bool hasUuidReferences, 
     return true;
 }
 /// Read an unsigned integer member within [minimum, maximum].
-bool BoundedInteger(JsonValue value, uint64 minimum, uint64 maximum, uint64& output) noexcept
+bool BoundedInteger(JsonValue value, uint64 minimum, uint64 maximum, uint64& outValue) noexcept
 {
     uint64 number = 0;
     if (value.Integer(number) == false || number < minimum || number > maximum)
     {
         return false;
     }
-    output = number;
+    outValue = number;
     return true;
 }
 /// The room-level `scatter` component: lattice conversion, region and keep-out margin.
-bool Scatter(JsonValue value, RoomScatter& scatter) noexcept
+bool Scatter(JsonValue value, RoomScatter& outScatter) noexcept
 {
     uint64 units = 0;
     if (value.Fields({"units_per_metre", "min_x", "min_y", "max_x", "max_y", "keep_out_margin"}) == false ||
         BoundedInteger(value.Get("units_per_metre"), 1, MAX_SCATTER_UNITS_PER_METRE, units) == false ||
-        Number(value.Get("min_x"), scatter.Minimum.X) == false ||
-        Number(value.Get("min_y"), scatter.Minimum.Y) == false ||
-        Number(value.Get("max_x"), scatter.Maximum.X) == false ||
-        Number(value.Get("max_y"), scatter.Maximum.Y) == false ||
-        Number(value.Get("keep_out_margin"), scatter.KeepOutMargin) == false)
+        Number(value.Get("min_x"), outScatter.Minimum.X) == false ||
+        Number(value.Get("min_y"), outScatter.Minimum.Y) == false ||
+        Number(value.Get("max_x"), outScatter.Maximum.X) == false ||
+        Number(value.Get("max_y"), outScatter.Maximum.Y) == false ||
+        Number(value.Get("keep_out_margin"), outScatter.KeepOutMargin) == false)
     {
         return false;
     }
-    scatter.UnitsPerMetre = static_cast<uint32>(units);
+    outScatter.UnitsPerMetre = static_cast<uint32>(units);
     return true;
 }
 /// A `scatter_layer` component: stable ID, cells, candidates and scale range.
-bool ScatterLayer(JsonValue value, ScatterLayerRecipe& layer) noexcept
+bool ScatterLayer(JsonValue value, ScatterLayerRecipe& outLayer) noexcept
 {
     uint64 id = 0;
     uint64 cellSize = 0;
@@ -118,37 +118,38 @@ bool ScatterLayer(JsonValue value, ScatterLayerRecipe& layer) noexcept
     uint64 minimumScale = 0;
     uint64 maximumScale = 0;
     if (value.Fields({"layer", "cell_size", "candidates", "min_scale", "max_scale"}) == false ||
-        BoundedInteger(value.Get("layer"), 0, 255, id) == false ||
-        BoundedInteger(value.Get("cell_size"), 1, 65535, cellSize) == false ||
+        BoundedInteger(value.Get("layer"), 0, MAX_SCATTER_LAYER_ID, id) == false ||
+        BoundedInteger(value.Get("cell_size"), 1, MAX_SCATTER_UINT16_FIELD, cellSize) == false ||
         BoundedInteger(value.Get("candidates"), 1, MAX_ROOM_SCATTER_CANDIDATES_PER_CELL, candidates) == false ||
-        BoundedInteger(value.Get("min_scale"), 1, 65535, minimumScale) == false ||
-        BoundedInteger(value.Get("max_scale"), 1, 65535, maximumScale) == false)
+        BoundedInteger(value.Get("min_scale"), 1, MAX_SCATTER_UINT16_FIELD, minimumScale) == false ||
+        BoundedInteger(value.Get("max_scale"), 1, MAX_SCATTER_UINT16_FIELD, maximumScale) == false)
     {
         return false;
     }
-    layer.Layer = static_cast<uint8>(id);
-    layer.CellSize = static_cast<uint16>(cellSize);
-    layer.Candidates = static_cast<uint16>(candidates);
-    layer.MinimumScale = static_cast<uint16>(minimumScale);
-    layer.MaximumScale = static_cast<uint16>(maximumScale);
+    outLayer.Layer = static_cast<uint8>(id);
+    outLayer.CellSize = static_cast<uint16>(cellSize);
+    outLayer.Candidates = static_cast<uint16>(candidates);
+    outLayer.MinimumScale = static_cast<uint16>(minimumScale);
+    outLayer.MaximumScale = static_cast<uint16>(maximumScale);
     return true;
 }
 /// A `scatter_variant` component; `outLayer` is the stable ID of the layer it joins.
-bool ScatterVariant(JsonValue value, ScatterVariantRecipe& variant, uint8& outLayer) noexcept
+bool ScatterVariant(JsonValue value, ScatterVariantRecipe& outVariant, uint8& outLayer) noexcept
 {
     uint64 layer = 0;
     uint64 radius = 0;
     if (value.Fields({"layer", "exclusion_radius", "half_x", "half_y", "red", "green", "blue"}) == false ||
-        BoundedInteger(value.Get("layer"), 0, 255, layer) == false ||
-        BoundedInteger(value.Get("exclusion_radius"), 0, 65535, radius) == false ||
-        Number(value.Get("half_x"), variant.HalfExtent.X) == false ||
-        Number(value.Get("half_y"), variant.HalfExtent.Y) == false ||
-        Number(value.Get("red"), variant.Color[0]) == false || Number(value.Get("green"), variant.Color[1]) == false ||
-        Number(value.Get("blue"), variant.Color[2]) == false)
+        BoundedInteger(value.Get("layer"), 0, MAX_SCATTER_LAYER_ID, layer) == false ||
+        BoundedInteger(value.Get("exclusion_radius"), 0, MAX_SCATTER_UINT16_FIELD, radius) == false ||
+        Number(value.Get("half_x"), outVariant.HalfExtent.X) == false ||
+        Number(value.Get("half_y"), outVariant.HalfExtent.Y) == false ||
+        Number(value.Get("red"), outVariant.Color[0]) == false ||
+        Number(value.Get("green"), outVariant.Color[1]) == false ||
+        Number(value.Get("blue"), outVariant.Color[2]) == false)
     {
         return false;
     }
-    variant.ExclusionRadius = static_cast<uint32>(radius);
+    outVariant.ExclusionRadius = static_cast<uint32>(radius);
     outLayer = static_cast<uint8>(layer);
     return true;
 }

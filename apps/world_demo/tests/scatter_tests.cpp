@@ -120,14 +120,14 @@ struct LayerPlacements final
     }
 };
 
-void Load(Session& session, std::string_view source)
+void Load(Session& inoutSession, std::string_view source)
 {
-    REQUIRE(session.RequestLoad(source).Error == LevelError::None);
-    while (session.GetLoadStage() != LoadStage::Ready)
+    REQUIRE(inoutSession.RequestLoad(source).Error == LevelError::None);
+    while (inoutSession.GetLoadStage() != LoadStage::Ready)
     {
-        REQUIRE(session.PollLoad() == Status::Success);
+        REQUIRE(inoutSession.PollLoad() == Status::Success);
     }
-    REQUIRE(session.Activate());
+    REQUIRE(inoutSession.Activate());
 }
 } // namespace
 

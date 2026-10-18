@@ -77,6 +77,16 @@ inline constexpr int32 MAX_SCATTER_LATTICE_MAGNITUDE = 100000000;
 inline constexpr uint16 SCATTER_SCALE_UNIT = 1000;
 /// Largest keep-out margin in metres.
 inline constexpr float32 MAX_SCATTER_KEEP_OUT_MARGIN = 10.0F;
+/// Default lattice resolution: one centimetre.
+inline constexpr uint32 DEFAULT_SCATTER_UNITS_PER_METRE = 100;
+/// Default drawn half extent of a variant in metres.
+inline constexpr float32 DEFAULT_SCATTER_HALF_EXTENT = 0.25F;
+/// Colour channels an authored variant carries (red, green, blue).
+inline constexpr usize SCATTER_COLOR_CHANNELS = 3;
+/// Largest stable layer ID; layer IDs are stored in 8 bits of the placement identity.
+inline constexpr uint64 MAX_SCATTER_LAYER_ID = 255;
+/// Largest authored cell size, exclusion radius or scale: the 16-bit kernel fields.
+inline constexpr uint64 MAX_SCATTER_UINT16_FIELD = 65535;
 /// One drawable choice of a scatter layer (`scatter_variant` component).
 struct ScatterVariantRecipe final
 {
@@ -84,9 +94,9 @@ struct ScatterVariantRecipe final
     /// Exclusion radius in lattice units, at most the layer's cell size.
     uint32 ExclusionRadius = 0;
     /// Drawn half extent in metres at scale SCATTER_SCALE_UNIT.
-    Vec2 HalfExtent{0.25F, 0.25F};
+    Vec2 HalfExtent{DEFAULT_SCATTER_HALF_EXTENT, DEFAULT_SCATTER_HALF_EXTENT};
     /// Base colour; extraction applies a cosmetic tint.
-    float32 Color[3] = {};
+    float32 Color[SCATTER_COLOR_CHANNELS] = {};
     /// Durable identity from a version-2 World record; nil for version-1 content.
     foundation::identity::SourceObjectId Object{};
 };
@@ -115,7 +125,7 @@ struct RoomScatter final
 {
     Name Id{};
     /// Lattice units per metre, 1 through MAX_SCATTER_UNITS_PER_METRE.
-    uint32 UnitsPerMetre = 100;
+    uint32 UnitsPerMetre = DEFAULT_SCATTER_UNITS_PER_METRE;
     /// Region corners in metres, inside the level bounds.
     Vec2 Minimum{};
     Vec2 Maximum{};
