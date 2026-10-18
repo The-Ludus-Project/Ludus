@@ -1119,13 +1119,38 @@ matches, created new attachments instead, and left six entries idle. Exports
 stayed byte identical. The single virtualized run's CPU times vary too much to
 support a timing claim either way.
 
+The same consumer also ran once in Chromium WebGPU on October 18, 2026, in the
+"Renderer browser tests (pooling)" job of browser run 39166437459. It used the
+pinned headless Chromium 140.0.7339.186 on a GitHub `ubuntu-24.04` runner, with
+the SwiftShader adapter, which reports itself as software and exposes no adapter
+name or IDs. The run built `develop` 9de35f00 plus the
+one-line OBJ reader wasm32 tidy fix ([#380](https://github.com/The-Ludus-Project/Ludus/pull/380)), which does not touch the renderer.
+The page was cross-origin isolated, and the smallest observed `performance.now()`
+step was 5 µs, so the CPU times are quantized to 5 µs. WebGPU telemetry exposes
+no API allocation bytes:
+
+| Workload | Mode | Created (reload / resize / in flight) | Reused | Deferred | Logical bytes steady / peak | Idle pool bytes (logical) | Stage p50 / p95 µs | Encode p50 / p95 µs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| export-only | serial control | 6 / 6 / 7 | 0 | 0 | 1,843,668 / 3,686,868 | 0 | 805 / 1135 | 145 / 185 |
+| export-only | exact pool | 6 / 6 / 7 | 0 | 0 | 1,843,668 / 3,686,868 | 0 | 800 / 835 | 145 / 195 |
+| scratch-2 | serial control | 18 / 18 / 21 | 0 | 0 | 5,530,452 / 11,060,052 | 0 | 950 / 1040 | 280 / 365 |
+| scratch-2 | exact pool | 10 / 8 / 7 | 8 / 10 / 14 | 0 | 12,903,252 / 14,746,452 | 7,372,800 | 850 / 935 | 275 / 340 |
+
+The allocation counts and the 7.4 MB idle pool match the local Metal runs, and
+every captured export of the pooled runs was byte identical to the control's. Every
+peak is 24 bytes below the local Metal one. No deferred acquisition was observed: the
+SwiftShader frames completed before the next staging. The scratch-2 `Stage` p50 is
+100 µs lower pooled, but this is a single run on a software adapter, and the
+export-only pair, which does identical work in both modes, differs by 300 µs at
+p95. That supports no CPU-time claim. `Encode` is unchanged.
+
 Platform status:
 
 | Platform | Established | Evidence |
 | --- | --- | --- |
 | macOS / Metal (Apple M5; GitHub paravirtual device) | Unit and GPU byte parity, ASan/UBSan, and the measurement consumer above | Local runs, October 18, 2026; the CI macOS job runs the consumer and uploads `rg4-pooling-metal` (ci run 39144503034) |
-| Linux / Vulkan (Mesa llvmpipe) | Not yet established. The GPU byte-parity cases are part of the existing `[render-graph]` validation-layer step; the measurement consumer step is new | The branch dispatch skipped "Development and SDK", because its source-policy step compares against `main`, which predates develop's legacy code. Batches run `main`'s workflow files, so the consumer step runs only after promotion |
-| Browser / WebGPU (Chromium SwiftShader) | Not yet established; the consumer and `render-graph-pooling-browser-test.mjs` are wired into a new "Renderer browser tests (pooling)" suite | The branch dispatch (run 39144505286) stopped in `compile-and-package`. clang-tidy rejects `std::string_view{"", 0}` in the generated localization fixture (`modules/localization/tests/generate_fixture.py`), a failure already on `develop` |
+| Linux / Vulkan (Mesa llvmpipe) | Not yet established. The GPU byte-parity cases are part of the existing `[render-graph]` validation-layer step; the measurement consumer step is pending | The consumer step and its `rg4-pooling-vulkan` artifact exist only in `develop`'s `ci.yml`. Batches and the nightly run use `main`'s workflow files, and `main` (5d8d2090 on October 18, 2026) predates RG4a, so no run has produced the artifact. A branch dispatch skips "Development and SDK", because its source-policy step compares against `main`. The numbers arrive with the first batch or nightly run after promotion |
+| Browser / WebGPU (Chromium 140 SwiftShader) | Byte parity between the pooled and control runs, and the measurement consumer above, in the "Renderer browser tests (pooling)" suite | Browser run 39166437459, October 18, 2026; the suite uploads `report.json` in `renderer-browser-pooling-evidence` |
 
 Unsupported or not established:
 
@@ -1133,8 +1158,8 @@ Unsupported or not established:
 - The depth-only compatibility RGBA8 image remains.
 - Physical heap aliasing, pass merging, parallel recording and async queues are
   separate RG4 slices with their own controls.
-- Vulkan and WebGPU measurements are not established yet (see the platform
-  table). WebGL 2 / GLSL ES is not measured. Linux and browser CI use software
+- The Vulkan measurement is not established yet (see the platform table).
+  WebGL 2 / GLSL ES is not measured. Linux and browser CI use software
   adapters, so no physical-GPU numbers will exist for Vulkan or WebGPU.
 - Idle entries are bounded by count, not bytes: a large-extent workload retains
   correspondingly more memory until it is trimmed.
