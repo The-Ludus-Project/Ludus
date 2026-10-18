@@ -23,6 +23,8 @@ struct RenderGraphJobRequest final
     foundation::uint64 ProjectEpoch = 0;
     foundation::uint64 Revision = 0;
     QString Action;
+    QByteArray InputIdentity;   ///< Semantic draft/configuration identity captured for live preview.
+    bool ShouldPreview = false; ///< Apply only a successful build matching the current semantic draft.
     QStringList Arguments;
     QString SnapshotDirectory;
 };

@@ -48,6 +48,7 @@ const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
 const QString HELPER_KEY = QStringLiteral("renderGraph/helper");
 const QString COMPILER_KEY = QStringLiteral("renderGraph/compiler");
 const QString VALIDATOR_KEY = QStringLiteral("renderGraph/validator");
+const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
 const QString SPIRV_CROSS_KEY = QStringLiteral("renderGraph/spirvCross");
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Preview service period, about one 60 Hz display refresh.
@@ -249,7 +250,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mNewIdentity(new QLineEdit(this)), mEdges(new QTableWidget(this)), mEdgeFrom(new QLineEdit(this)),
       mEdgeTo(new QLineEdit(this)), mSourceFile(new QComboBox(this)), mSource(new QPlainTextEdit(this)),
       mPlan(new QPlainTextEdit(this)), mHelper(new QLineEdit(this)), mCompiler(new QLineEdit(this)),
-      mValidator(new QLineEdit(this)), mSpirvCross(new QLineEdit(this)), mDiagnostics(new QListWidget(this)),
+      mValidator(new QLineEdit(this)), mSpirvCross(new QLineEdit(this)), mWorkerSocket(new QLineEdit(this)),
+      mLivePreview(new QCheckBox(QStringLiteral("Live Preview"), this)), mDiagnostics(new QListWidget(this)),
       mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)), mPreviewImage(new PreviewImage(this)),
       mPreviewStatus(new QLabel(this)), mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), this))
 {
@@ -268,6 +270,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     actions->addWidget(mConfiguration);
     actions->addWidget(mValidate);
     actions->addWidget(mBuild);
+    QPushButton* buildPreview = new QPushButton(QStringLiteral("Build && Preview"), this);
+    buildPreview->setObjectName(QStringLiteral("renderGraphBuildPreview"));
+    mLivePreview->setObjectName(QStringLiteral("renderGraphLivePreview"));
+    mLivePreview->setToolTip(QStringLiteral("Rebuild changed drafts in the background and preview only matching "
+                                            "successful results; saved files are unchanged."));
+    actions->addWidget(buildPreview);
+    actions->addWidget(mLivePreview);
     actions->addWidget(mCook);
     actions->addWidget(mCancel);
 
@@ -344,6 +353,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mCompiler->setText(settings.value(COMPILER_KEY).toString());
     mValidator->setText(settings.value(VALIDATOR_KEY).toString());
     mSpirvCross->setText(settings.value(SPIRV_CROSS_KEY).toString());
+    mWorkerSocket->setText(
+        settings.value(WORKER_SOCKET_KEY, qEnvironmentVariable("LUDUS_SHADER_WORKER_SOCKET")).toString());
+    mWorkerSocket->setObjectName(QStringLiteral("renderGraphWorkerSocket"));
+    mWorkerSocket->setPlaceholderText(QStringLiteral("existing ludus-shader-worker socket"));
     mHelper->setPlaceholderText(QStringLiteral("<sdk>/lib/cmake/Ludus/shaders"));
     mCompiler->setPlaceholderText(QStringLiteral("pinned slangc"));
     mValidator->setPlaceholderText(QStringLiteral("pinned spirv-val (SPIR-V/GLSL profiles)"));
@@ -352,6 +365,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     buildLayout->addRow(QStringLiteral("Slang compiler"), mCompiler);
     buildLayout->addRow(QStringLiteral("SPIR-V validator"), mValidator);
     buildLayout->addRow(QStringLiteral("SPIRV-Cross"), mSpirvCross);
+    buildLayout->addRow(QStringLiteral("Native shader worker"), mWorkerSocket);
     buildLayout->addRow(new QLabel(QStringLiteral("Builds and runtime generations go to out/render-graph in the "
                                                   "project; saved sources are never modified by a build."),
                                    this));
@@ -407,8 +421,20 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             mStatus->setText(QStringLiteral("Open a root .lurender.json inside the project folder."));
         }
     });
+    connect(mConfiguration, &QComboBox::currentTextChanged, this, [this]() { scheduleLiveBuild(); });
     connect(mValidate, &QPushButton::clicked, this, [this]() { static_cast<void>(Validate()); });
     connect(mBuild, &QPushButton::clicked, this, [this]() { static_cast<void>(Build()); });
+    connect(buildPreview, &QPushButton::clicked, this, [this]() { static_cast<void>(BuildAndPreview()); });
+    connect(&mLiveBuild, &RenderGraphLiveBuild::BuildRequested, this, [this]() {
+        static_cast<void>(BuildAndPreview());
+    });
+    connect(mLivePreview, &QCheckBox::toggled, this, [this](bool isEnabled) {
+        mLiveBuild.SetEnabled(isEnabled);
+        if (isEnabled == true)
+        {
+            scheduleLiveBuild();
+        }
+    });
     connect(mCook, &QPushButton::clicked, this, [this]() { static_cast<void>(CookRuntime()); });
     connect(mCancel, &QPushButton::clicked, this, &RendererWorkspace::CancelJob);
     connect(mTree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* current, QTreeWidgetItem*) {
@@ -508,7 +534,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mDiagnostics, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
         static_cast<void>(ActivateDiagnostic(mDiagnostics->row(item)));
     });
-    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross, mWorkerSocket})
     {
         connect(tool, &QLineEdit::editingFinished, this, [this]() {
             QSettings preferences;
@@ -516,6 +542,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             preferences.setValue(COMPILER_KEY, mCompiler->text());
             preferences.setValue(VALIDATOR_KEY, mValidator->text());
             preferences.setValue(SPIRV_CROSS_KEY, mSpirvCross->text());
+            preferences.setValue(WORKER_SOCKET_KEY, mWorkerSocket->text());
         });
     }
     connect(&mJob, &RenderGraphJob::Finished, this, &RendererWorkspace::AcceptResult);
@@ -527,6 +554,7 @@ RendererWorkspace::~RendererWorkspace() = default;
 
 void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
 {
+    mLiveBuild.Reset();
     const bool isSameRoot = root == mProjectRoot;
     mEpoch = epoch;
     if (isSameRoot == true)
@@ -655,7 +683,10 @@ void RendererWorkspace::Redo()
     }
 }
 
-bool RendererWorkspace::startJob(const QString& action, const QStringList& arguments, bool needsSnapshot)
+bool RendererWorkspace::startJob(const QString& action,
+                                 const QStringList& arguments,
+                                 bool shouldCaptureSnapshot,
+                                 bool shouldPreview)
 {
     if (mDocument.IsLoaded() == false || mProjectRoot.isEmpty() == true || mJob.IsActive() == true)
     {
@@ -666,7 +697,9 @@ bool RendererWorkspace::startJob(const QString& action, const QStringList& argum
     request.ProjectEpoch = mEpoch;
     request.Revision = mDocument.GetRevision();
     request.Action = action;
-    if (needsSnapshot == true)
+    request.ShouldPreview = shouldPreview;
+    request.InputIdentity = getBuildIdentity();
+    if (shouldCaptureSnapshot == true)
     {
         // Jobs read an immutable copy of the draft, never the saved package or live widgets.
         request.SnapshotDirectory =
@@ -691,6 +724,7 @@ bool RendererWorkspace::startJob(const QString& action, const QStringList& argum
         mStatus->setText(QStringLiteral("The render-graph tool is unavailable from this editor's tooling root."));
         return false;
     }
+    mLiveBuild.SetBusy(true);
     mActiveRequest = request.Request;
     mCancel->setEnabled(true);
     mStatus->setText(
@@ -711,6 +745,26 @@ bool RendererWorkspace::Validate()
 }
 
 bool RendererWorkspace::Build()
+{
+    return startBuild(false);
+}
+
+bool RendererWorkspace::BuildAndPreview()
+{
+    if (startBuild(true) == false)
+    {
+        return false;
+    }
+    mLiveBuild.MarkRequested(getBuildIdentity());
+    return true;
+}
+
+void RendererWorkspace::SetWorkerSocket(const QString& endpoint)
+{
+    mWorkerSocket->setText(endpoint);
+}
+
+bool RendererWorkspace::startBuild(bool shouldPreview)
 {
     if (mDocument.GetFiles().contains(manifestFile()) == false)
     {
@@ -734,7 +788,21 @@ bool RendererWorkspace::Build()
     {
         arguments += {QStringLiteral("--spirv-cross"), mSpirvCross->text()};
     }
-    return startJob(QStringLiteral("build"), arguments, true);
+    if (mWorkerSocket->text().isEmpty() == false)
+    {
+        arguments += {QStringLiteral("--worker-socket"), mWorkerSocket->text()};
+    }
+    if (shouldPreview == true)
+    {
+        const QString configuration = mConfiguration->currentText() == DEFAULT_CONFIGURATION
+                                          ? QStringLiteral("Default")
+                                          : mConfiguration->currentText();
+        arguments += {QStringLiteral("--runtime-package"),
+                      GetRuntimePackagePath(),
+                      QStringLiteral("--configuration"),
+                      configuration};
+    }
+    return startJob(QStringLiteral("build"), arguments, true, shouldPreview);
 }
 
 bool RendererWorkspace::CookRuntime()
@@ -749,6 +817,8 @@ bool RendererWorkspace::CookRuntime()
 
 void RendererWorkspace::CancelJob()
 {
+    mLivePreview->setChecked(false);
+    mLiveBuild.SetEnabled(false);
     mJob.Cancel();
 }
 
@@ -770,6 +840,7 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
         QDir(result.Request.SnapshotDirectory).removeRecursively();
     }
     mCancel->setEnabled(false);
+    mLiveBuild.SetBusy(false);
     // A result for another project, request or closed document never publishes.
     if (result.Request.Request != mActiveRequest || result.Request.ProjectEpoch != mEpoch ||
         mDocument.IsLoaded() == false)
@@ -824,8 +895,26 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
             entry->setData(LOCATION_ROLE, location);
         }
     }
+    if (result.IsSuccessful == true && result.Request.ShouldPreview == true &&
+        result.Request.InputIdentity == getBuildIdentity())
+    {
+        static_cast<void>(PreviewRuntime());
+    }
     renderStatus();
     Q_EMIT JobFinished();
+}
+
+QByteArray RendererWorkspace::getBuildIdentity() const
+{
+    return ComputeRenderGraphBuildIdentity(mDocument, mConfiguration->currentText());
+}
+
+void RendererWorkspace::scheduleLiveBuild()
+{
+    if (mIsRendering == false && mDocument.IsLoaded() == true)
+    {
+        mLiveBuild.Schedule(getBuildIdentity());
+    }
 }
 
 void RendererWorkspace::documentEdited(RenderGraphDocumentStatus status)
@@ -839,6 +928,7 @@ void RendererWorkspace::documentEdited(RenderGraphDocumentStatus status)
     renderSource();
     renderStatus();
     Q_EMIT DocumentChanged();
+    scheduleLiveBuild();
 }
 
 QJsonObject RendererWorkspace::selectedConfiguration() const

@@ -1,5 +1,11 @@
 # Shader-toolchain spike handoff
 
+This page records the original offline compiler spike. Current optional native
+compiler/API clients, live reload and headless workflows are documented in
+[native shader worker and live development builds](render-graph-authoring.md#native-shader-worker-and-live-development-builds).
+That opt-in capability supersedes this spike's blanket restriction on embedding
+the compiler; ordinary renderer/runtime targets remain compiler-independent.
+
 ## Selection and boundary
 
 Slang **2026.1.2** succeeds for this probe's vertex and fragment shaders on both

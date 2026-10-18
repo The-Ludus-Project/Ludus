@@ -39,6 +39,8 @@ include(LudusReflection)
 include(EngineSdkIdentity)
 
 option(LUDUS_BUILD_TESTS "Build Ludus tests" ON)
+option(LUDUS_BUILD_SHADER_WORKER "Build the optional native Slang compiler library and headless worker" OFF)
+option(LUDUS_SHADER_WORKER_ONLY "Configure only the headless shader tooling closure" OFF)
 option(LUDUS_BUILD_SMOKE_APP "Build the smoke executable" ON)
 option(LUDUS_BUILD_WORLD_DEMO "Build the graphical game world reference (requires shader tools)" OFF)
 option(LUDUS_BUILD_SHADER_PROBE "Build the isolated offline shader feasibility probe" OFF)
@@ -217,6 +219,28 @@ include(EngineDependencyPreflight)
 include(EngineTestDiagnostics)
 
 add_subdirectory(modules/foundation/base)
+if(LUDUS_SHADER_WORKER_ONLY)
+    if(EMSCRIPTEN OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
+        message(FATAL_ERROR "The shader worker requires a native Linux/macOS host")
+    endif()
+    set(LUDUS_BUILD_SHADER_WORKER ON)
+    add_subdirectory(modules/foundation/memory)
+    add_subdirectory(modules/foundation/hash)
+    add_subdirectory(modules/foundation/strings)
+    add_subdirectory(modules/foundation/containers)
+    add_subdirectory(modules/foundation/filesystem)
+    add_subdirectory(third_party/yyjson)
+    add_subdirectory(modules/foundation/parsing)
+    add_subdirectory(modules/tooling/shader_compiler)
+    configure_package_config_file("${PROJECT_SOURCE_DIR}/cmake/LudusShaderToolsConfig.cmake.in"
+        "${PROJECT_BINARY_DIR}/LudusShaderToolsConfig.cmake"
+        INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/LudusShaderTools")
+    install(FILES "${PROJECT_BINARY_DIR}/LudusShaderToolsConfig.cmake"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/LudusShaderTools")
+    install(EXPORT LudusTargets NAMESPACE Ludus:: FILE LudusShaderToolsTargets.cmake
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/LudusShaderTools")
+    return()
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Windows validates only the FoundationThreading closure (threading.md, T3).
     # Other modules have no Windows backend; the SDK is not installed there yet.
@@ -270,6 +294,7 @@ add_subdirectory(third_party/miniaudio)
 add_subdirectory(modules/audio)
 add_subdirectory(third_party/yyjson)
 add_subdirectory(modules/foundation/parsing)
+add_subdirectory(modules/tooling/shader_compiler)
 add_subdirectory(modules/foundation/reflection)
 add_subdirectory(modules/foundation/serialization)
 add_subdirectory(modules/foundation/config)
@@ -310,6 +335,7 @@ if(EMSCRIPTEN)
     add_subdirectory(modules/platform)
     add_subdirectory(modules/graphics/rhi)
     add_subdirectory(modules/graphics/renderer)
+    add_subdirectory(modules/runtime/shader_development)
     add_subdirectory(modules/graphics/text)
     # NOTE: Ludus::Text is intentionally NOT built for the Emscripten target yet.
     # Its FreeType/HarfBuzz dependencies are resolved natively through Conan; the
@@ -334,6 +360,7 @@ else()
     add_subdirectory(modules/platform)
     add_subdirectory(modules/graphics/rhi)
     add_subdirectory(modules/graphics/renderer)
+    add_subdirectory(modules/runtime/shader_development)
     add_subdirectory(modules/text)
     add_subdirectory(modules/graphics/text)
 
@@ -435,7 +462,7 @@ write_basic_package_version_file(
 # --- Redistributable dependency inventory (P02/P03/P11) ----------------------
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
-    FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging
+    FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient
     FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content SceneFormat RenderGraphFormat StringDictionaryFormat StringDictionary StringDictionaryWriter SceneCook AudioContent Resources GameplayWorld GameplayCamera GameApi PhysicsFluid Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
@@ -452,7 +479,7 @@ if(LUDUS_BUILD_UNICODE)
     ludus_sdk_register_dependency(ICU4C "78.3" "Unicode-3.0" bundled)
 endif()
 if(NOT EMSCRIPTEN)
-    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text GameHost)
+    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text GameHost ShaderDevelopment)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
@@ -461,6 +488,12 @@ else()
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
+endif()
+
+if(LUDUS_BUILD_SHADER_WORKER)
+    ludus_sdk_register_component(ShaderCompiler)
+    ludus_sdk_register_feature(ShaderCompiler)
+    ludus_sdk_register_dependency(Slang "2026.1.2" "Apache-2.0-WITH-LLVM-exception" bundled)
 endif()
 
 # Redistributable static link-closure dependencies. These are the libraries the
@@ -563,7 +596,7 @@ if(NOT EMSCRIPTEN)
     install(FILES apps/game_host/main.cpp
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus" RENAME LudusGameHostMain.cpp)
 endif()
-install(FILES modules/graphics/rhi/shaders/raster_bindings.slang modules/graphics/rhi/shaders/runtime_bindings.slang modules/graphics/rhi/shaders/ray_query.slang cmake/shaders/compile_ray.py cmake/shaders/compile_shader.py cmake/shaders/compile_raster.py cmake/shaders/compile_graph_stage.py cmake/shaders/cook_texture.py config/shader_toolchain.json config/spirv_cross_toolchain.json DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES modules/graphics/rhi/shaders/raster_bindings.slang modules/graphics/rhi/shaders/runtime_bindings.slang modules/graphics/rhi/shaders/ray_query.slang cmake/shaders/compile_ray.py cmake/shaders/compile_shader.py cmake/shaders/compile_raster.py cmake/shaders/compile_graph_stage.py cmake/shaders/native_worker.py cmake/shaders/cook_texture.py config/shader_toolchain.json config/spirv_cross_toolchain.json DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 
 install(FILES third_party/xxhash/LICENSE DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/licenses" RENAME xxhash-LICENSE)
 

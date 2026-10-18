@@ -1138,3 +1138,204 @@ Unsupported or not established:
   adapters, so no physical-GPU numbers will exist for Vulkan or WebGPU.
 - Idle entries are bounded by count, not bytes: a large-extent workload retains
   correspondingly more memory until it is trimmed.
+
+## Native shader worker and live development builds
+
+Shader iteration is a development capability shared by the editor, standalone
+applications and headless tooling. Slang runs in a persistent native worker;
+Python retains graph/schema generation, independent layout validation and package
+cooking. Compilation never requires starting the editor, GameHost or an RHI device.
+The portable artifact and runtime-generation formats remain the shared boundary.
+
+### Build and run the headless compiler
+
+After preparing the pinned tools, select the host's native preset. For example:
+
+```bash
+cmake --preset macos-clang-development -B out/build/shader-worker \
+  -DLUDUS_SHADER_WORKER_ONLY=ON -DLUDUS_BUILD_TESTS=OFF
+cmake --build out/build/shader-worker --target ludus-shader-worker
+cmake --install out/build/shader-worker --prefix "$PWD/out/shader-sdk"
+```
+
+Use `linux-clang-development` on Linux. `LUDUS_SLANG_ROOT` selects an already
+verified Slang distribution; default is `out/shader-tools/slang`. Configuration
+and compilation perform no tool downloads. The tools-only closure contains Base,
+Memory, Hash, Strings, Containers, Filesystem and Parsing, plus the compiler and
+client; it does not configure Qt, Platform, RHI, audio or game modules. A full SDK
+can instead enable `LUDUS_BUILD_SHADER_WORKER=ON`.
+
+The worker/API library supports native Linux and macOS. The pinned upstream macOS
+Slang API library requires macOS 15; the compiler target advertises that deployment
+minimum. Browser builds can consume cooked generations, but cannot run this native
+worker or Unix-socket client. Existing offline helpers remain available, including
+the older multi-entry fullscreen compatibility path.
+
+Create a private directory for the socket, then keep the worker running:
+
+```bash
+worker_directory=$(mktemp -d)
+out/shader-sdk/bin/ludus-shader-worker --serve "$worker_directory/compiler.sock"
+```
+
+The standalone prefix contains the worker and native libraries. Install the
+`ludus-tools` Python CLI separately; `$SDK` below names an existing full SDK
+containing the graph/schema validation helpers, and `$SLANG` its verified compiler
+distribution. These are build inputs and do not initialize the engine.
+
+In another terminal, use that endpoint explicitly (or set
+`LUDUS_SHADER_WORKER_SOCKET` for the graph CLI):
+
+```bash
+ludus --json render-graph build graphs/main.lushader.json out/graph-build \
+  --helper "$SDK/lib/cmake/Ludus/shaders" --compiler "$SLANG/bin/slangc" \
+  --worker-socket "$worker_directory/compiler.sock" \
+  --runtime-package out/render-graph/main.lurgrt --configuration Default
+```
+
+`worker_directory` must name the same directory in both terminals. CI and
+packaging use the same one-shot `build` command and its exit status. Add the
+pinned validator/translator arguments when the manifest declares SPIR-V or GLSL.
+CMake's graph and renderer raster/compute helpers accept
+`LUDUS_SHADER_WORKER_SOCKET`; for an external installed worker, also set
+`LUDUS_SHADER_WORKER_EXECUTABLE` to make its binary an explicit build dependency.
+When the worker target is part of the build, that dependency is automatic.
+Built-in recipe selection continues to belong to
+`ludus_compile_renderer_shaders` and its manifest.
+
+For continuous source iteration, replace `build` with `watch`. It observes the
+explicit source root, debounces changes, and emits JSON only for completed builds
+or errors. It requires a native worker and `--runtime-package`. Stop with Ctrl-C.
+The watcher preserves the last runtime file on source, compile, validation or cook
+failure, and rejects source changes detected before publication. The source tree
+must be separate from generated output; `out/` and hidden directories are ignored.
+An unchanged failure is retried after the next source edit or a restarted command.
+
+The native executable also accepts `--stdio`: each request/reply has a four-byte
+little-endian byte length followed by versioned UTF-8 JSON, bounded to 16 MiB.
+It supports multiple requests until EOF and needs no Unix socket in this mode.
+`--version` reports the pinned Slang version. An occupied socket is refused;
+normal termination removes the worker's socket. After a crash, use a new private
+endpoint or explicitly remove the abandoned socket after confirming no worker
+owns it. Clients never silently switch to an offline compiler after worker failure.
+
+### Editor and game clients
+
+In the Renderer tab's Build Settings, set **Native shader worker** to the shared
+endpoint. **Build & Preview** builds/cooks an immutable draft and previews a
+successful result only if its project/request and semantic source/configuration
+identity still match. **Live Preview** opts into debounced background builds;
+layout-only moves do not schedule a build. Saving is independent. Cancel disables
+live building; failures retain the last drawable preview. The existing preview's
+static-material/profile restrictions still apply.
+
+Standalone native games can link `Ludus::ShaderDevelopment` and create a
+`ludus::runtime::shader_development::ReloadSession` over their producer's final
+`.lurgrt` path and existing `RenderGraphActivation`. `Initialize` pins the output
+directory and starts one dedicated file-read worker. Call `Service` between frames
+with a monotonic timestamp, then drive the activation's existing `Poll` and
+`Update` protocol. Metadata observation/open can access disk; shader payload reads
+are asynchronous. A newer publication cancels/drains the old read before its
+buffer is reused. Failed reads/decodes never stage a partial generation. Inspect
+`ReloadReport` separately from the activation report and presented image.
+
+Applications needing direct source compilation can link
+`Ludus::ShaderCompilerClient`. `Client::Submit` copies an immutable set of relative
+source paths/texts plus target/stage/entry and a caller-owned request identity;
+`Poll` advances nonblocking IPC. Cancel discards the reply locally. Callers validate
+the echoed identity, reflection and their own interface contract before creating
+replacement resources. This lower-level API does not bypass graph admission or
+pipeline readiness. `Ludus::ShaderCompiler` is the optional in-process API library
+for tools or applications that explicitly choose to embed the compiler. Its
+synchronous `Compile` belongs on a dedicated worker thread; one compiler instance
+is confined to one thread. Neither client library initializes an engine/editor.
+The standalone install exposes these components through `LudusShaderTools`:
+
+```cmake
+find_package(LudusShaderTools REQUIRED COMPONENTS ShaderCompilerClient)
+target_link_libraries(my_development_tool PRIVATE Ludus::ShaderCompilerClient)
+```
+
+Request `ShaderCompiler` and link `Ludus::ShaderCompiler` when embedding the API.
+Target reflection includes `nativeEntryPointResourceUsage`, a map from global
+parameter names to booleans queried from Slang's generated-code metadata. Slang's
+API JSON alone omits the CLI's per-entry usage records; consumers must retain this
+metadata when deriving live resource bindings. The graph and recipe adapters
+validate it before comparing emitted target layouts.
+
+The worker copies at most 64 source files and 4 MiB of source bytes into a closed
+in-memory Slang filesystem. It cannot fall back to source files on disk. It retains
+one global Slang session and reuses its latest module/session only while the entire
+snapshot and root source are identical. Any changed file creates a fresh session;
+objects from the old session are released first. Sequential requests avoid sharing
+non-reentrant Slang state between threads. Outputs are bounded to 2 MiB each for
+artifact/reflection; diagnostics to 64 KiB. The graph cache includes native worker
+implementation identity and the actual API-library digest alongside existing
+source/schema/tool identities. Native and command-line compiler cache entries are
+distinct; a worker replacement during a graph build is rejected.
+
+### Portable artifacts and device compilation
+
+SPIR-V and DXIL are intermediate representations themselves. Slang's serialized
+modules are an earlier, compiler-specific IR that can preserve frontend work;
+they are not device machine code. This worker emits SPIR-V, WGSL or MSL as selected
+by the caller. Existing RHI shader/pipeline creation still lets the graphics
+implementation compile for the actual adapter and driver before activation.
+Measure that device preparation separately from source compilation.
+
+A future server can distribute portable artifacts or compiler modules, and may
+also distribute validated device-cache blobs for matching hardware/driver keys.
+Vendor name alone is insufficient: Vulkan's pipeline-cache header includes vendor
+ID, device ID and a pipeline-cache UUID. Retain portable-artifact fallback when
+opaque cache data is rejected. No device-cache server or portable vendor-machine-
+code format is introduced here. See the [Vulkan pipeline cache contract](https://docs.vulkan.org/spec/latest/chapters/pipelines.html#pipelines-cache)
+and [Slang's compilation API and sessions](https://docs.shader-slang.org/en/latest/compilation-api.html).
+
+### Benchmark and acceptance
+
+`tools/shader-bench/benchmark.py` measures real CLI builds without a device. Run
+it once without `--worker` and once with `--worker /path/to/ludus-shader-worker`,
+using different empty `--output` directories and the same pinned `--compiler`.
+It writes raw JSON samples under the selected ignored output directory. The
+native run starts one worker and retains it for all samples; compiler startup
+is outside per-request times. Cold refers to an empty artifact cache, not flushed
+OS caches. Both runs use a fresh Python CLI process per sample.
+
+On October 18, 2026, macOS arm64, pinned Slang 2026.1.2, seven samples per case,
+three static-profile programs and Metal/WGSL targets, the pre-implementation
+baseline measured 1402.90 ms for an empty artifact cache and 735.72 ms for one
+shader edit. Repeating both paths after implementation produced:
+
+| Case | Existing CLI median | Persistent native median |
+| --- | ---: | ---: |
+| Empty artifact cache | 1595.25 ms | 888.27 ms |
+| Cached artifacts | 399.29 ms | 390.52 ms |
+| Single shader edit | 734.33 ms | 562.72 ms |
+| Shared include edit | 741.80 ms | 601.58 ms |
+| Invalid shader edit | 389.79 ms | 270.37 ms |
+
+The final native run's one-time worker startup was 522.60 ms, measured
+separately. An installed, relocated tools-only consumer also compiled WGSL using
+only installed headers/libraries. ASan/UBSan passed the compiler and socket tests.
+
+These small-fixture wall times do not establish large-project throughput or GPU
+pipeline latency. Graph preparation still invokes Python validation helpers, and
+the first worker has one compilation lane. Cache misses are currently sequential.
+
+The native API tests cover deterministic output, source/include invalidation,
+all three targets, closed inputs and diagnostics. The worker integration test
+uses the real native client and compiler to cover cancellation, malformed and
+abandoned connections, cached graph builds, changed shaders, compile failures,
+occupied endpoints and worker exit. The dedicated `ludus_shader_reload_gpu` test
+passes worker-produced generations through the native game loader, driver
+pipeline preparation and real pixel readback; it checks changed pixels, failed
+publication preservation, superseded reads and interface-mismatch preservation.
+On the first local Metal run, changed-generation read/preparation/activation
+took 65.3 ms; the largest delivery-service call, including initial driver
+preparation, took 251.3 ms. Native RHI driver preparation is currently synchronous
+on its owner thread. Thus source compilation is asynchronous, but this change
+does not establish hitch-free GPU pipeline preparation. These figures are single
+observations, not percentile estimates or shader-compiler timings. The test
+reports delivery/pipeline timing separately from the source benchmark and
+refuses a skipped GPU case. Linux, browser and physical-device qualification
+remain distinct from any local macOS result.

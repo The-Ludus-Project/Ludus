@@ -112,7 +112,14 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_renderer_render_tests PRIVATE
         LUDUS_RG3_SURFACE_DIRECTORY="${rg3_surface_directory}" LUDUS_RG3_BOUND_DIRECTORY="${rg3_bound_directory}"
         LUDUS_RG3_OFFSCREEN_DIRECTORY="${rg3_offscreen_directory}")
-    target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationFilesystem)
+    target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::FoundationFilesystem Ludus::ShaderDevelopment)
+    if(TARGET ludus-shader-worker)
+        add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"
+            --worker "$<TARGET_FILE:ludus-shader-worker>" --client "$<TARGET_FILE:ludus_shader_compiler_tests>"
+            --renderer "$<TARGET_FILE:ludus_renderer_render_tests>")
+        set_tests_properties(ludus_shader_reload_gpu PROPERTIES LABELS "shader;renderer;gpu" TIMEOUT 120)
+    endif()
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME rg2_depth_display RASTER
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/depth_display.slang" VERTEX VSMain FRAGMENT PSMain)
 endif()

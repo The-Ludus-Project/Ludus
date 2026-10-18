@@ -178,6 +178,8 @@ qt_add_executable(ludus_editor
     src/render_graph_canvas.cpp
     src/internal/renderer_workspace.h
     src/renderer_workspace.cpp
+    src/internal/render_graph_live_build.h
+    src/render_graph_live_build.cpp
     src/configuration_workspace.cpp
     src/editor_files.cpp
     src/internal/scene_archive.h
@@ -337,6 +339,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_canvas.cpp
         src/internal/renderer_workspace.h
         src/renderer_workspace.cpp
+    src/internal/render_graph_live_build.h
+    src/render_graph_live_build.cpp
         src/configuration_workspace.cpp
         src/editor_files.cpp
         src/internal/scene_archive.h
@@ -483,4 +487,19 @@ if(EMSCRIPTEN)
     set_target_properties(ludus_editor PROPERTIES QT_WASM_INITIAL_MEMORY 33554432 QT_WASM_MAXIMUM_MEMORY 2147483648)
     target_link_options(ludus_editor PRIVATE "-sASYNCIFY_STACK_SIZE=131072"
         "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js")
+endif()
+
+if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp
+        src/render_graph_document.cpp src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
+    set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_render_graph_live_build_tests PRIVATE src)
+    target_compile_definitions(ludus_render_graph_live_build_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_render_graph_live_build_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Test
+        Ludus::FoundationContainers Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_render_graph_live_build_tests)
+    ludus_enable_test_exceptions(ludus_render_graph_live_build_tests)
+    add_test(NAME ludus_render_graph_live_build_tests COMMAND ludus_render_graph_live_build_tests)
+    set_tests_properties(ludus_render_graph_live_build_tests PROPERTIES LABELS "editor;shader" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
