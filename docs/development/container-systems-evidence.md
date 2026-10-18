@@ -191,7 +191,8 @@ There are no timing claims.
 - **Consumers.** The Input reducer's live-down, live-suppressed and
   reset-baseline masks, and the Resources manager's dependency-closure and
   catalog-duplicate sets, now use `StaticBitSet` instead of `bool` arrays. The
-  existing Input and Resources suites pass unchanged. The public
+  existing Input and Resources suites pass unchanged. The reducer's write-only
+  live-suppressed mask was later removed; suppression is step-time state. The public
   `KeyboardSnapshot` and `FocusBaseline` bool arrays were deliberately left
   alone to keep the SDK API and ABI stable.
 - **SDK and browser.** `tests/sdk_consumer/containers.cpp` exercises a 65-bit
