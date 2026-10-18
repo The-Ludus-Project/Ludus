@@ -307,6 +307,19 @@ namespace
     QSet<QString> unique;
     QString root;
     QString entry;
+    // A .pbrt entry wins; glTF/OBJ files are entries only for scenes without one,
+    // because pbrt scenes may ship .obj companions.
+    QString otherEntry;
+    const auto consider = [&entry, &otherEntry](const QString& name, const QString& path) {
+        if (name.endsWith(QStringLiteral(".pbrt"), Qt::CaseInsensitive) == true)
+        {
+            entry = entry.isEmpty() == true ? path : entry;
+        }
+        else if (IsSceneEntryName(name) == true && otherEntry.isEmpty() == true)
+        {
+            otherEntry = path;
+        }
+    };
     for (const QString& path : paths)
     {
         const QStringList parts = path.split(QLatin1Char('/'));
@@ -330,10 +343,7 @@ namespace
                 return false;
             }
             root = parts.first();
-            if (IsSceneEntryName(parts.back()) == true && entry.isEmpty() == true)
-            {
-                entry = path;
-            }
+            consider(parts.back(), path);
         }
         else if (parts.size() != 1)
         {
@@ -347,12 +357,13 @@ namespace
             }
             entry = path;
         }
-        else if (IsSceneEntryName(path) == true && entry.isEmpty() == true)
+        else
         {
-            entry = path;
+            consider(path, path);
         }
         unique.insert(path);
     }
+    entry = entry.isEmpty() == true ? otherEntry : entry;
     if (entry.isEmpty() == true)
     {
         return false;
@@ -515,13 +526,17 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
                     ImportedBytes += static_cast<foundation::int64>(expanded) - state->ChargedBytes;
                     state->ChargedBytes = static_cast<foundation::int64>(expanded);
                     QString entry;
-                    QDirIterator files(state->Directory,
-                                       QStringList{QStringLiteral("*.pbrt"),
-                                                   QStringLiteral("*.gltf"),
-                                                   QStringLiteral("*.glb"),
-                                                   QStringLiteral("*.obj")},
-                                       QDir::Files,
-                                       QDirIterator::Subdirectories);
+                    // Prefer a .pbrt entry; otherwise the first glTF/OBJ entry.
+                    QDirIterator pbrtFiles(state->Directory,
+                                           QStringList{QStringLiteral("*.pbrt")},
+                                           QDir::Files,
+                                           QDirIterator::Subdirectories);
+                    QDirIterator otherFiles(
+                        state->Directory,
+                        QStringList{QStringLiteral("*.gltf"), QStringLiteral("*.glb"), QStringLiteral("*.obj")},
+                        QDir::Files,
+                        QDirIterator::Subdirectories);
+                    QDirIterator& files = pbrtFiles.hasNext() == true ? pbrtFiles : otherFiles;
                     if (files.hasNext() == false)
                     {
                         Report(state->Owner,
