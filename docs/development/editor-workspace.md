@@ -461,7 +461,7 @@ The schema root has `id`, `label`, `components` and `assets`, and may declare th
 | `integer` | Finite ordered `min`/`max` within ±2147483647; integral values only |
 | `string` | UTF-8 text of at most 512 bytes |
 | `enum` | `choices`: 1–64 unique strings, each at most 128 UTF-8 bytes; default is one of them |
-| `entity` | Empty-string default. Picker uses a stable ID in the current world or empty for None |
+| `entity` | Empty-string default. Picker uses an entity's key in the current world (its version-2 UUID or version-1 ID) or empty for None |
 | `asset` | Empty-string default and `asset_kind`. Picker uses a declared logical asset ID of that kind or empty for None |
 
 Each declared asset has `id`, `label` and `kind`. The list is supplied by the
@@ -479,9 +479,23 @@ self-references, and preserves references to other entities. New entity IDs are
 FoundationIdentity UUIDv4 text from the operating system's entropy source; if it
 is unavailable, Add and Duplicate change nothing and report that in the status
 line (see [the UUID architecture](../architecture/object-handles-uuid.md#implementation-sequence)).
-The Editor opens and saves version-1 Worlds only. Version-2 records with committed
-UUIDs are produced by `ludus-cook identity` and are not yet editable here; see
-[UUID authoring records](../architecture/object-handles-uuid.md#stage-3-uuid-authoring-records).
+
+The Editor opens, edits and saves both World versions, and each document keeps
+the version it was opened with. A version-1 World is never converted implicitly;
+convert one with `ludus-cook identity` (see
+[UUID authoring records](../architecture/object-handles-uuid.md#stage-3-uuid-authoring-records)).
+A version-2 record adds a root `document` UUID. Each entity has `uuid`, `label`,
+`name` and `components` instead of `id`:
+
+- `uuid` is the entity's identity. Entity-typed properties store target UUIDs.
+- `label` is a unique, readable scoped ID, shown in the inspector and pickers.
+- Add and Duplicate mint a UUIDv4 that is unique in the World. They derive the
+  label from the name: its lowercase ASCII letters and digits, separated by `-`,
+  at most 31 characters, with `-2`, `-3`, ... added for uniqueness.
+- Renaming changes only `name`. The label and UUID stay the same.
+- A version-2 World cannot use the scene extension yet. Import Scene refuses it
+  and changes nothing.
+- **New World** still creates a version-1 World.
 
 Runtime integration stays game-owned: parse/validate into temporary owned data;
 create registry entities; map persisted IDs to new runtime handles; populate
@@ -974,8 +988,8 @@ they do not become gameplay registry entities merely because they are editable.
 3. Select `floor` to edit collision center/extents, or **Level settings** to edit
    bounds, camera and seed. The seed is decimal text so all unsigned 64-bit values
    survive the JSON/inspector boundary exactly.
-4. Duplicate an enemy/exit with **Duplicate**. Its new ID fits the game's 31-byte
-   identity limit. Add Entity and Add Component can assemble new recipes; unfinished
+4. Duplicate an enemy/exit with **Duplicate**. Its new ID, or its version-2 label,
+   fits the game's 31-byte identity limit. Add Entity and Add Component can assemble new recipes; unfinished
    recipes remain editable, while Save/preview reject incompatible role combinations,
    broken player targets, invalid bounds, excess capacity or missing settings.
 

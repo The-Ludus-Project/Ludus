@@ -598,7 +598,8 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
         {
             continue;
         }
-        const auto id = entity.value(QStringLiteral("id")).toString();
+        // The entity key: a version-2 UUID or a version-1 ID.
+        const QString id = world.GetEntityKey(entity);
         const auto name = entity.value(QStringLiteral("name")).toString();
         math::TransformTRS trs;
         if (Attached(entity, transform) == false || Transform(Values(entity, transform), trs, error) == false)
