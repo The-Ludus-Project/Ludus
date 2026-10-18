@@ -1100,17 +1100,32 @@ What these numbers show:
 - CPU time: there is no CPU-time claim. `Stage` is dominated by pipeline prewarm,
   and the export-only pair, which does identical work in both modes, differs by as
   much as the scratch pair. `Encode` is unchanged.
-- In flight: no deferred acquisition was observed, because this small workload's
-  frames completed before the next staging. Deferral is covered deterministically
-  by the reference-backend tests.
+- In flight: no deferred acquisition was observed locally, because this small
+  workload's frames completed before the next staging. Deferral is covered
+  deterministically by the reference-backend tests, and was observed in CI below.
+
+One run of the same consumer in the CI macOS job (GitHub `macos-15` runner,
+"Apple Paravirtual device", October 18, 2026, ci run 39144503034):
+
+| Workload | Mode | Created (reload / resize / in flight) | Reused | Deferred | Logical bytes steady / peak | Idle pool bytes (logical) | Stage p50 / p95 µs | Encode p50 / p95 µs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| export-only | serial control | 6 / 6 / 7 | 0 | 0 | 1,843,668 / 5,530,536 | 0 | 1458 / 2127 | 30.1 / 104.6 |
+| export-only | exact pool | 6 / 6 / 7 | 0 | 0 | 1,843,668 / 5,530,536 | 0 | 1513 / 2457 | 35.7 / 129.0 |
+| scratch-2 | serial control | 18 / 18 / 21 | 0 | 0 | 5,530,452 / 16,590,504 | 0 | 2621 / 4563 | 68.9 / 311.3 |
+| scratch-2 | exact pool | 10 / 8 / 9 | 8 / 10 / 12 | 2 | 16,589,652 / 20,276,904 | 11,059,200 | 1644 / 4484 | 73.8 / 316.2 |
+
+On this virtual device two in-flight acquisitions found only unfinished exact
+matches, created new attachments instead, and left six entries idle. Exports
+stayed byte identical. The single virtualized run's CPU times vary too much to
+support a timing claim either way.
 
 Platform status:
 
 | Platform | Established | Evidence |
 | --- | --- | --- |
-| macOS / Metal (Apple M5) | Unit, GPU byte parity and the measurement consumer above | Local runs, October 18, 2026; the CI macOS job also runs the consumer and uploads `rg4-pooling-metal` |
-| Linux / Vulkan (Mesa llvmpipe) | GPU byte parity and the measurement consumer under the Khronos validation layer | CI "Development and SDK" job; the log is uploaded as `rg4-pooling-vulkan` |
-| Browser / WebGPU (Chromium SwiftShader) | Byte parity and measurements inside Wasm, with cross-origin isolation for the CPU timer | "Renderer browser tests (pooling)" job; `report.json` records the runs, the Chromium version and the observed `performance.now()` step |
+| macOS / Metal (Apple M5; GitHub paravirtual device) | Unit and GPU byte parity, ASan/UBSan, and the measurement consumer above | Local runs, October 18, 2026; the CI macOS job runs the consumer and uploads `rg4-pooling-metal` (ci run 39144503034) |
+| Linux / Vulkan (Mesa llvmpipe) | Not yet established. The GPU byte-parity cases are part of the existing `[render-graph]` validation-layer step; the measurement consumer step is new | The branch dispatch skipped "Development and SDK", because its source-policy step compares against `main`, which predates develop's legacy code. Batches run `main`'s workflow files, so the consumer step runs only after promotion |
+| Browser / WebGPU (Chromium SwiftShader) | Not yet established; the consumer and `render-graph-pooling-browser-test.mjs` are wired into a new "Renderer browser tests (pooling)" suite | The branch dispatch (run 39144505286) stopped in `compile-and-package`. clang-tidy rejects `std::string_view{"", 0}` in the generated localization fixture (`modules/localization/tests/generate_fixture.py`), a failure already on `develop` |
 
 Unsupported or not established:
 
@@ -1118,7 +1133,8 @@ Unsupported or not established:
 - The depth-only compatibility RGBA8 image remains.
 - Physical heap aliasing, pass merging, parallel recording and async queues are
   separate RG4 slices with their own controls.
-- WebGL 2 / GLSL ES is not measured. Linux and browser evidence uses software
-  adapters, and no physical-GPU numbers exist for Vulkan or WebGPU.
+- Vulkan and WebGPU measurements are not established yet (see the platform
+  table). WebGL 2 / GLSL ES is not measured. Linux and browser CI use software
+  adapters, so no physical-GPU numbers will exist for Vulkan or WebGPU.
 - Idle entries are bounded by count, not bytes: a large-extent workload retains
   correspondingly more memory until it is trimmed.
