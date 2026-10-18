@@ -50,10 +50,10 @@ namespace ludus::foundation::core
 namespace detail
 {
 // Raw, alignment-aware, nothrow allocation seam. Implemented once in
-// array_support.cpp in terms of the sized/aligned nothrow operator new/delete.
-// This is the single insertion point for a future Ludus engine allocator: no
-// call site changes when it is re-pointed. Returns nullptr on failure (never
-// throws, never terminates here).
+// array_support.cpp through FoundationMemory's Containers allocation domain,
+// which accounts capacity bytes and uses the aligned nothrow operator
+// new/delete backend. No call site changes when it is re-pointed. Returns
+// nullptr on failure (never throws, never terminates here).
 /// Internal allocation seam used by Array; not a general allocator API.
 ///
 /// Returns uninitialized storage of `bytes` bytes aligned to `alignment`, or nullptr on failure or for zero bytes.

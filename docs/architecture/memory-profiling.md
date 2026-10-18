@@ -1,10 +1,12 @@
 # Ludus Memory Profiling Architecture
 
-**Status:** Proposed design. No memory profiler or new allocator is implemented
+**Status:** Proposed design. No memory recorder or new allocator is implemented
 by this document. Phase 0 is implemented: the owner repair by
 [smart pointer](smart-pointers.md#delivery-slices-and-validation) slice 1, and the
 trace slab alignment/lifetime repair and baselines in
-[memory phase 0](../development/memory-phase-0.md). The design follows
+[memory phase 0](../development/memory-phase-0.md). Phase 1, domain counters,
+registry, `Array` migration and gauge export, is recorded with its measured
+overhead in [memory phase 1](../development/memory-phase-1.md). The design follows
 [ADR 0008](../decisions/0008-memory-management.md) and the
 [memory ownership architecture](memory-management.md). The subsequent
 [article review](memory-profiling-gems-review.md) records sources, page ranges,
@@ -61,7 +63,8 @@ process-lifetime system domain. It supplies no counters, registry, live ledger,
 or memory capture. Extend that existing module/type rather than introducing a
 competing byte allocation API. Existing custom domains/context must outlive their
 allocations; the profiler cannot extend callback/code lifetime merely by retaining
-a numeric ID. The Array seam below still uses direct aligned new/delete.
+a numeric ID. [Memory phase 1](../development/memory-phase-1.md) later added the
+counters and registry, and moved the Array seam below onto a domain.
 
 `Array` has an aligned, fallible
 [allocation seam](../../modules/foundation/containers/src/array_support.cpp).
@@ -550,7 +553,7 @@ instead of concealing it; change architecture only on representative evidence.
 | Phase | Independently reviewable outcome |
 | --- | --- |
 | 0 | Repair owned-pointer move/deleter behavior and trace slab alignment/lifecycle before dependent migrations. The aliased Array resize prerequisite is already implemented. Establish current allocation/footprint baselines. **Implemented:** owner repair by [smart pointer](smart-pointers.md#delivery-slices-and-validation) slice 1; trace repair and baselines in [memory phase 0](../development/memory-phase-0.md). |
-| 1 | Extend the existing system-backed AllocationDomain boundary with checked counters/registry; explicit Array migration; coverage manifest and quiescent gauge export |
+| 1 | Extend the existing system-backed AllocationDomain boundary with checked counters/registry; explicit Array migration; coverage manifest and quiescent gauge export. **Implemented:** [memory phase 1](../development/memory-phase-1.md), including the measured single-domain contention cost. |
 | 2 | One activity recorder, site definitions, fixed table/journal, safe-point begin/end, artifact validator and traffic reports |
 | 3 | Proven-domain persistent table, exact checkpoints and survivor differences; shared validation table; independent restart/loss tests |
 | 4 | Resource/arena/GPU/process providers and owner-lifetime reports for demonstrated consumers |

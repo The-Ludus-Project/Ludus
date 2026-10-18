@@ -34,11 +34,14 @@ target_sources(
 )
 
 # Dependency direction: FoundationContainers may use FoundationBase (types,
-# assertions, compiler macros), never the reverse.
+# assertions, compiler macros) and FoundationMemory (the Array storage domain),
+# never the reverse. Memory stays private: no public container header names it.
 target_link_libraries(
     ludus_foundation_containers
     PUBLIC
         Ludus::FoundationBase
+    PRIVATE
+        Ludus::FoundationMemory
 )
 
 ludus_apply_project_defaults(ludus_foundation_containers)
@@ -52,6 +55,7 @@ install(
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
+    find_package(Threads REQUIRED)
 
     add_executable(ludus_foundation_containers_tests)
     target_sources(
@@ -67,13 +71,16 @@ if(LUDUS_BUILD_TESTS)
             tests/array_tests.cpp
             tests/sorted_map_tests.cpp
             tests/relocation_tests.cpp
+            tests/array_accounting_tests.cpp
     )
     target_include_directories(ludus_foundation_containers_tests PRIVATE tests)
     target_link_libraries(
         ludus_foundation_containers_tests
         PRIVATE
             Ludus::FoundationContainers
+            Ludus::FoundationMemory
             Catch2::Catch2WithMain
+            Threads::Threads
     )
     ludus_apply_project_defaults(ludus_foundation_containers_tests)
     ludus_enable_test_exceptions(ludus_foundation_containers_tests)

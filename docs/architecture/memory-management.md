@@ -786,6 +786,8 @@ These are reversible source/test changes with no owning-pointer-family migration
 
 Split **1A** (standalone Linux system byte API/Core statistics, contract tests, private benchmark-only counting/failing backend, no engine migration) from **1B** (redirect Array seam and replace its global-new counting tests in the same PR). Accept accounting overhead evidence before 1B. Test doubles are selected by test target, not a mutable production backend. Windows/macOS implementations wait for those ports; do not pretend that adding untested files validates them. Neither step introduces realloc, tagged containers, object factories, arenas, a ledger or a session observer.
 
+**Implementation note (memory profiling phase 1):** the existing `AllocationDomain` already supplied the fallible byte boundary, so it was extended rather than replaced: checked per-domain counters, a bounded registry with built-in `System` and `Containers` domains, and the `Array` seam redirected to `Containers` with the same backend family. No `TryAllocateBytes`/`MemoryUsage` spelling, mutable test backend or ADR 0003 C-runtime exemption was needed. Single-threaded overhead was within noise; one domain shared by four allocating threads was about 6.7 times slower. See [memory phase 1](../development/memory-phase-1.md).
+
 ### Phase 2 — Make container attribution and ownership explicit
 
 | Item | Plan |

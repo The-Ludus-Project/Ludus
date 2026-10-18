@@ -83,6 +83,26 @@ The [job scheduler's profiler adapter](threading.md#execution-traces) is the fir
 user: it records Submit/Wait slices, one slice per job, dispatch flows and a
 ready-queue counter.
 
+## Memory gauges
+
+`<ludus/foundation/profiling/memory_gauges.hpp>` declares `RecordMemoryGauges()`.
+During a capture it samples every registered FoundationMemory allocation domain
+on the calling thread's timeline. `ExportPerfettoTrace` writes each sample as one
+`Memory/<domain>` counter event and adds a coverage manifest under the trace's
+`metadata` object. Call it at a boundary where the application has stopped
+allocation in every registered domain if the values must reconcile exactly.
+
+```cpp
+#include <ludus/foundation/profiling/memory_gauges.hpp>
+
+// After the frame's workers have finished:
+(void)ludus::foundation::profiling::RecordMemoryGauges();
+```
+
+Domain accounting belongs to FoundationMemory and stays on when
+`LUDUS_PROFILING_ENABLED` is off. The metric, validity and coverage contracts
+are in [memory profiling phase 1](../../development/memory-phase-1.md).
+
 ## Build flavors
 
 `LUDUS_PROFILING_ENABLED` is SDK-owned (generated `profiling_config.hpp`) and
@@ -98,14 +118,14 @@ code (gate G1).
   future analysis pass), never stored on the hot path.
 - Visualization is external (Perfetto now, Tracy later). No in-engine timeline.
 - Counters/gauges (Phase 2), hitch capture (Phase 3), flow correlation logic
-  (Phase 4), GPU trace (Phase 5, needs an RHI) and memory profiling (Phase 6,
-  needs the allocator) are **not** in this module yet, by design.
+  (Phase 4), GPU trace (Phase 5, needs an RHI) and allocation recording beyond
+  the domain gauges above are **not** in this module yet, by design.
 
 The proposed [memory profiling architecture](../../architecture/memory-profiling.md)
 defines a distinct bounded memory recorder, domain-baseline and loss contracts,
 and staged integration. Its [reference review](../../architecture/memory-profiling-gems-review.md)
-documents the supporting reading. These are future contracts; the CPU stream
-does not currently record allocation lifetimes.
+documents the supporting reading. Only its phase 1 domain gauges are
+implemented; the CPU stream does not record allocation lifetimes.
 
 ## Implementation notes / deliberate MVP adjustments
 

@@ -38,7 +38,7 @@ if(EMSCRIPTEN AND NOT LUDUS_PROFILING_ENABLED)
     target_sources(ludus_foundation_profiling PRIVATE src/profiling_disabled.cpp)
 else()
     target_sources(ludus_foundation_profiling PRIVATE
-        src/recorder.cpp src/profiling.cpp src/export_perfetto.cpp)
+        src/recorder.cpp src/profiling.cpp src/export_perfetto.cpp src/memory_gauges.cpp)
 endif()
 
 target_sources(
@@ -47,6 +47,7 @@ target_sources(
         src/internal/trace_event.hpp
         src/internal/trace_chunk.hpp
         src/internal/recorder.hpp
+        src/internal/memory_gauge.hpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -59,6 +60,7 @@ target_sources(
             include/ludus/foundation/profiling/zone.hpp
             include/ludus/foundation/profiling/trace_system.hpp
             include/ludus/foundation/profiling/integration.hpp
+            include/ludus/foundation/profiling/memory_gauges.hpp
             "${LUDUS_FOUNDATION_PROFILING_GENERATED_INCLUDE_DIR}/ludus/foundation/profiling/profiling_config.hpp"
 )
 
@@ -71,7 +73,8 @@ target_include_directories(
 )
 
 # Dependency direction (AGENTS.md): FoundationProfiling may use FoundationTime/Base
-# (types, defines) and FoundationMemory (the aligned trace slab), never a
+# (types, defines) and FoundationMemory (the aligned trace slab and the
+# allocation-domain gauges of memory_gauges.hpp), never a
 # higher-level module. It deliberately does NOT depend
 # on FoundationLogging — it keeps its own thread identity so the ubiquitous
 # instrumentation header stays minimal and the layering clean.
@@ -111,11 +114,13 @@ if(LUDUS_BUILD_TESTS)
             tests/export_tests.cpp
             tests/recorder_tests.cpp
             tests/disabled_tests.cpp
+            tests/memory_gauge_tests.cpp
     )
     target_link_libraries(
         ludus_foundation_profiling_tests
         PRIVATE
             Ludus::FoundationProfiling
+            Ludus::FoundationMemory
             Ludus::FoundationTime
             Catch2::Catch2WithMain
     )
