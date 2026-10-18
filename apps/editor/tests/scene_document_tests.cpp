@@ -140,3 +140,27 @@ TEST_CASE("Scene picking rejects stale frames resize camera identity and cancell
             LevelError::None);
     CHECK_FALSE(doc.Pick(position, frame, frame, picked));
 }
+TEST_CASE("Scene history is empty before the first load and reset by Clear and reload", "[editor][scene]")
+{
+    SceneDocument doc;
+    CHECK(doc.Stamp(0, 0).Revision == 0);
+    CHECK_FALSE(doc.CanUndo());
+    CHECK_FALSE(doc.CanRedo());
+    CHECK_FALSE(doc.Undo());
+    CHECK_FALSE(doc.Redo());
+    Load(doc);
+    SceneSnapshot changed = doc.Draft();
+    changed.Level.Entities[0].Position.X += 0.1F;
+    REQUIRE(doc.Commit(changed, doc.Stamp(0, 0)));
+    CHECK(doc.CanUndo());
+    doc.Clear();
+    CHECK_FALSE(doc.CanUndo());
+    CHECK_FALSE(doc.Undo());
+    CHECK(doc.Stamp(0, 0).Revision == 0);
+    Load(doc);
+    CHECK_FALSE(doc.CanUndo());
+    CHECK(doc.Stamp(0, 0).Revision == 0);
+    REQUIRE(doc.Commit(changed, doc.Stamp(0, 0)));
+    REQUIRE(doc.Undo());
+    CHECK_FALSE(doc.Dirty());
+}

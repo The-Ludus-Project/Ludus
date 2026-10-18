@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/base/types.h>
 
 #include "internal/document_history.h"
@@ -29,8 +30,22 @@ struct SceneTransform final
     foundation::float32 Rotation = 0;
     world_demo::Vec2 Scale{1, 1};
 };
-// Fixed capacity history (32 whole snapshots, <512 KiB). Snapshot copies cannot
-// fail. Load and commit validate a candidate before publishing anything.
+/// Undo steps one scene document keeps. Every step stores a whole before/after snapshot pair.
+inline constexpr foundation::usize SCENE_HISTORY_CAPACITY = 32;
+using SceneHistory = DocumentHistory<SceneSnapshot, SCENE_HISTORY_CAPACITY>;
+/// Most entities one transform gesture moves.
+inline constexpr foundation::usize MAX_SCENE_TRANSFORM_TARGETS = 32;
+/// Inline budget for SceneDocument. Hosts embed the document by value and tests construct it on the stack,
+/// so its three working snapshots stay far below the smallest default thread stack Ludus runs on (512 KiB
+/// for macOS secondary threads). The snapshot history is owned out of line and has its own budget.
+inline constexpr foundation::usize MAX_SCENE_DOCUMENT_INLINE_BYTES = foundation::usize{64} * 1024;
+/// Budget for the history one document allocates on its first Load: SCENE_HISTORY_CAPACITY snapshot pairs,
+/// about 535 KiB with the scatter-capable Level. Growing Level or the capacity past this should be a
+/// deliberate decision about per-document memory, not a side effect of a schema change.
+inline constexpr foundation::usize MAX_SCENE_HISTORY_BYTES = foundation::usize{1024} * 1024;
+// Fixed capacity history, allocated once by the first successful Load and reused
+// after Clear. Snapshot copies cannot fail. Load and commit validate a candidate
+// before publishing anything.
 class SceneDocument final
 {
 public:
@@ -59,11 +74,11 @@ public:
     }
     [[nodiscard]] bool CanUndo() const noexcept
     {
-        return Gesture_ == false && History_.CanUndo();
+        return Gesture_ == false && mHistoryOrNull.Get() != nullptr && mHistoryOrNull->CanUndo();
     }
     [[nodiscard]] bool CanRedo() const noexcept
     {
-        return Gesture_ == false && History_.CanRedo();
+        return Gesture_ == false && mHistoryOrNull.Get() != nullptr && mHistoryOrNull->CanRedo();
     }
     [[nodiscard]] bool Undo() noexcept;
     [[nodiscard]] bool Redo() noexcept;
@@ -84,11 +99,14 @@ public:
     [[nodiscard]] static foundation::usize Find(const SceneSnapshot& snapshot, const world_demo::Name& id) noexcept;
 
 private:
+    [[nodiscard]] foundation::uint64 getRevision() const noexcept;
+
     SceneSnapshot Draft_{};
     SceneSnapshot Saved_{};
     SceneSnapshot Preview_{};
-    DocumentHistory<SceneSnapshot, 32> History_;
-    world_demo::Name Targets_[32]{};
+    /// Empty until the first successful Load; kept, and reset, across Clear and later loads.
+    foundation::UniquePtr<SceneHistory> mHistoryOrNull;
+    world_demo::Name mTargets[MAX_SCENE_TRANSFORM_TARGETS]{};
     foundation::usize TargetCount_ = 0;
     foundation::uint64 Identity_ = 0;
     SceneStamp GestureStamp_{};
@@ -96,5 +114,8 @@ private:
     bool Gesture_ = false;
     bool Loaded_ = false;
 };
-static_assert(sizeof(SceneDocument) < foundation::usize{512} * 1024);
+static_assert(sizeof(SceneDocument) <= MAX_SCENE_DOCUMENT_INLINE_BYTES,
+              "SceneDocument must stay small enough to embed and to construct on a thread stack");
+static_assert(sizeof(SceneHistory) <= MAX_SCENE_HISTORY_BYTES,
+              "Scene history outgrew its per-document budget; shrink Level or SCENE_HISTORY_CAPACITY");
 } // namespace ludus::editor

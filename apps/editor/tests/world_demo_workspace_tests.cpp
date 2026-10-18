@@ -78,7 +78,8 @@ TEST_CASE("World demo uses World fields history save recovery and runtime data",
     auto* boundViewport = view.findChild<QWidget*>(QStringLiteral("worldViewport"));
     REQUIRE(boundViewport != nullptr);
     CHECK(boundViewport->isHidden());
-    CHECK(view.findChild<QListWidget*>(QStringLiteral("worldEntities"))->count() == 5);
+    // Five gameplay entities and six scatter entities.
+    CHECK(view.findChild<QListWidget*>(QStringLiteral("worldEntities"))->count() == 11);
     Select(view, QStringLiteral("player-start"));
     const auto original = view.Document().Draft();
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("-"));

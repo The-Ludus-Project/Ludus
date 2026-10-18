@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 
+#include <new>
+
 namespace ludus::editor
 {
 namespace
@@ -105,9 +107,18 @@ world_demo::LevelResult SceneDocument::Load(const char* bytes, foundation::usize
         return result;
     }
     Canonicalize(candidate.Level);
+    if (mHistoryOrNull.Get() == nullptr)
+    {
+        // The only allocation: one bounded history, before anything is published.
+        mHistoryOrNull.Reset(new (std::nothrow) SceneHistory);
+        if (mHistoryOrNull.Get() == nullptr)
+        {
+            return {world_demo::LevelError::Capacity, 0};
+        }
+    }
     Draft_ = Saved_ = candidate;
     ++Identity_;
-    History_.Reset();
+    mHistoryOrNull->Reset();
     Gesture_ = false;
     PreviewRevision_ = 0;
     Loaded_ = true;
@@ -117,15 +128,22 @@ void SceneDocument::Clear() noexcept
 {
     Loaded_ = false;
     Gesture_ = false;
-    History_.Reset();
+    if (mHistoryOrNull.Get() != nullptr)
+    {
+        mHistoryOrNull->Reset();
+    }
     if (Identity_ != ~foundation::uint64{0})
     {
         ++Identity_;
     }
 }
+foundation::uint64 SceneDocument::getRevision() const noexcept
+{
+    return mHistoryOrNull.Get() != nullptr ? mHistoryOrNull->Revision() : 0;
+}
 SceneStamp SceneDocument::Stamp(foundation::uint64 camera, foundation::uint64 surface) const noexcept
 {
-    return {Identity_, History_.Revision(), camera, surface, PreviewRevision_};
+    return {Identity_, getRevision(), camera, surface, PreviewRevision_};
 }
 foundation::usize SceneDocument::Find(const SceneSnapshot& snapshot, const world_demo::Name& id) noexcept
 {
@@ -140,14 +158,14 @@ foundation::usize SceneDocument::Find(const SceneSnapshot& snapshot, const world
 }
 bool SceneDocument::Commit(const SceneSnapshot& candidate, SceneStamp expected) noexcept
 {
-    if (Loaded() == false || Gesture_ || expected.Document != Identity_ || expected.Revision != History_.Revision() ||
+    if (Loaded() == false || Gesture_ || expected.Document != Identity_ || expected.Revision != getRevision() ||
         world_demo::ValidateLevel(candidate.Level) != world_demo::LevelError::None)
     {
         return false;
     }
     auto canonical = candidate;
     Canonicalize(canonical.Level);
-    if (History_.Commit(Draft_, canonical) == false)
+    if (mHistoryOrNull->Commit(Draft_, canonical) == false)
     {
         return false;
     }
@@ -156,16 +174,16 @@ bool SceneDocument::Commit(const SceneSnapshot& candidate, SceneStamp expected) 
 }
 bool SceneDocument::Undo() noexcept
 {
-    return Gesture_ == false && History_.Undo(Draft_);
+    return Gesture_ == false && Loaded() && mHistoryOrNull->Undo(Draft_);
 }
 bool SceneDocument::Redo() noexcept
 {
-    return Gesture_ == false && History_.Redo(Draft_);
+    return Gesture_ == false && Loaded() && mHistoryOrNull->Redo(Draft_);
 }
 bool SceneDocument::BeginTransform(const world_demo::Name* ids, foundation::usize count, SceneStamp expected) noexcept
 {
     if (PreviewRevision_ == ~foundation::uint64{0} || Loaded() == false || Gesture_ || ids == nullptr || count == 0 ||
-        count > 32 || expected.Document != Identity_ || expected.Revision != History_.Revision())
+        count > MAX_SCENE_TRANSFORM_TARGETS || expected.Document != Identity_ || expected.Revision != getRevision())
     {
         return false;
     }
@@ -185,7 +203,7 @@ bool SceneDocument::BeginTransform(const world_demo::Name* ids, foundation::usiz
     }
     for (foundation::usize i = 0; i < count; ++i)
     {
-        Targets_[i] = ids[i];
+        mTargets[i] = ids[i];
     }
     Preview_ = Draft_;
     TargetCount_ = count;
@@ -203,7 +221,7 @@ bool SceneDocument::PreviewTransform(const SceneTransform* values, foundation::u
     auto candidate = Draft_;
     for (foundation::usize i = 0; i < count; ++i)
     {
-        auto& entity = candidate.Level.Entities[Find(candidate, Targets_[i])];
+        world_demo::Recipe& entity = candidate.Level.Entities[Find(candidate, mTargets[i])];
         entity.Position = values[i].Position;
         entity.Rotation = values[i].Rotation;
         entity.Scale = values[i].Scale;
@@ -242,7 +260,7 @@ bool SceneDocument::AcknowledgeSave(const SceneSnapshot& snapshot, foundation::u
     }
     Saved_ = snapshot;
     Canonicalize(Saved_.Level);
-    History_.BreakGroup();
+    mHistoryOrNull->BreakGroup();
     return true;
 }
 bool SceneDocument::Restore(const SceneSnapshot& snapshot) noexcept
@@ -256,8 +274,8 @@ bool SceneDocument::Pick(world_demo::Vec2 point,
 {
     namespace math = foundation::math;
     if (Loaded() == false || Gesture_ || (request == current) == false || request.Document != Identity_ ||
-        request.Revision != History_.Revision() || request.Preview != PreviewRevision_ ||
-        math::IsFinite(point.X) == false || math::IsFinite(point.Y) == false)
+        request.Revision != getRevision() || request.Preview != PreviewRevision_ || math::IsFinite(point.X) == false ||
+        math::IsFinite(point.Y) == false)
     {
         return false;
     }
