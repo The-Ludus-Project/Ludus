@@ -471,6 +471,8 @@ struct RenderGraph::State final
     format::ShaderTarget Target = format::ShaderTarget::Spirv;
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
+    // Only the validated active prefix is copied and read; unused capacity has no stage.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
     StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
     StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};

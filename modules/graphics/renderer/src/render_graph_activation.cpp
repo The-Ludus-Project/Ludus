@@ -134,10 +134,14 @@ struct RenderGraphPackage::State final
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Camera, format::MAX_CAMERAS> Cameras{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
+    // DecodeUniforms validates and writes every active stage before any binding is published.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
     StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
     StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
     /// Stage binding requirements derived from the uniform records, one table per role.
+    // RasterBinding initializes Visibility to Both, including every nested array element.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<StaticArray<rhi::RasterBinding, format::UNIFORM_SLOT_COUNT>, format::STAGE_ROLE_COUNT> Bindings{};
     StaticArray<usize, format::STAGE_ROLE_COUNT> BindingCounts{};
     StaticArray<uint8, format::IDENTITY_BYTES> InterfaceIdentity{};

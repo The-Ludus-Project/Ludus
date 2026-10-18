@@ -681,6 +681,10 @@ TEST_CASE("RG2 bound plans reject malformed or incomplete target layouts before 
     fixture.UniformBindings[0].Program = format::Technique::DepthOnly;
     CHECK(fixture.Initialize() == rhi::RasterStatus::InvalidDescription);
     fixture.UniformBindings[0].Program = format::Technique::ColorAndDepth;
+    // Unused capacity may have a zero stage; an active record must never publish it.
+    fixture.UniformBindings[0].Stages = static_cast<format::Visibility>(0);
+    CHECK(fixture.Initialize() == rhi::RasterStatus::InvalidDescription);
+    fixture.UniformBindings[0].Stages = format::Visibility::Fragment;
     // A field outside its block is malformed.
     fixture.UniformFields[1].ByteOffset = WGSL_MATERIAL_BYTES;
     CHECK(fixture.Initialize() == rhi::RasterStatus::InvalidDescription);

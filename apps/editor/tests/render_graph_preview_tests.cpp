@@ -12,6 +12,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/content/render_graph_format/runtime_package.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -27,6 +28,7 @@ using namespace ludus::editor;
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
+namespace format = ludus::content::render_graph_format;
 namespace host = ludus::render_graph_packages::editor_renderer_static;
 namespace shaders = ludus::shaders;
 namespace
@@ -35,8 +37,8 @@ namespace
 constexpr int32 WIDTH = 96;
 constexpr int32 HEIGHT = 64;
 constexpr usize ATTEMPTS = 5000;
-/// Byte offset of the interface identity: six uint32 header words (runtime_package.h).
-constexpr qsizetype INTERFACE_OFFSET = 24;
+/// The format owner defines the serialized header words preceding the interface identity.
+constexpr qsizetype INTERFACE_OFFSET = format::HEADER_FIELD_COUNT * sizeof(uint32);
 constexpr qsizetype TRUNCATED_BYTES = 40;
 constexpr int32 COLOR_TOLERANCE = 1;
 

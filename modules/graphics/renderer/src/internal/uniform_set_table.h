@@ -17,6 +17,8 @@ using namespace foundation;
 struct FlatUniformLayout final
 {
     /// Ascending binding numbers; MinSize is the stage range rounded up to UNIFORM_RANGE_GRANULE.
+    // Every element uses RasterBinding's valid Visibility::Both default member initializer.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<rhi::RasterBinding, rhi::RASTER_BINDING_COUNT> Bindings{};
     StaticArray<usize, rhi::RASTER_BINDING_COUNT> Offsets{}; ///< Aligned buffer offset of each binding.
     StaticArray<usize, rhi::RASTER_BINDING_COUNT> Sizes{};   ///< Caller block bytes: the declared stage MinSize.
