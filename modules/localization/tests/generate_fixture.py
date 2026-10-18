@@ -71,6 +71,9 @@ for prefix, manifest, results, domain, namespace in releases:
 def literal(text: str) -> str:
     """C++ string_view literal; octal escapes have a fixed width, so no digit can extend them."""
     data = text.encode("utf-8")
+    if len(data) == 0:
+        # An empty (pointer, length) pair trips clang-tidy bugprone-string-constructor.
+        return "std::string_view{}"
     body = "".join(chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in '"\\?' else f"\\{byte:03o}" for byte in data)
     return f'std::string_view{{"{body}", {len(data)}}}'
 
