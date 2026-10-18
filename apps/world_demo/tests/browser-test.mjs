@@ -30,6 +30,11 @@ try {
   report.backend = await page.locator('#status').getAttribute('data-backend');
   assert.equal(report.backend, process.env.LUDUS_WORLD_WEBGL === '1' ? 'webgl2' : 'webgpu');
   const state = () => page.locator('#status').evaluate(node => ({...node.dataset}));
+  // The app runs on requestAnimationFrame, so two page frames include at least one app frame.
+  const frames = () => page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+  // An input reset discards queued records (K05). Software-GPU frames can exceed a fixed sleep, so wait
+  // for the published mode before blurring instead of assuming a key press has been consumed.
+  const mode = expected => page.waitForFunction(value => document.querySelector('#status').dataset.mode === value, expected);
   await page.locator('canvas').evaluate(node => node.focus()); await page.waitForTimeout(100);
   await page.keyboard.press('p');
   await page.waitForFunction(() => document.querySelector('#status').dataset.mode === 'paused');
@@ -50,14 +55,16 @@ try {
   assert.ok(Number(paused.placements) > 0, 'First room must prepare scatter placements');
   assert.equal(paused.scatter, '599315e43924865a', 'Browser scatter digest must equal the pinned native digest');
   report.scatter = {placements:Number(paused.placements), digest:paused.scatter}; check('scatter placements match the pinned native digest');
-  await page.keyboard.press('n'); await page.waitForTimeout(100); assert.equal(Number((await state()).tick), Number(paused.tick)+1); check('single step advances exactly one neutral tick');
-  await page.keyboard.press('p'); await page.waitForTimeout(100);
+  await page.keyboard.press('n');
+  await page.waitForFunction(tick => Number(document.querySelector('#status').dataset.tick) >= tick, Number(paused.tick)+1);
+  await frames(); await page.waitForTimeout(100); assert.equal(Number((await state()).tick), Number(paused.tick)+1); check('single step advances exactly one neutral tick');
+  await page.keyboard.press('p'); await mode('playing');
   const before = await state(); await page.keyboard.down('d');
   await page.waitForFunction(x => Number(document.querySelector('#status').dataset.x) > x + 0.5, Number(before.x), {timeout:30000});
   await page.keyboard.up('d');
   assert.ok(Number((await state()).x) > Number(before.x)+0.5); check('held movement advances world coordinates');
-  await page.keyboard.press('Space'); await page.keyboard.press('p'); await page.waitForTimeout(80);
-  await page.locator('canvas').evaluate(node => node.blur()); await page.locator('canvas').evaluate(node => node.focus()); await page.waitForTimeout(100); assert.equal((await state()).mode, 'paused'); check('focus loss and regain preserve pause');
+  await page.keyboard.press('Space'); await page.keyboard.press('p'); await mode('paused');
+  await page.locator('canvas').evaluate(node => node.blur()); await page.locator('canvas').evaluate(node => node.focus()); await frames(); await page.waitForTimeout(100); assert.equal((await state()).mode, 'paused'); check('focus loss and regain preserve pause');
   await page.keyboard.press('r'); await page.waitForTimeout(180); await page.waitForFunction(() => Number(document.querySelector('#status').dataset.x) < -5.9); const restarted = await state(); assert.ok(Number(restarted.x) < -5.9); assert.equal(restarted.mode, 'playing'); check('restart publishes a fresh initial level');
   // A held control is cancelled by blur and stays suppressed through refocus.
   await page.keyboard.down('d'); await page.waitForTimeout(80); await page.locator('canvas').evaluate(node => node.blur()); await page.waitForTimeout(80); await page.locator('canvas').evaluate(node => node.focus());
