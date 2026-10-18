@@ -1119,10 +1119,11 @@ matches, created new attachments instead, and left six entries idle. Exports
 stayed byte identical. The single virtualized run's CPU times vary too much to
 support a timing claim either way.
 
-One run of the same consumer in Chromium WebGPU (pinned Chromium 140.0.7339.186,
-headless, SwiftShader adapter reported as software with no adapter name or IDs,
-GitHub `ubuntu-24.04` runner) on October 18, 2026, browser run 39166437459,
-"Renderer browser tests (pooling)". The run built `develop` 9de35f00 plus the
+The same consumer also ran once in Chromium WebGPU on October 18, 2026, in the
+"Renderer browser tests (pooling)" job of browser run 39166437459. It used the
+pinned headless Chromium 140.0.7339.186 on a GitHub `ubuntu-24.04` runner, with
+the SwiftShader adapter, which reports itself as software and exposes no adapter
+name or IDs. The run built `develop` 9de35f00 plus the
 one-line OBJ reader wasm32 tidy fix ([#380](https://github.com/The-Ludus-Project/Ludus/pull/380)), which does not touch the renderer.
 The page was cross-origin isolated, and the smallest observed `performance.now()`
 step was 5 µs, so the CPU times are quantized to 5 µs. WebGPU telemetry exposes
