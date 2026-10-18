@@ -12,7 +12,7 @@ import re
 
 from compile_raster import (glsl_interface, glsl_varyings, raster_interface,
                             uniform_shape, wgsl_contract)
-from compile_shader import entry, run
+from compile_shader import entry, relative_line_directives, run
 
 
 def varying_interface(point, stage):
@@ -128,15 +128,7 @@ def compile_graph_stage(args, lock):
             raise RuntimeError('RG1 requires exactly one emitted Metal stage entry')
         code = artifact.read_text()
         metal_layouts(code, interface, document)
-        source_root = Path(args.source).resolve().parent
-        def remap(match):
-            filename = Path(match[2])
-            if filename.is_absolute():
-                if not filename.is_relative_to(source_root):
-                    raise RuntimeError('RG1 emitted debug path escapes captured source root')
-                return match[1] + filename.relative_to(source_root).as_posix() + match[3]
-            return match[0]
-        code = re.sub(r'(^\s*#line\s+\d+\s+")([^"]+)(")', remap, code, flags=re.M)
+        code = relative_line_directives(code, [Path(args.source).parent])
         artifact.write_text(code)
         emitted = names[0]
     else:

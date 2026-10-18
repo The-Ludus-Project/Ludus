@@ -548,6 +548,15 @@ Sharing changes these build outputs:
   exact source paths in the debugger.
 - Translation units with checkout-specific definitions, such as the text tests'
   absolute fixture directory, still compile in each checkout.
+- Generated headers must not embed a checkout path. ccache hashes preprocessed
+  output by relativizing every line-start `#line N "path"` under `base_dir`,
+  and cannot tell a line marker from the same text inside a raw string literal.
+  A header whose embedded text differs only by such a path hashes equal in
+  every checkout, so one checkout's object, with its own folded literal length,
+  is reused next to another checkout's copy of the same `inline` literal. The
+  shader helpers therefore name Slang's emitted `#line` files relative to the
+  captured source and include directories
+  ([fullscreen rendering](fullscreen-rendering.md#macos-metal)).
 - `-ftime-trace` compilations bypass ccache, because ccache does not cache that
   option. `./scripts/profile-build` and `./scripts/check-build-budget` also
   turn ccache off, so build-time evidence is unaffected.
