@@ -17,10 +17,20 @@ Acceptance into `develop` does not establish full platform qualification.
 
 Pull requests targeting `develop` run source formatting, source-policy and workflow
 syntax checks, tooling regressions, the installed host-tooling tests, and public
-API/documentation validation. Drafts retain these inexpensive checks. Native
-build variants, full analysis, sanitizers, browser builds, SDK qualification,
-editor journeys and build budgets run on the combined batch. The `ci:full` label
-does not expand an integration PR into a full run.
+API/documentation validation. Drafts retain these inexpensive checks. When the
+change is not documentation-only, they also run **Integration compile (Linux
+Clang, Editor)**: one `ubuntu-24.04` job that prepares `linux-clang-development`
+with the Editor and its trusted render preview, builds every default target with
+warnings as errors, and runs the `unit` CTest label (Editor tests offscreen). It
+restores the Conan and `editor` compiler caches that the batch's Optional editor
+job saves on `main` and never writes its own, so it takes about 10 minutes with a
+warm cache and about 30 minutes cold. The `Ubuntu Clang` gate requires it on
+integration PRs and expects it skipped elsewhere, where Development and Optional
+editor supersede it. A macOS compile stays batch-only: macOS setup alone takes
+about 11 minutes and hosted macOS minutes cost ten times as much as Linux minutes.
+Other native build variants, full analysis, sanitizers, browser builds, SDK
+qualification, editor journeys and build budgets run on the combined batch. The
+`ci:full` label does not expand an integration PR into a full run.
 
 `.github/workflows/batch-ci.yml` wakes at minutes 13 and 43 of each hour. When
 `BATCH_CI_ENABLED` is `true`, it captures the current `main` and `develop` commit SHAs.
