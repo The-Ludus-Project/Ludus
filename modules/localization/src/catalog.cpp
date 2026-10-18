@@ -3,6 +3,8 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 
+#include "internal/catalog_access.hpp"
+
 #include <atomic>
 #include <utility>
 
@@ -426,21 +428,94 @@ Status Catalog::ResolveStatic(MessageBinding binding, ResolvedText& output) cons
         return Status::RequiresArguments;
     }
     const uint32 provider = readWord(record + RECORD_PROVIDER);
-    Origin origin = Origin::Translation;
+    output = {text, getOrigin(provider), getSliceAt(mLayout.Providers + static_cast<usize>(provider) * SLICE_BYTES)};
+    return Status::Ok;
+}
+
+Origin Catalog::getOrigin(uint32 provider) const noexcept
+{
     if (GetLocale() == GetSourceLocale())
     {
-        origin = Origin::Source;
+        return Origin::Source;
     }
-    else if (provider + 1 == mLayout.ProviderCount)
+    if (provider + 1 == mLayout.ProviderCount)
     {
-        origin = Origin::SourceFallback;
+        return Origin::SourceFallback;
     }
-    else if (provider != 0)
+    return provider == 0 ? Origin::Translation : Origin::Fallback;
+}
+
+uint32 detail::CatalogAccess::GetVersion(const Catalog& catalog) noexcept
+{
+    return catalog.mLayout.Version;
+}
+
+bool detail::CatalogAccess::IsBindingOf(const Catalog& catalog, MessageBinding binding) noexcept
+{
+    return catalog.IsValid() == true && binding.mToken == catalog.mLayout.Token &&
+           binding.mIndex < catalog.mLayout.Count;
+}
+
+uint32 detail::CatalogAccess::GetIndex(MessageBinding binding) noexcept
+{
+    return binding.mIndex;
+}
+
+detail::MessageRecord detail::CatalogAccess::GetMessage(const Catalog& catalog, uint32 index) noexcept
+{
+    const usize record = catalog.mLayout.Records + static_cast<usize>(index) * catalog.mLayout.RecordBytes;
+    if (catalog.mLayout.Version != 2)
     {
-        origin = Origin::Fallback;
+        return
+        {
+            .Value = catalog.getSliceAt(record + 8),
+            .IsDynamic = false,
+            .Provider = 0,
+            .FirstArgument = 0,
+            .ArgumentCount = 0,
+        };
     }
-    output = {text, origin, getSliceAt(mLayout.Providers + static_cast<usize>(provider) * SLICE_BYTES)};
-    return Status::Ok;
+    return
+    {
+        .Value = catalog.getSliceAt(record + 8),
+        .IsDynamic = catalog.readWord(record + RECORD_KIND) == KIND_DYNAMIC,
+        .Provider = catalog.readWord(record + RECORD_PROVIDER),
+        .FirstArgument = catalog.readWord(record + RECORD_FIRST_ARGUMENT),
+        .ArgumentCount = catalog.readWord(record + RECORD_ARGUMENT_COUNT),
+    };
+}
+
+detail::ArgumentRecord detail::CatalogAccess::GetArgument(const Catalog& catalog, uint32 argument) noexcept
+{
+    const usize entry = catalog.mLayout.Arguments + static_cast<usize>(argument) * ARGUMENT_RECORD_BYTES;
+    const uint32 policy = catalog.readWord(entry + 12);
+    return
+    {
+        .Name = catalog.getSliceAt(entry),
+        .Type = static_cast<ArgumentType>(catalog.readWord(entry + 8)),
+        .Origin = policy == 1 ? TextOrigin::User : TextOrigin::Game,
+        .Unknown = policy == 0 ? UnknownPolicy::Other : UnknownPolicy::Reject,
+        .MaxBytes = catalog.readWord(entry + 16),
+        .Minimum = static_cast<int64>(static_cast<int32>(catalog.readWord(entry + 20))),
+        .Maximum = static_cast<int64>(static_cast<int32>(catalog.readWord(entry + 24))),
+        .FirstValue = catalog.readWord(entry + 28),
+        .ValueCount = catalog.readWord(entry + 32),
+    };
+}
+
+std::string_view detail::CatalogAccess::GetEnumValue(const Catalog& catalog, uint32 value) noexcept
+{
+    return catalog.getSliceAt(catalog.mLayout.Values + static_cast<usize>(value) * SLICE_BYTES);
+}
+
+std::string_view detail::CatalogAccess::GetProviderLocale(const Catalog& catalog, uint32 provider) noexcept
+{
+    return catalog.getSliceAt(catalog.mLayout.Providers + static_cast<usize>(provider) * SLICE_BYTES);
+}
+
+Origin detail::CatalogAccess::GetOrigin(const Catalog& catalog, uint32 provider) noexcept
+{
+    return catalog.getOrigin(provider);
 }
 
 namespace

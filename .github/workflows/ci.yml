@@ -937,7 +937,7 @@ jobs:
             out/icu-probe/host-build
             out/icu-probe/data
           key: icu-probe-v1-${{ runner.os }}-${{ hashFiles('config/icu_toolchain.json', 'tools/icu-probe/data-filter.json', 'scripts/icu-probe') }}
-      - name: Validate L0 ICU backend, corpus and isolated allocation-failure sweep with sanitizers
+      - name: Validate L0 ICU backend, L2 formatting and isolated allocation-failure sweeps with sanitizers
         run: |
           ./scripts/icu-probe bootstrap
           ./scripts/icu-probe cook
@@ -946,7 +946,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: localization-l0-linux-sanitized-evidence
-          path: out/build/linux-clang-asan-ubsan/tools/icu-probe/evidence.json
+          path: |
+            out/build/linux-clang-asan-ubsan/tools/icu-probe/evidence.json
+            out/build/linux-clang-asan-ubsan/modules/localization/format-evidence.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

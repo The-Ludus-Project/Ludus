@@ -252,6 +252,25 @@ class DescriptorTests(unittest.TestCase):
         self.assertIn(".Unknown = ludus::localization::UnknownPolicy::Other, .MaxBytes = 0, .Minimum = 0, "
                       ".Maximum = 0, .Values = kMoodSelectMoodValues}", header)
 
+    def test_typed_helpers_erase_arguments_to_format(self):
+        header = release.descriptors(self.source, "game::l10n::test")
+        self.assertIn("#include <ludus/localization/formatter.hpp>", header)
+        self.assertIn("inline ludus::localization::Status FormatHudLives(ludus::localization::FormatterContext& context,",
+                      header)
+        self.assertIn("ludus::localization::MessageBinding binding, ludus::foundation::int64 lives,", header)
+        self.assertIn('ludus::localization::MakeCountArgument("lives", lives),', header)
+        self.assertIn('ludus::localization::MakeEnumArgument("mood", mood),', header)
+        self.assertIn("return ludus::localization::Format(context, binding, arguments, output, outResult);", header)
+        self.assertNotIn("FormatMenuStart", header)  # Argument-free messages use ResolveStatic or Format directly.
+        # Snake case becomes camelCase; keywords and the helper's own parameters get a suffix.
+        lives = message(self.source, "hud/lives")
+        lives["arguments"] = [dict(lives["arguments"][0], name="max_lives"), dict(lives["arguments"][0], name="new"),
+                              dict(lives["arguments"][0], name="output")]
+        header = release.descriptors(self.source, "game::l10n::test")
+        self.assertIn("ludus::foundation::int64 maxLives, ludus::foundation::int64 newArgument, "
+                      "ludus::foundation::int64 outputArgument,", header)
+        self.assertIn('MakeCountArgument("new", newArgument)', header)
+
     def test_only_schema_edits_change_the_header(self):
         header = release.descriptors(self.source, "game::l10n::test")
         message(self.source, "menu/start").update(pattern="Begin", context="Changed context.", source_revision=9)

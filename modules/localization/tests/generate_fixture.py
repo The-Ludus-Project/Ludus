@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts/python"))
 from localization import bindings, cook, document, export_review, read_json, write_atomic  # noqa: E402
-from localization_release import RecordedProfileChecker, cook_release  # noqa: E402
+from localization_release import RecordedProfileChecker, _pascal, cook_release  # noqa: E402
 
 source = document(read_json(Path(__file__).parent / "source.json"), False)
 translation = export_review(source, "fr-FR")
@@ -58,9 +58,61 @@ releases = (
     ("kRelease", TESTS / "release/release.json", TESTS / "release/profile-results.json", "test/l1",
      "localization_release_fixture"),
 )
+packages: dict[str, list[tuple[str, str]]] = {}
 for prefix, manifest, results, domain, namespace in releases:
     cooked = cook_release(manifest, RecordedProfileChecker(results), namespaces={domain: namespace})
     append_bindings(cooked["bindings"][0]["data"].decode("utf-8"))
     for package in cooked["packages"]:
-        emit(prefix + "".join(part.capitalize() for part in package["locale"].split("-")), package["data"])
+        name = prefix + "".join(part.capitalize() for part in package["locale"].split("-"))
+        emit(name, package["data"])
+        packages.setdefault(prefix, []).append((package["locale"], name))
+
+
+def literal(text: str) -> str:
+    """C++ string_view literal; octal escapes have a fixed width, so no digit can extend them."""
+    data = text.encode("utf-8")
+    body = "".join(chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in '"\\?' else f"\\{byte:03o}" for byte in data)
+    return f'std::string_view{{"{body}", {len(data)}}}'
+
+
+def argument_value(name: str, value: object) -> str:
+    qualified = "ludus::localization"
+    if isinstance(value, bool):
+        raise ValueError(f"{name}: boolean corpus arguments are not representable")
+    if isinstance(value, int):
+        return f"{{{literal(name)}, {qualified}::ArgumentValueKind::Integer, {value}, 0.0, {{}}}}"
+    if isinstance(value, float):
+        return f"{{{literal(name)}, {qualified}::ArgumentValueKind::Number, 0, {value!r}, {{}}}}"
+    return f"{{{literal(name)}, {qualified}::ArgumentValueKind::Text, 0, 0.0, {literal(value)}}}"
+
+
+# The L0/L1 corpus expectations as typed L2 format cases over the cooked packages.
+corpus_root = ROOT / "modules/localization/corpus"
+expectations = read_json(corpus_root / "expectations.json")
+corpus_source = read_json(corpus_root / "game-ui.source.json")
+symbols = {m["key"]: "k" + m.get("symbol", _pascal(m["key"], "/-")) for m in corpus_source["messages"]}
+lines += ["namespace localization_corpus_cases", "{",
+          "/// One corpus expectation: a formatted output or InvalidArguments.",
+          "struct FormatCase", "{", "    std::string_view Locale;",
+          "    const ludus::localization::MessageDescriptor* Descriptor;",
+          "    std::span<const ludus::localization::ArgumentValue> Arguments;", "    bool IsFormatted;",
+          "    std::string_view Expected;", "};", "",
+          "/// One cooked corpus package and its locale.", "struct CorpusPackage", "{",
+          "    std::string_view Locale;", "    std::span<const ludus::foundation::uint8> Bytes;", "};",
+          "inline constexpr CorpusPackage kCorpusPackages[] = {",
+          *[f"    {{{literal(locale)}, {name}}}," for locale, name in packages["kCorpus"]], "};", ""]
+rows = []
+for index, case in enumerate(expectations["cases"]):
+    arguments = case["arguments"]
+    span = "{}"
+    if arguments:
+        lines.append(f"inline constexpr ludus::localization::ArgumentValue kCase{index}Arguments[] = {{")
+        lines += [f"    {argument_value(name, value)}," for name, value in arguments.items()]
+        lines.append("};")
+        span = f"kCase{index}Arguments"
+    is_formatted = "expected" in case
+    expected = literal(case["expected"]) if is_formatted else "{}"
+    rows.append(f"    {{{literal(case['locale'])}, &localization_corpus::{symbols[case['key']]}, {span}, "
+                f"{'true' if is_formatted else 'false'}, {expected}}},")
+lines += ["inline constexpr FormatCase kFormatCases[] = {", *rows, "};", "} // namespace localization_corpus_cases", ""]
 write_atomic(Path(sys.argv[1]), ("#pragma once\n\n" + "\n".join(includes) + "\n\n" + "\n".join(lines)).encode("utf-8"))
