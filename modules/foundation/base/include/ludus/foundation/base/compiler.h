@@ -92,6 +92,16 @@
 #    define LUDUS_COLD
 #endif
 
+// Microsoft-ABI targets (MSVC, clang-cl and Clang for windows-msvc) ignore the
+// standard [[no_unique_address]] to keep MSVC layout compatibility, and Clang
+// warns that it is unknown. Their equivalent is [[msvc::no_unique_address]]:
+// https://clang.llvm.org/docs/AttributeReference.html#no-unique-address
+#if defined(LUDUS_COMPILER_MSVC_ABI)
+#    define LUDUS_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#    define LUDUS_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
+
 // -----------------------------------------------------------------------------
 // Branch-prediction hints and low-level codegen intrinsics.
 //

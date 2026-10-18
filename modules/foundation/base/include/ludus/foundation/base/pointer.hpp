@@ -355,7 +355,7 @@ private:
         }
     }
 
-    [[no_unique_address]] DeleterType mDeleter;
+    LUDUS_NO_UNIQUE_ADDRESS DeleterType mDeleter;
     ElementType* mPointer;
 };
 } // namespace ludus::foundation::core

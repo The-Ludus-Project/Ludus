@@ -561,7 +561,7 @@ Status WavefrontReader::readFace(WordCursor& inoutWords, uint32 lineNumber) noex
         return Status::Ok;
     }
     // A fan over count corners has count - 2 triangles.
-    mTotalCorners += (count - 2) * IR_TRIANGLE_CORNER_COUNT;
+    mTotalCorners += static_cast<uint64>(count - 2) * IR_TRIANGLE_CORNER_COUNT;
     if (mTotalCorners > MAX_TOTAL_CORNERS)
     {
         fail(codes::LIMIT_EXCEEDED, lineNumber, "face corners exceed the OBJ profile limit");
