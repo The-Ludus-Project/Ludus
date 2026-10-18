@@ -2,7 +2,8 @@
 
 Status: proposed Ludus architecture, October 13, 2026. The initial draft used
 `ab49fe8`; integration boundaries were reconciled with `a8e041d`.
-The procedural modules and tools described here require implementation. The
+The procedural modules and tools described here require implementation, except
+the headless scatter kernel of [P0](#p0-room-scoped-scatter). The
 [Gems and research review](procedural-content-generation-gems-review.md) records
 consulted sources and the [research queue](procedural-content-generation-gems-review.md#conference-and-journal-research-plan)
 maps further reading to owners, delivery slices and acceptance evidence.
@@ -798,3 +799,90 @@ the relevant review. Follow the
 when investigating an observed shortfall; preserve the serial baseline and the
 owning domain contracts. Documentation uses the pinned local-index, strict wiki,
 coverage/link/search and documentation-regression checks.
+
+### P0: room-scoped scatter
+
+P0 starts with a scatter of static placements in the rooms of `apps/world_demo`.
+It is also milestone 1 of the [randomness architecture](randomness.md#milestone-1-procedural-placement),
+which owns its domains, root seed and event rules. This section owns the recipe,
+the placement identity, the thinning rule and the kernel. The recipe is read
+from the level files the world demo already parses; a separate recipe codec,
+provenance, caching and author overrides wait for P1. Layers are independent:
+cross-layer occupancy, where trees claim space before smaller plants, waits for
+P2, so in P0 only authored keep-out rectangles constrain every layer.
+
+**Kernel.** `Ludus::ProceduralEnvironment` (`modules/content/procedural/environment`)
+is headless and depends only on FoundationBase, FoundationContainers and
+FoundationMath. It never depends on GameplayWorld, so it builds for native and
+browser targets alike. It is the serial reference: one call generates one layer
+over a requested range of cells into caller storage, without allocating. Job
+scheduling belongs to the caller. Generating a range in pieces and merging them
+in canonical order gives the same result as one call, which the tests verify with
+the job system.
+
+**Coordinates.** The kernel works in integer lattice units; the game maps them to
+world space. The region and keep-outs are half-open integer rectangles. Cells are
+`cellSize` units square, cell coordinates use floor division so negative
+positions work, and each must fit in `int16`. Candidate positions, conflict tests
+and acceptance are exact integer arithmetic, so native and web builds accept the
+same placements. Rotation and scale are integers too; the game converts them to
+floating point for presentation.
+
+**Identity.** A placement is identified by the tuple (room, layer, cell X, cell Y,
+candidate). Room is a nonzero ordinal from the game's room catalog, layer is the
+recipe's authored layer ID, and candidate is the index of the candidate within its
+cell. The tuple packs exactly into the 64-bit address scope:
+
+| Bits | Field | Range |
+| --- | --- | --- |
+| 63-48 | Room | 1 to 65535 |
+| 47-40 | Layer ID | 0 to 255 |
+| 39-32 | Candidate | 0 to 255, below the layer's candidate count |
+| 31-16 | Cell X | `int16`, stored as its two's-complement bits |
+| 15-0 | Cell Y | `int16`, stored as its two's-complement bits |
+
+The packing is injective within these ranges, so the scope is the identity rather
+than a digest of it. Validation rejects a recipe that cannot be packed; nothing
+is truncated or hashed. Candidate indices are fixed per cell, so a search attempt
+never becomes an identity.
+
+**Random layout.** The game derives three keys from the session's world seed and
+its manifest domains, and the kernel samples them at event zero:
+
+| Domain | Dimension | Meaning | Mapping |
+| --- | --- | --- | --- |
+| Placement | 0 | X offset within the cell | `TrySampleBounded` below `cellSize` |
+| Placement | 1 | Y offset within the cell | `TrySampleBounded` below `cellSize` |
+| Placement | 2 | Thinning priority | `SampleUInt32` |
+| Variant | 0 | Variant index | `TrySampleBounded` below the variant count |
+| Transform | 0 | Rotation in 1/65536 turns | high 16 bits of `SampleUInt32` |
+| Transform | 1 | Scale | minimum plus `TrySampleBounded` below the range width |
+
+Rotation and scale are drawn only for accepted candidates, and nothing in
+acceptance reads them, so changing the transform ranges cannot move or remove a
+placement. A new property uses an unused dimension or a new domain.
+
+**Thinning.** Each cell holds a fixed number of candidates. A candidate is eligible
+when its position lies inside the region and outside every keep-out. Two eligible
+candidates conflict when the squared distance between them is less than the
+square of the sum of their variants' exclusion radii. The test is symmetric. An
+eligible candidate is accepted unless it conflicts with an eligible candidate of
+higher priority, where priority compares the sampled word and then the packed
+identity. The ordering is total, so ties cannot occur. Validation limits each
+exclusion radius to the cell size, so a conflict reaches at most two cells in each
+direction. Acceptance therefore depends only on nearby cells, so a cell gives the same
+result whether it is generated alone or with its neighbours, in any order. The rule
+can leave gaps; it is not a maximal Poisson-disk sampler.
+
+**Output and failure.** Placements are written in canonical order: cell Y, then
+cell X, then candidate, all ascending. Validation reports the first problem with
+its index. Generation checks the room, layer, cell range and storage capacity
+before writing anything. If a bounded draw exhausts its attempts, which needs
+65,536 consecutive rejections, generation reports it, the reported count is
+unchanged and the storage contents are unspecified.
+
+**Acceptance.** The kernel tests cover the golden placement digest on native and
+Emscripten, ordering independence across worker counts, chunk sizes, traversal
+order and isolated cells, property isolation, and rejection of every invalid
+recipe field. World integration, harvesting and the remaining isolation rows of
+milestone 1 follow in the world demo.
