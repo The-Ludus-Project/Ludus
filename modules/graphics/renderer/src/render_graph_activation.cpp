@@ -608,6 +608,10 @@ struct RenderGraphActivation::State final
     StaticArray<uint8, format::IDENTITY_BYTES> Interface{};
     rhi::RasterShaderDescription CompositeVertex{};
     rhi::RasterShaderDescription CompositeFragment{};
+    /// Shared by every generation under ExactPool. Declared before the generations,
+    /// so their graphs return leased attachments before the pool is destroyed.
+    RenderGraphAttachmentPool Pool;
+    bool IsPooled = false;
     core::UniquePtr<Generation> Active;
     core::UniquePtr<Generation> Candidate;
     uint64 NextSerial = 0;
@@ -637,13 +641,15 @@ RenderGraphActivation::~RenderGraphActivation() noexcept
 Status RenderGraphActivation::Initialize(rhi::DeviceHandle device,
                                          BorrowedView<const uint8> interfaceIdentity,
                                          const rhi::RasterShaderDescription& compositeVertex,
-                                         const rhi::RasterShaderDescription& compositeFragment) noexcept
+                                         const rhi::RasterShaderDescription& compositeFragment,
+                                         RenderGraphAllocation allocation) noexcept
 {
     if (mState.Get() != nullptr)
     {
         return Status::InvalidState;
     }
-    if (interfaceIdentity.IsValid() == false || interfaceIdentity.GetSize() != format::IDENTITY_BYTES)
+    if (interfaceIdentity.IsValid() == false || interfaceIdentity.GetSize() != format::IDENTITY_BYTES ||
+        (allocation != RenderGraphAllocation::ExactPool && allocation != RenderGraphAllocation::SerialControl))
     {
         return Status::InvalidDescription;
     }
@@ -660,6 +666,15 @@ Status RenderGraphActivation::Initialize(rhi::DeviceHandle device,
     }
     candidate->CompositeVertex = compositeVertex;
     candidate->CompositeFragment = compositeFragment;
+    candidate->IsPooled = allocation == RenderGraphAllocation::ExactPool;
+    if (candidate->IsPooled == true)
+    {
+        const Status bound = candidate->Pool.Initialize(device);
+        if (bound != Status::Ready)
+        {
+            return bound;
+        }
+    }
     mState.Swap(candidate);
     return Status::Ready;
 }
@@ -695,7 +710,8 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     const Status status =
         generation->Graph.Initialize(state.Device,
                                      generation->Package->GetPlan(),
-                                     generation->Package->GetPrograms(state.CompositeVertex, state.CompositeFragment));
+                                     generation->Package->GetPrograms(state.CompositeVertex, state.CompositeFragment),
+                                     state.IsPooled == true ? &state.Pool : nullptr);
     if (IsAccepted(status) == false)
     {
         state.FailCandidate(status);
@@ -808,12 +824,24 @@ RenderGraphActivationReport RenderGraphActivation::GetReport() const noexcept
 {
     return mState.Get() != nullptr ? mState->Report : RenderGraphActivationReport{};
 }
+RenderGraphPoolReport RenderGraphActivation::GetPoolReport() const noexcept
+{
+    return mState.Get() != nullptr ? mState->Pool.GetReport() : RenderGraphPoolReport{};
+}
+void RenderGraphActivation::TrimPool() noexcept
+{
+    if (mState.Get() != nullptr)
+    {
+        mState->Pool.Trim();
+    }
+}
 void RenderGraphActivation::Reset() noexcept
 {
     if (mState.Get() != nullptr)
     {
         mState->Candidate.Reset();
         mState->Active.Reset();
+        mState->Pool.Reset();
     }
     mState.Reset();
 }

@@ -128,6 +128,78 @@ struct RenderGraphReport final
     bool IsAccepted = false;              ///< Candidate was accepted for asynchronous preparation.
     bool IsReady = false;                 ///< Accepted scene is drawable; producer completion is separate.
 };
+namespace internal
+{
+/// Private access from RenderGraph to its attachment pool.
+struct RenderGraphPoolAccess;
+} // namespace internal
+/// Largest idle-entry capacity of one attachment pool: every backing of the largest plan.
+/// Idle entries keep their RHI texture records and logical bytes (StorageLimits::ResourcesPerKind
+/// and ResourceBytes), so choose a smaller capacity or Trim when those budgets are tight.
+inline constexpr foundation::uint32 RENDER_GRAPH_POOL_CAPACITY =
+    static_cast<foundation::uint32>(content::render_graph_format::MAX_RESOURCES);
+/// Copied counters of one attachment pool; counts are allocations, never bytes. Measure bytes
+/// with rhi::GetAllocationTelemetry, which owns the RHI size accounting.
+struct RenderGraphPoolReport final
+{
+    foundation::uint32 IdleAllocations = 0;    ///< Released transient attachments awaiting an exact match.
+    foundation::uint32 LeasedAllocations = 0;  ///< Pool-provided transient attachments currently owned by graphs.
+    foundation::uint64 CreatedAllocations = 0; ///< Acquisitions without a reusable match; each created an attachment.
+    foundation::uint64 ReusedAllocations = 0;  ///< Acquisitions served by an idle exact match with proven completion.
+    /// Acquisitions that found idle exact matches but created an attachment, because none had proven completion.
+    foundation::uint64 DeferredAcquisitions = 0;
+    foundation::uint64 DestroyedAllocations = 0; ///< Idle entries destroyed by capacity, Trim, Reset or failed proof.
+};
+/// RG4 exact-descriptor pool for graph-owned transient attachments: allocations backing logical
+/// resources that are neither exported nor the presentation surface. A RenderGraph initialized
+/// with a pool takes each transient backing from it and returns it on Reset. An idle allocation is
+/// reused only when its complete RHI texture description (format, extent, samples, mips, layers,
+/// dimension, attachment usage and private depth/stencil aspects) is equal and the RHI submission
+/// containing its last frame use has completed; a newer submission's completion covers earlier
+/// ones. Exports and surfaces never enter the pool, so no consumer of an export can observe reuse.
+/// This is allocation reuse across graph instances (reload, re-initialization), not physical heap
+/// aliasing: each live transient still owns its whole allocation. Releasing into a full pool
+/// evicts the least recently released idle entry. Not thread-safe: use the RHI
+/// owner thread between frames. The device outlives the pool; the pool outlives every graph
+/// initialized with it and must be Reset before the device is destroyed.
+class RenderGraphAttachmentPool final
+{
+public:
+    RenderGraphAttachmentPool() noexcept;                                            ///< Construct without a device.
+    ~RenderGraphAttachmentPool() noexcept;                                           ///< Reset; see Reset.
+    RenderGraphAttachmentPool(const RenderGraphAttachmentPool&) = delete;            ///< Ownership is noncopyable.
+    RenderGraphAttachmentPool& operator=(const RenderGraphAttachmentPool&) = delete; ///< Ownership is nonassignable.
+    /// Bind the pool to a ready device without allocating GPU resources.
+    /// @param device Ready owned device; outlives the pool and every graph initialized with it.
+    /// @param idleCapacity Most idle allocations retained, 1..RENDER_GRAPH_POOL_CAPACITY.
+    /// @return InvalidState when already initialized, InvalidDescription for a capacity outside
+    /// its range, OutOfMemory when bookkeeping cannot be allocated, otherwise the device
+    /// admission status; failure leaves the pool empty.
+    [[nodiscard]] rhi::RasterStatus Initialize(rhi::DeviceHandle device,
+                                               foundation::uint32 idleCapacity = RENDER_GRAPH_POOL_CAPACITY) noexcept;
+    /// Destroy every idle allocation; RHI retires their pending GPU uses. Leased ones are unaffected.
+    void Trim() noexcept;
+    /// Copy the counters; an uninitialized pool reports zeros.
+    [[nodiscard]] RenderGraphPoolReport GetReport() const noexcept;
+    /// Destroy idle allocations and unbind the device.
+    /// @pre No graph initialized with this pool still exists; leases are asserted to be zero.
+    void Reset() noexcept;
+
+private:
+    struct State;
+    foundation::core::UniquePtr<State> mState;
+    /// Grants RenderGraph acquisition and release of pooled attachments.
+    friend struct internal::RenderGraphPoolAccess;
+};
+/// Copied attachment ownership of one graph; counts are allocations, never bytes.
+struct RenderGraphAllocationReport final
+{
+    foundation::uint32 ExportAllocations = 0;    ///< Allocations backing an export; created and destroyed by the graph.
+    foundation::uint32 TransientAllocations = 0; ///< Allocations backing only unexported, non-surface resources.
+    foundation::uint32 CreatedAllocations = 0;   ///< Allocations this graph created, exports included.
+    foundation::uint32 ReusedAllocations = 0;    ///< Transient allocations reused from the pool.
+    bool IsPooled = false;                       ///< Initialized with a pool; false is the serial, non-pooled control.
+};
 /// Renderer integration of one immutable cooked graph configuration.
 /// All calls use the RHI owner thread; Encode requires an acquired frame,
 /// metadata queries may inspect that encoding, and other operations are between
@@ -147,8 +219,20 @@ public:
     /// Copy/validate plan and cooked interfaces, prewarm all required contexts and allocate attachments.
     /// Ready/Pending owns setup. Failure of empty initialization leaves it empty;
     /// reinitialization rejects and preserves existing state. No open frame is permitted.
-    [[nodiscard]] rhi::RasterStatus
-    Initialize(rhi::DeviceHandle device, const RenderGraphPlan& plan, const RenderGraphPrograms& programs) noexcept;
+    /// @param device Ready owned device without an open frame; outlives this graph.
+    /// @param plan Numeric plan; its records are copied before return.
+    /// @param programs Cooked stages; artifact storage stays alive until Initialize/Poll reaches Ready.
+    /// @param poolOrNull Optional RG4 attachment pool on the same device; transient backings are
+    /// taken from it and returned on Reset. Null selects the serial control: every attachment is
+    /// created here and destroyed on Reset. Both paths encode identical commands. An uninitialized
+    /// pool, or one bound to a destroyed device, rejects with InvalidDescription. The pool must
+    /// be bound to this device and outlive this graph.
+    [[nodiscard]] rhi::RasterStatus Initialize(rhi::DeviceHandle device,
+                                               const RenderGraphPlan& plan,
+                                               const RenderGraphPrograms& programs,
+                                               RenderGraphAttachmentPool* poolOrNull = nullptr) noexcept;
+    /// Copy attachment ownership counters; an empty graph reports zeros.
+    [[nodiscard]] RenderGraphAllocationReport GetAllocationReport() const noexcept;
     /// Poll prewarming and pending replacement; publish only a complete Ready candidate.
     /// Returns a candidate failure once while preserving the prior drawable scene.
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;

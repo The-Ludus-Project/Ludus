@@ -1,5 +1,7 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 
+#include "internal/render_graph_pool.h"
+
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -463,6 +465,27 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     }
     return ValidateUniforms(plan, isUsed);
 }
+/// The complete RHI description of a backing: RGBA8 color with private Depth32, one sample.
+/// A depth-only backing keeps this color image: RHI attachments always pair color with private
+/// depth, and every raster pipeline targets at least one color format.
+rhi::TextureDescription MakeAttachmentDescription(const format::Resource& backing) noexcept
+{
+    rhi::TextureDescription description;
+    description.Width = backing.Width;
+    description.Height = backing.Height;
+    description.Attachment = true;
+    return description;
+}
+/// Whether any logical resource exported from the plan lives in this backing allocation.
+bool IsExportBacking(BorrowedView<const format::Resource> resources, usize backing) noexcept
+{
+    bool isExported = false;
+    for (usize i = 0; i < resources.GetSize(); ++i)
+    {
+        isExported = isExported == true || (resources[i].Backing == backing && resources[i].IsExported == 1);
+    }
+    return isExported;
+}
 } // namespace
 struct RenderGraph::State final
 {
@@ -479,6 +502,10 @@ struct RenderGraph::State final
     /// Uniform range of each binding: its largest carried block, matching the stage MinSize.
     StaticArray<usize, format::MAX_UNIFORM_BINDINGS> BindingBytes{};
     StaticArray<rhi::TextureHandle, format::MAX_RESOURCES> Textures{};
+    /// Backings leased from PoolOrNull and returned to it on destruction; exports never are.
+    StaticArray<bool, format::MAX_RESOURCES> IsPooled{};
+    RenderGraphAttachmentPool* PoolOrNull = nullptr;
+    RenderGraphAllocationReport Allocation{};
     StaticArray<Renderer, format::TECHNIQUE_COUNT> Contexts{};
     StaticArray<bool, format::TECHNIQUE_COUNT> IsUsed{};
     StaticArray<bool, format::TECHNIQUE_COUNT> HasViews{};
@@ -715,7 +742,17 @@ struct RenderGraph::State final
         Current.Reset();
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
-            static_cast<void>(rhi::Destroy(Device, Textures[i]));
+            // A pool reset early (a broken precondition, asserted there) no longer takes leases back.
+            if (IsPooled[i] == true && internal::RenderGraphPoolAccess::IsBound(*PoolOrNull) == true)
+            {
+                internal::RenderGraphPoolAccess::Release(*PoolOrNull,
+                                                         MakeAttachmentDescription(Resources[i]),
+                                                         Textures[i]);
+            }
+            else
+            {
+                static_cast<void>(rhi::Destroy(Device, Textures[i]));
+            }
         }
     }
 };
@@ -727,7 +764,8 @@ void RenderGraph::Reset() noexcept
 }
 Status RenderGraph::Initialize(rhi::DeviceHandle device,
                                const RenderGraphPlan& plan,
-                               const RenderGraphPrograms& programs) noexcept
+                               const RenderGraphPrograms& programs,
+                               RenderGraphAttachmentPool* poolOrNull) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -737,6 +775,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     if (status != Status::Ready)
     {
         return status;
+    }
+    if (poolOrNull != nullptr && internal::RenderGraphPoolAccess::IsUsable(*poolOrNull) == false)
+    {
+        return Status::InvalidDescription;
     }
     status = ValidatePlan(plan);
     if (status != Status::Ready)
@@ -804,6 +846,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     candidate->Target = target;
     candidate->Programs = programs;
     candidate->IsUsed = isUsed;
+    candidate->PoolOrNull = poolOrNull;
+    candidate->Allocation.IsPooled = poolOrNull != nullptr;
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
         candidate->Resources[i] = plan.Resources[i];
@@ -855,15 +899,43 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             continue;
         }
-        rhi::TextureDescription description;
-        description.Width = resource.Width;
-        description.Height = resource.Height;
-        description.Attachment = true;
+        const rhi::TextureDescription description = MakeAttachmentDescription(resource);
+        // Exports are never pooled: a consumer may retain views or bindings beyond the graph.
+        const bool isExportBacking = IsExportBacking(plan.Resources, i);
+        if (isExportBacking == true)
+        {
+            ++candidate->Allocation.ExportAllocations;
+        }
+        else
+        {
+            ++candidate->Allocation.TransientAllocations;
+        }
+        if (poolOrNull != nullptr && isExportBacking == false)
+        {
+            bool isReused = false;
+            status =
+                internal::RenderGraphPoolAccess::Acquire(*poolOrNull, description, candidate->Textures[i], isReused);
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
+            candidate->IsPooled[i] = true;
+            if (isReused == true)
+            {
+                ++candidate->Allocation.ReusedAllocations;
+            }
+            else
+            {
+                ++candidate->Allocation.CreatedAllocations;
+            }
+            continue;
+        }
         status = rhi::CreateTexture(device, description, {}, candidate->Textures[i]);
         if (IsAccepted(status) == false)
         {
             return status;
         }
+        ++candidate->Allocation.CreatedAllocations;
     }
     mState.Swap(candidate);
     status = Poll();
@@ -1302,6 +1374,10 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     }
     outReport = state.Report;
     return prepared;
+}
+RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
+{
+    return mState.Get() == nullptr ? RenderGraphAllocationReport{} : mState->Allocation;
 }
 BorrowedView<const RenderGraphCoverageRecord> RenderGraph::GetCoverage() const noexcept
 {
