@@ -58,6 +58,7 @@ TEST_CASE("Preview preparation failure is terminal for its resource generation",
     QString error;
     CHECK(generation.IsPrepared() == false);
     CHECK(generation.Prepare({}, error) == PreviewPreparationStatus::Failed);
+    CHECK(error.contains(QStringLiteral("GPU renderer initialization failed")) == true);
     CHECK(generation.Prepare({}, error) == PreviewPreparationStatus::Failed);
     CHECK(generation.IsPrepared() == false);
 }

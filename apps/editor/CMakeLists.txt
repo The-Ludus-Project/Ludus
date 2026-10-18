@@ -44,7 +44,7 @@ endif()
 # AUTOMOC is enabled per target below, not globally.
 
 # Native editor builds include rendering; lightweight builds explicitly opt out.
-# Browser builds retain their separate document-only authoring path.
+# Browser builds use a separate WebGPU canvas without Qt Quick interop.
 set(editor_render_preview_default ON)
 if(EMSCRIPTEN)
     set(editor_render_preview_default OFF)
@@ -57,9 +57,7 @@ endif()
 
 set(editor_viewport_sources
     src/preview_viewport.cpp
-    src/viewport_navigation.cpp
-    src/internal/software_viewport.h
-    src/software_viewport.cpp)
+    src/viewport_navigation.cpp)
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Quick)
     # The readback fallback is selected only on Linux, but the shared viewport code references it.
@@ -252,10 +250,15 @@ target_link_libraries(ludus_editor PRIVATE Ludus::SceneCook ludus_stb_image)
 # World documents share the version-2 record constants with their owner (object handles stage 3).
 target_link_libraries(ludus_editor PRIVATE Ludus::ContentIdentity)
 if(EMSCRIPTEN)
-    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_SOFTWARE_VIEWPORT=1)
+    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_BROWSER_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
+    target_sources(ludus_editor PRIVATE src/browser_viewport.cpp src/internal/browser_viewport.h)
+    target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi)
+    ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
+        renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
+        renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
-    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1)
+    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi Qt6::Quick)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)
@@ -364,6 +367,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/live_journey_tests.cpp
         tests/macos_journey_tests.cpp
     )
+    # Keep the small software rasterizer only as an independent test oracle.
+    target_sources(ludus_editor_tests PRIVATE src/software_viewport.cpp)
     set_target_properties(ludus_editor_tests PROPERTIES AUTOMOC ON)
     qt_add_resources(ludus_editor_tests ludus_brand
         PREFIX "/ludus"
@@ -418,7 +423,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::FoundationTime)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW)
-        target_compile_definitions(ludus_editor_tests PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1)
+        target_compile_definitions(ludus_editor_tests PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)

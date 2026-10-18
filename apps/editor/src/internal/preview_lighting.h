@@ -153,7 +153,8 @@ struct Inputs final
     uint64 DependencyRevision = 0;
 };
 
-inline rhi::RasterStatus BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs)
+inline rhi::RasterStatus
+BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, bool shouldBuildShadows = true)
 {
     if (scene.Definition == nullptr || key.size() < static_cast<isize>(sizeof(uint64) * 2) ||
         scene.Definition->Objects.GetSize() > MAX_INSTANCES ||
@@ -264,6 +265,11 @@ inline rhi::RasterStatus BuildInputs(const RenderScene& scene, const QByteArray&
         return normalizedStatus;
     }
     result.Lights = normalized;
+    if (shouldBuildShadows == false)
+    {
+        outInputs = result;
+        return rhi::RasterStatus::Ready;
+    }
     for (usize i = 0; i < result.Lights.Count; ++i)
     {
         const rr::DirectLight& light = result.Lights.Lights[i];

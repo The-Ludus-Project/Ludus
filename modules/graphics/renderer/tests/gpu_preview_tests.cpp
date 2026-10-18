@@ -267,7 +267,7 @@ TEST_CASE("Interactive raster viewport updates World snapshots and camera withou
     rr::Snapshot world;
     REQUIRE(renderer.CreateSnapshot(&item, 1, world) == S::Ready);
     rr::RasterViewport viewport;
-    REQUIRE(viewport.Initialize(renderer, device, 8, 8) == S::Ready);
+    REQUIRE(viewport.Initialize(renderer, device, 8, 8, 1, rr::ViewportColorMode::PreferHdr, true) == S::Ready);
     rr::ViewDescription camera;
     rr::ViewReport report;
     REQUIRE(viewport.Update(world, camera, report) == S::Ready);

@@ -1716,6 +1716,12 @@ no reference input retention, BVH, compute or ray-query capability and has no
 sample target or convergence state. Poll Pending resource/view setup before
 rendering. No driver shader compilation occurs in the per-frame draw path.
 
+Browser consumers can initialize with `shouldPresentToSurface = true` to composite
+the encoded display texture into the acquired surface in the same submission.
+Surface and viewport extents must match. This uses the renderer's ordinary
+composition shader and applies no second tone map or encoding. The default
+texture-only mode retains the native Qt interop contract below.
+
 Acquire a completed `ViewportImage` with a `ViewportFrame` lease. Two leased
 images apply backpressure and neither may be overwritten. The image is top-left,
 physical-pixel RGBA8Unorm carrying **sRGB-encoded tone-mapped RGB**, matching the optional PT image convention.
