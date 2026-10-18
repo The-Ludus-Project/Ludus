@@ -22,6 +22,10 @@
 namespace
 {
 using namespace ludus::foundation;
+// Upper bound for an accepted main-window close to hide the window; the close
+// handler retries every 20 ms while workers quiesce, and only a hung worker
+// should reach this bound.
+constexpr int32 CLOSE_WAIT_MILLISECONDS = 10000;
 namespace content = ludus::content;
 namespace audio = ludus::audio;
 void Save(std::string_view root, std::string_view path, const content::Bytes& bytes)
@@ -206,7 +210,7 @@ TEST_CASE("Cancelling close preserves the audio draft and does not save workspac
         if (auto* dialog = window.findChild<QMessageBox*>())
         {
             prompted = true;
-            dialog->done(QMessageBox::Cancel);
+            dialog->button(QMessageBox::Cancel)->click();
         }
     });
     CHECK_FALSE(window.close());
@@ -215,14 +219,18 @@ TEST_CASE("Cancelling close preserves the audio draft and does not save workspac
     CHECK(gain->value() == 0.25);
     CHECK_FALSE(QFileInfo::exists(preferences));
     // A later accepted close can publish the layout after the draft decision.
+    // QMessageBox::question reports the clicked button, so the choice must be
+    // a click; done(Discard) leaves no clicked button and reads as Cancel.
     QTimer::singleShot(0, &window, [&window]() {
         if (auto* dialog = window.findChild<QMessageBox*>())
         {
-            dialog->done(QMessageBox::Discard);
+            dialog->button(QMessageBox::Discard)->click();
         }
     });
-    (void)window.close();
-    QTRY_VERIFY_WITH_TIMEOUT(window.isVisible() == false, 3000);
+    CHECK(window.close());
+    // A QtTest QTRY_* macro returns silently on failure inside a Catch2 case;
+    // report the wait through Catch2 instead.
+    REQUIRE(QTest::qWaitFor([&window] { return window.isVisible() == false; }, CLOSE_WAIT_MILLISECONDS));
     CHECK(QFileInfo::exists(preferences));
 }
 

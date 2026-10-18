@@ -9,6 +9,8 @@
 #include "internal/main_window.h"
 #include "internal/project_store.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
@@ -31,6 +33,15 @@ using namespace ludus::editor;
 
 namespace
 {
+// Upper bound for one Python adapter round trip (interpreter start, CMake
+// preset inspection, exit). The adapter needs well under a second of CPU, but
+// on a shared 10-core macOS host at load 46-48 a read-only setup probe took
+// 6.4 s and the next one missed a 10 s bound. Waits return as soon as their
+// condition holds, so this bound only decides when a hung adapter fails.
+// Waits use QTest::qWaitFor under a Catch2 assertion: a QtTest QTRY_* macro
+// returns silently from a Catch2 case on failure and skips the later checks.
+constexpr ludus::foundation::int32 ADAPTER_WAIT_MILLISECONDS = 60000;
+
 ToolingPaths NoTooling()
 {
     ToolingPaths tooling;
@@ -111,11 +122,11 @@ TEST_CASE("Open reports a valid CMake setup using read-only preset inspection", 
     controller.OpenProject(descriptor);
     const bool ready = QTest::qWaitFor(
         [&controller] { return controller.State().SetupStatus.contains(QStringLiteral("CMake setup ready")); },
-        10000);
+        ADAPTER_WAIT_MILLISECONDS);
     INFO(controller.State().SetupStatus.toStdString());
     REQUIRE(ready);
     // A terminal result is provisional until the one-shot adapter exits.
-    REQUIRE(QTest::qWaitFor([&controller] { return controller.Caps().CanOpen; }, 10000));
+    REQUIRE(QTest::qWaitFor([&controller] { return controller.Caps().CanOpen; }, ADAPTER_WAIT_MILLISECONDS));
     CHECK_FALSE(QFileInfo(QDir(dir.path()).filePath(QStringLiteral("out"))).exists());
 }
 
@@ -140,10 +151,10 @@ TEST_CASE("Open reports a stale CMake cache without rewriting it", "[editor][con
     controller.OpenProject(descriptor);
     const bool stale = QTest::qWaitFor(
         [&controller] { return controller.State().SetupStatus.contains(QStringLiteral("stale CMake cache")); },
-        10000);
+        ADAPTER_WAIT_MILLISECONDS);
     INFO(controller.State().SetupStatus.toStdString());
     REQUIRE(stale);
-    REQUIRE(QTest::qWaitFor([&controller] { return controller.Caps().CanOpen; }, 10000));
+    REQUIRE(QTest::qWaitFor([&controller] { return controller.Caps().CanOpen; }, ADAPTER_WAIT_MILLISECONDS));
     QFile after(cachePath);
     REQUIRE(after.open(QIODevice::ReadOnly));
     CHECK(after.readAll() == before);
@@ -294,7 +305,7 @@ TEST_CASE("Opening an SDK project automatically reports missing setup without ru
     REQUIRE(tool != nullptr);
     QSignalSpy finished(tool, &ToolProcess::Finished);
     controller.OpenProject(descriptor);
-    QDeadlineTimer deadline(10000);
+    QDeadlineTimer deadline(ADAPTER_WAIT_MILLISECONDS);
     while (controller.State().Result.Kind == Outcome::None && deadline.hasExpired() == false)
     {
         QTest::qWait(10);
@@ -391,7 +402,7 @@ else:
 
 QMessageBox* WaitForDebugPrompt(MainWindow& window)
 {
-    QDeadlineTimer deadline(10000);
+    QDeadlineTimer deadline(ADAPTER_WAIT_MILLISECONDS);
     QMessageBox* dialog = nullptr;
     while (dialog == nullptr && deadline.hasExpired() == false)
     {
@@ -403,7 +414,7 @@ QMessageBox* WaitForDebugPrompt(MainWindow& window)
 
 void WaitForDebugSession(EditorController& controller)
 {
-    QDeadlineTimer deadline(10000);
+    QDeadlineTimer deadline(ADAPTER_WAIT_MILLISECONDS);
     while (controller.State().OperationPhase != Phase::Debugging && deadline.hasExpired() == false)
     {
         QTest::qWait(10);
@@ -414,7 +425,7 @@ void WaitForDebugSession(EditorController& controller)
 void StopDebugSession(EditorController& controller)
 {
     controller.Stop();
-    QDeadlineTimer deadline(10000);
+    QDeadlineTimer deadline(ADAPTER_WAIT_MILLISECONDS);
     while (controller.Caps().CanCloseImmediately == false && deadline.hasExpired() == false)
     {
         QTest::qWait(10);
@@ -441,7 +452,7 @@ TEST_CASE("Debug is visible and optional setup is offered only after a Debug req
     controller.OpenProject(WriteDescriptor(dir, ValidDescriptor()));
     QTest::qWait(10);
     CHECK(window.findChild<QMessageBox*>(QStringLiteral("debuggerSetupDialog")) == nullptr);
-    QTRY_VERIFY_WITH_TIMEOUT(action->isEnabled(), 10000);
+    REQUIRE(QTest::qWaitFor([&] { return action->isEnabled(); }, ADAPTER_WAIT_MILLISECONDS));
     action->trigger();
     auto* dialog = WaitForDebugPrompt(window);
     REQUIRE(dialog != nullptr);
@@ -516,7 +527,7 @@ TEST_CASE("A stale debugger setup dialog cannot debug a different project", "[ed
     setup->click();
     QTest::qWait(30);
     CHECK(controller.State().DescriptorPath == project);
-    QTRY_VERIFY_WITH_TIMEOUT(controller.Caps().CanBuildDebug, 10000);
+    REQUIRE(QTest::qWaitFor([&] { return controller.Caps().CanBuildDebug; }, ADAPTER_WAIT_MILLISECONDS));
     CHECK_FALSE(QFile::exists(second.filePath(QStringLiteral("debug_request.json"))));
     CHECK_FALSE(QFile::exists(dir.filePath(QStringLiteral("debug_request.json"))));
 }
@@ -558,7 +569,7 @@ TEST_CASE("Play menu follows saved project and tooling eligibility", "[editor][c
 #if defined(Q_OS_MACOS)
     CHECK_FALSE(play->isEnabled());
 #else
-    QTRY_VERIFY_WITH_TIMEOUT(play->isEnabled(), 10000);
+    REQUIRE(QTest::qWaitFor([&] { return play->isEnabled(); }, ADAPTER_WAIT_MILLISECONDS));
 #endif
     CHECK_FALSE(reload->isEnabled());
 
@@ -586,7 +597,7 @@ TEST_CASE("Live Play ownership prevents a competing RAD debug job", "[editor][de
     EditorController controller(tooling);
     MainWindow window(&controller);
     controller.OpenProject(WriteDescriptor(dir, ValidDescriptor()));
-    QTRY_VERIFY_WITH_TIMEOUT(controller.CanPlay(), 10000);
+    REQUIRE(QTest::qWaitFor([&] { return controller.CanPlay(); }, ADAPTER_WAIT_MILLISECONDS));
     controller.Play();
     REQUIRE(controller.PlayState().Phase == PlayPhase::Starting);
     CHECK_FALSE(controller.Caps().CanBuildDebug);
@@ -596,7 +607,7 @@ TEST_CASE("Live Play ownership prevents a competing RAD debug job", "[editor][de
     const auto job = controller.State().ActiveJob;
     controller.BuildDebug(QStringLiteral("/fixture/RAD executable"));
     CHECK(controller.State().ActiveJob == job);
-    QTRY_VERIFY_WITH_TIMEOUT(controller.Caps().CanCloseImmediately, 10000);
+    REQUIRE(QTest::qWaitFor([&] { return controller.Caps().CanCloseImmediately; }, ADAPTER_WAIT_MILLISECONDS));
     CHECK(controller.PlayState().Phase == PlayPhase::Stopped);
     CHECK_FALSE(QFile::exists(dir.filePath(QStringLiteral("debug_request.json"))));
 }
