@@ -549,7 +549,7 @@ jobs:
           SOURCE_POLICY_HEAD: ${{ inputs.batch_sha || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: |
           python3 scripts/python/source_policy.py --base "$SOURCE_POLICY_BASE" --head "$SOURCE_POLICY_HEAD" --clang-format "clang-format-$LUDUS_CI_LLVM_MAJOR"
-          PYTHONPATH=scripts/python python3 -m unittest test_source_policy test_renderer_shader_recipes -v
+          PYTHONPATH=scripts/python python3 -m unittest test_source_policy test_check_naming test_changed_tidy test_renderer_shader_recipes -v
       - name: Test S0 Luau source and bytecode integrity contracts
         run: python3 -m unittest discover -s tools/luau-probe -p 'test_*.py' -v
       - name: Test L0 localization document, receipt and manifest contracts
@@ -1111,6 +1111,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.batch_sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/native-setup
         with:
@@ -1122,6 +1123,15 @@ jobs:
         run: ./scripts/build linux-clang-development
       - name: Analyze every project translation unit
         run: ./scripts/check linux-clang-development --tidy
+      # Naming, magic-number and implicit-bool rules apply to changed lines only
+      # (AGENTS.md "Naming enforcement"); one shard analyzes the whole change.
+      - name: Analyze changed lines with naming and magic-number rules
+        if: matrix.shard == 0
+        env:
+          LUDUS_TIDY_SHARD_COUNT: "1"
+          LUDUS_TIDY_SHARD_INDEX: "0"
+          CHANGED_LINES_BASE: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'origin/main' }}
+        run: ./scripts/check linux-clang-development --tidy-changed --base "$CHANGED_LINES_BASE"
       - name: Review complete stable analyzer baseline
         if: needs.changes.outputs.validation_tier == 'nightly'
         continue-on-error: true

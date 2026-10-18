@@ -178,33 +178,41 @@ engine code. Discuss such cases in the PR before adding them.
   named constant or a shared alias (`MessageText`, `ResourcePath`,
   `MAX_MESSAGE_BYTES`) rather than a literal such as `Text<255>`; reuse the shared
   alias so each capacity is instantiated once.
-- **Compare booleans explicitly.** Write `condition == false` instead of
-  `!condition` (the `!` is thin and easy to miss), and prefer
-  `condition == true` over a bare boolean operand in `if`/`while`/`?:`/`&&`/`||`
-  (`if (writer.IsOk() == true && hasCamera == true)`). Comparisons that already
-  yield a boolean (`count == 0`, `a < b`) stay as they are. Non-boolean values
-  (pointers, integers) are compared against `nullptr`/`0` explicitly as usual.
+- **Compare booleans explicitly.** Write `condition == false`, never `!condition`
+  or `not`; prefer `condition == true` over a bare boolean operand in
+  `if`/`while`/`?:`/`&&`/`||`. Compare pointers with `nullptr` and integers with `0`.
+  Comparisons that already yield a boolean (`count == 0`, `a < b`) stay as they are.
+- **No magic numbers.** Name numeric literals other than 0, 1, 2 and 0.5 with a
+  constant in their owner (see "Declarations and representation constants").
 
 #### Naming enforcement
 
-Rules are enforced by tooling only in modules that have adopted them, so
-existing code does not fail CI before it is migrated. A module adopts the rules
-by adding a `.clang-tidy` with `InheritParentConfig: true` and
-`readability-identifier-naming` (copy `modules/content/scene_cook/.clang-tidy`)
-and listing its directory in `config/naming_scopes.txt`. New modules adopt them
-when created. Adopted today: `modules/content/scene_cook`,
-`modules/content/scene_format`, and FoundationMath's `summation` files.
+Run the gates locally before a PR:
+
+```bash
+./scripts/check --format                     # format, N1 everywhere, N2-N4 in adopted scopes
+python3 scripts/python/source_policy.py --base origin/develop   # changed lines
+./scripts/check linux-clang-development --tidy-changed --base origin/develop  # needs a configured build
+```
+
+The pull-request **Source formatting** job runs the first two; batch validation's
+**Clang static analysis** job runs `--tidy-changed` (`config/clang-tidy-changed.yml`,
+or `clang-tidy-changed-tests.yml` without magic numbers for test sources).
+Existing code is migrated when touched; changed lines must comply everywhere.
+Adopted scopes (`config/naming_scopes.txt` plus a per-directory `.clang-tidy`
+copied from `modules/content/scene_cook/.clang-tidy`) are checked in full.
 
 | Rule | Enforcement |
 | --- | --- |
-| Private/protected methods camelCase; public methods, free functions, types PascalCase; private members `m` + PascalCase; parameters and locals camelCase; constants UPPER_CASE | clang-tidy `readability-identifier-naming` (per-directory `.clang-tidy`) |
-| `condition == false` instead of `!condition` | `tools/check_naming.py` rule N1 (`./scripts/check --format`) for adopted modules; `source_policy.py` for changed C++ lines |
-| `out`/`inout` prefix on non-const lvalue reference parameters | `check_naming.py` N2 (presence of a prefix; `out` vs `inout` choice is review-only) |
-| Boolean names read as questions | `check_naming.py` N3 (declarations spelled `bool`) |
-| `OrNull` on nullable pointer variables | Shared N4 scans explicit null initializers in adopted scopes and changed C++ lines; inferred nullability remains review-only |
-| No `out`/`inout` on rvalue reference parameters | Shared N2 checks ordinary declarations in adopted scopes and changed C++ lines |
-| `condition == true` instead of a bare boolean operand | Review-only (needs type information) |
-| Spelled-out names, verb-first functions, no literal template sizes, reuse engine types | Review-only |
+| `condition == false` instead of `!condition`/`not` | `tools/check_naming.py` N1, **every** first-party C++ file (preprocessor directives, `EM_JS` JavaScript bodies, `operator!` declarations and the Catch2 export sources `tests/support/catch_stream.*` exempt) |
+| Case rules: private/protected methods camelCase; public methods, free functions, types PascalCase; private members `m` + PascalCase; parameters and locals camelCase; constants UPPER_CASE | clang-tidy `readability-identifier-naming`: adopted scopes in full, `--tidy-changed` on changed lines |
+| No magic numbers | `source_policy.py` (lexical) and clang-tidy `readability-magic-numbers` (`--tidy-changed`) on changed non-test lines; waive a justified literal with `// ludus-style: magic-number <reason>` |
+| Pointers/integers compared explicitly | clang-tidy `readability-implicit-bool-conversion` on changed lines |
+| `out`/`inout` prefix on non-const lvalue reference parameters; none on rvalue references | N2: adopted scopes and changed lines (`out` vs `inout` choice is review-only) |
+| Boolean names read as questions | N3 (declarations spelled `bool`): adopted scopes and changed lines |
+| `OrNull` on nullable pointer variables | N4 (explicit null initializers): adopted scopes and changed lines; inferred nullability is review-only |
+| Spelled-out names | N5 abbreviation list (`arg`, `param`, `ctx`, `src`, `dst`, `num`, ...) on changed declarations; waive external API mirrors with `// ludus-style: abbreviation <reason>` |
+| `condition == true` instead of a bare boolean operand, verb-first functions, literal template sizes beyond the magic-number gate, engine type reuse | Review-only (needs type or intent information) |
 
 `readability-simplify-boolean-expr` is disabled repository-wide because it
 rejects the explicit `== true`/`== false` style.
@@ -271,10 +279,9 @@ rejects the explicit `== true`/`== false` style.
   samples and tests, without a debt baseline. Existing violations do not permit
   new ones. This lexical gate checks explicit types, single-variable declarations,
   built-in CMake recipe ownership, C++ boolean negation, shader case/out names,
-  coordinate member labels and interface annotation placement. Negation checks
-  skip comments, literals and preprocessor directives; they do not infer boolean
-  types or detect bare boolean conditions. Compiler,
-  reflection tests, formatting, tidy and semantic review remain required.
+  coordinate member labels, interface annotation placement and the naming and
+  magic-number rules in "Naming enforcement". Compiler, reflection tests,
+  formatting, tidy and semantic review remain required.
 
 ### Review feedback and viewport acceptance
 

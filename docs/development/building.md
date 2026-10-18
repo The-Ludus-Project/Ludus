@@ -784,8 +784,9 @@ regressions to the owning check rather than relying on an isolated PR comment.
 Run the changed-source gate with an explicit comparison:
 
 ```sh
-python3 scripts/python/source_policy.py --base origin/main --clang-format clang-format-23
-PYTHONPATH=scripts/python python3 -m unittest test_source_policy -v
+python3 scripts/python/source_policy.py --base origin/develop --clang-format clang-format-23
+PYTHONPATH=scripts/python python3 -m unittest test_source_policy test_check_naming test_changed_tidy -v
+./scripts/check linux-clang-development --tidy-changed --base origin/develop
 ```
 
 CI uses the PR's actual base commit and includes standalone examples, tests and
@@ -807,6 +808,21 @@ Comments, strings, directives, unchanged lines, owner headers and test fixtures
 are excluded. It does not evaluate arbitrary C++ expressions or establish that
 the selected constant represents the right policy; review those semantics using
 [limit ownership](../architecture/content-resources.md#limit-ownership).
+
+On changed C++ lines the gate also applies the naming rules: `out`/`inout`
+reference parameter prefixes (N2), boolean names that read as questions (N3),
+`OrNull` on explicitly null-initialized pointers (N4), and a list of rejected
+abbreviations in declarations (N5). Outside test sources, `tests/`,
+`benchmarks/` and `tools/`, numeric literals other than 0, 1, 2 and 0.5 need a
+named constant unless they initialize a `constexpr`/`const` declaration, an
+enumerator or a `static_assert`; append `// ludus-style: magic-number <reason>`
+to keep a justified literal. `tools/check_naming.py` (run by
+`./scripts/check --format`) rejects `!`/`not` negation in every first-party
+C++ file. `--tidy-changed` runs clang-tidy `readability-identifier-naming`,
+`readability-magic-numbers` and `readability-implicit-bool-conversion` on the
+changed lines of each changed translation unit (and the headers it includes);
+batch validation runs it in the static-analysis job. A header changed without
+a changed includer is only covered by the lexical gate.
 Formatting, compilation, independent shader reflection and semantic review
 remain necessary. Shader entry-point renames must update every source and
 installed-SDK cook call; shared includes must be installed and appear in compiler
