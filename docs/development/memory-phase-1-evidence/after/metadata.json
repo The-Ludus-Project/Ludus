@@ -1,0 +1,1355 @@
+{
+ "variant": "after",
+ "rounds": [
+  {
+   "revision": "ec577ca4bc9dc54c2650777cab5806274c2a3f7f",
+   "working_tree_modified": true,
+   "binary_sha256": "5d950b86630ca65681b263efd07b4c5620377fb39d25c65b08f89db595ca6b3a",
+   "build": {
+    "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+    "CMAKE_CXX_COMPILER": "<worktree>/out/host-tools/bin/clang++",
+    "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem \"<worktree>/out/host-tools/libcxx-include\"",
+    "LUDUS_BUILD_FLAVOR": "Profile",
+    "LUDUS_PROFILING_ENABLED": "1",
+    "compiler_version": "Homebrew clang version 23.1.3"
+   },
+   "platform": "macOS-26.6-arm64-arm-64bit",
+   "machine": "arm64",
+   "cpu": "Apple M5",
+   "logical_cpus": 10,
+   "load_average_1_5_15_before": [
+    10.82275390625,
+    24.6875,
+    24.22607421875
+   ],
+   "load_average_1_5_15_after": [
+    10.5166015625,
+    24.3935546875,
+    24.125
+   ],
+   "seed": 31,
+   "processes_per_workload": 1,
+   "method": "Each workload runs in a fresh process per round, in seeded random order; one warmup then seven timed samples per process. Rates are nanoseconds per workload operation; peak RSS is the process's ru_maxrss. No sanitizer, capture or CPU pinning; other host load is recorded as load averages, not controlled.",
+   "process_runs": [
+    {
+     "workload": "raw-contended-churn-4-threads",
+     "process": 0,
+     "order": 0,
+     "wall_seconds": 0.23351979200378992,
+     "peak_rss_kib": 12336,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-small-churn",
+     "process": 0,
+     "order": 1,
+     "wall_seconds": 0.2758357920101844,
+     "peak_rss_kib": 1760,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-large-blocks",
+     "process": 0,
+     "order": 2,
+     "wall_seconds": 0.008781000011367723,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-aligned64",
+     "process": 0,
+     "order": 3,
+     "wall_seconds": 0.009160624991636723,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-reserved",
+     "process": 0,
+     "order": 4,
+     "wall_seconds": 0.010175167000852525,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-contended-churn-4-threads",
+     "process": 0,
+     "order": 5,
+     "wall_seconds": 1.485050792020047,
+     "peak_rss_kib": 2688,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-remote-free",
+     "process": 0,
+     "order": 6,
+     "wall_seconds": 0.02413850001175888,
+     "peak_rss_kib": 6096,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-small-churn",
+     "process": 0,
+     "order": 7,
+     "wall_seconds": 0.3008570829988457,
+     "peak_rss_kib": 1808,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-unreserved",
+     "process": 0,
+     "order": 8,
+     "wall_seconds": 0.009953333996236324,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "idle",
+     "process": 0,
+     "order": 9,
+     "wall_seconds": 0.007490167015930638,
+     "peak_rss_kib": 1360,
+     "exit_code": 0
+    }
+   ],
+   "summary": {
+    "array-append-aligned64": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 5.10406494140625,
+     "ns_per_operation_p25": 5.0900726318359375,
+     "ns_per_operation_p75": 5.1097869873046875,
+     "ns_per_operation_min": 5.08245849609375,
+     "ns_per_operation_max": 5.26556396484375,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "array-append-reserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.5201892852783203,
+     "ns_per_operation_p25": 0.5198121070861816,
+     "ns_per_operation_p75": 0.521420955657959,
+     "ns_per_operation_min": 0.5195932388305664,
+     "ns_per_operation_max": 0.5254344940185547,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "array-append-unreserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.5247592926025391,
+     "ns_per_operation_p25": 0.5239849090576172,
+     "ns_per_operation_p75": 0.5522375106811523,
+     "ns_per_operation_min": 0.5223350524902344,
+     "ns_per_operation_max": 0.5669593811035156,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "idle": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.0,
+     "ns_per_operation_p25": 0.0,
+     "ns_per_operation_p75": 0.0,
+     "ns_per_operation_min": 0.0,
+     "ns_per_operation_max": 0.0,
+     "peak_rss_kib_median": 1360.0,
+     "peak_rss_kib_max": 1360.0
+    },
+    "raw-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 26.27619171142578,
+     "ns_per_operation_p25": 24.940510749816895,
+     "ns_per_operation_p75": 26.73602056503296,
+     "ns_per_operation_min": 23.65537452697754,
+     "ns_per_operation_max": 31.557759284973145,
+     "peak_rss_kib_median": 12336.0,
+     "peak_rss_kib_max": 12336.0
+    },
+    "raw-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 31.22409152984619,
+     "ns_per_operation_p25": 29.530107975006104,
+     "ns_per_operation_p75": 33.3713493347168,
+     "ns_per_operation_min": 29.446721076965332,
+     "ns_per_operation_max": 33.71310234069824,
+     "peak_rss_kib_median": 1760.0,
+     "peak_rss_kib_max": 1760.0
+    },
+    "system-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 174.60358142852783,
+     "ns_per_operation_p25": 169.4632968902588,
+     "ns_per_operation_p75": 181.7285418510437,
+     "ns_per_operation_min": 166.85028839111328,
+     "ns_per_operation_max": 194.84472274780273,
+     "peak_rss_kib_median": 2688.0,
+     "peak_rss_kib_max": 2688.0
+    },
+    "system-large-blocks": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 5860.6875,
+     "ns_per_operation_p25": 5856.78125,
+     "ns_per_operation_p75": 5867.84375,
+     "ns_per_operation_min": 5851.5625,
+     "ns_per_operation_max": 6084.65625,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "system-remote-free": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 13.895660400390625,
+     "ns_per_operation_p25": 13.781867980957031,
+     "ns_per_operation_p75": 14.043174743652344,
+     "ns_per_operation_min": 13.762786865234375,
+     "ns_per_operation_max": 14.452621459960938,
+     "peak_rss_kib_median": 6096.0,
+     "peak_rss_kib_max": 6096.0
+    },
+    "system-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 32.89926052093506,
+     "ns_per_operation_p25": 31.51029348373413,
+     "ns_per_operation_p75": 34.545958518981934,
+     "ns_per_operation_min": 29.73167133331299,
+     "ns_per_operation_max": 49.44066143035889,
+     "peak_rss_kib_median": 1808.0,
+     "peak_rss_kib_max": 1808.0
+    }
+   },
+   "round": 1
+  },
+  {
+   "revision": "ec577ca4bc9dc54c2650777cab5806274c2a3f7f",
+   "working_tree_modified": true,
+   "binary_sha256": "5d950b86630ca65681b263efd07b4c5620377fb39d25c65b08f89db595ca6b3a",
+   "build": {
+    "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+    "CMAKE_CXX_COMPILER": "<worktree>/out/host-tools/bin/clang++",
+    "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem \"<worktree>/out/host-tools/libcxx-include\"",
+    "LUDUS_BUILD_FLAVOR": "Profile",
+    "LUDUS_PROFILING_ENABLED": "1",
+    "compiler_version": "Homebrew clang version 23.1.3"
+   },
+   "platform": "macOS-26.6-arm64-arm-64bit",
+   "machine": "arm64",
+   "cpu": "Apple M5",
+   "logical_cpus": 10,
+   "load_average_1_5_15_before": [
+    10.5166015625,
+    24.3935546875,
+    24.125
+   ],
+   "load_average_1_5_15_after": [
+    10.5166015625,
+    24.3935546875,
+    24.125
+   ],
+   "seed": 32,
+   "processes_per_workload": 1,
+   "method": "Each workload runs in a fresh process per round, in seeded random order; one warmup then seven timed samples per process. Rates are nanoseconds per workload operation; peak RSS is the process's ru_maxrss. No sanitizer, capture or CPU pinning; other host load is recorded as load averages, not controlled.",
+   "process_runs": [
+    {
+     "workload": "raw-contended-churn-4-threads",
+     "process": 0,
+     "order": 0,
+     "wall_seconds": 0.2183219580037985,
+     "peak_rss_kib": 3936,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-remote-free",
+     "process": 0,
+     "order": 1,
+     "wall_seconds": 0.02489191698259674,
+     "peak_rss_kib": 6096,
+     "exit_code": 0
+    },
+    {
+     "workload": "idle",
+     "process": 0,
+     "order": 2,
+     "wall_seconds": 0.004167666018474847,
+     "peak_rss_kib": 1360,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-reserved",
+     "process": 0,
+     "order": 3,
+     "wall_seconds": 0.007755791011732072,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-aligned64",
+     "process": 0,
+     "order": 4,
+     "wall_seconds": 0.009372125001391396,
+     "peak_rss_kib": 9968,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-large-blocks",
+     "process": 0,
+     "order": 5,
+     "wall_seconds": 0.005034750007325783,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-unreserved",
+     "process": 0,
+     "order": 6,
+     "wall_seconds": 0.008358458988368511,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-small-churn",
+     "process": 0,
+     "order": 7,
+     "wall_seconds": 0.21254829200915992,
+     "peak_rss_kib": 1744,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-contended-churn-4-threads",
+     "process": 0,
+     "order": 8,
+     "wall_seconds": 1.284834000020055,
+     "peak_rss_kib": 2704,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-small-churn",
+     "process": 0,
+     "order": 9,
+     "wall_seconds": 0.23788724999758415,
+     "peak_rss_kib": 1776,
+     "exit_code": 0
+    }
+   ],
+   "summary": {
+    "array-append-aligned64": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 4.5095977783203125,
+     "ns_per_operation_p25": 4.466064453125,
+     "ns_per_operation_p75": 4.73944091796875,
+     "ns_per_operation_min": 4.4600067138671875,
+     "ns_per_operation_max": 6.0272216796875,
+     "peak_rss_kib_median": 9968.0,
+     "peak_rss_kib_max": 9968.0
+    },
+    "array-append-reserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.4625711441040039,
+     "ns_per_operation_p25": 0.46239280700683594,
+     "ns_per_operation_p75": 0.46259164810180664,
+     "ns_per_operation_min": 0.46221446990966797,
+     "ns_per_operation_max": 0.4653139114379883,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "array-append-unreserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.5387859344482422,
+     "ns_per_operation_p25": 0.532686710357666,
+     "ns_per_operation_p75": 0.5395412445068359,
+     "ns_per_operation_min": 0.5235671997070312,
+     "ns_per_operation_max": 0.5419254302978516,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "idle": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.0,
+     "ns_per_operation_p25": 0.0,
+     "ns_per_operation_p75": 0.0,
+     "ns_per_operation_min": 0.0,
+     "ns_per_operation_max": 0.0,
+     "peak_rss_kib_median": 1360.0,
+     "peak_rss_kib_max": 1360.0
+    },
+    "raw-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 25.210976600646973,
+     "ns_per_operation_p25": 24.787346839904785,
+     "ns_per_operation_p75": 26.231805324554443,
+     "ns_per_operation_min": 23.654460906982422,
+     "ns_per_operation_max": 27.392864227294922,
+     "peak_rss_kib_median": 3936.0,
+     "peak_rss_kib_max": 3936.0
+    },
+    "raw-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 24.178624153137207,
+     "ns_per_operation_p25": 24.106820583343506,
+     "ns_per_operation_p75": 24.808863639831543,
+     "ns_per_operation_min": 24.00477695465088,
+     "ns_per_operation_max": 26.223182678222656,
+     "peak_rss_kib_median": 1744.0,
+     "peak_rss_kib_max": 1744.0
+    },
+    "system-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 155.72190284729004,
+     "ns_per_operation_p25": 152.60728216171265,
+     "ns_per_operation_p75": 157.0442714691162,
+     "ns_per_operation_min": 144.92233562469482,
+     "ns_per_operation_max": 159.40431690216064,
+     "peak_rss_kib_median": 2704.0,
+     "peak_rss_kib_max": 2704.0
+    },
+    "system-large-blocks": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 5188.8125,
+     "ns_per_operation_p25": 5187.484375,
+     "ns_per_operation_p75": 5214.859375,
+     "ns_per_operation_min": 5179.6875,
+     "ns_per_operation_max": 5251.3125,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "system-remote-free": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 15.923812866210938,
+     "ns_per_operation_p25": 15.728958129882812,
+     "ns_per_operation_p75": 17.090805053710938,
+     "ns_per_operation_min": 13.783782958984375,
+     "ns_per_operation_max": 17.507553100585938,
+     "peak_rss_kib_median": 6096.0,
+     "peak_rss_kib_max": 6096.0
+    },
+    "system-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 26.48886013031006,
+     "ns_per_operation_p25": 26.36563777923584,
+     "ns_per_operation_p75": 28.473198890686035,
+     "ns_per_operation_min": 26.3538761138916,
+     "ns_per_operation_max": 29.168804168701172,
+     "peak_rss_kib_median": 1776.0,
+     "peak_rss_kib_max": 1776.0
+    }
+   },
+   "round": 2
+  },
+  {
+   "revision": "ec577ca4bc9dc54c2650777cab5806274c2a3f7f",
+   "working_tree_modified": true,
+   "binary_sha256": "5d950b86630ca65681b263efd07b4c5620377fb39d25c65b08f89db595ca6b3a",
+   "build": {
+    "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+    "CMAKE_CXX_COMPILER": "<worktree>/out/host-tools/bin/clang++",
+    "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem \"<worktree>/out/host-tools/libcxx-include\"",
+    "LUDUS_BUILD_FLAVOR": "Profile",
+    "LUDUS_PROFILING_ENABLED": "1",
+    "compiler_version": "Homebrew clang version 23.1.3"
+   },
+   "platform": "macOS-26.6-arm64-arm-64bit",
+   "machine": "arm64",
+   "cpu": "Apple M5",
+   "logical_cpus": 10,
+   "load_average_1_5_15_before": [
+    10.5166015625,
+    24.3935546875,
+    24.125
+   ],
+   "load_average_1_5_15_after": [
+    10.23486328125,
+    24.1044921875,
+    24.0244140625
+   ],
+   "seed": 33,
+   "processes_per_workload": 1,
+   "method": "Each workload runs in a fresh process per round, in seeded random order; one warmup then seven timed samples per process. Rates are nanoseconds per workload operation; peak RSS is the process's ru_maxrss. No sanitizer, capture or CPU pinning; other host load is recorded as load averages, not controlled.",
+   "process_runs": [
+    {
+     "workload": "idle",
+     "process": 0,
+     "order": 0,
+     "wall_seconds": 0.0038228340272326022,
+     "peak_rss_kib": 1360,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-contended-churn-4-threads",
+     "process": 0,
+     "order": 1,
+     "wall_seconds": 0.19553829199867323,
+     "peak_rss_kib": 11808,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-large-blocks",
+     "process": 0,
+     "order": 2,
+     "wall_seconds": 0.0053714169771410525,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-small-churn",
+     "process": 0,
+     "order": 3,
+     "wall_seconds": 0.2292618330102414,
+     "peak_rss_kib": 1792,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-unreserved",
+     "process": 0,
+     "order": 4,
+     "wall_seconds": 0.012539749994175509,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-reserved",
+     "process": 0,
+     "order": 5,
+     "wall_seconds": 0.007019625016255304,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-remote-free",
+     "process": 0,
+     "order": 6,
+     "wall_seconds": 0.017176708002807572,
+     "peak_rss_kib": 6096,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-contended-churn-4-threads",
+     "process": 0,
+     "order": 7,
+     "wall_seconds": 1.2350877500139177,
+     "peak_rss_kib": 2720,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-small-churn",
+     "process": 0,
+     "order": 8,
+     "wall_seconds": 0.20132483300403692,
+     "peak_rss_kib": 1744,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-aligned64",
+     "process": 0,
+     "order": 9,
+     "wall_seconds": 0.006098207988543436,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    }
+   ],
+   "summary": {
+    "array-append-aligned64": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 3.7930755615234375,
+     "ns_per_operation_p25": 3.7905426025390625,
+     "ns_per_operation_p75": 3.7959442138671875,
+     "ns_per_operation_min": 3.786712646484375,
+     "ns_per_operation_max": 3.868743896484375,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "array-append-reserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.39517879486083984,
+     "ns_per_operation_p25": 0.39511919021606445,
+     "ns_per_operation_p75": 0.40004682540893555,
+     "ns_per_operation_min": 0.39501953125,
+     "ns_per_operation_max": 0.40308666229248047,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "array-append-unreserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.4839897155761719,
+     "ns_per_operation_p25": 0.47594308853149414,
+     "ns_per_operation_p75": 0.4913806915283203,
+     "ns_per_operation_min": 0.4545450210571289,
+     "ns_per_operation_max": 0.5462169647216797,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "idle": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.0,
+     "ns_per_operation_p25": 0.0,
+     "ns_per_operation_p75": 0.0,
+     "ns_per_operation_min": 0.0,
+     "ns_per_operation_max": 0.0,
+     "peak_rss_kib_median": 1360.0,
+     "peak_rss_kib_max": 1360.0
+    },
+    "raw-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 20.859360694885254,
+     "ns_per_operation_p25": 20.75686025619507,
+     "ns_per_operation_p75": 23.240546226501465,
+     "ns_per_operation_min": 20.252267837524414,
+     "ns_per_operation_max": 26.47844886779785,
+     "peak_rss_kib_median": 11808.0,
+     "peak_rss_kib_max": 11808.0
+    },
+    "raw-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 23.549994468688965,
+     "ns_per_operation_p25": 22.32813835144043,
+     "ns_per_operation_p75": 24.01814889907837,
+     "ns_per_operation_min": 22.176544189453125,
+     "ns_per_operation_max": 24.726510047912598,
+     "peak_rss_kib_median": 1744.0,
+     "peak_rss_kib_max": 1744.0
+    },
+    "system-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 146.81216049194336,
+     "ns_per_operation_p25": 145.4699239730835,
+     "ns_per_operation_p75": 150.15037870407104,
+     "ns_per_operation_min": 143.61389541625977,
+     "ns_per_operation_max": 153.16669178009033,
+     "peak_rss_kib_median": 2720.0,
+     "peak_rss_kib_max": 2720.0
+    },
+    "system-large-blocks": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 5188.8125,
+     "ns_per_operation_p25": 5188.140625,
+     "ns_per_operation_p75": 5194.015625,
+     "ns_per_operation_min": 5187.5,
+     "ns_per_operation_max": 5251.3125,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "system-remote-free": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 12.912750244140625,
+     "ns_per_operation_p25": 10.631553649902344,
+     "ns_per_operation_p75": 13.227142333984375,
+     "ns_per_operation_min": 10.434478759765625,
+     "ns_per_operation_max": 15.285491943359375,
+     "peak_rss_kib_median": 6096.0,
+     "peak_rss_kib_max": 6096.0
+    },
+    "system-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 26.30945110321045,
+     "ns_per_operation_p25": 26.265323162078857,
+     "ns_per_operation_p75": 27.07850933074951,
+     "ns_per_operation_min": 24.42367935180664,
+     "ns_per_operation_max": 28.766592025756836,
+     "peak_rss_kib_median": 1792.0,
+     "peak_rss_kib_max": 1792.0
+    }
+   },
+   "round": 3
+  },
+  {
+   "revision": "ec577ca4bc9dc54c2650777cab5806274c2a3f7f",
+   "working_tree_modified": true,
+   "binary_sha256": "5d950b86630ca65681b263efd07b4c5620377fb39d25c65b08f89db595ca6b3a",
+   "build": {
+    "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+    "CMAKE_CXX_COMPILER": "<worktree>/out/host-tools/bin/clang++",
+    "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem \"<worktree>/out/host-tools/libcxx-include\"",
+    "LUDUS_BUILD_FLAVOR": "Profile",
+    "LUDUS_PROFILING_ENABLED": "1",
+    "compiler_version": "Homebrew clang version 23.1.3"
+   },
+   "platform": "macOS-26.6-arm64-arm-64bit",
+   "machine": "arm64",
+   "cpu": "Apple M5",
+   "logical_cpus": 10,
+   "load_average_1_5_15_before": [
+    10.23486328125,
+    24.1044921875,
+    24.0244140625
+   ],
+   "load_average_1_5_15_after": [
+    10.23486328125,
+    24.1044921875,
+    24.0244140625
+   ],
+   "seed": 34,
+   "processes_per_workload": 1,
+   "method": "Each workload runs in a fresh process per round, in seeded random order; one warmup then seven timed samples per process. Rates are nanoseconds per workload operation; peak RSS is the process's ru_maxrss. No sanitizer, capture or CPU pinning; other host load is recorded as load averages, not controlled.",
+   "process_runs": [
+    {
+     "workload": "raw-small-churn",
+     "process": 0,
+     "order": 0,
+     "wall_seconds": 0.18494325000210665,
+     "peak_rss_kib": 1760,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-contended-churn-4-threads",
+     "process": 0,
+     "order": 1,
+     "wall_seconds": 0.18546999999671243,
+     "peak_rss_kib": 3728,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-aligned64",
+     "process": 0,
+     "order": 2,
+     "wall_seconds": 0.0063512919878121465,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-contended-churn-4-threads",
+     "process": 0,
+     "order": 3,
+     "wall_seconds": 1.3936339170031715,
+     "peak_rss_kib": 2688,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-unreserved",
+     "process": 0,
+     "order": 4,
+     "wall_seconds": 0.04914258301141672,
+     "peak_rss_kib": 11760,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-small-churn",
+     "process": 0,
+     "order": 5,
+     "wall_seconds": 0.25461787497624755,
+     "peak_rss_kib": 1792,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-remote-free",
+     "process": 0,
+     "order": 6,
+     "wall_seconds": 0.022108208999270573,
+     "peak_rss_kib": 6096,
+     "exit_code": 0
+    },
+    {
+     "workload": "idle",
+     "process": 0,
+     "order": 7,
+     "wall_seconds": 0.004465874982997775,
+     "peak_rss_kib": 1360,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-large-blocks",
+     "process": 0,
+     "order": 8,
+     "wall_seconds": 0.004893625009572133,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-reserved",
+     "process": 0,
+     "order": 9,
+     "wall_seconds": 0.010715665994212031,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    }
+   ],
+   "summary": {
+    "array-append-aligned64": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 4.06646728515625,
+     "ns_per_operation_p25": 4.0652008056640625,
+     "ns_per_operation_p75": 4.07568359375,
+     "ns_per_operation_min": 4.06329345703125,
+     "ns_per_operation_max": 4.1643829345703125,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "array-append-reserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.4650754928588867,
+     "ns_per_operation_p25": 0.4630880355834961,
+     "ns_per_operation_p75": 0.47181034088134766,
+     "ns_per_operation_min": 0.46221446990966797,
+     "ns_per_operation_max": 0.5195140838623047,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "array-append-unreserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.534693717956543,
+     "ns_per_operation_p25": 0.5327262878417969,
+     "ns_per_operation_p75": 0.5868077278137207,
+     "ns_per_operation_min": 0.5205469131469727,
+     "ns_per_operation_max": 1.0421276092529297,
+     "peak_rss_kib_median": 11760.0,
+     "peak_rss_kib_max": 11760.0
+    },
+    "idle": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.0,
+     "ns_per_operation_p25": 0.0,
+     "ns_per_operation_p75": 0.0,
+     "ns_per_operation_min": 0.0,
+     "ns_per_operation_max": 0.0,
+     "peak_rss_kib_median": 1360.0,
+     "peak_rss_kib_max": 1360.0
+    },
+    "raw-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 21.56643009185791,
+     "ns_per_operation_p25": 20.74827766418457,
+     "ns_per_operation_p75": 22.192835807800293,
+     "ns_per_operation_min": 20.239154815673828,
+     "ns_per_operation_max": 22.95362949371338,
+     "peak_rss_kib_median": 3728.0,
+     "peak_rss_kib_max": 3728.0
+    },
+    "raw-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 21.021763801574707,
+     "ns_per_operation_p25": 20.98768949508667,
+     "ns_per_operation_p75": 21.891375064849854,
+     "ns_per_operation_min": 20.878950119018555,
+     "ns_per_operation_max": 22.264281272888184,
+     "peak_rss_kib_median": 1760.0,
+     "peak_rss_kib_max": 1760.0
+    },
+    "system-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 157.56527519226074,
+     "ns_per_operation_p25": 146.1213436126709,
+     "ns_per_operation_p75": 194.19743633270264,
+     "ns_per_operation_min": 140.0219602584839,
+     "ns_per_operation_max": 203.56444549560547,
+     "peak_rss_kib_median": 2688.0,
+     "peak_rss_kib_max": 2688.0
+    },
+    "system-large-blocks": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 5277.34375,
+     "ns_per_operation_p25": 5272.796875,
+     "ns_per_operation_p75": 5295.5625,
+     "ns_per_operation_min": 5261.71875,
+     "ns_per_operation_max": 5662.75,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "system-remote-free": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 13.881683349609375,
+     "ns_per_operation_p25": 12.325920104980469,
+     "ns_per_operation_p75": 14.896392822265625,
+     "ns_per_operation_min": 12.223556518554688,
+     "ns_per_operation_max": 15.047714233398438,
+     "peak_rss_kib_median": 6096.0,
+     "peak_rss_kib_max": 6096.0
+    },
+    "system-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 28.933167457580566,
+     "ns_per_operation_p25": 28.74314785003662,
+     "ns_per_operation_p75": 30.024667263031006,
+     "ns_per_operation_min": 28.5528507232666,
+     "ns_per_operation_max": 31.267921447753906,
+     "peak_rss_kib_median": 1792.0,
+     "peak_rss_kib_max": 1792.0
+    }
+   },
+   "round": 4
+  },
+  {
+   "revision": "ec577ca4bc9dc54c2650777cab5806274c2a3f7f",
+   "working_tree_modified": true,
+   "binary_sha256": "5d950b86630ca65681b263efd07b4c5620377fb39d25c65b08f89db595ca6b3a",
+   "build": {
+    "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+    "CMAKE_CXX_COMPILER": "<worktree>/out/host-tools/bin/clang++",
+    "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem \"<worktree>/out/host-tools/libcxx-include\"",
+    "LUDUS_BUILD_FLAVOR": "Profile",
+    "LUDUS_PROFILING_ENABLED": "1",
+    "compiler_version": "Homebrew clang version 23.1.3"
+   },
+   "platform": "macOS-26.6-arm64-arm-64bit",
+   "machine": "arm64",
+   "cpu": "Apple M5",
+   "logical_cpus": 10,
+   "load_average_1_5_15_before": [
+    10.5361328125,
+    23.9365234375,
+    23.96533203125
+   ],
+   "load_average_1_5_15_after": [
+    10.5361328125,
+    23.9365234375,
+    23.96533203125
+   ],
+   "seed": 35,
+   "processes_per_workload": 1,
+   "method": "Each workload runs in a fresh process per round, in seeded random order; one warmup then seven timed samples per process. Rates are nanoseconds per workload operation; peak RSS is the process's ru_maxrss. No sanitizer, capture or CPU pinning; other host load is recorded as load averages, not controlled.",
+   "process_runs": [
+    {
+     "workload": "idle",
+     "process": 0,
+     "order": 0,
+     "wall_seconds": 0.00485562501125969,
+     "peak_rss_kib": 1360,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-contended-churn-4-threads",
+     "process": 0,
+     "order": 1,
+     "wall_seconds": 1.6544202499790117,
+     "peak_rss_kib": 2688,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-contended-churn-4-threads",
+     "process": 0,
+     "order": 2,
+     "wall_seconds": 0.2085804590024054,
+     "peak_rss_kib": 5040,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-remote-free",
+     "process": 0,
+     "order": 3,
+     "wall_seconds": 0.023401042009936646,
+     "peak_rss_kib": 6096,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-small-churn",
+     "process": 0,
+     "order": 4,
+     "wall_seconds": 0.2907733749889303,
+     "peak_rss_kib": 1792,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-unreserved",
+     "process": 0,
+     "order": 5,
+     "wall_seconds": 0.00836800000979565,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-aligned64",
+     "process": 0,
+     "order": 6,
+     "wall_seconds": 0.0069568330072797835,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-small-churn",
+     "process": 0,
+     "order": 7,
+     "wall_seconds": 0.23039074998814613,
+     "peak_rss_kib": 1744,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-large-blocks",
+     "process": 0,
+     "order": 8,
+     "wall_seconds": 0.005178124993108213,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-reserved",
+     "process": 0,
+     "order": 9,
+     "wall_seconds": 0.007271082984516397,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    }
+   ],
+   "summary": {
+    "array-append-aligned64": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 4.5623779296875,
+     "ns_per_operation_p25": 4.532173156738281,
+     "ns_per_operation_p75": 4.6084747314453125,
+     "ns_per_operation_min": 4.50579833984375,
+     "ns_per_operation_max": 4.6513824462890625,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "array-append-reserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.46221446990966797,
+     "ns_per_operation_p25": 0.4620552062988281,
+     "ns_per_operation_p75": 0.46366453170776367,
+     "ns_per_operation_min": 0.46193599700927734,
+     "ns_per_operation_max": 0.46984386444091797,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "array-append-unreserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.5286130905151367,
+     "ns_per_operation_p25": 0.524500846862793,
+     "ns_per_operation_p75": 0.533759593963623,
+     "ns_per_operation_min": 0.5193948745727539,
+     "ns_per_operation_max": 0.5371971130371094,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "idle": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.0,
+     "ns_per_operation_p25": 0.0,
+     "ns_per_operation_p75": 0.0,
+     "ns_per_operation_min": 0.0,
+     "ns_per_operation_max": 0.0,
+     "peak_rss_kib_median": 1360.0,
+     "peak_rss_kib_max": 1360.0
+    },
+    "raw-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 22.476911544799805,
+     "ns_per_operation_p25": 22.12536382675171,
+     "ns_per_operation_p75": 23.75809335708618,
+     "ns_per_operation_min": 21.396636962890625,
+     "ns_per_operation_max": 27.455925941467285,
+     "peak_rss_kib_median": 5040.0,
+     "peak_rss_kib_max": 5040.0
+    },
+    "raw-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 26.439745903015137,
+     "ns_per_operation_p25": 26.333789348602295,
+     "ns_per_operation_p75": 26.63975954055786,
+     "ns_per_operation_min": 26.129801750183105,
+     "ns_per_operation_max": 26.72410011291504,
+     "peak_rss_kib_median": 1744.0,
+     "peak_rss_kib_max": 1744.0
+    },
+    "system-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 197.0648365020752,
+     "ns_per_operation_p25": 194.83137130737305,
+     "ns_per_operation_p75": 199.0230484008789,
+     "ns_per_operation_min": 183.43822193145752,
+     "ns_per_operation_max": 203.59599590301514,
+     "peak_rss_kib_median": 2688.0,
+     "peak_rss_kib_max": 2688.0
+    },
+    "system-large-blocks": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 5246.09375,
+     "ns_per_operation_p25": 5240.234375,
+     "ns_per_operation_p75": 5262.375,
+     "ns_per_operation_min": 5222.65625,
+     "ns_per_operation_max": 5539.0625,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "system-remote-free": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 13.761520385742188,
+     "ns_per_operation_p25": 13.750717163085938,
+     "ns_per_operation_p75": 13.782180786132812,
+     "ns_per_operation_min": 13.742446899414062,
+     "ns_per_operation_max": 17.320632934570312,
+     "peak_rss_kib_median": 6096.0,
+     "peak_rss_kib_max": 6096.0
+    },
+    "system-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 32.34072494506836,
+     "ns_per_operation_p25": 32.31863212585449,
+     "ns_per_operation_p75": 35.86701536178589,
+     "ns_per_operation_min": 31.3933687210083,
+     "ns_per_operation_max": 40.17432498931885,
+     "peak_rss_kib_median": 1792.0,
+     "peak_rss_kib_max": 1792.0
+    }
+   },
+   "round": 5
+  },
+  {
+   "revision": "ec577ca4bc9dc54c2650777cab5806274c2a3f7f",
+   "working_tree_modified": true,
+   "binary_sha256": "5d950b86630ca65681b263efd07b4c5620377fb39d25c65b08f89db595ca6b3a",
+   "build": {
+    "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+    "CMAKE_CXX_COMPILER": "<worktree>/out/host-tools/bin/clang++",
+    "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem \"<worktree>/out/host-tools/libcxx-include\"",
+    "LUDUS_BUILD_FLAVOR": "Profile",
+    "LUDUS_PROFILING_ENABLED": "1",
+    "compiler_version": "Homebrew clang version 23.1.3"
+   },
+   "platform": "macOS-26.6-arm64-arm-64bit",
+   "machine": "arm64",
+   "cpu": "Apple M5",
+   "logical_cpus": 10,
+   "load_average_1_5_15_before": [
+    10.5361328125,
+    23.9365234375,
+    23.96533203125
+   ],
+   "load_average_1_5_15_after": [
+    10.2529296875,
+    23.6552734375,
+    23.86572265625
+   ],
+   "seed": 36,
+   "processes_per_workload": 1,
+   "method": "Each workload runs in a fresh process per round, in seeded random order; one warmup then seven timed samples per process. Rates are nanoseconds per workload operation; peak RSS is the process's ru_maxrss. No sanitizer, capture or CPU pinning; other host load is recorded as load averages, not controlled.",
+   "process_runs": [
+    {
+     "workload": "system-small-churn",
+     "process": 0,
+     "order": 0,
+     "wall_seconds": 0.2669076670135837,
+     "peak_rss_kib": 1824,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-contended-churn-4-threads",
+     "process": 0,
+     "order": 1,
+     "wall_seconds": 1.349622832989553,
+     "peak_rss_kib": 2704,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-aligned64",
+     "process": 0,
+     "order": 2,
+     "wall_seconds": 0.006631291995290667,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-contended-churn-4-threads",
+     "process": 0,
+     "order": 3,
+     "wall_seconds": 0.211416833975818,
+     "peak_rss_kib": 4080,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-unreserved",
+     "process": 0,
+     "order": 4,
+     "wall_seconds": 0.009755375009262934,
+     "peak_rss_kib": 9760,
+     "exit_code": 0
+    },
+    {
+     "workload": "raw-small-churn",
+     "process": 0,
+     "order": 5,
+     "wall_seconds": 0.20885358299710788,
+     "peak_rss_kib": 1760,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-remote-free",
+     "process": 0,
+     "order": 6,
+     "wall_seconds": 0.017486374999862164,
+     "peak_rss_kib": 6096,
+     "exit_code": 0
+    },
+    {
+     "workload": "array-append-reserved",
+     "process": 0,
+     "order": 7,
+     "wall_seconds": 0.00689250000868924,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    },
+    {
+     "workload": "idle",
+     "process": 0,
+     "order": 8,
+     "wall_seconds": 0.003074542008107528,
+     "peak_rss_kib": 1360,
+     "exit_code": 0
+    },
+    {
+     "workload": "system-large-blocks",
+     "process": 0,
+     "order": 9,
+     "wall_seconds": 0.004146499995840713,
+     "peak_rss_kib": 5536,
+     "exit_code": 0
+    }
+   ],
+   "summary": {
+    "array-append-aligned64": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 4.077911376953125,
+     "ns_per_operation_p25": 4.0753631591796875,
+     "ns_per_operation_p75": 4.080772399902344,
+     "ns_per_operation_min": 4.069000244140625,
+     "ns_per_operation_max": 4.1116180419921875,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "array-append-reserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.39478111267089844,
+     "ns_per_operation_p25": 0.3947615623474121,
+     "ns_per_operation_p75": 0.3958740234375,
+     "ns_per_operation_min": 0.3947420120239258,
+     "ns_per_operation_max": 0.39748382568359375,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "array-append-unreserved": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.5276203155517578,
+     "ns_per_operation_p25": 0.5224347114562988,
+     "ns_per_operation_p75": 0.533759593963623,
+     "ns_per_operation_min": 0.5172891616821289,
+     "ns_per_operation_max": 0.5528526306152344,
+     "peak_rss_kib_median": 9760.0,
+     "peak_rss_kib_max": 9760.0
+    },
+    "idle": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 0.0,
+     "ns_per_operation_p25": 0.0,
+     "ns_per_operation_p75": 0.0,
+     "ns_per_operation_min": 0.0,
+     "ns_per_operation_max": 0.0,
+     "peak_rss_kib_median": 1360.0,
+     "peak_rss_kib_max": 1360.0
+    },
+    "raw-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 24.814844131469727,
+     "ns_per_operation_p25": 24.1637225151062,
+     "ns_per_operation_p75": 25.219161987304688,
+     "ns_per_operation_min": 22.75379467010498,
+     "ns_per_operation_max": 26.029746055603027,
+     "peak_rss_kib_median": 4080.0,
+     "peak_rss_kib_max": 4080.0
+    },
+    "raw-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 24.26048183441162,
+     "ns_per_operation_p25": 23.628751754760742,
+     "ns_per_operation_p75": 24.28595209121704,
+     "ns_per_operation_min": 22.43085765838623,
+     "ns_per_operation_max": 25.75381565093994,
+     "peak_rss_kib_median": 1760.0,
+     "peak_rss_kib_max": 1760.0
+    },
+    "system-contended-churn-4-threads": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 158.3305206298828,
+     "ns_per_operation_p25": 151.57157182693481,
+     "ns_per_operation_p75": 162.88711643218994,
+     "ns_per_operation_min": 146.05577754974365,
+     "ns_per_operation_max": 173.30408096313477,
+     "peak_rss_kib_median": 2704.0,
+     "peak_rss_kib_max": 2704.0
+    },
+    "system-large-blocks": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 4480.46875,
+     "ns_per_operation_p25": 4479.171875,
+     "ns_per_operation_p75": 4483.078125,
+     "ns_per_operation_min": 4477.875,
+     "ns_per_operation_max": 4490.875,
+     "peak_rss_kib_median": 5536.0,
+     "peak_rss_kib_max": 5536.0
+    },
+    "system-remote-free": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 10.560348510742188,
+     "ns_per_operation_p25": 10.442733764648438,
+     "ns_per_operation_p75": 12.140266418457031,
+     "ns_per_operation_min": 10.431930541992188,
+     "ns_per_operation_max": 13.58795166015625,
+     "peak_rss_kib_median": 6096.0,
+     "peak_rss_kib_max": 6096.0
+    },
+    "system-small-churn": {
+     "samples": 7,
+     "processes": 1,
+     "ns_per_operation_median": 30.218799591064453,
+     "ns_per_operation_p25": 29.067853927612305,
+     "ns_per_operation_p75": 31.672656059265137,
+     "ns_per_operation_min": 28.74728012084961,
+     "ns_per_operation_max": 36.10547351837158,
+     "peak_rss_kib_median": 1824.0,
+     "peak_rss_kib_max": 1824.0
+    }
+   },
+   "round": 6
+  }
+ ]
+}

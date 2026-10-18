@@ -53,3 +53,12 @@ modules/localization/src/internal/catalog_access.hpp
 modules/localization/src/internal/formatter_backend.hpp
 modules/localization/tests/formatter_tests.cpp
 modules/localization/tests/format_probe.cpp
+modules/foundation/memory/include/ludus/foundation/memory/allocation_statistics.hpp
+modules/foundation/memory/src/accounting.cpp
+modules/foundation/memory/src/internal/accounting.hpp
+modules/foundation/memory/tests/accounting_tests.cpp
+modules/foundation/containers/tests/array_accounting_tests.cpp
+modules/foundation/profiling/include/ludus/foundation/profiling/memory_gauges.hpp
+modules/foundation/profiling/src/memory_gauges.cpp
+modules/foundation/profiling/src/internal/memory_gauge.hpp
+modules/foundation/profiling/tests/memory_gauge_tests.cpp

@@ -4,7 +4,9 @@
 // scripts/python/memory_baseline.py runner starts every workload in fresh
 // processes, records each process's peak RSS and computes rates offline. This
 // tool measures the current system-backed paths only; it changes no allocation
-// policy and is not a CI timing gate.
+// policy and is not a CI timing gate. Memory profiling phase 1 added the raw
+// and contended churn workloads to measure domain accounting overhead
+// (docs/development/memory-phase-1.md).
 //
 // See docs/development/memory-phase-0.md for the method and recorded results.
 #include <ludus/foundation/base/core.h>
@@ -101,37 +103,67 @@ void WriteRow(std::string_view workload, usize sample, const Sample& result) noe
 
 // ---- System domain ----------------------------------------------------------
 
+constexpr usize CHURN_SLOT_COUNT = 4096;
+constexpr usize CHURN_SIZE_CLASS_COUNT = 9;
+constexpr usize CHURN_BLOCK_ALIGNMENT = 16;
+constexpr StaticArray<usize, CHURN_SIZE_CLASS_COUNT> CHURN_SIZE_CLASSES = {16, 24, 32, 48, 64, 96, 128, 192, 256};
+
+// Allocates through the system AllocationDomain: the accounted engine path.
+struct DomainBackend
+{
+    const AllocationDomain& Domain;
+
+    [[nodiscard]] void* Allocate(usize bytes) const noexcept
+    {
+        return Domain.TryAllocate(bytes, CHURN_BLOCK_ALIGNMENT);
+    }
+    void Free(void* block, usize bytes) const noexcept
+    {
+        Domain.Free(block, bytes, CHURN_BLOCK_ALIGNMENT);
+    }
+};
+
+// Calls the system domain's backend family directly, with no domain dispatch,
+// validation or accounting: the unaccounted reference for the same workload.
+struct RawBackend
+{
+    [[nodiscard]] void* Allocate(usize bytes) const noexcept
+    {
+        return ::operator new(bytes, std::align_val_t{CHURN_BLOCK_ALIGNMENT}, std::nothrow);
+    }
+    void Free(void* block, usize) const noexcept
+    {
+        ::operator delete(block, std::align_val_t{CHURN_BLOCK_ALIGNMENT});
+    }
+};
+
 // Mixed small-block churn over a retained set: each operation picks a random
 // slot and frees it if occupied, otherwise allocates a random size class and
 // touches the payload. Bytes = requested bytes allocated during the sample.
-Sample RunSystemSmallChurn()
+// Untimed: the final release of the retained set.
+template <typename BackendType>
+Sample RunSmallChurn(const BackendType& backend, uint64 operationCount, uint64 seed)
 {
-    constexpr usize SLOT_COUNT = 4096;
-    constexpr uint64 OPERATION_COUNT = 1U << 20;
-    constexpr usize SIZE_CLASS_COUNT = 9;
-    constexpr usize BLOCK_ALIGNMENT = 16;
-    const StaticArray<usize, SIZE_CLASS_COUNT> sizeClasses = {16, 24, 32, 48, 64, 96, 128, 192, 256};
-    const AllocationDomain& domain = GetSystemAllocationDomain();
-    StaticArray<uint8*, SLOT_COUNT> blocks{};
-    StaticArray<usize, SLOT_COUNT> blockSizes{};
-    uint64 state = RANDOM_SEED;
+    StaticArray<uint8*, CHURN_SLOT_COUNT> blocks{};
+    StaticArray<usize, CHURN_SLOT_COUNT> blockSizes{};
+    uint64 state = seed;
     Sample sample;
-    sample.Operations = OPERATION_COUNT;
+    sample.Operations = operationCount;
 
     const uint64 start = NowTicks();
-    for (uint64 operation = 0; operation < OPERATION_COUNT; ++operation)
+    for (uint64 operation = 0; operation < operationCount; ++operation)
     {
         const uint64 random = NextRandom(state);
-        const usize slot = static_cast<usize>(random % SLOT_COUNT);
+        const usize slot = static_cast<usize>(random % CHURN_SLOT_COUNT);
         if (blocks[slot] != nullptr)
         {
             sample.Checksum += blocks[slot][0];
-            domain.Free(blocks[slot], blockSizes[slot], BLOCK_ALIGNMENT);
+            backend.Free(blocks[slot], blockSizes[slot]);
             blocks[slot] = nullptr;
             continue;
         }
-        const usize bytes = sizeClasses[static_cast<usize>((random >> 32U) % SIZE_CLASS_COUNT)];
-        uint8* block = static_cast<uint8*>(domain.TryAllocate(bytes, BLOCK_ALIGNMENT));
+        const usize bytes = CHURN_SIZE_CLASSES[static_cast<usize>((random >> 32U) % CHURN_SIZE_CLASS_COUNT)];
+        uint8* block = static_cast<uint8*>(backend.Allocate(bytes));
         if (block == nullptr)
         {
             continue;
@@ -144,11 +176,82 @@ Sample RunSystemSmallChurn()
     }
     sample.Nanoseconds = NowTicks() - start;
 
-    for (usize slot = 0; slot < SLOT_COUNT; ++slot)
+    for (usize slot = 0; slot < CHURN_SLOT_COUNT; ++slot)
     {
-        domain.Free(blocks[slot], blockSizes[slot], BLOCK_ALIGNMENT);
+        if (blocks[slot] != nullptr)
+        {
+            backend.Free(blocks[slot], blockSizes[slot]);
+        }
     }
     return sample;
+}
+
+constexpr uint64 CHURN_OPERATION_COUNT = 1U << 20;
+
+Sample RunSystemSmallChurn()
+{
+    return RunSmallChurn(DomainBackend{GetSystemAllocationDomain()}, CHURN_OPERATION_COUNT, RANDOM_SEED);
+}
+
+Sample RunRawSmallChurn()
+{
+    return RunSmallChurn(RawBackend{}, CHURN_OPERATION_COUNT, RANDOM_SEED);
+}
+
+// Four threads churn concurrently, released together; wall time from release
+// to the last thread's completion. With the domain backend every thread updates
+// the same domain's counters. Operations = total operations.
+template <typename BackendType>
+Sample RunContendedChurn(const BackendType& backend)
+{
+    constexpr uint32 THREAD_COUNT = 4;
+    constexpr uint64 OPERATIONS_PER_THREAD = 1U << 18;
+    std::atomic<bool> shouldStart{false};
+    std::atomic<uint64> lastFinish{0};
+    StaticArray<Sample, THREAD_COUNT> results{};
+    Array<std::thread> threads;
+    threads.EnsureCapacity(THREAD_COUNT);
+    for (uint32 t = 0; t < THREAD_COUNT; ++t)
+    {
+        threads.AddInPlace([&backend, &shouldStart, &lastFinish, &results, t] {
+            while (shouldStart.load(std::memory_order_acquire) == false)
+            {
+                std::this_thread::yield();
+            }
+            results[t] = RunSmallChurn(backend, OPERATIONS_PER_THREAD, RANDOM_SEED + t);
+            const uint64 now = NowTicks();
+            uint64 previous = lastFinish.load(std::memory_order_relaxed);
+            while (previous < now &&
+                   lastFinish.compare_exchange_weak(previous, now, std::memory_order_relaxed) == false)
+            {
+            }
+        });
+    }
+    const uint64 start = NowTicks();
+    shouldStart.store(true, std::memory_order_release);
+    for (std::thread& thread : threads)
+    {
+        thread.join();
+    }
+    Sample sample;
+    sample.Operations = THREAD_COUNT * OPERATIONS_PER_THREAD;
+    sample.Nanoseconds = lastFinish.load(std::memory_order_relaxed) - start;
+    for (const Sample& result : results)
+    {
+        sample.Bytes += result.Bytes;
+        sample.Checksum += result.Checksum;
+    }
+    return sample;
+}
+
+Sample RunSystemContendedChurn()
+{
+    return RunContendedChurn(DomainBackend{GetSystemAllocationDomain()});
+}
+
+Sample RunRawContendedChurn()
+{
+    return RunContendedChurn(RawBackend{});
 }
 
 // Page-aligned 4 MiB blocks: allocate, touch one byte per page, free.
@@ -415,14 +518,17 @@ Sample RunIdle()
 
 constexpr usize WORKLOAD_COUNT =
 #if LUDUS_PROFILING_ENABLED
-    10;
+    13;
 #else
-    7;
+    10;
 #endif
 
 const StaticArray<Workload, WORKLOAD_COUNT> WORKLOADS = {{
     { .Name = "idle", .Run = RunIdle },
     { .Name = "system-small-churn", .Run = RunSystemSmallChurn },
+    { .Name = "raw-small-churn", .Run = RunRawSmallChurn },
+    { .Name = "system-contended-churn-4-threads", .Run = RunSystemContendedChurn },
+    { .Name = "raw-contended-churn-4-threads", .Run = RunRawContendedChurn },
     { .Name = "system-large-blocks", .Run = RunSystemLargeBlocks },
     { .Name = "system-remote-free", .Run = RunSystemRemoteFree },
     { .Name = "array-append-unreserved", .Run = RunArrayAppendUnreserved },

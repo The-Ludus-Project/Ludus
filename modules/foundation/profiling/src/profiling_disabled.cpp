@@ -1,4 +1,5 @@
 #include <ludus/foundation/profiling/integration.hpp>
+#include <ludus/foundation/profiling/memory_gauges.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
 
@@ -45,5 +46,9 @@ bool ExportPerfettoTrace(std::string_view) noexcept
 TraceHealth GetTraceHealth() noexcept
 {
     return {};
+}
+bool RecordMemoryGauges() noexcept
+{
+    return false;
 }
 } // namespace ludus::foundation::profiling
