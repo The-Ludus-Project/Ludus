@@ -109,7 +109,7 @@ streamed; every diagnostic carries `file:line`.
 | Indices | positive one-based and negative relative indices for `v`, `vt`, `vn`; zero, malformed or out-of-range indices fail with `MALFORMED_INPUT` |
 | Faces | polygons up to 64 corners fan-triangulated (exact for convex polygons); larger polygons skipped; degenerate triangles removed (`GEOMETRY_REPAIRED`) |
 | Grouping | one IR mesh per (object/group, material) pair (at most 2^18 pairs); equal corner tuples are welded |
-| Smoothing | `s off`/`s 0` faces keep their own corners, so generated normals stay flat; numbered groups share them |
+| Smoothing | When normals are generated, `s off`/`s 0` faces keep their own corners so they stay flat, and numbered groups share them. Faces with an explicit `vn` on every corner weld equal `v/vt/vn` corners whatever the group |
 | Missing data | missing `vn` → area-weighted normals; a group mixing faces with and without `vt`/`vn` is made uniform with `ATTRIBUTE_IGNORED` |
 | Not imported (reported) | `l`/`p`, free-form curves and surfaces, display attributes |
 | MTL statements | `newmtl`, `Kd`, `Ks`, `Ke`, `Ns`, `d` (incl. `-halo`), `Tr`, `illum`, `Pr`, `Pm`; `Ka`, `Ni`, `Tf`, sheen/clearcoat keys reported or ignored |
