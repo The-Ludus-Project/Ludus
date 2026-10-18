@@ -1,6 +1,9 @@
 # Ludus Randomness Architecture
 
-**Status:** Core primitives implemented; broader integration remains proposed.
+**Status:** Core primitives and the first game consumer implemented; broader
+integration remains proposed. `apps/world_demo` scatters static placements per
+room from a recorded session seed and the checked-in manifest ([milestone 1](#milestone-1-procedural-placement),
+pull requests 1 and 2); harvesting and regrowth (pull request 3) are pending.
 FoundationMath ships `addressed_random.hpp`: checked domain-key derivation and
 address construction, Philox4x32-10 raw/block/float samples, and bounded sampling
 with a prepared-bound option. Existing PCG32 v1 behavior remains authoritative in
@@ -729,11 +732,20 @@ rejected before generation, with nothing published.
 
 **Delivery.** Three pull requests deliver it, each with its tests and documentation:
 
-1. The domain manifest check in FoundationMath and the headless scatter kernel in
-   `Ludus::ProceduralEnvironment`, with the golden, ordering, property-isolation
-   and rejection tests.
-2. World demo integration: the room catalog, scatter recipes in level files, the
-   session world seed, drawing with the cosmetic domain, and the replay hash.
+1. Delivered: the domain manifest check in FoundationMath and the headless
+   scatter kernel in `Ludus::ProceduralEnvironment`, with the golden, ordering,
+   property-isolation and rejection tests.
+2. Delivered: world demo integration. The checked-in manifest
+   (`apps/world_demo/internal/random_domains.h`) assigns the five domains, the
+   room catalog (`internal/room_catalog.h`) maps each level's document identity to
+   its ordinal, the `.world.json` rooms author `scatter`, `scatter_layer` and
+   `scatter_variant` entities, the session records an explicit `WorldSeed`, the
+   room's placements are generated when its world is prepared and enter the
+   replay hash, and extraction draws them with a cosmetic-domain tint that enters
+   nothing. The [world demo guide](../examples/world-demo.md#scatter-placements)
+   describes authoring and limits; `apps/world_demo/tests/scatter_tests.cpp` and
+   the browser harness check the isolation rows above, catalog/manifest
+   rejection, load failures that publish nothing and one pinned placement digest.
 3. Harvesting and regrowth with the event rules above, and status updates here,
    in the procedural document and in the world demo guide.
 
@@ -780,9 +792,10 @@ test results are evidence about the authors' implementations, not Ludus results.
 | OS CSPRNG everywhere | Correct source for security and root entropy. Simulation still needs explicit deterministic ownership and stable replay sampling. |
 | Global or automatic thread-local stream | Hidden coupling and schedule-dependent simulation results; excluded. |
 
-Core primitives, representative native/WebAssembly fixtures and Metal, Vulkan
-and software-adapter WebGPU parity are implemented. Game/world integration,
-broader acceptance evidence, performance baselines, hardware WebGPU
-qualification and statistical qualification remain work for the milestones above.
+Core primitives, representative native/WebAssembly fixtures, Metal, Vulkan
+and software-adapter WebGPU parity, and the world demo's room scatter are
+implemented. Harvesting/regrowth, the state codec and seed acquisition, broader
+acceptance evidence, performance baselines, hardware WebGPU qualification and
+statistical qualification remain work for the milestones above.
 Complete the initial implementation before using the research backlog to propose
 measured improvements.

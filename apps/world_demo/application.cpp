@@ -48,19 +48,28 @@ Key MapKey(platform::browser::Key key) noexcept
             return Key::Unknown;
     }
 }
-// Independently checked std140/WGSL/SPIR-V: vector array stride 16;
-// view/settings at 0/16, geometry/color/rotation at 32/1056/2080, size 3104.
-struct alignas(16) Uniforms final
+// Independently checked std140/WGSL/SPIR-V: vector array stride 16; view/settings at 0/16,
+// geometry/color/rotation at 32/3104/6176 for MAX_RENDER_DRAWS (192) records, size 9248.
+constexpr usize UNIFORM_VECTOR_LANES = 4;
+constexpr usize UNIFORM_VECTOR_BYTES = UNIFORM_VECTOR_LANES * sizeof(float32);
+struct alignas(UNIFORM_VECTOR_BYTES) Uniforms final
 {
-    float32 View[4] = {};
-    float32 Settings[4] = {};
-    float32 Geometry[64][4] = {};
-    float32 Color[64][4] = {};
-    float32 Rotation[64][4] = {};
+    float32 View[UNIFORM_VECTOR_LANES] = {};
+    float32 Settings[UNIFORM_VECTOR_LANES] = {};
+    float32 Geometry[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
+    float32 Color[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
+    float32 Rotation[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
 };
-static_assert(std::is_standard_layout_v<Uniforms> && sizeof(Uniforms) == 3104 && alignof(Uniforms) == 16);
-static_assert(offsetof(Uniforms, Settings) == 16 && offsetof(Uniforms, Geometry) == 32 &&
-              offsetof(Uniforms, Color) == 1056 && offsetof(Uniforms, Rotation) == 2080);
+constexpr usize UNIFORM_GEOMETRY_OFFSET = 2 * UNIFORM_VECTOR_BYTES;
+constexpr usize UNIFORM_COLOR_OFFSET = UNIFORM_GEOMETRY_OFFSET + MAX_RENDER_DRAWS * UNIFORM_VECTOR_BYTES;
+constexpr usize UNIFORM_ROTATION_OFFSET = UNIFORM_COLOR_OFFSET + MAX_RENDER_DRAWS * UNIFORM_VECTOR_BYTES;
+constexpr usize UNIFORM_BYTES = UNIFORM_ROTATION_OFFSET + MAX_RENDER_DRAWS * UNIFORM_VECTOR_BYTES;
+static_assert(MAX_RENDER_DRAWS == 192 && UNIFORM_COLOR_OFFSET == 3104 && UNIFORM_ROTATION_OFFSET == 6176 &&
+              UNIFORM_BYTES == 9248);
+static_assert(std::is_standard_layout_v<Uniforms> && sizeof(Uniforms) == UNIFORM_BYTES && alignof(Uniforms) == 16);
+static_assert(offsetof(Uniforms, Settings) == 16 && offsetof(Uniforms, Geometry) == UNIFORM_GEOMETRY_OFFSET &&
+              offsetof(Uniforms, Color) == UNIFORM_COLOR_OFFSET &&
+              offsetof(Uniforms, Rotation) == UNIFORM_ROTATION_OFFSET);
 bool Accepted(rhi::ResourceStatus status) noexcept
 {
     return status == rhi::ResourceStatus::Ready || status == rhi::ResourceStatus::Pending;

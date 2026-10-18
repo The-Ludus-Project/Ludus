@@ -37,8 +37,11 @@ TEST_CASE("Every candidate allocation failure preserves the active world", "[wor
     REQUIRE(session.Activate());
     const auto old = session.World().FindAuthored("player-start");
     const auto hash = session.World().GetReplayHash();
-    // Two registry arrays plus three arrays for each of eight component pools.
-    for (isize allocation = 0; allocation < 26; ++allocation)
+    // Two registry arrays, three arrays for each of eight component pools, then the scatter kernel's
+    // candidate scratch and the room's placement storage.
+    constexpr isize CANDIDATE_ALLOCATIONS = 28;
+    REQUIRE(session.World().GetPlacements().empty() == false);
+    for (isize allocation = 0; allocation < CANDIDATE_ALLOCATIONS; ++allocation)
     {
         REQUIRE(session.RequestLoad(ExampleLevel()).Error == LevelError::None);
         gCalls = 0;
@@ -85,4 +88,6 @@ TEST_CASE("Prepared ticks, commands, completions and render extraction never all
     REQUIRE(tick == Status::Success);
     REQUIRE(rendered);
     REQUIRE(after == before);
+    // Extraction drew the room's placements (with their cosmetic tint) without allocating.
+    REQUIRE(frame.Count > level.CollisionCount + level.EntityCount);
 }

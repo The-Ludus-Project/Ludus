@@ -3,7 +3,8 @@
 Status: proposed Ludus architecture, October 13, 2026. The initial draft used
 `ab49fe8`; integration boundaries were reconciled with `a8e041d`.
 The procedural modules and tools described here require implementation, except
-the headless scatter kernel of [P0](#p0-room-scoped-scatter). The
+the headless scatter kernel of [P0](#p0-room-scoped-scatter) and its room-scoped
+integration in `apps/world_demo`. The
 [Gems and research review](procedural-content-generation-gems-review.md) records
 consulted sources and the [research queue](procedural-content-generation-gems-review.md#conference-and-journal-research-plan)
 maps further reading to owners, delivery slices and acceptance evidence.
@@ -884,5 +885,9 @@ unchanged and the storage contents are unspecified.
 **Acceptance.** The kernel tests cover the golden placement digest on native and
 Emscripten, ordering independence across worker counts, chunk sizes, traversal
 order and isolated cells, property isolation, and rejection of every invalid
-recipe field. World integration, harvesting and the remaining isolation rows of
-milestone 1 follow in the world demo.
+recipe field. The world demo integrates the kernel: its rooms author the recipe
+as `scatter`, `scatter_layer` and `scatter_variant` entities, its checked-in
+catalog assigns room ordinals, placements are generated when a room is prepared
+and drawn behind entities, and its tests cover the presentation, content and
+rejection rows of milestone 1 ([guide](../examples/world-demo.md#scatter-placements)).
+Harvesting and regrowth follow there.

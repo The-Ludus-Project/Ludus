@@ -657,7 +657,8 @@ TEST_CASE("Commit preflight faults without publishing spawns or presentation", "
     REQUIRE(world.Registry().IsAlive(old));
     REQUIRE(world.GetOutbox().empty());
     REQUIRE_FALSE(world.Extract(1, frame));
-    REQUIRE(frame.Count == 4);
+    // The retained frame still holds the floor, the three entities and the room's placements.
+    REQUIRE(frame.Count == 4 + world.GetPlacements().size());
 }
 TEST_CASE("Gameplay command overflow retains failure context without publishing", "[world-demo]")
 {
