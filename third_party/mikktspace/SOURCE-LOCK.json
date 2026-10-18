@@ -1,0 +1,11 @@
+{
+  "name": "MikkTSpace",
+  "version": "3e895b49d05ea07e4c2133156cfa94369e19e409",
+  "license": "zlib (Copyright (C) 2011 by Morten S. Mikkelsen)",
+  "release_url": "https://github.com/mmikk/MikkTSpace/tree/3e895b49d05ea07e4c2133156cfa94369e19e409",
+  "files": {
+    "mikktspace.c": "de87e74107df766ce68108801262bd8d53899414236b59810509a8fc2a51e288",
+    "mikktspace.h": "17fc433894f24c73753d548086cc4d8c5c0379f4a6edfb98b5da243e4f0bc3d0"
+  },
+  "notes": "Reference MikkTSpace tangent generator, vendored unchanged at a pinned commit and verified by CMake without network access. Built as one C translation unit (no exceptions; malloc/free for scratch). Used privately by Ludus::SceneCook through src/importers/tangent_generation.cpp; no MikkTSpace types appear in public headers."
+}

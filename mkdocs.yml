@@ -102,7 +102,7 @@ nav:
       - Render graph authoring proposal: architecture/render-graph-authoring.md
       - Benchmark scenes and suites: development/benchmark-scenes.md
       - Runtime profiling: development/runtime-profiling.md
-      - Best-effort pbrt import: development/best-effort-scene-import.md
+      - Best-effort scene import: development/best-effort-scene-import.md
       - Release packages: development/game-packaging-publishing.md
       - Browser editor build: development/browser-editor.md
   - Samples:

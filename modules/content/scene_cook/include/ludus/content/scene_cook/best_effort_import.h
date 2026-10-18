@@ -5,27 +5,48 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/strings/string.hpp>
 
+#include <span>
 #include <string_view>
 
 /// @file
-/// Best-effort pbrt-v4 scene importer (profile pbrt-best-effort-v1).
+/// Best-effort scene importers: pbrt-v4 (profile pbrt-best-effort-v1), glTF 2.0
+/// and GLB (gltf-best-effort-v1) and Wavefront OBJ with MTL (obj-best-effort-v1).
 ///
-/// Unlike the frozen pbrt-reference-v1 staircase2 cooker, this importer accepts
-/// general pbrt-v4 scenes with reported approximations: unsupported
-/// features become documented fallbacks, and the scene is fitted to the LUSCN
-/// limits in Ludus::SceneFormat (6 meshes, 8 materials, 8 textures, 500 k
-/// vertices, 128 objects, 64 MiB). Every compromise is recorded in a
-/// deterministic, versioned JSON import report. Authored lighting that cannot fit
-/// without losing sources or energy rejects explicitly. See
+/// Unlike the frozen pbrt-reference-v1 staircase2 cooker, these importers accept
+/// general scenes with reported approximations: unsupported features become
+/// documented fallbacks, and the scene is fitted to the LUSCN limits in
+/// Ludus::SceneFormat (6 meshes, 8 materials, 8 textures, 500 k vertices, 128
+/// objects, 64 MiB). Every compromise is recorded in a deterministic, versioned
+/// JSON import report. Authored pbrt lighting that cannot fit without losing
+/// sources or energy rejects explicitly; decorative glTF/OBJ emission is dropped
+/// with a diagnostic instead. All front-ends share one format-neutral
+/// intermediate representation and budget planner. See
 /// docs/development/best-effort-scene-import.md.
 namespace ludus::content::scene_cook
 {
-/// Profile identifier recorded in the import report and the catalog.
+/// Profile identifier of the pbrt-v4 importer, recorded in the import report and the catalog.
 inline constexpr std::string_view BEST_EFFORT_PROFILE = "pbrt-best-effort-v1";
+/// Profile identifier of the glTF 2.0 / GLB importer.
+inline constexpr std::string_view GLTF_BEST_EFFORT_PROFILE = "gltf-best-effort-v1";
+/// Profile identifier of the Wavefront OBJ/MTL importer.
+inline constexpr std::string_view OBJ_BEST_EFFORT_PROFILE = "obj-best-effort-v1";
+
+/// @brief Scene source container recognised by DetectSceneSourceFormat.
+enum class SceneSourceFormat : uint8
+{
+    /// Not recognised.
+    Unknown,
+    /// pbrt-v4 scene description text.
+    Pbrt,
+    /// glTF 2.0 JSON (.gltf) or binary container (.glb).
+    Gltf,
+    /// Wavefront OBJ text.
+    Obj,
+};
 /// Version of the import report JSON schema.
 inline constexpr uint32 IMPORT_REPORT_SCHEMA = 1;
 
-/// @brief Options for ImportPbrtBestEffort.
+/// @brief Options for the best-effort importers.
 struct BestEffortOptions final
 {
     /// Parse and plan only: no image decoding and no bundle. The report is complete
@@ -36,7 +57,7 @@ struct BestEffortOptions final
 /// @brief Headline numbers of one import, also present in the report.
 struct ImportSummary final
 {
-    /// Source files read (the entry file plus includes).
+    /// Text source files read (the entry file plus pbrt includes or MTL libraries).
     uint32 SourceFiles = 0;
     /// Shape placements after instance expansion.
     uint32 SourcePlacements = 0;
@@ -46,7 +67,8 @@ struct ImportSummary final
     uint32 SourceMaterials = 0;
     /// Image and spectrum textures defined by the source.
     uint32 SourceTextures = 0;
-    /// AreaLightSource directives (each makes the shapes after it in its block emissive).
+    /// pbrt AreaLightSource directives (each makes the shapes after it in its block
+    /// emissive), or emissive glTF/MTL materials in use.
     uint32 SourceAreaLights = 0;
     /// Meshes in the cooked bundle (one per material slot).
     uint32 CookedMeshes = 0;
@@ -68,7 +90,7 @@ struct ImportSummary final
     uint32 Errors = 0;
 };
 
-/// @brief Outputs of ImportPbrtBestEffort.
+/// @brief Outputs of the best-effort importers.
 struct BestEffortResult final
 {
     /// LUSCN version 3 bundle with authored photometric lighting and triangle bake coordinates (scene.luscn); empty for
@@ -76,11 +98,15 @@ struct BestEffortResult final
     foundation::Array<uint8> Bundle;
     /// Import report JSON (import-report.json) including its trailing newline.
     foundation::Array<uint8> Report;
+    /// Source format that produced the result; Unknown before an import ran.
+    SceneSourceFormat Format = SceneSourceFormat::Unknown;
+    /// Importer profile identifier (one of the *_PROFILE constants); empty before an import ran.
+    std::string_view Profile;
     /// Verbatim LICENSE.txt (or LICENSE.md) from the import root; empty when absent.
     foundation::Array<uint8> License;
     /// Headline numbers.
     ImportSummary Summary;
-    /// Root-relative paths of every file the import read (pbrt sources, PLY files,
+    /// Root-relative paths of every file the import read (text sources, PLY or glTF buffer files,
     /// referenced images and the licence), without duplicates, in first-use order.
     /// Callers re-hash these to detect a source that changed after the import.
     foundation::Array<foundation::String> Inputs;
@@ -105,6 +131,70 @@ struct BestEffortResult final
                                         BestEffortResult& outResult,
                                         CookError& outError,
                                         const Cancellation* cancelOrNull = nullptr) noexcept;
+
+/// Import a glTF 2.0 (.gltf) or GLB (.glb) entry file with the best-effort profile.
+/// The static triangle-mesh subset (node hierarchy, instancing, core metallic-roughness
+/// materials, perspective cameras, KHR_lights_punctual) is read; unsupported content
+/// is reported. A file that requires an unsupported extension fails with Invalid.
+/// @param entryFile Native path of the entry file. Its directory is the import root;
+/// external buffers and images must resolve inside it. Data URIs are decoded in memory.
+/// @param options Dry-run selection.
+/// @param outResult Replaced. On a failure with diagnostics, outResult.Report still holds
+/// the report so the caller can show why.
+/// @param outError Set on failure: Invalid (malformed input, unsupported required
+/// features or nothing drawable), NotFound/IoError (entry file), Cancelled, OutOfMemory.
+/// @param cancelOrNull Optional cancellation hook polled per node, primitive and placement.
+/// @return true on success.
+/// @note Same platform and determinism contract as ImportPbrtBestEffort.
+[[nodiscard]] bool ImportGltfBestEffort(std::string_view entryFile,
+                                        const BestEffortOptions& options,
+                                        BestEffortResult& outResult,
+                                        CookError& outError,
+                                        const Cancellation* cancelOrNull = nullptr) noexcept;
+
+/// Import a Wavefront OBJ entry file and the MTL libraries it names.
+/// Faces are fan-triangulated (at most 64 corners), Phong-style materials are mapped to
+/// metallic-roughness with the documented conversion, and the result is fitted to LUSCN.
+/// @param entryFile Native path of the .obj file; its directory is the import root and
+/// material libraries and textures must resolve inside it.
+/// @param options Dry-run selection.
+/// @param outResult Replaced; on a failure with diagnostics the report is kept.
+/// @param outError Set on failure: Invalid (malformed records, zero or out-of-range
+/// indices, limits, nothing drawable), NotFound/IoError (entry file), Cancelled, OutOfMemory.
+/// @param cancelOrNull Optional cancellation hook polled every few thousand lines.
+/// @return true on success.
+/// @note Same platform and determinism contract as ImportPbrtBestEffort. The entry is
+/// streamed; memory grows with the retained geometry, not the file size.
+[[nodiscard]] bool ImportObjBestEffort(std::string_view entryFile,
+                                       const BestEffortOptions& options,
+                                       BestEffortResult& outResult,
+                                       CookError& outError,
+                                       const Cancellation* cancelOrNull = nullptr) noexcept;
+
+/// Classify a scene source from its first bytes, falling back to the file name extension
+/// only when the content is not decisive (for example a comment-only prefix).
+/// GLB magic or a leading '{' selects Gltf, an OBJ record keyword selects Obj and a
+/// capitalised pbrt directive selects Pbrt.
+/// @param prefix Leading bytes of the file (4 KiB is plenty); may be empty.
+/// @param fileName Name used only for the extension fallback.
+/// @return The detected format, or Unknown.
+[[nodiscard]] SceneSourceFormat DetectSceneSourceFormat(std::span<const uint8> prefix,
+                                                        std::string_view fileName) noexcept;
+
+/// Read the first 4 KiB of entryFile and classify it with DetectSceneSourceFormat.
+/// @param entryFile Native path.
+/// @param outFormat Set only on Ok.
+/// @return Ok, NotFound, IoError or Unsupported (no native file access on this target).
+[[nodiscard]] Status DetectSceneSourceFile(std::string_view entryFile, SceneSourceFormat& outFormat) noexcept;
+
+/// Import entryFile with the best-effort importer selected by DetectSceneSourceFile.
+/// @return As the selected importer; Unsupported in outError when the format is unknown,
+/// NotFound/IoError when the entry cannot be read.
+[[nodiscard]] bool ImportSceneBestEffort(std::string_view entryFile,
+                                         const BestEffortOptions& options,
+                                         BestEffortResult& outResult,
+                                         CookError& outError,
+                                         const Cancellation* cancelOrNull = nullptr) noexcept;
 
 /// Write scene.luscn, import-report.json and (when present) LICENSE.txt below output.
 /// @param output Native directory; created with its parents when absent.

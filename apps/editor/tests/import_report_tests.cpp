@@ -91,6 +91,8 @@ TEST_CASE("import sources split into a directory and a pbrt entry", "[editor][im
     const ImportSource general = SplitImportSource(QDir(directory.path()).filePath(QStringLiteral("room.pbrt")));
     CHECK(general.Entry == QStringLiteral("room.pbrt"));
     CHECK(general.Directory == QDir(directory.path()).absolutePath());
+    const ImportSource gltf = SplitImportSource(QDir(directory.path()).filePath(QStringLiteral("scene.glb")));
+    CHECK(gltf.Entry == QStringLiteral("scene.glb"));
 }
 
 TEST_CASE("import previews list source and cooked counts, budget and fallbacks", "[editor][import]")
@@ -110,6 +112,14 @@ TEST_CASE("import previews list source and cooked counts, budget and fallbacks",
 
     const QString stored = DescribeImportReport(MakeBestEffortReport(false));
     CHECK(stored.contains(QStringLiteral("2.0 MiB of 64.0 MiB")) == true);
+
+    // glTF and OBJ imports share the best-effort report schema and name their profile.
+    QJsonObject gltf = MakeBestEffortReport(false);
+    gltf.insert(QStringLiteral("importer"), QStringLiteral("gltf-best-effort-v1"));
+    gltf.insert(QStringLiteral("entry"), QStringLiteral("scene.glb"));
+    const QString gltfText = DescribeImportReport(gltf);
+    CHECK(gltfText.contains(QStringLiteral("Importer: gltf-best-effort-v1 (scene.glb)")) == true);
+    CHECK(gltfText.contains(QStringLiteral("2.0 MiB of 64.0 MiB")) == true);
 
     const QJsonObject manifest{{QStringLiteral("source"), QStringLiteral("Modern Hall / staircase2")},
                                {QStringLiteral("meshes"), 6},

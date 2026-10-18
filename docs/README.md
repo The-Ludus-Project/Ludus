@@ -50,7 +50,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 ## Guides and workflows
 
 - [Benchmark scenes and system test suites](development/benchmark-scenes.md)
-- [Best-effort pbrt-v4 scene import](development/best-effort-scene-import.md)
+- [Best-effort scene import (pbrt-v4, glTF 2.0, OBJ)](development/best-effort-scene-import.md)
 - [Browser editor](wiki/guides/browser-editor.md)
 - [Browser smoke packaging and itch.io upload](development/web-packaging.md)
 - [Build Profiling](development/build-profiling.md)

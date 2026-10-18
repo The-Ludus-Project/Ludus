@@ -1,0 +1,1 @@
+CC0 1.0: synthetic Ludus test fixture, dedicated to the public domain.

@@ -5,8 +5,8 @@
 // Thanks to Greg Turk, "The PLY Polygon File Format" (Stanford, 1994), for the
 // header grammar and element/property layout.
 
-#include "import_diagnostics.h"
-#include "scene_ir.h"
+#include "../import_diagnostics.h"
+#include "../scene_ir.h"
 
 #include <span>
 #include <string_view>

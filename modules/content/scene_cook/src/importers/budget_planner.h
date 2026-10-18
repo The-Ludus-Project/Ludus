@@ -8,8 +8,8 @@
 // for merged emissive surfaces, and the rest merge into their nearest kept
 // material. Each cluster becomes one world-space mesh and one object.
 
-#include "pbrt/import_diagnostics.h"
-#include "pbrt/scene_ir.h"
+#include "import_diagnostics.h"
+#include "scene_ir.h"
 
 #include <ludus/content/scene_cook/scene_cook.h>
 

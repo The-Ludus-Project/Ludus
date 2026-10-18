@@ -64,6 +64,39 @@ inline constexpr std::string_view TEXTURE_DOWNSCALED = "TEXTURE_DOWNSCALED";
 inline constexpr std::string_view GEOMETRY_DROPPED = "GEOMETRY_DROPPED";
 inline constexpr std::string_view EMISSION_CLAMPED = "EMISSION_CLAMPED";
 inline constexpr std::string_view LIMIT_EXCEEDED = "LIMIT_EXCEEDED";
+// glTF 2.0 / GLB and Wavefront OBJ/MTL front-ends.
+/// The input violates its format's structure (truncated container, broken JSON, bad index).
+inline constexpr std::string_view MALFORMED_INPUT = "MALFORMED_INPUT";
+/// A valid feature the profile cannot import; the whole import fails.
+inline constexpr std::string_view UNSUPPORTED_FEATURE = "UNSUPPORTED_FEATURE";
+/// A glTF extension listed in extensionsRequired is not supported.
+inline constexpr std::string_view EXTENSION_REQUIRED = "EXTENSION_REQUIRED";
+/// An optional extension or record was ignored as the specification permits.
+inline constexpr std::string_view EXTENSION_IGNORED = "EXTENSION_IGNORED";
+/// A vertex attribute or texture-coordinate set the IR does not carry.
+inline constexpr std::string_view ATTRIBUTE_IGNORED = "ATTRIBUTE_IGNORED";
+/// A primitive, face or record that is not a triangle surface was skipped.
+inline constexpr std::string_view PRIMITIVE_SKIPPED = "PRIMITIVE_SKIPPED";
+/// Skins, animation or morph targets were ignored; the rest pose is imported.
+inline constexpr std::string_view ANIMATION_IGNORED = "ANIMATION_IGNORED";
+/// A secondary material texture or term that LUSCN v3 cannot store.
+inline constexpr std::string_view TEXTURE_DROPPED = "TEXTURE_DROPPED";
+/// Per-material sidedness was ignored (LUSCN v3 has no double-sided flag).
+inline constexpr std::string_view SIDEDNESS_IGNORED = "SIDEDNESS_IGNORED";
+/// Optional decorative emission was cooked as a non-emitter.
+inline constexpr std::string_view EMISSION_DROPPED = "EMISSION_DROPPED";
+/// Emission units or textures were approximated.
+inline constexpr std::string_view EMISSION_APPROXIMATED = "EMISSION_APPROXIMATED";
+/// Tangents were generated in the IR (not yet stored by LUSCN v3).
+inline constexpr std::string_view TANGENTS_GENERATED = "TANGENTS_GENERATED";
+/// A light term was approximated or ignored.
+inline constexpr std::string_view LIGHT_APPROXIMATED = "LIGHT_APPROXIMATED";
+/// A dependency path was rewritten (for example '\\' separators) before resolution.
+inline constexpr std::string_view PATH_NORMALIZED = "PATH_NORMALIZED";
+/// A referenced dependency (buffer, material library) could not be read.
+inline constexpr std::string_view DEPENDENCY_UNREADABLE = "DEPENDENCY_UNREADABLE";
+/// Degenerate triangles or nonfinite values were removed.
+inline constexpr std::string_view GEOMETRY_REPAIRED = "GEOMETRY_REPAIRED";
 } // namespace codes
 
 /// One aggregated diagnostic: the first occurrence's location plus a count.

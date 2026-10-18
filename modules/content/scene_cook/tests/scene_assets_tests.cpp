@@ -757,6 +757,77 @@ TEST_CASE("Editor import routes general pbrt files to pbrt-best-effort-v1", "[sc
     std::filesystem::remove_all(work, ignored);
 }
 
+TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort profiles", "[scene_assets]")
+{
+    struct Fixture
+    {
+        std::string_view Directory;
+        std::string_view Entry;
+        std::string_view Profile;
+    };
+    const Fixture fixtures[] = {
+        {"gltf/instanced", "scene.gltf", "gltf-best-effort-v1"},
+        {"gltf/embedded", "scene.glb", "gltf-best-effort-v1"},
+        {"obj/room", "room.obj", "obj-best-effort-v1"},
+    };
+    for (const Fixture& fixture : fixtures)
+    {
+        INFO(fixture.Entry);
+        const std::filesystem::path work = MakeWorkDirectory();
+        const std::filesystem::path project = work / "project";
+        const std::filesystem::path source = work / "source";
+        std::filesystem::create_directories(project);
+        std::filesystem::copy(std::filesystem::path(LUDUS_SCENE_IMPORT_FIXTURES_DIR) / std::string(fixture.Directory),
+                              source,
+                              std::filesystem::copy_options::recursive);
+        const std::string root = project.string();
+        const std::string sourceText = source.string();
+        SequentialUuids counter;
+        UuidSource uuids{&SequentialUuids::Generate, &counter};
+        AssetOptions options;
+        options.UuidsOrNull = &uuids;
+        options.SourceOrigin = VIRTUAL_ORIGIN;
+        options.SourceEntry = fixture.Entry;
+        AssetError error;
+        Array<uint8> level;
+        REQUIRE(CreateLevel("Imported", options, level, error));
+        EditorSceneRequest request;
+        request.Root = root;
+        request.Source = sourceText;
+        request.Level = ToSpan(level);
+        request.Operation = EditorSceneOperation::PreviewImport;
+        EditorSceneResult preview;
+        const bool isPreviewed = OperateEditorScene(request, options, preview, error);
+        INFO(Describe(error));
+        REQUIRE(isPreviewed);
+        CHECK(GetResponseMember(preview.Response, "profile") == fixture.Profile);
+
+        request.Operation = EditorSceneOperation::Import;
+        EditorSceneResult imported;
+        const bool isImported = OperateEditorScene(request, options, imported, error);
+        INFO(Describe(error));
+        REQUIRE(isImported);
+        // The assembled scene is what the editor viewport installs.
+        CHECK(imported.Scene.IsEmpty() == false);
+        const std::string candidate = GetResponseMember(imported.Response, "level");
+        request.Operation = EditorSceneOperation::CommitImport;
+        request.Level = ToSpan(candidate);
+        request.Catalog = ToSpan(imported.Catalog);
+        EditorSceneResult committed;
+        REQUIRE(OperateEditorScene(request, options, committed, error));
+        request.Operation = EditorSceneOperation::Assemble;
+        request.Catalog = {};
+        EditorSceneResult assembled;
+        REQUIRE(OperateEditorScene(request, options, assembled, error));
+        CHECK(assembled.Scene.IsEmpty() == false);
+        const std::string reports = GetResponseMember(assembled.Response, "import_reports");
+        CHECK(reports.find("\"importer\":\"" + std::string(fixture.Profile) + "\"") != std::string::npos);
+
+        std::error_code ignored;
+        std::filesystem::remove_all(work, ignored);
+    }
+}
+
 TEST_CASE("Catalogs larger than the 1 MiB metadata limit still import", "[scene_assets]")
 {
     // Every catalog record carries its import's full source_inputs map, so the catalog grows with

@@ -1,12 +1,12 @@
 #include "pbrt_parser.h"
 
 #include "../../native_files.h"
-#include "byte_source.h"
+#include "../byte_source.h"
+#include "../transform_utilities.h"
 #include "pbrt_tokenizer.h"
 #include "ply_reader.h"
 #include "shape_tessellation.h"
 #include "spectrum_tables.h"
-#include "transform_utilities.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 

@@ -15,3 +15,11 @@ init.sh text eol=lf
 # Binary font fixtures must never be line-ending normalized.
 *.ttf binary
 *.otf binary
+
+# Scene-import fixtures: binary containers and images must never be normalized.
+modules/content/scene_cook/tests/fixtures/**/*.glb binary
+modules/content/scene_cook/tests/fixtures/**/*.bin binary
+modules/content/scene_cook/tests/fixtures/**/*.exr binary
+modules/content/scene_cook/tests/fixtures/**/*.hdr binary
+modules/content/scene_cook/tests/fixtures/**/*.jpg binary
+modules/content/scene_cook/tests/fixtures/**/*.png binary

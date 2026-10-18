@@ -6,5 +6,5 @@
   "files": {
     "stb_image.h": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3"
   },
-  "notes": "Vendored single header at a pinned commit. CMake verifies exact bytes without network access. Built as one C translation unit with PNG only, no stdio, no SIMD, so it compiles unchanged for native and Emscripten targets. Used privately by Ludus::SceneCook; no stb types appear in public headers."
+  "notes": "Vendored single header at a pinned commit. CMake verifies exact bytes without network access. Built as one C translation unit with PNG, JPEG and Radiance HDR only, no stdio, no SIMD, so it compiles unchanged for native and Emscripten targets. Heap use goes through the bounded allocator in stb_image_allocator.c (STBI_MALLOC/REALLOC/FREE). Used privately by Ludus::SceneCook; no stb types appear in public headers."
 }

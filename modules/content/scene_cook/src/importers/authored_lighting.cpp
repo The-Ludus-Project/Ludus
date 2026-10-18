@@ -1,9 +1,10 @@
 #include "authored_lighting.h"
 
 #include "../native_files.h"
-#include "pbrt/transform_utilities.h"
+#include "transform_utilities.h"
 
 #include <ludus/content/content.h>
+#include <ludus/content/scene_cook/limits.h>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
@@ -12,7 +13,7 @@ namespace ludus::content::scene_cook::importers
 namespace
 {
 namespace format = scene_format;
-constexpr usize MAX_ENVIRONMENT_FILE_BYTES = usize{256} * 1024 * 1024;
+constexpr usize MAX_ENVIRONMENT_FILE_BYTES = MAX_SOURCE_IMAGE_BYTES;
 
 [[nodiscard]] float64 ComputeLuminance(math::Vector3d rgb) noexcept
 {

@@ -161,9 +161,10 @@ and [cooking](resource-management.md#cooking-and-storage).
 | WAV / FLAC | Sound and music sources; Audio/AudioContent | Existing private pinned miniaudio decoder; preserve accepted sample/channel profiles and preparation limits |
 | TrueType / OpenType fonts | Font faces, shaping, and rasterization; Text | Existing private FreeType/HarfBuzz integration; use the tested font profile, with collections and advanced font features separately qualified |
 | PNG | UI images, sprites, and texture source pixels; image import tools | First proposed image slice: static images decoded into owned RGBA8 pixels under an explicit color policy |
-| Wavefront OBJ | Simple static mesh interchange; mesh import tools | First proposed geometry slice: triangle faces with positions and optional UVs/normals; materials are a separate profile |
-| glTF 2.0 / GLB | Scene, mesh, and material interchange; scene import tools | Follow OBJ/image candidates with a declared static triangle-mesh profile; skins, animation, morph targets, and extensions have separate acceptance gates |
-| JPEG | Photographic texture sources; image import tools | Later image slice: declared baseline/progressive profiles and explicit orientation/color conversion; no new decoder selected here |
+| Wavefront OBJ | Simple static mesh interchange; mesh import tools | Implemented for scene import as `obj-best-effort-v1` with MTL (October 2026); a strict mesh-only profile remains proposed |
+| glTF 2.0 / GLB | Scene, mesh, and material interchange; scene import tools | Implemented for scene import as the static triangle-mesh `gltf-best-effort-v1` profile (October 2026); skins, animation, morph targets, sparse accessors and compression remain separate gates |
+| JPEG | Photographic texture sources; image import tools | Baseline and progressive decoding implemented for scene import textures through the private stb configuration; orientation metadata is ignored |
+| Radiance RGBE / OpenEXR | HDR environment maps and textures; scene import tools | Implemented for scene import: Radiance through stb, an original OpenEXR subset reader (scanline/tiled, NONE/RLE/ZIPS/ZIP) |
 | KTX2 | Mipmapped texture artifacts; texture cooker and graphics adapter | Later runtime texture slice when RHI supports the required formats; transcoders and supercompression are opt-in audited backends |
 | Ludus domain binary | Cooked meshes, textures, levels, or other typed definitions | Per-domain versioned layouts using the checked binary contract below; each requires a real consuming subsystem |
 
@@ -214,6 +215,23 @@ compressed geometry, embedded image codecs, skins, and animation are explicit
 profile decisions. External files and decoded data URIs pass through a bounded
 Content/tool resolver; a parser does not perform network or filesystem I/O.
 Count embedded and external dependencies together and record their digests.
+
+### Implemented scene-import profiles
+
+The best-effort scene importers implement the OBJ and glTF/GLB proposals above
+for *scene import*, where the goal is to fit authored content into the cooked
+scene format with explicit diagnostics rather than to reject it. They follow
+the structural rules of this section — bounded line and JSON readers,
+content-based detection, a resolver for every dependency, digests for every
+input, malformed/unsupported/limit/out-of-memory distinctions, and failures
+that leave outputs untouched — but deliberately accept more than the strict
+first profiles: OBJ polygons are fan-triangulated, MTL libraries are resolved,
+glTF optional extensions are ignored per the specification and missing normals
+or tangents are generated. Each such decision is reported in the import
+report. Their supported-subset matrices, budgets and material conversions live
+in [best-effort scene import](../development/best-effort-scene-import.md).
+A strict mesh-only OBJ profile and the reusable PNG image profile for other
+consumers remain proposals.
 
 ### Admission and compatibility gates
 
@@ -274,6 +292,11 @@ are engineering choices, not requirements of these specifications:
 - Khronos Group, [*KTX File Format Specification, version 2*](https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html),
   sections 3 and 4: indexed mip data, representation metadata, and independently
   declared supercompression; a container reader does not establish GPU support.
+- Industrial Light & Magic and the OpenEXR project, [*OpenEXR File Layout*](https://openexr.com/en/latest/OpenEXRFileLayout.html):
+  header attributes, channel lists, offset tables, scanline/tile chunks and the
+  RLE/ZIP predictors read by the scene importer's subset reader.
+- Greg Ward, "Real Pixels", *Graphics Gems II* (1991), pages 80-83: the shared
+  exponent RGBE encoding of Radiance `.hdr` files.
 - Microsoft, [*Resource Interchange File Format (RIFF)*](https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff-),
   and IETF, [*RFC 9639: Free Lossless Audio Codec (FLAC)*](https://www.rfc-editor.org/rfc/rfc9639):
   format context for the existing Audio codec; the repository's pinned backend

@@ -6,7 +6,8 @@
 // Format" (https://pbrt.org/fileformat-v4), for the lexical grammar: quoted
 // strings, '#' comments, '[' ']' lists, bare directive words and numbers.
 
-#include "byte_source.h"
+#include "../byte_source.h"
+#include "../decimal_number.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/strings/string.hpp>
@@ -31,7 +32,7 @@ enum class TokenKind : uint8
     Word,
     /// A quoted string with escapes resolved.
     String,
-    /// A numeric literal (text only; see ParseNumber).
+    /// A numeric literal (text only; see importers::ParseNumber).
     Number,
     OpenBracket,
     CloseBracket,
@@ -104,10 +105,4 @@ private:
     std::string_view mErrorMessage;
     uint32 mErrorLine = 0;
 };
-
-/// Locale-free conversion of a pbrt numeric literal (optional sign, digits,
-/// optional fraction and exponent; leading '.' and trailing '.' are accepted).
-/// Rounds to binary32 (correctly rounded), then widens; underflow yields a signed zero.
-/// @return false for malformed or overflowing input; outValue is unchanged then.
-[[nodiscard]] bool ParseNumber(std::string_view text, float64& outValue) noexcept;
 } // namespace ludus::content::scene_cook::importers::pbrt

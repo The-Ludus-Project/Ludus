@@ -1,8 +1,11 @@
 #pragma once
 
 // Texture image decoding for the best-effort importers: TGA (including RLE and
-// colour-mapped), PNG (vendored stb_image) and PFM. Output is RGBA8, rows top
-// to bottom, with colour channels kept in the file's encoding.
+// colour-mapped), PNG and baseline/progressive JPEG (vendored stb_image),
+// Radiance RGBE (.hdr), an OpenEXR subset (exr_reader.h) and PFM. Colour output
+// is RGBA8, rows top to bottom, with colour channels kept in the file's encoding
+// (HDR sources are clamped and sRGB-encoded). EXIF orientation and embedded ICC
+// profiles are ignored. Lighting output keeps linear float RGB.
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -45,7 +48,8 @@ struct DecodedLightingImage final
 enum class ImageResult : uint8
 {
     Ok,
-    /// The container (for example EXR, TIFF) has no decoder in this build.
+    /// The container (for example TIFF) or a valid feature of it (for example EXR
+    /// PIZ compression) has no decoder in this build.
     Unsupported,
     Invalid,
     OutOfMemory,
@@ -58,7 +62,9 @@ enum class ImageResult : uint8
                                       DecodedImage& outImage,
                                       std::string_view& outMessage) noexcept;
 /// PFM lighting preserves finite nonnegative float RGB and file scale, north row first.
-/// PNG/TGA lighting is decoded from sRGB. Failure preserves outImage.
+/// Radiance and OpenEXR lighting keep linear float RGB and are box-halved until they fit
+/// MAX_ENVIRONMENT_DIMENSION and the bundle byte budget. PNG/TGA/JPEG lighting is
+/// decoded from sRGB. Failure preserves outImage.
 [[nodiscard]] ImageResult DecodeLightingImage(std::string_view fileName,
                                               foundation::BorrowedView<const uint8> data,
                                               DecodedLightingImage& outImage,
