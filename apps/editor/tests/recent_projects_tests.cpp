@@ -2,6 +2,8 @@
 #include "internal/main_window.h"
 #include "internal/recent_projects.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
@@ -26,7 +28,7 @@ namespace
 {
 // Upper bound for a recent-project open to publish its descriptor (QTRY_COMPARE's
 // former default); the wait returns as soon as the state changes.
-constexpr int OPEN_WAIT_MILLISECONDS = 5000;
+constexpr ludus::foundation::int32 OPEN_WAIT_MILLISECONDS = 5000;
 
 QString WriteProject(QTemporaryDir& directory, const QString& filename, const QByteArray& name)
 {

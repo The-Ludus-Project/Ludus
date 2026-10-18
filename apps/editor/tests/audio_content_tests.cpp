@@ -25,7 +25,7 @@ using namespace ludus::foundation;
 // Upper bound for an accepted main-window close to hide the window; the close
 // handler retries every 20 ms while workers quiesce, and only a hung worker
 // should reach this bound.
-constexpr int CLOSE_WAIT_MILLISECONDS = 10000;
+constexpr int32 CLOSE_WAIT_MILLISECONDS = 10000;
 namespace content = ludus::content;
 namespace audio = ludus::audio;
 void Save(std::string_view root, std::string_view path, const content::Bytes& bytes)

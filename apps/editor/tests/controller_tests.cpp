@@ -9,6 +9,8 @@
 #include "internal/main_window.h"
 #include "internal/project_store.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
@@ -38,7 +40,7 @@ namespace
 // condition holds, so this bound only decides when a hung adapter fails.
 // Waits use QTest::qWaitFor under a Catch2 assertion: a QtTest QTRY_* macro
 // returns silently from a Catch2 case on failure and skips the later checks.
-constexpr int ADAPTER_WAIT_MILLISECONDS = 60000;
+constexpr ludus::foundation::int32 ADAPTER_WAIT_MILLISECONDS = 60000;
 
 ToolingPaths NoTooling()
 {
