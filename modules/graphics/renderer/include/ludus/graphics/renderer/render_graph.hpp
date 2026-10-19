@@ -298,6 +298,24 @@ public:
     [[nodiscard]] rhi::RasterStatus GetExport(foundation::uint32 resource,
                                               rhi::TextureHandle& outTexture,
                                               rhi::TextureAspect& outAspect) const noexcept;
+    /// Borrow the allocation and aspect backing any logical resource that is not the presentation
+    /// surface, after producer completion, for read-only diagnostic consumers such as a texture
+    /// viewer. Unlike GetExport this admits transient attachments. It reports what the backing
+    /// allocation holds after the last completed frame: a backing shared by several logical
+    /// resources (a depth resource always shares its colour resource's allocation) shows the last
+    /// write, and a subresource discarded by its final pass is undefined (check it with
+    /// rhi::GetTextureState before reading). Transient allocations may be pooled and reused by
+    /// another graph after Reset, so callers must finish every use, including readbacks, before
+    /// the next Render or Reset and must never write to the allocation.
+    /// @param resource Logical resource index in the plan.
+    /// @param outTexture Receives the borrowed backing allocation; unchanged on failure.
+    /// @param outAspect Receives Color for colour resources and Depth for depth resources.
+    /// @return Ready after producer completion; NotReady while no completed output exists;
+    /// InvalidDescription for an out-of-range resource; Unsupported for a resource backed by
+    /// the presentation surface. Outputs are preserved on failure.
+    [[nodiscard]] rhi::RasterStatus GetResourceAllocation(foundation::uint32 resource,
+                                                          rhi::TextureHandle& outTexture,
+                                                          rhi::TextureAspect& outAspect) const noexcept;
     /// Detach graph resources. Device stays alive, no open frame or foreign export consumer.
     /// GPU uses retire in RHI; does not wait or destroy another graph generation.
     void Reset() noexcept;

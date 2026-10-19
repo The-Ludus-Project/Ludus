@@ -5,6 +5,7 @@
 #    include "editor_default_graph.h"
 #    include "editor_renderer_static.h"
 #    include "internal/render_graph_preview.h"
+#    include "internal/texture_viewer.h"
 #    include "renderer_composite.h"
 #endif
 
@@ -477,6 +478,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mTabs->addTab(mPlan, QStringLiteral("Plan"));
     mTabs->addTab(buildPage, QStringLiteral("Build Settings"));
     mTabs->addTab(mPreviewPage, QStringLiteral("Preview"));
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // Texture viewer: any target or attachment of the previewed generation (native GPU builds).
+    mTextureViewerOrNull = new TextureViewer(this);
+    mTabs->addTab(mTextureViewerOrNull, QStringLiteral("Textures"));
+#endif
 
     mDiagnostics->setObjectName(QStringLiteral("renderGraphDiagnostics"));
     mStatus->setObjectName(QStringLiteral("renderGraphStatus"));
@@ -608,6 +614,15 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         mSelectedConfiguration = mCanvas->GetConfiguration();
         mSelectedNode = node;
         renderTree();
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        // A node that writes or publishes textures shows them in the texture viewer.
+        QJsonObject graph;
+        if (mTextureViewerOrNull != nullptr && mDocument.GetGraph(mSelectedFile, graph) == true)
+        {
+            static_cast<void>(
+                mTextureViewerOrNull->SelectCanvasNode(graph.value(QStringLiteral("id")).toString(), node));
+        }
+#endif
     });
     connect(mCanvas,
             &RenderGraphCanvas::MoveRequested,
@@ -641,6 +656,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         this);
     connect(mPreviewOrNull, &RenderGraphPreview::Changed, this, &RendererWorkspace::renderPreview);
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, &RendererWorkspace::renderPreview);
+    mTextureViewerOrNull->SetPreview(mPreviewOrNull);
     mPreviewTimer.setInterval(PREVIEW_INTERVAL_MILLISECONDS);
     connect(&mPreviewTimer, &QTimer::timeout, this, &RendererWorkspace::ServicePreview);
 #endif

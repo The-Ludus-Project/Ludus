@@ -101,6 +101,9 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
                 worker_socket=str(endpoint), **bound_options)
             legacy_bound = render_graph_reload.rebuild(bound / 'main.lushader.json', root / 'bound-legacy', root / 'bound-legacy.lurgrt', **bound_options)
             assert native_bound['runtime']['interface_identity'] == legacy_bound['runtime']['interface_identity']
+            # Reload publishes the resource names beside the package, for the editor texture viewer.
+            assert Path(native_bound['runtime']['resource_names']) == (root / 'bound-native.lurgrt.resources.json').absolute()
+            assert json.loads(Path(native_bound['runtime']['resource_names']).read_text())['generation'] == native_bound['runtime']['generation']
             source = render_graph.new_workspace(root / 'sources', output='presentation')
             graph = json.loads(source.read_text())
             for configuration in graph['configurations']:

@@ -1575,4 +1575,27 @@ RenderGraph::GetExport(uint32 resource, rhi::TextureHandle& outTexture, rhi::Tex
         state.Resources[resource].Kind == format::Aspect::Color ? rhi::TextureAspect::Color : rhi::TextureAspect::Depth;
     return Status::Ready;
 }
+Status RenderGraph::GetResourceAllocation(uint32 resource,
+                                          rhi::TextureHandle& outTexture,
+                                          rhi::TextureAspect& outAspect) const noexcept
+{
+    if (mState.Get() == nullptr || resource >= mState->Header.ResourceCount)
+    {
+        return Status::InvalidDescription;
+    }
+    const State& state = *mState;
+    const format::Resource& logical = state.Resources[resource];
+    if (logical.IsSurface == 1 || state.Resources[logical.Backing].IsSurface == 1)
+    {
+        return Status::Unsupported;
+    }
+    if (state.HasValidOutput == false || state.Producer.IsNull() == true ||
+        rhi::GetStatus(state.Device, state.Producer) != Status::Ready)
+    {
+        return Status::NotReady;
+    }
+    outTexture = state.Textures[logical.Backing];
+    outAspect = logical.Kind == format::Aspect::Color ? rhi::TextureAspect::Color : rhi::TextureAspect::Depth;
+    return Status::Ready;
+}
 } // namespace ludus::graphics::renderer

@@ -50,8 +50,12 @@ def rebuild(manifest, output, runtime_package, *, configuration='Default', **opt
         cooked = execution.cook_runtime(report['package'], staged, configuration=configuration)
         build.require(fingerprint(root) == before, 'Stale', 'reload', 'sources changed before runtime publication')
         build.checkpoint(options.get('cancel'))
+        # Names first, so a reader that sees the new package also finds its matching names.
+        names = execution.resource_names_path(destination)
+        build.atomic(names, execution.resource_names_path(staged).read_bytes())
         build.atomic(destination, staged.read_bytes())
         cooked['runtime_package'] = str(destination)
+        cooked['resource_names'] = str(names)
         return {'build': report, 'runtime': cooked}
 
 
