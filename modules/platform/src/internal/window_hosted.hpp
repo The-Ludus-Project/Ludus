@@ -8,6 +8,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 
 #include <ludus/platform/base/window.h>
+#include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/hosted_window.h>
 
 #include "hosted_protocol.hpp"
@@ -20,6 +21,11 @@ inline constexpr uint32 WELCOME_TIMEOUT_MILLISECONDS = 5000;
 /// Bytes buffered from the channel between HandleEvent() calls.
 inline constexpr usize RECEIVE_BUFFER_BYTES = 4096;
 static_assert(RECEIVE_BUFFER_BYTES >= MAX_FRAME_BYTES);
+/// Bytes of Images and Present messages queued while the endpoint does not drain its socket.
+inline constexpr usize SEND_BUFFER_BYTES = 1024;
+static_assert(SEND_BUFFER_BYTES >= 2 * MAX_MESSAGE_BYTES);
+/// Releases received but not yet taken by the surface producer: every image of four generations.
+inline constexpr usize MAX_QUEUED_RELEASES = 4 * HOSTED_SURFACE_IMAGE_COUNT;
 
 /// True when HOSTED_WINDOW_ENVIRONMENT_VARIABLE is present in the environment.
 [[nodiscard]] bool IsRequested() noexcept;
@@ -33,10 +39,13 @@ static_assert(RECEIVE_BUFFER_BYTES >= MAX_FRAME_BYTES);
 /// user id, a refusal or a missing Welcome within WELCOME_TIMEOUT_MILLISECONDS.
 [[nodiscard]] foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexcept;
 
-/// Send the version-1 Hello for `token` on a freshly connected socket.
+/// Send the Hello for `token` on a freshly connected socket.
 [[nodiscard]] bool TrySendHello(int32 descriptor, const Token& token) noexcept;
 
 /// @brief Wait for the Welcome on a connection whose Hello was sent, then build the window.
+///
+/// The window implements HostedSurfaceChannel for RHI and publishes it in its
+/// NativeWindowInfo; `token` authenticates its Mach rendezvous messages.
 ///
 /// Takes ownership of `connection` whatever the outcome. The caller configured it
 /// with TryConfigureSocket() before sending the Hello, so HandleEvent() never blocks;
@@ -47,6 +56,7 @@ static_assert(RECEIVE_BUFFER_BYTES >= MAX_FRAME_BYTES);
 /// @param outRefusal The endpoint's reason when it refused; unchanged otherwise.
 /// @return The window, or null on refusal, channel loss, a protocol violation or timeout.
 [[nodiscard]] foundation::UniquePtr<Window> OpenWindow(SocketDescriptor&& connection,
+                                                       const Token& token,
                                                        const Window::CreateInfo& info,
                                                        uint32 timeoutMilliseconds,
                                                        HostedRefusal& outRefusal) noexcept;

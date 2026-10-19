@@ -13,6 +13,7 @@
 #include <ludus/input/key.h>
 #include <ludus/input/keyboard_event.h>
 #include <ludus/platform/base/window.h>
+#include <ludus/platform/hosted_surface.h>
 
 #include <string_view>
 
@@ -214,6 +215,29 @@ public:
     /// return InvalidState.
     /// @return Ok, NotConnected (recorded for the Welcome), Overflow or InvalidState.
     HostedEndpointStatus SendClose() noexcept;
+
+    /// @brief Take the oldest hosted surface message the window sent.
+    ///
+    /// Pump() receives them: an Images event carries a new generation and owns its
+    /// sharing handles (Mach send rights received through the session's Mach
+    /// rendezvous on macOS, file descriptors received with `SCM_RIGHTS`); a Present
+    /// event names a completed image. Events keep their arrival order. At most eight
+    /// are queued; until they are taken, the endpoint stops reading the window, which
+    /// then sees its surface calls report Busy. Disconnection discards queued events.
+    /// @param outEvent The event; unchanged unless true is returned.
+    /// @return true when an event was taken.
+    [[nodiscard]] bool TryTakeSurfaceEvent(HostedSurfaceEvent& outEvent) noexcept;
+
+    /// @brief Return a presented image to the window once the consumer's sampling has completed.
+    ///
+    /// A release is never dropped: when the send queue is full it waits, in order,
+    /// and is sent once the queue drains.
+    /// @param generation Generation of the released image.
+    /// @param image Index of the released image in that generation.
+    /// @return Ok; NotConnected; InvalidArgument for a zero generation or an index
+    /// outside the generation; InvalidState when stopped; Overflow when twelve
+    /// releases are already waiting.
+    HostedEndpointStatus SendRelease(foundation::uint32 generation, foundation::uint32 image) noexcept;
 
 private:
     struct State;

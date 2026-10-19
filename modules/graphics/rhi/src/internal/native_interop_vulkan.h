@@ -217,6 +217,12 @@ void NativeInteropDetachSurface() noexcept
     // A borrowed context is headless: keep its private pools/targets until the
     // last native pin retires. In particular, do not wait on a foreign consumer
     // whose forward progress may depend on this shutdown returning to its owner.
+    if (gHostedProducer.IsConnected() == true)
+    {
+        // The hosted window's channel is borrowed only until the surface detaches.
+        WaitIdle();
+        gHostedProducer.Disconnect();
+    }
     if (gSurface == VK_NULL_HANDLE)
     {
         gWindow = {};

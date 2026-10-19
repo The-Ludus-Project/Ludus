@@ -7,6 +7,8 @@ struct wl_surface;
 
 namespace ludus::platform
 {
+class HostedSurfaceChannel;
+
 enum class WindowSystem : ludus::foundation::uint8
 {
     Headless,
@@ -16,9 +18,9 @@ enum class WindowSystem : ludus::foundation::uint8
     Cocoa,
     /// @brief Window whose events come from a host channel (HOSTED_WINDOW_ENVIRONMENT_VARIABLE).
     ///
-    /// It has no native handles. RHI does not connect to hosted windows yet; the hosted
-    /// surface is a later stage of docs/architecture/editor-gui-systems.md, "Play in the
-    /// editor viewport".
+    /// It has no native handles. RHI renders into the hosted surface reached through
+    /// NativeWindowInfo::HostedSurfaceOrNull; see docs/architecture/editor-gui-systems.md,
+    /// "The hosted surface and frame ownership".
     Hosted,
 };
 
@@ -46,5 +48,10 @@ struct NativeWindowInfo final
     /// Hosted windows publish the scale their host sent with each resize. Native backends
     /// do not observe a scale yet and publish 1.
     ludus::foundation::float32 Scale = 1.0F;
+    /// @brief Hosted only: the window's surface channel, borrowed from the hosted window.
+    ///
+    /// Valid while that window lives; null for every other backend. RHI publishes its
+    /// hosted images and frames through it. Use it on the thread that pumps the window.
+    HostedSurfaceChannel* HostedSurfaceOrNull = nullptr;
 };
 } // namespace ludus::platform
