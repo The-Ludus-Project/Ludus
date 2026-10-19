@@ -19,7 +19,8 @@
 namespace ludus::editor
 {
 /// One World extraction converted to RenderGraph records. Mesh geometry borrows Scene's
-/// storage, which this value keeps alive by implicit sharing until it is replaced.
+/// storage (its PreviewMesh arrays or its shared cooked Definition), which this value keeps
+/// alive by implicit sharing and reference counting until it is replaced.
 struct RenderGraphExtraction final
 {
     RenderScene Scene;
@@ -33,8 +34,13 @@ struct RenderGraphExtraction final
 /// Convert the World extraction used by the editor viewport into RenderGraph inputs: one static
 /// mesh per scene mesh and one item per object with its straight RGBA tint (object tint times
 /// surface tint). Translucent tints are declared Transparent, never silently made opaque.
-/// @return False with outError when the scene exceeds the runtime format bounds or is empty;
-/// outExtraction is unchanged on failure.
+/// A cooked scene (imported or merged World, Definition set) keeps its geometry only in the
+/// decoded definition; its meshes are borrowed from there without copying. Otherwise the
+/// authored PreviewMesh arrays are borrowed.
+/// @param view Must use the conventional depth convention the runtime admits; see
+/// RenderPreview::DescribeConventionalView.
+/// @return False with outError when the scene exceeds the runtime format bounds, is empty or
+/// its definition does not parallel its mesh table; outExtraction is unchanged on failure.
 [[nodiscard]] bool MakeRenderGraphExtraction(const RenderScene& scene,
                                              const graphics::renderer::ViewDescription& view,
                                              foundation::uint64 revision,

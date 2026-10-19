@@ -44,6 +44,39 @@ bool Fail(QString& error, const QString& text)
     error = text;
     return false;
 }
+/// Corners of an axis-aligned box.
+constexpr usize AABB_CORNER_COUNT = 8;
+/// Unitless scale on the farthest scene-bound corner distance, so geometry on the bound is not
+/// clipped by rounding at a finite far plane.
+constexpr float32 FINITE_FAR_MARGIN = 1.01F;
+/// Minimum far-to-near ratio of a finite preview projection; a scene entirely inside the near
+/// plane still yields a valid (empty) frustum.
+constexpr float32 MIN_FAR_TO_NEAR = 2.0F;
+/// Mesh-local positions of scene mesh meshIndex. A cooked scene (Definition set) keeps its
+/// geometry only in the decoded definition, whose mesh table parallels RenderScene::Meshes.
+/// @pre meshIndex indexes scene.Meshes and, when set, the definition's mesh table.
+BorrowedView<const math::Vector3> GetMeshPositions(const RenderScene& scene, int32 meshIndex) noexcept
+{
+    if (scene.Definition != nullptr)
+    {
+        const resources::SceneMesh& mesh = scene.Definition->Meshes[static_cast<usize>(meshIndex)];
+        return {mesh.Positions.GetData(), mesh.Positions.GetSize()};
+    }
+    const PreviewMesh& mesh = scene.Meshes[meshIndex];
+    return {mesh.Positions.constData(), static_cast<usize>(mesh.Positions.size())};
+}
+/// Rewrite a finite reverse-Z view (near 1, far 0, Greater) for the conventional convention
+/// (near 0, far 1, Less) by replacing clip z with w - z. Exact only for a finite projection: an
+/// infinite one would map its absent far plane to the degenerate depth 1 at infinity.
+void ConvertToConventionalDepth(rr::ViewDescription& inoutView) noexcept
+{
+    for (math::Vector4& column : inoutView.WorldToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    inoutView.Depth = rr::DepthConvention::Conventional;
+    inoutView.InfiniteFar = false;
+}
 uint64 ComputeSourceId(const QString& id)
 {
     const QByteArray hash = QCryptographicHash::hash(id.toUtf8(), QCryptographicHash::Sha256);
@@ -805,6 +838,10 @@ bool RenderScene::TryGetBounds(const QString& id, math::Aabb3& outBoundsWorld) c
 {
     math::Aabb3 candidate = math::EmptyAabb3();
     bool hasPoint = false;
+    if (Definition != nullptr && Definition->Meshes.GetSize() != static_cast<usize>(Meshes.size()))
+    {
+        return false;
+    }
     for (const PreviewObject& object : Objects)
     {
         if (id.isEmpty() == false && object.Id != id)
@@ -815,8 +852,10 @@ bool RenderScene::TryGetBounds(const QString& id, math::Aabb3& outBoundsWorld) c
         {
             return false;
         }
-        for (const math::Vector3 positionMesh : Meshes[object.Mesh].Positions)
+        const BorrowedView<const math::Vector3> positions = GetMeshPositions(*this, object.Mesh);
+        for (usize i = 0; i < positions.GetSize(); ++i)
         {
+            const math::Vector3 positionMesh = positions[i];
             const math::Vector3 positionWorld = math::TransformPoint(object.Transform, positionMesh);
             if (math::IsFinite(positionWorld) == false)
             {
@@ -916,10 +955,34 @@ bool RenderScene::View(const PreviewViewOptions& options, rr::ViewDescription& o
         position = pose.Translation;
         forward = math::Rotate(pose.Rotation, {0, 0, -1});
     }
+    if (options.ShouldUseConventionalDepth == true && projection.Kind == rr::ProjectionKind::PerspectiveInfinite)
+    {
+        // The conventional flip is exact only for a finite projection, so bound the far plane by
+        // the farthest corner of the World's geometry from this camera.
+        math::Aabb3 boundsWorld;
+        if (TryGetBounds({}, boundsWorld) == false)
+        {
+            return Fail(outError, QStringLiteral("The World has no finite geometry bounds for a finite projection."));
+        }
+        float32 farthest = 0;
+        for (usize corner = 0; corner < AABB_CORNER_COUNT; ++corner)
+        {
+            const math::Vector3 cornerWorld{(corner & 1U) != 0 ? boundsWorld.Max.X : boundsWorld.Min.X,
+                                            (corner & 2U) != 0 ? boundsWorld.Max.Y : boundsWorld.Min.Y,
+                                            (corner & 4U) != 0 ? boundsWorld.Max.Z : boundsWorld.Min.Z};
+            farthest = math::Max(farthest, math::Length(cornerWorld - position));
+        }
+        projection.Kind = rr::ProjectionKind::Perspective;
+        projection.Far = math::Max(farthest * FINITE_FAR_MARGIN, projection.Near * MIN_FAR_TO_NEAR);
+    }
     rr::ViewDescription view;
     if (rr::BuildViewDescription(projection, mapping, view) != graphics::rhi::RasterStatus::Ready)
     {
         return Fail(outError, QStringLiteral("Camera lens cannot be represented by the renderer."));
+    }
+    if (options.ShouldUseConventionalDepth == true)
+    {
+        ConvertToConventionalDepth(view);
     }
     view.CameraPosition = position;
     view.CameraForward = forward;

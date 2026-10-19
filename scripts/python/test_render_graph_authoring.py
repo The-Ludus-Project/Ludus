@@ -164,6 +164,30 @@ class ShaderFailureTests(BuildFixture):
                 self.run_build()
         self.assertEqual({'source': source, 'line': 2}, caught.exception.location)
 
+    def test_real_helper_failure_maps_its_prefixed_compiler_line(self):
+        # Run the real run_stage/compile_shader.py path. The helper reports compiler failure on
+        # stderr as `Ludus shader build: <compiler output>`, so the first diagnostic line carries
+        # that prefix. Only slangc is a stand-in: it reports the pinned version, then prints a
+        # Slang diagnostic for the captured absolute source path and fails.
+        import stat
+        import sys
+        self.runner.stop()
+        version = json.loads((self.helper / 'shader_toolchain.json').read_text())['slang']['version']
+        self.compiler.write_text(
+            f'#!{sys.executable}\nimport sys\nfrom pathlib import Path\n'
+            f'if sys.argv[1:] == ["-version"]:\n    print({version!r})\n    sys.exit(0)\n'
+            'source = Path(next(a for a in sys.argv if a.endswith("wrapper.slang"))).parent\n'
+            'print(f"{source}/main_shaders/color.slang(3): error 30015: undefined identifier \'x\'.")\n'
+            'print("    return float4(x, 1);")\nsys.exit(1)\n')
+        self.compiler.chmod(self.compiler.stat().st_mode | stat.S_IXUSR)
+        with self.assertRaises(ToolingError) as caught:
+            self.run_build()
+        self.assertEqual('RenderGraphBuildShader', caught.exception.code)
+        self.assertIn('\n' + build.SHADER_HELPER_PREFIX + 'main_shaders/color.slang(3): error 30015',
+                      caught.exception.message)
+        self.assertEqual({'source': 'main_shaders/color.slang', 'line': 3}, caught.exception.location)
+        self.assertEqual("undefined identifier 'x'.", caught.exception.diagnostics[0]['message'])
+
 
 class MigrationTests(BuildFixture):
     def stage(self, command, cancel):

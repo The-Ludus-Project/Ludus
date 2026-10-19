@@ -71,6 +71,10 @@ struct PreviewViewOptions final
     const foundation::math::Vector3* OrbitCenter = nullptr;
     foundation::float32 OrbitRadius = 0;
     const gameplay::camera::CameraSample* EditorCameraOrNull = nullptr;
+    /// Produce DepthConvention::Conventional (near 0, far 1, Less) instead of the viewport's
+    /// reverse-Z. An infinite perspective lens is replaced by a finite one whose far plane
+    /// encloses the World's geometry from the camera, so clip z can be rewritten as w - z exactly.
+    bool ShouldUseConventionalDepth = false;
 };
 struct RenderScene final
 {
@@ -110,6 +114,7 @@ struct RenderScene final
     /// Bounds of the extracted visible objects, or one selected stable ID; failure preserves output.
     [[nodiscard]] bool TryGetBounds(const QString& id, foundation::math::Aabb3& outBoundsWorld) const noexcept;
     // camera=-1 selects the independent editor orbit. All failures preserve output.
+    // Cooked scenes (Definition set) read their geometry from the definition for bounds.
     [[nodiscard]] bool
     View(const PreviewViewOptions& options, graphics::renderer::ViewDescription& outView, QString& outError) const;
 };

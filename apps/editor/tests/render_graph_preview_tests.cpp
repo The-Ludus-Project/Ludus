@@ -7,6 +7,7 @@
 #include "editor_renderer_static.h"
 #include "internal/offscreen_frame_reader.h"
 #include "internal/render_graph_preview.h"
+#include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
 #include "renderer_composite.h"
 
@@ -21,6 +22,8 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QThread>
 
@@ -41,6 +44,7 @@ constexpr usize ATTEMPTS = 5000;
 constexpr qsizetype INTERFACE_OFFSET = format::HEADER_FIELD_COUNT * sizeof(uint32);
 constexpr qsizetype TRUNCATED_BYTES = 40;
 constexpr int32 COLOR_TOLERANCE = 1;
+constexpr usize MATRIX_COLUMNS = 4;
 
 QByteArray ReadFixture()
 {
@@ -106,6 +110,43 @@ RenderScene MakeScene(math::Vector4 tint)
     object.Tint = tint;
     scene.Objects.append(object);
     return scene;
+}
+
+/// The same triangle composed the way an imported or merged World delivers it: cooked into a
+/// decoded definition that owns the geometry, with empty PreviewMesh arrays.
+RenderScene MakeCookedScene()
+{
+    const QJsonObject level{
+        {QStringLiteral("id"), QStringLiteral("0f4c2a8e-3b1d-4e6a-9c7f-2d5b8a1e4c90")},
+        {QStringLiteral("objects"), QJsonArray{}},
+        {QStringLiteral("camera"),
+         QJsonObject{{QStringLiteral("eye"), QJsonArray{0, 0, 3}},
+                     {QStringLiteral("target"), QJsonArray{0, 0, 0}},
+                     {QStringLiteral("up"), QJsonArray{0, 1, 0}},
+                     {QStringLiteral("fov"), 1.0}}},
+    };
+    RenderScene authored = MakeScene({1, 1, 1, 1});
+    // Cooking requires a complete static vertex: normals and texture coordinates per position.
+    authored.Meshes[0].Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    authored.Meshes[0].Uvs = {{0, 0}, {1, 0}, {.5F, 1}};
+    RenderScene cooked;
+    QString error;
+    const bool isMerged = RenderScene::Merge(authored, {}, level, cooked, error, {});
+    INFO(error.toStdString());
+    REQUIRE(isMerged == true);
+    REQUIRE(cooked.Definition != nullptr);
+    REQUIRE(cooked.Meshes.size() == 1);
+    REQUIRE(cooked.Meshes.at(0).Positions.isEmpty() == true);
+    REQUIRE(cooked.Definition->Meshes[0].Positions.GetSize() == 3);
+    return cooked;
+}
+
+/// Normalized depth of a world point under a view.
+float32 GetDepth(const renderer::ViewDescription& view, math::Vector3 positionWorld)
+{
+    const math::Vector4 clip = view.WorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
+    REQUIRE(clip.W > 0);
+    return clip.Z / clip.W;
 }
 
 RenderGraphExtraction MakeExtraction(math::Vector4 tint, uint64 revision)
@@ -241,6 +282,104 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
     CHECK(MakeRenderGraphExtraction(RenderScene{}, {}, 10, unchanged, error) == false);
     CHECK(unchanged.Revision == 9);
     CHECK(MakeRenderGraphExtraction(scene, {}, 0, unchanged, error) == false);
+}
+
+TEST_CASE("RG3b cooked World extraction borrows the decoded definition's geometry", "[editor][render-graph][preview]")
+{
+    const RenderScene cooked = MakeCookedScene();
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(cooked, {}, 3, extraction, error) == true);
+    REQUIRE(extraction.Meshes.size() == 1);
+    const ludus::resources::SceneMesh& source = cooked.Definition->Meshes[0];
+    // Borrowed from the shared definition the extraction retains, not copied.
+    CHECK(extraction.Scene.Definition.Get() == cooked.Definition.Get());
+    CHECK(extraction.Meshes[0].Geometry.Positions == source.Positions.GetData());
+    CHECK(extraction.Meshes[0].Geometry.VertexCount == 3);
+    CHECK(extraction.Meshes[0].Geometry.Indices == source.Indices.GetData());
+    CHECK(extraction.Meshes[0].Geometry.IndexCount == 3);
+    REQUIRE(extraction.Items.size() == 1);
+    CHECK(extraction.Items[0].MeshIndex == 0);
+}
+
+TEST_CASE("RG3b editor reverse-Z camera yields a finite conventional view of the same camera",
+          "[editor][render-graph][preview]")
+{
+    RenderPreview viewport;
+    viewport.Resize(WIDTH, HEIGHT);
+    REQUIRE(viewport.SetScene(MakeCookedScene()) == true);
+    QString error;
+    renderer::ViewDescription reverse;
+    REQUIRE(viewport.DescribeView(WIDTH, HEIGHT, reverse, error) == true);
+    // The editor camera is an infinite reverse-Z perspective, which the runtime rejects.
+    CHECK(reverse.Depth == renderer::DepthConvention::ReverseZ);
+    CHECK(reverse.InfiniteFar == true);
+    renderer::ViewDescription conventional;
+    REQUIRE(viewport.DescribeConventionalView(WIDTH, HEIGHT, conventional, error) == true);
+    CHECK(conventional.Depth == renderer::DepthConvention::Conventional);
+    CHECK(conventional.InfiniteFar == false);
+    CHECK(conventional.CameraPosition == reverse.CameraPosition);
+    CHECK(conventional.CameraForward == reverse.CameraForward);
+
+    // The same camera: the far plane changes only clip z, so x, y and w agree.
+    for (usize column = 0; column < MATRIX_COLUMNS; ++column)
+    {
+        CHECK(conventional.WorldToClip.At(0, column) == reverse.WorldToClip.At(0, column));
+        CHECK(conventional.WorldToClip.At(1, column) == reverse.WorldToClip.At(1, column));
+        CHECK(conventional.WorldToClip.At(3, column) == reverse.WorldToClip.At(3, column));
+    }
+    // Every scene point lies inside the finite conventional depth range, nearer points smaller.
+    const math::Vector3 nearWorld{0, .5F, .5F};
+    const math::Vector3 farWorld = nearWorld + reverse.CameraForward;
+    const float32 nearDepth = GetDepth(conventional, nearWorld);
+    for (const math::Vector3 vertexWorld : {math::Vector3{-.5F, -.5F, .5F}, math::Vector3{.5F, -.5F, .5F}, nearWorld})
+    {
+        const float32 depth = GetDepth(conventional, vertexWorld);
+        CHECK(depth > 0);
+        CHECK(depth < 1);
+    }
+    CHECK(GetDepth(conventional, farWorld) > nearDepth);
+    CHECK(GetDepth(reverse, farWorld) < GetDepth(reverse, nearWorld));
+
+    // A scene without geometry has no finite far plane; the output is preserved.
+    RenderPreview empty;
+    renderer::ViewDescription unchanged = conventional;
+    CHECK(empty.DescribeConventionalView(WIDTH, HEIGHT, unchanged, error) == false);
+    CHECK(unchanged.WorldToClip == conventional.WorldToClip);
+}
+
+TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[editor][render-graph][preview]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    // The World viewport's cooked scene and its reverse-Z editor camera, as ServicePreview
+    // delivers them: before the fix the empty PreviewMesh geometry and the reverse-Z view were
+    // each rejected by RenderGraph::Update and no generation ever presented.
+    RenderPreview viewport;
+    viewport.Resize(WIDTH, HEIGHT);
+    REQUIRE(viewport.SetScene(MakeCookedScene()) == true);
+    renderer::ViewDescription view;
+    QString error;
+    REQUIRE(viewport.DescribeConventionalView(WIDTH, HEIGHT, view, error) == true);
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(viewport.Scene(), view, 1, extraction, error) == true);
+    // The schema tint is baked into the cooked texture; the flat profile draws its white surface.
+    REQUIRE(extraction.Items.size() == 1);
+    CHECK(extraction.Items[0].Material.Color == math::Vector4{1, 1, 1, 1});
+
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(extraction);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
+    CHECK(preview.GetPresentedRevision() == 1);
+    // The framed triangle covers the center; the corner stays the graph's clear color.
+    CheckCenter(preview.GetImage(), 255, 255, 255);
+    CHECK(preview.GetImage().pixelColor(0, 0) != preview.GetImage().pixelColor(WIDTH / 2, HEIGHT / 2));
+    preview.Detach();
 }
 
 TEST_CASE("RG3b preview publishes only complete frames and matches the live path", "[editor][render-graph][preview]")

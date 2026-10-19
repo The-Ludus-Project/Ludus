@@ -4,6 +4,8 @@
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_preview.h"
+#include "internal/renderer_workspace.h"
 #include "internal/world_document.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
@@ -25,6 +27,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -773,6 +776,73 @@ TEST_CASE("Editor keeps the unified World workspace outside tool tabs", "[editor
     }
     CHECK(worlds == 0);
     CHECK(window.centralWidget() == window.findChild<WorldWorkspace*>());
+}
+
+TEST_CASE("Renderer preview follows the viewport the World shows", "[editor][world][render-graph]")
+{
+    QTemporaryDir directory;
+    const QString starterPath = Fixture(directory);
+    QString prepareError;
+    INFO(prepareError.toStdString());
+    const QString external = QDir(directory.path()).filePath(QStringLiteral("external"));
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(external));
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(),
+                                                       QStringLiteral("scenes/room.lulevel"),
+                                                       external,
+                                                       prepareError));
+    const QString levelPath =
+        QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(QStringLiteral("scenes/room.lulevel"));
+    ToolingPaths tools;
+    tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    EditorController controller(tools, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    LevelWorkspace* level = window.findChild<LevelWorkspace*>();
+    REQUIRE(world != nullptr);
+    REQUIRE(renderer != nullptr);
+    REQUIRE(level != nullptr);
+    const auto waitUntilSettled = [world]() {
+        QElapsedTimer timer;
+        timer.start();
+        while (world->CanSave() == false && timer.elapsed() < 15000)
+        {
+            QTest::qWait(10);
+        }
+        REQUIRE(world->CanSave() == true);
+    };
+    QSignalSpy changed(world, &WorldWorkspace::RenderPreviewChanged);
+    world->SetProject(directory.path(), 1);
+
+    // A schema-bound World shows its render panel, never the scene viewport.
+    REQUIRE(world->Open(starterPath));
+    waitUntilSettled();
+    RenderPreview* const panel = &world->GetRenderPreview();
+    CHECK(panel != &level->GetRenderPreview());
+    CHECK(renderer->GetPreviewSourceOrNull() == panel);
+
+    // An imported-scene World shows the level viewport; the Renderer tab follows it, and the
+    // shown scene is cooked (geometry only in its decoded definition).
+    const qsizetype before = changed.count();
+    REQUIRE(world->Open(levelPath));
+    waitUntilSettled();
+    CHECK(&world->GetRenderPreview() == &level->GetRenderPreview());
+    CHECK(renderer->GetPreviewSourceOrNull() == &level->GetRenderPreview());
+    CHECK(changed.count() == before + 1);
+    REQUIRE(level->PreviewScene().Definition != nullptr);
+    CHECK(level->PreviewScene().Meshes.at(0).Positions.isEmpty() == true);
+
+    // Returning to the schema-bound World switches back. Opening a .lulevel converts it into an
+    // unsaved World; save it first so reopening does not ask to discard it.
+    REQUIRE(world->Save() == true);
+    waitUntilSettled();
+    REQUIRE(world->Dirty() == false);
+    REQUIRE(world->Open(starterPath));
+    waitUntilSettled();
+    CHECK(&world->GetRenderPreview() == panel);
+    CHECK(renderer->GetPreviewSourceOrNull() == panel);
+    CHECK(changed.count() == before + 2);
+    world->StopPreview();
 }
 
 TEST_CASE("Converted cooked levels edit placement and gameplay in World and survive reopening",

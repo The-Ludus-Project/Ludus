@@ -55,7 +55,10 @@ public:
         return DemoDocument_;
     }
     [[nodiscard]] bool StartPreview();
-    /// World-bound viewport renderer whose device and extraction feed the render-graph preview.
+    /// Renderer of the viewport this World shows, whose device and extraction feed the
+    /// render-graph preview: the scene viewport of an imported-scene World, otherwise the
+    /// schema-bound render panel. RenderPreviewChanged reports a change of choice. The result
+    /// is owned by this workspace; it never starts a device on the caller's behalf.
     [[nodiscard]] RenderPreview& GetRenderPreview() noexcept;
     void SetProject(const QString& root, foundation::uint64 epoch);
     [[nodiscard]] bool Open(const QString& path);
@@ -100,6 +103,8 @@ Q_SIGNALS:
     void DocumentChanged();
     void PreviewStarting();
     void PlayRequested();
+    /// GetRenderPreview now returns a different viewport renderer (the shown view changed).
+    void RenderPreviewChanged();
 
 private:
     [[nodiscard]] bool LoadProjectSchema(WorldDocument& candidate, QByteArray& schema, bool worldDemo = false);
@@ -119,6 +124,9 @@ private:
     void PickTint(const QString& id, const QJsonObject& binding);
     void Snapshot();
     [[nodiscard]] QByteArray RecoveryHeader() const;
+    /// Record which viewport renderer the World shows and emit RenderPreviewChanged on change.
+    void updateShownRenderPreview(bool isSceneShown);
+    RenderPreview* mShownRenderPreviewOrNull = nullptr;
     WorldDocument Document_;
     foundation::identity::EntropySource mEntropy = platform::GetSystemEntropySource();
     SceneDocument DemoDocument_;

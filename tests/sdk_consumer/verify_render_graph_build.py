@@ -54,11 +54,17 @@ def main():
     changed = run_cli('build', manifest, output / 'first', *flags)['build']
     assert changed['cache_misses'] == len(args.profiles) and changed['cache_hits'] == 2 * len(args.profiles)
     prior = (output / 'first/current.json').read_bytes()
-    color.write_text('invalid shader function !')
+    # The pinned compiler's diagnostic arrives through the helper's prefixed stderr report and
+    # must still name the authored function file and line the editor opens.
+    broken = original.replace('material.tint', 'undefinedTint')
+    broken_line = next(i for i, line in enumerate(broken.splitlines(), 1) if 'undefinedTint' in line)
+    color.write_text(broken)
     failed = subprocess.run([cli, '--json', 'render-graph', 'build', manifest, str(output / 'first'), *flags], cwd=output,
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert failed.returncode != 0 and (output / 'first/current.json').read_bytes() == prior
-    assert json.loads(failed.stdout)['error']['code'] == 'RenderGraphBuildShader'
+    error = json.loads(failed.stdout)['error']
+    assert error['code'] == 'RenderGraphBuildShader'
+    assert error['location'] == {'source': 'main_shaders/color.slang', 'line': broken_line}, error.get('location')
     package_path = Path(first['package'])
     cpp = ['#include "schemas.h"', '#include <cstring>', 'using namespace ludus;',
            'using namespace ludus::render_graph_generated;', 'int main()', '{',

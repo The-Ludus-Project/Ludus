@@ -717,7 +717,7 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("far"), mCameraController.GetSample().Lens.FarPlane}};
 }
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — width then height matches ViewDescription.
-bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescription& outView, QString& outError) const
+PreviewViewOptions RenderPreview::makeViewOptions(uint32 width, uint32 height) const noexcept
 {
     PreviewViewOptions options;
     options.Camera = Camera_;
@@ -729,6 +729,19 @@ bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescriptio
     options.OrbitCenter = &OrbitCenter_;
     options.OrbitRadius = OrbitRadius_;
     options.EditorCameraOrNull = &mCameraController.GetSample();
+    return options;
+}
+bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescription& outView, QString& outError) const
+{
+    return Scene_.View(makeViewOptions(width, height), outView, outError);
+}
+bool RenderPreview::DescribeConventionalView(uint32 width,
+                                             uint32 height,
+                                             rr::ViewDescription& outView,
+                                             QString& outError) const
+{
+    PreviewViewOptions options = makeViewOptions(width, height);
+    options.ShouldUseConventionalDepth = true;
     return Scene_.View(options, outView, outError);
 }
 void RenderPreview::RestoreNavigation(const QJsonObject& state)
