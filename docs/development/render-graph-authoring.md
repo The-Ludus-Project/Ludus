@@ -1483,6 +1483,13 @@ layout-only moves do not schedule a build. Saving is independent. Cancel disable
 live building; failures retain the last drawable preview. The existing preview's
 static-material/profile restrictions still apply.
 
+The scene viewport's **Live shaders** toggle uses the same worker for the
+built-in renderer recipes of the editor's own engine checkout. It starts a
+private worker from the build tree when `LUDUS_BUILD_SHADER_WORKER` is on, or
+connects to this endpoint or `LUDUS_SHADER_WORKER_SOCKET`. Recipe names, sources
+and entries come from the renderer manifest; see
+[Editor workspace](editor-workspace.md).
+
 Standalone native games can link `Ludus::ShaderDevelopment` and create a
 `ludus::runtime::shader_development::ReloadSession` over their producer's final
 `.lurgrt` path and existing `RenderGraphActivation`. `Initialize` pins the output

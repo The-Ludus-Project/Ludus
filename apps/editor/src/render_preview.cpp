@@ -258,7 +258,7 @@ bool RenderPreview::beginResourceRestart() noexcept
         return false;
     }
     foundation::UniquePtr<PreviewGpuGeneration> candidate;
-    candidate.Reset(new (std::nothrow) PreviewGpuGeneration(Device_, Scene_, mShading));
+    candidate.Reset(new (std::nothrow) PreviewGpuGeneration(Device_, Scene_, mShading, mShaders));
     if (candidate.Get() == nullptr)
     {
         fail(QStringLiteral("GPU preview staging allocation failed. Previous view retained."));
@@ -285,6 +285,28 @@ bool RenderPreview::beginResourceRestart() noexcept
     Report_ = {};
     Frames_ = 0;
     ViewDirty_ = true;
+    return true;
+}
+void RenderPreview::SetShaders(const PreviewShaderSet& shaders)
+{
+    mShaders = shaders;
+    if (OwnsDevice_ == true)
+    {
+        restartResources();
+    }
+}
+bool RenderPreview::rejectShaders()
+{
+    if (mResources.Get() == nullptr || mResources->Shaders.GetRevision() == mPresentedShaders.GetRevision())
+    {
+        return false;
+    }
+    const uint64 rejected = mResources->Shaders.GetRevision();
+    const QString reason = mPreparationFailure.isEmpty() == false ? mPreparationFailure
+                                                                  : QStringLiteral("GPU pipeline preparation failed.");
+    mShaders = mPresentedShaders;
+    restartResources();
+    Q_EMIT ShadersRejected(rejected, reason);
     return true;
 }
 bool RenderPreview::Start()
@@ -1112,11 +1134,24 @@ void RenderPreview::Tick()
         mIsAwaitingProducer = false;
         ++Frames_;
         const uint64 ownerFrame = Frames_;
+        const bool hasNewShaders = mResources->Shaders.GetRevision() != mPresentedShaders.GetRevision();
+        if (hasNewShaders == true)
+        {
+            mPresentedShaders = mResources->Shaders;
+        }
         Q_EMIT FrameReady();
         // A receiver can stop/replace the preview at this transaction boundary.
         if (OwnsDevice_ == false || Frames_ != ownerFrame)
         {
             return;
+        }
+        if (hasNewShaders == true)
+        {
+            Q_EMIT ShadersApplied(mPresentedShaders.GetRevision());
+            if (OwnsDevice_ == false || Frames_ != ownerFrame)
+            {
+                return;
+            }
         }
     }
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -1163,6 +1198,11 @@ void RenderPreview::Tick()
     }
     if (prepare() == false)
     {
+        // A replacement shader set that cannot build pipelines falls back to the presented set.
+        if (rejectShaders() == true)
+        {
+            return;
+        }
         // Keep a stage's specific reason; the generic text covers unexplained failures.
         fail(
             mPreparationFailure.isEmpty() == false
