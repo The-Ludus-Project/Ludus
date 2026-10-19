@@ -607,7 +607,8 @@ private:
 
 private:
     SocketDescriptor mConnection;
-    Token mToken = {};
+    /// Authenticates Mach rendezvous messages (macOS only).
+    [[maybe_unused]] Token mToken = {};
     RendezvousNonce mNonce = {};
 #if defined(LUDUS_PLATFORM_MACOS)
     RendezvousClient mRendezvous;

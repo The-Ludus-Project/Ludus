@@ -148,8 +148,8 @@ public:
     /// @brief Import new generations and record completed frames from the endpoint.
     ///
     /// Call after HostedWindowEndpoint::Pump(), once per editor frame.
-    /// @return Ok; Refused once the game's images were refused; NotConnected when the
-    /// window is gone; InvalidState when stopped.
+    /// @return Ok; Refused once the game's images were refused; NotConnected while no
+    /// window is connected (not yet admitted, or gone); InvalidState when stopped.
     [[nodiscard]] HostedConsumerStatus Pump() noexcept;
 
     /// True when a completed frame newer than every acquired frame is waiting.

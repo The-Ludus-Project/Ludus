@@ -8,8 +8,10 @@ namespace
 {
 /// Welcome or overflow resize, visibility, overflow reset, focus and close.
 constexpr usize MAX_SYNCHRONIZATION_MESSAGES = 5;
+#if defined(LUDUS_PLATFORM_MACOS)
 /// Rendezvous messages from other processes skipped while matching one Images message.
 constexpr usize MAX_REJECTED_RENDEZVOUS_MESSAGES = 16;
+#endif
 
 bool IsValidVisibility(WindowVisibility visibility) noexcept
 {

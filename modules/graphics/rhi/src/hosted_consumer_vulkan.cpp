@@ -16,6 +16,11 @@
 // ownership to the implementation.
 namespace ludus::graphics::rhi::internal
 {
+// The public header names these Vulkan values without including Vulkan.
+static_assert(HOSTED_VULKAN_QUEUE_FAMILY_EXTERNAL == VK_QUEUE_FAMILY_EXTERNAL);
+static_assert(HOSTED_VULKAN_SHADER_READ_LAYOUT ==
+              static_cast<foundation::uint32>(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+
 namespace
 {
 using namespace foundation;
