@@ -354,7 +354,7 @@ TEST_CASE("RG3 a real compiler error opens the authored shader line", "[editor][
     const QString root = QFileInfo(project.path()).canonicalFilePath();
     RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(root, 3);
-    workspace.SetBuildTools(helper.path(), compiler);
+    workspace.SetBuildTools({ .Helper = helper.path(), .Compiler = compiler, .Validator = {}, .SpirvCross = {} });
     REQUIRE(workspace.OpenGraph(QDir(root).filePath(QStringLiteral("graphs/") + ROOT_GRAPH)) == true);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
     REQUIRE(workspace.Build() == true);
