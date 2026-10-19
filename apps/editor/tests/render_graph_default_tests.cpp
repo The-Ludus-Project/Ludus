@@ -53,9 +53,15 @@ QStringList ListProject(const QTemporaryDir& project)
     return QDir(project.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
 }
 
+/// The workspace binds the canonical project root (a temporary directory may be a symlink).
+QString GetProjectRoot(const QTemporaryDir& project)
+{
+    return QFileInfo(project.path()).canonicalFilePath();
+}
+
 QString GetPackage(const QTemporaryDir& project)
 {
-    return QDir(project.path()).filePath(PROJECT_RENDER_GRAPH_DIRECTORY);
+    return QDir(GetProjectRoot(project)).filePath(PROJECT_RENDER_GRAPH_DIRECTORY);
 }
 
 /// An authored-field edit of the default's camera node, as the inspector applies it.
@@ -176,7 +182,7 @@ TEST_CASE("The first edit of the default is an undoable project draft that Save 
     CHECK(document.IsFileDirty(DEFAULT_RENDER_GRAPH_ROOT) == true);
     CHECK(document.IsFileDirty(LIBRARY) == false);
     CHECK(workspace.GetRuntimePackagePath() ==
-          QDir(project.path()).filePath(QStringLiteral("out/render-graph/renderer/main/main.lurgrt")));
+          QDir(GetProjectRoot(project)).filePath(QStringLiteral("out/render-graph/renderer/main/main.lurgrt")));
     CHECK(workspace.GetPreviewPackagePath() == workspace.GetRuntimePackagePath());
     CHECK(ListProject(project).isEmpty() == true);
 

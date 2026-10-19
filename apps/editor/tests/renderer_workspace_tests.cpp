@@ -233,6 +233,41 @@ TEST_CASE("RG3 save refuses external changes and snapshots never touch saved sou
     CHECK(document.SetText(QStringLiteral("unknown.slang"), {}) == RenderGraphDocumentStatus::NotFound);
 }
 
+TEST_CASE("RG3 build outputs stay inside a project opened through a symlink", "[editor][render-graph]")
+{
+    QTemporaryDir project;
+    QTemporaryDir links;
+    QTemporaryDir outside;
+    REQUIRE(project.isValid() == true);
+    REQUIRE(links.isValid() == true);
+    REQUIRE(outside.isValid() == true);
+    static_cast<void>(MakePackage(project));
+    const QString link = QDir(links.path()).filePath(QStringLiteral("project"));
+    if (QFile::link(project.path(), link) == false)
+    {
+        SKIP("this file system cannot create a directory symlink");
+    }
+    const QString root = QFileInfo(project.path()).canonicalFilePath();
+    REQUIRE(root.isEmpty() == false);
+    REQUIRE(QFileInfo(link).canonicalFilePath() == root);
+    REQUIRE(QDir::cleanPath(link) != root);
+
+    RendererWorkspace workspace({FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(link, 5);
+    REQUIRE(workspace.OpenGraph(QDir(link).filePath(QStringLiteral("graphs/") + ROOT_GRAPH)) == true);
+    const QString runtime = workspace.GetRuntimePackagePath();
+    INFO(runtime.toStdString());
+    CHECK(runtime == QDir(root).filePath(QStringLiteral("out/render-graph/graphs/main/main.lurgrt")));
+
+    // A package outside the project has no build tree there, so Build refuses to start.
+    const QString foreign = MakePackage(outside);
+    REQUIRE(workspace.GetDocument().Load(QFileInfo(foreign).canonicalFilePath(), ROOT_GRAPH) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(workspace.GetRuntimePackagePath().isEmpty() == true);
+    CHECK(workspace.Build() == false);
+    CHECK(QFileInfo::exists(QDir(root).filePath(QStringLiteral("out"))) == false);
+}
+
 TEST_CASE("RG3 Renderer workspace maps CLI errors and matches CLI plans", "[editor][render-graph]")
 {
     const QString python = FindPython();

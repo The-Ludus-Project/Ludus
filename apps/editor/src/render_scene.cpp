@@ -6,6 +6,7 @@
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/precision.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
@@ -43,6 +44,48 @@ bool Fail(QString& error, const QString& text)
 {
     error = text;
     return false;
+}
+/// Distinct codes of one 8-bit texture channel.
+constexpr usize CHANNEL_CODES = 256;
+/// Largest 8-bit channel code, which encodes 1.
+constexpr float32 MAX_CHANNEL_CODE = 255.0F;
+/// Color channels averaged by ComputeLinearMeanRgb; alpha is the fourth texel byte.
+constexpr usize COLOR_CHANNELS = 3;
+/// Flat base color of a decoded cooked texture for consumers that sample no textures: the
+/// unweighted mean of its mip-zero RGB in linear space. Each sRGB byte is decoded before
+/// averaging, never averaged as a code. Alpha is ignored, because the cooked viewport transport
+/// draws LUSCN materials Opaque and samples no alpha. Counting codes per channel makes the result
+/// independent of texel order. Decoding already bounded the texture by the SceneFormat texel and
+/// byte caps, so the work is linear in at most MAX_TOTAL_TEXTURE_BYTES per scene.
+math::Vector3 ComputeLinearMeanRgb(const resources::SceneTexture& texture) noexcept
+{
+    const usize texelCount = texture.Pixels.GetSize() / format::TEXEL_BYTES;
+    if (texelCount == 0)
+    {
+        return {};
+    }
+    StaticArray<uint64, CHANNEL_CODES * COLOR_CHANNELS> counts{};
+    const uint8* bytes = texture.Pixels.GetData();
+    for (usize texel = 0; texel < texelCount; ++texel)
+    {
+        for (usize channel = 0; channel < COLOR_CHANNELS; ++channel)
+        {
+            ++counts[channel * CHANNEL_CODES + bytes[texel * format::TEXEL_BYTES + channel]];
+        }
+    }
+    StaticArray<float64, COLOR_CHANNELS> sums{};
+    for (usize code = 0; code < CHANNEL_CODES; ++code)
+    {
+        const float64 linear = static_cast<float64>(math::DecodeSrgb(static_cast<float32>(code) / MAX_CHANNEL_CODE));
+        for (usize channel = 0; channel < COLOR_CHANNELS; ++channel)
+        {
+            sums[channel] += linear * static_cast<float64>(counts[channel * CHANNEL_CODES + code]);
+        }
+    }
+    const float64 count = static_cast<float64>(texelCount);
+    return {static_cast<float32>(sums[0] / count),
+            static_cast<float32>(sums[1] / count),
+            static_cast<float32>(sums[2] / count)};
 }
 /// Corners of an axis-aligned box.
 constexpr usize AABB_CORNER_COUNT = 8;
@@ -721,7 +764,8 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                                                        "identical surfaces are shared."));
                         }
                         object.Surface = static_cast<int32>(candidate.Surfaces.size());
-                        candidate.Surfaces.append({object.Texture, object.Tint});
+                        candidate.Surfaces.append(
+                            { .Texture = object.Texture, .Tint = object.Tint, .FlatTint = object.Tint });
                     }
                 }
                 for (const auto vertex : candidate.Meshes[object.Mesh].Positions)
@@ -1244,8 +1288,11 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         (void)source; // Geometry stays in the immutable leased definition.
         candidate.Meshes.append(mesh);
     }
+    // One linear mean per texture, shared by every material that samples it.
+    QVector<math::Vector3> textureMeans;
     for (const auto& source : scene.Textures)
     {
+        textureMeans.append(ComputeLinearMeanRgb(source));
         PreviewTexture texture;
         texture.Pixels = QImage(source.Pixels.GetData(),
                                 static_cast<int32>(source.Width),
@@ -1262,6 +1309,16 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         PreviewSurface surface;
         surface.Texture = source.Texture == ~uint32{0} ? -1 : static_cast<int32>(source.Texture);
         surface.Tint = surface.Texture < 0 ? math::Vector4{0, 0, 0, 1} : math::Vector4{1, 1, 1, 1};
+        surface.FlatTint = surface.Tint;
+        if (surface.Texture >= 0)
+        {
+            if (surface.Texture >= textureMeans.size())
+            {
+                return Fail(error, QStringLiteral("Cooked material names a missing texture."));
+            }
+            const math::Vector3& mean = textureMeans[surface.Texture];
+            surface.FlatTint = {surface.Tint.X * mean.X, surface.Tint.Y * mean.Y, surface.Tint.Z * mean.Z, 1};
+        }
         surface.Repeat = source.Repeat;
         surface.Metallic = source.Metallic;
         surface.Roughness = source.Roughness;
