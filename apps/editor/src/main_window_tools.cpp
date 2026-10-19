@@ -36,7 +36,7 @@ namespace ludus::editor
 {
 namespace
 {
-enum PropertiesPage : foundation::int32
+enum PropertiesPage : foundation::uint8
 {
     EMPTY_PROPERTIES_PAGE,
     WORLD_PROPERTIES_PAGE,
@@ -47,6 +47,8 @@ constexpr QLatin1StringView MAIN_RENDER_GRAPH{"main.lurender.json"};
 
 /// Root render graph of the package that contains a shader file: the nearest folder,
 /// from the shader's own up to root, holding a .lurender.json (main.lurender.json first).
+// The shader file and the project root are distinct named paths.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 [[nodiscard]] QString FindPackageGraph(const QString& shader, const QString& root)
 {
     const QString canonicalRoot = QFileInfo(root).canonicalFilePath();
@@ -181,6 +183,7 @@ void MainWindow::renderActiveDocument()
 void MainWindow::renderDocumentTitles()
 {
     // Tabs show the document's file and a `*` while it has unsaved changes, like VS.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): fallback name and file path are distinct.
     const auto title = [](const QString& name, const QString& path, bool isDirty) {
         const QString file = QFileInfo(path).fileName();
         return (file.isEmpty() == true ? name : file) + (isDirty == true ? QStringLiteral("*") : QString());

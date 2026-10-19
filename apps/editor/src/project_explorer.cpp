@@ -73,6 +73,7 @@ ProjectExplorer::ProjectExplorer(QWidget* parentOrNull)
     Refresh();
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the root path and display name are distinct.
 void ProjectExplorer::SetProject(const QString& root, const QString& name)
 {
     // Canonical, so listed paths compare equal to the paths documents report.
@@ -108,7 +109,7 @@ void ProjectExplorer::Refresh()
         static_cast<void>(addItem(project, QStringLiteral("Scripts"), ProjectItemKind::Scripts, {}));
         static_cast<void>(addItem(project, QStringLiteral("Audio"), ProjectItemKind::Audio, {}));
         static_cast<void>(addItem(project, QStringLiteral("Content"), ProjectItemKind::Content, {}));
-        scan(worlds, graphs, shaders);
+        scan({ .Worlds = worlds, .RenderGraphs = graphs, .Shaders = shaders });
         project->setExpanded(true);
         worlds->setExpanded(true);
         graphs->setExpanded(true);
@@ -122,7 +123,7 @@ void ProjectExplorer::Refresh()
     applyFilter();
 }
 
-void ProjectExplorer::scan(QTreeWidgetItem* worlds, QTreeWidgetItem* graphs, QTreeWidgetItem* shaders)
+void ProjectExplorer::scan(const ScanFolders& folders)
 {
     const QDir root(mRoot);
     QList<PendingFolder> pending{{ .Path = mRoot, .Depth = 0 }};
@@ -151,17 +152,17 @@ void ProjectExplorer::scan(QTreeWidgetItem* worlds, QTreeWidgetItem* graphs, QTr
             ProjectItemKind kind = ProjectItemKind::Folder;
             if (name.endsWith(WORLD_SUFFIX) == true)
             {
-                parentOrNull = worlds;
+                parentOrNull = folders.Worlds;
                 kind = ProjectItemKind::World;
             }
             else if (name.endsWith(RENDER_GRAPH_SUFFIX) == true)
             {
-                parentOrNull = graphs;
+                parentOrNull = folders.RenderGraphs;
                 kind = ProjectItemKind::RenderGraph;
             }
             else if (name.endsWith(SHADER_MANIFEST_SUFFIX) == true || name.endsWith(SHADER_SOURCE_SUFFIX) == true)
             {
-                parentOrNull = shaders;
+                parentOrNull = folders.Shaders;
                 kind = ProjectItemKind::Shader;
             }
             if (parentOrNull == nullptr)

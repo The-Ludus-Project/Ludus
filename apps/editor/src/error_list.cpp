@@ -1,5 +1,7 @@
 #include "internal/error_list.h"
 
+#include <ludus/foundation/base/core.h>
+
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QHBoxLayout>
@@ -21,7 +23,7 @@ namespace ludus::editor
 {
 namespace
 {
-enum Column : foundation::int32
+enum Column : foundation::uint8
 {
     SEVERITY_COLUMN,
     CODE_COLUMN,
@@ -259,7 +261,7 @@ void ErrorList::ReplaceEntries(ErrorListProducer producer, const QList<ErrorList
         }
     }
     kept.append(entries);
-    mEntries = kept;
+    mEntries = foundation::Move(kept);
     render();
 }
 

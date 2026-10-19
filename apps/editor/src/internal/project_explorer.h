@@ -52,6 +52,7 @@ public:
 
     /// Show the project rooted at root (its source folder) under name; an empty root
     /// shows only the project-independent items. Rescans immediately.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the root path and display name are distinct.
     void SetProject(const QString& root, const QString& name);
     /// Rescan the current project folder.
     void Refresh();
@@ -68,7 +69,14 @@ Q_SIGNALS:
 private:
     [[nodiscard]] QTreeWidgetItem*
     addItem(QTreeWidgetItem* parentOrNull, const QString& text, ProjectItemKind kind, const QString& path);
-    void scan(QTreeWidgetItem* worlds, QTreeWidgetItem* graphs, QTreeWidgetItem* shaders);
+    /// Tree folders that receive each kind of scanned file.
+    struct ScanFolders final
+    {
+        QTreeWidgetItem* Worlds;
+        QTreeWidgetItem* RenderGraphs;
+        QTreeWidgetItem* Shaders;
+    };
+    void scan(const ScanFolders& folders);
     void applyFilter();
     void activate(const QTreeWidgetItem* item);
 

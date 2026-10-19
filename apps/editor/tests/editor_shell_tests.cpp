@@ -23,6 +23,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLatin1StringView>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
@@ -41,16 +42,20 @@ using ludus::foundation::int32;
 
 namespace
 {
-const QStringList TOOL_WINDOWS{
-    QStringLiteral("projectExplorerDock"),
-    QStringLiteral("propertiesDock"),
-    QStringLiteral("errorListDock"),
-    QStringLiteral("outputDock"),
-    QStringLiteral("contentDock"),
-    QStringLiteral("liveInspectorDock"),
-    QStringLiteral("timingDock"),
-};
-const QString PACKAGE_GRAPH = QStringLiteral("renderer/main.lurender.json");
+/// objectNames of every tool window the shell creates.
+QStringList GetToolWindows()
+{
+    return {
+        QStringLiteral("projectExplorerDock"),
+        QStringLiteral("propertiesDock"),
+        QStringLiteral("errorListDock"),
+        QStringLiteral("outputDock"),
+        QStringLiteral("contentDock"),
+        QStringLiteral("liveInspectorDock"),
+        QStringLiteral("timingDock"),
+    };
+}
+constexpr QLatin1StringView PACKAGE_GRAPH{"renderer/main.lurender.json"};
 
 QByteArray ReadBytes(const QString& path)
 {
@@ -129,7 +134,7 @@ void Settle()
 void CheckDefaultToolWindows(const MainWindow& window)
 {
     CHECK(window.centralWidget() == &Well(window));
-    for (const QString& name : TOOL_WINDOWS)
+    for (const QString& name : GetToolWindows())
     {
         INFO(name.toStdString());
         CHECK(Dock(window, name)->isHidden() == false);
@@ -280,7 +285,7 @@ TEST_CASE("Window menu shows hides and resets every tool window", "[editor][layo
     Settle();
     QMenu* menu = window.findChild<QMenu*>(QStringLiteral("windowMenu"));
     REQUIRE(menu != nullptr);
-    for (const QString& name : TOOL_WINDOWS)
+    for (const QString& name : GetToolWindows())
     {
         INFO(name.toStdString());
         QDockWidget* dock = Dock(window, name);
