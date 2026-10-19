@@ -65,6 +65,9 @@ def main():
     error = json.loads(failed.stdout)['error']
     assert error['code'] == 'RenderGraphBuildShader'
     assert error['location'] == {'source': 'main_shaders/color.slang', 'line': broken_line}, error.get('location')
+    # The report names no machine path: no helper command echoes or temporary build roots.
+    assert str(output) not in error['message'] and str(output.resolve()) not in error['message'], error['message']
+    assert not any(line.startswith('+ ') for line in error['message'].splitlines()), error['message']
     package_path = Path(first['package'])
     cpp = ['#include "schemas.h"', '#include <cstring>', 'using namespace ludus;',
            'using namespace ludus::render_graph_generated;', 'int main()', '{',
