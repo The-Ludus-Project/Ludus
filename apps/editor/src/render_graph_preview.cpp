@@ -153,7 +153,8 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         math::Vector4 color = object.Tint;
         if (object.Surface >= 0 && object.Surface < extraction.Scene.Surfaces.size())
         {
-            const math::Vector4& tint = extraction.Scene.Surfaces.at(object.Surface).Tint;
+            // The static profile samples no textures; the surface's flat approximation stands in.
+            const math::Vector4& tint = extraction.Scene.Surfaces.at(object.Surface).FlatTint;
             color = {color.X * tint.X, color.Y * tint.Y, color.Z * tint.Z, color.W * tint.W};
         }
         renderer::RenderGraphItem item;
