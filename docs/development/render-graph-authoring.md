@@ -11,7 +11,8 @@ using the same CLI/backend. RG2 adds bounded static opaque Renderer admission an
 execution through cooked headers. RG3a adds the editor's Renderer tab, mapped
 diagnostics, runtime generations and atomic activation; the node canvas and live
 in-editor preview are RG3b. RG4a adds measured exact-descriptor pooling of
-transient attachments with a serial control.
+transient attachments with a serial control. To begin in the editor, see
+[Start customizing the renderer](#start-customizing-the-renderer).
 
 **RG0 plans are contract diagnostics, not executable renderer packages.** They
 do not compile shaders, evaluate scene draw-item coverage, negotiate device
@@ -19,6 +20,72 @@ capabilities or render pixels. Those checks are reported as pending. RG1 builds 
 Renderer/RHI integration. `DefaultOpaque`, `DefaultMasked` and `RendererStatic`
 identify the qualified static profile described below; arbitrary mesh/material
 compatibility is never inferred from those labels.
+
+## Start customizing the renderer
+
+You don't need to create a render graph first. The engine ships a default one, and
+the editor uses it for any project that has no graph of its own.
+
+1. **Look at the default.** Open a project and choose the **Renderer** tab. If the
+   project has no `renderer/main.lurender.json`, the tab shows the **Engine default
+   renderer**. This is the static opaque `RendererStatic` graph: Scene and Camera feed
+   `RasterizeGraph` into 640×360 color and depth targets, and the color target is
+   exported. Its sources live in
+   [`modules/graphics/renderer/render_graphs/default`](../../modules/graphics/renderer/render_graphs/default/main.lurender.json).
+   The SDK installs a read-only copy to `share/Ludus/render-graphs/default`, and
+   the editor embeds the same copy. Showing the default writes nothing to the
+   project.
+2. **Preview it.** Start the World viewport, then choose **Build & Preview**. While
+   the default is unedited, the preview uses the generation that was cooked when the
+   editor was built. No build, tools or project files are involved. The
+   [preview rules](#preview-a-cooked-generation) below still apply.
+3. **Edit it.** Change anything: move a node on the canvas, edit a field in the
+   Inspector, or apply shader text in the Source tab. The first edit turns the
+   default into a project draft:
+   - The path label changes to `renderer/main.lurender.json (new, unsaved)`, and the
+     status line names the folder that Save will create.
+   - Undo works as usual. Undoing every edit returns to the unedited default.
+   - **Save** (Ctrl+S or Command-S) creates the whole package under `renderer/` and
+     reports where it went. After that, the project always opens its own graph.
+
+   To copy the default without editing it, open the **Open Graph...** drop-down, or
+   right-click the source tree, and choose **Customize in Project**. Neither path ever
+   replaces a file. If `renderer/` already holds any of the package's files, nothing
+   is written; open that graph with **Open Graph...** instead.
+4. **Iterate.** **Build & Preview** and **Live Preview** build the draft with the
+   editor's own shader tools and preview the result. Unsaved drafts build too, from
+   an immutable snapshot (see [Validate, build and cook a draft](#validate-build-and-cook-a-draft)).
+
+You never have to fill in the **Build Settings** tab. When its fields are empty,
+builds use the tools the editor build already used for its own graphs:
+
+- the SDK shader helper that build staged;
+- the pinned `slangc` (`LUDUS_SLANG_COMPILER`);
+- `spirv-val` and SPIRV-Cross, if that build configured them.
+
+Each empty field shows its default as a placeholder. The fields under **Tool
+overrides (advanced)** replace a default only for this editor and are kept in
+editor preferences, never in the project. Editors built without the native preview
+(`LUDUS_EDITOR_RENDER_PREVIEW=OFF`, or the browser editor) have no tool defaults
+and no preview. In those editors, set the helper and compiler yourself to build.
+
+The feature stays out of the way if you don't use it:
+
+- World rendering doesn't depend on render graphs.
+- No banner, prompt or required step appears.
+- Saving the unedited default writes nothing.
+- Closing a project asks to save only after you have edited the graph.
+
+Limits:
+
+- The default covers the `RendererStatic` profile only. The editor's preview interface
+  identity is the default's, and a compile-time check keeps the
+  [RG2 offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json)
+  on the same interface.
+- The default's profiles follow the host: `metal` and `wgsl` on macOS, `spirv` and
+  `wgsl` on Linux, and `wgsl` for web builds.
+- A project's own graph is found only at `renderer/main.lurender.json`. Open graphs
+  stored anywhere else with **Open Graph...**.
 
 ## Create a saved graph and import it
 
@@ -649,8 +716,11 @@ in-editor preview; see [Node canvas and preview (RG3b)](#node-canvas-and-preview
 
 ### Edit in the Renderer tab
 
-Open a project, choose **Renderer**, then **Open Graph...** and select a root
-`.lurender.json` inside the project. Its directory is the package root. The tab
+Open a project and choose **Renderer**. The tab shows the project's
+`renderer/main.lurender.json`, or else the
+[engine default](#start-customizing-the-renderer). To edit another graph, choose
+**Open Graph...** and select a root `.lurender.json` inside the project. Its
+directory is the package root. The tab
 loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
 most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
 symlinks are skipped).
@@ -686,9 +756,10 @@ ludus --json render-graph dump graphs/main.lurender.json --root graphs
 
 A result names the draft revision it checked; a later edit marks it as describing
 an older revision. Results from a cancelled job, an earlier request or another
-project are discarded. Build uses the **Build Settings** tab's SDK helper and
-pinned compiler paths (stored in editor preferences, never in the project) and
-publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
+project are discarded. Build uses the editor build's shader helper and pinned
+compiler, unless **Build Settings** overrides them (overrides are stored in editor
+preferences, never in the project). It publishes to
+`out/render-graph/<graph>/build`. Cook Runtime writes
 `out/render-graph/<graph>.lurgrt` from that build tree.
 
 ### Mapped diagnostics
@@ -882,7 +953,8 @@ CLI backend, which owns legality and reports the same codes as
 ### Preview a cooked generation
 
 1. Build and **Cook Runtime** as above, so `out/render-graph/<graph>.lurgrt`
-   exists.
+   exists. **Build & Preview** does both, then previews the result. An unedited
+   engine default skips this step and uses the generation cooked with the editor.
 2. Open a World and start its viewport; the preview borrows that device and the
    World extraction. It never starts a device of its own.
 3. Open the **Preview** tab and choose **Preview Runtime**.
@@ -918,10 +990,12 @@ revision R`) from the candidate's state. The copy to the CPU is asynchronous and
 always finishes before the preview polls for activation or renders again, so a
 replaced generation is never reset while its export is being read.
 
-The editor is built against the RendererStatic interface of the checked-in
-[offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json):
-CMake cooks it into the editor and its interface identity is the one every
-previewed generation must match. Graphs scaffolded with
+The editor is built against the RendererStatic interface of the
+[engine default graph](#start-customizing-the-renderer). CMake cooks it into the
+editor, and its interface identity is the one every previewed generation must
+match. A compile-time check keeps the checked-in
+[offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json),
+which the preview parity tests cook, on the same interface. Graphs scaffolded with
 `ludus render-graph new-build --renderer-static` use that interface. Hot-swapping
 a candidate whose camera count differs from the active generation's fails, because
 one extraction feeds both; preview it after a viewport restart instead.

@@ -87,6 +87,29 @@ function(ludus_editor_compile_render_graph_host target)
     ludus_compile_render_graph(TARGET ${target} NAME editor_renderer_static
         MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
     set(editor_renderer_static_RUNTIME_PACKAGE "${editor_renderer_static_RUNTIME_PACKAGE}" PARENT_SCOPE)
+    # The engine-owned default graph the Renderer tab shows when a project has none. Its
+    # prebuilt generation previews with no project files or tools; its header's interface
+    # identity is checked against the host fixture at compile time. The same shader helper,
+    # compiler and validators become the Renderer tab's default build tools.
+    get_property(default_graph GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR)
+    ludus_compile_render_graph(TARGET ${target} NAME editor_default_graph
+        MANIFEST "${default_graph}/main.lushader.json" RUNTIME_PACKAGE)
+    target_compile_definitions(${target} PRIVATE
+        "LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME=\"${editor_default_graph_RUNTIME_PACKAGE}\""
+        "LUDUS_EDITOR_SHADER_HELPER=\"${editor_default_graph_SHADER_HELPER}\""
+        "LUDUS_EDITOR_SLANG_COMPILER=\"${LUDUS_SLANG_COMPILER}\""
+        "LUDUS_EDITOR_SPIRV_VALIDATOR=\"${LUDUS_SPIRV_VALIDATOR}\""
+        "LUDUS_EDITOR_SPIRV_CROSS=\"${LUDUS_SPIRV_CROSS}\"")
+endfunction()
+
+# The default graph's authored sources, read-only inside the editor (also in builds
+# without the native preview), so the Renderer tab can show and copy them.
+function(ludus_editor_add_default_render_graph target)
+    get_property(default_graph GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR)
+    get_property(default_graph_files GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_FILES)
+    list(TRANSFORM default_graph_files PREPEND "${default_graph}/")
+    qt_add_resources(${target} ludus_default_render_graph
+        PREFIX "/render-graph/default" BASE "${default_graph}" FILES ${default_graph_files})
 endfunction()
 
 # --- Shared editor logic library ---------------------------------------------
@@ -174,6 +197,8 @@ qt_add_executable(ludus_editor
     src/render_graph_canvas.cpp
     src/internal/renderer_workspace.h
     src/renderer_workspace.cpp
+    src/internal/render_graph_defaults.h
+    src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
     src/render_graph_live_build.cpp
     src/configuration_workspace.cpp
@@ -212,6 +237,7 @@ set(world_demo_schema "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring/world.sch
 qt_add_resources(ludus_editor world_demo_schema PREFIX "/world-demo" BASE "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring" FILES ${world_demo_schema})
 qt_add_resources(ludus_editor ludus_samples
     PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
+ludus_editor_add_default_render_graph(ludus_editor)
 if(APPLE)
     target_sources(ludus_editor PRIVATE resources/ludus.icns)
     set_source_files_properties(resources/ludus.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
@@ -334,6 +360,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_canvas.cpp
         src/internal/renderer_workspace.h
         src/renderer_workspace.cpp
+        src/internal/render_graph_defaults.h
+        src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
     src/render_graph_live_build.cpp
         src/configuration_workspace.cpp
@@ -365,6 +393,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp
         tests/renderer_workspace_tests.cpp
+        tests/render_graph_default_tests.cpp
         tests/render_graph_canvas_tests.cpp
         tests/live_journey_tests.cpp
         tests/macos_journey_tests.cpp
@@ -379,6 +408,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     qt_add_resources(ludus_editor_tests world_demo_schema PREFIX "/world-demo" BASE "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring" FILES ${world_demo_schema})
     qt_add_resources(ludus_editor_tests ludus_samples
         PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
+    ludus_editor_add_default_render_graph(ludus_editor_tests)
     target_include_directories(ludus_editor_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/modules/audio/tests")
     target_compile_definitions(ludus_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         "LUDUS_EDITOR_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
