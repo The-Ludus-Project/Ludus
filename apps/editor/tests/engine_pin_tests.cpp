@@ -9,6 +9,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAction>
 #include <QComboBox>
 #include <QDeadlineTimer>
 #include <QDialogButtonBox>
@@ -21,6 +22,7 @@
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolBar>
 
 using namespace ludus::editor;
 
@@ -231,4 +233,114 @@ else:
     // A repair replaces the selection, so the stale report and its button are retired.
     CHECK(controller.State().EnginePin.State == EnginePinState::None);
     QTRY_VERIFY_WITH_TIMEOUT(useEngine->isVisible() == false, 10000);
+}
+
+TEST_CASE("Project setup failures stay actionable above World until verified", "[editor][setup][notice]")
+{
+    QTemporaryDir directory;
+    QFile fixture(QStringLiteral(LUDUS_EDITOR_SOURCE_DIR) + QStringLiteral("/tests/fixtures/valid_v2_cmake.json"));
+    REQUIRE(fixture.open(QIODevice::ReadOnly));
+    const QString descriptor = directory.filePath(QStringLiteral("ludus.project.json"));
+    WriteFile(descriptor, fixture.readAll());
+    WriteFile(directory.filePath(QStringLiteral("CMakeLists.txt")),
+              QByteArrayLiteral("cmake_minimum_required(VERSION 3.29)\n"));
+    const QString adapter = directory.filePath(QStringLiteral("setup_adapter.py"));
+    WriteFile(adapter, QByteArrayLiteral(R"py(import json, sys, time
+from pathlib import Path
+print(json.dumps(dict(protocol=1, type='ready')), flush=True)
+request = json.loads(sys.stdin.readline())
+time.sleep(0.15)
+is_ready = Path(request['project']).with_name('ready').exists()
+print(json.dumps(dict(protocol=1, type='result', job=request['job'],
+    outcome='success' if is_ready else 'failed', stage='configuring',
+    code='Ok' if is_ready else 'InvalidProject',
+    message='Setup checked' if is_ready else 'SDK or tool inputs changed; run repair',
+    cleanup_confirmed=True, exit_code=None, signal=None)), flush=True)
+)py"));
+    ToolingPaths tooling;
+    tooling.PythonPath = QStringLiteral("/usr/bin/python3");
+    tooling.AdapterPath = adapter;
+    tooling.ToolingRoot = directory.path();
+    EditorController controller(tooling);
+    MainWindow window(&controller);
+    window.show();
+    QToolBar* notice = window.findChild<QToolBar*>(QStringLiteral("projectSetupNotice"));
+    QLabel* message = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeText"));
+    QPushButton* repair = window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeRepair"));
+    QPushButton* check = window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeCheck"));
+    REQUIRE(notice != nullptr);
+    REQUIRE(message != nullptr);
+    REQUIRE(repair != nullptr);
+    REQUIRE(check != nullptr);
+    CHECK_FALSE(notice->isVisible());
+    controller.OpenProject(descriptor);
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() {
+            return controller.State().SetupProblem.isEmpty() == false && controller.Caps().CanCloseImmediately &&
+                   check->isEnabled() == true;
+        },
+        10000));
+    CHECK(notice->isVisible());
+    CHECK(message->text().contains(QStringLiteral("SDK or tool inputs changed")));
+    CHECK(repair->isEnabled());
+    ProjectDescriptor draft = controller.State().Draft;
+    draft.Name = QStringLiteral("Changed project settings");
+    controller.EditDraft(draft);
+    CHECK(notice->isVisible());
+    CHECK_FALSE(repair->isEnabled());
+    CHECK_FALSE(check->isEnabled());
+    CHECK(message->text().contains(QStringLiteral("Save project settings")));
+    controller.UndoProjectEdit();
+    CHECK(repair->isEnabled());
+    repair->click();
+    QDialog* dialog = window.findChild<QDialog*>(QStringLiteral("projectSetupDialog"));
+    REQUIRE(dialog != nullptr);
+    CHECK(dialog->isVisible());
+    dialog->reject();
+    CHECK(controller.Caps().CanCloseImmediately);
+    CHECK(notice->isVisible());
+
+    controller.SetupProject(QString(), QString(), false, true);
+    CHECK(notice->isVisible());
+    CHECK_FALSE(repair->isEnabled());
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() { return controller.Caps().CanCloseImmediately && check->isEnabled() == true; },
+        10000));
+    CHECK(notice->isVisible());
+    CHECK(controller.State().Result.Kind == Outcome::Failed);
+    controller.ClearOutput();
+    CHECK(notice->isVisible());
+    QAction* reset = window.findChild<QAction*>(QStringLiteral("resetWorkspaceLayout"));
+    REQUIRE(reset != nullptr);
+    reset->trigger();
+    CHECK(notice->isVisible());
+
+    controller.EditDraft(draft);
+    controller.Save();
+    CHECK(notice->isVisible());
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() {
+            return controller.State().Result.Kind == Outcome::Failed && controller.Caps().CanCloseImmediately &&
+                   check->isEnabled() == true;
+        },
+        10000));
+    CHECK(notice->isVisible());
+
+    WriteFile(directory.filePath(QStringLiteral("ready")), QByteArrayLiteral("ready"));
+    check->click();
+    CHECK(notice->isVisible());
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() { return controller.Caps().CanCloseImmediately && check->isEnabled() == true; },
+        10000));
+    CHECK(controller.State().SetupProblem.isEmpty());
+    CHECK_FALSE(notice->isVisible());
+
+    REQUIRE(QFile::remove(directory.filePath(QStringLiteral("ready"))));
+    check->click();
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() { return controller.Caps().CanCloseImmediately && check->isEnabled() == true; },
+        10000));
+    CHECK(notice->isVisible());
+    CHECK(controller.CloseProject());
+    CHECK_FALSE(notice->isVisible());
 }

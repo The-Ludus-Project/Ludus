@@ -85,6 +85,31 @@ LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR_LAYOUT, "Editor.Layout");
 
 void MainWindow::BuildUi()
 {
+    mSetupNoticeOrNull = new QToolBar(QStringLiteral("Project setup needs attention"), this);
+    mSetupNoticeOrNull->setObjectName(QStringLiteral("projectSetupNotice"));
+    mSetupNoticeOrNull->setMovable(false);
+    mSetupNoticeOrNull->setFloatable(false);
+    QWidget* notice = new QWidget(mSetupNoticeOrNull);
+    notice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    QHBoxLayout* noticeLayout = new QHBoxLayout(notice);
+    mSetupNoticeTextOrNull = new QLabel(notice);
+    mSetupNoticeTextOrNull->setObjectName(QStringLiteral("projectSetupNoticeText"));
+    mSetupNoticeTextOrNull->setTextFormat(Qt::PlainText);
+    mSetupNoticeTextOrNull->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    noticeLayout->addWidget(mSetupNoticeTextOrNull, 1);
+    mSetupNoticeRepairOrNull = new QPushButton(QStringLiteral("Repair setup…"), notice);
+    mSetupNoticeRepairOrNull->setObjectName(QStringLiteral("projectSetupNoticeRepair"));
+    noticeLayout->addWidget(mSetupNoticeRepairOrNull);
+    mSetupNoticeCheckOrNull = new QPushButton(QStringLiteral("Check again"), notice);
+    mSetupNoticeCheckOrNull->setObjectName(QStringLiteral("projectSetupNoticeCheck"));
+    noticeLayout->addWidget(mSetupNoticeCheckOrNull);
+    mSetupNoticeOrNull->addWidget(notice);
+    addToolBar(mSetupNoticeOrNull);
+    addToolBarBreak();
+    mSetupNoticeOrNull->hide();
+    connect(mSetupNoticeRepairOrNull, &QPushButton::clicked, this, [this]() { SetupProjectAction_->trigger(); });
+    connect(mSetupNoticeCheckOrNull, &QPushButton::clicked, this, [this]() { CheckSetupAction_->trigger(); });
+
     // Visual Studio layout: documents in the central well; tool windows dock around it.
     // The right dock area owns both right corners, so Project Explorer and Properties run
     // the full height and the bottom tool windows sit under the documents only.
@@ -569,6 +594,7 @@ void MainWindow::ResetWorkspaceLayout()
         toolbar->show();
     }
     applyDefaultDockSizes();
+    RenderStatus();
 }
 
 void MainWindow::buildWindowMenu(QMenu* menu)
