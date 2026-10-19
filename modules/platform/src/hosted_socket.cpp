@@ -5,6 +5,9 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#if defined(__APPLE__)
+#    include <sys/un.h>
+#endif
 #include <unistd.h>
 
 #if !defined(__APPLE__) && !defined(__linux__)
@@ -155,6 +158,29 @@ bool TryReadPeerUserId(int32 descriptor, uint32& outUserId) noexcept
         return false;
     }
     outUserId = static_cast<uint32>(credentials.uid);
+    return true;
+#endif
+}
+
+bool TryReadPeerProcessId(int32 descriptor, int32& outProcessId) noexcept
+{
+#if defined(__APPLE__)
+    pid_t processId = 0;
+    socklen_t size = sizeof(processId);
+    if (::getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &processId, &size) != 0 || size != sizeof(processId))
+    {
+        return false;
+    }
+    outProcessId = static_cast<int32>(processId);
+    return true;
+#else
+    ucred credentials{};
+    socklen_t size = sizeof(credentials);
+    if (::getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &credentials, &size) != 0 || size != sizeof(credentials))
+    {
+        return false;
+    }
+    outProcessId = static_cast<int32>(credentials.pid);
     return true;
 #endif
 }

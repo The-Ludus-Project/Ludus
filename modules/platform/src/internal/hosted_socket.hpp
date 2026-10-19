@@ -96,6 +96,12 @@ ReceiveSome(int32 descriptor, foundation::BorrowedView<uint8> outBytes, usize& o
 /// credentials at connect() time, so the peer cannot forge them.
 [[nodiscard]] bool TryReadPeerUserId(int32 descriptor, uint32& outUserId) noexcept;
 
+/// @brief Read the process id of a connected Unix-socket peer.
+///
+/// macOS uses LOCAL_PEERPID; Linux uses SO_PEERCRED. Like the user id, the kernel
+/// records it at connect() time.
+[[nodiscard]] bool TryReadPeerProcessId(int32 descriptor, int32& outProcessId) noexcept;
+
 /// The effective user id of this process.
 [[nodiscard]] uint32 GetCurrentUserId() noexcept;
 } // namespace ludus::platform::hosted

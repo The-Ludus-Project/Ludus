@@ -70,6 +70,7 @@ target_sources(
     ludus_platform
     PRIVATE
         src/hosted_protocol.cpp
+        src/hosted_surface.cpp
         src/hosted_window_endpoint.cpp
         src/native_keymap.cpp
         src/window.cpp
@@ -82,6 +83,7 @@ target_sources(
         FILES
             include/ludus/platform/browser/window.h
             include/ludus/platform/config.h
+            include/ludus/platform/hosted_surface.h
             include/ludus/platform/hosted_window.h
             include/ludus/platform/keyboard_sink.h
             include/ludus/platform/log_categories.h
@@ -187,6 +189,12 @@ if(NOT EMSCRIPTEN AND (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME 
         src/hosted_socket.cpp
         src/window_hosted.cpp)
     target_compile_definitions(ludus_platform PRIVATE LUDUS_PLATFORM_HOSTED=1)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        # Hosted surface images cross the per-session Mach rendezvous; libbsm reads
+        # the sender's audit token.
+        target_sources(ludus_platform PRIVATE src/hosted_mach.cpp)
+        target_link_libraries(ludus_platform PRIVATE bsm)
+    endif()
 endif()
 
 ludus_apply_project_defaults(ludus_platform)
@@ -249,6 +257,30 @@ if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE)
     ludus_enable_test_exceptions(ludus_platform_hosted_tests)
     add_test(NAME ludus_platform_hosted_tests COMMAND ludus_platform_hosted_tests)
     set_tests_properties(ludus_platform_hosted_tests PROPERTIES LABELS "unit;platform;input" TIMEOUT 60)
+endif()
+
+if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # Mach rendezvous probe: a child process sends IOSurface send rights to the
+    # endpoint's per-session bootstrap name.
+    add_executable(ludus_platform_hosted_mach_child tests/hosted_mach_child.cpp)
+    target_include_directories(ludus_platform_hosted_mach_child PRIVATE src)
+    target_link_libraries(ludus_platform_hosted_mach_child PRIVATE
+        Ludus::Platform Ludus::FoundationContainers Ludus::FoundationStrings
+        "-framework IOSurface" "-framework CoreFoundation")
+    ludus_apply_project_defaults(ludus_platform_hosted_mach_child)
+
+    add_executable(ludus_platform_hosted_mach_tests tests/hosted_mach_tests.cpp)
+    target_include_directories(ludus_platform_hosted_mach_tests PRIVATE src)
+    target_compile_definitions(ludus_platform_hosted_mach_tests PRIVATE
+        LUDUS_HOSTED_MACH_CHILD="$<TARGET_FILE:ludus_platform_hosted_mach_child>")
+    add_dependencies(ludus_platform_hosted_mach_tests ludus_platform_hosted_mach_child)
+    target_link_libraries(ludus_platform_hosted_mach_tests PRIVATE
+        Ludus::Platform Ludus::FoundationContainers Ludus::FoundationStrings Ludus::FoundationTime
+        "-framework IOSurface" "-framework CoreFoundation" Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_platform_hosted_mach_tests)
+    ludus_enable_test_exceptions(ludus_platform_hosted_mach_tests)
+    add_test(NAME ludus_platform_hosted_mach_tests COMMAND ludus_platform_hosted_mach_tests)
+    set_tests_properties(ludus_platform_hosted_mach_tests PROPERTIES LABELS "unit;platform;macos" TIMEOUT 60)
 endif()
 
 if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
