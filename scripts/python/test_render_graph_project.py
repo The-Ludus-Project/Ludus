@@ -61,6 +61,16 @@ class ProjectGraphToolsTests(unittest.TestCase):
         self.assertEqual(before, {root: self.snapshot(root) for root in before})
         self.assertTrue((self.builder.output / 'current.json').is_file())
 
+    def test_pre_worker_sdk_builds_without_optional_native_client(self):
+        helper = self.sdk / 'lib/cmake/Ludus/shaders'
+        self.assertFalse((helper / 'native_worker.py').exists())
+        before = self.snapshot(self.sdk)
+        code, result = self.build_cli()
+        self.assertEqual(0, code, result)
+        self.assertEqual(str(helper), result['toolchain']['helper'])
+        self.assertTrue((self.builder.output / 'current.json').is_file())
+        self.assertEqual(before, self.snapshot(self.sdk))
+
     def test_sdk_switch_is_resolved_again_and_never_falls_back_to_another_install(self):
         _, first = self.resolve()
         other = self.make_sdk('replacement-sdk')

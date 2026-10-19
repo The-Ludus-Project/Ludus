@@ -99,6 +99,41 @@ class BuildTests(unittest.TestCase):
         self.assertIn('PipelineReadiness', package['checks_pending'])
         self.assertEqual(len({p['key'] for p in package['programs'] if p['id'] == 'Geometry'}), 2)
 
+    def test_offline_build_needs_no_native_client_and_ignores_unused_client_changes(self):
+        self.assertFalse((self.helper / build.NATIVE_WORKER_HELPER).exists())
+        first = self.run_build()
+        client = self.helper / build.NATIVE_WORKER_HELPER
+        client.write_text('unused native client')
+        second = self.run_build()
+        client.write_text('changed unused native client')
+        third = self.run_build()
+        self.assertEqual(first['generation'], second['generation'])
+        self.assertEqual(first['generation'], third['generation'])
+        self.assertEqual(0, second['cache_misses'])
+        self.assertEqual(0, third['cache_misses'])
+
+    def test_explicit_or_environment_worker_requires_its_sdk_client_and_preserves_publication(self):
+        self.run_build()
+        pointer = self.pointer()
+        for uses_environment in (False, True):
+            with self.subTest(environment=uses_environment):
+                environment = {'LUDUS_SHADER_WORKER_SOCKET': '/unused/compiler.sock'} if uses_environment else {}
+                options = {} if uses_environment else {'worker_socket': '/unused/compiler.sock'}
+                with patch.dict(os.environ, environment):
+                    with self.assertRaisesRegex(ToolingError, 'native_worker.py') as caught:
+                        self.run_build(**options)
+                self.assertEqual('RenderGraphBuildTools', caught.exception.code)
+                self.assertEqual(pointer, self.pointer())
+
+    def test_native_client_is_hashed_when_worker_is_selected(self):
+        client = self.helper / build.NATIVE_WORKER_HELPER
+        client.write_text('native client')
+        first, _ = build.tool_identity(self.helper, self.compiler, None, None, worker_socket='/unused/compiler.sock')
+        client.write_text('changed native client')
+        second, _ = build.tool_identity(self.helper, self.compiler, None, None, worker_socket='/unused/compiler.sock')
+        self.assertNotEqual(first['helper/' + build.NATIVE_WORKER_HELPER],
+                            second['helper/' + build.NATIVE_WORKER_HELPER])
+
     def test_target_packing_is_independent_and_generated_cpp_is_documented(self):
         report = self.run_build()
         package = build.verify_package(Path(report['package']))

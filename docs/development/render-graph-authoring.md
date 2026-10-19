@@ -713,7 +713,10 @@ project are discarded. Build resolves the saved project's current native profile
 through the same SDK resolver as ordinary project builds: a saved local SDK
 selection takes precedence over an installed locked SDK in the shared store.
 Its installed `lib/cmake/Ludus/shaders` directory supplies the shader helper and
-toolchain pins. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
+toolchain pins. Ordinary offline compilation does not require the optional
+`native_worker.py` client, so SDKs that predate native-worker support remain usable.
+That client is required and included in tool identity only when a native worker
+is selected. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
 from the selected local setup preset or the editor's prepared shader tools.
 No path entry is needed for **New Graph → Build & Preview**. Loading and building
 do not download tools, repair the project or write into the engine/SDK.
