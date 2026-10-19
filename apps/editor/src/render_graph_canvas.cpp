@@ -13,6 +13,8 @@
 #include <QPainterPath>
 #include <QPen>
 #include <QSet>
+#include <QShowEvent>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include <cmath>
@@ -24,6 +26,7 @@ using namespace foundation;
 namespace
 {
 constexpr float64 NODE_WIDTH = 190;
+constexpr float64 FRAME_PADDING = 40;
 constexpr float64 HEADER_HEIGHT = 26;
 constexpr float64 PORT_SPACING = 22;
 constexpr float64 PORT_RADIUS = 6;
@@ -422,8 +425,32 @@ void RenderGraphCanvas::ShowConfiguration(const QString& file, const QString& co
     {
         // A different configuration starts with no selection and fits its contents.
         SelectNode({});
-        fitInView(mScene->itemsBoundingRect().adjusted(-40, -40, 40, 40), Qt::KeepAspectRatio);
+        mShouldFitOnShow = true;
+        if (isVisible() == true)
+        {
+            fitGraph();
+        }
     }
+}
+
+void RenderGraphCanvas::showEvent(QShowEvent* event)
+{
+    QGraphicsView::showEvent(event);
+    // A new graph can be loaded while the empty-state page still hides this view.
+    // Fit only that pending configuration after the splitter has laid out its viewport.
+    QTimer::singleShot(0, this, [this]() {
+        if (mShouldFitOnShow == true)
+        {
+            fitGraph();
+        }
+    });
+}
+
+void RenderGraphCanvas::fitGraph()
+{
+    fitInView(mScene->itemsBoundingRect().adjusted(-FRAME_PADDING, -FRAME_PADDING, FRAME_PADDING, FRAME_PADDING),
+              Qt::KeepAspectRatio);
+    mShouldFitOnShow = false;
 }
 
 QJsonObject RenderGraphCanvas::configuration() const

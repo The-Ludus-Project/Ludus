@@ -164,11 +164,13 @@ class ShaderFailureTests(BuildFixture):
                 self.run_build()
         self.assertEqual({'source': source, 'line': 2}, caught.exception.location)
 
-    def test_real_helper_failure_maps_its_prefixed_compiler_line(self):
-        # Run the real run_stage/compile_shader.py path. The helper reports compiler failure on
-        # stderr as `Ludus shader build: <compiler output>`, so the first diagnostic line carries
-        # that prefix. Only slangc is a stand-in: it reports the pinned version, then prints a
-        # Slang diagnostic for the captured absolute source path and fails.
+    def fail_with_real_helper(self, *extra):
+        """Build through the real run_stage/compile_shader.py path with a stand-in slangc.
+
+        The stand-in reports the pinned version, then prints a Slang diagnostic for the
+        captured absolute source path, any extra lines (formatted with `source`, `output`
+        and `tool`) and fails. Return the raised ToolingError.
+        """
         import stat
         import sys
         self.runner.stop()
@@ -177,16 +179,37 @@ class ShaderFailureTests(BuildFixture):
             f'#!{sys.executable}\nimport sys\nfrom pathlib import Path\n'
             f'if sys.argv[1:] == ["-version"]:\n    print({version!r})\n    sys.exit(0)\n'
             'source = Path(next(a for a in sys.argv if a.endswith("wrapper.slang"))).parent\n'
+            'output = Path(sys.argv[sys.argv.index("-o") + 1]).parent\n'
+            'tool = sys.argv[0]\n'
             'print(f"{source}/main_shaders/color.slang(3): error 30015: undefined identifier \'x\'.")\n'
-            'print("    return float4(x, 1);")\nsys.exit(1)\n')
+            'print("    return float4(x, 1);")\n' +
+            ''.join(f'print(f{line!r})\n' for line in extra) + 'sys.exit(1)\n')
         self.compiler.chmod(self.compiler.stat().st_mode | stat.S_IXUSR)
         with self.assertRaises(ToolingError) as caught:
             self.run_build()
         self.assertEqual('RenderGraphBuildShader', caught.exception.code)
-        self.assertIn('\n' + build.SHADER_HELPER_PREFIX + 'main_shaders/color.slang(3): error 30015',
-                      caught.exception.message)
-        self.assertEqual({'source': 'main_shaders/color.slang', 'line': 3}, caught.exception.location)
-        self.assertEqual("undefined identifier 'x'.", caught.exception.diagnostics[0]['message'])
+        return caught.exception
+
+    def test_real_helper_failure_maps_its_prefixed_compiler_line(self):
+        # The helper reports compiler failure on stderr as `Ludus shader build: <compiler
+        # output>`, so the first diagnostic line carries that prefix.
+        error = self.fail_with_real_helper()
+        self.assertTrue(error.message.startswith(
+            'shader helper: ' + build.SHADER_HELPER_PREFIX + 'main_shaders/color.slang(3): error 30015'), error.message)
+        self.assertEqual({'source': 'main_shaders/color.slang', 'line': 3}, error.location)
+        self.assertEqual("undefined identifier 'x'.", error.diagnostics[0]['message'])
+
+    def test_real_helper_failure_message_has_no_machine_paths(self):
+        # The helper echoes `+ <absolute slangc> ... -o <temporary artifact path>`; compiler
+        # messages may name the tool, the stage output and helper files.
+        error = self.fail_with_real_helper('{tool}: cannot write {output}/artifact.metal',
+                                           'note: see ' + str(self.helper.resolve()) + '/compile_graph_stage.py')
+        self.assertNotIn(str(self.root), error.message)
+        self.assertNotIn(str(self.root.resolve()), error.message)
+        self.assertFalse(any(line.startswith('+ ') for line in error.message.splitlines()), error.message)
+        self.assertIn('\nslangc: cannot write artifact/artifact.metal\n', error.message)
+        self.assertIn('\nnote: see helper/compile_graph_stage.py', error.message)
+        self.assertEqual({'source': 'main_shaders/color.slang', 'line': 3}, error.location)
 
 
 class MigrationTests(BuildFixture):

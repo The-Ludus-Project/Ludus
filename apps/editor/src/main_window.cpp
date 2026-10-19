@@ -790,7 +790,7 @@ void MainWindow::OnStateChanged()
             SetProjectWorkspace(root, true);
         }
         Scripts_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), root, state.Saved.Preset);
-        Renderer_->SetProject(root, state.ProjectEpoch);
+        Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
         if (restore == true)
         {
             // A new project identity retires the previous project's render-graph rows.

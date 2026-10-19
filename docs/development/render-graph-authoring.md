@@ -22,6 +22,25 @@ compatibility is never inferred from those labels.
 
 ## Create a saved graph and import it
 
+In the native editor, open your game project and choose **Renderer → New Graph…**
+(or **Create Render Graph…** in the empty workspace). Enter a graph name and
+choose **Create**. The editor creates `graphs/<name>/` inside the selected game
+project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
+`main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
+graph on the canvas. The starter exports a color image and uses the
+RendererStatic interface required by the editor preview. Target profiles are
+Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
+running viewport and never overwrites an existing graph folder. A failed creation
+keeps the previously open draft. Graphs and shader sources belong to the game
+project; engine/SDK files are read-only inputs.
+
+Next, open a World viewport and choose **Build & Preview**. The editor detects the
+selected project's SDK shader helper and prepared shader compiler automatically;
+SPIR-V/GLSL dependencies are detected only when the graph declares those targets. See
+[editing and building](#edit-and-reload-graphs-rg3) and the
+[preview's supported rendering profile](#preview-a-cooked-generation).
+Creation and building do not change the game's selected runtime renderer.
+
 From a checkout, use `./scripts/ludus`; after installation use `ludus`:
 
 ```bash
@@ -655,6 +674,10 @@ loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
 most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
 symlinks are skipped).
 
+For a project without graph sources, use **New Graph…** first, as described in
+[graph creation](#create-a-saved-graph-and-import-it). The empty workspace offers
+creation directly; build actions become available once a graph is open.
+
 - **Inspector** edits the selected node's authored fields by stable ID, adds or
   removes nodes (removal also drops their connections and layout position), and
   connects or disconnects `node.port` endpoints. Layout x/y edits only change
@@ -686,13 +709,41 @@ ludus --json render-graph dump graphs/main.lurender.json --root graphs
 
 A result names the draft revision it checked; a later edit marks it as describing
 an older revision. Results from a cancelled job, an earlier request or another
-project are discarded. Build uses the **Build Settings** tab's SDK helper and
-pinned compiler paths (stored in editor preferences, never in the project) and
-publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
+project are discarded. Build resolves the saved project's current native profile
+through the same SDK resolver as ordinary project builds: a saved local SDK
+selection takes precedence over an installed locked SDK in the shared store.
+Its installed `lib/cmake/Ludus/shaders` directory supplies the shader helper and
+toolchain pins. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
+from the selected local setup preset or the editor's prepared shader tools.
+No path entry is needed for **New Graph → Build & Preview**. Loading and building
+do not download tools, repair the project or write into the engine/SDK.
+
+**Build Settings** displays the resolved paths after a successful build. Its
+**Override detected shader tools (advanced)** checkbox explicitly enables manual
+paths for an exceptional tool setup. Old editor-wide path preferences do not
+override project detection, and switching projects clears these overrides.
+Each automatic build resolves selection again, so SDK switches and repairs take
+effect without restarting the editor. Missing/incomplete SDKs or tools report a
+setup error; use **Project → Repair Project Setup**. A selection change during
+compilation/cooking rejects publication and retains the previous runtime.
+
+Build publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
 `out/render-graph/<graph>.lurgrt` from that build tree. These paths are resolved
 from the project's canonical location, so a project opened through a symlink
 still builds inside its own folder. Build and Cook Runtime refuse a graph whose
 package lies outside the project.
+
+The same automatic path is available to tooling without the editor:
+
+```bash
+ludus render-graph build graphs/Main/main.lushader.json out/graph-build \
+  --project /path/to/game --tooling-root /path/to/prepared/ludus \
+  --runtime-package out/graph.lurgrt
+```
+
+`--tooling-root` is unnecessary when the selected local preset records all required
+shader-tool paths. Explicit `--helper`/`--compiler` arguments remain supported for
+standalone packages. Pin/version, reflection and publication checks still apply.
 
 ### Mapped diagnostics
 
@@ -707,6 +758,14 @@ With `--json`, a failure's `error.location` names its authored owner:
 
 Locations are package-relative and never contain machine paths. Activate a
 diagnostic (double-click or Enter) to navigate to it.
+
+Shader failure messages are portable too. The helper's own command echoes
+(`+ <tool> <arguments>`, with absolute tool and temporary paths) are dropped,
+because the stage descriptor and build manifest already identify tools and
+inputs, and they would otherwise use up the 4 KiB message bound before the
+compiler's diagnostics. In the remaining text, captured sources appear
+package-relative, stage outputs as `artifact/`, helper files as `helper/` and the
+compiler by its file name.
 
 The shader helper (`compile_shader.py`) reports a compiler failure as one stderr
 line prefixed `Ludus shader build: `, so the compiler's first diagnostic arrives as

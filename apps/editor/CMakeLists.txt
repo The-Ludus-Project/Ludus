@@ -170,6 +170,8 @@ qt_add_executable(ludus_editor
     src/render_graph_document.cpp
     src/internal/render_graph_job.h
     src/render_graph_job.cpp
+    src/internal/render_graph_creation.h
+    src/render_graph_creation.cpp
     src/internal/render_graph_canvas.h
     src/render_graph_canvas.cpp
     src/internal/renderer_workspace.h
@@ -339,6 +341,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_document.cpp
         src/internal/render_graph_job.h
         src/render_graph_job.cpp
+        src/internal/render_graph_creation.h
+        src/render_graph_creation.cpp
         src/internal/render_graph_canvas.h
         src/render_graph_canvas.cpp
         src/internal/renderer_workspace.h
@@ -393,6 +397,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         "LUDUS_EDITOR_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
         "LUDUS_EDITOR_PROJECT_ROOT=\"${PROJECT_SOURCE_DIR}\"")
+    target_compile_definitions(ludus_editor_tests PRIVATE
+        "LUDUS_EDITOR_SDK_MANIFEST=\"${PROJECT_BINARY_DIR}/cmake/LudusSdkManifest.json\"")
     # Controller/MainWindow sources are compiled directly into the test binary so
     # tests can drive the controller and (offscreen) widgets.
     target_sources(ludus_editor_tests PRIVATE

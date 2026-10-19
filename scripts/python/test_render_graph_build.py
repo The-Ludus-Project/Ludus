@@ -475,6 +475,8 @@ class CompilerAcceptance(unittest.TestCase):
                 build.build_package(manifest, temp / 'broken', **options)
             line = next(i for i, text in enumerate(broken.splitlines(), 1) if 'undefinedTint' in text)
             self.assertEqual({'source': 'main_shaders/color.slang', 'line': line}, caught.exception.location)
+            self.assertNotIn(str(temp.resolve()), caught.exception.message)
+            self.assertNotIn(str(temp), caught.exception.message)
             color.write_text(broken.replace('undefinedTint', 'material.tint'))
             package = build.verify_package(Path(first['package']))
             self.assertEqual(package['counts']['artifacts'], 3 * len(profiles))
