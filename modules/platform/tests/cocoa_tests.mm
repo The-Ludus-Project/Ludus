@@ -159,12 +159,17 @@ TEST_CASE("Cocoa creates owned windows and publishes resized backing-pixel exten
         CHECK(window->GetVisibility() == WindowVisibility::Minimized);
         [native deminiaturize:nil];
         deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (window->GetNativeWindowInfo().Width == 0 && std::chrono::steady_clock::now() < deadline)
+        // AppKit can publish intermediate nonzero extents during the restore animation.
+        // Wait for the requested size before checking that restoration preserved it.
+        while ((window->GetNativeWindowInfo().Width != extent.Width ||
+                window->GetNativeWindowInfo().Height != extent.Height) &&
+               std::chrono::steady_clock::now() < deadline)
         {
             REQUIRE(window->HandleEvent({}));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         CHECK(window->GetNativeWindowInfo().Width == extent.Width);
+        CHECK(window->GetNativeWindowInfo().Height == extent.Height);
         CHECK(window->GetVisibility() != WindowVisibility::Minimized);
         [native performClose:nil];
         CHECK_FALSE(window->HandleEvent({}));
