@@ -9,12 +9,12 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
 #    include <sys/un.h>
 #endif
 #include <unistd.h>
 
-#if !defined(__APPLE__) && !defined(__linux__)
+#if !defined(LUDUS_PLATFORM_MACOS) && !defined(LUDUS_PLATFORM_LINUX)
 #    error "The hosted window channel requires macOS or Linux"
 #endif
 
@@ -45,7 +45,7 @@ bool TryConfigureSocket(int32 descriptor) noexcept
     {
         return false;
     }
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     const int32 shouldSuppressPipeSignal = 1;
     if (::setsockopt(descriptor,
                      SOL_SOCKET,
@@ -67,7 +67,7 @@ TransferStatus SendSome(int32 descriptor, foundation::BorrowedView<const uint8> 
     }
     while (true)
     {
-#if defined(__linux__)
+#if defined(LUDUS_PLATFORM_LINUX)
         const ssize_t count = ::send(descriptor, bytes.GetDataOrNull(), bytes.GetSize(), MSG_NOSIGNAL);
 #else
         const ssize_t count = ::send(descriptor, bytes.GetDataOrNull(), bytes.GetSize(), 0);
@@ -151,7 +151,7 @@ TransferStatus SendWithDescriptors(int32 descriptor,
     std::memcpy(CMSG_DATA(header), descriptors, sizeof(int32) * descriptorCount);
     while (true)
     {
-#if defined(__linux__)
+#if defined(LUDUS_PLATFORM_LINUX)
         const ssize_t count = ::sendmsg(descriptor, &message, MSG_NOSIGNAL);
 #else
         const ssize_t count = ::sendmsg(descriptor, &message, 0);
@@ -199,7 +199,7 @@ TransferStatus ReceiveWithDescriptors(int32 descriptor,
     message.msg_iovlen = 1;
     message.msg_control = control.GetData();
     message.msg_controllen = static_cast<socklen_t>(control.GetSize());
-#if defined(__linux__)
+#if defined(LUDUS_PLATFORM_LINUX)
     constexpr int32 RECEIVE_FLAGS = MSG_CMSG_CLOEXEC;
 #else
     constexpr int32 RECEIVE_FLAGS = 0;
@@ -242,7 +242,7 @@ TransferStatus ReceiveWithDescriptors(int32 descriptor,
             std::memcpy(&receivedDescriptor, CMSG_DATA(header) + (i * sizeof(int32)), sizeof(int32));
             if (received < descriptorCapacity)
             {
-#if !defined(__linux__)
+#if !defined(LUDUS_PLATFORM_LINUX)
                 const int32 flags = ::fcntl(receivedDescriptor, F_GETFD, 0);
                 static_cast<void>(::fcntl(receivedDescriptor, F_SETFD, flags | FD_CLOEXEC));
 #endif
@@ -295,7 +295,7 @@ bool WaitUntilReadable(int32 descriptor, foundation::time::Duration timeout) noe
 
 bool TryReadPeerUserId(int32 descriptor, uint32& outUserId) noexcept
 {
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     uid_t userId = 0;
     gid_t groupId = 0;
     if (::getpeereid(descriptor, &userId, &groupId) != 0)
@@ -318,7 +318,7 @@ bool TryReadPeerUserId(int32 descriptor, uint32& outUserId) noexcept
 
 bool TryReadPeerProcessId(int32 descriptor, int32& outProcessId) noexcept
 {
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     pid_t processId = 0;
     socklen_t size = sizeof(processId);
     if (::getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &processId, &size) != 0 || size != sizeof(processId))

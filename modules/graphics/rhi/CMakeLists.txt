@@ -110,7 +110,7 @@ endif()
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/profile.cpp src/raster.cpp src/ray_unsupported.cpp)
+    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/hosted_ring_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/profile.cpp src/raster.cpp src/ray_unsupported.cpp)
     target_compile_definitions(ludus_rhi_lifecycle_tests PRIVATE LUDUS_RHI_TEST_STORAGE=1)
     target_include_directories(ludus_rhi_lifecycle_tests PRIVATE include src)
     target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE Ludus::Platform Ludus::FoundationContainers Catch2::Catch2WithMain)
@@ -180,6 +180,21 @@ if(LUDUS_BUILD_TESTS AND APPLE)
     ludus_enable_test_exceptions(ludus_rhi_hosted_surface_tests)
     add_test(NAME ludus_rhi_hosted_surface_tests COMMAND ludus_rhi_hosted_surface_tests)
     set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 120)
+endif()
+
+if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EMSCRIPTEN)
+    add_executable(ludus_rhi_hosted_surface_tests tests/hosted_surface_vulkan_tests.cpp)
+    target_include_directories(ludus_rhi_hosted_surface_tests PRIVATE src)
+    target_compile_definitions(ludus_rhi_hosted_surface_tests PRIVATE
+        VK_NO_PROTOTYPES LUDUS_HOSTED_PRODUCER="$<TARGET_FILE:ludus_rhi_hosted_producer>")
+    add_dependencies(ludus_rhi_hosted_surface_tests ludus_rhi_hosted_producer)
+    target_link_libraries(ludus_rhi_hosted_surface_tests PRIVATE
+        Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationStrings Ludus::FoundationTime
+        volk::volk_headers Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_rhi_hosted_surface_tests)
+    ludus_enable_test_exceptions(ludus_rhi_hosted_surface_tests)
+    add_test(NAME ludus_rhi_hosted_surface_tests COMMAND ludus_rhi_hosted_surface_tests)
+    set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES LABELS "rhi;gpu;linux" TIMEOUT 120)
 endif()
 
 if(TARGET ludus_rhi_render_tests)

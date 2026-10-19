@@ -15,7 +15,7 @@
 
 #include "hosted_protocol.hpp"
 #include "hosted_socket.hpp"
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
 #    include "hosted_mach.hpp"
 #endif
 
@@ -65,7 +65,7 @@ public:
     /// @pre The state is valid for the protocol (extent, scale, visibility).
     void Configure(const Token& token, uint32 expectedUserId, const MirroredWindowState& state) noexcept;
 
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     /// @brief Register the session's Mach rendezvous for IOSurface send rights.
     ///
     /// Call after Configure() and before a window is admitted; the Welcome then
@@ -148,7 +148,7 @@ private:
 
     RendezvousNonce mNonce = {};
     int32 mPeerProcessId = -1;
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     RendezvousServer mRendezvous;
 #endif
     foundation::StaticArray<uint8, ENDPOINT_RECEIVE_BUFFER_BYTES> mReceived = {};

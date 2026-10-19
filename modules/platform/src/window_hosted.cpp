@@ -1,6 +1,6 @@
 #include "internal/window_hosted.hpp"
 
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
 #    include "internal/hosted_mach.hpp"
 #endif
 
@@ -409,7 +409,7 @@ private:
         return HostedSurfaceStatus::Ok;
     }
 
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     [[nodiscard]] HostedSurfaceStatus publishMachPorts(HostedSurfaceImages& inoutImages) noexcept
     {
         if (mRendezvous.IsConnected() == false)
@@ -465,7 +465,7 @@ public:
         {
             status = publishDescriptors(inoutImages);
         }
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
         if (inoutImages.Handles[0].GetKind() == HostedHandleKind::MachPort)
         {
             status = publishMachPorts(inoutImages);
@@ -609,7 +609,7 @@ private:
     SocketDescriptor mConnection;
     Token mToken = {};
     RendezvousNonce mNonce = {};
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     RendezvousClient mRendezvous;
 #endif
     foundation::StaticArray<uint8, SEND_BUFFER_BYTES> mSend = {};

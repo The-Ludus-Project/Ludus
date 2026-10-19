@@ -35,13 +35,13 @@ void EndpointSession::Configure(const Token& token, uint32 expectedUserId, const
     mRefusalCount = 0;
     mNonce = {};
     mPeerProcessId = -1;
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     mRendezvous.Stop();
 #endif
     clearSurfaceState();
 }
 
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
 bool EndpointSession::TryStartRendezvous(const RendezvousNonce& nonce) noexcept
 {
     RendezvousName name;
@@ -348,7 +348,7 @@ bool EndpointSession::tryAttachHandles(const Message& message, HostedSurfaceImag
         mDescriptorCount -= HOSTED_SURFACE_IMAGE_COUNT;
         return true;
     }
-#if defined(__APPLE__)
+#if defined(LUDUS_PLATFORM_MACOS)
     // The window sends the Mach message before the socket message, so it is queued by now.
     for (usize attempt = 0; attempt < MAX_REJECTED_RENDEZVOUS_MESSAGES; ++attempt)
     {
