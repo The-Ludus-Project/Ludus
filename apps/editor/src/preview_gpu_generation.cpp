@@ -5,6 +5,7 @@
 #include "internal/static_lighting_job.h"
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -27,6 +28,7 @@
 #include <QString>
 
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+#    include "editor_wireframe.h"
 #    include "renderer_clustered_authored.h"
 #    include "renderer_clustered_authored_shadow.h"
 #    include "renderer_composite.h"
@@ -46,9 +48,44 @@ using namespace foundation;
 namespace rhi = graphics::rhi;
 namespace renderer = graphics::renderer;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+/// Wireframe edge colour; the fill is a dim shade of it (editor_wireframe.slang).
+constexpr math::Vector4 WIREFRAME_EDGE_COLOR{.45F, .7F, 1, 1};
+/// Barycentric coordinates the wireframe shader reads from each triangle corner's UV.
+constexpr math::Vector2 WIREFRAME_CORNERS[content::scene_format::TRIANGLE_CORNERS] = {{1, 0}, {0, 1}, {0, 0}};
+
 bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
+}
+/// Expand a triangle list to one vertex per corner whose UV is its barycentric
+/// coordinate, so the wireframe shader can find edges without a line topology.
+/// @return False for an out-of-range index, over-limit count or allocation failure.
+bool ExpandWireframeMesh(BorrowedView<const math::Vector3> positions,
+                         BorrowedView<const uint32> indices,
+                         Array<math::Vector3>& outPositions,
+                         Array<math::Vector2>& outBarycentrics,
+                         Array<uint32>& outIndices) noexcept
+{
+    const usize count = indices.GetSize();
+    if (positions.IsValid() == false || indices.IsValid() == false ||
+        count % content::scene_format::TRIANGLE_CORNERS != 0 || count > content::scene_format::MAX_INDICES ||
+        outPositions.TryResize(count) == false || outBarycentrics.TryResize(count) == false ||
+        outIndices.TryResize(count) == false)
+    {
+        return false;
+    }
+    for (usize corner = 0; corner < count; ++corner)
+    {
+        const uint32 index = indices[corner];
+        if (index >= positions.GetSize())
+        {
+            return false;
+        }
+        outPositions[corner] = positions[index];
+        outBarycentrics[corner] = WIREFRAME_CORNERS[corner % content::scene_format::TRIANGLE_CORNERS];
+        outIndices[corner] = static_cast<uint32>(corner);
+    }
+    return true;
 }
 #endif
 } // namespace
@@ -207,6 +244,13 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
         {
             return false;
         }
+        if (Shading == PreviewShading::Wireframe)
+        {
+            return acceptStage(Renderer.PrewarmMaterialProgram(ludus::shaders::editor_wireframe::Vertex(),
+                                                               ludus::shaders::editor_wireframe::Fragment(),
+                                                               mProgram),
+                               PreparationStage::Assets);
+        }
         if (Source.Lit == true && Shading == PreviewShading::Lit)
         {
             return acceptStage(
@@ -260,7 +304,33 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
             Array<math::Vector2> textureCoordinatesMaterial;
             Array<math::Vector2> textureCoordinatesBakeAtlas;
             Array<uint32> indices;
-            if (Source.Lit == true)
+            if (Shading == PreviewShading::Wireframe)
+            {
+                const bool isExpanded =
+                    Source.Lit == true
+                        ? ExpandWireframeMesh({Source.Definition->Meshes[static_cast<usize>(i)].Positions.GetData(),
+                                               Source.Definition->Meshes[static_cast<usize>(i)].Positions.GetSize()},
+                                              {Source.Definition->Meshes[static_cast<usize>(i)].Indices.GetData(),
+                                               Source.Definition->Meshes[static_cast<usize>(i)].Indices.GetSize()},
+                                              positionsMesh,
+                                              textureCoordinatesMaterial,
+                                              indices)
+                        : ExpandWireframeMesh({mesh.Positions.constData(), static_cast<usize>(mesh.Positions.size())},
+                                              {mesh.Indices.constData(), static_cast<usize>(mesh.Indices.size())},
+                                              positionsMesh,
+                                              textureCoordinatesMaterial,
+                                              indices);
+                if (isExpanded == false)
+                {
+                    return false;
+                }
+                description.Positions = positionsMesh.GetData();
+                description.VertexCount = positionsMesh.GetSize();
+                description.Indices = indices.GetData();
+                description.IndexCount = indices.GetSize();
+                description.Texcoords = textureCoordinatesMaterial.GetData();
+            }
+            else if (Source.Lit == true)
             {
                 const resources::SceneMesh& source = Source.Definition->Meshes[static_cast<usize>(i)];
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -387,6 +457,11 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
             description.Texture = {};
             description.Tint = {.6F, .6F, .6F, 1};
         }
+        if (Shading == PreviewShading::Wireframe)
+        {
+            description.Texture = {};
+            description.Tint = WIREFRAME_EDGE_COLOR;
+        }
         description.Sampler.Filter = rhi::RasterFilter::Linear;
         description.Sampler.U = description.Sampler.V =
             surface.Repeat == true ? rhi::RasterAddress::Repeat : rhi::RasterAddress::Clamp;
@@ -441,9 +516,11 @@ bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& 
         renderer::SceneItem& item = items[i];
         item.Geometry = mMeshes[object.Mesh];
         item.Transform = object.Transform;
-        item.Material.Color = Shading == PreviewShading::Solid ? math::Vector4{1, 1, 1, 1} : object.Tint;
+        const bool isInspection = Shading == PreviewShading::Solid || Shading == PreviewShading::Wireframe;
+        item.Material.Color = isInspection == true ? math::Vector4{1, 1, 1, 1} : object.Tint;
         item.SourceId = static_cast<uint64>(i) + 1;
-        if (Source.Lit == true || object.Texture >= 0)
+        // Wireframe always needs its own program: the flat fallback has no edges.
+        if (Source.Lit == true || object.Texture >= 0 || Shading == PreviewShading::Wireframe)
         {
             const rhi::RasterStatus status = Renderer.GetStatus(mMaterials[object.Surface]);
             if (IsAccepted(status) == false)

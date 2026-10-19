@@ -257,6 +257,7 @@ if(EMSCRIPTEN)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
         renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow)
+    ludus_compile_shader(TARGET ludus_editor NAME editor_wireframe RASTER SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/editor_wireframe.slang" VERTEX VertexMain FRAGMENT FragmentMain)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
@@ -267,6 +268,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
         renderer_clustered_authored renderer_clustered_authored_shadow)
     ludus_compile_shader(TARGET ludus_editor NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
+    ludus_compile_shader(TARGET ludus_editor NAME editor_wireframe RASTER SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/editor_wireframe.slang" VERTEX VertexMain FRAGMENT FragmentMain)
     ludus_editor_compile_render_graph_host(ludus_editor)
 endif()
 
@@ -435,6 +437,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             renderer_lit_shadow renderer_clustered renderer_clustered_shadow
             renderer_clustered_authored renderer_clustered_authored_shadow)
         ludus_compile_shader(TARGET ludus_editor_tests NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
+        ludus_compile_shader(TARGET ludus_editor_tests NAME editor_wireframe RASTER SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/editor_wireframe.slang" VERTEX VertexMain FRAGMENT FragmentMain)
         ludus_editor_compile_render_graph_host(ludus_editor_tests)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE

@@ -134,7 +134,7 @@ private:
     };
     [[nodiscard]] LUDUS_INLINE bool shouldUseLitMaterials() const noexcept
     {
-        return Source.Lit == true && Shading != PreviewShading::Albedo;
+        return Source.Lit == true && Shading != PreviewShading::Albedo && Shading != PreviewShading::Wireframe;
     }
     [[nodiscard]] bool acceptStage(graphics::rhi::RasterStatus status, PreparationStage next) noexcept;
     [[nodiscard]] bool prepareRenderer() noexcept;

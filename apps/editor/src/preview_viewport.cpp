@@ -635,9 +635,11 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
     shading->addItem(QStringLiteral("Solid — neutral preview shading"));
     shading->addItem(QStringLiteral("Albedo — unlit surface colors"));
     shading->addItem(QStringLiteral("Lit — scene lighting"));
+    shading->addItem(QStringLiteral("Wireframe — triangle edges"));
     shading->setToolTip(QStringLiteral("Solid uses an editor-only neutral material and preview light; Albedo shows "
                                        "base colors without illumination. Lit shows authored lights, emitting surfaces "
-                                       "as shadowed area lights and, once baked, static diffuse lighting."));
+                                       "as shadowed area lights and, once baked, static diffuse lighting. Wireframe "
+                                       "draws every triangle edge over a dim fill, ignoring materials and lights."));
     shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
     QHBoxLayout* controls = new QHBoxLayout;
     controls->addWidget(shading, 1);

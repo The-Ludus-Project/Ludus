@@ -165,7 +165,7 @@ private:
     QString mSelectedId;
     [[nodiscard]] LUDUS_INLINE bool usesLitMaterials() const noexcept
     {
-        return Scene_.Lit == true && mShading != PreviewShading::Albedo;
+        return Scene_.Lit == true && mShading != PreviewShading::Albedo && mShading != PreviewShading::Wireframe;
     }
     PreviewShading mShading = PreviewShading::Solid;
     // Explicit static-lighting budget, started on the first bake. Declared before

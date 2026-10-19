@@ -10,5 +10,7 @@ enum class PreviewShading : foundation::uint8
     Solid,
     Albedo,
     Lit,
+    /// Triangle edges over a dim fill, independent of materials and lighting.
+    Wireframe,
 };
 } // namespace ludus::editor

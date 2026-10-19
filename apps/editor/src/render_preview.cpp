@@ -33,6 +33,51 @@ namespace rhi = graphics::rhi;
 namespace rr = graphics::renderer;
 constexpr int32 NAVIGATION_STATE_VERSION = 2;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+/// Status suffix for the inspection modes; Lit reports its lighting state separately.
+QString DescribeInspectionShading(PreviewShading shading)
+{
+    switch (shading)
+    {
+        case PreviewShading::Albedo:
+            return QStringLiteral(" · Albedo: unlit surface colors");
+        case PreviewShading::Wireframe:
+            return QStringLiteral(" · Wireframe: triangle edges");
+        case PreviewShading::Solid:
+        case PreviewShading::Lit:
+            break;
+    }
+    return QStringLiteral(" · Solid: neutral preview shading");
+}
+#endif
+/// Persisted viewport preference name of a shading mode.
+QString GetShadingName(PreviewShading shading)
+{
+    switch (shading)
+    {
+        case PreviewShading::Lit:
+            return QStringLiteral("lit");
+        case PreviewShading::Albedo:
+            return QStringLiteral("albedo");
+        case PreviewShading::Wireframe:
+            return QStringLiteral("wireframe");
+        case PreviewShading::Solid:
+            break;
+    }
+    return QStringLiteral("solid");
+}
+/// Shading mode for a persisted name; unknown or missing names open in Solid.
+PreviewShading ParseShadingName(const QString& name)
+{
+    for (const PreviewShading shading : {PreviewShading::Lit, PreviewShading::Albedo, PreviewShading::Wireframe})
+    {
+        if (name == GetShadingName(shading))
+        {
+            return shading;
+        }
+    }
+    return PreviewShading::Solid;
+}
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
 bool Accepted(rhi::RasterStatus s) noexcept
 {
     return s == rhi::RasterStatus::Ready || s == rhi::RasterStatus::Pending;
@@ -464,7 +509,8 @@ void RenderPreview::Stop() noexcept
 }
 void RenderPreview::SetShading(PreviewShading shading)
 {
-    if ((shading != PreviewShading::Solid && shading != PreviewShading::Albedo && shading != PreviewShading::Lit) ||
+    if ((shading != PreviewShading::Solid && shading != PreviewShading::Albedo && shading != PreviewShading::Lit &&
+         shading != PreviewShading::Wireframe) ||
         shading == mShading)
     {
         return;
@@ -702,10 +748,7 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("zoom"), Zoom_},
             {QStringLiteral("camera"), CameraId_},
             {QStringLiteral("reference"), Reference_},
-            {QStringLiteral("shading"),
-             mShading == PreviewShading::Lit
-                 ? QStringLiteral("lit")
-                 : (mShading == PreviewShading::Albedo ? QStringLiteral("albedo") : QStringLiteral("solid"))},
+            {QStringLiteral("shading"), GetShadingName(mShading)},
             {QStringLiteral("x"), OrbitCenter_.X},
             {QStringLiteral("y"), OrbitCenter_.Y},
             {QStringLiteral("z"), OrbitCenter_.Z},
@@ -798,11 +841,7 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     Camera_ = -1;
     CameraId_ = state.value(QStringLiteral("camera")).toString().left(256);
     Reference_ = state.value(QStringLiteral("reference")).toBool();
-    SetShading(state.value(QStringLiteral("shading")).toString() == QStringLiteral("lit")
-                   ? PreviewShading::Lit
-                   : (state.value(QStringLiteral("shading")).toString() == QStringLiteral("albedo")
-                          ? PreviewShading::Albedo
-                          : PreviewShading::Solid));
+    SetShading(ParseShadingName(state.value(QStringLiteral("shading")).toString()));
     navigationChanged();
 }
 void RenderPreview::resetFrames() noexcept
@@ -1451,11 +1490,8 @@ void RenderPreview::Tick()
                                                                ? QStringLiteral("object")
                                                                : QStringLiteral("objects"))
                                                 : QString()))
-                                : (mShading == PreviewShading::Solid
-                                       ? QStringLiteral(" · Solid: neutral preview shading")
-                                       : QStringLiteral(" · Albedo: unlit surface colors")))
-                         : (mShading == PreviewShading::Solid ? QStringLiteral(" · Solid: neutral preview shading")
-                                                              : QStringLiteral(" · Albedo: unlit surface colors")));
+                                : DescribeInspectionShading(mShading))
+                         : DescribeInspectionShading(mShading));
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
         if (Scene_.Lit == true && mShading == PreviewShading::Lit)
         {

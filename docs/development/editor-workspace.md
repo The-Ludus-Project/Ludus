@@ -545,7 +545,7 @@ reverse-Z view and C0 camera APIs. It extracts **applied** World data; it never 
 project code or changes simulation state. Camera/orbit/reference controls are
 preview settings and do not enter Save, Undo or recovery. The engine's current
 lighting implementation supplies Lit materials, authored lights and shadows;
-Solid and Albedo remain inspection modes. See the owning
+Solid, Albedo and Wireframe remain inspection modes. See the owning
 [renderer contract](../architecture/renderer-systems.md) and
 [camera contract](../architecture/camera-systems.md).
 
@@ -831,7 +831,13 @@ directional fill and ambient contribution, so imported rooms remain visible for
 inspection and editing. **Albedo — unlit surface colors** displays base-color textures and material tints; emitting meshes
 with black authored albedo remain black in this view.
 **Lit — scene lighting** displays authored analytic lights, emitting surfaces,
-shadowed area-light proxies and the completed static diffuse/indirect bake. During resource preparation, the viewport retains its last drawable GPU
+shadowed area-light proxies and the completed static diffuse/indirect bake.
+**Wireframe — triangle edges** draws every triangle edge in light blue over a dim
+fill, ignoring materials, textures and lights, so imported geometry can be checked
+on its own. Nearer surfaces hide the edges behind them. The RHI has no line
+topology, so the viewport expands each mesh to one vertex per triangle corner and
+the editor-owned `editor_wireframe` shader (`apps/editor/shaders/`) finds edges from
+barycentric coordinates in screen space. During resource preparation, the viewport retains its last drawable GPU
 image until Qt presents the replacement. A failed replacement reports its error
 without clearing that image; a later scene or shading change can retry preparation.
 When no image remains to retain, the viewport itself shows the failure reason,
@@ -840,8 +846,7 @@ Switching modes keeps the World, camera and layout; the shading choice
 is restored with the project's viewport preferences. Older preferences without a
 shading choice open in Solid mode. These visualization overrides do not change
 authored materials or add lights to the World. Solid lighting is a navigation
-aid, not the imported scene lighting. Wireframe and normal visualizations are
-not yet available.
+aid, not the imported scene lighting. Normal visualization is not yet available.
 
 Lit first publishes shadowed direct lighting, then prepares static diffuse and
 indirect lighting as cancellable CPU jobs on the preview's three-worker job system

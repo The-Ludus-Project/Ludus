@@ -1,5 +1,8 @@
 #include "internal/controller.h"
 #include "internal/main_window.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/offscreen_frame_reader.h"
+#endif
 #include "internal/preview_area_lights.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
@@ -584,6 +587,16 @@ TEST_CASE("Viewport shading is visible by default and restores independently of 
     CHECK(preview.GetShading() == PreviewShading::Albedo);
     CHECK(shading->currentIndex() == 1);
     CHECK(preview.Scene().Identity == fixture.Scene.Identity);
+    CHECK(fixture.World.Draft() == draft);
+    shading->setCurrentIndex(3);
+    CHECK(preview.GetShading() == PreviewShading::Wireframe);
+    const QJsonObject wireframe = preview.Navigation();
+    CHECK(wireframe.value(QStringLiteral("shading")).toString() == QStringLiteral("wireframe"));
+    preview.RestoreNavigation(navigation);
+    CHECK(preview.GetShading() == PreviewShading::Albedo);
+    preview.RestoreNavigation(wireframe);
+    CHECK(preview.GetShading() == PreviewShading::Wireframe);
+    CHECK(shading->currentIndex() == 3);
     CHECK(fixture.World.Draft() == draft);
     navigation.remove(QStringLiteral("shading"));
     preview.RestoreNavigation(navigation);
@@ -1193,6 +1206,109 @@ TEST_CASE("Headless preview prepares authored lighting from the extracted World"
     preview.Stop();
 #else
     SKIP("Headless authored-light preview requires the native Linux preview");
+#endif
+}
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+namespace
+{
+/// Upper bound for preparing and presenting one headless frame on a software rasterizer.
+constexpr int32 HEADLESS_FRAME_TIMEOUT_MILLISECONDS = 60000;
+/// Headless frame size; small enough for a software rasterizer, large enough for edges.
+constexpr int32 HEADLESS_FRAME_PIXELS = 96;
+/// Wireframe edges are bright and blue-dominant after sRGB encoding and antialiasing
+/// (WIREFRAME_EDGE_COLOR); Solid shading and the clear colour are neutral grey.
+constexpr int32 EDGE_MIN_BLUE = 150;
+constexpr int32 EDGE_MIN_BLUE_OVER_RED = 20;
+
+/// Render the scene headlessly in the given mode and read the presented RGBA8 frame back.
+/// @return A null image when no headless Vulkan device is available.
+QImage RenderHeadless(const RenderScene& scene, PreviewShading shading, QString& outStatus)
+{
+    RenderPreview preview;
+    bool isAdmitted = false;
+    QObject::connect(&preview, &RenderPreview::DeviceRequested, &preview, [&preview, &isAdmitted]() {
+        isAdmitted = preview.AdmitOffscreenDevice();
+    });
+    preview.Resize(HEADLESS_FRAME_PIXELS, HEADLESS_FRAME_PIXELS);
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetShading(shading);
+    const bool hasStarted = preview.Start();
+    if (isAdmitted == false)
+    {
+        return {};
+    }
+    REQUIRE(hasStarted == true);
+    const bool hasFrame =
+        QTest::qWaitFor([&preview]() { return preview.HasPendingFrame(); }, HEADLESS_FRAME_TIMEOUT_MILLISECONDS);
+    outStatus = preview.Status();
+    INFO(outStatus.toStdString());
+    REQUIRE(hasFrame == true);
+    rr::ViewportFrame lease;
+    rr::ViewportImage image;
+    REQUIRE(preview.TakeFrame(lease, image) == true);
+    OffscreenFrameReader reader;
+    REQUIRE(reader.Begin(preview.GetDevice(), image.Texture, image.Width, image.Height) == true);
+    OffscreenReadStatus read = OffscreenReadStatus::Pending;
+    const bool hasRead = QTest::qWaitFor(
+        [&reader, &read]() {
+            read = reader.Poll();
+            return read != OffscreenReadStatus::Pending;
+        },
+        HEADLESS_FRAME_TIMEOUT_MILLISECONDS);
+    REQUIRE(hasRead == true);
+    REQUIRE(read == OffscreenReadStatus::Complete);
+    const QImage frame = reader.TakeImage();
+    preview.ReleaseFrame(lease);
+    preview.Stop();
+    return frame;
+}
+
+/// Count pixels carrying the wireframe edge colour.
+int32 CountEdgePixels(const QImage& image)
+{
+    int32 count = 0;
+    for (int32 y = 0; y < image.height(); ++y)
+    {
+        for (int32 x = 0; x < image.width(); ++x)
+        {
+            const QRgb pixel = image.pixel(x, y);
+            if (qBlue(pixel) >= EDGE_MIN_BLUE && qBlue(pixel) - qRed(pixel) >= EDGE_MIN_BLUE_OVER_RED)
+            {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+} // namespace
+#endif
+
+TEST_CASE("Wireframe shading draws triangle edges for authored and cooked scenes",
+          "[editor][render-authoring][wireframe][gpu]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    Fixture fixture;
+    const RenderScene authored = fixture.Scene;
+    const RenderScene cooked = LoadLitStarterScene(fixture);
+    REQUIRE(cooked.Lit == true);
+    for (const RenderScene* scene : {&authored, &cooked})
+    {
+        INFO((scene->Lit == true ? "cooked scene" : "authored scene"));
+        QString status;
+        const QImage solid = RenderHeadless(*scene, PreviewShading::Solid, status);
+        if (solid.isNull() == true)
+        {
+            SKIP("No headless Vulkan device; install lavapipe to render the wireframe preview");
+        }
+        CHECK(CountEdgePixels(solid) == 0);
+        const QImage wireframe = RenderHeadless(*scene, PreviewShading::Wireframe, status);
+        REQUIRE(wireframe.isNull() == false);
+        CHECK(status.contains(QStringLiteral("Wireframe: triangle edges")) == true);
+        CHECK(CountEdgePixels(wireframe) > 0);
+        CHECK(wireframe != solid);
+    }
+#else
+    SKIP("Headless wireframe rendering requires the native Linux preview");
 #endif
 }
 TEST_CASE("Static lighting worker owns surface overrides until completed chart transfer",

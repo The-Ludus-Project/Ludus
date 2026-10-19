@@ -90,7 +90,8 @@ readback or image upload. Orbit, pan, zoom, focus, shading and resize update the
 current scene. Output is bounded to 1024 physical pixels on its longest side.
 
 **Solid** is the neutral navigation visualization; **Albedo** shows unlit surface
-colors; **Lit** uses admitted authored direct lights, emission and environment.
+colors; **Wireframe** draws triangle edges over a dim fill; **Lit** uses admitted
+authored direct lights, emission and environment.
 The browser profile does not submit shadow maps or run the native worker-based
 static lighting bake. Emissive geometry does not imply real-time indirect lighting.
 Pending resource preparation retains the last presented view; rejected candidates
