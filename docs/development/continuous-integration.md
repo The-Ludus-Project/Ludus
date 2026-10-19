@@ -17,23 +17,33 @@ Acceptance into `develop` does not establish full platform qualification.
 
 Pull requests targeting `develop` run source formatting, source-policy and workflow
 syntax checks, tooling regressions, the installed host-tooling tests, and public
-API/documentation validation. Drafts retain these inexpensive checks. When the
-change is not documentation-only, they also run **Integration compile (Linux
-Clang, Editor)**: one `ubuntu-24.04` job that prepares `linux-clang-development`
-with the Editor, its trusted render preview and the native shader worker
-(`LUDUS_BUILD_SHADER_WORKER`, which live shader reload uses), builds every default
-target with warnings as errors, and runs the `unit` CTest label (Editor tests
-offscreen, plus the shader compiler and worker protocol tests) and
-`ludus_target_detection`. It
-restores the Conan and `editor` compiler caches that the batch's Optional editor
-job saves on `main` and never writes its own, so it takes about 10 minutes with a
-warm cache and about 30 minutes cold. The `Ubuntu Clang` gate requires it on
-integration PRs and expects it skipped elsewhere, where Development and Optional
-editor supersede it. A macOS compile stays batch-only: macOS setup alone takes
-about 11 minutes and hosted macOS minutes cost ten times as much as Linux minutes.
-Other native build variants, full analysis, sanitizers, browser builds, SDK
-qualification, editor journeys and build budgets run on the combined batch. The
-`ci:full` label does not expand an integration PR into a full run.
+API/documentation validation. Drafts retain these inexpensive checks. They do not
+install the native toolchain or compile engine, Editor or shader-worker targets.
+The `Ubuntu Clang` gate requires the source/tooling job for non-documentation
+changes and verifies that every deferred native job is skipped. The installed
+host-tooling and public API checks remain separate required checks. The `ci:full`
+label does not expand an integration PR into a full run; dispatch a batch on
+`main` when earlier platform qualification is needed.
+
+The combined batch owns native compilation, unit tests, full analysis,
+sanitizers, browser builds, SDK qualification, editor journeys and build budgets.
+Its **Editor, shader worker and unit tests** job prepares
+`linux-clang-development` with trusted render preview and the native shader
+worker (`LUDUS_BUILD_SHADER_WORKER`, used by live shader reload), builds every
+default target with warnings as errors, and runs the union of the `unit` and `editor`
+CTest labels offscreen, including shader compiler and worker protocol tests, plus
+`ludus_target_detection`. Tests carrying both labels run once. It also retains
+static analysis and the installed Behavior SDK journey. This replaces the separate native build on every
+PR with one authoring build per combined batch. Native dependency and compiler
+caches continue to be saved in the batch's `main` scope.
+
+Cheap PR checks establish source/tooling admission, not build readiness. A compile
+or runtime regression can enter `develop`; the batch must reject it before
+`main` advances. Inspect failed batch diagnostics and submit a focused fix or
+revert through a `develop` PR, as described in [recovery](#recover-a-failed-batch).
+Do not bypass full qualification to clear a backlog. The expected PR critical
+path is the remaining source/tooling and documentation checks; actual savings
+must be measured after this policy is active.
 
 `.github/workflows/batch-ci.yml` wakes at minutes 13 and 43 of each hour. When
 `BATCH_CI_ENABLED` is `true`, it captures the current `main` and `develop` commit SHAs.
@@ -49,6 +59,11 @@ A batch that promotes coordinator edits still executes its original workflow
 revision through the last job. Verify changed coordinator behavior with a later
 `develop` candidate after the repair reaches `main`. Dispatching without a new
 candidate skips validation and publication, so it does not exercise the change.
+When retiring the PR-only integration compile, the native gate accepts its
+legacy job entry only when a pre-promotion trusted workflow reports it skipped
+outside the integration tier. Missing full-validation jobs still fail. The first
+batch promoting this workflow change uses the old Editor job definition; verify
+the combined worker-on authoring build on a subsequent candidate.
 
 Before changing the compiler pin, prepare the trusted validation workflows to
 read the captured candidate's `config/tool_versions.json`. Install its LLVM major
