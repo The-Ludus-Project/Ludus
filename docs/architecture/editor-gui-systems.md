@@ -254,12 +254,13 @@ panels serve developer diagnostics. Runtime UI remains its own engine concern;
 `modules/ui` is not an editor widget toolkit.
 
 Authoring preview runs trusted engine rendering from immutable draft snapshots;
-it does not load arbitrary project game code. Gameplay stays in the supervised
-GameHost. Start Play with its own window where supported. Out-of-process frame
-transport is optional later work with explicit format, ownership, sequence,
-resize and backpressure contracts. Do not promise universal zero-copy sharing
-between Qt, Ludus and a child process. CPU readback is a diagnostic fallback,
-not the assumed interactive production path.
+it does not load arbitrary project game code. Gameplay stays in a supervised
+child process. The proposed [Play in the editor viewport](#play-in-the-editor-viewport)
+design presents that process's window in the World viewport, with a separate
+window as the user's choice. It defines the format, ownership, sequence, resize
+and backpressure contracts for macOS Metal and Linux Vulkan only. Do not promise
+zero-copy sharing between Qt, Ludus and a child process elsewhere. CPU readback
+is a diagnostic fallback, not the assumed interactive production path.
 
 A render-surface adapter must specify who creates/destroys the window/view/canvas,
 which thread may access it, pixel dimensions and scale, surface generation,
@@ -308,6 +309,257 @@ frontend has similar viewport obligations. Host a canvas in a supported layout
 seam; do not rely on Qt private globals as the enduring rendering API. A failed
 viewport leaves the document UI usable. [Browser strategy](editor-browser-strategy.md)
 defines the frontend selection gates and persistence limits.
+
+## Play in the editor viewport
+
+Status: proposed 2026-10-19 for review; nothing in this section is implemented.
+It replaces the separate World-demo authoring window, the World-demo private
+shader and the separate-window default for Play.
+
+While a game plays, the World viewport is that game's window. The game owns
+rendering and input there and behaves as it would in its own OS window. A
+separate OS window is a mode the user chooses. Edit and Play both draw through
+the one engine Renderer. No workspace, adapter or game keeps a private renderer,
+window path or input path for the same job.
+
+### Hosting stays out of process
+
+The game runs in its own process: the Build and Run target, or GameHost for
+Live Play. The editor never loads game code. This keeps
+[ADR 0012](../decisions/0012-game-host-and-live-reload.md) and
+[ADR 0023](../decisions/0023-editor-presentation-and-document-core.md) intact:
+
+- A crashing or hung game cannot take documents with it.
+- Module reload and checkpoint migration keep their supervisor.
+- The editor and the game each own exactly one RHI device, as the current
+  one-device-per-process `rhi::CreateDevice` contract requires.
+
+In-process hosting is rejected. The game would have to run on the editor's
+Qt-shared device and inside the editor's frame loop. Its window and input would
+then differ from those of a shipped game, and a game crash would end the editing
+session. The cost of keeping it out of process is a cross-process GPU image
+transport, which RHI does not have yet.
+
+### The hosted window
+
+Platform gains one backend, `WindowSystem::Hosted`. A hosted window is a real
+`platform::Window` whose events and surface come from a host channel instead of
+an OS window server.
+
+To start a session, the editor passes a channel address in the run request: a
+per-session Unix socket path in a 0700 directory, plus a random token. The
+tooling adapters (`editor_tool.py`, `play_tool.py`) add that address to the
+child's environment. When the variable is present, `WindowManager::CreateWindow`
+returns a hosted window. Game code does not change. The same mechanism covers
+`apps/world_demo`, GameHost's `FramePresenter` and any other Ludus application.
+Without the variable, the native backend runs as it does today.
+
+The channel carries a bounded, versioned binary protocol owned by Platform. It
+is separate from the GameHost control protocol and from the tooling stdio
+events. A connection is accepted only with the token and a peer of the same uid.
+The editor endpoint owns the socket. Losing the channel delivers a close to the
+game, just as closing its window would.
+
+The hosted backend implements the same `WindowBase` contract and event
+vocabulary as Cocoa and Wayland:
+
+- resize, in backing pixels plus a scale;
+- visibility: Visible, Occluded or Minimized;
+- focus, as FocusEntered/FocusLost resets with a held-key baseline;
+- keyboard records through the attached sink;
+- close.
+
+Platform has no native pointer, cursor capture, fullscreen or text input yet.
+Each of these lands in every backend in the same change, the hosted backend
+included, so the viewport is never more or less capable than a native window.
+
+Key translation has one owner. Platform publishes its existing native key-code
+maps: Cocoa's `MapKeyCode` and the evdev keymap. The editor's Qt adapter converts
+`QKeyEvent::nativeVirtualKey`/`nativeScanCode` through those maps, not through a
+second table.
+
+### The hosted surface and frame ownership
+
+RHI connects a device to a hosted window exactly as it connects to any window.
+`CreateDevice(app, {.System = Hosted, …})` yields a hosted surface. `BeginFrame`,
+`EndFrame` and the Renderer's surface draws are unchanged. The hosted surface is
+a swapchain whose presentation engine is the editor:
+
+| Step | Producer: game RHI | Consumer: editor viewport |
+| --- | --- | --- |
+| Configure | Allocates three exportable RGBA8 images at the configured size, tagged with a surface generation | Imports each image onto its own Qt-shared device and records the generation |
+| Acquire | `BeginFrame` takes an image the consumer has released. If none is free it returns `FrameStatus::Skipped` without blocking | — |
+| Present | After `EndFrame`'s submission token is Ready, sends Present with image, generation and sequence | Wraps the image as the pending Qt texture through the existing lease path |
+| Release | The image becomes acquirable again | Returns the image after the Qt frame that sampled it ends (`afterFrameEnd`) |
+| Resize | Allocates a new generation on the next frame. Old images retire once all are released | Keeps the old generation's last image until the first new-generation frame arrives |
+
+Completion is fenced on the CPU. The game announces a frame only after its GPU
+work has completed. The editor returns an image only after its own sampling has
+completed. Neither side needs the other's fence objects. Shared GPU events
+(`MTLSharedEvent`, external semaphores) are a later optimization, made only if
+measurements justify it. A skipped frame never undoes simulation, as specified
+in [frame and tick updates](frame-update.md#presentation-and-rendering).
+
+Backends:
+
+- **macOS Metal.** Images are IOSurface-backed `MTLTexture`s. Each IOSurface is
+  sent as a Mach send right (`IOSurfaceCreateMachPort`, then
+  `IOSurfaceLookupFromMachPort`) through a per-session Mach rendezvous port that
+  the editor registers. A Unix socket cannot carry Mach rights. Global IOSurface
+  IDs are rejected because any process can look them up. The editor creates its
+  texture on Qt's `MTLDevice` from the IOSurface. The P5 probe must confirm this
+  exchange against Apple's [IOSurface](https://developer.apple.com/documentation/iosurface)
+  documentation before the backend lands.
+- **Linux Vulkan.** Images use `VK_KHR_external_memory_fd`: export with
+  `vkGetMemoryFdKHR`, import with `VkImportMemoryFdInfoKHR`. The fds travel over
+  the same Unix socket with `SCM_RIGHTS`. Opaque fd handles require the same
+  `VkPhysicalDeviceIDProperties::deviceUUID` and `driverUUID` on both sides. On a
+  mismatch, the editor refuses Play in the viewport and states the reason. Queue
+  ownership transfers use `VK_QUEUE_FAMILY_EXTERNAL`. Thanks to the Khronos
+  Vulkan Working Group for the
+  [VK_KHR_external_memory_fd](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_external_memory_fd.html)
+  and [external memory handle type compatibility](https://docs.vulkan.org/refpages/latest/refpages/source/VkExternalMemoryHandleTypeFlagBits.html)
+  reference pages, which define the export, import and UUID-matching contract
+  adopted here.
+- **Browser and Windows.** Not covered. The browser editor keeps its separate
+  web-sample player, and Platform has no Win32 backend. Each needs its own
+  decision.
+
+There is no CPU-readback Play transport. When hosted images are unavailable
+(offscreen Qt, mismatched adapters, a missing extension), the editor states why
+and offers the separate window. It never switches modes silently.
+
+On the editor side, imported images reach the screen through the existing
+presentation path: QQuickWindow, `ImageItem`, two frame slots, and release at
+`afterFrameEnd`. `PreviewViewport` presents frames from a narrow
+`ViewportFrameSource` with two implementations:
+
+- `RenderPreview`, the in-process edit renderer;
+- `PlayViewportSource`, which holds the imported hosted images.
+
+Each source owns its leases and generations. The play source keeps a retired
+generation alive until its last lease is released, as `PreviewGpuGeneration`
+does. Play frames are shown 1:1 at the full viewport pixel size. The 1024-pixel
+cap and the stretch mapping apply only to edit previews.
+
+### Input, focus and capture
+
+In Play, `PreviewViewport` stops navigating and forwards input instead. It does
+not interpret game keys.
+
+- **Focus.** Keyboard focus entering the viewport (by click or Tab) sends
+  FocusEntered with the current held-key baseline. Focus loss, editor-window
+  deactivation, hiding and modal dialogs send FocusLost. These are the
+  transitions that Cocoa key-window changes and Wayland keyboard enter/leave
+  already produce.
+- **Shortcuts.** While the viewport has Play focus, it accepts
+  `ShortcutOverride`, so menus and editor shortcuts cannot take game keys. Two
+  chords stay reserved for the editor:
+  - Shift+F6 stops Play (the existing Stop shortcut).
+  - Shift+F1 releases capture and focus without stopping the game.
+  - Esc belongs to the game.
+- **Capture.** Once Platform supports cursor capture, a capture request from the
+  game makes the viewport grab the mouse and hide the cursor, as navigation fly
+  mode already does. The release chord, focus loss and Stop each end the capture.
+- **Resize, scale and visibility.** A viewport resize becomes a hosted resize
+  event in backing pixels and scale. Switching tabs or hiding the dock becomes
+  Occluded, so GameHost's existing 10 Hz hidden pacing applies unchanged.
+- **Close.** Stop sends a hosted close, the same as clicking a native window's
+  close button, so the game shuts down along its normal path. The existing
+  supervisor timeout and process-group cleanup remain the backstop.
+
+### Separate window mode
+
+Play offers **In viewport** (the default) and **In separate window**. The choice
+is a local editor preference, not project data. In separate-window mode the
+launcher omits the hosted-window variable, so the same binary with the same
+arguments opens its native window. The World viewport keeps the edit view and
+labels it as playing elsewhere. A mode change applies to the next Play; a
+running session does not move between modes.
+
+### Edit and Play transitions
+
+One World viewport serves every World, World-demo included, in both modes.
+
+1. **Edit.** `RenderPreview` renders the World extraction from the document
+   snapshot and editor camera through the engine Renderer. Input drives
+   navigation. The Renderer tab's render-graph preview follows
+   `WorldWorkspace::GetRenderPreview`.
+2. **Play requested.** The existing preconditions still apply: a saved project,
+   clean drafts, and Build and Run or Live Play eligibility. The edit preview
+   stops producing frames but keeps its device and its last image. The play
+   source starts Pending, and the viewport keeps showing the edit image until a
+   game frame is Ready.
+3. **Playing.** The first presented game frame makes the play source Ready, and
+   the viewport switches to it. Input switches to forwarding. The render-graph
+   preview keeps its edit source; reloading a graph inside the game belongs to
+   the live-reload asset path.
+4. **Stop, exit or crash.** Leases drain, and imported images are destroyed
+   after release. The edit source resumes from the document; simulation never
+   writes authored state. A crash or failed start is reported in the status area
+   and Output, and the edit view returns.
+
+### World-demo on the engine Renderer
+
+World-demo levels contain only 2D oriented boxes, and every one is opaque:
+collision, scatter and role visuals all use alpha one (`apps/world_demo/world.cpp`).
+They map onto existing Renderer features without a new shader:
+
+- One unit-quad `MeshDescription`.
+- One `SceneItem` per `RenderFrame` draw. Its `Affine3` comes from position,
+  rotation and half extent, its `FlatMaterial` from the draw colour, and it uses
+  the `Opaque` layer. The draw index becomes an explicit depth key, so collision
+  boxes sit under scatter and scatter under actors, with no blending.
+- The camera is the gameplay `CameraSample` that `GameWorld::Extract` already
+  evaluates. The existing `camera_view` builder turns it into an orthographic
+  `ViewDescription`.
+
+A single Qt-free function owned by `apps/world_demo` turns a `RenderFrame` into
+these items and the view. The runtime calls it every frame and draws with
+`Renderer` on an explicit `CreateDevice` device instead of `rhi::Start`. The
+editor builds a `GameWorld` from the projected level (`ProjectWorldDemo`)
+without ticking it and extracts one frame. It then passes the same items to a
+`RenderScene`, so World-demo Worlds render in the shared viewport like every
+other World. `GetRenderPreview` returns that preview, so the render-graph
+preview also works for World-demo Worlds. Edit and Play draw identical
+geometry, scatter included, because both use the game's own extraction.
+
+A World-demo frame holds up to 192 draws (`MAX_RENDER_DRAWS`). That is more
+than RenderScene's current 128-object bound but within the Renderer's default
+of 256. P2 raises the RenderScene bound to a named constant owned by the
+Renderer limit, so the limit is not written as a second literal.
+
+The following are then deleted:
+
+- `ScenePreview` and its unavailable stub;
+- `SceneDocument` and the `ludus_editor_scene` library;
+- `world_scene.slang` and the editor's `editor_scene` shader;
+- the World-demo **Open rendered preview** button;
+- the `[.scene-native]` journey.
+
+ScenePreview's keyboard gestures (WASD cursor, Enter pick, arrow transforms) are
+not ported. Transforms are edited in the World inspector, as they are for every
+other World. Viewport picking and gizmos are later work for all Worlds, not a
+World-demo feature.
+
+### Delivery stages
+
+Each stage is one PR to `develop`, with regression tests, documentation and the
+AGENTS.md gates.
+
+| Stage | Boundary | Evidence |
+| --- | --- | --- |
+| P1 | World-demo runtime on the engine Renderer: shared item/view builder and an explicit device. The runtime stops using `world_scene.slang` | Builder unit tests for transform, order, colour and camera; headless and `--frames` runs; offscreen readback against the expected box layout |
+| P2 | World-demo edit view in the shared viewport. Deletes ScenePreview, SceneDocument and `world_scene.slang` | World-demo Worlds publish a `RenderScene` and a RenderPreview; the render-graph preview attaches; inspector edits and undo update the frame; gesture tests replaced |
+| P3 | `ViewportFrameSource` extracted in `PreviewViewport`, with no behaviour change | Existing viewport lease, resize, retire and offscreen tests pass unchanged |
+| P4 | Platform hosted-window backend, editor endpoint and public native key-code maps | Socket-pair tests for each event, the focus baseline, close on channel loss, and token/uid refusal |
+| P5 | RHI hosted surface: Metal IOSurface and Vulkan external-memory export and import | Two-process GPU tests: known colour, release-gated acquire, Skipped on exhaustion, retirement of resized generations, adapter-mismatch refusal |
+| P6 | Play in the viewport: launcher variable, play source, input forwarding, reserved chords and transitions | Controller and viewport state tests; Cocoa journey playing World-demo in the viewport with native keys and resize; return to edit after crash and Stop |
+| P7 | Separate-window preference and unavailable reasons | Preference persistence; launch without the variable; refusal-message tests |
+
+P1, P3 and P4 are independent of each other. P2 needs P1, P5 needs P4, and P6
+needs P2, P3 and P5. P5 opens with its macOS Mach rendezvous and Linux
+device-UUID probes in the same PR.
 
 ## Implementation boundaries and refactoring
 
