@@ -38,6 +38,40 @@ incremental deltas; it must not reimplement document validation/history in
 JavaScript or serialize an entire project on each keystroke. Choose the smallest
 binding needed by the accepted workflow, not a general RPC/object proxy system.
 
+## Source editing direction
+
+The current Renderer Source pane is a Qt `QPlainTextEdit` over the graph draft.
+Its platform clipboard, selection, undo/redo and cursor-navigation behavior is
+part of the editing baseline, including modifier keys and keyboard-only use.
+The current pane does not provide language completion or formatting. Qt's
+[QPlainTextEdit documentation](https://doc.qt.io/qt-6/qplaintextedit.html)
+describes the supplied text operations; those must remain intact when adding
+code-specific behavior.
+
+Use lightweight in-editor editing plus **Open in Code Editor** for full code
+work. The Renderer Source pane now lets native users choose an installed
+application and open the selected saved project file. It asks before saving
+pending changes or creating a project copy of the built-in graph. External saves
+refresh a clean draft before validation/build, as one undoable revision; local
+conflicts retain the draft and block the operation. Project-owned sources stay
+in the project, and builds continue to consume a captured revision. The first
+launcher opens files; diagnostic line navigation and editor-specific command
+arguments are not yet integrated.
+
+Full embedded code editing would require a maintained editor component,
+project-aware completion and diagnostics, language-specific formatting, file
+tabs, indentation, search, native Home/End and modifier-key behavior, clipboard,
+IME and accessibility acceptance. Completion must see the same manifest-generated
+shader interfaces and bindings as compilation, including unsaved source buffers.
+Evaluate that as a separate integration rather
+than growing a bespoke text widget. Slang's official
+[editor extensions](https://shader-slang.org/tools/) already offer completion,
+semantic highlighting and navigation; its
+[VS Code extension](https://github.com/shader-slang/slang-vscode-extension)
+uses `clang-format` for shader formatting. Prettier supports
+[JSON and other listed languages](https://prettier.io/docs); formatter selection
+must follow the source language and project configuration.
+
 ## Toolkit evaluation
 
 | Option | Where it helps | Cost or constraint | Decision |

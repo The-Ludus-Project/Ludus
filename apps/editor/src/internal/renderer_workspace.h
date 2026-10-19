@@ -6,6 +6,7 @@
 #include <ludus/foundation/math/matrix.hpp>
 
 #include "internal/controller.h"
+#include "internal/external_code_editor.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_creation.h"
 #include "internal/render_graph_defaults.h"
@@ -78,6 +79,11 @@ public:
     /// Save the draft. An unedited engine default is not project content: nothing is written
     /// and the result is true. An edited default creates its package under graphs/Main/.
     [[nodiscard]] bool Save();
+    /// Open the selected saved project source in the chosen native code editor.
+    /// Pending edits require an explicit save; cancellation preserves all source text.
+    [[nodiscard]] bool OpenSourceInCodeEditor();
+    /// Adopt external saves if there are no conflicting local edits; writes nothing.
+    [[nodiscard]] bool ReloadSourcesFromDisk();
     /// True while the engine default is shown and Save has not created a project copy yet.
     [[nodiscard]] bool IsBuiltIn() const;
     /// Explicitly copy the shown engine default, with any draft edits, into graphs/Main/ in
@@ -168,6 +174,7 @@ private:
     [[nodiscard]] bool startBuild(bool shouldPreview);
     [[nodiscard]] bool isUneditedBuiltIn() const;
     [[nodiscard]] bool writeDocument();
+    [[nodiscard]] bool hasPendingSourceText() const;
     void openProjectGraph();
     void showDocument(const RenderGraphDocument& document);
     void showPreviewPage();
@@ -201,6 +208,7 @@ private:
     bool mIsValidated = false;
     bool mIsRendering = false;
     RenderGraphDocument mDocument;
+    ExternalCodeEditor mCodeEditor;
     RenderGraphJob mJob;
     RenderGraphCreation mCreation;
     RenderGraphJobResult mLastResult;

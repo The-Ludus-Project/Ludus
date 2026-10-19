@@ -1,5 +1,7 @@
 #include "internal/render_graph_canvas.h"
 
+#include <ludus/foundation/math/scalar.hpp>
+
 #include <QBrush>
 #include <QFont>
 #include <QGraphicsEllipseItem>
@@ -10,6 +12,7 @@
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QPainterPath>
 #include <QPen>
 #include <QSet>
@@ -38,6 +41,9 @@ constexpr float64 EDGE_HIT_WIDTH = 8;
 constexpr float64 CURVE_OFFSET = 70;
 constexpr float64 ZOOM_STEP = 1.15;
 constexpr float64 WHEEL_NOTCH = 120;
+constexpr float64 SCROLL_PIXELS_PER_ZOOM_STEP = 40;
+constexpr float64 MINIMUM_VIEW_SCALE = 0.01;
+constexpr float64 MAXIMUM_VIEW_SCALE = 8;
 constexpr int32 LABEL_POINT_SIZE = 9;
 constexpr int32 MAX_CYCLE_SEARCH_STEPS = 1024;
 /// Reserved display key for configuration outputs; not a valid authored identifier.
@@ -402,11 +408,11 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     setScene(mScene);
     setRenderHint(QPainter::Antialiasing);
     setDragMode(QGraphicsView::ScrollHandDrag);
-    setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+    setTransformationAnchor(QGraphicsView::NoAnchor);
     setBackgroundBrush(QColor(28, 31, 36));
     setToolTip(QStringLiteral("Drag nodes to arrange them (one undo step per drag) · drag from an output port to an "
                               "input port to connect · Delete removes the selected node or link · double-click a "
-                              "Subgraph to open its source"));
+                              "Subgraph to open its source · pinch or scroll to zoom around the pointer"));
 }
 
 RenderGraphCanvas::~RenderGraphCanvas()
@@ -1039,9 +1045,54 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
 
 void RenderGraphCanvas::wheelEvent(QWheelEvent* event)
 {
-    const float64 steps = event->angleDelta().y() / WHEEL_NOTCH;
-    const float64 factor = std::pow(ZOOM_STEP, steps);
-    scale(factor, factor);
+    const float64 steps = event->pixelDelta().isNull() == false ? event->pixelDelta().y() / SCROLL_PIXELS_PER_ZOOM_STEP
+                                                                : event->angleDelta().y() / WHEEL_NOTCH;
+    zoomAt(math::Pow(ZOOM_STEP, steps), event->position());
     event->accept();
+}
+
+bool RenderGraphCanvas::viewportEvent(QEvent* event)
+{
+    if (event->type() == QEvent::NativeGesture)
+    {
+        QNativeGestureEvent* gesture = static_cast<QNativeGestureEvent*>(event);
+        if (gesture->gestureType() == Qt::ZoomNativeGesture)
+        {
+            // Thanks to Qt Group, QNativeGestureEvent, "Detailed Description" and
+            // constructor: macOS/Wayland pinch values are incremental magnification,
+            // applied as 1 + value. Two-finger scrolling remains a separate wheel event.
+            // https://doc.qt.io/qt-6/qnativegestureevent.html
+            zoomAt(1 + gesture->value(), gesture->position());
+            event->accept();
+            return true;
+        }
+        if (gesture->gestureType() == Qt::BeginNativeGesture || gesture->gestureType() == Qt::EndNativeGesture)
+        {
+            event->accept();
+            return true;
+        }
+    }
+    return QGraphicsView::viewportEvent(event);
+}
+
+void RenderGraphCanvas::zoomAt(float64 factor, QPointF position)
+{
+    if (math::IsFinite(factor) == false || factor <= 0 || factor == 1)
+    {
+        return;
+    }
+    const float64 current = transform().m11();
+    if (math::IsFinite(current) == false || current <= 0)
+    {
+        return;
+    }
+    const float64 scaled = current * factor;
+    const float64 target = math::IsFinite(scaled) == true ? math::Clamp(scaled, MINIMUM_VIEW_SCALE, MAXIMUM_VIEW_SCALE)
+                                                          : MAXIMUM_VIEW_SCALE;
+    const QPointF before = viewportTransform().inverted().map(position);
+    scale(target / current, target / current);
+    const QPointF after = viewportTransform().inverted().map(position);
+    const QPointF offset = after - before;
+    translate(offset.x(), offset.y());
 }
 } // namespace ludus::editor

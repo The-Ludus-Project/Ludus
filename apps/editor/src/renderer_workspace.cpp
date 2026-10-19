@@ -14,6 +14,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -35,6 +36,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextBlock>
+#include <QTextDocument>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -380,6 +382,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QVBoxLayout* sourceLayout = new QVBoxLayout(sourcePage);
     mSourceFile->setObjectName(QStringLiteral("renderGraphSourceFile"));
     mSource->setObjectName(QStringLiteral("renderGraphSource"));
+    mSource->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    mSource->setLineWrapMode(QPlainTextEdit::NoWrap);
     QPushButton* applyText = new QPushButton(QStringLiteral("Apply Text to Draft"), this);
     QPushButton* revertText = new QPushButton(QStringLiteral("Revert Text"), this);
     QHBoxLayout* sourceRow = new QHBoxLayout;
@@ -387,6 +391,27 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     sourceRow->addWidget(applyText);
     sourceRow->addWidget(revertText);
     sourceLayout->addLayout(sourceRow);
+    QPushButton* openCodeEditor = new QPushButton(QStringLiteral("Open in Code Editor"), sourcePage);
+    QPushButton* chooseCodeEditor = new QPushButton(QStringLiteral("Choose Code Editor..."), sourcePage);
+    QPushButton* reloadSources = new QPushButton(QStringLiteral("Reload Sources"), sourcePage);
+    openCodeEditor->setObjectName(QStringLiteral("renderGraphOpenCodeEditor"));
+    chooseCodeEditor->setObjectName(QStringLiteral("renderGraphChooseCodeEditor"));
+    reloadSources->setObjectName(QStringLiteral("renderGraphReloadSources"));
+    QHBoxLayout* editorRow = new QHBoxLayout;
+    editorRow->addWidget(openCodeEditor);
+    editorRow->addWidget(chooseCodeEditor);
+    editorRow->addWidget(reloadSources);
+    sourceLayout->addLayout(editorRow);
+    QLabel* sourceHint = new QLabel(QStringLiteral("Save in your code editor, then Build & Preview. "
+                                                   "Reload Sources refreshes this pane."),
+                                    sourcePage);
+    sourceHint->setWordWrap(true);
+    sourceLayout->addWidget(sourceHint);
+#if defined(Q_OS_WASM)
+    openCodeEditor->setEnabled(false);
+    chooseCodeEditor->setEnabled(false);
+    sourceHint->setText(QStringLiteral("External code editors are available in the native Ludus editor."));
+#endif
     sourceLayout->addWidget(mSource, 1);
 
     mPlan->setObjectName(QStringLiteral("renderGraphPlan"));
@@ -460,6 +485,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     horizontal->addWidget(mTree);
     horizontal->addWidget(mCanvas);
     horizontal->addWidget(mTabs);
+    mTree->setMinimumWidth(INITIAL_SOURCE_TREE_WIDTH);
     mCanvas->setMinimumWidth(MINIMUM_CANVAS_WIDTH);
     horizontal->setSizes({INITIAL_SOURCE_TREE_WIDTH, INITIAL_CANVAS_WIDTH, INITIAL_INSPECTOR_WIDTH});
     horizontal->setCollapsible(1, false);
@@ -659,6 +685,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         documentEdited(mDocument.SetText(mSourceFile->currentText(), mSource->toPlainText().toUtf8()));
     });
     connect(revertText, &QPushButton::clicked, this, [this]() { renderSource(); });
+    connect(openCodeEditor, &QPushButton::clicked, this, [this]() { static_cast<void>(OpenSourceInCodeEditor()); });
+    connect(chooseCodeEditor, &QPushButton::clicked, this, [this]() {
+        static_cast<void>(mCodeEditor.Configure(this));
+    });
+    connect(reloadSources, &QPushButton::clicked, this, [this]() { static_cast<void>(ReloadSourcesFromDisk()); });
     connect(mDiagnostics, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
         static_cast<void>(ActivateDiagnostic(mDiagnostics->row(item)));
     });
@@ -870,6 +901,93 @@ bool RendererWorkspace::Save()
     return writeDocument();
 }
 
+bool RendererWorkspace::hasPendingSourceText() const
+{
+    QString draftText = QString::fromUtf8(mDocument.GetDraft(mSourceFile->currentText()));
+    draftText.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    draftText.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    return mSourceFile->currentText().isEmpty() == false && mSource->document()->isModified() == true &&
+           mSource->toPlainText() != draftText;
+}
+
+bool RendererWorkspace::OpenSourceInCodeEditor()
+{
+    if (mDocument.IsLoaded() == false || IsJobActive() == true)
+    {
+        return false;
+    }
+    const QString file = mSourceFile->currentText();
+    const bool hasPendingText = hasPendingSourceText();
+    if (mDocument.IsBuiltIn() == true || mDocument.IsDirty() == true || hasPendingText == true)
+    {
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+            this,
+            QStringLiteral("Open in Code Editor"),
+            mDocument.IsBuiltIn() == true
+                ? QStringLiteral("Create an editable project copy before opening this source in your code editor?")
+                : QStringLiteral("Save the graph and source changes before opening this file in your code editor?"),
+            QMessageBox::Save | QMessageBox::Cancel,
+            QMessageBox::Save);
+        if (answer != QMessageBox::Save)
+        {
+            return false;
+        }
+        if (hasPendingText == true)
+        {
+            const RenderGraphDocumentStatus status = mDocument.SetText(file, mSource->toPlainText().toUtf8());
+            documentEdited(status);
+            if (status != RenderGraphDocumentStatus::Ok)
+            {
+                return false;
+            }
+        }
+        if ((mDocument.IsBuiltIn() == true ? CustomizeBuiltIn() : Save()) == false)
+        {
+            return false;
+        }
+    }
+    const QString path = QFileInfo(QDir(mDocument.GetPackageRoot()).filePath(file)).canonicalFilePath();
+    if (path.isEmpty() == true || path.startsWith(mProjectRoot + QLatin1Char('/')) == false)
+    {
+        mStatus->setText(QStringLiteral("Code editing requires a saved source inside this project."));
+        return false;
+    }
+    QString error;
+    if (mCodeEditor.Open(this, path, error) == false)
+    {
+        mStatus->setText(error);
+        return false;
+    }
+    mStatus->setText(QStringLiteral("Opening %1. Save in your code editor, then Build & Preview.").arg(file));
+    return true;
+}
+
+bool RendererWorkspace::ReloadSourcesFromDisk()
+{
+    if (IsJobActive() == true || hasPendingSourceText() == true)
+    {
+        mStatus->setText(
+            QStringLiteral("Finish the current job and apply or revert pending text before reloading sources."));
+        return false;
+    }
+    bool hasChanged = false;
+    const RenderGraphDocumentStatus status = mDocument.RefreshFromDisk(hasChanged);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(
+            status == RenderGraphDocumentStatus::Conflict
+                ? QStringLiteral("External sources changed while local edits exist. Undo local edits or reopen "
+                                 "the graph to resolve them; the current draft is retained.")
+                : DescribeStatus(status));
+        return false;
+    }
+    if (hasChanged == true)
+    {
+        documentEdited(RenderGraphDocumentStatus::Ok);
+    }
+    return true;
+}
+
 bool RendererWorkspace::IsBuiltIn() const
 {
     return mDocument.IsBuiltIn();
@@ -954,6 +1072,10 @@ bool RendererWorkspace::startJob(const QString& action,
                                  bool shouldPreview)
 {
     if (mDocument.IsLoaded() == false || mProjectRoot.isEmpty() == true || IsJobActive() == true)
+    {
+        return false;
+    }
+    if (shouldCaptureSnapshot == true && ReloadSourcesFromDisk() == false)
     {
         return false;
     }

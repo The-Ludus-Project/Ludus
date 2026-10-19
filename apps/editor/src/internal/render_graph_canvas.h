@@ -137,6 +137,7 @@ Q_SIGNALS:
     void LinkRejected(const QString& reason);
 
 protected:
+    bool viewportEvent(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -156,6 +157,7 @@ private:
     [[nodiscard]] QString edgeAt(QPointF position, QString& outTo) const;
     void cancelLink();
     void fitGraph();
+    void zoomAt(foundation::float64 factor, QPointF position);
 
     const RenderGraphDocument& mDocument;
     QGraphicsScene* mScene;

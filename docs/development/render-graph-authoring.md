@@ -977,6 +977,29 @@ RG3b completes the editor half of the
 a visual node canvas over the same draft, and a trusted preview of the cooked
 runtime generation on the editor's existing viewport device.
 
+### Edit shader sources in a code editor
+
+On native desktop, select a file in the **Source** tab and click **Open in Code
+Editor**. The first use opens a native application picker; **Choose Code
+Editor…** changes that saved preference. On macOS, select the editor's `.app`
+from Applications. No command-line launcher or shell command is required.
+The selected application receives the saved project file; completion and
+formatting come from that application's language support. This first launcher
+opens the file without a diagnostic line argument. External application launch
+is unavailable in the browser editor.
+
+If the graph or text pane has unsaved changes, opening asks to save them first.
+For the engine default, opening asks to create an editable copy in the project;
+the engine sources stay unchanged. Cancelling retains the current text/draft.
+
+Save in the code editor, then use **Build & Preview**. Validation and builds
+refresh external saves when the draft is clean; **Reload Sources** performs the
+same refresh without starting a job. Refresh uses the existing package limits
+and creates one undoable revision. When local and external changes conflict,
+the current draft is retained and the job does not start. Undo local edits or
+reopen the graph to resolve the conflict. Apply or revert unapplied text before
+reloading; source refresh never silently replaces that text.
+
 ### Edit on the canvas
 
 The canvas sits between the source tree and the inspector and shows the selected
@@ -991,7 +1014,9 @@ undo, explicit save, validation and the inspector stay in step.
 | Select a link and press Delete | `Disconnect` |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source tab; not an edit |
-| Wheel, or drag empty space | Zoom or pan the view only |
+| Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
+| Wheel or vertical two-finger scroll | Zoom around the pointer, including smooth pixel scrolling |
+| Drag empty space | Pan the view only |
 
 Header colours show the connection domain: blue scene/view (Scene, Camera),
 orange execution (Raster, Present), green resource (Target, Export), purple
