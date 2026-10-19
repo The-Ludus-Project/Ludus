@@ -30,7 +30,8 @@ SHAPES = {'Float32': ('float', 1), 'Float2': ('float2', 2), 'Float3': ('float3',
 RESERVED = {'class', 'struct', 'namespace', 'auto', 'const', 'float', 'int', 'void', 'return', 'for', 'while', 'if', 'else', 'static', 'inline', 'template', 'typename', 'private', 'public', 'protected', 'operator', 'true', 'false', 'nullptr', 'bool', 'break', 'continue', 'switch', 'case', 'default', 'delete', 'new', 'this', 'union', 'enum', 'do', 'sizeof', 'alignof', 'using', 'typedef', 'uniform', 'in', 'out', 'register', 'cbuffer', 'shader', 'rgEntry', 'value'}
 RESERVED.update(('alignas alignof and and_eq asm atomic_cancel atomic_commit atomic_noexcept bitand bitor catch char char8_t char16_t char32_t compl consteval constexpr constinit const_cast co_await co_return co_yield decltype double dynamic_cast explicit export extern friend goto inline int long mutable noexcept not not_eq or or_eq reflexpr reinterpret_cast requires short signed static_assert static_cast template thread_local throw try typeid typename unsigned virtual volatile wchar_t xor xor_eq concept final override float2 float3 float4 uint uint2 uint3 uint4').split())
 NAME = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,62}\Z')
-HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'native_worker.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
+NATIVE_WORKER_HELPER = 'native_worker.py'
+HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
 LIMITS = {'configurations': 8, 'programs': 32, 'artifacts': 128, 'pipelines': 64}
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
@@ -379,9 +380,14 @@ def file_hash(path):
     return h.hexdigest()
 
 
-def tool_identity(helper, compiler, validator, cross):
-    """Identity includes helper/locks, actual binaries and Slang shared libraries."""
+def tool_identity(helper, compiler, validator, cross, *, worker_socket=None):
+    """Hash required helpers/tools; the native client belongs only to worker builds."""
     paths = {f'helper/{p}': helper / p for p in HELPERS}
+    if worker_socket:
+        client = helper / NATIVE_WORKER_HELPER
+        require(client.is_file(), 'Tools', 'native worker',
+                'selected SDK has no native_worker.py; native worker compilation requires an SDK with that helper')
+        paths['helper/' + NATIVE_WORKER_HELPER] = client
     paths['generator/render_graph_build.py'] = Path(__file__)
     paths['generator/render_graph.py'] = Path(graph.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
@@ -610,12 +616,12 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     value = document(snapshot.load(manifest_label), manifest_label)
     schemas, programs, techniques, counts = validate_manifest(value)
     helper = Path(helper).resolve()
-    tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross)
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
+    tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross, worker_socket=worker_socket)
     worker_identity = None
     if worker_socket:
         import importlib.util
-        spec = importlib.util.spec_from_file_location('_ludus_native_worker', helper / 'native_worker.py')
+        spec = importlib.util.spec_from_file_location('_ludus_native_worker', helper / NATIVE_WORKER_HELPER)
         native = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(native)
         try:
