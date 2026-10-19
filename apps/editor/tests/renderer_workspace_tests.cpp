@@ -13,7 +13,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QApplication>
-#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -21,7 +20,6 @@
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QLineEdit>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPlainTextEdit>
@@ -158,14 +156,11 @@ TEST_CASE("Renderer creates a complete project-owned graph with New Graph", "[ed
     REQUIRE(project.isValid() == true);
     const QString root = QFileInfo(project.path()).canonicalFilePath();
     RendererWorkspace workspace({FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
-    QPushButton* createOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphNew"));
-    QPushButton* previewOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphBuildPreview"));
     QPushButton* createFirstOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphCreateFirst"));
-    REQUIRE(createOrNull != nullptr);
-    REQUIRE(previewOrNull != nullptr);
     REQUIRE(createFirstOrNull != nullptr);
-    CHECK(createOrNull->isEnabled() == false);
-    CHECK(previewOrNull->isEnabled() == false);
+    // New Graph and Build & Preview are shell commands; their gates are the workspace's.
+    CHECK(workspace.CanCreateGraph() == false);
+    CHECK(workspace.CanBuild() == false);
     // Without a project, the empty page offers nothing to create into.
     CHECK(createFirstOrNull->isEnabled() == false);
     workspace.SetProject(root, 1);
@@ -179,8 +174,8 @@ TEST_CASE("Renderer creates a complete project-owned graph with New Graph", "[ed
         REQUIRE(workspace.grab().save(capture + QStringLiteral("-empty.png")) == true);
     }
     // A project without graphs shows the engine default instead of an empty page; New Graph
-    // stays available in the toolbar.
-    CHECK(createOrNull->isEnabled() == true);
+    // stays available as a command.
+    CHECK(workspace.CanCreateGraph() == true);
     CHECK(workspace.IsBuiltIn() == true);
     CHECK(createFirstOrNull->isVisible() == false);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
@@ -191,8 +186,8 @@ TEST_CASE("Renderer creates a complete project-owned graph with New Graph", "[ed
         dialogOrNull->setTextValue(QStringLiteral("MyGraph"));
         dialogOrNull->accept();
     });
-    createOrNull->click();
-    CHECK(createOrNull->isEnabled() == false);
+    CHECK(workspace.PromptNewGraph() == true);
+    CHECK(workspace.CanCreateGraph() == false);
     // Repeated state publications for this project must not cancel creation.
     workspace.SetProject(project.path(), 1);
     REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
@@ -205,7 +200,7 @@ TEST_CASE("Renderer creates a complete project-owned graph with New Graph", "[ed
     CHECK(QFileInfo(root + QStringLiteral("/graphs/MyGraph/main.lushader.json")).isFile() == true);
     CHECK(workspace.GetCanvas().GetNodeCount() > 0);
     CHECK(createFirstOrNull->isVisible() == false);
-    CHECK(previewOrNull->isEnabled() == true);
+    CHECK(workspace.CanBuild() == true);
     CHECK(workspace.GetStatusText().contains(QStringLiteral("Build & Preview")) == true);
     workspace.SetBuildTools({}, {});
     CHECK(workspace.IsJobActive() == false);
@@ -283,13 +278,9 @@ TEST_CASE("New Graph builds and cooks with the project's SDK without manual shad
     preferences.setValue(QStringLiteral("renderGraph/compiler"), QStringLiteral("/stale/other-project/slangc"));
     RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetProject(project, 1);
-    QCheckBox* overridesOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("renderGraphOverrideTools"));
-    QLineEdit* compilerOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("renderGraphCompiler"));
-    REQUIRE(overridesOrNull != nullptr);
-    REQUIRE(compilerOrNull != nullptr);
-    CHECK(overridesOrNull->isChecked() == false);
-    CHECK(compilerOrNull->text().isEmpty() == true);
-    CHECK(compilerOrNull->isEnabled() == false);
+    // Stale preferences from another project are never overrides.
+    CHECK(workspace.GetBuildSettings().ShouldOverrideTools == false);
+    CHECK(workspace.GetBuildSettings().Tools.Compiler.isEmpty() == true);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
     REQUIRE(workspace.CreateGraph(QStringLiteral("Automatic")) == true);
     REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
@@ -299,15 +290,17 @@ TEST_CASE("New Graph builds and cooks with the project's SDK without manual shad
     INFO(result.Code.toStdString() + ": " + result.Message.toStdString());
     REQUIRE(result.IsSuccessful == true);
     CHECK(result.Payload.value(QStringLiteral("toolchain")).toObject().value(QStringLiteral("sdk")).toString() == sdk);
-    CHECK(compilerOrNull->text() == compiler);
-    CHECK(overridesOrNull->isChecked() == false);
+    CHECK(workspace.GetResolvedBuildTools().Compiler == compiler);
+    CHECK(workspace.GetResolvedSdk() == sdk);
+    CHECK(workspace.GetBuildSettings().ShouldOverrideTools == false);
     CHECK(QFileInfo(workspace.GetRuntimePackagePath()).isFile() == true);
     CHECK(ReadFile(manifest) == sdkIdentity);
     workspace.SetBuildTools(QStringLiteral("/advanced/helper"), QStringLiteral("/advanced/slangc"));
-    CHECK(overridesOrNull->isChecked() == true);
+    CHECK(workspace.GetBuildSettings().ShouldOverrideTools == true);
     workspace.SetProject(root, 2);
-    CHECK(overridesOrNull->isChecked() == false);
-    CHECK(compilerOrNull->text().isEmpty() == true);
+    CHECK(workspace.GetBuildSettings().ShouldOverrideTools == false);
+    CHECK(workspace.GetBuildSettings().Tools.Compiler.isEmpty() == true);
+    CHECK(workspace.GetResolvedBuildTools().Compiler.isEmpty() == true);
 }
 
 TEST_CASE("RG3 editor canonical JSON matches the CLI's saved graph bytes", "[editor][render-graph]")

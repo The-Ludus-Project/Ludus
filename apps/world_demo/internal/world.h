@@ -111,8 +111,15 @@ struct Draw final
 inline constexpr uint32 MAX_WORLD_ENTITIES = 48;
 /// Most collision boxes one level authors.
 inline constexpr usize MAX_WORLD_COLLISION = 16;
-/// Render records: every entity, every collision box and every placement of a full room.
-inline constexpr usize MAX_RENDER_DRAWS = MAX_WORLD_ENTITIES + MAX_WORLD_COLLISION + MAX_ROOM_PLACEMENTS;
+/// Channels of a draw colour: linear RGB followed by alpha.
+inline constexpr usize DRAW_COLOR_CHANNELS = 4;
+/// Draws Extract emits before the collision boxes: the room floor over the level bounds.
+inline constexpr usize ROOM_FLOOR_DRAWS = 1;
+/// Linear RGBA of the room floor; outside the level bounds the renderer's clear shows.
+inline constexpr float32 ROOM_FLOOR_COLOR[DRAW_COLOR_CHANNELS] = {0.025F, 0.04F, 0.08F, 1};
+/// Render records: the floor, every entity, every collision box and every placement of a full room.
+inline constexpr usize MAX_RENDER_DRAWS =
+    ROOM_FLOOR_DRAWS + MAX_WORLD_ENTITIES + MAX_WORLD_COLLISION + MAX_ROOM_PLACEMENTS;
 struct RenderFrame final
 {
     Draw Draws[MAX_RENDER_DRAWS] = {};

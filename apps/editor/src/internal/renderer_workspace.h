@@ -7,6 +7,7 @@
 
 #include "internal/controller.h"
 #include "internal/external_code_editor.h"
+#include "internal/render_graph_build_settings.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_creation.h"
 #include "internal/render_graph_defaults.h"
@@ -23,13 +24,12 @@
 QT_BEGIN_NAMESPACE
 class QAction;
 class QComboBox;
-class QCheckBox;
 class QFormLayout;
 class QLabel;
 class QLineEdit;
-class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QScrollArea;
 class QSpinBox;
 class QStackedWidget;
 class QTabWidget;
@@ -49,9 +49,16 @@ class RenderPreview;
 // trusted preview of the cooked runtime generation on the World viewport device.
 // A project without graphs/Main/main.lurender.json shows the engine default read-only;
 // the first edit turns it into a project draft that Save creates under graphs/Main/.
+//
+// In the editor shell this is the render-graph canvas document: a source tree beside
+// the Canvas, Source and Plan views. It owns no command buttons; the shell's renderGraph.*
+// commands call its operations. Its node inspector and preview are panels the shell
+// moves into the Properties and Render Preview tool windows (TakeInspectorPanel and
+// TakePreviewPanel), and Tools > Options edits its build settings.
 // See docs/development/render-graph-authoring.md#edit-and-reload-graphs-rg3,
-// docs/development/render-graph-authoring.md#node-canvas-and-preview-rg3b and
-// docs/development/render-graph-authoring.md#start-customizing-the-renderer.
+// docs/development/render-graph-authoring.md#node-canvas-and-preview-rg3b,
+// docs/development/render-graph-authoring.md#start-customizing-the-renderer and
+// docs/development/editor-workspace.md#workspace-layout.
 class RendererWorkspace final : public QWidget
 {
     Q_OBJECT
@@ -73,6 +80,15 @@ public:
     /// graphs/name directory. Completion is asynchronous through JobFinished.
     /// Existing files and the current draft are retained if creation fails.
     [[nodiscard]] bool CreateGraph(const QString& name);
+    /// True when a project is bound and no job or creation is running, so New Graph and
+    /// Open Graph can start.
+    [[nodiscard]] bool CanCreateGraph() const;
+    /// Ask to save a dirty draft, then ask for a graph name and start CreateGraph. False
+    /// when CanCreateGraph() is false, a prompt is cancelled or creation cannot start.
+    [[nodiscard]] bool PromptNewGraph();
+    /// Ask to save a dirty draft, then choose a root .lurender.json in the project and open
+    /// it. False when CanCreateGraph() is false, a prompt is cancelled or the graph cannot open.
+    [[nodiscard]] bool PromptOpenGraph();
     [[nodiscard]] bool ConfirmDiscard();
     [[nodiscard]] bool IsDirty() const;
     [[nodiscard]] bool CanSave() const;
@@ -95,6 +111,9 @@ public:
     void Undo();
     void Redo();
 
+    /// True when a document is open and no job or creation is running, so Validate, Build,
+    /// Build & Preview and Cook Runtime can start.
+    [[nodiscard]] bool CanBuild() const;
     /// Validate and dump the current draft snapshot. False when a job is active or nothing is open.
     [[nodiscard]] bool Validate();
     /// Build the draft snapshot's sibling .lushader.json into the project's render-graph build tree.
@@ -106,10 +125,36 @@ public:
     void SetWorkerSocket(const QString& endpoint);
     /// Cook the last published build into a runtime generation for atomic activation.
     [[nodiscard]] bool CookRuntime();
+    /// Cancel the running job or graph creation, and turn Live Preview off.
     void CancelJob();
     [[nodiscard]] bool IsJobActive() const;
-    /// Explicitly opt into advanced shader path overrides; two empty paths restore project detection.
+    /// Turn background rebuilds of changed drafts on or off. Turning it on schedules a build
+    /// of the current draft; later edits rebuild after a short delay and preview only
+    /// matching successful results. CancelJob and a project change turn it off. Emits
+    /// LivePreviewChanged when the state changes.
+    void SetLivePreview(bool isEnabled);
+    [[nodiscard]] bool IsLivePreviewEnabled() const;
+    /// Explicitly opt into advanced shader path overrides; two empty paths restore project
+    /// detection. The validator and SPIRV-Cross overrides are kept.
     void SetBuildTools(const QString& helper, const QString& compiler);
+    /// Replace the build settings that later builds use (Tools > Options). The worker socket
+    /// is stored as an editor preference; tool overrides last until the project changes.
+    void SetBuildSettings(const RenderGraphBuildSettings& settings);
+    [[nodiscard]] const RenderGraphBuildSettings& GetBuildSettings() const noexcept
+    {
+        return mBuildSettings;
+    }
+    /// Shader tools the last successful build without overrides resolved from the project's
+    /// SDK, or empty paths before such a build. Cleared when the project changes.
+    [[nodiscard]] const RenderGraphBuildTools& GetResolvedBuildTools() const noexcept
+    {
+        return mResolvedTools;
+    }
+    /// SDK prefix of the last successful build without overrides, or empty.
+    [[nodiscard]] const QString& GetResolvedSdk() const noexcept
+    {
+        return mResolvedSdk;
+    }
     /// Publish a finished job result. Results for another request, project epoch or a
     /// closed document are ignored, so stale jobs never replace current diagnostics.
     void AcceptResult(const RenderGraphJobResult& result);
@@ -125,8 +170,12 @@ public:
     [[nodiscard]] bool SelectNode(const QString& file, const QString& configuration, const QString& node);
     /// Selected node as `file#configuration/node`, or empty.
     [[nodiscard]] QString GetSelection() const;
+    /// Rows of the last published result: one summary row, then one row per tool
+    /// diagnostic of a failed result. Zero before any result. The shell's Error List shows
+    /// the same rows in the same order (MakeRenderGraphErrorEntries).
     [[nodiscard]] foundation::int32 GetDiagnosticCount() const;
-    /// Navigate to a diagnostic's authored node or source line.
+    /// Navigate to a diagnostic row's authored node (selecting it on the Canvas) or source
+    /// line (showing it in the Source view). False for a row without an authored location.
     [[nodiscard]] bool ActivateDiagnostic(foundation::int32 row);
     [[nodiscard]] QString GetSourceFile() const;
     [[nodiscard]] foundation::int32 GetSourceLine() const;
@@ -143,6 +192,13 @@ public:
     {
         return *mCanvas;
     }
+    /// Move the selected node's inspector (fields, layout position, node creation and
+    /// connections) into a shell tool window. Call once; the panel then lives under
+    /// newParent but stays driven by this document's selection and edits.
+    [[nodiscard]] QWidget* TakeInspectorPanel(QWidget* newParent);
+    /// Move the runtime preview panel (Preview Runtime, status and image) into a shell tool
+    /// window. Call once; the panel then lives under newParent.
+    [[nodiscard]] QWidget* TakePreviewPanel(QWidget* newParent);
     /// Borrow the World viewport whose device and extraction feed the preview; null detaches.
     /// The source must outlive this workspace or be cleared first.
     void SetPreviewSource(RenderPreview* sourceOrNull);
@@ -165,6 +221,10 @@ public:
 Q_SIGNALS:
     void DocumentChanged();
     void JobFinished();
+    /// What CanBuild, CanCreateGraph, IsJobActive or IsDirty report may have changed.
+    void CommandsChanged();
+    /// Live Preview was turned on or off (SetLivePreview, CancelJob or a project change).
+    void LivePreviewChanged(bool isEnabled);
 
 private:
     [[nodiscard]] bool startJob(const QString& action,
@@ -177,7 +237,6 @@ private:
     [[nodiscard]] bool hasPendingSourceText() const;
     void openProjectGraph();
     void showDocument(const RenderGraphDocument& document);
-    void showPreviewPage();
     [[nodiscard]] QByteArray getBuildIdentity() const;
     void scheduleLiveBuild();
     void renderTree();
@@ -189,8 +248,8 @@ private:
     void documentEdited(RenderGraphDocumentStatus status);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
     void addNode();
-    void promptNewGraph();
     void openSourceLine(const QString& file, foundation::int32 line);
+    [[nodiscard]] QJsonObject getDiagnosticLocation(foundation::int32 row) const;
     [[nodiscard]] QJsonObject selectedConfiguration() const;
     [[nodiscard]] QJsonObject selectedNode() const;
     [[nodiscard]] QString buildDirectory() const;
@@ -207,6 +266,8 @@ private:
     foundation::uint64 mValidatedRevision = 0;
     bool mIsValidated = false;
     bool mIsRendering = false;
+    bool mHasResult = false;
+    bool mIsLivePreviewEnabled = false;
     RenderGraphDocument mDocument;
     ExternalCodeEditor mCodeEditor;
     RenderGraphJob mJob;
@@ -216,18 +277,13 @@ private:
     QString mSelectedConfiguration;
     QString mSelectedNode;
     QLabel* mPath;
-    QPushButton* mNewGraph;
-    QPushButton* mOpenGraph;
-    QPushButton* mBuildPreview;
     QStackedWidget* mContent;
     QLabel* mEmptyMessage;
+    QPushButton* mCreateFirst;
     QComboBox* mConfiguration;
-    QPushButton* mValidate;
-    QPushButton* mBuild;
-    QPushButton* mCook;
-    QPushButton* mCancel;
     QTreeWidget* mTree;
-    QTabWidget* mTabs;
+    QTabWidget* mViews;
+    QScrollArea* mInspectorPanel;
     QWidget* mInspector;
     QFormLayout* mFields;
     QSpinBox* mLayoutX;
@@ -240,17 +296,11 @@ private:
     QComboBox* mSourceFile;
     QPlainTextEdit* mSource;
     QPlainTextEdit* mPlan;
-    QLineEdit* mHelper;
-    QLineEdit* mCompiler;
-    QLineEdit* mValidator;
-    QLineEdit* mSpirvCross;
-    QLineEdit* mWorkerSocket;
-    QCheckBox* mOverrideBuildTools;
+    RenderGraphBuildSettings mBuildSettings;
+    RenderGraphBuildTools mResolvedTools;
+    QString mResolvedSdk;
     QAction* mCustomize;
-    QLabel* mBuildToolsStatus;
-    QCheckBox* mLivePreview;
     RenderGraphLiveBuild mLiveBuild;
-    QListWidget* mDiagnostics;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;
     QWidget* mPreviewPage;

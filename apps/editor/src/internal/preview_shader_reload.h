@@ -60,6 +60,9 @@ public:
     PreviewShaderReload& operator=(const PreviewShaderReload&) = delete;
     /// Whether this editor build can rebuild viewport shaders at all (native Linux/macOS preview).
     [[nodiscard]] static bool IsSupported() noexcept;
+    /// Target code this editor's viewport draws, and so the target of its built-in renderer shaders:
+    /// Metal source on macOS, SPIR-V elsewhere.
+    [[nodiscard]] static tooling::shader_compiler::Target GetHostTarget() noexcept;
     /// Watch and rebuild a different source tree (for example a copy of the renderer shaders).
     /// Only while Off; returns false otherwise and keeps the current sources.
     [[nodiscard]] bool SetSources(const PreviewShaderSources& sources);

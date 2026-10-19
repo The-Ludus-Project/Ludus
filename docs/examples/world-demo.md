@@ -208,8 +208,8 @@ the previous render frame until restart and never publishes that tick's presenta
 ## Ownership and limits
 
 The reference world reserves 48 entities, 32 commands/outcomes, 64 optional
-presentation records, 16 outstanding completion tickets and 192 render records
-(`MAX_RENDER_DRAWS`: 48 entities, 16 collision boxes and 128 placements).
+presentation records, 16 outstanding completion tickets and 193 render records
+(`MAX_RENDER_DRAWS`: the room floor, 48 entities, 16 collision boxes and 128 placements).
 Content permits 32 initial entities, 16 static boxes and 128 scatter placements.
 These limits leave room for every active entity, static geometry and placement
 in the render frame. Queue overflow
@@ -258,15 +258,23 @@ cross-platform floating-point determinism are future work.
 The player draws each frame through the engine
 [Renderer](../architecture/renderer-systems.md#views-and-depth-l1) on one explicit
 RHI device; it keeps no shader of its own. `render_items` turns the extracted
-`RenderFrame` into scene items. Each of its up to 192 draws becomes one opaque
+`RenderFrame` into scene items. Each of its up to 193 draws becomes one opaque
 flat-material item over a shared unit quad, scaled by its half extent and rotated
-by its angle. The draw's position in the frame becomes its depth key, so later
-draws cover earlier ones exactly as before, without blending. The gameplay camera
-sample becomes a reverse-Z orthographic view through the game's checked
-`camera_view` builder. `FrameRenderer` prepares the Renderer's flat and views
-profiles, replaces the snapshot every frame, and keeps drawing the last Ready view
-while a newer view's upload is Pending. Collider boxes are axis-aligned; visual
-rotation affects drawing. Narrow windows expand the camera height to keep the
+by its angle. The first draw is the room floor over the level bounds, in
+`ROOM_FLOOR_COLOR`. The draw's position in the frame becomes its depth key, so
+later draws cover earlier ones without blending. The gameplay camera sample
+becomes a reverse-Z orthographic view through the game's checked `camera_view`
+builder.
+
+`FrameRenderer` presents through the Renderer's `RasterViewport`, the same
+interactive output the Editor's World viewport uses. It prepares the flat, views
+and lighting-output profiles, replaces the snapshot every frame, and composites
+to the surface in the same submission. The last drawable view keeps presenting
+while a newer view's upload is Pending. Colours are linear, so the window shows
+the Renderer's display transform: an 8-bit linear target, per-channel Reinhard
+tone mapping at exposure one, then sRGB encoding. Edit and Play show the same
+pixels. Outside the room's bounds the Renderer's black clear shows. Collider
+boxes are axis-aligned; visual rotation affects drawing. Narrow windows expand the camera height to keep the
 authored horizontal bounds visible. The item and view builders have no window,
 device or Qt dependency, so an Editor view of a World-demo World can draw the same
 geometry from the same extraction.
@@ -284,9 +292,11 @@ allocations, and proves prepared simulation/extraction paths allocate no storage
 `ludus_world_render_items_tests` compares every sampled pixel centre of the
 example room with the retired fullscreen shader's coverage rule, and checks
 draw order, depth range, colours and rejected frames. The GPU test
-`ludus_world_frame_renderer_pixels` draws that room on a headless device through
-`FrameRenderer`, reads the image back and compares it with the same rule. It
-also checks that rejected and zero-extent frames keep the last drawable view.
+`ludus_world_frame_renderer_pixels` presents that room on a headless device
+through `FrameRenderer`, then reads back the presented display image. It compares
+the image with the same coverage rule passed through an independent restatement
+of the display transform. It also checks that rejected and zero-extent frames
+keep the last drawable view.
 
 The contributor workflow also checks native ASan/UBSan, format/tidy, header/include
 boundaries and installed SDK consumption. Browser QA uses the repository's pinned

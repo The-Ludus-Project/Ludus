@@ -1,6 +1,7 @@
 // MainWindow routing between tool windows and documents: Project Explorer opens
 // documents, the Error List navigates to diagnostics, Properties follows the
-// active document, and render-graph commands follow the Renderer document.
+// active document, render-graph commands follow the Renderer document, and
+// Tools > Options edits the Renderer document's build settings.
 // The tool windows and the document well are separate components; this file
 // only connects their requests to the document owners' existing operations.
 
@@ -9,6 +10,7 @@
 #include "internal/document_well.h"
 #include "internal/error_list.h"
 #include "internal/main_window.h"
+#include "internal/options_dialog.h"
 #include "internal/project_explorer.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
@@ -17,7 +19,6 @@
 #include <ludus/foundation/base/types.h>
 
 #include <QAction>
-#include <QCheckBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QFileInfo>
@@ -40,6 +41,7 @@ enum PropertiesPage : foundation::uint8
 {
     EMPTY_PROPERTIES_PAGE,
     WORLD_PROPERTIES_PAGE,
+    RENDER_GRAPH_PROPERTIES_PAGE,
 };
 constexpr foundation::int32 STATUS_MESSAGE_MILLISECONDS = 8000;
 constexpr QLatin1StringView RENDER_GRAPH_SUFFIX{".lurender.json"};
@@ -168,13 +170,15 @@ void MainWindow::renderActiveDocument()
     {
         mProperties->setCurrentIndex(WORLD_PROPERTIES_PAGE);
     }
+    else if (activeOrNull == Renderer_)
+    {
+        // The Renderer document keeps its inspector current with its own selection.
+        mProperties->setCurrentIndex(RENDER_GRAPH_PROPERTIES_PAGE);
+    }
     else
     {
-        mNoProperties->setText(activeOrNull == Renderer_
-                                   ? QStringLiteral("Select a node on the render-graph canvas; its fields are in the "
-                                                    "Render Graph document's Inspector tab.")
-                                   : QStringLiteral("The active document has no selection with properties. Select a "
-                                                    "World entity to edit it here."));
+        mNoProperties->setText(QStringLiteral("The active document has no selection with properties. Select a "
+                                              "World entity or a render-graph node to edit it here."));
         mProperties->setCurrentIndex(EMPTY_PROPERTIES_PAGE);
     }
     RenderDocumentActions();
@@ -202,14 +206,34 @@ void MainWindow::renderDocumentTitles()
 
 void MainWindow::renderGraphCommands()
 {
-    const bool isLoaded = Renderer_->GetDocument().IsLoaded();
-    const bool isIdle = Renderer_->IsJobActive() == false;
+    const bool canBuild = Renderer_->CanBuild();
     for (QAction* action : {mValidateGraphAction, mBuildGraphAction, mBuildPreviewGraphAction, mCookGraphAction})
     {
-        action->setEnabled(isLoaded == true && isIdle == true);
+        action->setEnabled(canBuild);
     }
-    mLivePreviewGraphAction->setEnabled(isLoaded);
+    mNewGraphAction->setEnabled(Renderer_->CanCreateGraph());
+    mOpenGraphAction->setEnabled(Renderer_->CanCreateGraph());
+    mCancelGraphAction->setEnabled(Renderer_->IsJobActive());
+    mLivePreviewGraphAction->setEnabled(Renderer_->GetDocument().IsLoaded());
     renderDocumentTitles();
+}
+
+void MainWindow::showOptions()
+{
+    OptionsDialog* dialog = new OptionsDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->SetBuildSettings(Renderer_->GetBuildSettings());
+    dialog->SetResolvedBuildTools(Renderer_->GetResolvedSdk(), Renderer_->GetResolvedBuildTools());
+    // Tool overrides belong to the project they were chosen for; a project change while the
+    // dialog is open discards them.
+    const foundation::uint64 epoch = Controller_->State().ProjectEpoch;
+    connect(dialog, &QDialog::accepted, this, [this, dialog, epoch]() {
+        if (Controller_->State().ProjectEpoch == epoch)
+        {
+            Renderer_->SetBuildSettings(dialog->GetBuildSettings());
+        }
+    });
+    dialog->open();
 }
 
 void MainWindow::renderGraphErrors()

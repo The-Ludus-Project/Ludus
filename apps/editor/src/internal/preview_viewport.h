@@ -1,6 +1,7 @@
 #pragma once
 
 #include "internal/render_preview.h"
+#include "internal/viewport_frame_source.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 
@@ -31,10 +32,20 @@ enum class ViewportPresentation : foundation::uint8
     Unavailable,
 };
 // One embedded presentation surface for both World bindings and cooked scenes.
+// Frames come from a ViewportFrameSource; device admission and navigation stay with the RenderPreview.
 class PreviewViewport final : public QWidget
 {
 public:
+    /// Present preview's own frames.
     explicit PreviewViewport(RenderPreview* preview, QWidget* parentOrNull = nullptr, bool isAutomatic = true);
+    /// Present frames leased from frameSource, whose images live on preview's admitted device.
+    /// preview still admits the device and receives navigation. frameSource must emit
+    /// ResettingFrames before it is destroyed and before preview's device stops, so that no
+    /// lease this viewport holds outlives its image. The browser canvas presents preview directly.
+    PreviewViewport(RenderPreview* preview,
+                    ViewportFrameSource* frameSource,
+                    QWidget* parentOrNull = nullptr,
+                    bool isAutomatic = true);
     ~PreviewViewport() override;
     void ShowFrame();
     void ClearFrame(const QString& text);
@@ -73,6 +84,7 @@ private:
     /// Copy the live shader status from its controller and push it to the active presentation.
     void updateShaderStatus();
     RenderPreview* Preview_;
+    ViewportFrameSource* mFrameSource;
     static constexpr foundation::usize MOVEMENT_KEY_COUNT = 7;
     foundation::StaticArray<bool, MOVEMENT_KEY_COUNT> mHeldKeys{};
     QPointF mLastPositionGlobal;

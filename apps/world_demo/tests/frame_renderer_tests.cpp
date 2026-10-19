@@ -20,8 +20,8 @@ constexpr uint32 BYTES_PER_PIXEL = 4;
 constexpr uint32 STAGING_ROW_ALIGNMENT = 256;
 // Every asynchronous GPU step must finish well inside this bound.
 constexpr uint64 TIMEOUT_NANOSECONDS = 15 * NANOSECONDS_PER_SECOND;
-// One 8-bit code of rounding between the float colour and the stored texel.
-constexpr int32 CHANNEL_TOLERANCE = 1;
+// Rounding of the 8-bit linear scene target and the 8-bit display image.
+constexpr int32 CHANNEL_TOLERANCE = 2;
 // Pixel centres this close (world units) to a box edge are skipped: coverage there is
 // a rasterization rule, not part of the contract.
 constexpr float32 EDGE_TOLERANCE = 0.05F;
@@ -67,16 +67,26 @@ RenderFrame ExtractExample()
     REQUIRE(session.World().Extract(0, frame, false, 1));
     return frame;
 }
-uint8 Encode(float32 value)
+// Independent restatement of the Renderer's display transform for a Linear8 RasterViewport at
+// exposure one: the linear colour is stored in an 8-bit target, then per-channel Reinhard, then
+// the sRGB transfer function, then an 8-bit display image (renderer_output.slang).
+uint8 GetDisplayCode(float32 linear, bool isAlpha)
 {
-    return static_cast<uint8>(std::lround(value * 255.0F));
+    if (isAlpha == true)
+    {
+        return 255;
+    }
+    const float32 stored = std::round(linear * 255.0F) / 255.0F;
+    const float32 mapped = stored / (1 + stored);
+    const float32 encoded = mapped <= 0.0031308F ? 12.92F * mapped : 1.055F * std::pow(mapped, 1 / 2.4F) - 0.055F;
+    return static_cast<uint8>(std::lround(encoded * 255.0F));
 }
-// The retired world_scene.slang rule: the last box containing the pixel centre wins.
+// The last box containing the pixel centre wins over the Renderer's black clear.
 bool TryGetReferenceColor(const RenderFrame& frame, math::Vector2 point, uint8 (&outColor)[RGBA_CHANNELS])
 {
     for (usize channel = 0; channel < RGBA_CHANNELS; ++channel)
     {
-        outColor[channel] = Encode(FRAME_BACKGROUND[channel]);
+        outColor[channel] = GetDisplayCode(0, channel == RGBA_ALPHA);
     }
     for (usize index = 0; index < frame.Count; ++index)
     {
@@ -94,7 +104,7 @@ bool TryGetReferenceColor(const RenderFrame& frame, math::Vector2 point, uint8 (
         {
             for (usize channel = 0; channel < RGBA_CHANNELS; ++channel)
             {
-                outColor[channel] = Encode(draw.Color[channel]);
+                outColor[channel] = GetDisplayCode(draw.Color[channel], channel == RGBA_ALPHA);
             }
         }
     }
@@ -102,7 +112,7 @@ bool TryGetReferenceColor(const RenderFrame& frame, math::Vector2 point, uint8 (
 }
 } // namespace
 
-TEST_CASE("The player's FrameRenderer draws the reference image through the engine Renderer",
+TEST_CASE("The player's FrameRenderer presents the Editor viewport's encoded image of the room",
           "[world-demo][renderer][gpu]")
 {
     Gpu gpu;
@@ -122,41 +132,34 @@ TEST_CASE("The player's FrameRenderer draws the reference image through the engi
 
     FrameRenderer renderer;
     REQUIRE(WaitFor(gpu, [&] { return renderer.Prepare(gpu.Device); }) == rhi::RasterStatus::Ready);
-    CHECK(renderer.HasView() == false);
-    CHECK(renderer.Draw({}) == rhi::RasterStatus::NotReady);
+    REQUIRE(rhi::SetFrameTarget(gpu.Device, gpu.Surface, { .Width = WIDTH, .Height = HEIGHT }) ==
+            rhi::DeviceStatus::Ready);
+    rhi::SubmissionToken unused;
+    CHECK(renderer.Present(gpu.Surface, unused) == rhi::RasterStatus::NotReady);
 
     const RenderFrame frame = ExtractExample();
     REQUIRE(renderer.Update(frame, WIDTH, HEIGHT) == rhi::RasterStatus::Ready);
-    // A Pending candidate is promoted by a later Update, exactly as the player's next frame does.
-    REQUIRE(WaitFor(gpu, [&] {
-                if (renderer.HasView() == true)
-                {
-                    return rhi::RasterStatus::Ready;
-                }
-                const rhi::RasterStatus status = renderer.Update(frame, WIDTH, HEIGHT);
-                return status == rhi::RasterStatus::Ready ? rhi::RasterStatus::NotReady : status;
-            }) == rhi::RasterStatus::Ready);
+    // The viewport presents once its targets and first view are Ready, as the player's next frames do.
+    rhi::SubmissionToken completion;
+    REQUIRE(WaitFor(gpu, [&] { return renderer.Present(gpu.Surface, completion); }) == rhi::RasterStatus::Ready);
+    REQUIRE(WaitFor(gpu, [&] { return rhi::GetStatus(gpu.Device, completion); }) == rhi::RasterStatus::Ready);
 
-    // Rejected and skipped frames keep the last drawable view; the image below is still the example room.
+    // Rejected and skipped frames keep the last drawable view, which still presents.
     RenderFrame translucent = frame;
     translucent.Draws[0].Color[RGBA_ALPHA] = 0.5F;
     CHECK(renderer.Update(translucent, WIDTH, HEIGHT) == rhi::RasterStatus::InvalidDescription);
-    CHECK(renderer.HasView());
     CHECK(renderer.Update(frame, 0, HEIGHT) == rhi::RasterStatus::NotReady);
-    CHECK(renderer.HasView());
+    rhi::SubmissionToken again;
+    REQUIRE(WaitFor(gpu, [&] { return renderer.Present(gpu.Surface, again); }) == rhi::RasterStatus::Ready);
+    REQUIRE(WaitFor(gpu, [&] { return rhi::GetStatus(gpu.Device, again); }) == rhi::RasterStatus::Ready);
 
-    rhi::TextureHandle target;
-    REQUIRE(rhi::CreateTexture(gpu.Device, { .Width = WIDTH, .Height = HEIGHT, .Attachment = true }, {}, target) !=
-            rhi::RasterStatus::Failed);
-    REQUIRE(WaitFor(gpu, [&] { return rhi::GetStatus(gpu.Device, target); }) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::SetFrameTarget(gpu.Device, gpu.Surface, { .Width = WIDTH, .Height = HEIGHT }) ==
-            rhi::DeviceStatus::Ready);
-    REQUIRE(rhi::BeginFrame(gpu.Device, gpu.Surface) == rhi::DeviceStatus::Ready);
-    const rhi::RasterStatus drawn = renderer.Draw(target);
-    rhi::SubmissionToken completion;
-    REQUIRE(rhi::EndFrame(gpu.Device, completion) == rhi::RasterStatus::Ready);
-    REQUIRE(drawn == rhi::RasterStatus::Ready);
-    REQUIRE(WaitFor(gpu, [&] { return rhi::GetStatus(gpu.Device, completion); }) == rhi::RasterStatus::Ready);
+    // Read the presented display image: what the surface received, tone-mapped and encoded.
+    ludus::graphics::renderer::ViewportFrame lease;
+    ludus::graphics::renderer::ViewportImage image;
+    REQUIRE(WaitFor(gpu, [&] { return renderer.Acquire(lease, image); }) == rhi::RasterStatus::Ready);
+    REQUIRE(image.Width == WIDTH);
+    REQUIRE(image.Height == HEIGHT);
+    const rhi::TextureHandle target = image.Texture;
 
     // Read back in bands that each fit one transfer slice.
     rhi::LifetimeCapabilities capabilities;
@@ -217,13 +220,13 @@ TEST_CASE("The player's FrameRenderer draws the reference image through the engi
             INFO("pixel " << x << "," << y);
             CHECK(isMatch);
             ++compared;
-            covered += expected[0] != Encode(FRAME_BACKGROUND[0]) ? 1 : 0;
+            covered += expected[0] != 0 ? 1 : 0;
         }
     }
     // Scatter leaves many pixel centres within half a pixel of an edge; a quarter still covers every room feature.
     CHECK(compared > WIDTH * HEIGHT / 4);
     CHECK(covered > 0);
 
-    REQUIRE(rhi::Destroy(gpu.Device, target) == rhi::RasterStatus::Ready);
+    REQUIRE(renderer.Release(lease) == rhi::RasterStatus::Ready);
     renderer.Reset();
 }

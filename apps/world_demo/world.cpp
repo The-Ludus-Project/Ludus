@@ -1126,6 +1126,20 @@ bool GameWorld::Extract(float32 alpha,
         candidate.Draws[candidate.Count++] = draw;
         return true;
     };
+    // The floor is a draw under everything else, so every renderer shows the same room, whatever it clears to.
+    Draw floor
+    {
+        .Position = {(mLevel.Minimum.X + mLevel.Maximum.X) * 0.5F, (mLevel.Minimum.Y + mLevel.Maximum.Y) * 0.5F},
+        .HalfExtent = {(mLevel.Maximum.X - mLevel.Minimum.X) * 0.5F, (mLevel.Maximum.Y - mLevel.Minimum.Y) * 0.5F},
+    };
+    for (usize channel = 0; channel < DRAW_COLOR_CHANNELS; ++channel)
+    {
+        floor.Color[channel] = ROOM_FLOOR_COLOR[channel];
+    }
+    if (add(floor) == false)
+    {
+        return false;
+    }
     for (usize index = 0; index < mLevel.CollisionCount; ++index)
     {
         if (add(

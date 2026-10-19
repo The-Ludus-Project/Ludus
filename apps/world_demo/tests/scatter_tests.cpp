@@ -214,12 +214,12 @@ TEST_CASE("Presentation isolation: rendering, pacing, interpolation and cosmetic
     // The frame holds every placement behind the entities, tinted per placement but identically every frame.
     REQUIRE(drawn.Extract(0.5F, frame));
     REQUIRE(drawn.Extract(0.5F, again));
-    REQUIRE(frame.Count == level.CollisionCount + drawn.GetPlacements().size() + 3);
+    REQUIRE(frame.Count == ROOM_FLOOR_DRAWS + level.CollisionCount + drawn.GetPlacements().size() + 3);
     bool hasDistinctTint = false;
     for (usize i = 0; i < drawn.GetPlacements().size(); ++i)
     {
-        const Draw& draw = frame.Draws[level.CollisionCount + i];
-        const Draw& repeated = again.Draws[level.CollisionCount + i];
+        const Draw& draw = frame.Draws[ROOM_FLOOR_DRAWS + level.CollisionCount + i];
+        const Draw& repeated = again.Draws[ROOM_FLOOR_DRAWS + level.CollisionCount + i];
         for (usize channel = 0; channel < 4; ++channel)
         {
             CHECK(draw.Color[channel] == repeated.Color[channel]);
@@ -229,7 +229,8 @@ TEST_CASE("Presentation isolation: rendering, pacing, interpolation and cosmetic
         const Placement& placement = drawn.GetPlacements()[i];
         const Placement& previous = drawn.GetPlacements()[i == 0 ? 0 : i - 1];
         const bool isSameVariant = placement.Layer == previous.Layer && placement.Variant == previous.Variant;
-        if (i != 0 && isSameVariant == true && draw.Color[1] != frame.Draws[level.CollisionCount + i - 1].Color[1])
+        if (i != 0 && isSameVariant == true &&
+            draw.Color[1] != frame.Draws[ROOM_FLOOR_DRAWS + level.CollisionCount + i - 1].Color[1])
         {
             hasDistinctTint = true;
         }

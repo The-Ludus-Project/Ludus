@@ -19,7 +19,6 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QLineEdit>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -313,9 +312,9 @@ TEST_CASE("Build & Preview builds an edited default like any project graph", "[e
         {
             SKIP("The default's SPIR-V profile needs the configured spirv-val");
         }
-        QLineEdit* validatorOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("renderGraphValidator"));
-        REQUIRE(validatorOrNull != nullptr);
-        validatorOrNull->setText(validator);
+        RenderGraphBuildSettings settings = workspace.GetBuildSettings();
+        settings.Tools.Validator = validator;
+        workspace.SetBuildSettings(settings);
     }
     REQUIRE(document.SetText(COLOR_SHADER, QByteArray("// customized\n") + document.GetDraft(COLOR_SHADER)) ==
             RenderGraphDocumentStatus::Ok);
