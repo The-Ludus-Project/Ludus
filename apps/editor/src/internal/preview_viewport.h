@@ -37,6 +37,8 @@ public:
     ~PreviewViewport() override;
     void ShowFrame();
     void ClearFrame(const QString& text);
+    /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.
+    [[nodiscard]] QString GetStatisticsText() const;
     [[nodiscard]] foundation::uint64 PresentedFrames() const noexcept;
     /// True when either the shared-device or the offscreen readback path can show frames.
     [[nodiscard]] static bool CanPresent() noexcept;
@@ -60,6 +62,8 @@ private:
     struct State;
     foundation::UniquePtr<State> mState;
     void resizeSurface();
+    /// Reformat the statistics overlay from RenderPreview and push it to the active presentation.
+    void updateStatistics();
     RenderPreview* Preview_;
     static constexpr foundation::usize MOVEMENT_KEY_COUNT = 7;
     foundation::StaticArray<bool, MOVEMENT_KEY_COUNT> mHeldKeys{};

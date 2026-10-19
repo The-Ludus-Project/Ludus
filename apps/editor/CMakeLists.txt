@@ -157,6 +157,9 @@ qt_add_executable(ludus_editor
     src/preview_gpu_generation.cpp
     src/internal/preview_gpu_generation.h
     src/internal/preview_shading.h
+    src/preview_shading.cpp
+    src/internal/viewport_statistics.h
+    src/viewport_statistics.cpp
     src/editor_camera_controller.cpp
     src/static_lighting_job.cpp
     src/internal/static_lighting_job.h
@@ -278,7 +281,9 @@ if(EMSCRIPTEN)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow)
+        renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow
+        renderer_lit_debug renderer_lit_debug_shadow
+        renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
@@ -287,7 +292,9 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
-        renderer_clustered_authored renderer_clustered_authored_shadow)
+        renderer_clustered_authored renderer_clustered_authored_shadow
+        renderer_lit_debug renderer_lit_debug_shadow
+        renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
     ludus_compile_shader(TARGET ludus_editor NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
     ludus_editor_compile_render_graph_host(ludus_editor)
 endif()
@@ -314,6 +321,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/preview_gpu_generation.cpp
         src/internal/preview_gpu_generation.h
         src/internal/preview_shading.h
+    src/preview_shading.cpp
+    src/internal/viewport_statistics.h
+    src/viewport_statistics.cpp
         src/editor_camera_controller.cpp
         src/static_lighting_job.cpp
         src/internal/static_lighting_job.h
@@ -333,6 +343,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/world_workspace_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
+        tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/world_demo_workspace_tests.cpp
@@ -464,7 +475,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_lit_shadow renderer_clustered renderer_clustered_shadow
-            renderer_clustered_authored renderer_clustered_authored_shadow)
+            renderer_clustered_authored renderer_clustered_authored_shadow
+            renderer_lit_debug renderer_lit_debug_shadow
+            renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
         ludus_compile_shader(TARGET ludus_editor_tests NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
         ludus_editor_compile_render_graph_host(ludus_editor_tests)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp)

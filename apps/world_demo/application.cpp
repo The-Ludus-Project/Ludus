@@ -1,14 +1,11 @@
 #include "internal/application.h"
-#include "internal/camera_view.h"
-#include "world_scene.h"
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/input/actions.h>
 #include <ludus/platform/keyboard_sink.h>
-#include <span>
-#include <type_traits>
 namespace ludus::world_demo
 {
 namespace
@@ -47,32 +44,6 @@ Key MapKey(platform::browser::Key key) noexcept
         default:
             return Key::Unknown;
     }
-}
-// Independently checked std140/WGSL/SPIR-V: vector array stride 16; view/settings at 0/16,
-// geometry/color/rotation at 32/3104/6176 for MAX_RENDER_DRAWS (192) records, size 9248.
-constexpr usize UNIFORM_VECTOR_LANES = 4;
-constexpr usize UNIFORM_VECTOR_BYTES = UNIFORM_VECTOR_LANES * sizeof(float32);
-struct alignas(UNIFORM_VECTOR_BYTES) Uniforms final
-{
-    float32 View[UNIFORM_VECTOR_LANES] = {};
-    float32 Settings[UNIFORM_VECTOR_LANES] = {};
-    float32 Geometry[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
-    float32 Color[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
-    float32 Rotation[MAX_RENDER_DRAWS][UNIFORM_VECTOR_LANES] = {};
-};
-constexpr usize UNIFORM_GEOMETRY_OFFSET = 2 * UNIFORM_VECTOR_BYTES;
-constexpr usize UNIFORM_COLOR_OFFSET = UNIFORM_GEOMETRY_OFFSET + MAX_RENDER_DRAWS * UNIFORM_VECTOR_BYTES;
-constexpr usize UNIFORM_ROTATION_OFFSET = UNIFORM_COLOR_OFFSET + MAX_RENDER_DRAWS * UNIFORM_VECTOR_BYTES;
-constexpr usize UNIFORM_BYTES = UNIFORM_ROTATION_OFFSET + MAX_RENDER_DRAWS * UNIFORM_VECTOR_BYTES;
-static_assert(MAX_RENDER_DRAWS == 192 && UNIFORM_COLOR_OFFSET == 3104 && UNIFORM_ROTATION_OFFSET == 6176 &&
-              UNIFORM_BYTES == 9248);
-static_assert(std::is_standard_layout_v<Uniforms> && sizeof(Uniforms) == UNIFORM_BYTES && alignof(Uniforms) == 16);
-static_assert(offsetof(Uniforms, Settings) == 16 && offsetof(Uniforms, Geometry) == UNIFORM_GEOMETRY_OFFSET &&
-              offsetof(Uniforms, Color) == UNIFORM_COLOR_OFFSET &&
-              offsetof(Uniforms, Rotation) == UNIFORM_ROTATION_OFFSET);
-bool Accepted(rhi::ResourceStatus status) noexcept
-{
-    return status == rhi::ResourceStatus::Ready || status == rhi::ResourceStatus::Pending;
 }
 } // namespace
 bool Application::Start(rhi::BackendSelection selection, const char* levelBytes, usize levelSize) noexcept
@@ -124,9 +95,16 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
         return false;
     }
     mWindow->AttachKeyboardSink({ .OnRecord = Record, .OnReset = Reset, .UserData = &mInput });
-    const auto status =
-        rhi::Start({ .Name = "World reference", .Version = 1 }, mWindow->GetNativeWindowInfo(), selection);
-    if (status != rhi::StartStatus::Ready && status != rhi::StartStatus::Pending)
+    rhi::DeviceDescription description;
+    description.Selection = selection;
+    description.Required.PortableRaster = true;
+    const rhi::DeviceStatus status = rhi::CreateDevice({ .Name = "World reference", .Version = 1 },
+                                                       mWindow->GetNativeWindowInfo(),
+                                                       description,
+                                                       mDevice,
+                                                       mSurface);
+    mHasDevice = status == rhi::DeviceStatus::Ready || status == rhi::DeviceStatus::Pending;
+    if (mHasDevice == false)
     {
         Shutdown();
         mState = AppState::Failed;
@@ -144,52 +122,21 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
 }
 void Application::Shutdown() noexcept
 {
-    rhi::Shutdown();
+    // Renderer handles must be released before the device is destroyed.
+    mFrameRenderer.Reset();
+    mIsRendererReady = false;
+    if (mHasDevice == true)
+    {
+        (void)rhi::DestroyDevice(mDevice);
+        mHasDevice = false;
+    }
+    mDevice = {};
+    mSurface = {};
     mWindow.Reset();
-    mVertex = {};
-    mFragment = {};
-    mUniform = {};
-    mPipeline = {};
-    mCreated = false;
-    mRendererReady = false;
     mState = AppState::Stopped;
     mInput.RequestReset(input::ResetReason::FocusLost, {});
 }
-bool Application::PrepareRenderer() noexcept
-{
-    if (mCreated == false)
-    {
-        if (Accepted(rhi::CreateShader(shaders::world_scene::Vertex(), mVertex)) == false ||
-            Accepted(rhi::CreateShader(shaders::world_scene::Fragment(), mFragment)) == false ||
-            Accepted(rhi::CreateUniform(sizeof(Uniforms), mUniform)) == false)
-        {
-            return false;
-        }
-        mCreated = true;
-    }
-    for (const auto status : {rhi::GetStatus(mVertex), rhi::GetStatus(mFragment), rhi::GetStatus(mUniform)})
-    {
-        if (status == rhi::ResourceStatus::Pending)
-        {
-            return true;
-        }
-        if (status != rhi::ResourceStatus::Ready)
-        {
-            return false;
-        }
-    }
-    if (rhi::GetStatus(mPipeline) == rhi::ResourceStatus::InvalidHandle)
-    {
-        if (Accepted(rhi::CreatePipeline({mVertex, mFragment, mUniform}, mPipeline)) == false)
-        {
-            return false;
-        }
-    }
-    const auto status = rhi::GetStatus(mPipeline);
-    mRendererReady = status == rhi::ResourceStatus::Ready;
-    return mRendererReady || status == rhi::ResourceStatus::Pending;
-}
-void Application::BrowserInput(const platform::browser::WindowState& window) noexcept
+void Application::browserInput(const platform::browser::WindowState& window) noexcept
 {
     const bool focused = window.Focused && window.Visible;
     if (focused != mHadFocus)
@@ -257,75 +204,48 @@ void Application::BrowserInput(const platform::browser::WindowState& window) noe
         }
     }
 }
-bool Application::Render(const platform::browser::WindowState& window) noexcept
+bool Application::render(const platform::browser::WindowState& window) noexcept
 {
-    auto status = rhi::SetFrameTarget({ .Width = window.FramebufferWidth, .Height = window.FramebufferHeight });
-    if (status == rhi::FrameStatus::Skipped)
-    {
-        return true;
-    }
-    if (status != rhi::FrameStatus::Ready)
+    if (rhi::PollLifetime(mDevice) == rhi::RasterStatus::Failed)
     {
         return false;
     }
-    status = rhi::BeginFrameStatus();
-    if (status == rhi::FrameStatus::Skipped)
-    {
-        return true;
-    }
-    if (status != rhi::FrameStatus::Ready)
-    {
-        return false;
-    }
-    const auto info = rhi::GetFrameInfo();
-    PlanarCameraView cameraView;
-    if (TryBuildPlanarCameraView(mFrame.Camera,
-                                 {
-                                     .Width = info.Width,
-                                     .Height = info.Height,
-                                 },
-                                 {},
-                                 1.0e6,
-                                 cameraView) != gameplay::camera::CameraStatus::Success)
+    const rhi::RasterStatus updated = mFrameRenderer.Update(mFrame, window.FramebufferWidth, window.FramebufferHeight);
+    if (updated != rhi::RasterStatus::Ready && updated != rhi::RasterStatus::NotReady)
     {
         // This is a presentation failure, never an authoritative simulation fault.
-        (void)rhi::EndFrame();
         return false;
     }
-    Uniforms uniforms;
-    uniforms.View[0] = static_cast<float32>(info.Width);
-    uniforms.View[1] = static_cast<float32>(info.Height);
-    uniforms.View[2] = cameraView.Center.X;
-    uniforms.View[3] = cameraView.Center.Y;
-    uniforms.Settings[0] = cameraView.VerticalSpan;
-    uniforms.Settings[1] = static_cast<float32>(mFrame.Count);
-    for (usize index = 0; index < mFrame.Count; ++index)
+    if (mFrameRenderer.HasView() == false)
     {
-        const auto& draw = mFrame.Draws[index];
-        uniforms.Geometry[index][0] = draw.Position.X;
-        uniforms.Geometry[index][1] = draw.Position.Y;
-        uniforms.Geometry[index][2] = draw.HalfExtent.X;
-        uniforms.Geometry[index][3] = draw.HalfExtent.Y;
-        uniforms.Rotation[index][0] = draw.Rotation;
-        for (usize channel = 0; channel < 4; ++channel)
-        {
-            uniforms.Color[index][channel] = draw.Color[channel];
-        }
+        return true;
     }
-    const auto bytes = std::span<const uint8>(reinterpret_cast<const uint8*>(&uniforms), sizeof(uniforms));
-    if (rhi::UpdateUniform(mUniform, bytes) != rhi::ResourceStatus::Ready ||
-        rhi::DrawFullscreen(mPipeline) != rhi::ResourceStatus::Ready)
+    const rhi::DeviceStatus target = rhi::SetFrameTarget(mDevice,
+                                                         mSurface,
+                                                         {
+                                                             .Width = window.FramebufferWidth,
+                                                             .Height = window.FramebufferHeight,
+                                                         });
+    if (target != rhi::DeviceStatus::Ready)
+    {
+        return target == rhi::DeviceStatus::Skipped;
+    }
+    const rhi::DeviceStatus begun = rhi::BeginFrame(mDevice, mSurface);
+    if (begun != rhi::DeviceStatus::Ready)
+    {
+        return begun == rhi::DeviceStatus::Skipped;
+    }
+    const rhi::RasterStatus drawn = mFrameRenderer.Draw({});
+    rhi::SubmissionToken completion;
+    const rhi::RasterStatus ended = rhi::EndFrame(mDevice, completion);
+    if (drawn != rhi::RasterStatus::Ready || ended != rhi::RasterStatus::Ready)
     {
         return false;
     }
-    const auto end = rhi::EndFrameStatus();
-    if (end == rhi::FrameStatus::Ready)
-    {
-        // A diagnostic reading for --pacing-report, independent of the frame's one simulation timestamp.
-        mPresentReturn = foundation::time::Now();
-        ++mPresentedFrames;
-    }
-    return end == rhi::FrameStatus::Ready || end == rhi::FrameStatus::Skipped;
+    // A diagnostic reading for --pacing-report, independent of the frame's one simulation timestamp.
+    mPresentReturn = foundation::time::Now();
+    ++mPresentedFrames;
+    return true;
 }
 platform::PaceResult Application::Pace(const platform::PacingClock& clock) noexcept
 {
@@ -370,18 +290,23 @@ AppState Application::Frame() noexcept
     {
         mPacing.Reset();
     }
-    const auto startup = rhi::GetStartup();
-    if (startup.State == rhi::StartupState::Failed || startup.State == rhi::StartupState::DeviceLost)
+    rhi::DeviceInfo device;
+    const rhi::DeviceStatus deviceStatus = rhi::GetDeviceInfo(mDevice, device);
+    if (deviceStatus == rhi::DeviceStatus::Pending)
+    {
+        return mState;
+    }
+    if (deviceStatus != rhi::DeviceStatus::Ready)
     {
         Shutdown();
         mState = AppState::Failed;
         return mState;
     }
-    if (startup.State != rhi::StartupState::Ready)
-    {
-        return mState;
-    }
-    if (PrepareRenderer() == false)
+    const rhi::StartupInfo& startup = device.Startup;
+    mSelectedBackend = startup.SelectedBackend;
+    const rhi::RasterStatus prepared = mFrameRenderer.Prepare(mDevice);
+    mIsRendererReady = prepared == rhi::RasterStatus::Ready;
+    if (mIsRendererReady == false && prepared != rhi::RasterStatus::Pending)
     {
         Shutdown();
         mState = AppState::Failed;
@@ -394,7 +319,7 @@ AppState Application::Frame() noexcept
     {
         (void)mWindow->SetBrowserFramebufferLimit(startup.MaxTextureDimension2D);
         (void)mWindow->GetBrowserState(window);
-        BrowserInput(window);
+        browserInput(window);
     }
     else
     {
@@ -404,7 +329,7 @@ AppState Application::Frame() noexcept
         window.FramebufferWidth = native.Width;
         window.FramebufferHeight = native.Height;
     }
-    if (mRendererReady == false || mSession.World().IsBuilt() == false)
+    if (mIsRendererReady == false || mSession.World().IsBuilt() == false)
     {
         return mState;
     }
@@ -479,7 +404,7 @@ AppState Application::Frame() noexcept
     {
         (void)mSession.RequestLoad(BuiltinLevel(mSession.World().GetNextLevel().View()));
     }
-    if (Render(window) == false)
+    if (render(window) == false)
     {
         Shutdown();
         mState = AppState::Failed;

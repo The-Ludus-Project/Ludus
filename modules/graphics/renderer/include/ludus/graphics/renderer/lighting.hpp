@@ -223,6 +223,28 @@ struct BakedLighting final
     /// at most one direct diffuse term; dynamic direct specular remains.
     ludus::foundation::uint64 DirectLightId = 0;
 };
+/// Diagnostic output selected by the debug-view lit recipes (`renderer_lit_debug`,
+/// `renderer_clustered_authored_debug`). Ordinary lit programs ignore it and shade normally.
+/// Debug colours are pre-compensated for RasterViewport's Reinhard + sRGB presentation at
+/// exposure one, so they display as described; RGBA8 scene targets clip values above 0.73.
+enum class MaterialDebugView : ludus::foundation::uint8
+{
+    /// Ordinary lit shading.
+    None = MATERIAL_DEBUG_VIEW_NONE,
+    /// Shaded world-space normal mapped from [-1,1] to [0,1] RGB.
+    NormalWorld = MATERIAL_DEBUG_VIEW_NORMAL_WORLD,
+    /// Camera distance mapped linearly over ViewDescription::DebugDepthRange, near black to far white.
+    LinearDepth = MATERIAL_DEBUG_VIEW_LINEAR_DEPTH,
+    /// Perceptual roughness after surface-map scaling, as grey.
+    Roughness = MATERIAL_DEBUG_VIEW_ROUGHNESS,
+    /// Metallic fraction after surface-map scaling, as grey.
+    Metallic = MATERIAL_DEBUG_VIEW_METALLIC,
+    /// Fractional mesh UV0 as red (U) and green (V).
+    TexcoordUv = MATERIAL_DEBUG_VIEW_TEXCOORD_UV,
+    /// Direct lights with a nonzero shadowed contribution at the pixel, as a blue-to-red heat
+    /// ramp saturating at MATERIAL_DEBUG_LIGHT_COUNT_SATURATION; black means no direct light.
+    LightCount = MATERIAL_DEBUG_VIEW_LIGHT_COUNT,
+};
 /// Immutable unlit base schema plus the L4 metallic/roughness lighting terms.
 struct LitMaterialDescription final
 {
@@ -277,6 +299,9 @@ struct LitMaterialDescription final
     const LightClusterDescription* Clusters = nullptr;
     /// Ready rendered atlas; null supplies unshadowed direct lighting.
     ShadowAtlas Shadows{};
+    /// Diagnostic output for debug-view programs; ignored by ordinary lit programs.
+    /// Values outside the enumeration are rejected.
+    MaterialDebugView DebugView = MaterialDebugView::None;
 };
 /// Decoded linear surface-map parameters, with a unit positive-hemisphere tangent normal.
 struct SurfaceParameters final

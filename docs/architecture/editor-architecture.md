@@ -129,7 +129,10 @@ World supplies the single hierarchy, component/transform inspector, Save,
 Undo/Redo and recovery owner for 2D and 3D authoring. Game-owned adapters project
 World snapshots into trusted preview and runtime formats; they do not own a second
 authoring tab or durable history. Imported 3D geometry renders in World; the
-world-demo 2D adapter retains its trusted native rendering window. The viewport uses an explicit render-surface adapter to RHI;
+world-demo 2D adapter still uses its trusted native rendering window. The proposed
+[Play in the editor viewport](editor-gui-systems.md#play-in-the-editor-viewport) design
+moves World-demo into the shared viewport and engine Renderer, and makes that viewport
+the game's window during Play. The viewport uses an explicit render-surface adapter to RHI;
 use trusted in-process authoring rendering from document snapshots, separately
 from out-of-process gameplay. Native embedding and browser canvas composition
 require prototypes; host-frame transport is optional later work. Current RHI

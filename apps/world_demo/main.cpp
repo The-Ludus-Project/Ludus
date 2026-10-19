@@ -128,7 +128,7 @@ void Frame() noexcept
     const ludus::foundation::uint64 digest = session.World().GetPlacementDigest();
     Present(static_cast<ludus::foundation::uint32>(state),
             static_cast<ludus::foundation::uint32>(session.Driver.GetMode()),
-            static_cast<ludus::foundation::uint32>(ludus::graphics::rhi::GetStartup().SelectedBackend),
+            static_cast<ludus::foundation::uint32>(gApplication.GetSelectedBackend()),
             static_cast<ludus::foundation::uint32>(session.World().GetTick()),
             transform != nullptr ? transform->Current.X : 0,
             transform != nullptr ? transform->Current.Y : 0,
