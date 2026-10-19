@@ -31,14 +31,6 @@ const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
 /// Revisions are unique per process, so a recreated controller never reuses a presented revision.
 QAtomicInteger<quint64> gNextRevision{1};
 
-compiler::Target GetHostTarget() noexcept
-{
-#if defined(Q_OS_MACOS)
-    return compiler::Target::Metal;
-#else
-    return compiler::Target::Spirv;
-#endif
-}
 /// Shader files of directory with their size and modification time, so a directory notification
 /// caused by unrelated files (editor swap and backup files) does not start a build.
 QStringList GetDirectoryStamp(const QString& directory)
@@ -132,6 +124,15 @@ bool PreviewShaderReload::IsSupported() noexcept
     return true;
 #else
     return false;
+#endif
+}
+
+compiler::Target PreviewShaderReload::GetHostTarget() noexcept
+{
+#if defined(Q_OS_MACOS)
+    return compiler::Target::Metal;
+#else
+    return compiler::Target::Spirv;
 #endif
 }
 
