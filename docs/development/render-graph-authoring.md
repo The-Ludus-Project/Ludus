@@ -705,6 +705,13 @@ With `--json`, a failure's `error.location` names its authored owner:
 Locations are package-relative and never contain machine paths. Activate a
 diagnostic (double-click or Enter) to navigate to it.
 
+The shader helper (`compile_shader.py`) reports a compiler failure as one stderr
+line prefixed `Ludus shader build: `, so the compiler's first diagnostic arrives as
+`Ludus shader build: main_shaders/color.slang(3): error 30015: ...`. The mapper
+accepts that prefix; later compiler lines arrive unprefixed. The installed CLI
+consumer and the editor tests assert the location from the pinned compiler's real
+output.
+
 ### Runtime generations and activation
 
 ```bash
@@ -884,7 +891,11 @@ CLI backend, which owns legality and reports the same codes as
 1. Build and **Cook Runtime** as above, so `out/render-graph/<graph>.lurgrt`
    exists.
 2. Open a World and start its viewport; the preview borrows that device and the
-   World extraction. It never starts a device of its own.
+   World extraction. It never starts a device of its own. The preview follows
+   the viewport the World shows: the scene viewport of an imported-scene World
+   (such as a converted `.lulevel` or a World with a `scene` section), otherwise
+   the schema-bound render panel. Switching Worlds re-attaches the preview and
+   re-stages the requested generation on the newly shown viewport's device.
 3. Open the **Preview** tab and choose **Preview Runtime**.
 
 Preview is an explicit action: it reads the last cooked file once, decodes it and
@@ -896,6 +907,33 @@ opaque item with its flat tint (object tint times surface tint); a tint with alp
 below one is declared `Transparent`, and the editor's `DiagnosticColor` coverage
 policy draws unsupported items in magenta instead of hiding them. Textures, lights
 and other materials are outside the current static profile.
+
+Imported and merged Worlds are cooked: their geometry lives only in the decoded
+scene definition, which the extraction borrows (and keeps alive) without copying.
+Their base color lives in textures, which the static profile does not sample, so
+textured surfaces preview as flat white and untextured ones as flat black.
+
+The runtime profile admits only conventional depth (near 0, far 1, `Less`, clear
+1). The World viewport's editor camera is an infinite reverse-Z perspective, so the
+preview asks for a finite conventional projection of the same camera instead:
+
+- An infinite perspective lens becomes a finite one whose far plane is 1% beyond
+  the farthest corner of the World's geometry bounds from the camera (at least
+  twice the near plane). Finite authored perspective and orthographic lenses keep
+  their planes.
+- The finite reverse-Z clip z is rewritten as `w - z`. This is exact only for a
+  finite projection; applied to an infinite one it would leave a degenerate far
+  plane at depth 1.
+- Position, orientation, field of view, near plane and the clip x, y and w rows
+  are unchanged, so the image matches the viewport framing. Conventional depth
+  has less precision than reverse-Z far from the camera; distant coplanar
+  surfaces can z-fight in the preview where the viewport does not.
+- A World without finite geometry bounds reports that in the preview status
+  instead of drawing.
+
+Reverse-Z graphs are not admitted: that would need an authored and qualified graph
+configuration (depth compare `Greater`, clear 0), never an implicit variant of a
+conventional graph.
 
 The image changes only when a complete copy of a frame from the **active**
 generation arrives:
@@ -939,13 +977,24 @@ one extraction feeds both; preview it after a viewport restart instead.
   candidate showing nothing; the first successful frame; truncated, foreign-interface
   and missing generations keeping the previous frame and generation; a pending
   replacement keeping the previous frame until it presents; and the last
-  frame surviving a device stop. Preview/live parity renders the frozen fixture
+  frame surviving a device stop. A cooked (definition-backed) scene composed by
+  `RenderScene::Merge` checks that the extraction borrows the definition's geometry,
+  that the reverse-Z editor camera yields a finite conventional view with the same
+  x, y and w rows and in-range depths, and that the scene renders through the
+  graph from the editor camera. A World test checks that the Renderer tab's source
+  follows a schema World's render panel, an imported World's scene viewport and
+  back. A Renderer test builds a broken `color.slang` with the pinned compiler and
+  opens line 3 from the diagnostic. Preview/live parity renders the frozen fixture
   through the preview (cooked `.lurgrt`, activation, World extraction adapter) and
   through the live runtime path (the compiled header and a directly owned
   `RenderGraph` with independently written inputs) and requires identical bytes.
 
 Local qualification ran these suites with Clang 18 on macOS (Metal) under the
-offscreen Qt platform. They prove the preview's renderer output and publication
+offscreen Qt platform. A native (cocoa) editor run on a copy of an imported
+staircase World (17 objects, 6 meshes) attached the preview to the World's scene
+viewport, presented the offscreen fixture's generation from the editor camera, and
+opened `main_shaders/color.slang` line 3 for an undefined identifier while keeping
+the presented generation. They prove the preview's renderer output and publication
 rules, not native Qt presentation of the Preview tab or a live GameHost session.
 Linux/Vulkan and browser execution are not established by these local runs, and
 RG3b makes no scheduling, memory or performance claim.

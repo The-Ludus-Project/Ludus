@@ -1394,18 +1394,25 @@ void RendererWorkspace::openSubgraph(const QString& asset, const QString& config
 
 void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
 {
+    if (sourceOrNull == mPreviewSourceOrNull)
+    {
+        return;
+    }
     if (mPreviewSourceOrNull != nullptr)
     {
         disconnect(mPreviewSourceOrNull, nullptr, this, nullptr);
     }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mPreviewOrNull != nullptr && sourceOrNull != mPreviewSourceOrNull)
+    if (mPreviewOrNull != nullptr)
     {
+        // Release generations on the previous viewport's device; the new source's device (once
+        // it has one) is attached by ServicePreview, which also restages the requested generation.
         mPreviewOrNull->Detach();
     }
 #endif
     mPreviewSourceOrNull = sourceOrNull;
     mPreviewDeviceSerial = 0;
+    mPreviewSceneIdentity.clear();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mPreviewSourceOrNull != nullptr && mPreviewOrNull != nullptr)
     {
@@ -1470,16 +1477,23 @@ void RendererWorkspace::ServicePreview()
     const QSize target = preview.GetTargetSize();
     if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false)
     {
-        // The World viewport's current camera or orbit, at the graph's exported extent.
+        // The World viewport's current camera or orbit, at the graph's exported extent. The
+        // runtime profile admits only conventional depth, so request a finite conventional
+        // projection of the same camera instead of the viewport's infinite reverse-Z one.
         graphics::renderer::ViewDescription view;
         QString error;
         const RenderScene& scene = mPreviewSourceOrNull->Scene();
-        if (mPreviewSourceOrNull->DescribeView(static_cast<uint32>(target.width()),
-                                               static_cast<uint32>(target.height()),
-                                               view,
-                                               error) == true &&
-            (scene.Identity != mPreviewSceneIdentity ||
-             AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
+        const bool hasView = mPreviewSourceOrNull->DescribeConventionalView(static_cast<uint32>(target.width()),
+                                                                            static_cast<uint32>(target.height()),
+                                                                            view,
+                                                                            error);
+        if (hasView == false && scene.Identity != mPreviewSceneIdentity)
+        {
+            mPreviewStatus->setText(error);
+            mPreviewSceneIdentity = scene.Identity;
+        }
+        if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
+                                AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
         {
             RenderGraphExtraction extraction;
             if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)

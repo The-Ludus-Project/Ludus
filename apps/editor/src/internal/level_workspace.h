@@ -127,6 +127,12 @@ public:
     {
         return Preview_.Scene();
     }
+    /// Viewport renderer of this level; it owns the device and extraction that render-graph
+    /// previews borrow while the level is the World's shown view.
+    [[nodiscard]] LUDUS_INLINE RenderPreview& GetRenderPreview() noexcept
+    {
+        return Preview_;
+    }
 
     [[nodiscard]] QJsonObject Document() const
     {

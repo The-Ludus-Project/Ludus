@@ -212,8 +212,12 @@ void MainWindow::BuildUi()
     WorkTabs_->addTab(Scripts_, QStringLiteral("&Scripts"));
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), WorkTabs_);
     WorkTabs_->addTab(Renderer_, QStringLiteral("&Renderer"));
-    // The render-graph preview borrows the World viewport's device and extraction.
+    // The render-graph preview borrows the device and extraction of whichever viewport the
+    // World shows (its imported scene or its schema-bound panel) and follows it when it changes.
     Renderer_->SetPreviewSource(&World_->GetRenderPreview());
+    connect(World_, &WorldWorkspace::RenderPreviewChanged, Renderer_, [this]() {
+        Renderer_->SetPreviewSource(&World_->GetRenderPreview());
+    });
     Configuration_ = new ConfigurationWorkspace(WorkTabs_);
     WorkTabs_->addTab(Configuration_, QStringLiteral("&Configuration"));
 
