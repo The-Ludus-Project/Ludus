@@ -16,6 +16,7 @@
 #include "internal/editor_camera_controller.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/viewport_frame_source.h"
 #include "internal/viewport_statistics.h"
 
 #include <QElapsedTimer>
@@ -27,7 +28,8 @@ namespace ludus::editor
 {
 class PreviewGpuGeneration;
 // Main-thread renderer/device owner. Never destroys another preview's session.
-class RenderPreview final : public QObject
+// Its frames reach PreviewViewport through the ViewportFrameSource contract.
+class RenderPreview final : public ViewportFrameSource
 {
     Q_OBJECT
 public:
@@ -74,7 +76,7 @@ public:
     {
         return mStatistics;
     }
-    void Resize(foundation::int32 width, foundation::int32 height);
+    void Resize(foundation::int32 width, foundation::int32 height) override;
     /// Suppress repeated GPU submissions for hidden browser surfaces; allow the first
     /// candidate frame so import validation can complete while its tab is hidden.
     void SetPresentationVisible(bool isVisible) noexcept;
@@ -129,8 +131,8 @@ public:
     }
     [[nodiscard]] platform::NativeWindowInfo WindowInfo() const noexcept;
     [[nodiscard]] bool TakeFrame(graphics::renderer::ViewportFrame& outFrame,
-                                 graphics::renderer::ViewportImage& outImage) noexcept;
-    void ReleaseFrame(graphics::renderer::ViewportFrame& inoutFrame) noexcept;
+                                 graphics::renderer::ViewportImage& outImage) noexcept override;
+    void ReleaseFrame(graphics::renderer::ViewportFrame& inoutFrame) noexcept override;
     /// Borrowed handle of the owned device; null while no device is admitted.
     [[nodiscard]] LUDUS_INLINE graphics::rhi::DeviceHandle GetDevice() const noexcept
     {
@@ -152,16 +154,14 @@ public:
         return mDeviceSerial;
     }
     [[nodiscard]] graphics::rhi::RasterStatus PinDevice(graphics::rhi::NativeDeviceLease& outLease) noexcept;
-    [[nodiscard]] LUDUS_INLINE bool HasPendingFrame() const noexcept
+    [[nodiscard]] LUDUS_INLINE bool HasPendingFrame() const noexcept override
     {
         return mHasPendingFrame;
     }
 Q_SIGNALS:
     void Changed();
     void NavigationChanged();
-    void FrameReady();
     void DeviceRequested();
-    void ResettingFrames();
     /// Emitted before the owned device is destroyed; borrowers must release device resources.
     void DeviceStopping();
     void Stopped();
