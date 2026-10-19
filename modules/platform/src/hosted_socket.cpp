@@ -13,6 +13,13 @@
 
 namespace ludus::platform::hosted
 {
+namespace
+{
+constexpr foundation::uint64 NANOSECONDS_PER_MILLISECOND = 1'000'000;
+/// Largest timeout poll(2) accepts: INT_MAX milliseconds.
+constexpr foundation::uint64 MAX_POLL_MILLISECONDS = 2'147'483'647;
+} // namespace
+
 void SocketDescriptor::Reset(int32 descriptor) noexcept
 {
     if (mDescriptor >= 0)
@@ -109,14 +116,18 @@ TransferStatus ReceiveSome(int32 descriptor, foundation::BorrowedView<uint8> out
     }
 }
 
-bool WaitUntilReadable(int32 descriptor, uint32 timeoutMilliseconds) noexcept
+bool WaitUntilReadable(int32 descriptor, foundation::time::Duration timeout) noexcept
 {
+    const foundation::uint64 milliseconds =
+        (timeout.Nanoseconds + NANOSECONDS_PER_MILLISECOND - 1) / NANOSECONDS_PER_MILLISECOND;
+    const int32 timeoutMilliseconds =
+        static_cast<int32>(milliseconds < MAX_POLL_MILLISECONDS ? milliseconds : MAX_POLL_MILLISECONDS);
     pollfd request{};
     request.fd = descriptor;
     request.events = POLLIN;
     while (true)
     {
-        const int32 count = ::poll(&request, 1, static_cast<int32>(timeoutMilliseconds));
+        const int32 count = ::poll(&request, 1, timeoutMilliseconds);
         if (count < 0 && errno == EINTR)
         {
             continue;

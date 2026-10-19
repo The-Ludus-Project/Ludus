@@ -109,10 +109,10 @@ public:
                 publishExtent();
                 return true;
             }
-            const foundation::uint64 elapsed =
-                (foundation::time::Now().Nanoseconds - start.Nanoseconds) / NANOSECONDS_PER_MILLISECOND;
-            if (elapsed >= timeoutMilliseconds ||
-                WaitUntilReadable(mConnection.Get(), static_cast<uint32>(timeoutMilliseconds - elapsed)) == false)
+            const foundation::uint64 limit =
+                static_cast<foundation::uint64>(timeoutMilliseconds) * NANOSECONDS_PER_MILLISECOND;
+            const foundation::uint64 elapsed = foundation::time::Now().Nanoseconds - start.Nanoseconds;
+            if (elapsed >= limit || WaitUntilReadable(mConnection.Get(), {limit - elapsed}) == false)
             {
                 return false;
             }

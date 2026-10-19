@@ -216,7 +216,8 @@ Message EndpointSession::makeFocusMessage() const noexcept
 
 bool EndpointSession::enqueueSynchronization(bool isOverflow) noexcept
 {
-    foundation::StaticArray<Message, MAX_SYNCHRONIZATION_MESSAGES> messages{};
+    // Default-initialized: every Message member has a default member initializer.
+    foundation::StaticArray<Message, MAX_SYNCHRONIZATION_MESSAGES> messages;
     usize count = 0;
     if (isOverflow == true)
     {

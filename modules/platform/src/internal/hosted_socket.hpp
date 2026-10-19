@@ -8,6 +8,7 @@
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 namespace ludus::platform::hosted
 {
@@ -85,9 +86,9 @@ SendSome(int32 descriptor, foundation::BorrowedView<const uint8> bytes, usize& o
 ReceiveSome(int32 descriptor, foundation::BorrowedView<uint8> outBytes, usize& outReceived) noexcept;
 
 /// @brief Wait until a socket is readable, closed or failed.
-/// @param timeoutMilliseconds Longest wait; zero polls once.
+/// @param timeout Longest wait, rounded up to whole milliseconds; zero polls once.
 /// @return false on timeout or a poll failure.
-[[nodiscard]] bool WaitUntilReadable(int32 descriptor, uint32 timeoutMilliseconds) noexcept;
+[[nodiscard]] bool WaitUntilReadable(int32 descriptor, foundation::time::Duration timeout) noexcept;
 
 /// @brief Read the effective user id of a connected Unix-socket peer.
 ///
