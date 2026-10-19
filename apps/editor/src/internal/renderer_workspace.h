@@ -7,6 +7,7 @@
 
 #include "internal/controller.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_creation.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
 #include "internal/render_graph_live_build.h"
@@ -27,6 +28,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QStackedWidget;
 class QTabWidget;
 class QTableWidget;
 class QTreeWidget;
@@ -57,6 +59,10 @@ public:
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
+    /// Create and open an offscreen Renderer graph in the selected project's
+    /// graphs/name directory. Completion is asynchronous through JobFinished.
+    /// Existing files and the current draft are retained if creation fails.
+    [[nodiscard]] bool CreateGraph(const QString& name);
     [[nodiscard]] bool ConfirmDiscard();
     [[nodiscard]] bool IsDirty() const;
     [[nodiscard]] bool CanSave() const;
@@ -143,9 +149,11 @@ private:
     void renderEdges();
     void renderSource();
     void renderStatus();
+    void updateActions();
     void documentEdited(RenderGraphDocumentStatus status);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
     void addNode();
+    void promptNewGraph();
     void openSourceLine(const QString& file, foundation::int32 line);
     [[nodiscard]] QJsonObject selectedConfiguration() const;
     [[nodiscard]] QJsonObject selectedNode() const;
@@ -165,11 +173,17 @@ private:
     bool mIsRendering = false;
     RenderGraphDocument mDocument;
     RenderGraphJob mJob;
+    RenderGraphCreation mCreation;
     RenderGraphJobResult mLastResult;
     QString mSelectedFile;
     QString mSelectedConfiguration;
     QString mSelectedNode;
     QLabel* mPath;
+    QPushButton* mNewGraph;
+    QPushButton* mOpenGraph;
+    QPushButton* mBuildPreview;
+    QStackedWidget* mContent;
+    QLabel* mEmptyMessage;
     QComboBox* mConfiguration;
     QPushButton* mValidate;
     QPushButton* mBuild;

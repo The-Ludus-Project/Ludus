@@ -22,6 +22,25 @@ compatibility is never inferred from those labels.
 
 ## Create a saved graph and import it
 
+In the native editor, open your game project and choose **Renderer → New Graph…**
+(or **Create Render Graph…** in the empty workspace). Enter a graph name and
+choose **Create**. The editor creates `graphs/<name>/` inside the selected game
+project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
+`main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
+graph on the canvas. The starter exports a color image and uses the
+RendererStatic interface required by the editor preview. Target profiles are
+Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
+running viewport and never overwrites an existing graph folder. A failed creation
+keeps the previously open draft. Graphs and shader sources belong to the game
+project; engine/SDK files are read-only inputs.
+
+Next, open a World viewport and choose **Build & Preview**. Set the installed SDK
+helper and pinned shader compiler in **Build Settings** when they have not been
+configured; SPIR-V profiles also require the validator. See
+[editing and building](#edit-and-reload-graphs-rg3) and the
+[preview's supported rendering profile](#preview-a-cooked-generation).
+Creation and building do not change the game's selected runtime renderer.
+
 From a checkout, use `./scripts/ludus`; after installation use `ludus`:
 
 ```bash
@@ -654,6 +673,10 @@ Open a project, choose **Renderer**, then **Open Graph...** and select a root
 loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
 most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
 symlinks are skipped).
+
+For a project without graph sources, use **New Graph…** first, as described in
+[graph creation](#create-a-saved-graph-and-import-it). The empty workspace offers
+creation directly; build actions become available once a graph is open.
 
 - **Inspector** edits the selected node's authored fields by stable ID, adds or
   removes nodes (removal also drops their connections and layout position), and

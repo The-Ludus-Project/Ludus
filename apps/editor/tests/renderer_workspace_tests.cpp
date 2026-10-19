@@ -6,27 +6,37 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
 #include "internal/renderer_workspace.h"
+#include "internal/workspace_style.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QPixmap>
+#include <QPoint>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QPushButton>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTimer>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
 namespace
 {
 constexpr int32 JOB_TIMEOUT_MILLISECONDS = 60000;
+constexpr int32 CREATION_WORKSPACE_WIDTH = 1280;
+constexpr int32 CREATION_WORKSPACE_HEIGHT = 800;
+constexpr int32 MINIMUM_VISIBLE_CANVAS_WIDTH = 480;
 const QString ROOT_GRAPH = QStringLiteral("main.lurender.json");
 const QString LIBRARY = QStringLiteral("rasterize.lurender.json");
 
@@ -116,6 +126,100 @@ QByteArray RunCli(const QString& python, const QStringList& arguments)
     return process.readAllStandardOutput();
 }
 } // namespace
+
+TEST_CASE("Renderer creates a complete project-owned graph from its empty state", "[editor][render-graph][creation]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString root = QFileInfo(project.path()).canonicalFilePath();
+    RendererWorkspace workspace({FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    QPushButton* createOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphNew"));
+    QPushButton* previewOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphBuildPreview"));
+    QPushButton* createFirstOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphCreateFirst"));
+    REQUIRE(createOrNull != nullptr);
+    REQUIRE(previewOrNull != nullptr);
+    REQUIRE(createFirstOrNull != nullptr);
+    CHECK(createOrNull->isEnabled() == false);
+    CHECK(previewOrNull->isEnabled() == false);
+    workspace.SetProject(root, 1);
+    ApplyWorkspaceStyle(&workspace);
+    workspace.resize(CREATION_WORKSPACE_WIDTH, CREATION_WORKSPACE_HEIGHT);
+    workspace.show();
+    QApplication::processEvents();
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_RENDER_GRAPH_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(workspace.grab().save(capture + QStringLiteral("-empty.png")) == true);
+    }
+    CHECK(createOrNull->isEnabled() == true);
+    CHECK(createFirstOrNull->isVisible() == true);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    QTimer::singleShot(0, &workspace, [&root]() {
+        QInputDialog* dialogOrNull = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        CHECK(dialogOrNull->labelText().contains(root + QStringLiteral("/graphs")) == true);
+        dialogOrNull->setTextValue(QStringLiteral("MyGraph"));
+        dialogOrNull->accept();
+    });
+    createFirstOrNull->click();
+    CHECK(createOrNull->isEnabled() == false);
+    // Repeated state publications for this project must not cancel creation.
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(workspace.GetStatusText().toStdString());
+    CHECK(workspace.GetDocument().IsLoaded() == true);
+    CHECK(workspace.GetDocument().IsDirty() == false);
+    CHECK(workspace.GetDocument().GetFiles().size() == 6);
+    CHECK(workspace.GetRuntimePackagePath().startsWith(root + QStringLiteral("/out/render-graph/")) == true);
+    CHECK(QFileInfo(root + QStringLiteral("/graphs/MyGraph/main.lushader.json")).isFile() == true);
+    CHECK(workspace.GetCanvas().GetNodeCount() > 0);
+    CHECK(createFirstOrNull->isVisible() == false);
+    CHECK(previewOrNull->isEnabled() == true);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Build & Preview")) == true);
+    workspace.SetBuildTools({}, {});
+    CHECK(workspace.BuildAndPreview() == false);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Build Settings")) == true);
+    CHECK(workspace.IsJobActive() == false);
+    QApplication::processEvents();
+    CHECK(workspace.GetCanvas().width() >= MINIMUM_VISIBLE_CANVAS_WIDTH);
+    const QPoint sceneNodePositionPixel =
+        workspace.GetCanvas().mapFromScene(workspace.GetCanvas().GetNodePosition(QStringLiteral("scene")));
+    CHECK(workspace.GetCanvas().viewport()->rect().contains(sceneNodePositionPixel) == true);
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(workspace.grab().save(capture + QStringLiteral("-created.png")) == true);
+    }
+    const QByteArray original = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    CHECK(workspace.CreateGraph(QStringLiteral("MyGraph")) == false);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("already exists")) == true);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
+    CHECK(workspace.CreateGraph(QStringLiteral("../escape")) == false);
+    CHECK(QFileInfo(root + QStringLiteral("/escape")).exists() == false);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
+}
+
+TEST_CASE("Renderer creation refuses linked graph directories and ignores cancelled callbacks",
+          "[editor][render-graph][creation]")
+{
+    QTemporaryDir project;
+    QTemporaryDir engine;
+    REQUIRE(QFile::link(engine.path(), QDir(project.path()).filePath(QStringLiteral("graphs"))) == true);
+    RenderGraphCreation creation;
+    const ToolingPaths tooling{FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    QString error;
+    CHECK(creation.Start(tooling, project.path(), QStringLiteral("Main"), 1, error) == false);
+    CHECK(QDir(engine.path()).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty() == true);
+    REQUIRE(QFile::remove(QDir(project.path()).filePath(QStringLiteral("graphs"))) == true);
+    QSignalSpy finished(&creation, &RenderGraphCreation::Finished);
+    QSignalSpy created(&creation, &RenderGraphCreation::Created);
+    QSignalSpy failed(&creation, &RenderGraphCreation::Failed);
+    REQUIRE(creation.Start(tooling, project.path(), QStringLiteral("Main"), 1, error) == true);
+    creation.Cancel();
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    CHECK(creation.IsActive() == false);
+    CHECK(created.count() == 0);
+    CHECK(failed.count() == 0);
+}
 
 TEST_CASE("RG3 editor canonical JSON matches the CLI's saved graph bytes", "[editor][render-graph]")
 {
@@ -382,4 +486,27 @@ TEST_CASE("RG3 Renderer tab joins the main window document actions", "[editor][r
     CHECK(workspace->CanSave() == false);
     CHECK(workspace->ConfirmDiscard() == true);
     CHECK(workspace->Validate() == false);
+}
+
+TEST_CASE("Renderer graph ownership follows the project descriptor rather than its CMake source folder",
+          "[editor][render-graph][creation]")
+{
+    QTemporaryDir project;
+    const QString descriptor = QDir(project.path()).filePath(QStringLiteral("ludus.project.json"));
+    WriteFile(descriptor, QByteArrayLiteral(R"json({"version":1,"name":"Game","provider":"cmake",
+"source_dir":"code","preset":"linux-clang-development","target":"app","run":{"cwd":".","args":[]}})json"));
+    REQUIRE(QDir().mkpath(QDir(project.path()).filePath(QStringLiteral("code"))) == true);
+    EditorController controller({FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    MainWindow window(&controller, nullptr, QDir(project.path()).filePath(QStringLiteral("layout.ini")));
+    controller.OpenProject(descriptor);
+    RendererWorkspace* workspaceOrNull = window.findChild<RendererWorkspace*>(QStringLiteral("rendererWorkspace"));
+    REQUIRE(workspaceOrNull != nullptr);
+    QSignalSpy finished(workspaceOrNull, &RendererWorkspace::JobFinished);
+    REQUIRE(workspaceOrNull->CreateGraph(QStringLiteral("Main")) == true);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    CHECK(workspaceOrNull->GetDocument().IsLoaded() == true);
+    CHECK(QFileInfo(QDir(project.path()).filePath(QStringLiteral("graphs/Main/main.lurender.json"))).isFile() == true);
+    CHECK(QDir(QDir(project.path()).filePath(QStringLiteral("code")))
+              .entryList(QDir::NoDotAndDotDot | QDir::AllEntries)
+              .isEmpty() == true);
 }

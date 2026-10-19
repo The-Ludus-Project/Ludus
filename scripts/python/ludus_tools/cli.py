@@ -463,9 +463,10 @@ def cmd_render_graph(args) -> int:
                 payload = {"build": render_graph_build.build_package(args.manifest, args.output, **options)}
         human = _json.dumps(payload, indent=2)
     elif args.graph_action == "new":
-        path = render_graph.new_workspace(Path(args.destination), output=args.output)
-        payload = {"created": str(path), "stage": "RG0"}
-        human = f"Saved graph sources at {path}; RG0 validates contracts, not GPU execution."
+        path = render_graph.new_workspace(Path(args.destination), output=args.output,
+                    renderer_static=args.renderer_static, profiles=args.profiles)
+        payload = {"created": str(path), "stage": "RG1" if args.renderer_static else "RG0"}
+        human = f"Saved graph sources at {path}; build and cook before GPU execution."
     elif getattr(args, "library", False):
         if args.configuration is not None:
             raise ToolingError("RenderGraphConfiguration", "--library inspects all configurations; omit --configuration")
@@ -509,6 +510,9 @@ def build_parser() -> argparse.ArgumentParser:
     new_graph = graphs.add_parser("new", help="save RasterizeGraph and a root graph in a new directory")
     new_graph.add_argument("destination")
     new_graph.add_argument("--output", choices=("presentation", "offscreen", "depth"), default="presentation")
+    new_graph.add_argument("--renderer-static", action="store_true", help="also create Renderer-compatible shader sources")
+    new_graph.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl"),
+                           help="explicit shader targets for --renderer-static")
     new_graph.set_defaults(func=cmd_render_graph)
     for action in ("validate", "dump"):
         graph = graphs.add_parser(action)

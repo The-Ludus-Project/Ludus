@@ -15,6 +15,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -27,6 +28,7 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextBlock>
@@ -44,6 +46,10 @@ constexpr int NODE_ROLE = Qt::UserRole + 2;
 constexpr int LOCATION_ROLE = Qt::UserRole + 3;
 constexpr int32 MAX_EXTENT = 16384;
 constexpr int32 MAX_COORDINATE = 32768;
+constexpr int32 INITIAL_SOURCE_TREE_WIDTH = 200;
+constexpr int32 INITIAL_CANVAS_WIDTH = 640;
+constexpr int32 INITIAL_INSPECTOR_WIDTH = 400;
+constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
 const QString HELPER_KEY = QStringLiteral("renderGraph/helper");
 const QString COMPILER_KEY = QStringLiteral("renderGraph/compiler");
@@ -241,7 +247,11 @@ QString DescribeLocation(const QJsonObject& location)
 
 RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* parentOrNull)
     : QWidget(parentOrNull), mTooling(tooling), mPath(new QLabel(QStringLiteral("No render graph is open."), this)),
-      mConfiguration(new QComboBox(this)), mValidate(new QPushButton(QStringLiteral("&Validate Draft"), this)),
+      mNewGraph(new QPushButton(QStringLiteral("&New Graph..."), this)),
+      mOpenGraph(new QPushButton(QStringLiteral("&Open Graph..."), this)),
+      mBuildPreview(new QPushButton(QStringLiteral("Build && Preview"), this)), mContent(new QStackedWidget(this)),
+      mEmptyMessage(new QLabel(this)), mConfiguration(new QComboBox(this)),
+      mValidate(new QPushButton(QStringLiteral("&Validate Draft"), this)),
       mBuild(new QPushButton(QStringLiteral("&Build Draft"), this)),
       mCook(new QPushButton(QStringLiteral("Cook &Runtime"), this)),
       mCancel(new QPushButton(QStringLiteral("Cancel"), this)), mTree(new QTreeWidget(this)),
@@ -256,7 +266,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mPreviewStatus(new QLabel(this)), mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), this))
 {
     setObjectName(QStringLiteral("rendererWorkspace"));
-    QPushButton* open = new QPushButton(QStringLiteral("&Open Graph..."), this);
+    mNewGraph->setObjectName(QStringLiteral("renderGraphNew"));
+    mNewGraph->setProperty("visualRole", QStringLiteral("primary"));
+    mOpenGraph->setObjectName(QStringLiteral("renderGraphOpen"));
     mConfiguration->setObjectName(QStringLiteral("renderGraphConfiguration"));
     mConfiguration->setToolTip(QStringLiteral("Root configuration to validate and cook; choices are authored."));
     mValidate->setObjectName(QStringLiteral("renderGraphValidate"));
@@ -264,21 +276,23 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mCook->setObjectName(QStringLiteral("renderGraphCook"));
     mCancel->setEnabled(false);
     QHBoxLayout* actions = new QHBoxLayout;
-    actions->addWidget(open);
+    actions->addWidget(mNewGraph);
+    actions->addWidget(mOpenGraph);
     actions->addWidget(mPath, 1);
     actions->addWidget(new QLabel(QStringLiteral("Configuration"), this));
     actions->addWidget(mConfiguration);
-    actions->addWidget(mValidate);
-    actions->addWidget(mBuild);
-    QPushButton* buildPreview = new QPushButton(QStringLiteral("Build && Preview"), this);
-    buildPreview->setObjectName(QStringLiteral("renderGraphBuildPreview"));
+    QHBoxLayout* buildActions = new QHBoxLayout;
+    buildActions->addWidget(mValidate);
+    buildActions->addWidget(mBuild);
+    mBuildPreview->setObjectName(QStringLiteral("renderGraphBuildPreview"));
     mLivePreview->setObjectName(QStringLiteral("renderGraphLivePreview"));
     mLivePreview->setToolTip(QStringLiteral("Rebuild changed drafts in the background and preview only matching "
                                             "successful results; saved files are unchanged."));
-    actions->addWidget(buildPreview);
-    actions->addWidget(mLivePreview);
-    actions->addWidget(mCook);
-    actions->addWidget(mCancel);
+    buildActions->addWidget(mBuildPreview);
+    buildActions->addWidget(mLivePreview);
+    buildActions->addStretch();
+    buildActions->addWidget(mCook);
+    buildActions->addWidget(mCancel);
 
     mTree->setObjectName(QStringLiteral("renderGraphTree"));
     mTree->setHeaderLabel(QStringLiteral("Graph sources"));
@@ -366,9 +380,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     buildLayout->addRow(QStringLiteral("SPIR-V validator"), mValidator);
     buildLayout->addRow(QStringLiteral("SPIRV-Cross"), mSpirvCross);
     buildLayout->addRow(QStringLiteral("Native shader worker"), mWorkerSocket);
-    buildLayout->addRow(new QLabel(QStringLiteral("Builds and runtime generations go to out/render-graph in the "
+    QLabel* buildHint = new QLabel(QStringLiteral("Builds and runtime generations go to out/render-graph in the "
                                                   "project; saved sources are never modified by a build."),
-                                   this));
+                                   buildPage);
+    buildHint->setWordWrap(true);
+    buildLayout->addRow(buildHint);
 
     // Preview: the cooked runtime generation on the World viewport device (RG3b).
     QWidget* previewPage = new QWidget(this);
@@ -395,18 +411,38 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     horizontal->addWidget(mTree);
     horizontal->addWidget(mCanvas);
     horizontal->addWidget(mTabs);
+    mCanvas->setMinimumWidth(MINIMUM_CANVAS_WIDTH);
+    horizontal->setSizes({INITIAL_SOURCE_TREE_WIDTH, INITIAL_CANVAS_WIDTH, INITIAL_INSPECTOR_WIDTH});
+    horizontal->setCollapsible(1, false);
     horizontal->setStretchFactor(1, 2);
     horizontal->setStretchFactor(2, 1);
     QSplitter* vertical = new QSplitter(Qt::Vertical, this);
     vertical->addWidget(horizontal);
     vertical->addWidget(mDiagnostics);
     vertical->setStretchFactor(0, 1);
+    QWidget* emptyPage = new QWidget(this);
+    QVBoxLayout* emptyLayout = new QVBoxLayout(emptyPage);
+    emptyLayout->addStretch();
+    mEmptyMessage->setObjectName(QStringLiteral("renderGraphEmptyMessage"));
+    mEmptyMessage->setAlignment(Qt::AlignCenter);
+    mEmptyMessage->setWordWrap(true);
+    emptyLayout->addWidget(mEmptyMessage);
+    QPushButton* createFirst = new QPushButton(QStringLiteral("Create Render Graph..."), emptyPage);
+    createFirst->setObjectName(QStringLiteral("renderGraphCreateFirst"));
+    createFirst->setProperty("visualRole", QStringLiteral("primary"));
+    emptyLayout->addWidget(createFirst, 0, Qt::AlignHCenter);
+    emptyLayout->addStretch();
+    mContent->addWidget(emptyPage);
+    mContent->addWidget(vertical);
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->addLayout(actions);
-    layout->addWidget(vertical, 1);
+    layout->addLayout(buildActions);
+    layout->addWidget(mContent, 1);
     layout->addWidget(mStatus);
 
-    connect(open, &QPushButton::clicked, this, [this]() {
+    connect(mNewGraph, &QPushButton::clicked, this, &RendererWorkspace::promptNewGraph);
+    connect(createFirst, &QPushButton::clicked, mNewGraph, &QPushButton::click);
+    connect(mOpenGraph, &QPushButton::clicked, this, [this]() {
         if (mProjectRoot.isEmpty() == true || ConfirmDiscard() == false)
         {
             return;
@@ -424,7 +460,31 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mConfiguration, &QComboBox::currentTextChanged, this, [this]() { scheduleLiveBuild(); });
     connect(mValidate, &QPushButton::clicked, this, [this]() { static_cast<void>(Validate()); });
     connect(mBuild, &QPushButton::clicked, this, [this]() { static_cast<void>(Build()); });
-    connect(buildPreview, &QPushButton::clicked, this, [this]() { static_cast<void>(BuildAndPreview()); });
+    connect(mBuildPreview, &QPushButton::clicked, this, [this]() { static_cast<void>(BuildAndPreview()); });
+    connect(&mCreation, &RenderGraphCreation::Finished, this, [this]() {
+        updateActions();
+        Q_EMIT JobFinished();
+    });
+    connect(&mCreation, &RenderGraphCreation::Created, this, [this](const QString& rootGraph, uint64 epoch) {
+        if (epoch == mEpoch)
+        {
+            if (OpenGraph(rootGraph) == true)
+            {
+                mStatus->setText(QStringLiteral("Created %1. Open a World viewport, then choose Build & Preview.")
+                                     .arg(QDir(mProjectRoot).relativeFilePath(rootGraph)));
+            }
+            else
+            {
+                mStatus->setText(QStringLiteral("Graph sources were created at %1 but could not be opened. "
+                                                "The previous draft is still open.")
+                                     .arg(rootGraph));
+            }
+        }
+    });
+    connect(&mCreation, &RenderGraphCreation::Failed, this, [this](const QString& message) {
+        renderStatus();
+        mStatus->setText(message);
+    });
     connect(&mLiveBuild, &RenderGraphLiveBuild::BuildRequested, this, [this]() {
         static_cast<void>(BuildAndPreview());
     });
@@ -554,15 +614,20 @@ RendererWorkspace::~RendererWorkspace() = default;
 
 void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
 {
+    const QString canonicalRoot = root.isEmpty() == true ? QString() : QFileInfo(root).canonicalFilePath();
+    if (canonicalRoot != mProjectRoot || epoch != mEpoch)
+    {
+        mCreation.Cancel();
+    }
     mLiveBuild.Reset();
-    const bool isSameRoot = root == mProjectRoot;
+    const bool isSameRoot = canonicalRoot == mProjectRoot;
     mEpoch = epoch;
     if (isSameRoot == true)
     {
         return;
     }
     CancelJob();
-    mProjectRoot = root;
+    mProjectRoot = canonicalRoot;
     mDocument.Reset();
     mSelectedFile.clear();
     mSelectedConfiguration.clear();
@@ -571,10 +636,49 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mIsValidated = false;
     mDiagnostics->clear();
     mPlan->clear();
+    mPath->setText(QStringLiteral("No render graph is open."));
     renderTree();
     renderSource();
     renderStatus();
     Q_EMIT DocumentChanged();
+}
+
+void RendererWorkspace::promptNewGraph()
+{
+    if (mProjectRoot.isEmpty() == true || IsJobActive() == true || ConfirmDiscard() == false)
+    {
+        return;
+    }
+    const uint64 epoch = mEpoch;
+    QInputDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("newRenderGraphDialog"));
+    dialog.setWindowTitle(QStringLiteral("New Render Graph"));
+    dialog.setLabelText(QStringLiteral("Graph name\n\nCreates an editable graph and shaders in:\n%1/<name>/\n\n"
+                                       "Use letters, numbers, - or _, starting with a letter.\n"
+                                       "The graph will render your World into a color image for preview.")
+                            .arg(QDir(mProjectRoot).filePath(QStringLiteral("graphs"))));
+    dialog.setTextValue(QStringLiteral("Main"));
+    dialog.setOkButtonText(QStringLiteral("Create"));
+    if (dialog.exec() == QDialog::Accepted && epoch == mEpoch)
+    {
+        static_cast<void>(CreateGraph(dialog.textValue().trimmed()));
+    }
+}
+
+bool RendererWorkspace::CreateGraph(const QString& name)
+{
+    if (IsJobActive() == true)
+    {
+        return false;
+    }
+    QString error;
+    if (mCreation.Start(mTooling, mProjectRoot, name, mEpoch, error) == false)
+    {
+        mStatus->setText(error);
+        return false;
+    }
+    renderStatus();
+    return true;
 }
 
 bool RendererWorkspace::OpenGraph(const QString& path)
@@ -688,7 +792,7 @@ bool RendererWorkspace::startJob(const QString& action,
                                  bool shouldCaptureSnapshot,
                                  bool shouldPreview)
 {
-    if (mDocument.IsLoaded() == false || mProjectRoot.isEmpty() == true || mJob.IsActive() == true)
+    if (mDocument.IsLoaded() == false || mProjectRoot.isEmpty() == true || IsJobActive() == true)
     {
         return false;
     }
@@ -729,6 +833,7 @@ bool RendererWorkspace::startJob(const QString& action,
     mCancel->setEnabled(true);
     mStatus->setText(
         QStringLiteral("Running render-graph %1 on draft revision %2...").arg(action).arg(request.Revision));
+    renderStatus();
     return true;
 }
 
@@ -770,6 +875,13 @@ bool RendererWorkspace::startBuild(bool shouldPreview)
     {
         mStatus->setText(
             QStringLiteral("Create %1 with `ludus render-graph new-build` before building.").arg(manifestFile()));
+        return false;
+    }
+    if (mHelper->text().trimmed().isEmpty() == true || mCompiler->text().trimmed().isEmpty() == true)
+    {
+        mTabs->setCurrentWidget(mHelper->parentWidget());
+        mStatus->setText(QStringLiteral("Choose your installed SDK shader helper and Slang compiler in Build Settings, "
+                                        "then choose Build & Preview. These tools are read-only build inputs."));
         return false;
     }
     QStringList arguments{QStringLiteral("{snapshot}/") + manifestFile(),
@@ -817,14 +929,20 @@ bool RendererWorkspace::CookRuntime()
 
 void RendererWorkspace::CancelJob()
 {
+    const bool isCreating = mCreation.IsActive();
     mLivePreview->setChecked(false);
+    mCreation.Cancel();
     mLiveBuild.SetEnabled(false);
     mJob.Cancel();
+    if (isCreating == true)
+    {
+        mStatus->setText(QStringLiteral("Graph creation cancelled. Choose New Graph to try again."));
+    }
 }
 
 bool RendererWorkspace::IsJobActive() const
 {
-    return mJob.IsActive();
+    return mJob.IsActive() == true || mCreation.IsActive() == true;
 }
 
 void RendererWorkspace::SetBuildTools(const QString& helper, const QString& compiler)
@@ -1172,9 +1290,18 @@ void RendererWorkspace::renderSource()
 
 void RendererWorkspace::renderStatus()
 {
-    if (mDocument.IsLoaded() == false)
+    if (mCreation.IsActive() == true)
     {
-        mStatus->setText(QStringLiteral("Open a root .lurender.json to edit its graph, schema and shader sources."));
+        mStatus->setText(QStringLiteral("Creating the graph and shader sources in your project..."));
+    }
+    else if (mJob.IsActive() == true)
+    {
+        mStatus->setText(QStringLiteral("Working on the render graph..."));
+    }
+    else if (mDocument.IsLoaded() == false)
+    {
+        mStatus->setText(QStringLiteral("Choose New Graph to create a graph in this project, or Open Graph "
+                                        "to edit an existing one."));
     }
     else
     {
@@ -1191,11 +1318,34 @@ void RendererWorkspace::renderStatus()
         }
         mStatus->setText(text);
     }
+    updateActions();
+}
+
+void RendererWorkspace::updateActions()
+{
     const bool isOpen = mDocument.IsLoaded();
-    mValidate->setEnabled(isOpen);
-    mBuild->setEnabled(isOpen);
-    mCook->setEnabled(isOpen);
-    mPreviewButton->setEnabled(isOpen == true && mPreviewOrNull != nullptr);
+    const bool isBusy = IsJobActive();
+    const bool canCreate = mProjectRoot.isEmpty() == false && isBusy == false;
+    const bool canBuild = isOpen == true && isBusy == false;
+    mNewGraph->setEnabled(canCreate);
+    mOpenGraph->setEnabled(canCreate);
+    mContent->widget(0)->setEnabled(canCreate);
+    mContent->setCurrentIndex(isOpen == true ? 1 : 0);
+    mEmptyMessage->setText(
+        mProjectRoot.isEmpty() == true
+            ? QStringLiteral("Open a game project to create or edit its render graphs.")
+            : QStringLiteral("Create your first render graph\n\n"
+                             "Graphs and shader sources are saved in this project's graphs folder.\n"
+                             "Create a graph, then use Build & Preview with an open World viewport."));
+    mConfiguration->setEnabled(canBuild);
+    mValidate->setEnabled(canBuild);
+    mBuild->setEnabled(canBuild);
+    mBuildPreview->setEnabled(canBuild);
+    mLivePreview->setEnabled(canBuild);
+    mCook->setEnabled(canBuild);
+    mCancel->setEnabled(isBusy);
+    mPreviewButton->setEnabled(canBuild == true && mPreviewOrNull != nullptr);
+    mDiagnostics->setVisible(mDiagnostics->count() > 0);
 }
 
 void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonValue& value)

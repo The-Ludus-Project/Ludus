@@ -170,6 +170,8 @@ qt_add_executable(ludus_editor
     src/render_graph_document.cpp
     src/internal/render_graph_job.h
     src/render_graph_job.cpp
+    src/internal/render_graph_creation.h
+    src/render_graph_creation.cpp
     src/internal/render_graph_canvas.h
     src/render_graph_canvas.cpp
     src/internal/renderer_workspace.h
@@ -330,6 +332,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_document.cpp
         src/internal/render_graph_job.h
         src/render_graph_job.cpp
+        src/internal/render_graph_creation.h
+        src/render_graph_creation.cpp
         src/internal/render_graph_canvas.h
         src/render_graph_canvas.cpp
         src/internal/renderer_workspace.h
