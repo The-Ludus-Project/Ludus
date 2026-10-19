@@ -7,9 +7,10 @@
 #include <filesystem>
 #include <fstream>
 #include <span>
-#include <stdlib.h> // mkdtemp (POSIX).
+#include <stdlib.h> // mkdtemp on Linux.
 #include <string>
 #include <string_view>
+#include <unistd.h> // mkdtemp on macOS.
 
 #include <ludus/foundation/base/types.h>
 
