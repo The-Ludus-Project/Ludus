@@ -79,8 +79,11 @@ public:
 
     /// @brief Start a new generation of the given extent, retiring the current one.
     /// @return false when every slot still holds a generation; nothing changes then.
+    // Width before height, as every Ludus extent.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     [[nodiscard]] bool
     TryBeginGeneration(foundation::uint32 width, foundation::uint32 height, foundation::usize& outSlot) noexcept
+    // NOLINTEND(bugprone-easily-swappable-parameters)
     {
         for (foundation::usize slot = 0; slot < MAX_HOSTED_GENERATIONS; ++slot)
         {

@@ -67,6 +67,8 @@ public:
     ProducerProcess& operator=(ProducerProcess&&) = delete;
 
     /// Start the producer with `address` in LUDUS_HOSTED_WINDOW.
+    // One call site passes the mode and the endpoint's address by name.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void Spawn(std::string_view mode, std::string_view address)
     {
         foundation::StaticString<MAX_VARIABLE_BYTES> variable;

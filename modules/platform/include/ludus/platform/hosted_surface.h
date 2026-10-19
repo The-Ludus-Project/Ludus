@@ -20,6 +20,8 @@ inline constexpr foundation::usize HOSTED_ADAPTER_UUID_BYTES = 16;
 /// @brief Pixel encoding of hosted surface images.
 enum class HostedImageFormat : foundation::uint8
 {
+    /// No format; never valid in an Images message.
+    Unknown = 0,
     /// Four 8-bit unsigned normalized channels in R, G, B, A byte order, not sRGB-encoded.
     Rgba8Unorm = 1,
 };
