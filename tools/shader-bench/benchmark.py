@@ -41,7 +41,9 @@ def main():
         command += ['--worker-socket', os.environ['LUDUS_BENCH_WORKER_SOCKET']]
     helper = args.output / 'helper'
     helper.mkdir()
-    for name in render_graph_build.HELPERS:
+    # A worker run hashes and loads the native client beside the ordinary helper bundle.
+    names = render_graph_build.HELPERS + ((render_graph_build.NATIVE_WORKER_HELPER,) if args.worker else ())
+    for name in names:
         shutil.copyfile(ROOT / ('config' if name.endswith('.json') else 'cmake/shaders') / name, helper / name)
     command[9] = str(helper)
     cases = {}
