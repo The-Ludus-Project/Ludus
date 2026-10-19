@@ -39,6 +39,24 @@ struct EditorCommand final
 };
 
 // Render-graph commands act on the open render-graph document.
+inline constexpr EditorCommand RENDER_GRAPH_NEW_COMMAND
+{
+    .Id = "renderGraph.new",
+    .Text = "New Render &Graph...",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Create an editable render graph and its shaders in this project's graphs folder.",
+    .IsCheckable = false,
+};
+inline constexpr EditorCommand RENDER_GRAPH_OPEN_COMMAND
+{
+    .Id = "renderGraph.open",
+    .Text = "Open Render G&raph...",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Open a root .lurender.json in this project as the render-graph document.",
+    .IsCheckable = false,
+};
 inline constexpr EditorCommand RENDER_GRAPH_VALIDATE_COMMAND
 {
     .Id = "renderGraph.validate",
@@ -82,6 +100,15 @@ inline constexpr EditorCommand RENDER_GRAPH_COOK_COMMAND
     .ToolbarText = "Cook",
     .Shortcut = "",
     .Help = "Cook the last published render-graph build into a runtime generation.",
+    .IsCheckable = false,
+};
+inline constexpr EditorCommand RENDER_GRAPH_CANCEL_COMMAND
+{
+    .Id = "renderGraph.cancel",
+    .Text = "Cance&l Render Graph Job",
+    .ToolbarText = "Cancel",
+    .Shortcut = "Ctrl+Break",
+    .Help = "Stop the running render-graph validation, build, cook or graph creation and turn Live Preview off.",
     .IsCheckable = false,
 };
 
@@ -141,6 +168,15 @@ inline constexpr EditorCommand VIEW_LIVE_INSPECTOR_COMMAND
     .Help = "Show the running game's live properties.",
     .IsCheckable = false,
 };
+inline constexpr EditorCommand VIEW_RENDER_PREVIEW_COMMAND
+{
+    .Id = "view.renderPreview",
+    .Text = "Render Pre&view",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Show the render-graph preview of the World viewport.",
+    .IsCheckable = false,
+};
 inline constexpr EditorCommand VIEW_TIMING_COMMAND
 {
     .Id = "view.timing",
@@ -168,6 +204,17 @@ inline constexpr EditorCommand WINDOW_CLOSE_ALL_DOCUMENTS_COMMAND
     .ToolbarText = "",
     .Shortcut = "",
     .Help = "Close every document tab. Drafts stay open; reopen them from Project Explorer or the Window menu.",
+    .IsCheckable = false,
+};
+
+// Tools commands open editor-wide preferences.
+inline constexpr EditorCommand TOOLS_OPTIONS_COMMAND
+{
+    .Id = "tools.options",
+    .Text = "&Options...",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Edit editor preferences, including render-graph shader tools and the native shader worker.",
     .IsCheckable = false,
 };
 

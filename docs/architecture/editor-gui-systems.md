@@ -79,18 +79,37 @@ windows"); its tab-group, tool-window and reset-layout model informs this shell.
 | Part | Qt Widgets mechanism | Owner and contract |
 | --- | --- | --- |
 | Document well | `QMainWindow` central widget: a `QSplitter` of `QTabWidget` tab groups (one direction, at most four groups) | `DocumentWell` owns presentation only: open views, order, active group and split. Closing a tab hides a view; its document owner keeps the draft |
-| Tool windows | One `QDockWidget` per tool window with a stable `objectName` (Project Explorer, Properties, Error List, Output, Content, Live Inspector, Timing) | Each reads its owner's copied state; none owns a draft |
-| Commands | One `QAction` per command from a small catalogue (stable ID, label, short toolbar label, shortcut, help) shared by menus, toolbars and shortcuts | Document and controller operations validate at dispatch |
+| Tool windows | One `QDockWidget` per tool window with a stable `objectName` (Project Explorer, Properties, Error List, Output, Content, Render Preview, Live Inspector, Timing) | Each reads its owner's copied state or hosts a document owner's panel; none owns a draft |
+| Commands | One `QAction` per command from a small catalogue (stable ID, label, short toolbar label, shortcut, help) shared by menus, toolbars and shortcuts | Document and controller operations validate at dispatch; documents have no duplicate command rows |
 | Active document | The current tab of the active group | Save/Undo/Redo route to it; focus in a tool window keeps the document active |
-| Layout | `saveState`/`restoreState` (version 4) per user, plus per-project open documents and groups | Older, other-Qt or corrupt layouts fall back to the default |
+| Layout | `saveState`/`restoreState` (version 5) per user, plus per-project open documents and groups | Older, other-Qt or corrupt layouts fall back to the default |
+| Preferences | Tools > Options: a modal page list beside the selected page, editing a copy | The document owner validates and applies the accepted values |
 
-Properties hosts the World's entity inspector panel, which keeps editing the
-World document's draft. The Error List copies render-graph results and parses
-build output; navigation calls the producer's existing location mapping
-(`RendererWorkspace::ActivateDiagnostic`). Remaining work: split the Renderer
-into a render-graph canvas document (one per open `.lurender.json`) with its
-node inspector in Properties, its preview as a Render Preview tool window and
-its build tools in a Tools > Options dialog.
+Properties hosts one page per document kind and shows the active document's:
+the World's entity inspector, or the render graph's node inspector, which follows
+the canvas selection. Each panel is taken from its document owner
+(`WorldWorkspace::TakePropertiesPanel`, `RendererWorkspace::TakeInspectorPanel`)
+and keeps editing that document's draft, so Save and Undo still route to the
+document. The Render Preview tool window hosts the render graph's preview panel
+(`RendererWorkspace::TakePreviewPanel`); the preview itself, its borrowed World
+viewport device and its activation stay with the document owner.
+
+The Render Graph document is the source tree beside Canvas, Source and Plan views.
+The shell's `renderGraph.*` commands (File > New/Open Render Graph, the Build menu
+and the Render Graph toolbar) call its operations and read its gates (`CanBuild`,
+`CanCreateGraph`, `IsJobActive`, `CommandsChanged`). Live Preview is document state
+(`SetLivePreview`, `LivePreviewChanged`), so Cancel or a project change unchecks the
+toggle. Tools > Options edits the document's `RenderGraphBuildSettings` and shows
+what the last automatic build resolved. The Error List copies render-graph results
+and parses build output; navigation calls the producer's existing location mapping
+(`RendererWorkspace::ActivateDiagnostic`), whose rows are the Error List's rows in
+the same order.
+
+One render graph is open at a time. One canvas document per open `.lurender.json`
+needs its own design first: each document would need its own job, Error List
+producer identity and Properties page, and the preview, which holds a
+RenderGraphActivation on the shared World viewport device, would have to follow the
+active graph document.
 
 ### Docking middleware evaluation
 
@@ -538,7 +557,7 @@ One World viewport serves every World, World-demo included, in both modes.
 
 1. **Edit.** `RenderPreview` renders the World extraction from the document
    snapshot and editor camera through the engine Renderer. Input drives
-   navigation. The Renderer tab's render-graph preview follows
+   navigation. The Render Graph document's preview follows
    `WorldWorkspace::GetRenderPreview`.
 2. **Play requested.** The existing preconditions still apply: a saved project,
    clean drafts, and Build and Run or Live Play eligibility. The edit preview

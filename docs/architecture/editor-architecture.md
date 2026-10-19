@@ -152,7 +152,7 @@ inspection and version activation are owned by the
 authors provide computations and requirements; the graph owns resource wiring.
 Preview and live execution share the cooked Renderer/RHI contract, while keeping
 their process, scene and resource-instance ownership explicit. RG3a delivers a
-Renderer tab with typed graph/source drafts, undo, explicit save, mapped
+Render Graph document with typed graph/source drafts, undo, explicit save, mapped
 diagnostics and shared CLI jobs. RG3b adds a node canvas over the same document
 operations and a trusted preview that activates cooked generations on the World
 viewport's device without replacing its last drawable view until a new frame is

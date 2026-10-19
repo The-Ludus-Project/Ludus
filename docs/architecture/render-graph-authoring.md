@@ -681,7 +681,9 @@ field identity and type, requires explicit defaults for added or changed fields
 and reports dropped values; it never writes sources. See
 [RG3 usage and evidence](../development/render-graph-authoring.md#edit-and-reload-graphs-rg3).
 
-RG3b is delivered in the editor's Renderer tab. The node canvas is another view
+RG3b is delivered in the editor's Render Graph document, with its node inspector in
+the Properties tool window and its preview in the Render Preview tool window. The
+node canvas is another view
 of the same typed draft: drags commit one layout edit per gesture, links are
 pre-checked with the validator's Port/MultipleWriters/TypeMismatch/Cycle codes
 before Connect, and double-clicking a Subgraph opens its source. The trusted

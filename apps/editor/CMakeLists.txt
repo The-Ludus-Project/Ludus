@@ -216,6 +216,9 @@ qt_add_executable(ludus_editor
     src/document_well.cpp
     src/internal/editor_commands.h
     src/editor_commands.cpp
+    src/internal/options_dialog.h
+    src/options_dialog.cpp
+    src/internal/render_graph_build_settings.h
     src/internal/error_list.h
     src/error_list.cpp
     src/internal/project_explorer.h
@@ -450,6 +453,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/document_well.cpp
         src/internal/editor_commands.h
         src/editor_commands.cpp
+        src/internal/options_dialog.h
+        src/options_dialog.cpp
+        src/internal/render_graph_build_settings.h
         src/internal/error_list.h
         src/error_list.cpp
         src/internal/project_explorer.h

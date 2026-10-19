@@ -6,9 +6,10 @@
 // The shell follows Visual Studio's layout: a central DocumentWell holds document
 // views (World, render graph, scripts, project settings, audio, configuration) in
 // tab groups, and tool windows (Project Explorer, Properties, Error List, Output,
-// Content, Live Inspector, Timing) are dockable, tabbable QDockWidgets. Commands
-// are QActions shared by menus, toolbars and shortcuts; Save and Undo follow the
-// active document. See docs/development/editor-workspace.md#workspace-layout.
+// Content, Render Preview, Live Inspector, Timing) are dockable, tabbable
+// QDockWidgets. Commands are QActions shared by menus, toolbars and shortcuts; Save
+// and Undo follow the active document, and Tools > Options edits editor preferences.
+// See docs/development/editor-workspace.md#workspace-layout.
 //
 // Private editor header (not installed). Uses standard Qt layouts/controls only.
 // While synchronizing fields from state it blocks edit signals (QSignalBlocker)
@@ -115,6 +116,7 @@ private:
     void renderActiveDocument();
     void renderDocumentTitles();
     void renderGraphCommands();
+    void showOptions();
     void renderGraphErrors();
     void renderBuildErrors();
     void SaveWorkspaceLayout() const;
@@ -176,13 +178,18 @@ private:
     QDockWidget* mErrorListDock;
     ErrorList* mErrorList;
     QDockWidget* mContentDock;
+    QDockWidget* mRenderPreviewDock;
     QToolBar* mStandardToolbar;
     QToolBar* mRenderGraphToolbar;
+    QAction* mNewGraphAction;
+    QAction* mOpenGraphAction;
     QAction* mValidateGraphAction;
     QAction* mBuildGraphAction;
     QAction* mBuildPreviewGraphAction;
     QAction* mLivePreviewGraphAction;
     QAction* mCookGraphAction;
+    QAction* mCancelGraphAction;
+    QAction* mOptionsAction;
     QAction* mProjectSettingsAction;
     QAction* mResetLayoutAction;
     QToolBar* GameToolbar_ = nullptr;

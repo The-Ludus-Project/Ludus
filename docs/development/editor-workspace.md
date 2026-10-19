@@ -31,7 +31,7 @@ central document well, and **tool windows** dock around it (see
 | --- | --- |
 | Start Page | New/Open and recent projects while no project is open |
 | World | 2D/3D placement, game-owned entities/components, typed fields, references, shared history/save/recovery and trusted preview |
-| Render Graph | The project's render-graph package: graph sources, node canvas, inspector, shader/source editor and preview ([render-graph authoring](render-graph-authoring.md)) |
+| Render Graph | The open render-graph package: its source tree beside the node **Canvas**, the **Source** text editor and the validated **Plan** ([render-graph authoring](render-graph-authoring.md)) |
 | Project Settings | Setup/engine overview, lifecycle actions, name/profile and expandable build/launch details |
 | Scripts | Project-owned script and sequence drafts |
 | Audio | Content selection, definitions, save and preview |
@@ -40,10 +40,11 @@ central document well, and **tool windows** dock around it (see
 | Tool window | Purpose |
 | --- | --- |
 | Project Explorer | The project's worlds, render graphs, shaders, scripts, audio and content; opening an item opens its document |
-| Properties | Fields of the active document's selection (the selected World entity) |
+| Properties | Fields of the active document's selection (the selected World entity or render-graph node) |
 | Error List | Render-graph, shader and build diagnostics; double-click navigates to the source |
 | Output | Selectable build/tool/runtime diagnostics |
 | Content | Content catalog, search and imports |
+| Render Preview | The World viewport rendered through the open render graph (Preview Runtime, status and image) |
 | Live Inspector | Copied runtime state and supported live property operations |
 | Timing | Runtime-reported frame pacing and interval statistics for the running session |
 
@@ -345,12 +346,12 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   Group**, **Merge All Tab Groups** and the tab context menu move documents
   between groups. Groups share one direction at a time, up to four groups.
 - **Tool windows** dock around the documents. By default Project Explorer
-  (tabbed with Content) sits above Properties (tabbed with Live Inspector) on
-  the right, and the Error List (tabbed with Output and Timing) sits below the
-  documents. Drag a title bar to move, tab or float a tool window. **View**
-  shows and focuses one (Project Explorer Ctrl+Alt+L, Properties F4, Error List
-  Ctrl+Alt+E, Output Ctrl+Alt+O). The **Window** menu lists every tool window
-  with a check mark to show or hide it.
+  (tabbed with Content and Render Preview) sits above Properties (tabbed with
+  Live Inspector) on the right, and the Error List (tabbed with Output and
+  Timing) sits below the documents. Drag a title bar to move, tab or float a
+  tool window. **View** shows and focuses one (Project Explorer Ctrl+Alt+L,
+  Properties F4, Error List Ctrl+Alt+E, Output Ctrl+Alt+O, Render Preview). The
+  **Window** menu lists every tool window with a check mark to show or hide it.
 - **Window → Reset Window Layout** restores the default documents-first
   arrangement, all tool windows and toolbars, sized for the current window
   (the right column takes about a fifth of the width and the bottom group about
@@ -361,11 +362,15 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   Properties and pressing Ctrl+S saves the World. Focus entering another
   document's tab makes that document active. Undo still acts on focused text
   first.
-- **Properties** shows the World's entity inspector (name, component fields,
-  Add Component, Apply and Reset) while the World is the active document. The
-  render-graph node inspector remains in the Render Graph document's
-  **Inspector** tab until the Renderer is split into a canvas document and
-  tool windows.
+- **Properties** follows the active document. While the World is active it
+  shows the entity inspector (name, component fields, Add Component, Apply and
+  Reset). While the Render Graph is active it shows the node selected on the
+  canvas, in the source tree or by Error List navigation: its authored fields,
+  canvas position, Remove Node, Add Node and the configuration's connections.
+  Edits there are Render Graph edits: Ctrl+S and Ctrl+Z act on the graph.
+- **Render Preview** shows the World viewport through the open render graph.
+  **Build → Build Render Graph and Preview** brings it forward; Live Preview
+  rebuilds update it without moving focus or raising it.
 - **Error List** collects the last render-graph result (graph errors and mapped
   shader diagnostics) and compiler/CMake diagnostics found in build output.
   Toggle Errors, Warnings and Messages to filter. Double-click a render-graph
@@ -374,14 +379,20 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   render-graph job brings the Error List forward without taking focus.
 - **Toolbars** share the menus' commands: Standard (Open, Save, Undo, Redo),
   Game (build, run, debug and Play controls) and Render Graph (Validate, Build
-  Graph, Build & Preview, Live Preview). Toolbar buttons use short labels so a
-  1280-pixel window shows them all; tooltips give the full name and shortcut.
-  **View → Toolbars** hides or shows each toolbar.
+  Graph, Build & Preview, Live Preview, Cancel). Toolbar buttons use short labels
+  so a 1280-pixel window shows them all; tooltips give the full name and
+  shortcut. **View → Toolbars** hides or shows each toolbar. Documents have no
+  command rows of their own: **File → New Render Graph...** and **Open Render
+  Graph...** open graphs, and the **Build** menu holds every render-graph
+  command, including Cook Render Graph Runtime and Cancel Render Graph Job.
+- **Tools → Options...** edits editor preferences. Its **Render Graph** page
+  holds the advanced shader-tool overrides and the native shader worker socket
+  ([build settings](render-graph-authoring.md#build-settings)).
 
 Layout preferences are local to this computer. The window's tool-window layout
 is saved in `workspace.json` (see [Workspace layout (S1)](#workspace-layout-s1));
 each project also remembers its open documents, tab groups and World
-navigation. Layout version 4 introduced this arrangement: layouts saved by
+navigation. Layout version 5 added the Render Preview tool window: layouts saved by
 older editors, other Qt versions, or invalid/corrupt files fall back to the
 default, and a malformed document arrangement leaves the World open.
 
@@ -422,6 +433,7 @@ keeps the window and its draft open.
 | F6 / Shift+F6 | Build and Play / Stop |
 | Ctrl+F7 / F7 | Validate Render Graph / Build Render Graph |
 | Shift+F7 / Ctrl+Shift+F7 | Build Render Graph and Preview / toggle Live Render Graph Preview |
+| Ctrl+Break | Cancel the running render-graph job (also turns Live Preview off) |
 | Ctrl+Alt+L / F4 | Show Project Explorer / Properties |
 | Ctrl+Alt+E / Ctrl+Alt+O | Show Error List / Output |
 | F1 | Keyboard Shortcuts help |

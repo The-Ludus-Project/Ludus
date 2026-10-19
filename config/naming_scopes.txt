@@ -47,6 +47,9 @@ apps/editor/src/error_list.cpp
 apps/editor/src/internal/project_explorer.h
 apps/editor/src/project_explorer.cpp
 apps/editor/src/main_window_tools.cpp
+apps/editor/src/internal/options_dialog.h
+apps/editor/src/options_dialog.cpp
+apps/editor/src/internal/render_graph_build_settings.h
 apps/editor/tests/editor_shell_tests.cpp
 modules/runtime/game_host/src/internal/timing_telemetry.h
 modules/runtime/game_host/src/timing_telemetry.cpp
