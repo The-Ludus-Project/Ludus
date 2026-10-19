@@ -401,6 +401,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mWorkerSocket->setObjectName(QStringLiteral("renderGraphWorkerSocket"));
     mHelper->setObjectName(QStringLiteral("renderGraphShaderHelper"));
     mCompiler->setObjectName(QStringLiteral("renderGraphCompiler"));
+    mValidator->setObjectName(QStringLiteral("renderGraphValidator"));
     mWorkerSocket->setPlaceholderText(QStringLiteral("existing ludus-shader-worker socket"));
     mHelper->setPlaceholderText(QStringLiteral("Automatic from this project's selected SDK"));
     mCompiler->setPlaceholderText(QStringLiteral("Automatic from project setup / prepared editor tools"));

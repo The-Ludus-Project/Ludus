@@ -19,6 +19,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLineEdit>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -300,6 +301,22 @@ TEST_CASE("Build & Preview builds an edited default like any project graph", "[e
     workspace.SetProject(project.path(), 1);
     workspace.SetBuildTools(helper.path(), compiler);
     RenderGraphDocument& document = workspace.GetDocument();
+    // The default targets SPIR-V on Linux, which also needs the validator as an override.
+    const QJsonArray profiles = QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json")))
+                                    .object()
+                                    .value(QStringLiteral("profiles"))
+                                    .toArray();
+    if (profiles.contains(QStringLiteral("spirv")) == true)
+    {
+        const QString validator = QStringLiteral(LUDUS_EDITOR_TEST_SPIRV_VALIDATOR);
+        if (QFileInfo(validator).isExecutable() == false)
+        {
+            SKIP("The default's SPIR-V profile needs the configured spirv-val");
+        }
+        QLineEdit* validatorOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("renderGraphValidator"));
+        REQUIRE(validatorOrNull != nullptr);
+        validatorOrNull->setText(validator);
+    }
     REQUIRE(document.SetText(COLOR_SHADER, QByteArray("// customized\n") + document.GetDraft(COLOR_SHADER)) ==
             RenderGraphDocumentStatus::Ok);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
