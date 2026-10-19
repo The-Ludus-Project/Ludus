@@ -594,7 +594,7 @@ RasterStatus MetalRasterPreparation::Build() noexcept
         descriptor.fragmentFunction = Fragment.Function;
         descriptor.colorAttachments[0].pixelFormat =
             info.Target == RasterTarget::Rgba16Float  ? MTLPixelFormatRGBA16Float
-            : info.Target == RasterTarget::Surface    ? MTLPixelFormatBGRA8Unorm
+            : info.Target == RasterTarget::Surface    ? gSurfaceFormat
             : info.Target == RasterTarget::Rgba8Unorm ? MTLPixelFormatRGBA8Unorm
                                                       : MTLPixelFormatRGBA8Unorm_sRGB;
         descriptor.rasterSampleCount = info.SampleCount;
@@ -892,7 +892,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     {
         const auto& state = info.Description;
         const bool surface = info.Texture == internal::RASTER_INVALID;
-        auto color = surface ? (gDrawable != nil ? gDrawable.texture : gHeadless) : gRasterTextures[info.Texture];
+        id<MTLTexture> color = surface ? gSurfaceTexture : gRasterTextures[info.Texture];
         auto depth = surface                ? gDepth
                      : info.ColorCount == 0 ? gRasterDepths[info.Texture]
                                             : gRasterViewDepths[info.Colors[0].View];

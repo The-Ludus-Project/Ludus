@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/hosted_metal.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
@@ -12,6 +13,7 @@
 
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/native_window.h>
 
 #include <cstring>
@@ -105,6 +107,12 @@ CALayer* gPreviousLayer = nil;
 NSView* __unsafe_unretained gView = nil;
 NSWindow* __unsafe_unretained gWindow = nil;
 BOOL gPreviousWantsLayer = NO;
+/// Producer of a hosted window's surface; connected only for WindowSystem::Hosted.
+HostedProducerMetal gHosted;
+/// Color format of the frame target: BGRA8 drawables, or RGBA8 hosted images.
+MTLPixelFormat gSurfaceFormat = MTLPixelFormatBGRA8Unorm;
+/// Color attachment of the open frame: drawable, hosted image or headless texture.
+id<MTLTexture> gSurfaceTexture = nil;
 Shader gShaders[internal::RESOURCE_CAPACITY];
 Uniform gUniforms[internal::RESOURCE_CAPACITY];
 Pipeline gPipelines[internal::RESOURCE_CAPACITY];
@@ -150,6 +158,10 @@ bool ValidWindow(const WindowInfo& window) noexcept
     if (window.System == platform::WindowSystem::Headless)
     {
         return true;
+    }
+    if (window.System == platform::WindowSystem::Hosted)
+    {
+        return window.HostedSurfaceOrNull != nullptr;
     }
     if (window.System != platform::WindowSystem::Cocoa || window.CocoaWindow == nullptr || window.CocoaView == nullptr)
     {
@@ -299,6 +311,13 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             gView.wantsLayer = YES;
             gView.layer = gLayer;
         }
+        gSurfaceFormat = MTLPixelFormatBGRA8Unorm;
+        if (window.System == platform::WindowSystem::Hosted)
+        {
+            // The editor presents the hosted images; they are RGBA8 (docs/architecture/editor-gui-systems.md).
+            gHosted.Connect(gDevice, *window.HostedSurfaceOrNull);
+            gSurfaceFormat = MTLPixelFormatRGBA8Unorm;
+        }
         gTarget = { .Width = window.Width, .Height = window.Height };
         gConnected = true;
         return true;
@@ -322,6 +341,8 @@ void ShutdownRendering() noexcept
             [command waitUntilCompleted];
             command = nil;
         }
+        gHosted.Cancel();
+        gSurfaceTexture = nil;
         gHeadless = nil;
         gDepth = nil;
         gFrame = {};
@@ -334,6 +355,8 @@ void Shutdown() noexcept
     @autoreleasepool
     {
         ShutdownRendering();
+        gHosted.Disconnect();
+        gSurfaceFormat = MTLPixelFormatBGRA8Unorm;
         if (gView != nil && gView.layer == gLayer)
         {
             gView.layer = gPreviousLayer;
@@ -386,6 +409,10 @@ FrameStatus Begin() noexcept
                 return FrameStatus::Failed;
             }
         }
+        if (gHosted.IsConnected() == true && gHosted.Poll() == false)
+        {
+            return FrameFailure();
+        }
         if (gTarget.Width == 0 || gTarget.Height == 0 ||
             (gWindow != nil && (gWindow.miniaturized || gWindow.visible == false)))
         {
@@ -399,7 +426,19 @@ FrameStatus Begin() noexcept
         }
         gSubmitted[gSlot] = nil;
         id<MTLTexture> texture = nil;
-        if (gLayer != nil)
+        if (gHosted.IsConnected() == true)
+        {
+            const HostedAcquireStatus acquired = gHosted.Acquire(gTarget.Width, gTarget.Height, texture);
+            if (acquired == HostedAcquireStatus::Skipped)
+            {
+                return FrameStatus::Skipped;
+            }
+            if (acquired == HostedAcquireStatus::Failed)
+            {
+                return FrameFailure();
+            }
+        }
+        else if (gLayer != nil)
         {
             gLayer.frame = gView.bounds;
             gLayer.contentsScale = gWindow.backingScaleFactor;
@@ -443,6 +482,7 @@ FrameStatus Begin() noexcept
         }
         if (gDepth == nil)
         {
+            gHosted.Cancel();
             return FrameFailure();
         }
         gCommand = [gQueue commandBuffer];
@@ -459,8 +499,10 @@ FrameStatus Begin() noexcept
         gEncoder = [gCommand renderCommandEncoderWithDescriptor:pass];
         if (gEncoder == nil)
         {
+            gHosted.Cancel();
             return FrameFailure();
         }
+        gSurfaceTexture = texture;
         RasterFrameExtent();
         // Extent comes from the acquired texture, bounded by the target above.
         gFrame = {static_cast<uint32>(texture.width), static_cast<uint32>(texture.height), SurfaceEncoding::Unorm};
@@ -486,6 +528,13 @@ FrameStatus End() noexcept
         }
         TimingEnd();
         [gCommand commit];
+        if (gHosted.IsConnected() == true)
+        {
+            // Announced with Present once the command buffer completes (CPU fence).
+            gHosted.Submit(gCommand);
+            static_cast<void>(gHosted.Poll());
+        }
+        gSurfaceTexture = nil;
         gSubmitted[gSlot] = gCommand;
         gCommand = nil;
         gDrawable = nil;
@@ -560,7 +609,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
         MTLRenderPipelineDescriptor* description = [MTLRenderPipelineDescriptor new];
         description.vertexFunction = gShaders[resources.Vertex].Function;
         description.fragmentFunction = gShaders[resources.Fragment].Function;
-        description.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        description.colorAttachments[0].pixelFormat = gSurfaceFormat;
         description.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
         NSError* error = nil;
         MTLRenderPipelineReflection* reflection = nil;
