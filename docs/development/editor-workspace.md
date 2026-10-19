@@ -604,8 +604,8 @@ Build the native editor using [Enable the rendered authoring surface](#enable-th
    feedback. **Pause viewport** cancels pending publication and releases its device;
    the viewport stays embedded. **Resume viewport** restarts rendering.
 
-The world-demo 2D preview and World 3D preview share one device admission
-boundary. Opening either closes the other authoring surface; launching a game
+World-demo Worlds and schema-bound 3D Worlds render in this same embedded viewport
+through one device admission boundary. Launching a game
 also pauses World rendering and resumes it when the operation returns to Idle. Project/document replacement prevents late worker
 results from reopening or publishing into another document. Failed GPU setup
 stops the surface with feedback and preserves World edits; resuming retries.
@@ -1010,6 +1010,33 @@ unsaved sibling `.world.json` documents, and Save writes the sibling. The origin
 file remains intact; conversion refuses an existing destination. This is an import
 compatibility path, not a second editor or save workflow.
 
+### Render a World-demo World in the World viewport
+
+A World-demo World renders in the same embedded World viewport as every other
+World without an imported scene, through the engine Renderer. The editor builds
+the game's own World from the applied document without ticking it. It then
+converts the game's first extracted frame with the player's `render_items`
+builders: one unit quad per collision box, scatter placement and actor, with
+the player's colours and draw order. Edit and Play therefore draw the same
+geometry. The viewport opens through **Game camera**, the level's authored camera.
+It starts in **Albedo** shading, because these flat-colour boxes have no surface
+detail for Solid's neutral material. **View through** and the shading menu still
+offer the editor camera and the other modes. Applying a valid field, Undo/Redo and
+Discard re-extract the frame. Pending or invalid fields keep the last drawable
+image. The Renderer tab's render-graph preview attaches to this viewport as it
+does for any World.
+
+The viewport displays the Renderer's tone-mapped, sRGB-encoded image of the
+level's linear material colours over the editor's black clear colour. The
+standalone player writes the same colour values to its surface unchanged, over a
+dark blue floor. Geometry, positions and draw order match, but colours do not
+yet: the player is orange in the game and a desaturated olive in the viewport.
+
+There is no separate authoring window and no keyboard transform gesture. Edit
+transforms in the World inspector, as for every other World. Viewport picking and
+gizmos are later work for all Worlds; see
+[Play in the editor viewport](../architecture/editor-gui-systems.md#play-in-the-editor-viewport).
+
 ### Enable the rendered authoring surface
 
 Native editor builds enable `LUDUS_EDITOR_RENDER_PREVIEW` by default. Normal
@@ -1034,36 +1061,20 @@ out/host-tools/venv/bin/cmake --preset linux-clang-development \
   -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" \
   -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
 out/host-tools/venv/bin/cmake --build --preset linux-clang-development \
-  --target ludus_editor ludus_editor_tests ludus_editor_scene_tests ludus_world_demo
+  --target ludus_editor ludus_editor_tests ludus_world_demo
 ```
 
 For macOS use `macos-clang-development` and omit `LUDUS_SPIRV_VALIDATOR`; its
-pinned Slang path emits Metal. With tools prepared, World’s **Open rendered preview**
-creates one main-thread Platform-owned window and connects it to RHI. No Qt
-`winId()` borrowing, cross-process embedding, CPU-painted stand-in or project
-module loading is involved. Shutdown releases RHI before the window. This
-recovery path supports one authoring surface; multiwindow/multisurface ownership
-and an embedded mouse gizmo remain follow-ups.
-
-In the preview, WASD moves the white pick cursor, Enter picks an object, Tab
-cycles IDs, and arrow keys preview a 0.1-metre transform. Releasing all arrows
-accepts one edit. Escape cancels. The CPU pick uses the shader's rotated/scaled
-rectangles and draw order, and compares document, revision, camera, surface and
-transient-preview identities. Resize and cancelled previews invalidate older
-frames. Native Cocoa events are normalized through either the host responder
-or Ludus event pump, with duplicate suppression. Rendering failure leaves the
-document editable/saveable; reopening the preview starts a fresh RHI session.
+pinned Slang path emits Metal. Rendering failure leaves the document editable
+and saveable; **Resume viewport** retries.
 
 ### Save, recovery and Play
 
 **Save World** uses the same cooperative lock, baseline conflict checks, atomic
 replacement and explicit recovery described in [Gameplay world authoring](#gameplay-world-authoring).
-The sample player reads that exact World file. The 2D renderer owns only a
-transient validated projection and pending gesture; it never saves a second
-scene document. Releasing all arrows commits one edit to World's history.
-Undo/Redo update the projection from World, and incomplete inspector buffers
-stop the preview so native keyboard input cannot overwrite unapplied text.
-Pending text and cancelled gestures never enter Save or recovery.
+The sample player reads that exact World file. The World viewport renders a
+transient extraction of the applied World; it never saves a second scene
+document. Pending text never enters Save or recovery.
 
 For this adapter's **Play saved World**, configure Project settings to build
 `ludus_world_demo` with `LUDUS_BUILD_WORLD_DEMO=ON`, and set run arguments to
@@ -1077,16 +1088,15 @@ this sample Build/Run is distinct from the still-unavailable native Live Play /
 hot-reload protocol. `--headless --level <file>` and `--frames 3 --level <file>`
 provide bounded player acceptance paths.
 
-Portable scene tests cover failed-load rollback, all-or-nothing multi-target
-edits, cancelled gestures, saved-content history, eviction, save-during-edit
-acknowledgement, and stale picking. World widget/persistence tests cover invalid
-buffers, save/reopen, runtime projection, source conflicts, shared recovery,
-actor duplication, collision/settings edits and legacy import preservation. The opt-in Cocoa journey exercises actual Metal
-frames, native keys, resize, save/reopen, and a separately rendered player:
+World widget/persistence tests cover invalid buffers, save/reopen, runtime
+projection, source conflicts, shared recovery, actor duplication,
+collision/settings edits and legacy import preservation. They also cover the
+World viewport's extraction: entity keys, game camera, Albedo default and
+re-extraction after an edit. The opt-in Cocoa case renders an actual Metal frame in
+the shared viewport, then moves the player by an applied edit:
 
 ```bash
-QT_QPA_PLATFORM=cocoa LUDUS_SCENE_TEST_PLAYER="$PWD/out/build/macos-clang-development/apps/world_demo/ludus_world_demo" \
-  out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.scene-native]'
+QT_QPA_PLATFORM=cocoa out/build/macos-clang-development/apps/editor/ludus_editor_tests 'Native World-demo World*'
 ```
 
 Linux compilation and portable/offscreen checks do not qualify native Wayland

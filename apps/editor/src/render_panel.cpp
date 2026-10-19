@@ -1,12 +1,12 @@
 #include "internal/render_panel.h"
+#include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_load_job.h"
+#include "internal/render_scene.h"
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QDir>
 #include <QDoubleSpinBox>
-#include <QFileInfo>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -196,6 +196,7 @@ void RenderPanel::SetWorld(const QString& root, const WorldDocument* world)
     }
     Root_ = root;
     World_ = world;
+    mShouldUseDefaultCamera = true;
     PreviewWorld_ = world == nullptr ? WorldDocument{} : *world;
     Viewport_->ClearFrame(QStringLiteral("Open a World to render it here."));
     Selected_.clear();
@@ -203,12 +204,16 @@ void RenderPanel::SetWorld(const QString& root, const WorldDocument* world)
     UpdateTintAction();
     const bool loaded = world != nullptr && world->Loaded();
     Open_->setEnabled(loaded);
-    // A World without an imported scene renders through the project render bindings. Projects
-    // created for scene import have none, so say what to do instead of reporting a missing asset.
-    const bool hasRenderBindings =
-        root.isEmpty() == false &&
-        QFileInfo(QDir(root).filePath(QStringLiteral("authoring/render.preview.json"))).isFile();
-    const bool isAwaitingScene = loaded == true && world->SceneLevel().isEmpty() == true && hasRenderBindings == false;
+    // A World without an imported scene renders through project bindings or a game adapter. Projects
+    // created for scene import have neither, so say what to do instead of reporting a missing asset.
+    const RenderSceneSource source = world == nullptr ? RenderSceneSource::None : RenderScene::GetSource(root, *world);
+    const bool isAwaitingScene =
+        loaded == true && world->SceneLevel().isEmpty() == true && source == RenderSceneSource::None;
+    if (source == RenderSceneSource::WorldDemo)
+    {
+        // Flat-colour boxes carry no surface detail; Solid's neutral material would paint them all white.
+        Preview_.SetShading(PreviewShading::Albedo);
+    }
     if (isAwaitingScene == true)
     {
         Viewport_->ClearFrame(QStringLiteral("This World has no scene yet. Use Import scene… to render one here."));
@@ -299,10 +304,21 @@ void RenderPanel::Publish(const RenderScene& scene, bool launch)
         const foundation::int32 index = Cameras_->findData(selected);
         Cameras_->setCurrentIndex(index < 0 ? 0 : index);
     }
+    // The first scene of a newly opened World looks through its default camera; later publishes
+    // keep whatever the user chose, including the editor camera.
+    const bool shouldUseDefaultCamera =
+        mShouldUseDefaultCamera == true && selected.isEmpty() == true && scene.DefaultCamera >= 0;
     if (Preview_.SetScene(scene) == false)
     {
         Status_->setText(Preview_.Status());
         return;
+    }
+    mShouldUseDefaultCamera = false;
+    if (shouldUseDefaultCamera == true)
+    {
+        // Row 0 is the editor camera. SetScene re-synchronized the rows, so choose after it.
+        const QSignalBlocker block(Cameras_);
+        Cameras_->setCurrentIndex(scene.DefaultCamera + 1);
     }
     navigate();
     if (launch)

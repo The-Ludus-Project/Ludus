@@ -5,7 +5,6 @@
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/platform/entropy.h>
 
-#include "internal/scene_preview.h"
 #include "internal/world_document.h"
 
 #include <QMap>
@@ -46,19 +45,10 @@ public:
     {
         return Path_;
     }
-    [[nodiscard]] ScenePreview& WorldDemoPreview() noexcept
-    {
-        return DemoPreview_;
-    }
-    [[nodiscard]] const SceneDocument& WorldDemoProjection() const noexcept
-    {
-        return DemoDocument_;
-    }
-    [[nodiscard]] bool StartPreview();
     /// Renderer of the viewport this World shows, whose device and extraction feed the
     /// render-graph preview: the scene viewport of an imported-scene World, otherwise the
-    /// schema-bound render panel. RenderPreviewChanged reports a change of choice. The result
-    /// is owned by this workspace; it never starts a device on the caller's behalf.
+    /// render panel, which draws schema-bound and World-demo Worlds alike. RenderPreviewChanged reports a change of
+    /// choice. The result is owned by this workspace; it never starts a device on the caller's behalf.
     [[nodiscard]] RenderPreview& GetRenderPreview() noexcept;
     void SetProject(const QString& root, foundation::uint64 epoch);
     [[nodiscard]] bool Open(const QString& path);
@@ -67,19 +57,19 @@ public:
     [[nodiscard]] bool ConfirmDiscard();
     [[nodiscard]] bool Dirty() const noexcept
     {
-        return Pending_ || Unsaved_ || Document_.Dirty() || DemoDocument_.Previewing();
+        return Pending_ || Unsaved_ || Document_.Dirty();
     }
     [[nodiscard]] bool CanSave() const noexcept
     {
-        return Document_.Loaded() && DemoDocument_.Previewing() == false && SceneBusy() == false;
+        return Document_.Loaded() && SceneBusy() == false;
     }
     [[nodiscard]] bool CanUndo() const noexcept
     {
-        return Pending_ == false && DemoDocument_.Previewing() == false && SceneBusy() == false && Document_.CanUndo();
+        return Pending_ == false && SceneBusy() == false && Document_.CanUndo();
     }
     [[nodiscard]] bool CanRedo() const noexcept
     {
-        return Pending_ == false && DemoDocument_.Previewing() == false && SceneBusy() == false && Document_.CanRedo();
+        return Pending_ == false && SceneBusy() == false && Document_.CanRedo();
     }
     void StopPreview() noexcept;
     void ResumePreview();
@@ -111,8 +101,6 @@ private:
     [[nodiscard]] bool Inside(const QString& path, bool existing) const;
     [[nodiscard]] bool SceneBusy() const noexcept;
     void RefreshScene();
-    void RefreshWorldDemo();
-    void WorldDemoChanged();
     void SceneCompleted(bool accepted);
     void SceneVerified(bool accepted);
     void Render();
@@ -129,11 +117,7 @@ private:
     RenderPreview* mShownRenderPreviewOrNull = nullptr;
     WorldDocument Document_;
     foundation::identity::EntropySource mEntropy = platform::GetSystemEntropySource();
-    SceneDocument DemoDocument_;
-    ScenePreview DemoPreview_;
-    QPushButton* PreviewButton_ = nullptr;
     QPushButton* PlayButton_ = nullptr;
-    bool DemoSyncing_ = false;
     RenderPanel* Render_ = nullptr;
     LevelWorkspace* Scene_ = nullptr;
     QWidget* Viewport_ = nullptr;

@@ -1,8 +1,12 @@
 #include "entropy_fixture.h"
 #include "internal/editor_identity.h"
+#include "internal/preview_shading.h"
+#include "internal/render_panel.h"
+#include "internal/render_scene.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_workspace.h"
 
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -75,9 +79,10 @@ TEST_CASE("World demo uses World fields history save recovery and runtime data",
     view.SetProject(directory.path(), 1);
     REQUIRE(view.Open(path));
     REQUIRE(IsWorldDemo(view.Document()));
+    // World-demo Worlds render in the same bound viewport as every scene-less World.
     auto* boundViewport = view.findChild<QWidget*>(QStringLiteral("worldViewport"));
     REQUIRE(boundViewport != nullptr);
-    CHECK(boundViewport->isHidden());
+    CHECK(boundViewport->isHidden() == false);
     // Five gameplay entities and six scatter entities.
     CHECK(view.findChild<QListWidget*>(QStringLiteral("worldEntities"))->count() == 11);
     Select(view, QStringLiteral("player-start"));
@@ -193,34 +198,84 @@ TEST_CASE("World demo actors colliders settings and duplication share one inspec
     CHECK(Read(path) == disk);
     CHECK(view.Dirty());
 }
-TEST_CASE("World demo preview gestures commit once to World and cancel without authoring edits",
-          "[editor][world][unified][world-demo]")
+TEST_CASE("World demo renders its game extraction in the shared World viewport", "[editor][world][unified][world-demo]")
 {
     QTemporaryDir directory;
     const auto path = WorldFile(directory);
     WorldWorkspace view;
     view.SetProject(directory.path(), 1);
+    RenderPanel* panel = view.findChild<RenderPanel*>(QStringLiteral("worldRenderPanel"));
+    REQUIRE(panel != nullptr);
+    QSignalSpy loaded(panel, &RenderPanel::Loaded);
     REQUIRE(view.Open(path));
-    Select(view, QStringLiteral("player-start"));
-    CHECK(view.WorldDemoPreview().Selected().View() == "player-start");
-    const auto original = view.Document().Draft();
-    auto projection = view.WorldDemoProjection().Draft();
-    for (auto& recipe : projection.Level.Entities)
-    {
-        if (recipe.Id.View() == "player-start")
+    REQUIRE(RenderScene::GetSource(directory.path(), view.Document()) == RenderSceneSource::WorldDemo);
+    // No separate authoring window: the World shows the same bound viewport as every scene-less World.
+    CHECK(view.findChild<QPushButton*>(QStringLiteral("worldPreview")) == nullptr);
+    CHECK(&view.GetRenderPreview() == &panel->Preview());
+    CHECK(panel->isHidden() == false);
+
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::Load(directory.path(), view.Document(), scene, error));
+    INFO(error.toStdString());
+    REQUIRE(scene.Meshes.size() == 1);
+    CHECK(scene.Lit == false);
+    REQUIRE(scene.Cameras.size() == 1);
+    CHECK(scene.DefaultCamera == 0);
+    CHECK(scene.Cameras[0].Sample.Lens.Projection == ludus::gameplay::camera::CameraProjection::OrthographicFinite);
+    ludus::world_demo::Level level;
+    REQUIRE(ProjectWorldDemo(view.Document(), level, error));
+    // Collision boxes, scatter placements and every actor; the room authors scatter.
+    CHECK(scene.Objects.size() > static_cast<qsizetype>(level.CollisionCount + level.EntityCount));
+    const QString player = view.Document().FindEntityKey(QStringLiteral("player-start"));
+    const auto findPlayer = [&player](const RenderScene& candidate) -> const PreviewObject* {
+        for (const PreviewObject& object : candidate.Objects)
         {
-            recipe.Position.X += .25F;
+            if (object.Id == player)
+            {
+                return &object;
+            }
+        }
+        return nullptr;
+    };
+    const PreviewObject* playerObject = findPlayer(scene);
+    REQUIRE(playerObject != nullptr);
+    // The player's own colour and authored position, drawn by the game's builders.
+    CHECK(playerObject->Tint.X == 1);
+    CHECK(playerObject->Tint.W == 1);
+    ludus::foundation::float32 authoredX = 0;
+    for (ludus::foundation::usize i = 0; i < level.EntityCount; ++i)
+    {
+        if (level.Entities[i].Id.View() == "player-start")
+        {
+            authoredX = level.Entities[i].Position.X;
         }
     }
-    WorldDocument candidate = view.Document();
-    QString error;
-    REQUIRE(CommitWorldDemoGesture(candidate, projection, error));
-    REQUIRE(candidate.Undo());
-    CHECK(candidate.Draft() == original);
-    CHECK_FALSE(candidate.CanUndo());
+    CHECK(playerObject->Transform.Translation.X == authoredX);
+
+    // The panel publishes the same extraction and opens through the game camera.
+    REQUIRE((loaded.isEmpty() == false || loaded.wait(10000)));
+    CHECK(loaded.last().at(0).toBool());
+    CHECK(panel->Preview().Scene().Identity == scene.Identity);
+    QComboBox* cameras = panel->findChild<QComboBox*>(QStringLiteral("worldPreviewCamera"));
+    REQUIRE(cameras != nullptr);
+    CHECK(cameras->currentData().toString() == QStringLiteral("world-demo.camera"));
+    CHECK(panel->Preview().GetShading() == PreviewShading::Albedo);
+
+    // An applied edit re-extracts; an invalid pending field changes nothing.
+    Select(view, player);
+    Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("-3"));
+    REQUIRE(view.Apply());
+    RenderScene edited;
+    REQUIRE(RenderScene::Load(directory.path(), view.Document(), edited, error));
+    const PreviewObject* movedPlayer = findPlayer(edited);
+    REQUIRE(movedPlayer != nullptr);
+    CHECK(movedPlayer->Transform.Translation.X == -3);
+    CHECK(edited.Identity != scene.Identity);
+    const QJsonObject applied = view.Document().Draft();
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("-"));
-    CHECK_FALSE(view.StartPreview());
-    CHECK(view.Document().Draft() == original);
+    CHECK_FALSE(view.Apply());
+    CHECK(view.Document().Draft() == applied);
 }
 TEST_CASE("World demo entity IDs keep the legacy prefix and fail without entropy",
           "[editor][world][world-demo][identity]")

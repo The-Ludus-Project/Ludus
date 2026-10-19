@@ -312,9 +312,10 @@ defines the frontend selection gates and persistence limits.
 
 ## Play in the editor viewport
 
-Status: proposed 2026-10-19 for review; nothing in this section is implemented.
-It replaces the separate World-demo authoring window, the World-demo private
-shader and the separate-window default for Play.
+Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer)
+and P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) are
+implemented; P3–P7 are pending. It replaces the separate World-demo authoring
+window, the World-demo private shader and the separate-window default for Play.
 
 While a game plays, the World viewport is that game's window. The game owns
 rendering and input there and behaves as it would in its own OS window. A

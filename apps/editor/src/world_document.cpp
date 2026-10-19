@@ -559,7 +559,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         return Fail(error, QStringLiteral("A version-2 World needs a nonnil version-4 document UUID."));
     }
     const auto entities = candidate.value(QStringLiteral("entities")).toArray();
-    if (entities.size() > 128 || QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MaxBytes)
+    if (entities.size() > MAX_ENTITIES || QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MaxBytes)
     {
         return Fail(error, QStringLiteral("World supports at most 128 entities and 512 KiB."));
     }

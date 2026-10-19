@@ -2,6 +2,7 @@
 #include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
+#include "internal/render_scene_limits.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/projection.hpp>
@@ -132,8 +133,12 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     bool valid = scene.Identity.isEmpty()
                      ? (scene.Meshes.isEmpty() && scene.Textures.isEmpty() && scene.Surfaces.isEmpty() &&
                         scene.Objects.isEmpty() && scene.Cameras.isEmpty())
-                     : (scene.Meshes.isEmpty() == false && scene.Meshes.size() <= 6 && scene.Textures.size() <= 8 &&
-                        scene.Surfaces.size() <= 8 && scene.Objects.size() <= 128 && scene.Cameras.size() <= 128);
+                     : (scene.Meshes.isEmpty() == false &&
+                        static_cast<usize>(scene.Meshes.size()) <= content::scene_format::MAX_MESHES &&
+                        static_cast<usize>(scene.Textures.size()) <= content::scene_format::MAX_TEXTURES &&
+                        static_cast<usize>(scene.Surfaces.size()) <= content::scene_format::MAX_MATERIALS &&
+                        static_cast<usize>(scene.Objects.size()) <= MAX_PREVIEW_OBJECTS &&
+                        static_cast<usize>(scene.Cameras.size()) <= MAX_PREVIEW_CAMERAS);
     for (const auto& surface : scene.Surfaces)
     {
         valid = valid && surface.Texture >= (scene.Lit ? -1 : 0) && surface.Texture < scene.Textures.size();

@@ -57,6 +57,8 @@ private:
     foundation::uint64 Generation_ = 0;
     bool Again_ = false;
     bool QueuedLaunch_ = false;
+    /// Whether the next published scene still selects its default camera (set when a World opens).
+    bool mShouldUseDefaultCamera = false;
     RenderPreview Preview_;
     PreviewViewport* Viewport_;
     WorldDocument PreviewWorld_;

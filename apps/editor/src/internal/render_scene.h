@@ -19,6 +19,16 @@
 
 namespace ludus::editor
 {
+/// Where a World's render extraction comes from; one World has at most one source.
+enum class RenderSceneSource : foundation::uint8
+{
+    /// Nothing renders the World yet: no project bindings and no game adapter.
+    None,
+    /// The project's authoring/render.preview.json binds World components to renderables.
+    ProjectBindings,
+    /// The World-demo game extracts its own frame (apps/world_demo render_items).
+    WorldDemo,
+};
 // Private extraction adapter: project bindings name existing World properties.
 // Load validates every file before replacing output; no game code is executed.
 struct PreviewMesh final
@@ -115,6 +125,10 @@ struct RenderScene final
     QByteArray PacketIdentity;
     QByteArray AssetsIdentity;
     QJsonObject RenderableBinding;
+    /// Camera the viewport looks through until the user picks another; -1 is the editor camera.
+    foundation::int32 DefaultCamera = -1;
+    /// Choose the extraction source for a World in a project root; reads only file metadata.
+    [[nodiscard]] static RenderSceneSource GetSource(const QString& root, const WorldDocument& world);
     [[nodiscard]] static bool
     Load(const QString& root, const WorldDocument& world, RenderScene& output, QString& error);
     /// Bounds of the extracted visible objects, or one selected stable ID; failure preserves output.
