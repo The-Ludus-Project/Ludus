@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
@@ -52,7 +53,7 @@ void Select(WorldWorkspace& view, const QString& id)
     {
         if (list->item(row)->data(Qt::UserRole).toString() == id)
         {
-            list->setCurrentRow(row);
+            list->setCurrentRow(row, QItemSelectionModel::ClearAndSelect);
             return;
         }
     }

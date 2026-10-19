@@ -1,10 +1,15 @@
 #include "internal/window_hosted.hpp"
 
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+#    include "internal/hosted_mach.hpp"
+#endif
+
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/input/keyboard_event.h>
+#include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/keyboard_sink.h>
 #include <ludus/platform/log_categories.h>
 #include <ludus/platform/native_window.h>
@@ -25,13 +30,14 @@ namespace
 constexpr usize MAX_RECEIVE_ROUNDS = 16;
 constexpr foundation::uint64 NANOSECONDS_PER_MILLISECOND = 1'000'000;
 
-class WindowHosted final : public WindowBase
+class WindowHosted final : public WindowBase, public HostedSurfaceChannel
 {
 public:
-    WindowHosted(const CreateInfo& info, SocketDescriptor&& connection) noexcept
-        : WindowBase(info), mConnection(foundation::Move(connection))
+    WindowHosted(const CreateInfo& info, SocketDescriptor&& connection, const Token& token) noexcept
+        : WindowBase(info), mConnection(foundation::Move(connection)), mToken(token)
     {
         mNativeWindowInfo.System = WindowSystem::Hosted;
+        mNativeWindowInfo.HostedSurfaceOrNull = this;
     }
     ~WindowHosted() noexcept override
     {
@@ -49,7 +55,7 @@ public:
             return false;
         }
         synchronizeSink();
-        bool isChannelLost = processBuffered() == false;
+        bool isChannelLost = mIsChannelLost == true || flushSend() == false || processBuffered() == false;
         for (usize round = 0; round < MAX_RECEIVE_ROUNDS && isChannelLost == false && mIsClosed == false; ++round)
         {
             usize received = 0;
@@ -106,6 +112,7 @@ public:
                 mHostHeight = message.Height;
                 mNativeWindowInfo.Scale = message.Scale;
                 mVisibility = message.Visibility;
+                mNonce = message.Nonce;
                 publishExtent();
                 return true;
             }
@@ -187,15 +194,332 @@ private:
             case MessageKind::Close:
                 closeWindow();
                 return true;
+            case MessageKind::Release:
+                return queueRelease(message);
             case MessageKind::Hello:
             case MessageKind::Welcome:
             case MessageKind::Refused:
+            case MessageKind::Images:
+            case MessageKind::Present:
                 break;
         }
-        // Handshake messages after the handshake violate the protocol.
+        // Handshake messages after the handshake, and window-to-endpoint messages,
+        // violate the protocol.
         return false;
     }
 
+    [[nodiscard]] bool queueRelease(const Message& message) noexcept
+    {
+        // A conforming endpoint releases at most the images it was shown.
+        if (mReleaseCount == MAX_QUEUED_RELEASES)
+        {
+            return false;
+        }
+        mReleases[(mReleaseFirst + mReleaseCount) % MAX_QUEUED_RELEASES] =
+        {
+            .Generation = message.Generation,
+            .Image = message.Image,
+        };
+        ++mReleaseCount;
+        return true;
+    }
+
+    /// @brief Receive what the socket holds and move every Release out of the buffer.
+    ///
+    /// Window events stay buffered, in order, for HandleEvent(). Channel loss or a
+    /// malformed stream is recorded; HandleEvent() then reports the close.
+    void receiveReleases() noexcept
+    {
+        for (usize round = 0; round < MAX_RECEIVE_ROUNDS && mIsChannelLost == false; ++round)
+        {
+            if (extractReleases() == false)
+            {
+                mIsChannelLost = true;
+                return;
+            }
+            if (mReceivedSize == mReceived.GetSize())
+            {
+                // Window events fill the buffer; HandleEvent() must drain them first.
+                return;
+            }
+            usize received = 0;
+            const TransferStatus status =
+                ReceiveSome(mConnection.Get(),
+                            {mReceived.GetData() + mReceivedSize, mReceived.GetSize() - mReceivedSize},
+                            received);
+            if (status == TransferStatus::WouldBlock)
+            {
+                return;
+            }
+            if (status != TransferStatus::Progress)
+            {
+                mIsChannelLost = true;
+                return;
+            }
+            mReceivedSize += received;
+        }
+        if (mIsChannelLost == false && extractReleases() == false)
+        {
+            mIsChannelLost = true;
+        }
+    }
+
+    [[nodiscard]] bool extractReleases() noexcept
+    {
+        usize offset = 0;
+        while (offset < mReceivedSize && mReleaseCount < MAX_QUEUED_RELEASES)
+        {
+            Message message;
+            usize consumed = 0;
+            const DecodeStatus decoded =
+                TryDecodeMessage({mReceived.GetData() + offset, mReceivedSize - offset}, message, consumed);
+            if (decoded == DecodeStatus::NeedMore)
+            {
+                return true;
+            }
+            if (decoded == DecodeStatus::Malformed)
+            {
+                return false;
+            }
+            if (message.Kind != MessageKind::Release)
+            {
+                offset += consumed;
+                continue;
+            }
+            if (queueRelease(message) == false)
+            {
+                return false;
+            }
+            std::memmove(mReceived.GetData() + offset,
+                         mReceived.GetData() + offset + consumed,
+                         mReceivedSize - offset - consumed);
+            mReceivedSize -= consumed;
+        }
+        return true;
+    }
+
+    /// Send queued bytes; false when the channel is lost.
+    [[nodiscard]] bool flushSend() noexcept
+    {
+        while (mSendSize > 0)
+        {
+            usize sent = 0;
+            const TransferStatus status = SendSome(mConnection.Get(), {mSend.GetData(), mSendSize}, sent);
+            if (status == TransferStatus::WouldBlock)
+            {
+                return true;
+            }
+            if (status != TransferStatus::Progress)
+            {
+                mIsChannelLost = true;
+                return false;
+            }
+            std::memmove(mSend.GetData(), mSend.GetData() + sent, mSendSize - sent);
+            mSendSize -= sent;
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool enqueueSend(const Message& message) noexcept
+    {
+        usize size = 0;
+        if (TryEncodeMessage(message, {mSend.GetData() + mSendSize, mSend.GetSize() - mSendSize}, size) == false)
+        {
+            return false;
+        }
+        mSendSize += size;
+        return true;
+    }
+
+    [[nodiscard]] bool isSurfaceUsable() const noexcept
+    {
+        return mIsClosed == false && mIsChannelLost == false;
+    }
+
+    [[nodiscard]] static bool isValidImages(const HostedSurfaceImages& images) noexcept
+    {
+        Message message = makeImagesMessage(images);
+        for (const HostedImageHandle& handle : images.Handles)
+        {
+            if (handle.GetKind() != message.HandleKind)
+            {
+                return false;
+            }
+        }
+        return IsValidImagesMessage(message);
+    }
+
+    [[nodiscard]] static Message makeImagesMessage(const HostedSurfaceImages& images) noexcept
+    {
+        Message message;
+        message.Kind = MessageKind::Images;
+        message.Generation = images.Generation;
+        message.Width = images.Width;
+        message.Height = images.Height;
+        message.Format = images.Format;
+        message.HandleKind = images.Handles[0].GetKind();
+        message.AllocationSizes = images.AllocationSizes;
+        message.MemoryTypeIndex = images.MemoryTypeIndex;
+        message.DeviceUuid = images.DeviceUuid;
+        message.DriverUuid = images.DriverUuid;
+        return message;
+    }
+
+    [[nodiscard]] HostedSurfaceStatus publishDescriptors(HostedSurfaceImages& inoutImages) noexcept
+    {
+        // The descriptors ride on the message's first byte, so the queue must be empty.
+        if (mSendSize > 0)
+        {
+            return HostedSurfaceStatus::Busy;
+        }
+        foundation::StaticArray<uint8, MAX_MESSAGE_BYTES> bytes{};
+        usize size = 0;
+        if (TryEncodeMessage(makeImagesMessage(inoutImages), {bytes.GetData(), bytes.GetSize()}, size) == false)
+        {
+            return HostedSurfaceStatus::InvalidArgument;
+        }
+        foundation::StaticArray<int32, HOSTED_SURFACE_IMAGE_COUNT> descriptors{};
+        for (usize i = 0; i < HOSTED_SURFACE_IMAGE_COUNT; ++i)
+        {
+            descriptors[i] = inoutImages.Handles[i].GetFileDescriptor();
+        }
+        usize sent = 0;
+        const TransferStatus status = SendWithDescriptors(mConnection.Get(),
+                                                          {bytes.GetData(), size},
+                                                          descriptors.GetData(),
+                                                          descriptors.GetSize(),
+                                                          sent);
+        if (status == TransferStatus::WouldBlock)
+        {
+            return HostedSurfaceStatus::Busy;
+        }
+        if (status != TransferStatus::Progress)
+        {
+            mIsChannelLost = true;
+            return HostedSurfaceStatus::Disconnected;
+        }
+        // The kernel duplicated the descriptors into the message; the rest of a short
+        // write follows without them.
+        std::memcpy(mSend.GetData(), bytes.GetData() + sent, size - sent);
+        mSendSize = size - sent;
+        for (HostedImageHandle& handle : inoutImages.Handles)
+        {
+            handle.Reset();
+        }
+        return HostedSurfaceStatus::Ok;
+    }
+
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+    [[nodiscard]] HostedSurfaceStatus publishMachPorts(HostedSurfaceImages& inoutImages) noexcept
+    {
+        if (mRendezvous.IsConnected() == false)
+        {
+            RendezvousName name;
+            if (TryFormatRendezvousName(mNonce, name) == false)
+            {
+                return HostedSurfaceStatus::Unavailable;
+            }
+            if (mRendezvous.TryConnect(name) == false)
+            {
+                mIsChannelLost = true;
+                return HostedSurfaceStatus::Disconnected;
+            }
+        }
+        // Reserve the socket message first, so a sent Mach message is always announced.
+        if (mSend.GetSize() - mSendSize < MAX_MESSAGE_BYTES)
+        {
+            return HostedSurfaceStatus::Busy;
+        }
+        const RendezvousSendStatus status = mRendezvous.TrySend(mToken, inoutImages.Generation, inoutImages.Handles);
+        if (status == RendezvousSendStatus::Busy)
+        {
+            return HostedSurfaceStatus::Busy;
+        }
+        if (status != RendezvousSendStatus::Ok || enqueueSend(makeImagesMessage(inoutImages)) == false)
+        {
+            mIsChannelLost = true;
+            return HostedSurfaceStatus::Disconnected;
+        }
+        // The message carried copies; this window's own rights are no longer needed.
+        for (HostedImageHandle& handle : inoutImages.Handles)
+        {
+            handle.Reset();
+        }
+        return flushSend() == true ? HostedSurfaceStatus::Ok : HostedSurfaceStatus::Disconnected;
+    }
+#endif
+
+public:
+    HostedSurfaceStatus PublishImages(HostedSurfaceImages& inoutImages) noexcept override
+    {
+        if (isSurfaceUsable() == false || flushSend() == false)
+        {
+            return HostedSurfaceStatus::Disconnected;
+        }
+        if (isValidImages(inoutImages) == false || inoutImages.Generation <= mLastGeneration)
+        {
+            return HostedSurfaceStatus::InvalidArgument;
+        }
+        HostedSurfaceStatus status = HostedSurfaceStatus::Unavailable;
+        if (inoutImages.Handles[0].GetKind() == HostedHandleKind::OpaqueFileDescriptor)
+        {
+            status = publishDescriptors(inoutImages);
+        }
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+        if (inoutImages.Handles[0].GetKind() == HostedHandleKind::MachPort)
+        {
+            status = publishMachPorts(inoutImages);
+        }
+#endif
+        if (status == HostedSurfaceStatus::Ok)
+        {
+            mLastGeneration = inoutImages.Generation;
+        }
+        return status;
+    }
+
+    HostedSurfaceStatus Present(uint32 generation, uint32 image, foundation::uint64 sequence) noexcept override
+    {
+        if (isSurfaceUsable() == false || flushSend() == false)
+        {
+            return HostedSurfaceStatus::Disconnected;
+        }
+        if (generation == 0 || generation > mLastGeneration || image >= HOSTED_SURFACE_IMAGE_COUNT ||
+            (mHasPresented == true && sequence <= mLastSequence))
+        {
+            return HostedSurfaceStatus::InvalidArgument;
+        }
+        Message message;
+        message.Kind = MessageKind::Present;
+        message.Generation = generation;
+        message.Image = image;
+        message.Sequence = sequence;
+        if (enqueueSend(message) == false)
+        {
+            return HostedSurfaceStatus::Busy;
+        }
+        mHasPresented = true;
+        mLastSequence = sequence;
+        return flushSend() == true ? HostedSurfaceStatus::Ok : HostedSurfaceStatus::Disconnected;
+    }
+
+    HostedSurfaceStatus TakeRelease(HostedImageRelease& outRelease) noexcept override
+    {
+        if (mReleaseCount == 0 && isSurfaceUsable() == true)
+        {
+            receiveReleases();
+        }
+        if (mReleaseCount > 0)
+        {
+            outRelease = mReleases[mReleaseFirst];
+            mReleaseFirst = (mReleaseFirst + 1) % MAX_QUEUED_RELEASES;
+            --mReleaseCount;
+            return HostedSurfaceStatus::Ok;
+        }
+        return isSurfaceUsable() == true ? HostedSurfaceStatus::Busy : HostedSurfaceStatus::Disconnected;
+    }
+
+private:
     void applyReset(input::ResetReason reason, const input::FocusBaseline& baseline) noexcept
     {
         if (reason == input::ResetReason::FocusEntered)
@@ -283,6 +607,21 @@ private:
 
 private:
     SocketDescriptor mConnection;
+    /// Authenticates Mach rendezvous messages (macOS only).
+    [[maybe_unused]] Token mToken = {};
+    RendezvousNonce mNonce = {};
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+    RendezvousClient mRendezvous;
+#endif
+    foundation::StaticArray<uint8, SEND_BUFFER_BYTES> mSend = {};
+    usize mSendSize = 0;
+    foundation::StaticArray<HostedImageRelease, MAX_QUEUED_RELEASES> mReleases = {};
+    usize mReleaseFirst = 0;
+    usize mReleaseCount = 0;
+    uint32 mLastGeneration = 0;
+    foundation::uint64 mLastSequence = 0;
+    bool mHasPresented = false;
+    bool mIsChannelLost = false;
     foundation::StaticArray<uint8, RECEIVE_BUFFER_BYTES> mReceived = {};
     usize mReceivedSize = 0;
     uint32 mHostWidth = 0;
@@ -355,6 +694,7 @@ bool TrySendHello(int32 descriptor, const Token& token) noexcept
 }
 
 foundation::UniquePtr<Window> OpenWindow(SocketDescriptor&& connection,
+                                         const Token& token,
                                          const Window::CreateInfo& info,
                                          uint32 timeoutMilliseconds,
                                          HostedRefusal& outRefusal) noexcept
@@ -364,7 +704,7 @@ foundation::UniquePtr<Window> OpenWindow(SocketDescriptor&& connection,
     {
         return nullptr;
     }
-    WindowHosted* allocationOrNull = new (std::nothrow) WindowHosted(info, foundation::Move(owned));
+    WindowHosted* allocationOrNull = new (std::nothrow) WindowHosted(info, foundation::Move(owned), token);
     foundation::UniquePtr<WindowHosted> window(allocationOrNull);
     if (window.Get() == nullptr || window->WaitForWelcome(timeoutMilliseconds, outRefusal) == false)
     {
@@ -411,7 +751,7 @@ foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexc
     }
     HostedRefusal refusal = HostedRefusal::None;
     foundation::UniquePtr<Window> window =
-        OpenWindow(foundation::Move(connection), info, WELCOME_TIMEOUT_MILLISECONDS, refusal);
+        OpenWindow(foundation::Move(connection), token, info, WELCOME_TIMEOUT_MILLISECONDS, refusal);
     if (window.Get() == nullptr)
     {
         LUDUS_LOG_ERROR(LOG_PLATFORM,

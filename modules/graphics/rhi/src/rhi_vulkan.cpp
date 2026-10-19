@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/hosted_vulkan.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
@@ -12,6 +13,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
+#include <ludus/platform/hosted_surface.h>
 
 #include <cstring>
 #include <initializer_list>
@@ -110,6 +112,13 @@ uint32 gMaxDimension = 0;
 uint32 gMaxUniformSize = 0;
 WindowInfo gWindow;
 bool gHeadless = false;
+/// Renders a WindowSystem::Hosted window's frames into exported images. Hosted
+/// targets follow the headless layouts (gHeadless is true).
+HostedProducerVulkan gHostedProducer;
+/// Framebuffer of the acquired hosted image during a hosted frame.
+VkFramebuffer gHostedFramebuffer = VK_NULL_HANDLE;
+/// Incremented whenever CreateTargets() recreates the depth attachment.
+uint64 gDepthEpoch = 0;
 bool gBorrowedDevice = false;
 uint32 gNativeInstanceVersion = VK_API_VERSION_1_1;
 bool gEncoding = false;
@@ -125,6 +134,39 @@ bool Check(VkResult result) noexcept
         return false;
     }
     return true;
+}
+/// True when the connected window is WindowSystem::Hosted.
+bool IsHostedWindow() noexcept
+{
+    return gWindow.System == platform::WindowSystem::Hosted;
+}
+/// Framebuffer of the open frame's surface image.
+VkFramebuffer SurfaceFramebuffer() noexcept
+{
+    return gHostedProducer.IsConnected() == true ? gHostedFramebuffer : gTargets[gImage];
+}
+bool HasDeviceExtension(VkPhysicalDevice physical, const char* name) noexcept
+{
+    constexpr uint32 MAX_DEVICE_EXTENSIONS = 512;
+    uint32 count = 0;
+    if (vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, nullptr) != VK_SUCCESS ||
+        count > MAX_DEVICE_EXTENSIONS)
+    {
+        return false;
+    }
+    foundation::StaticArray<VkExtensionProperties, MAX_DEVICE_EXTENSIONS> available{};
+    if (vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, available.GetData()) != VK_SUCCESS)
+    {
+        return false;
+    }
+    for (uint32 i = 0; i < count; ++i)
+    {
+        if (std::strcmp(available[i].extensionName, name) == 0)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 void WaitIdle() noexcept
 {
@@ -313,7 +355,14 @@ bool CreateTargets() noexcept
     WaitIdle();
     ReleaseTargets();
     gExtent = { .width = gTarget.Width, .height = gTarget.Height };
-    if (gHeadless)
+    if (IsHostedWindow() == true)
+    {
+        // The hosted producer owns the color images and their framebuffers; only
+        // the shared depth attachment and the surface pass are created here.
+        gFormat = HOSTED_IMAGE_FORMAT;
+        gImageCount = 0;
+    }
+    else if (gHeadless)
     {
         gFormat = VK_FORMAT_R8G8B8A8_UNORM;
         gImageCount = 1;
@@ -459,6 +508,7 @@ bool CreateTargets() noexcept
     depthImage.samples = VK_SAMPLE_COUNT_1_BIT;
     depthImage.tiling = VK_IMAGE_TILING_OPTIMAL;
     depthImage.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    ++gDepthEpoch;
     if (Check(vkCreateImage(gDevice, &depthImage, nullptr, &gDepthImage)) == false)
     {
         return false;
@@ -679,6 +729,11 @@ bool ConnectWindow(const WindowInfo& window) noexcept
     }
     if (gBorrowedDevice && gPass == VK_NULL_HANDLE)
     {
+        if (window.System == platform::WindowSystem::Hosted)
+        {
+            // A borrowed device has no exportable-memory extension negotiated by RHI.
+            return false;
+        }
         gWindow = window;
         gHeadless = true;
         gTarget.Width = window.Width;
@@ -696,7 +751,11 @@ bool ConnectWindow(const WindowInfo& window) noexcept
                gWindow.Surface == window.Surface;
     }
     gWindow = window;
-    gHeadless = window.System == platform::WindowSystem::Headless;
+    if (IsHostedWindow() == true && window.HostedSurfaceOrNull == nullptr)
+    {
+        return false;
+    }
+    gHeadless = window.System == platform::WindowSystem::Headless || IsHostedWindow() == true;
     if (gHeadless == false)
     {
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
@@ -734,6 +793,12 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             LUDUS_LOG_ERROR(LOG_RHI, "Vulkan 1.1 is required for the generated SPIR-V profile");
             return false;
         }
+        if (IsHostedWindow() == true && HasDeviceExtension(gPhysical, HOSTED_MEMORY_EXTENSION_NAME) == false)
+        {
+            // Filter before committing to the adapter, so a later capable one is still considered.
+            LUDUS_LOG_ERROR(LOG_RHI, "A hosted window needs VK_KHR_external_memory_fd on the adapter");
+            return false;
+        }
         gMaxDimension = properties.limits.maxImageDimension2D;
         const uint32 dimensionLimits[] = {properties.limits.maxFramebufferWidth,
                                           properties.limits.maxFramebufferHeight,
@@ -753,8 +818,15 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         queue.queueFamilyIndex = gFamily;
         queue.queueCount = 1;
         queue.pQueuePriorities = &priority;
-        const char* extensions[5] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
+        // Swapchain (two), ray queries (three) or the hosted memory extension (one).
+        constexpr usize MAX_ENABLED_DEVICE_EXTENSIONS = 6;
+        const char* extensions[MAX_ENABLED_DEVICE_EXTENSIONS] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                                                                 VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
         uint32 enabledExtensions = gHeadless ? 0U : 2U;
+        if (IsHostedWindow() == true)
+        {
+            extensions[enabledExtensions++] = HOSTED_MEMORY_EXTENSION_NAME;
+        }
         VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance{};
         maintenance.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
         if (gHeadless == false)
@@ -943,6 +1015,11 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         }
         volkLoadDevice(gDevice);
         vkGetDeviceQueue(gDevice, gFamily, 0, &gQueue);
+        if (IsHostedWindow() == true)
+        {
+            gHostedProducer.Connect({ .PhysicalDevice = gPhysical, .Device = gDevice, .QueueFamily = gFamily },
+                                    *window.HostedSurfaceOrNull);
+        }
         gTarget.Width = window.Width;
         gTarget.Height = window.Height;
         if (gTarget.Width == 0 || gTarget.Height == 0 || gTarget.Width > gMaxDimension ||
@@ -1000,6 +1077,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
                 return true;
             }
             ReleaseTargets();
+            gHostedProducer.Disconnect();
             if (gDevice != VK_NULL_HANDLE)
             {
                 vkDestroyRenderPass(gDevice, gPass, nullptr);
@@ -1062,7 +1140,8 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
 {
     // Native ignores the browser selection (the facade already rejected a forced
     // browser backend via Supports); Vulkan is the only native backend.
-    if (window.System != platform::WindowSystem::Headless &&
+    const bool isValidHosted = window.System == platform::WindowSystem::Hosted && window.HostedSurfaceOrNull != nullptr;
+    if (window.System != platform::WindowSystem::Headless && isValidHosted == false &&
         (window.System != platform::WindowSystem::Wayland || window.Display == nullptr || window.Surface == nullptr))
     {
         return StartupError::InvalidWindow;
@@ -1094,6 +1173,8 @@ void ShutdownRendering() noexcept
     RetireAcquiredImage();
     WaitIdle();
     WaitPresents();
+    gHostedProducer.Cancel();
+    gHostedFramebuffer = VK_NULL_HANDLE;
     for (auto& frame : gFrames)
     {
         vkDestroyFence(gDevice, frame.Fence, nullptr);
@@ -1108,6 +1189,8 @@ void Shutdown() noexcept
 {
     ShutdownRendering();
     ReleaseTargets();
+    // ShutdownRendering waited for every submission that wrote a hosted image.
+    gHostedProducer.Disconnect();
     if (gDevice != VK_NULL_HANDLE)
     {
         vkDestroyRenderPass(gDevice, gPass, nullptr);
@@ -1181,6 +1264,11 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
 }
 FrameStatus Begin() noexcept
 {
+    if (gHostedProducer.IsConnected() == true && gHostedProducer.Poll() == false)
+    {
+        gLastResult = VK_ERROR_DEVICE_LOST;
+        return Failure();
+    }
     if (gTarget.Width == 0 || gTarget.Height == 0)
     {
         return FrameStatus::Skipped;
@@ -1199,6 +1287,8 @@ FrameStatus Begin() noexcept
         return Failure();
     }
     frame.Submitted = false;
+    // Hosted frames guarded by this fence have completed; it may be reset from now on.
+    gHostedProducer.MarkSignaled(frame.Fence);
     // Harvest the captured query before its frame fence can be reset for later work.
     (void)TimingPoll();
     if (gDevice == VK_NULL_HANDLE)
@@ -1211,6 +1301,19 @@ FrameStatus Begin() noexcept
         return FrameStatus::Failed;
     }
     gImage = 0;
+    if (gHostedProducer.IsConnected() == true)
+    {
+        const HostedVulkanAcquireStatus acquired =
+            gHostedProducer.Acquire(gExtent.width, gExtent.height, gPass, gDepthView, gDepthEpoch, gHostedFramebuffer);
+        if (acquired == HostedVulkanAcquireStatus::Skipped)
+        {
+            return FrameStatus::Skipped;
+        }
+        if (acquired == HostedVulkanAcquireStatus::Failed)
+        {
+            return Failure();
+        }
+    }
     if (gHeadless == false)
     {
         const auto result =
@@ -1249,6 +1352,7 @@ FrameStatus Begin() noexcept
     }
     if (Check(vkResetCommandBuffer(frame.Command, 0)) == false)
     {
+        gHostedProducer.Cancel();
         return Failure();
     }
     VkCommandBufferBeginInfo begin{};
@@ -1256,6 +1360,7 @@ FrameStatus Begin() noexcept
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (Check(vkBeginCommandBuffer(frame.Command, &begin)) == false)
     {
+        gHostedProducer.Cancel();
         return Failure();
     }
     TimingBegin();
@@ -1269,7 +1374,7 @@ FrameStatus Begin() noexcept
     VkRenderPassBeginInfo pass{};
     pass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     pass.renderPass = gPass;
-    pass.framebuffer = gTargets[gImage];
+    pass.framebuffer = SurfaceFramebuffer();
     pass.renderArea.extent = gExtent;
     pass.clearValueCount = 2;
     pass.pClearValues = clears;
@@ -1287,8 +1392,14 @@ FrameStatus End() noexcept
     }
     gEncoding = false;
     TimingEnd();
+    if (gHostedProducer.IsConnected() == true)
+    {
+        // Hand the image to the editor: VK_QUEUE_FAMILY_EXTERNAL, SHADER_READ_ONLY_OPTIMAL.
+        gHostedProducer.RecordRelease(frame.Command);
+    }
     if (Check(vkEndCommandBuffer(frame.Command)) == false || Check(vkResetFences(gDevice, 1, &frame.Fence)) == false)
     {
+        gHostedProducer.Cancel();
         return Failure();
     }
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1306,9 +1417,17 @@ FrameStatus End() noexcept
     }
     if (Check(vkQueueSubmit(gQueue, 1, &submit, frame.Fence)) == false)
     {
+        gHostedProducer.Cancel();
         return Failure();
     }
     frame.Submitted = true;
+    if (gHostedProducer.IsConnected() == true)
+    {
+        // Announced with Present once this fence signals (CPU fence).
+        gHostedProducer.Submit(frame.Fence);
+        gHostedFramebuffer = VK_NULL_HANDLE;
+        static_cast<void>(gHostedProducer.Poll());
+    }
     TimingSubmitted();
     gAcquiredWait = false;
     gFrame = (gFrame + 1) % FRAMES;

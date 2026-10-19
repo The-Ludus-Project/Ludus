@@ -142,6 +142,61 @@ bool IsWireResetReason(input::ResetReason reason) noexcept
            reason == input::ResetReason::Overflow;
 }
 
+/// Reserved bytes after the image index of Present and Release.
+constexpr usize RESERVED_REFERENCE_BYTES = 3;
+
+bool IsValidImageReference(uint32 generation, uint32 image) noexcept
+{
+    return generation != 0 && image < HOSTED_SURFACE_IMAGE_COUNT;
+}
+
+void WriteReserved(usize count, MessageWriter& inoutWriter) noexcept
+{
+    for (usize i = 0; i < count; ++i)
+    {
+        inoutWriter.Write<uint8>(0);
+    }
+}
+
+[[nodiscard]] bool IsReservedZero(usize count, MessageReader& inoutReader) noexcept
+{
+    uint8 bits = 0;
+    for (usize i = 0; i < count; ++i)
+    {
+        bits = static_cast<uint8>(bits | inoutReader.Read<uint8>());
+    }
+    return bits == 0;
+}
+
+bool TryReadUuid(MessageReader& inoutReader, AdapterUuid& outUuid) noexcept
+{
+    const uint8* bytesOrNull = inoutReader.ReadBytesOrNull(HOSTED_ADAPTER_UUID_BYTES);
+    if (bytesOrNull == nullptr)
+    {
+        return false;
+    }
+    std::memcpy(outUuid.GetData(), bytesOrNull, HOSTED_ADAPTER_UUID_BYTES);
+    return true;
+}
+
+bool TryDecodeImages(MessageReader& inoutReader, Message& inoutMessage) noexcept
+{
+    inoutMessage.Generation = inoutReader.Read<uint32>();
+    inoutMessage.Width = inoutReader.Read<uint32>();
+    inoutMessage.Height = inoutReader.Read<uint32>();
+    inoutMessage.Format = static_cast<HostedImageFormat>(inoutReader.Read<uint8>());
+    inoutMessage.HandleKind = static_cast<HostedHandleKind>(inoutReader.Read<uint8>());
+    const bool hasZeroReserved = inoutReader.Read<uint16>() == 0;
+    for (uint64& size : inoutMessage.AllocationSizes)
+    {
+        size = inoutReader.Read<uint64>();
+    }
+    inoutMessage.MemoryTypeIndex = inoutReader.Read<uint32>();
+    return TryReadUuid(inoutReader, inoutMessage.DeviceUuid) == true &&
+           TryReadUuid(inoutReader, inoutMessage.DriverUuid) == true && hasZeroReserved == true &&
+           IsValidImagesMessage(inoutMessage) == true;
+}
+
 void WriteKeyMask(const input::FocusBaseline& baseline, bool isFocused, MessageWriter& inoutWriter) noexcept
 {
     foundation::StaticArray<uint8, KEY_MASK_BYTES> mask{};
@@ -203,6 +258,7 @@ bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexce
             inoutWriter.Write<uint32>(message.Width);
             inoutWriter.Write<uint32>(message.Height);
             inoutWriter.Write<uint32>(GetScaleBits(message.Scale));
+            inoutWriter.WriteBytes(message.Nonce.GetData(), message.Nonce.GetSize());
             return true;
         case MessageKind::Refused:
             if (IsValidRefusal(static_cast<uint8>(message.Refusal)) == false)
@@ -247,6 +303,44 @@ bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexce
             return true;
         case MessageKind::Close:
             return true;
+        case MessageKind::Images:
+            if (IsValidImagesMessage(message) == false)
+            {
+                return false;
+            }
+            inoutWriter.Write<uint32>(message.Generation);
+            inoutWriter.Write<uint32>(message.Width);
+            inoutWriter.Write<uint32>(message.Height);
+            inoutWriter.Write<uint8>(static_cast<uint8>(message.Format));
+            inoutWriter.Write<uint8>(static_cast<uint8>(message.HandleKind));
+            inoutWriter.Write<uint16>(0);
+            for (const uint64 size : message.AllocationSizes)
+            {
+                inoutWriter.Write<uint64>(size);
+            }
+            inoutWriter.Write<uint32>(message.MemoryTypeIndex);
+            inoutWriter.WriteBytes(message.DeviceUuid.GetData(), message.DeviceUuid.GetSize());
+            inoutWriter.WriteBytes(message.DriverUuid.GetData(), message.DriverUuid.GetSize());
+            return true;
+        case MessageKind::Present:
+            if (IsValidImageReference(message.Generation, message.Image) == false)
+            {
+                return false;
+            }
+            inoutWriter.Write<uint32>(message.Generation);
+            inoutWriter.Write<uint8>(static_cast<uint8>(message.Image));
+            WriteReserved(RESERVED_REFERENCE_BYTES, inoutWriter);
+            inoutWriter.Write<uint64>(message.Sequence);
+            return true;
+        case MessageKind::Release:
+            if (IsValidImageReference(message.Generation, message.Image) == false)
+            {
+                return false;
+            }
+            inoutWriter.Write<uint32>(message.Generation);
+            inoutWriter.Write<uint8>(static_cast<uint8>(message.Image));
+            WriteReserved(RESERVED_REFERENCE_BYTES, inoutWriter);
+            return true;
     }
     return false;
 }
@@ -271,13 +365,19 @@ usize GetPayloadBytes(MessageKind kind) noexcept
             return KEY_PAYLOAD_BYTES;
         case MessageKind::Close:
             return CLOSE_PAYLOAD_BYTES;
+        case MessageKind::Images:
+            return IMAGES_PAYLOAD_BYTES;
+        case MessageKind::Present:
+            return PRESENT_PAYLOAD_BYTES;
+        case MessageKind::Release:
+            return RELEASE_PAYLOAD_BYTES;
     }
     return 0;
 }
 
 bool IsKnownKind(uint16 value) noexcept
 {
-    return value >= static_cast<uint16>(MessageKind::Hello) && value <= static_cast<uint16>(MessageKind::Close);
+    return value >= static_cast<uint16>(MessageKind::Hello) && value <= static_cast<uint16>(MessageKind::Release);
 }
 
 bool TryDecodeHello(MessageReader& inoutReader, usize payloadSize, Message& inoutMessage) noexcept
@@ -328,6 +428,12 @@ bool TryDecodePayload(MessageReader& inoutReader, usize payloadSize, Message& in
             inoutMessage.Height = inoutReader.Read<uint32>();
             inoutMessage.Scale = GetScale(inoutReader.Read<uint32>());
             inoutMessage.Visibility = static_cast<WindowVisibility>(visibility);
+            const uint8* nonceOrNull = inoutReader.ReadBytesOrNull(RENDEZVOUS_NONCE_BYTES);
+            if (nonceOrNull == nullptr)
+            {
+                return false;
+            }
+            std::memcpy(inoutMessage.Nonce.GetData(), nonceOrNull, RENDEZVOUS_NONCE_BYTES);
             return inoutMessage.Version == PROTOCOL_VERSION && reserved == 0 && IsValidVisibility(visibility) == true &&
                    IsValidExtent(inoutMessage.Width, inoutMessage.Height) == true &&
                    IsValidScale(inoutMessage.Scale) == true;
@@ -367,6 +473,21 @@ bool TryDecodePayload(MessageReader& inoutReader, usize payloadSize, Message& in
         }
         case MessageKind::Close:
             return true;
+        case MessageKind::Images:
+            return TryDecodeImages(inoutReader, inoutMessage);
+        case MessageKind::Present: {
+            inoutMessage.Generation = inoutReader.Read<uint32>();
+            inoutMessage.Image = inoutReader.Read<uint8>();
+            const bool hasZeroReserved = IsReservedZero(RESERVED_REFERENCE_BYTES, inoutReader);
+            inoutMessage.Sequence = inoutReader.Read<uint64>();
+            return hasZeroReserved == true && IsValidImageReference(inoutMessage.Generation, inoutMessage.Image);
+        }
+        case MessageKind::Release: {
+            inoutMessage.Generation = inoutReader.Read<uint32>();
+            inoutMessage.Image = inoutReader.Read<uint8>();
+            return IsReservedZero(RESERVED_REFERENCE_BYTES, inoutReader) == true &&
+                   IsValidImageReference(inoutMessage.Generation, inoutMessage.Image);
+        }
     }
     return false;
 }
@@ -397,6 +518,14 @@ bool IsValidScale(float32 scale) noexcept
 {
     // NaN fails both comparisons; infinity fails the upper bound.
     return scale > 0.0F && scale <= MAX_SCALE;
+}
+
+bool IsValidImagesMessage(const Message& message) noexcept
+{
+    return message.Generation != 0 && message.Width != 0 && message.Height != 0 &&
+           IsValidExtent(message.Width, message.Height) == true && message.Format == HostedImageFormat::Rgba8Unorm &&
+           (message.HandleKind == HostedHandleKind::MachPort ||
+            message.HandleKind == HostedHandleKind::OpaqueFileDescriptor);
 }
 
 bool AreTokensEqual(const Token& left, const Token& right) noexcept

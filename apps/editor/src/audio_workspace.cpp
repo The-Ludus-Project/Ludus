@@ -1,4 +1,5 @@
 #include "internal/audio_workspace.h"
+#include "internal/item_selection.h"
 
 #include <QCheckBox>
 #include <QDir>
@@ -105,6 +106,7 @@ AudioWorkspace::AudioWorkspace(QWidget* parent) : QWidget(parent)
 {
     auto* layout = new QVBoxLayout(this);
     List_ = new QListWidget(this);
+    ConfigureItemSelection(*List_);
     List_->setObjectName(QStringLiteral("audio-resources"));
     layout->addWidget(List_);
     auto* actions = new QHBoxLayout;

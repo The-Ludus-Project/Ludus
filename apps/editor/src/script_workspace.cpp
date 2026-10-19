@@ -1,4 +1,5 @@
 #include "internal/script_workspace.h"
+#include "internal/item_selection.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/sort.hpp>
@@ -106,6 +107,7 @@ ScriptWorkspace::ScriptWorkspace(EditorController* controller, QWidget* parent)
 
     layout->addWidget(Text_);
     Nodes_ = new QTableWidget(this);
+    ConfigureItemSelection(*Nodes_);
     Nodes_->setObjectName(QStringLiteral("scriptNodes"));
     Nodes_->setColumnCount(4);
     Nodes_->setHorizontalHeaderLabels({QStringLiteral("Node ID"),

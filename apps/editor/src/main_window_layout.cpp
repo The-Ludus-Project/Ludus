@@ -4,6 +4,7 @@
 #include "internal/document_well.h"
 #include "internal/editor_commands.h"
 #include "internal/error_list.h"
+#include "internal/item_selection.h"
 #include "internal/main_window.h"
 #include "internal/project_explorer.h"
 #include "internal/renderer_workspace.h"
@@ -227,6 +228,7 @@ void MainWindow::BuildUi()
 
     // Argument list editor: one string per item, Add/Remove; never a shell line.
     ArgsList_ = new QListWidget(form);
+    ConfigureItemSelection(*ArgsList_);
     ArgsList_->setObjectName(QStringLiteral("projectArguments"));
     connect(ArgsList_->model(), &QAbstractItemModel::dataChanged, this, &MainWindow::OnFieldEdited);
     auto* argsButtons = new QWidget(form);
@@ -317,7 +319,7 @@ void MainWindow::BuildUi()
         {QStringLiteral("Property"), QStringLiteral("Value"), QStringLiteral("Scope")});
     Properties_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     Properties_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    Properties_->setSelectionMode(QAbstractItemView::SingleSelection);
+    ConfigureItemSelection(*Properties_);
     ApplySessionButton_ = new QPushButton(QStringLiteral("Apply to session"), inspector);
     ApplySessionButton_->setToolTip(QStringLiteral("Apply the selected edited value to the running session."));
     connect(ApplySessionButton_, &QPushButton::clicked, this, [this]() {
@@ -386,6 +388,7 @@ void MainWindow::BuildUi()
         new QLabel(QStringLiteral("No recent projects yet. Open a project to add it here."), recentPanel);
     RecentEmptyLabel_->setWordWrap(true);
     RecentList_ = new QListWidget(recentPanel);
+    ConfigureItemSelection(*RecentList_);
     RecentList_->setObjectName(QStringLiteral("recentProjectsList"));
     RecentList_->setAccessibleName(QStringLiteral("Recent projects"));
     RecentList_->setWordWrap(true);

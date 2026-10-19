@@ -85,6 +85,38 @@ SendSome(int32 descriptor, foundation::BorrowedView<const uint8> bytes, usize& o
 [[nodiscard]] TransferStatus
 ReceiveSome(int32 descriptor, foundation::BorrowedView<uint8> outBytes, usize& outReceived) noexcept;
 
+/// Most file descriptors one transfer carries: one hosted surface generation.
+inline constexpr usize MAX_TRANSFER_DESCRIPTORS = 3;
+/// Most file descriptors one receive accepts: four generations in flight.
+inline constexpr usize MAX_RECEIVE_DESCRIPTORS = 4 * MAX_TRANSFER_DESCRIPTORS;
+
+/// @brief Send bytes with file descriptors attached (SCM_RIGHTS), without blocking.
+///
+/// The descriptors travel with the first byte. On Progress they were sent, even when
+/// fewer bytes than requested moved; the caller still owns and must close its copies.
+/// On WouldBlock nothing moved.
+/// @pre `descriptorCount` is 1 to MAX_TRANSFER_DESCRIPTORS and `bytes` is nonempty.
+[[nodiscard]] TransferStatus SendWithDescriptors(int32 descriptor,
+                                                 foundation::BorrowedView<const uint8> bytes,
+                                                 const int32* descriptors,
+                                                 usize descriptorCount,
+                                                 usize& outSent) noexcept;
+
+/// @brief Receive bytes and any attached file descriptors, without blocking.
+///
+/// Received descriptors are close-on-exec and owned by the caller. More descriptors
+/// than `descriptorCapacity`, or a truncated control message, is Failed; every
+/// descriptor received by that call is closed then.
+/// @pre `descriptorCapacity` is at most MAX_RECEIVE_DESCRIPTORS.
+/// @param outDescriptors Room for `descriptorCapacity` descriptors.
+/// @param outDescriptorCount Descriptors written to `outDescriptors`; zero unless Progress.
+[[nodiscard]] TransferStatus ReceiveWithDescriptors(int32 descriptor,
+                                                    foundation::BorrowedView<uint8> outBytes,
+                                                    usize& outReceived,
+                                                    int32* outDescriptors,
+                                                    usize descriptorCapacity,
+                                                    usize& outDescriptorCount) noexcept;
+
 /// @brief Wait until a socket is readable, closed or failed.
 /// @param timeout Longest wait, rounded up to whole milliseconds; zero polls once.
 /// @return false on timeout or a poll failure.
@@ -95,6 +127,12 @@ ReceiveSome(int32 descriptor, foundation::BorrowedView<uint8> outBytes, usize& o
 /// macOS uses getpeereid(3); Linux uses SO_PEERCRED. The kernel records the
 /// credentials at connect() time, so the peer cannot forge them.
 [[nodiscard]] bool TryReadPeerUserId(int32 descriptor, uint32& outUserId) noexcept;
+
+/// @brief Read the process id of a connected Unix-socket peer.
+///
+/// macOS uses LOCAL_PEERPID; Linux uses SO_PEERCRED. Like the user id, the kernel
+/// records it at connect() time.
+[[nodiscard]] bool TryReadPeerProcessId(int32 descriptor, int32& outProcessId) noexcept;
 
 /// The effective user id of this process.
 [[nodiscard]] uint32 GetCurrentUserId() noexcept;

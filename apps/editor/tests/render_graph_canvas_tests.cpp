@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
+#include <QKeySequence>
 #include <QNativeGestureEvent>
 #include <QPointingDevice>
 #include <QSignalSpy>
@@ -448,4 +449,34 @@ TEST_CASE("RG3b double-clicking a Subgraph navigates to its source", "[editor][r
     CHECK(workspace.GetSourceFile() == LIBRARY);
     // Navigation is not an edit.
     CHECK(workspace.GetDocument().GetRevision() == 0);
+}
+
+TEST_CASE("Canvas supports native Select All toggle additive and Escape selection",
+          "[editor][render-graph][canvas][selection]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.resize(1100, 700);
+    canvas.show();
+    canvas.activateWindow();
+    QCoreApplication::processEvents();
+    canvas.setFocus();
+    QTest::keySequence(&canvas, QKeySequence(QKeySequence::SelectAll));
+    CHECK(canvas.GetSelectedNodes().size() == canvas.GetNodeCount());
+    QTest::keyClick(&canvas, Qt::Key_Escape);
+    CHECK(canvas.GetSelectedNodes().isEmpty() == true);
+    const QPoint scene = ToViewport(canvas, canvas.GetNodePosition(QStringLiteral("scene")) + QPointF(40, 12));
+    const QPoint camera = ToViewport(canvas, canvas.GetNodePosition(QStringLiteral("camera")) + QPointF(40, 12));
+    QTest::mouseClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, scene);
+    QTest::mouseClick(canvas.viewport(), Qt::LeftButton, Qt::ControlModifier, camera);
+    CHECK(canvas.GetSelectedNodes().size() == 2);
+    QTest::mouseClick(canvas.viewport(), Qt::LeftButton, Qt::ControlModifier, scene);
+    CHECK(canvas.GetSelectedNodes() == QStringList{QStringLiteral("camera")});
+    QTest::mouseClick(canvas.viewport(), Qt::LeftButton, Qt::ShiftModifier, scene);
+    CHECK(canvas.GetSelectedNodes().size() == 2);
+    CHECK(document.GetRevision() == 0);
 }

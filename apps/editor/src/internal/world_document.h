@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 
 namespace ludus::editor
 {
@@ -94,6 +95,14 @@ public:
                                        QString& outError,
                                        const QString& source,
                                        QString& outId);
+    /// Duplicate a group as one undo step, remapping references within the copied group.
+    /// Failure preserves the document, history and outIds, including entropy/capacity failure.
+    [[nodiscard]] bool DuplicateEntities(const foundation::identity::EntropySource& entropy,
+                                         const QStringList& sources,
+                                         QStringList& outIds,
+                                         QString& outError);
+    /// Remove a group as one undo step. Surviving references reject the entire edit.
+    [[nodiscard]] bool RemoveEntities(const QStringList& ids, QString& outError);
     [[nodiscard]] bool RemoveEntity(const QString& id, QString& error);
     // Renaming changes only the display name; the label and UUID are preserved.
     [[nodiscard]] bool RenameEntity(const QString& id, QString& error, const QString& name);

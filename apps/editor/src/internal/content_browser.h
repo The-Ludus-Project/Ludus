@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QVector>
 #include <QWidget>
@@ -134,6 +135,7 @@ private:
     QPushButton* Cancel_ = nullptr;
     QString Root_;
     QString SelectedId_;
+    QStringList mSelectedIds;
     foundation::uint64 Epoch_ = 0;
     foundation::uint64 NextOperation_ = 0;
     foundation::uint64 ActiveOperation_ = 0;

@@ -999,6 +999,96 @@ bool WorldDocument::DuplicateEntity(const foundation::identity::EntropySource& e
     outId = foundation::Move(fresh);
     return true;
 }
+bool WorldDocument::DuplicateEntities(const foundation::identity::EntropySource& entropy,
+                                      const QStringList& sources,
+                                      QStringList& outIds,
+                                      QString& outError)
+{
+    QStringList uniqueSources = sources;
+    uniqueSources.removeDuplicates();
+    if (uniqueSources.isEmpty() == true)
+    {
+        return Fail(outError, QStringLiteral("Select entities to duplicate."));
+    }
+    WorldDocument candidate = *this;
+    QStringList copies;
+    for (const QString& source : uniqueSources)
+    {
+        QString copy;
+        if (candidate.DuplicateEntity(entropy, outError, source, copy) == false)
+        {
+            return false;
+        }
+        copies.append(copy);
+    }
+    QJsonObject draft = candidate.Draft();
+    QJsonArray entities = draft.value(QStringLiteral("entities")).toArray();
+    for (foundation::int32 index = 0; index < entities.size(); ++index)
+    {
+        QJsonObject entity = entities[index].toObject();
+        if (copies.contains(GetEntityKey(entity)) == false)
+        {
+            continue;
+        }
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        for (QJsonObject::iterator component = components.begin(); component != components.end(); ++component)
+        {
+            QJsonObject properties = component.value().toObject();
+            for (const QJsonValue value : Component(component.key()).value(QStringLiteral("properties")).toArray())
+            {
+                const QJsonObject property = value.toObject();
+                const QString key = property.value(QStringLiteral("id")).toString();
+                const foundation::isize sourceIndex = uniqueSources.indexOf(properties.value(key).toString());
+                if (property.value(QStringLiteral("type")) == QJsonValue(QStringLiteral("entity")) && sourceIndex >= 0)
+                {
+                    properties.insert(key, copies[sourceIndex]);
+                }
+            }
+            component.value() = properties;
+        }
+        entity.insert(QStringLiteral("components"), components);
+        QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+        const foundation::isize parentIndex = uniqueSources.indexOf(scene.value(QStringLiteral("parent")).toString());
+        if (scene.isEmpty() == false && parentIndex >= 0)
+        {
+            scene.insert(QStringLiteral("parent"), copies[parentIndex]);
+            entity.insert(QStringLiteral("scene"), scene);
+        }
+        entities[index] = entity;
+    }
+    draft.insert(QStringLiteral("entities"), entities);
+    if (Commit(draft, outError) == false)
+    {
+        return false;
+    }
+    outIds = copies;
+    return true;
+}
+bool WorldDocument::RemoveEntities(const QStringList& ids, QString& outError)
+{
+    if (ids.isEmpty() == true)
+    {
+        return Fail(outError, QStringLiteral("Select entities to delete."));
+    }
+    for (const QString& id : ids)
+    {
+        if (Entity(id).isEmpty() == true)
+        {
+            return Fail(outError, QStringLiteral("Entity no longer exists."));
+        }
+    }
+    QJsonObject candidate = Draft_;
+    QJsonArray entities = candidate.value(QStringLiteral("entities")).toArray();
+    for (foundation::int32 index = static_cast<foundation::int32>(entities.size()); index > 0; --index)
+    {
+        if (ids.contains(GetEntityKey(entities[index - 1].toObject())) == true)
+        {
+            entities.removeAt(index - 1);
+        }
+    }
+    candidate.insert(QStringLiteral("entities"), entities);
+    return Commit(candidate, outError);
+}
 bool WorldDocument::RemoveEntity(const QString& id, QString& error)
 {
     auto entities = Draft_.value(QStringLiteral("entities")).toArray();

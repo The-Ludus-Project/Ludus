@@ -2294,7 +2294,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     {
         return RasterError(prepared);
     }
-    VkFramebuffer framebuffer = surface ? gTargets[gImage] : gRasterTextures[info.Texture].Framebuffer;
+    VkFramebuffer framebuffer = surface ? SurfaceFramebuffer() : gRasterTextures[info.Texture].Framebuffer;
     gRasterExtent =
         surface ? gExtent
                 : VkExtent2D{gRasterTextures[info.Texture].Info.Width, gRasterTextures[info.Texture].Info.Height};
