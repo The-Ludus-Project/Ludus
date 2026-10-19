@@ -58,7 +58,6 @@ constexpr QRgb STATISTICS_BACKGROUND = qRgba(9, 12, 15, 190);
 constexpr QRgb STATISTICS_TEXT = qRgb(232, 236, 240);
 /// Translucent red panel behind live shader errors and restart notices.
 constexpr QRgb SHADER_ERROR_BACKGROUND = qRgba(110, 20, 24, 215);
-#    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Live shaders toggle tooltip; while an error is shown the tooltip carries its full text instead.
 QString GetLiveShadersToolTip()
 {
@@ -68,7 +67,6 @@ QString GetLiveShadersToolTip()
         "viewport's shaders in every shading mode without restarting. Compile errors keep the last good "
         "shaders and are shown over the viewport.");
 }
-#    endif
 /// Stacking order above the frame item, so clearFrames recreating that item never covers it.
 constexpr qreal STATISTICS_Z = 1;
 QFont GetStatisticsFont()
