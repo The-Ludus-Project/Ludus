@@ -94,6 +94,11 @@ public:
     {
         return Document_;
     }
+    /// Move the entity inspector (name, component fields, Add Component, Apply and Reset)
+    /// out of this view into newParent, for a shell Properties tool window. The panel keeps
+    /// editing this workspace's draft; this workspace keeps owning its state. Call once.
+    /// @return The moved panel; it lives as long as newParent keeps it.
+    [[nodiscard]] QWidget* TakePropertiesPanel(QWidget* newParent);
     /// Replace the entropy source that mints World, entity and scene-level IDs,
     /// including the embedded 3D level workspace's. Production keeps
     /// platform::GetSystemEntropySource(); tests inject a controlled or failing source.
@@ -127,6 +132,8 @@ private:
     /// Record which viewport renderer the World shows and emit RenderPreviewChanged on change.
     void updateShownRenderPreview(bool isSceneShown);
     RenderPreview* mShownRenderPreviewOrNull = nullptr;
+    /// Entity inspector column; TakePropertiesPanel moves it into a shell tool window.
+    QWidget* mPropertiesPanel;
     WorldDocument Document_;
     foundation::identity::EntropySource mEntropy = platform::GetSystemEntropySource();
     SceneDocument DemoDocument_;

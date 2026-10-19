@@ -1,5 +1,6 @@
 #include "internal/audio_preview.h"
 #include "internal/audio_workspace.h"
+#include "internal/content_browser.h"
 #include "internal/content_import.h"
 #include "internal/main_window.h"
 #include "wav_fixture.h"
@@ -201,6 +202,11 @@ TEST_CASE("Cancelling close preserves the audio draft and does not save workspac
     window.show();
     auto* audio = window.findChild<ludus::editor::AudioWorkspace*>();
     REQUIRE(audio != nullptr);
+    // The initial catalog read runs on a worker thread. Close waits for it, so let it finish
+    // first; this case is about the audio draft decision, not content shutdown timing.
+    ludus::editor::ContentWorkspace* content = window.findChild<ludus::editor::ContentWorkspace*>();
+    REQUIRE(content != nullptr);
+    REQUIRE(QTest::qWaitFor([content] { return content->Busy() == false; }, CLOSE_WAIT_MILLISECONDS));
     Activate(*audio);
     auto* gain = audio->findChild<QDoubleSpinBox*>(QStringLiteral("audio-gain"));
     REQUIRE(gain != nullptr);

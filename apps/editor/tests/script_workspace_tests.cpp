@@ -1,6 +1,7 @@
 // Explicit S5 journey uses a real Qt workspace, installed SDK, compiler and
 // out-of-process GameHost. Offscreen rendering proves wiring, not GPU output.
 #include "internal/controller.h"
+#include "internal/document_well.h"
 #include "internal/main_window.h"
 #include "internal/script_workspace.h"
 
@@ -23,7 +24,6 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSaveFile>
-#include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
@@ -195,10 +195,8 @@ TEST_CASE("script document actions save pending graph cells and route history", 
     window.activateWindow();
     REQUIRE(Await([&]() { return controller.Caps().CanEdit; }));
     auto* workspace = window.findChild<ScriptWorkspace*>();
-    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
     REQUIRE(workspace != nullptr);
-    REQUIRE(tabs != nullptr);
-    tabs->setCurrentWidget(workspace);
+    REQUIRE(window.GetDocumentWell().OpenDocument(workspace) == true);
     auto* nodes = workspace->findChild<QTableWidget*>(QStringLiteral("scriptNodes"));
     REQUIRE(nodes != nullptr);
     ludus::foundation::int32 row = -1;

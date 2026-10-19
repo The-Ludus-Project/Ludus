@@ -186,6 +186,15 @@ qt_add_executable(ludus_editor
     src/main_window.cpp
     src/document_commands.cpp
     src/main_window_layout.cpp
+    src/main_window_tools.cpp
+    src/internal/document_well.h
+    src/document_well.cpp
+    src/internal/editor_commands.h
+    src/editor_commands.cpp
+    src/internal/error_list.h
+    src/error_list.cpp
+    src/internal/project_explorer.h
+    src/project_explorer.cpp
     src/internal/timing_panel.h
     src/timing_panel.cpp
     src/project_setup_dialog.cpp
@@ -361,6 +370,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/engine_pin_tests.cpp
         tests/project_lifecycle_tests.cpp
         tests/workspace_layout_tests.cpp
+        tests/editor_shell_tests.cpp
         tests/recent_projects_tests.cpp
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp
@@ -391,6 +401,15 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/main_window.cpp
         src/document_commands.cpp
         src/main_window_layout.cpp
+        src/main_window_tools.cpp
+        src/internal/document_well.h
+        src/document_well.cpp
+        src/internal/editor_commands.h
+        src/editor_commands.cpp
+        src/internal/error_list.h
+        src/error_list.cpp
+        src/internal/project_explorer.h
+        src/project_explorer.cpp
         src/internal/timing_panel.h
         src/timing_panel.cpp
         src/project_setup_dialog.cpp

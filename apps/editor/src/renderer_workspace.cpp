@@ -397,6 +397,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     horizontal->addWidget(mTabs);
     horizontal->setStretchFactor(1, 2);
     horizontal->setStretchFactor(2, 1);
+    // First show favours the canvas; the splitter scales these proportions to its width.
+    constexpr int32 SOURCE_TREE_SHARE = 2;
+    constexpr int32 CANVAS_SHARE = 6;
+    constexpr int32 INSPECTOR_SHARE = 3;
+    horizontal->setSizes({SOURCE_TREE_SHARE, CANVAS_SHARE, INSPECTOR_SHARE});
     QSplitter* vertical = new QSplitter(Qt::Vertical, this);
     vertical->addWidget(horizontal);
     vertical->addWidget(mDiagnostics);
