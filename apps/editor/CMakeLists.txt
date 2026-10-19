@@ -89,17 +89,12 @@ function(ludus_editor_compile_render_graph_host target)
     set(editor_renderer_static_RUNTIME_PACKAGE "${editor_renderer_static_RUNTIME_PACKAGE}" PARENT_SCOPE)
     # The engine-owned default graph the Renderer tab shows when a project has none. Its
     # prebuilt generation previews with no project files or tools; its header's interface
-    # identity is checked against the host fixture at compile time. The same shader helper,
-    # compiler and validators become the Renderer tab's default build tools.
+    # identity is checked against the host fixture at compile time.
     get_property(default_graph GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR)
     ludus_compile_render_graph(TARGET ${target} NAME editor_default_graph
         MANIFEST "${default_graph}/main.lushader.json" RUNTIME_PACKAGE)
     target_compile_definitions(${target} PRIVATE
-        "LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME=\"${editor_default_graph_RUNTIME_PACKAGE}\""
-        "LUDUS_EDITOR_SHADER_HELPER=\"${editor_default_graph_SHADER_HELPER}\""
-        "LUDUS_EDITOR_SLANG_COMPILER=\"${LUDUS_SLANG_COMPILER}\""
-        "LUDUS_EDITOR_SPIRV_VALIDATOR=\"${LUDUS_SPIRV_VALIDATOR}\""
-        "LUDUS_EDITOR_SPIRV_CROSS=\"${LUDUS_SPIRV_CROSS}\"")
+        "LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME=\"${editor_default_graph_RUNTIME_PACKAGE}\"")
 endfunction()
 
 # The default graph's authored sources, read-only inside the editor (also in builds
@@ -193,6 +188,8 @@ qt_add_executable(ludus_editor
     src/render_graph_document.cpp
     src/internal/render_graph_job.h
     src/render_graph_job.cpp
+    src/internal/render_graph_creation.h
+    src/render_graph_creation.cpp
     src/internal/render_graph_canvas.h
     src/render_graph_canvas.cpp
     src/internal/renderer_workspace.h
@@ -356,6 +353,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_document.cpp
         src/internal/render_graph_job.h
         src/render_graph_job.cpp
+        src/internal/render_graph_creation.h
+        src/render_graph_creation.cpp
         src/internal/render_graph_canvas.h
         src/render_graph_canvas.cpp
         src/internal/renderer_workspace.h
@@ -413,6 +412,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         "LUDUS_EDITOR_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
         "LUDUS_EDITOR_PROJECT_ROOT=\"${PROJECT_SOURCE_DIR}\"")
+    target_compile_definitions(ludus_editor_tests PRIVATE
+        "LUDUS_EDITOR_SDK_MANIFEST=\"${PROJECT_BINARY_DIR}/cmake/LudusSdkManifest.json\"")
     # Controller/MainWindow sources are compiled directly into the test binary so
     # tests can drive the controller and (offscreen) widgets.
     target_sources(ludus_editor_tests PRIVATE

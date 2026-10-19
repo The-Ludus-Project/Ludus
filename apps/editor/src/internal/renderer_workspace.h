@@ -7,6 +7,7 @@
 
 #include "internal/controller.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_creation.h"
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
@@ -29,6 +30,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QStackedWidget;
 class QTabWidget;
 class QTableWidget;
 class QTreeWidget;
@@ -44,9 +46,8 @@ class RenderPreview;
 // Saved sources change only on Save. Diagnostics map to authored nodes and source
 // lines. RG3b adds a node canvas over the same document operations and an explicit
 // trusted preview of the cooked runtime generation on the World viewport device.
-// A project without renderer/main.lurender.json shows the engine default read-only; the
-// first edit turns it into a project draft that Save creates under renderer/, and the
-// shader tools default to the ones this editor build used.
+// A project without graphs/Main/main.lurender.json shows the engine default read-only;
+// the first edit turns it into a project draft that Save creates under graphs/Main/.
 // See docs/development/render-graph-authoring.md#edit-and-reload-graphs-rg3,
 // docs/development/render-graph-authoring.md#node-canvas-and-preview-rg3b and
 // docs/development/render-graph-authoring.md#start-customizing-the-renderer.
@@ -62,22 +63,26 @@ public:
     /// Bind a project root and epoch; a different root closes the document and cancels jobs.
     /// The root is canonicalized, so a symlinked path binds the same project and its build
     /// tree; an empty or missing root closes the project. A bound project then shows its
-    /// renderer/main.lurender.json, or the engine default when it has none (or it cannot be
-    /// loaded; the status line says why). Binding writes nothing.
+    /// graphs/Main/main.lurender.json, or the engine default when it has none (or it cannot
+    /// be loaded; the status line says why). Binding writes nothing.
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
+    /// Create and open an offscreen Renderer graph in the selected project's
+    /// graphs/name directory. Completion is asynchronous through JobFinished.
+    /// Existing files and the current draft are retained if creation fails.
+    [[nodiscard]] bool CreateGraph(const QString& name);
     [[nodiscard]] bool ConfirmDiscard();
     [[nodiscard]] bool IsDirty() const;
     [[nodiscard]] bool CanSave() const;
     /// Save the draft. An unedited engine default is not project content: nothing is written
-    /// and the result is true. An edited default creates its package under renderer/.
+    /// and the result is true. An edited default creates its package under graphs/Main/.
     [[nodiscard]] bool Save();
     /// True while the engine default is shown and Save has not created a project copy yet.
     [[nodiscard]] bool IsBuiltIn() const;
-    /// Explicitly copy the shown engine default, with any draft edits, into renderer/ in the
-    /// project and continue editing it there. False when the default is not shown or the copy
-    /// fails; an existing file at the destination is never replaced.
+    /// Explicitly copy the shown engine default, with any draft edits, into graphs/Main/ in
+    /// the project and continue editing it there. False when the default is not shown or the
+    /// copy fails; an existing file at the destination is never replaced.
     [[nodiscard]] bool CustomizeBuiltIn();
     [[nodiscard]] bool CanUndo() const;
     [[nodiscard]] bool CanRedo() const;
@@ -97,12 +102,8 @@ public:
     [[nodiscard]] bool CookRuntime();
     void CancelJob();
     [[nodiscard]] bool IsJobActive() const;
-    /// Manual tool overrides (the Build Settings fields); empty entries use the defaults.
-    void SetBuildTools(const RenderGraphBuildTools& overrides);
-    /// Tools used when no override is set; the constructor takes GetEditorBuildTools().
-    void SetDefaultBuildTools(const RenderGraphBuildTools& defaults);
-    /// Tools the next build passes to the CLI: each override, or else its default.
-    [[nodiscard]] RenderGraphBuildTools GetBuildTools() const;
+    /// Explicitly opt into advanced shader path overrides; two empty paths restore project detection.
+    void SetBuildTools(const QString& helper, const QString& compiler);
     /// Publish a finished job result. Results for another request, project epoch or a
     /// closed document are ignored, so stale jobs never replace current diagnostics.
     void AcceptResult(const RenderGraphJobResult& result);
@@ -169,7 +170,6 @@ private:
     [[nodiscard]] bool writeDocument();
     void openProjectGraph();
     void showDocument(const RenderGraphDocument& document);
-    void renderBuildTools();
     void showPreviewPage();
     [[nodiscard]] QByteArray getBuildIdentity() const;
     void scheduleLiveBuild();
@@ -178,9 +178,11 @@ private:
     void renderEdges();
     void renderSource();
     void renderStatus();
+    void updateActions();
     void documentEdited(RenderGraphDocumentStatus status);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
     void addNode();
+    void promptNewGraph();
     void openSourceLine(const QString& file, foundation::int32 line);
     [[nodiscard]] QJsonObject selectedConfiguration() const;
     [[nodiscard]] QJsonObject selectedNode() const;
@@ -200,11 +202,17 @@ private:
     bool mIsRendering = false;
     RenderGraphDocument mDocument;
     RenderGraphJob mJob;
+    RenderGraphCreation mCreation;
     RenderGraphJobResult mLastResult;
     QString mSelectedFile;
     QString mSelectedConfiguration;
     QString mSelectedNode;
     QLabel* mPath;
+    QPushButton* mNewGraph;
+    QPushButton* mOpenGraph;
+    QPushButton* mBuildPreview;
+    QStackedWidget* mContent;
+    QLabel* mEmptyMessage;
     QComboBox* mConfiguration;
     QPushButton* mValidate;
     QPushButton* mBuild;
@@ -229,9 +237,9 @@ private:
     QLineEdit* mValidator;
     QLineEdit* mSpirvCross;
     QLineEdit* mWorkerSocket;
-    QLabel* mToolSummary;
-    RenderGraphBuildTools mDefaultTools;
+    QCheckBox* mOverrideBuildTools;
     QAction* mCustomize;
+    QLabel* mBuildToolsStatus;
     QCheckBox* mLivePreview;
     RenderGraphLiveBuild mLiveBuild;
     QListWidget* mDiagnostics;

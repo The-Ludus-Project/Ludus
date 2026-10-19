@@ -153,8 +153,8 @@ operations and a trusted preview that activates cooked generations on the World
 viewport's device without replacing its last drawable view until a new frame is
 complete. A project without a graph shows the engine-owned default read-only, so
 the workspace never asks for a graph. The first edit makes that default an
-undoable project draft, and Save creates it under `renderer/`. Builds default to
-the shader tools the editor build used. See
+undoable project draft, and Save creates it under `graphs/Main/`. Builds detect
+shader tools from the project's selected SDK. See
 [start customizing the renderer](../development/render-graph-authoring.md#start-customizing-the-renderer),
 [edit and reload graphs](../development/render-graph-authoring.md#edit-and-reload-graphs-rg3)
 and [node canvas and preview](../development/render-graph-authoring.md#node-canvas-and-preview-rg3b).

@@ -27,7 +27,7 @@ You don't need to create a render graph first. The engine ships a default one, a
 the editor uses it for any project that has no graph of its own.
 
 1. **Look at the default.** Open a project and choose the **Renderer** tab. If the
-   project has no `renderer/main.lurender.json`, the tab shows the **Engine default
+   project has no `graphs/Main/main.lurender.json`, the tab shows the **Engine default
    renderer**. This is the static opaque `RendererStatic` graph: Scene and Camera feed
    `RasterizeGraph` into 640×360 color and depth targets, and the color target is
    exported. Its sources live in
@@ -42,37 +42,31 @@ the editor uses it for any project that has no graph of its own.
 3. **Edit it.** Change anything: move a node on the canvas, edit a field in the
    Inspector, or apply shader text in the Source tab. The first edit turns the
    default into a project draft:
-   - The path label changes to `renderer/main.lurender.json (new, unsaved)`, and the
+   - The path label changes to `graphs/Main/main.lurender.json (new, unsaved)`, and the
      status line names the folder that Save will create.
    - Undo works as usual. Undoing every edit returns to the unedited default.
-   - **Save** (Ctrl+S or Command-S) creates the whole package under `renderer/` and
-     reports where it went. After that, the project always opens its own graph.
+   - **Save** (Ctrl+S or Command-S) creates the whole package under `graphs/Main/`,
+     beside graphs made with **New Graph…**, and reports where it went. After that,
+     the project always opens its own graph.
 
-   To copy the default without editing it, open the **Open Graph...** drop-down, or
-   right-click the source tree, and choose **Customize in Project**. Neither path ever
-   replaces a file. If `renderer/` already holds any of the package's files, nothing
-   is written; open that graph with **Open Graph...** instead.
-4. **Iterate.** **Build & Preview** and **Live Preview** build the draft with the
-   editor's own shader tools and preview the result. Unsaved drafts build too, from
-   an immutable snapshot (see [Validate, build and cook a draft](#validate-build-and-cook-a-draft)).
+   To copy the default without editing it, right-click the source tree and choose
+   **Customize in Project**. Neither path ever replaces a file. If `graphs/Main/`
+   already holds any of the package's files, nothing is written; open that graph with
+   **Open Graph...** instead. A linked `graphs` folder is refused, as for New Graph.
+4. **Iterate.** **Build & Preview** and **Live Preview** build the draft and preview
+   the result. Like any project graph, the build detects shader tools from the
+   project's selected SDK, so no paths need to be entered. Unsaved drafts build
+   too, from an immutable snapshot (see [Validate, build and cook a draft](#validate-build-and-cook-a-draft)).
 
-You never have to fill in the **Build Settings** tab. When its fields are empty,
-builds use the tools the editor build already used for its own graphs:
-
-- the SDK shader helper that build staged;
-- the pinned `slangc` (`LUDUS_SLANG_COMPILER`);
-- `spirv-val` and SPIRV-Cross, if that build configured them.
-
-Each empty field shows its default as a placeholder. The fields under **Tool
-overrides (advanced)** replace a default only for this editor and are kept in
-editor preferences, never in the project. Editors built without the native preview
-(`LUDUS_EDITOR_RENDER_PREVIEW=OFF`, or the browser editor) have no tool defaults
-and no preview. In those editors, set the helper and compiler yourself to build.
+**New Graph…** remains the way to start additional graphs from scratch in
+`graphs/<name>/`. A graph you create with the name `Main` is the one the project
+opens instead of the default.
 
 The feature stays out of the way if you don't use it:
 
 - World rendering doesn't depend on render graphs.
-- No banner, prompt or required step appears.
+- No banner, prompt or required step appears; with a project open, the Renderer tab
+  shows the default rather than an empty page.
 - Saving the unedited default writes nothing.
 - Closing a project asks to save only after you have edited the graph.
 
@@ -84,10 +78,30 @@ Limits:
   on the same interface.
 - The default's profiles follow the host: `metal` and `wgsl` on macOS, `spirv` and
   `wgsl` on Linux, and `wgsl` for web builds.
-- A project's own graph is found only at `renderer/main.lurender.json`. Open graphs
-  stored anywhere else with **Open Graph...**.
+- A project opens only `graphs/Main/main.lurender.json` by itself. Open other graphs
+  with **Open Graph...**.
 
 ## Create a saved graph and import it
+
+In the native editor, open your game project and choose **Renderer → New Graph…**.
+(Without any graph, the tab already shows the
+[engine default](#start-customizing-the-renderer).) Enter a graph name and
+choose **Create**. The editor creates `graphs/<name>/` inside the selected game
+project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
+`main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
+graph on the canvas. The starter exports a color image and uses the
+RendererStatic interface required by the editor preview. Target profiles are
+Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
+running viewport and never overwrites an existing graph folder. A failed creation
+keeps the previously open draft. Graphs and shader sources belong to the game
+project; engine/SDK files are read-only inputs.
+
+Next, open a World viewport and choose **Build & Preview**. The editor detects the
+selected project's SDK shader helper and prepared shader compiler automatically;
+SPIR-V/GLSL dependencies are detected only when the graph declares those targets. See
+[editing and building](#edit-and-reload-graphs-rg3) and the
+[preview's supported rendering profile](#preview-a-cooked-generation).
+Creation and building do not change the game's selected runtime renderer.
 
 From a checkout, use `./scripts/ludus`; after installation use `ludus`:
 
@@ -717,13 +731,17 @@ in-editor preview; see [Node canvas and preview (RG3b)](#node-canvas-and-preview
 ### Edit in the Renderer tab
 
 Open a project and choose **Renderer**. The tab shows the project's
-`renderer/main.lurender.json`, or else the
+`graphs/Main/main.lurender.json`, or else the
 [engine default](#start-customizing-the-renderer). To edit another graph, choose
 **Open Graph...** and select a root `.lurender.json` inside the project. Its
 directory is the package root. The tab
 loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
 most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
 symlinks are skipped).
+
+For a project without graph sources, the tab shows the engine default, and build
+actions work on it right away. Use **New Graph…**, as described in
+[graph creation](#create-a-saved-graph-and-import-it), to start another graph.
 
 - **Inspector** edits the selected node's authored fields by stable ID, adds or
   removes nodes (removal also drops their connections and layout position), and
@@ -756,14 +774,41 @@ ludus --json render-graph dump graphs/main.lurender.json --root graphs
 
 A result names the draft revision it checked; a later edit marks it as describing
 an older revision. Results from a cancelled job, an earlier request or another
-project are discarded. Build uses the editor build's shader helper and pinned
-compiler, unless **Build Settings** overrides them (overrides are stored in editor
-preferences, never in the project). It publishes to
-`out/render-graph/<graph>/build`. Cook Runtime writes
+project are discarded. Build resolves the saved project's current native profile
+through the same SDK resolver as ordinary project builds: a saved local SDK
+selection takes precedence over an installed locked SDK in the shared store.
+Its installed `lib/cmake/Ludus/shaders` directory supplies the shader helper and
+toolchain pins. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
+from the selected local setup preset or the editor's prepared shader tools.
+No path entry is needed for **New Graph → Build & Preview**. Loading and building
+do not download tools, repair the project or write into the engine/SDK.
+
+**Build Settings** displays the resolved paths after a successful build. Its
+**Override detected shader tools (advanced)** checkbox explicitly enables manual
+paths for an exceptional tool setup. Old editor-wide path preferences do not
+override project detection, and switching projects clears these overrides.
+Each automatic build resolves selection again, so SDK switches and repairs take
+effect without restarting the editor. Missing/incomplete SDKs or tools report a
+setup error; use **Project → Repair Project Setup**. A selection change during
+compilation/cooking rejects publication and retains the previous runtime.
+
+Build publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
 `out/render-graph/<graph>.lurgrt` from that build tree. These paths are resolved
 from the project's canonical location, so a project opened through a symlink
 still builds inside its own folder. Build and Cook Runtime refuse a graph whose
 package lies outside the project.
+
+The same automatic path is available to tooling without the editor:
+
+```bash
+ludus render-graph build graphs/Main/main.lushader.json out/graph-build \
+  --project /path/to/game --tooling-root /path/to/prepared/ludus \
+  --runtime-package out/graph.lurgrt
+```
+
+`--tooling-root` is unnecessary when the selected local preset records all required
+shader-tool paths. Explicit `--helper`/`--compiler` arguments remain supported for
+standalone packages. Pin/version, reflection and publication checks still apply.
 
 ### Mapped diagnostics
 
@@ -778,6 +823,14 @@ With `--json`, a failure's `error.location` names its authored owner:
 
 Locations are package-relative and never contain machine paths. Activate a
 diagnostic (double-click or Enter) to navigate to it.
+
+Shader failure messages are portable too. The helper's own command echoes
+(`+ <tool> <arguments>`, with absolute tool and temporary paths) are dropped,
+because the stage descriptor and build manifest already identify tools and
+inputs, and they would otherwise use up the 4 KiB message bound before the
+compiler's diagnostics. In the remaining text, captured sources appear
+package-relative, stage outputs as `artifact/`, helper files as `helper/` and the
+compiler by its file name.
 
 The shader helper (`compile_shader.py`) reports a compiler failure as one stderr
 line prefixed `Ludus shader build: `, so the compiler's first diagnostic arrives as

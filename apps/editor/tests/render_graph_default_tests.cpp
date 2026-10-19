@@ -1,8 +1,8 @@
 // Default render-graph entry: a project without a graph shows and previews the engine default,
-// the first edit becomes an undoable project draft that Save creates under renderer/, the
-// explicit copy never replaces project files, and shader tools default to the ones this
-// editor build used. Offscreen widgets prove document, file and job wiring; GPU pixels of
-// the prebuilt default are covered by render_graph_preview_tests.cpp.
+// the first edit becomes an undoable project draft that Save creates under graphs/Main/, the
+// explicit copy never replaces project files, and an edited default builds like any graph.
+// Offscreen widgets prove document, file and job wiring; GPU pixels of the prebuilt default
+// are covered by render_graph_preview_tests.cpp.
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
@@ -182,7 +182,7 @@ TEST_CASE("The first edit of the default is an undoable project draft that Save 
     CHECK(document.IsFileDirty(DEFAULT_RENDER_GRAPH_ROOT) == true);
     CHECK(document.IsFileDirty(LIBRARY) == false);
     CHECK(workspace.GetRuntimePackagePath() ==
-          QDir(GetProjectRoot(project)).filePath(QStringLiteral("out/render-graph/renderer/main/main.lurgrt")));
+          QDir(GetProjectRoot(project)).filePath(QStringLiteral("out/render-graph/graphs/Main/main/main.lurgrt")));
     CHECK(workspace.GetPreviewPackagePath() == workspace.GetRuntimePackagePath());
     CHECK(ListProject(project).isEmpty() == true);
 
@@ -194,13 +194,13 @@ TEST_CASE("The first edit of the default is an undoable project draft that Save 
     CHECK(document.GetDraft(DEFAULT_RENDER_GRAPH_ROOT) == original);
     CHECK(workspace.GetStatusText().contains(QStringLiteral("Engine default renderer")) == true);
 
-    // Redo, then Save: the whole package is created under renderer/ and says so.
+    // Redo, then Save: the whole package is created under graphs/Main/ and says so.
     workspace.Redo();
-    CHECK(workspace.GetStatusText().contains(QStringLiteral("Save creates renderer/")) == true);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Save creates graphs/Main/")) == true);
     REQUIRE(workspace.Save() == true);
     CHECK(workspace.IsBuiltIn() == false);
     CHECK(workspace.IsDirty() == false);
-    CHECK(workspace.GetStatusText().contains(QStringLiteral("Created renderer in the project")) == true);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Created graphs/Main in the project")) == true);
     const QDir package(GetPackage(project));
     for (const QString& file : document.GetFiles())
     {
@@ -265,7 +265,7 @@ TEST_CASE("An unreadable project graph falls back to the default without replaci
     REQUIRE(workspace.IsBuiltIn() == true);
     // The reason is one parenthesized clause, followed by its own sentence.
     const QString status = workspace.GetStatusText();
-    CHECK(status.startsWith(QStringLiteral("renderer/main.lurender.json could not be opened (")) == true);
+    CHECK(status.startsWith(QStringLiteral("graphs/Main/main.lurender.json could not be opened (")) == true);
     CHECK(status.contains(QStringLiteral(".). ")) == false);
     CHECK(status.contains(QStringLiteral("). Showing the engine default;")) == true);
     // Customizing never replaces the project's own file.
@@ -273,65 +273,32 @@ TEST_CASE("An unreadable project graph falls back to the default without replaci
     CHECK(ReadFile(graph) == oversized);
 }
 
-TEST_CASE("Render-graph build tools default to the editor build and accept overrides", "[editor][render-graph]")
-{
-    const RenderGraphBuildTools defaults
-    {
-        .Helper = QStringLiteral("/sdk/shaders"),
-        .Compiler = QStringLiteral("/sdk/slangc"),
-        .Validator = QStringLiteral("/sdk/spirv-val"),
-        .SpirvCross = {},
-    };
-    const RenderGraphBuildTools chosen = ResolveBuildTools(
-        {
-            .Helper = {},
-            .Compiler = QStringLiteral(" /mine/slangc "),
-            .Validator = QStringLiteral("  "),
-            .SpirvCross = {},
-        },
-        defaults);
-    CHECK(chosen.Helper == defaults.Helper);
-    CHECK(chosen.Compiler == QStringLiteral("/mine/slangc"));
-    CHECK(chosen.Validator == defaults.Validator);
-    CHECK(chosen.SpirvCross.isEmpty() == true);
-
-    // Empty override fields use the tools this editor was built with.
-    RendererWorkspace workspace({});
-    workspace.SetBuildTools({});
-    const RenderGraphBuildTools editor = GetEditorBuildTools();
-    CHECK(workspace.GetBuildTools().Helper == editor.Helper);
-    CHECK(workspace.GetBuildTools().Compiler == editor.Compiler);
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    REQUIRE(editor.Helper.isEmpty() == false);
-    REQUIRE(editor.Compiler.isEmpty() == false);
-    CHECK(QFileInfo::exists(QDir(editor.Helper).filePath(QStringLiteral("compile_shader.py"))) == true);
-    CHECK(QFileInfo::exists(QDir(editor.Helper).filePath(QStringLiteral("shader_toolchain.json"))) == true);
-#endif
-
-    // A build with neither defaults nor overrides explains itself instead of starting a job.
-    QTemporaryDir project;
-    workspace.SetProject(project.path(), 1);
-    workspace.SetDefaultBuildTools({});
-    REQUIRE(DeactivateCamera(workspace.GetDocument()) == RenderGraphDocumentStatus::Ok);
-    CHECK(workspace.Build() == false);
-    CHECK(workspace.IsJobActive() == false);
-    CHECK(workspace.GetStatusText().contains(QStringLiteral("Tool overrides")) == true);
-    CHECK(ListProject(project).isEmpty() == true);
-}
-
-TEST_CASE("Build & Preview builds an edited default with the editor's tools", "[editor][render-graph]")
+TEST_CASE("Build & Preview builds an edited default like any project graph", "[editor][render-graph]")
 {
     const QString python = FindPython();
-    const RenderGraphBuildTools tools = GetEditorBuildTools();
-    if (python.isEmpty() == true || tools.Helper.isEmpty() == true || tools.Compiler.isEmpty() == true)
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    if (python.isEmpty() == true || QFileInfo(compiler).isExecutable() == false)
     {
-        SKIP("Needs python3 and an editor built with the native preview's shader tools");
+        SKIP("Needs python3 and the prepared pinned Slang compiler");
+    }
+    // Explicit tools stand in for project SDK detection, which this bare folder has no setup for.
+    QTemporaryDir tools;
+    const QDir helper(QDir(tools.path()).filePath(QStringLiteral("shaders")));
+    for (const QString& file : {QStringLiteral("cmake/shaders/compile_shader.py"),
+                                QStringLiteral("cmake/shaders/compile_raster.py"),
+                                QStringLiteral("cmake/shaders/compile_graph_stage.py"),
+                                QStringLiteral("cmake/shaders/native_worker.py"),
+                                QStringLiteral("config/shader_toolchain.json"),
+                                QStringLiteral("config/spirv_cross_toolchain.json")})
+    {
+        WriteFile(helper.filePath(QFileInfo(file).fileName()),
+                  ReadFile(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/") + file));
     }
     QTemporaryDir project;
     RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
-    workspace.SetBuildTools({});
     workspace.SetWorkerSocket({});
     workspace.SetProject(project.path(), 1);
+    workspace.SetBuildTools(helper.path(), compiler);
     RenderGraphDocument& document = workspace.GetDocument();
     REQUIRE(document.SetText(COLOR_SHADER, QByteArray("// customized\n") + document.GetDraft(COLOR_SHADER)) ==
             RenderGraphDocumentStatus::Ok);

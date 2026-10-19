@@ -1,5 +1,6 @@
 #include "internal/audio_preview.h"
 #include "internal/audio_workspace.h"
+#include "internal/content_browser.h"
 #include "internal/content_import.h"
 #include "internal/main_window.h"
 #include "wav_fixture.h"
@@ -22,9 +23,9 @@
 namespace
 {
 using namespace ludus::foundation;
-// Upper bound for an accepted main-window close to hide the window; the close
-// handler retries every 20 ms while workers quiesce, and only a hung worker
-// should reach this bound.
+// Upper bound for main-window workers to quiesce or for an accepted close to
+// hide the window; the close handler retries every 20 ms while workers quiesce,
+// and only a hung worker should reach this bound.
 constexpr int32 CLOSE_WAIT_MILLISECONDS = 10000;
 namespace content = ludus::content;
 namespace audio = ludus::audio;
@@ -218,6 +219,16 @@ TEST_CASE("Cancelling close preserves the audio draft and does not save workspac
     CHECK(window.isVisible());
     CHECK(gain->value() == 0.25);
     CHECK_FALSE(QFileInfo::exists(preferences));
+    // Opening the project started a background catalog refresh. The close
+    // handler ignores the event and retries every 20 ms until that job is
+    // retired, so on a slow runner an accepted close() may still return false.
+    // Wait for the workers the close handler checks before asserting that an
+    // accepted close completes synchronously.
+    ludus::editor::ContentWorkspace* contentWorkspace = window.findChild<ludus::editor::ContentWorkspace*>();
+    REQUIRE(contentWorkspace != nullptr);
+    REQUIRE(QTest::qWaitFor(
+        [contentWorkspace, audio] { return contentWorkspace->Finished() == true && audio->PreviewFinished() == true; },
+        CLOSE_WAIT_MILLISECONDS));
     // A later accepted close can publish the layout after the draft decision.
     // QMessageBox::question reports the clicked button, so the choice must be
     // a click; done(Discard) leaves no clicked button and reads as Cancel.

@@ -5,9 +5,6 @@ include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
 # Dependencies stay within ROOT; generated package/build output must be outside it.
 # RUNTIME_PACKAGE also cooks <NAME>.lurgrt for RG3 runtime activation and sets
 # <NAME>_RUNTIME_PACKAGE in the caller's scope to its absolute build-tree path.
-# <NAME>_SHADER_HELPER names the complete shader helper directory the build used
-# (the installed SDK shaders directory, or this target's staged checkout copy), so
-# a host such as the editor can offer it as a default for its own builds.
 function(ludus_compile_render_graph)
     cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE" "TARGET;NAME;MANIFEST;ROOT;CONFIGURATION" "")
     if(GRAPH_UNPARSED_ARGUMENTS OR NOT TARGET "${GRAPH_TARGET}" OR
@@ -40,7 +37,6 @@ function(ludus_compile_render_graph)
             configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/${lock}" "${helper}/${lock}" COPYONLY)
         endforeach()
     endif()
-    set(${GRAPH_NAME}_SHADER_HELPER "${helper}" PARENT_SCOPE)
     set(tools "${LUDUS_SLANG_COMPILER}")
     set(arguments)
     if(LUDUS_SHADER_WORKER_SOCKET)
