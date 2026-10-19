@@ -192,9 +192,10 @@ Timestamp At(uint64 nanoseconds)
 /// A session connected to a hosted window over a socketpair.
 struct ConnectedPair final
 {
+    // Declared first so it outlives the window attached to it.
+    SinkRecorder Recorder;
     hosted::EndpointSession Session;
     UniquePtr<Window> HostedWindow;
-    SinkRecorder Recorder;
 };
 
 /// Admit one end of a socketpair, send the window's Hello and open the window.
@@ -490,13 +491,14 @@ TEST_CASE("A hosted window ignores keys that arrive without focus", "[platform][
     key.Kind = hosted::MessageKind::Key;
     key.PhysicalKey = Key::KeyQ;
     WriteMessage(pair.EndpointSide.Get(), key);
+    // Declared before the window so it outlives the attached sink.
+    SinkRecorder recorder;
     HostedRefusal refusal = HostedRefusal::None;
     UniquePtr<Window> window = hosted::OpenWindow(ludus::foundation::Move(pair.WindowSide),
                                                   MakeCreateInfo(),
                                                   OPEN_TIMEOUT_MILLISECONDS,
                                                   refusal);
     REQUIRE(window.Get() != nullptr);
-    SinkRecorder recorder;
     window->AttachKeyboardSink(recorder.GetSink());
     REQUIRE(window->HandleEvent({}));
     CHECK(recorder.RecordCount == 0);
@@ -546,13 +548,14 @@ TEST_CASE("A hosted protocol violation closes the window", "[platform][hosted]")
     hosted::Message welcome;
     welcome.Kind = hosted::MessageKind::Welcome;
     WriteMessage(pair.EndpointSide.Get(), welcome);
+    // Declared before the window so it outlives the attached sink.
+    SinkRecorder recorder;
     HostedRefusal refusal = HostedRefusal::None;
     UniquePtr<Window> window = hosted::OpenWindow(ludus::foundation::Move(pair.WindowSide),
                                                   MakeCreateInfo(),
                                                   OPEN_TIMEOUT_MILLISECONDS,
                                                   refusal);
     REQUIRE(window.Get() != nullptr);
-    SinkRecorder recorder;
     window->AttachKeyboardSink(recorder.GetSink());
     // A second Welcome after the handshake.
     WriteMessage(pair.EndpointSide.Get(), welcome);
@@ -834,6 +837,7 @@ TEST_CASE("WindowManager opens a hosted window from the endpoint's environment a
     REQUIRE(address.TryAssign(endpoint.GetChannelAddress()) == ludus::foundation::StringStatus::Ok);
     REQUIRE(::setenv(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE, address.GetData(), 1) == 0);
 
+    SinkRecorder recorder;
     WindowManager manager;
     REQUIRE(manager.Initialize({}));
     UniquePtr<Window> window;
@@ -850,7 +854,6 @@ TEST_CASE("WindowManager opens a hosted window from the endpoint's environment a
     // Once a window is admitted no other process can connect.
     CHECK(::stat(socketPath.GetData(), &status) != 0);
 
-    SinkRecorder recorder;
     window->AttachKeyboardSink(recorder.GetSink());
     CHECK(endpoint.SendFocusEntered(MakeBaseline(Key::KeyW, Key::KeyA)) == HostedEndpointStatus::Ok);
     CHECK(endpoint.SendKey(Key::KeyW, KeyTransition::Up, false) == HostedEndpointStatus::Ok);
