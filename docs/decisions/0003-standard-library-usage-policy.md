@@ -200,3 +200,21 @@ suppress SIGPIPE. Browser builds return Unavailable without native IPC or Slang.
 Availability, interruption, malformed/disconnected peers and cancellation are
 covered by the native protocol tests. See the
 [native shader-worker contract](../development/render-graph-authoring.md#native-shader-worker-and-live-development-builds).
+
+### Platform hosted-window channel boundary
+
+Platform's hosted window and its editor endpoint
+(`modules/platform/src/hosted_socket.cpp`, `hosted_endpoint_session.cpp`,
+`hosted_window_endpoint.cpp` and `window_hosted.cpp`) use POSIX Unix-stream
+sockets on macOS and Linux: `socket`, `bind`, `listen`, `accept`, `connect`,
+`send`/`recv`, `poll`, `fcntl`, `setsockopt` (`SO_NOSIGPIPE`), `close`, and
+`errno`/`EINTR`/`EAGAIN` handling. Peer credentials are read with `getpeereid`
+on macOS and `getsockopt(SO_PEERCRED)` on Linux and compared with `geteuid`.
+The endpoint creates its session directory with `mkdtemp` (mode 0700), restricts
+the socket with `chmod`, and removes both with `unlink` and `rmdir`. The game
+side reads the channel address with `getenv`. Every operation is nonblocking or
+bounded by an explicit timeout, messages and buffers have fixed capacities, and
+writes never raise SIGPIPE. Browser and Windows builds compile none of these
+calls; the endpoint reports Unavailable there. Socket-pair and listening-socket
+tests cover each event, refusal and channel loss. See
+[the hosted window](../architecture/editor-gui-systems.md#the-hosted-window).

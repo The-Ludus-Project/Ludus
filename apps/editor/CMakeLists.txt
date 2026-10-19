@@ -44,6 +44,8 @@ endif()
 # AUTOMOC is enabled per target below, not globally.
 
 set(editor_viewport_sources
+    src/internal/viewport_frame_source.h
+    src/viewport_frame_source.cpp
     src/preview_viewport.cpp
     src/viewport_navigation.cpp)
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
@@ -244,6 +246,9 @@ qt_add_executable(ludus_editor
     src/document_well.cpp
     src/internal/editor_commands.h
     src/editor_commands.cpp
+    src/internal/options_dialog.h
+    src/options_dialog.cpp
+    src/internal/render_graph_build_settings.h
     src/internal/error_list.h
     src/error_list.cpp
     src/internal/project_explorer.h
@@ -384,6 +389,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
         tests/world_identity_tests.cpp
         src/internal/controller.h
@@ -482,6 +488,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/document_well.cpp
         src/internal/editor_commands.h
         src/editor_commands.cpp
+        src/internal/options_dialog.h
+        src/options_dialog.cpp
+        src/internal/render_graph_build_settings.h
         src/internal/error_list.h
         src/error_list.cpp
         src/internal/project_explorer.h

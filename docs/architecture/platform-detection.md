@@ -202,7 +202,13 @@ GCC/MSVC frontend dispatch cases are synthetic; real Clang Microsoft-target
 extension cases are compiled. This does not claim native GCC/MSVC engine support.
 The same test rejects new raw OS/CPU/frontend classification conditionals in
 first-party engine/application C++ outside `config.h`/`compiler.h`, keeping future
-edits centralized. Game API symbol visibility now queries the compiler's actual
+edits centralized. That scan lives in `tools/check_target_macros.py` and needs no
+compiler, so the pull-request **Source formatting** job also runs it on every
+change and reports each offending directive with its line. It covers sources that
+only some configurations compile, such as the shader compiler client used by
+`LUDUS_BUILD_SHADER_WORKER`. Write `LUDUS_TARGET_OS == LUDUS_OS_LINUX ||
+LUDUS_TARGET_OS == LUDUS_OS_MACOS` rather than `defined(__linux__) ||
+defined(__APPLE__)`; the latter also selects Android and iOS. Game API symbol visibility now queries the compiler's actual
 attribute support instead of repeating frontend identity checks.
 
 Native FoundationBase tests verify the C++ descriptor against `std::endian` and

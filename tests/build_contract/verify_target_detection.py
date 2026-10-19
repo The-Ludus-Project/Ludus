@@ -6,10 +6,12 @@ diagnostic, rather than because a cross-target standard library is missing.
 """
 
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import check_target_macros as target_macros  # noqa: E402
 
 
 def main() -> int:
@@ -168,20 +170,9 @@ def main() -> int:
             check(name, linux, header + f"static_assert(LUDUS_TARGET_COMPILER == LUDUS_CXX_{expected});\n", flags)
         check("unknown-compiler", linux, header, ["-U__clang__", "-U__GNUC__"], "unsupported compiler frontend")
 
-    # Target/frontend classification belongs to Band 0, including in new code.
-    raw_identity = re.compile(
-        r"^\s*#\s*(?:if|elif|ifdef|ifndef)\b[^\n]*\b(?:_WIN32|_WIN64|__linux__|__APPLE__|__ANDROID__|__EMSCRIPTEN__|"
-        r"__clang__|__GNUC__|_MSC_VER|__x86_64__|__aarch64__|__wasm32__|__wasm64__|_M_X64|_M_ARM64|_M_ARM64EC)\b",
-        re.MULTILINE,
-    )
-    detectors = {base / "ludus/foundation/base/config.h", base / "ludus/foundation/base/compiler.h"}
-    for tree in (root / "modules", root / "apps"):
-        for path in tree.rglob("*"):
-            if path.suffix not in (".cpp", ".h", ".hpp") or "tests" in path.parts or path in detectors:
-                continue
-            source = re.sub(r"\\\r?\n", " ", path.read_text(encoding="utf-8"))
-            if raw_identity.search(source):
-                failures.append(f"{path.relative_to(root)}: use FoundationBase detection instead of raw target/compiler macros")
+    # Target/frontend classification belongs to Band 0, including in new code. The
+    # compiler-free scan also runs in the pull-request Source formatting job.
+    failures.extend(target_macros.violations(root))
 
     if failures:
         print("\n".join(failures), file=sys.stderr)
