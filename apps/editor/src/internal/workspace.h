@@ -127,6 +127,7 @@ struct WorkspaceState
     QStringList DiscoveredTargets; // executable targets from last Configure
     QString DiscoveredPreset;      // preset the discovery cache belongs to
     QString SetupStatus;           // read-only CMake setup result for the saved project
+    QString SetupProblem;          // last setup failure; retained until a successful check or repair
     EnginePinStatus EnginePin;     // selected engine install versus this editor's engine (last check)
     LastResult Result;
 

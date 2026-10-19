@@ -192,6 +192,11 @@ private:
     // Set when no saved layout was restored, so the first show sizes the default docks.
     bool mShouldSizeDefaultDocks = true;
 
+    QToolBar* mSetupNoticeOrNull = nullptr;
+    QLabel* mSetupNoticeTextOrNull = nullptr;
+    QPushButton* mSetupNoticeRepairOrNull = nullptr;
+    QPushButton* mSetupNoticeCheckOrNull = nullptr;
+
     // Project lifecycle presentation; controller actions own all operations.
     QLabel* ProjectIdentity_ = nullptr;
     QLabel* ProjectSetupStatus_ = nullptr;

@@ -1054,6 +1054,8 @@ void MainWindow::RenderCapabilities()
     // Lifecycle buttons reuse the same command gates as menus/toolbars.
     ProjectCheckButton_->setEnabled(CheckSetupAction_->isEnabled());
     ProjectCheckButton_->setToolTip(CheckSetupAction_->toolTip());
+    mSetupNoticeRepairOrNull->setEnabled(SetupProjectAction_->isEnabled());
+    mSetupNoticeCheckOrNull->setEnabled(CheckSetupAction_->isEnabled());
     ProjectRepairButton_->setEnabled(SetupProjectAction_->isEnabled());
     ProjectRepairButton_->setToolTip(SetupProjectAction_->toolTip());
     ProjectRunButton_->setEnabled(BuildRunAction_->isEnabled());
@@ -1098,6 +1100,17 @@ void MainWindow::RenderStatus()
         setupStatus += QStringLiteral("\nEngine: %1").arg(state.EnginePin.Message);
     }
     ProjectSetupStatus_->setText(setupStatus);
+    const bool hasSetupProblem =
+        state.Document == DocumentState::ProjectLoaded && state.SetupProblem.isEmpty() == false;
+    mSetupNoticeOrNull->setVisible(hasSetupProblem);
+    mSetupNoticeTextOrNull->setToolTip(state.SetupProblem);
+    mSetupNoticeTextOrNull->setText(
+        QStringLiteral("Project setup needs attention: %1\nRepair now, or keep editing and repair later. %2")
+            .arg(state.SetupProblem.section(QLatin1Char('\n'), 0, 0),
+                 state.Dirty() == true
+                     ? QStringLiteral("Save project settings to enable repair.")
+                     : QStringLiteral("Repair updates local build settings and verifies a build and tests.")));
+
     QString next;
 #if defined(Q_OS_WASM)
     next = QStringLiteral("Download your changes to keep them. Use the desktop editor to repair setup and build "
