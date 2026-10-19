@@ -165,10 +165,15 @@ constexpr usize V3_LIGHTING_OFFSET = V3_OBJECT_OFFSET + sizeof(sceneFormat::Obje
 constexpr usize V3_LIGHT_OFFSET = V3_LIGHTING_OFFSET + sizeof(sceneFormat::LightingRecord);
 constexpr usize V3_ENVIRONMENT_OFFSET = V3_LIGHT_OFFSET + V3_LIGHT_COUNT * sizeof(sceneFormat::LightRecord);
 constexpr usize V3_BUNDLE_BYTES = V3_ENVIRONMENT_OFFSET + V3_PIXEL_COUNT * sceneFormat::ENVIRONMENT_TEXEL_BYTES;
-Array<uint8> MakeLightingFixture()
+/// Version 3 fixture, or the same scene as version 4 (VertexRecord without stored bake UVs).
+Array<uint8> MakeLightingFixture(uint32 version = sceneFormat::VERSION_3)
 {
+    const bool hasBakeCoordinates = sceneFormat::HasStoredBakeCoordinates(version);
     Array<uint8> bytes;
-    REQUIRE(bytes.TryResize(V3_BUNDLE_BYTES) == true);
+    REQUIRE(bytes.TryResize(V3_BUNDLE_BYTES - (hasBakeCoordinates == true
+                                                   ? 0
+                                                   : V3_VERTEX_COUNT * (sizeof(sceneFormat::VertexRecordV3) -
+                                                                        sizeof(sceneFormat::VertexRecord)))) == true);
     usize offset = 0;
     auto writeInteger = [&](uint32 value) {
         REQUIRE(
@@ -189,7 +194,7 @@ Array<uint8> MakeLightingFixture()
     };
     std::memcpy(bytes.GetData(), sceneFormat::MAGIC.data(), sceneFormat::MAGIC.size());
     offset = sceneFormat::MAGIC.size();
-    for (uint32 value : {sceneFormat::VERSION_3, 1U, 1U, 0U, 1U})
+    for (uint32 value : {version, 1U, 1U, 0U, 1U})
     {
         writeInteger(value);
     }
@@ -213,9 +218,14 @@ Array<uint8> MakeLightingFixture()
                                                       ludus::foundation::math::Vector3{1, 0, 0},
                                                       ludus::foundation::math::Vector3{0, 1, 0}})
     {
-        for (float32 value : {position.X, position.Y, position.Z, 0.F, 0.F, 1.F, 4.F, 5.F, .25F, .75F})
+        for (float32 value : {position.X, position.Y, position.Z, 0.F, 0.F, 1.F, 4.F, 5.F})
         {
             writeNumber(value);
+        }
+        if (hasBakeCoordinates == true)
+        {
+            writeNumber(.25F);
+            writeNumber(.75F);
         }
     }
     for (uint32 index : {0U, 1U, 2U})
@@ -335,6 +345,31 @@ TEST_CASE("Cooked v3 rejects unknown contracts and invalid transport values atom
         REQUIRE(scene.Materials[0].AreaSourceId == 41);
         REQUIRE(scene.Environment.Pixels[0].X == 16);
     }
+}
+TEST_CASE("Cooked v4 keeps v3 lighting records with indexed meshes and implicit bake charts", "[resources][scene]")
+{
+    const Array<uint8> bytes = MakeLightingFixture(sceneFormat::VERSION_4);
+    r::SceneDefinition scene;
+    REQUIRE(r::SceneDefinition::Decode(bytes.GetData(), bytes.GetSize(), scene) == r::Status::Ok);
+    REQUIRE(scene.Materials[0].AreaSourceId == 41);
+    REQUIRE(scene.Materials[0].EmissionPower == 1200);
+    REQUIRE(scene.Objects[0].SourceId == 101);
+    REQUIRE(scene.Meshes[0].Texcoords[0].X == 4);
+    REQUIRE(scene.Meshes[0].Indices.GetSize() == V3_VERTEX_COUNT);
+    // No stored chart coordinates: consumers derive them with TryGetBakeChartUv.
+    REQUIRE(scene.Meshes[0].BakeTexcoords.IsEmpty() == true);
+    REQUIRE(scene.Lights.GetSize() == V3_LIGHT_COUNT);
+    REQUIRE(scene.Environment.Pixels[1].Z == 3);
+    for (usize count = 0; count < bytes.GetSize(); ++count)
+    {
+        REQUIRE(r::SceneDefinition::Decode(bytes.GetData(), count, scene) == r::Status::Failed);
+        REQUIRE(scene.Objects[0].SourceId == 101);
+    }
+    Array<uint8> unknown;
+    REQUIRE(unknown.TryResize(bytes.GetSize()) == true);
+    std::memcpy(unknown.GetData(), bytes.GetData(), bytes.GetSize());
+    SetFixtureWord(unknown, sceneFormat::MAGIC.size(), sceneFormat::VERSION_4 + 1);
+    REQUIRE(r::SceneDefinition::Decode(unknown.GetData(), unknown.GetSize(), scene) == r::Status::Failed);
 }
 TEST_CASE("Legacy cooked lighting retains two-sided emitters and deterministic scene identities", "[resources][scene]")
 {

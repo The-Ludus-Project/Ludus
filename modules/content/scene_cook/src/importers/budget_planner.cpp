@@ -509,6 +509,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
 
     // 4. Assign placements to slots within the vertex and index budgets, largest first.
     uint32 totalVertices = 0;
+    uint32 totalIndices = 0;
     for (const uint32 index : order)
     {
         Placement& placement = plan.Placements[index];
@@ -528,9 +529,12 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             }
         }
         PlannedMaterial& planned = plan.Materials[slot];
-        const usize vertices = mesh.Indices.GetSize(); // Unique triangle corners for separate bake charts.
+        // LUSCN v4 meshes stay indexed; consumers expand corners for bake charts,
+        // which MAX_TOTAL_INDICES bounds across the bundle.
+        const usize vertices = mesh.GetVertexCount();
         const usize indices = mesh.Indices.GetSize();
-        if (totalVertices + vertices > format::MAX_VERTICES || planned.IndexCount + indices > format::MAX_INDICES)
+        if (totalVertices + vertices > format::MAX_VERTICES || planned.IndexCount + indices > format::MAX_INDICES ||
+            totalIndices + indices > format::MAX_TOTAL_INDICES)
         {
             if (isEmitting == true && shape.IsEmissionOptional == false)
             {
@@ -552,6 +556,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         }
         placement.IsKept = true;
         totalVertices += static_cast<uint32>(vertices);
+        totalIndices += static_cast<uint32>(indices);
         planned.VertexCount += static_cast<uint32>(vertices);
         planned.IndexCount += static_cast<uint32>(indices);
         if (planned.IsEmissive == false)

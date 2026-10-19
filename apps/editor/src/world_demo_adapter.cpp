@@ -1,7 +1,17 @@
 #include "internal/world_demo_adapter.h"
 
 #include "internal/editor_identity.h"
+#include "internal/render_items.h"
+#include "internal/world.h"
 
+#include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/transform.hpp>
+#include <ludus/foundation/math/vector.hpp>
+
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 
@@ -21,6 +31,8 @@ QString Text(const world_demo::Name& name)
 {
     return QString::fromLatin1(name.Text);
 }
+/// Smallest bounding radius in world units, so an empty room still frames sensibly.
+constexpr foundation::float32 MIN_WORLD_DEMO_RADIUS = 0.001F;
 } // namespace
 bool IsWorldDemo(const WorldDocument& document) noexcept
 {
@@ -137,37 +149,124 @@ bool ImportWorldDemo(WorldDocument& inoutDocument,
             .toJson(),
         outError);
 }
-bool CommitWorldDemoGesture(WorldDocument& document, const SceneSnapshot& projection, QString& error)
+bool LoadWorldDemoScene(const WorldDocument& document, RenderScene& outScene, QString& outError)
 {
-    auto candidate = document.Draft();
-    auto entities = candidate.value(QStringLiteral("entities")).toArray();
-    for (foundation::usize i = 0; i < projection.Level.EntityCount; ++i)
+    world_demo::Level level;
+    if (ProjectWorldDemo(document, level, outError) == false)
     {
-        const auto& recipe = projection.Level.Entities[i];
-        for (foundation::int32 row = 0; row < entities.size(); ++row)
-        {
-            auto entity = entities[row].toObject();
-            // A recipe's Id is the entity's label in both World versions, unique within the World.
-            if (document.GetEntityLabel(entity) == Text(recipe.Id))
-            {
-                auto components = entity.value(QStringLiteral("components")).toObject();
-                auto transform = components.value(QStringLiteral("transform")).toObject();
-                const auto next = Transform(recipe);
-                for (auto value = next.begin(); value != next.end(); ++value)
-                {
-                    if (static_cast<foundation::float32>(transform.value(value.key()).toDouble()) !=
-                        static_cast<foundation::float32>(value.value().toDouble()))
-                    {
-                        transform.insert(value.key(), value.value());
-                    }
-                }
-                components.insert(QStringLiteral("transform"), transform);
-                entity.insert(QStringLiteral("components"), components);
-                entities[row] = entity;
-            }
-        }
+        return false;
     }
-    candidate.insert(QStringLiteral("entities"), entities);
-    return document.Restore(candidate, error);
+    // The player's default world seed, so scatter matches what Play shows.
+    world_demo::GameWorld world;
+    world_demo::Status status = world.Prepare(level, world_demo::MAX_WORLD_ENTITIES, world_demo::WorldSeed{});
+    while (status == world_demo::Status::Success && world.IsBuilt() == false)
+    {
+        status = world.BuildNext();
+    }
+    world_demo::RenderFrame frame;
+    if (status != world_demo::Status::Success || world.Extract(0, frame, false, 0) == false)
+    {
+        outError = QStringLiteral("The World demo could not build its first frame (status %1). Authoring edits "
+                                  "were retained.")
+                       .arg(static_cast<foundation::uint32>(status));
+        return false;
+    }
+    world_demo::FrameItems items;
+    foundation::usize count = 0;
+    if (world_demo::TryBuildFrameItems(frame, {}, items, count) != graphics::rhi::RasterStatus::Ready)
+    {
+        outError = QStringLiteral("The World demo's first frame has a draw the renderer cannot admit.");
+        return false;
+    }
+    RenderScene candidate;
+    PreviewMesh quad;
+    quad.Id = QStringLiteral("world-demo.unit-quad");
+    for (const foundation::math::Vector3& position : world_demo::UNIT_QUAD_POSITIONS)
+    {
+        quad.Positions.append(position);
+        // Top-left UVs over the [-1, 1] quad; nothing samples them, the mesh contract needs one per vertex.
+        quad.Uvs.append({(position.X + 1) * 0.5F, (1 - position.Y) * 0.5F});
+        quad.Normals.append({0, 0, 1});
+    }
+    for (const foundation::uint32 index : world_demo::UNIT_QUAD_INDICES)
+    {
+        quad.Indices.append(index);
+    }
+    candidate.Meshes.append(quad);
+    // Extract emits collision boxes, then scatter, then actors in creation order. An unticked
+    // world has every actor alive, so ordering the recipes the same way maps each draw back to
+    // its World entity by label.
+    if (count < level.CollisionCount + level.EntityCount)
+    {
+        outError = QStringLiteral("The World demo's first frame is missing collision or actor draws.");
+        return false;
+    }
+    const foundation::usize scatterEnd = count - level.EntityCount;
+    foundation::StaticArray<foundation::usize, world_demo::MAX_WORLD_ENTITIES> actorRecipes{};
+    for (foundation::usize i = 0; i < level.EntityCount; ++i)
+    {
+        actorRecipes[i] = i;
+    }
+    foundation::Sort(actorRecipes.GetData(),
+                     level.EntityCount,
+                     [&world, &level](foundation::usize first, foundation::usize second) {
+                         const gameplay::world::EntityRegistry& registry = world.Registry();
+                         return registry.GetCreationSequence(world.FindAuthored(level.Entities[first].Id.View())) <
+                                registry.GetCreationSequence(world.FindAuthored(level.Entities[second].Id.View()));
+                     });
+    foundation::math::Vector3 low{};
+    foundation::math::Vector3 high{};
+    bool hasBounds = false;
+    for (foundation::usize index = 0; index < count; ++index)
+    {
+        PreviewObject object;
+        if (index < level.CollisionCount)
+        {
+            object.Name = Text(level.Collision[index].Id);
+        }
+        else if (index >= scatterEnd)
+        {
+            object.Name = Text(level.Entities[actorRecipes[index - scatterEnd]].Id);
+        }
+        object.Id = object.Name.isEmpty() == true ? QString() : document.FindEntityKey(object.Name);
+        object.Transform = items[index].Transform;
+        object.Tint = items[index].Material.Color;
+        for (const foundation::math::Vector3& position : world_demo::UNIT_QUAD_POSITIONS)
+        {
+            const foundation::math::Vector3 positionWorld =
+                foundation::math::TransformPoint(object.Transform, position);
+            if (hasBounds == false)
+            {
+                low = positionWorld;
+                high = positionWorld;
+                hasBounds = true;
+            }
+            low = {foundation::math::Min(low.X, positionWorld.X),
+                   foundation::math::Min(low.Y, positionWorld.Y),
+                   foundation::math::Min(low.Z, positionWorld.Z)};
+            high = {foundation::math::Max(high.X, positionWorld.X),
+                    foundation::math::Max(high.Y, positionWorld.Y),
+                    foundation::math::Max(high.Z, positionWorld.Z)};
+        }
+        candidate.Objects.append(object);
+    }
+    PreviewCamera camera;
+    camera.Id = QStringLiteral("world-demo.camera");
+    camera.Name = QStringLiteral("Game camera");
+    camera.Sample = frame.Camera;
+    camera.Trace = frame.CameraTrace;
+    candidate.Cameras.append(camera);
+    candidate.DefaultCamera = 0;
+    candidate.Center = (low + high) * 0.5F;
+    candidate.Radius = foundation::math::Max(MIN_WORLD_DEMO_RADIUS, foundation::math::Length(high - low) * 0.5F);
+    // Extraction is deterministic, so the projected World's bytes identify the scene.
+    candidate.AssetsIdentity =
+        QCryptographicHash::hash(QByteArrayLiteral("world-demo.unit-quad.v1"), QCryptographicHash::Sha256);
+    candidate.Identity =
+        QCryptographicHash::hash(document.Encode() + candidate.AssetsIdentity, QCryptographicHash::Sha256);
+    candidate.PacketIdentity = candidate.Identity;
+    outScene = foundation::Move(candidate);
+    outError.clear();
+    return true;
 }
 } // namespace ludus::editor

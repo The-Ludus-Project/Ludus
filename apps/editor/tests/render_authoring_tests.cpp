@@ -12,6 +12,7 @@
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
 
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
@@ -704,6 +705,77 @@ TEST_CASE("World composes schema meshes into cooked renderer data with bounded f
         combined = {};
         REQUIRE(preview.SetScene({}));
         CHECK(lastDefinition.IsExpired() == true);
+    }
+}
+
+TEST_CASE("World composition keeps imported LUSCN v4 meshes indexed beside schema meshes",
+          "[editor][unified][render-authoring]")
+{
+    namespace format = ludus::content::scene_format;
+    Fixture fixture;
+    // One indexed quad: four shared vertices, six indices, v3-style records.
+    QByteArray cooked;
+    {
+        QDataStream stream(&cooked, QIODevice::WriteOnly);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+        stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
+        stream << format::VERSION_4 << uint32{1} << uint32{1} << uint32{0} << uint32{1};
+        for (const float32 value : {0.F, 0.F, 3.F, 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 1.F})
+        {
+            stream << value;
+        }
+        stream << format::NO_TEXTURE << format::ADDRESS_CLAMP << 0.F << .5F << 0.F << 0.F << 0.F << uint32{0}
+               << uint32{0} << uint32{0} << 0.F << uint32{0};
+        stream << uint32{4} << uint32{6};
+        for (const math::Vector2 corner :
+             {math::Vector2{0, 0}, math::Vector2{1, 0}, math::Vector2{1, 1}, math::Vector2{0, 1}})
+        {
+            stream << corner.X << corner.Y << 0.F << 0.F << 0.F << 1.F << corner.X << corner.Y;
+        }
+        for (const uint32 index : {0U, 1U, 2U, 0U, 2U, 3U})
+        {
+            stream << index;
+        }
+        stream << uint32{0} << uint32{0};
+        for (const float32 value : {1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F})
+        {
+            stream << value;
+        }
+        stream << uint32{7} << uint32{0};
+        stream << format::LIGHTING_PROFILE_REC709_PHOTOMETRIC << uint32{0} << uint32{0} << uint32{0} << 0.F << 0.F
+               << 0.F;
+    }
+    ludus::resources::SceneDefinition imported;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(reinterpret_cast<const uint8*>(cooked.constData()),
+                                                      static_cast<usize>(cooked.size()),
+                                                      imported) == ludus::resources::Status::Ok);
+    const QJsonObject level{
+        {QStringLiteral("id"), QStringLiteral("a8517f65-8127-4bf4-99c2-e53b1a6d9701")},
+        {QStringLiteral("objects"),
+         QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("imported-quad")},
+                                {QStringLiteral("name"), QStringLiteral("Quad")},
+                                {QStringLiteral("mesh"), QStringLiteral("imported/mesh")},
+                                {QStringLiteral("material"), QStringLiteral("imported/material")}}}},
+        {QStringLiteral("camera"),
+         QJsonObject{{QStringLiteral("eye"), QJsonArray{0, 0, 3}},
+                     {QStringLiteral("target"), QJsonArray{0, 0, 0}},
+                     {QStringLiteral("up"), QJsonArray{0, 1, 0}},
+                     {QStringLiteral("fov"), 1.0}}},
+    };
+    RenderScene combined;
+    const bool isMerged = RenderScene::Merge(fixture.Scene, cooked, level, combined, fixture.Error, {});
+    INFO(fixture.Error.toStdString());
+    REQUIRE(isMerged);
+    REQUIRE(combined.Definition != nullptr);
+    REQUIRE(combined.Definition->Meshes.GetSize() == 1 + static_cast<usize>(fixture.Scene.Meshes.size()));
+    const ludus::resources::SceneMesh& quad = combined.Definition->Meshes[0];
+    CHECK(quad.Positions.GetSize() == 4);
+    CHECK(quad.Indices.GetSize() == 6);
+    CHECK(quad.BakeTexcoords.IsEmpty() == true);
+    for (const ludus::resources::SceneMesh& mesh : combined.Definition->Meshes)
+    {
+        CHECK(mesh.Normals.GetSize() == mesh.Positions.GetSize());
     }
 }
 

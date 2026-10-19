@@ -536,6 +536,72 @@ TEST_CASE("budget planner drops the smallest placements beyond the vertex budget
     CHECK(log.CountOccurrences(codes::GEOMETRY_DROPPED) == 1);
 }
 
+TEST_CASE("budget planner counts shared vertices once and bounds the combined index count", "[scene_cook][pbrt]")
+{
+    // A mesh of VertexCount positions whose IndexCount / 3 triangles reuse them.
+    struct SharedMesh final
+    {
+        usize VertexCount = 0;
+        usize IndexCount = 0;
+        float32 Scale = 1.0F;
+    };
+    const auto addMesh = [](SceneIr& inoutScene, const SharedMesh& shared) {
+        const usize vertexCount = shared.VertexCount;
+        const usize indexCount = shared.IndexCount;
+        const float32 scale = shared.Scale;
+        IrMesh mesh;
+        REQUIRE(mesh.Positions.TryResize(vertexCount * 3) == true);
+        for (usize v = 0; v < vertexCount; ++v)
+        {
+            mesh.Positions[v * 3] = scale * static_cast<float32>(v % 3 == 1 ? 1 : 0);
+            mesh.Positions[v * 3 + 1] = scale * static_cast<float32>(v % 3 == 2 ? 1 : 0);
+            mesh.Positions[v * 3 + 2] = static_cast<float32>(v) * 1e-6F;
+        }
+        REQUIRE(mesh.Indices.TryResize(indexCount) == true);
+        for (usize i = 0; i < indexCount; ++i)
+        {
+            mesh.Indices[i] = static_cast<uint32>((i / 3 * 3 + i % 3) % vertexCount);
+        }
+        const uint32 index = static_cast<uint32>(inoutScene.Meshes.GetSize());
+        REQUIRE(inoutScene.Meshes.TryAdd(static_cast<IrMesh&&>(mesh)) == true);
+        IrShape shape;
+        shape.Mesh = index;
+        REQUIRE(inoutScene.Shapes.TryAdd(shape) == true);
+        REQUIRE(inoutScene.WorldShapes.TryAdd(index) == true);
+    };
+    SECTION("more triangle corners than MAX_VERTICES fit when vertices are shared")
+    {
+        SceneIr scene;
+        constexpr usize VERTICES = 100002;
+        constexpr usize INDICES = 900000;
+        static_assert(INDICES > ludus::content::scene_format::MAX_VERTICES);
+        addMesh(scene, { .VertexCount = VERTICES, .IndexCount = INDICES });
+        DiagnosticLog log;
+        CookPlan plan;
+        REQUIRE(PlanBudget(scene, log, plan, nullptr) == ludus::content::Status::Ok);
+        CHECK(plan.DroppedPlacements == 0);
+        CHECK(plan.Placements[0].IsKept == true);
+    }
+    SECTION("the smallest placement leaves when the combined index count would overflow")
+    {
+        SceneIr scene;
+        constexpr usize INDICES = 600000;
+        static_assert(3 * INDICES > ludus::content::scene_format::MAX_TOTAL_INDICES);
+        static_assert(2 * INDICES <= ludus::content::scene_format::MAX_TOTAL_INDICES);
+        for (usize m = 0; m < 3; ++m)
+        {
+            addMesh(scene, { .VertexCount = 3, .IndexCount = INDICES, .Scale = static_cast<float32>(m + 1) });
+        }
+        DiagnosticLog log;
+        CookPlan plan;
+        REQUIRE(PlanBudget(scene, log, plan, nullptr) == ludus::content::Status::Ok);
+        CHECK(plan.DroppedPlacements == 1);
+        CHECK(plan.Placements[0].IsKept == false); // Smallest area goes first.
+        CHECK(plan.Placements[2].IsKept == true);
+        CHECK(log.CountOccurrences(codes::GEOMETRY_DROPPED) == 1);
+    }
+}
+
 TEST_CASE("pbrt-reference-v1 is unaffected: best-effort and reference ids differ", "[scene_cook][pbrt]")
 {
     CHECK(BEST_EFFORT_PROFILE != PROFILE);
@@ -801,8 +867,13 @@ TEST_CASE("Cooked v3 lighting preserves photometric lights, HDR environment and 
     CHECK(decoded.Materials[0].EmissionPower == 100.0F);
     CHECK(decoded.Materials[0].AreaSourceId != 0);
     CHECK(decoded.Objects[0].SourceId != 0);
-    REQUIRE(decoded.Meshes[0].BakeTexcoords.GetSize() == 3);
-    CHECK(decoded.Meshes[0].BakeTexcoords[0] != decoded.Meshes[0].BakeTexcoords[1]);
+    // Version 4 keeps the mesh indexed; bake charts are derived per triangle corner.
+    CHECK(decoded.Meshes[0].BakeTexcoords.IsEmpty() == true);
+    CHECK(decoded.Meshes[0].Positions.GetSize() == 3);
+    ludus::content::scene_format::BakeChartLayout layout;
+    CHECK(ludus::content::scene_format::TryMakeBakeChartLayout(
+              static_cast<ludus::foundation::core::uint32>(decoded.Meshes[0].Indices.GetSize() / 3),
+              layout) == true);
     bool hasEnvironmentDigest = false;
     for (const ludus::foundation::String& input : result.Inputs)
     {
@@ -812,7 +883,7 @@ TEST_CASE("Cooked v3 lighting preserves photometric lights, HDR environment and 
     const std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
     CHECK(report.find("not cooked") == std::string_view::npos);
     CHECK(report.find("\"analytic_lights\": 2") != std::string_view::npos);
-    CHECK(report.find("\"scene_format_version\": 3") != std::string_view::npos);
+    CHECK(report.find("\"scene_format_version\": 4") != std::string_view::npos);
     BestEffortResult repeat;
     REQUIRE(ImportPbrtBestEffort((scratch.Path / "lighting.pbrt").string(), {}, repeat, error) == true);
     REQUIRE(result.Bundle.GetSize() == repeat.Bundle.GetSize());

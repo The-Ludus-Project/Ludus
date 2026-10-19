@@ -9,7 +9,7 @@ schema `1`.
 byte-identical cooker for the recorded goldens; it rejects anything it does
 not model exactly. The best-effort importers accept general pbrt-v4, glTF 2.0
 (JSON or GLB) and Wavefront OBJ scenes, approximate what the runtime cannot
-represent, fit the result into the LUSCN01 v3 limits and explain every
+represent, fit the result into the LUSCN01 v4 limits and explain every
 compromise in a versioned JSON report. All of them are native C++; neither the
 cook nor its tests run Python.
 
@@ -19,7 +19,7 @@ format-neutral intermediate representation (SceneIR,
 shared budget planner, texture cook, bake and report writer. The IR keeps the
 complete source data a front-end can express, not the LUSCN capacities, so a
 later cooked-format revision can lift the limits without touching the parsers
-(see [what LUSCN v3 cannot carry](#what-luscn-v3-cannot-carry-yet)).
+(see [what LUSCN v4 cannot carry](#what-luscn-v4-cannot-carry-yet)).
 
 ## Running it
 
@@ -109,7 +109,7 @@ streamed; every diagnostic carries `file:line`.
 | Indices | positive one-based and negative relative indices for `v`, `vt`, `vn`; zero, malformed or out-of-range indices fail with `MALFORMED_INPUT` |
 | Faces | polygons up to 64 corners fan-triangulated (exact for convex polygons); larger polygons skipped; degenerate triangles removed (`GEOMETRY_REPAIRED`) |
 | Grouping | one IR mesh per (object/group, material) pair (at most 2^18 pairs); equal corner tuples are welded |
-| Smoothing | `s off`/`s 0` faces keep their own corners, so generated normals stay flat; numbered groups share them |
+| Smoothing | When normals are generated, `s off`/`s 0` faces keep their own corners so they stay flat, and numbered groups share them. Faces with an explicit `vn` on every corner weld equal `v/vt/vn` corners whatever the group |
 | Missing data | missing `vn` → area-weighted normals; a group mixing faces with and without `vt`/`vn` is made uniform with `ATTRIBUTE_IGNORED` |
 | Not imported (reported) | `l`/`p`, free-form curves and surfaces, display attributes |
 | MTL statements | `newmtl`, `Kd`, `Ks`, `Ke`, `Ns`, `d` (incl. `-halo`), `Tr`, `illum`, `Pr`, `Pm`; `Ka`, `Ni`, `Tf`, sheen/clearcoat keys reported or ignored |
@@ -159,15 +159,19 @@ coordinates but no tangents, MikkTSpace tangents are generated with the
 reference implementation by Morten S. Mikkelsen (vendored, unmodified, in
 `third_party/mikktspace`), using the OpenGL texture convention (v up) that
 glTF and common bakers assume. Corners whose frames differ get their own
-vertices. LUSCN v3 does not store tangents yet, so the report says
+vertices. LUSCN v4 does not store tangents yet, so the report says
 `TANGENTS_GENERATED … not stored`; meshes without texture coordinates are
 reported instead.
 
-## What LUSCN v3 cannot carry yet
+<a id="what-luscn-v3-cannot-carry-yet"></a>
 
-The planner fits the IR into LUSCN v3 (6 meshes, 8 materials, 8 textures, 128
-objects, 500k vertices, base-colour-only materials, flattened instancing). The
-IR already holds, and the cook reports dropping:
+## What LUSCN v4 cannot carry yet
+
+The planner fits the IR into LUSCN v4 (6 meshes, 8 materials, 8 textures, 128
+objects, 500k unique vertices, 1.5M indices, base-colour-only materials,
+flattened instancing). Meshes stay indexed, so a scene such as Khronos Sponza
+(262k triangles over 192k vertices) fits whole. The IR already holds, and the
+cook reports dropping:
 
 - per-vertex tangents and normal/height maps (`NORMALMAP_DROPPED`);
 - occlusion, emissive, specular and opacity textures (`TEXTURE_DROPPED`,
@@ -207,10 +211,11 @@ cited curve fit. Every approximation adds a diagnostic code.
 
 ## Authored lighting profile
 
-The shared scene profile is [LUSCN01 version 3](../architecture/content-resources.md), with stable
-placed-object and source identities, emission sidedness, requested lumens,
-analytic lights, HDR environment pixels and independent material/bake UVs.
-Older v1/v2 bundles remain readable with their historical two-sided emission.
+The shared scene profile is [LUSCN01 version 4](../architecture/content-resources.md#indexed-scene-meshes-luscn-v4):
+the version 3 records, with stable placed-object and source identities, emission
+sidedness, requested lumens, analytic lights and HDR environment pixels, and
+indexed meshes whose per-triangle bake charts are derived rather than stored.
+Older v1/v2/v3 bundles remain readable; v1/v2 keep their historical two-sided emission.
 
 PBRT's spectral photometry is approximated by fixed Rec.709 RGB luminance:
 source color is divided by `0.2126 R + 0.7152 G + 0.0722 B`, then multiplied by
@@ -238,8 +243,8 @@ area-light, shadow and indirect-transport limits.
 
 ## Budget planner
 
-The cooked scene must fit 6 meshes, 8 materials, 8 textures, 500k vertices,
-128 objects and 64 MiB. Each cooked mesh carries one material, so the planner:
+The cooked scene must fit 6 meshes, 8 materials, 8 textures, 500k unique
+vertices, 1.5M indices per mesh and in total, 128 objects and 64 MiB. Each cooked mesh carries one material, so the planner:
 
 1. reserves one slot per distinct emitter radiance, sidedness and power-normalization
    group; groups record their source shapes and area-light directives in the report;
@@ -248,9 +253,10 @@ The cooked scene must fit 6 meshes, 8 materials, 8 textures, 500k vertices,
 3. merges each remaining material into the nearest kept slot
    (`MATERIALS_MERGED`);
 4. merges all geometry of a slot into one world-space mesh;
-5. gives each triangle unique corners and a separate guttered bake chart, then
-   drops the smallest ordinary placements if the expanded vertex budget is exceeded
-   (`GEOMETRY_DROPPED`); required emitter geometry is never silently dropped;
+5. keeps each placement's vertices shared (consumers derive the guttered
+   per-triangle bake charts from the indices), then drops the smallest ordinary
+   placements if the vertex or index budget is exceeded (`GEOMETRY_DROPPED`);
+   required emitter geometry is never silently dropped;
 6. ranks textures and halves the largest until the byte budget is met
    (`TEXTURE_DOWNSCALED`). Geometry and authored lighting bytes are reserved first.
    Untextured slots get a 4×4 sRGB swatch.

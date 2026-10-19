@@ -1,3 +1,4 @@
+#include "internal/level.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
@@ -23,6 +24,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QMouseEvent>
 #include <QSize>
 #include <QTemporaryDir>
@@ -757,4 +760,107 @@ TEST_CASE("Native Lit viewport accepts zero-area triangles without baking", "[.r
     REQUIRE(Frames(preview, previous + 2));
     CHECK(viewport.PresentedFrames() > 0);
     preview.Stop();
+}
+TEST_CASE("Native World-demo World renders its game extraction in the shared viewport and follows edits",
+          "[.render-native]")
+{
+    REQUIRE(QApplication::platformName() == QStringLiteral("cocoa"));
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    const QString path =
+        QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(QStringLiteral("room.world.json"));
+    const std::string_view sample = ludus::world_demo::ExampleLevel();
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        REQUIRE(file.write(sample.data(), static_cast<int64>(sample.size())) == static_cast<int64>(sample.size()));
+    }
+    WorldWorkspace workspace;
+    workspace.resize(1200, 850);
+    workspace.show();
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path));
+    RenderPreview& preview = workspace.GetRenderPreview();
+    // The World's extraction loads on a worker; the panel publishes and starts it afterwards.
+    QElapsedTimer published;
+    published.start();
+    while ((preview.Scene().Identity.isEmpty() == true || preview.Running() == false) && published.elapsed() < 10000)
+    {
+        QTest::qWait(20);
+    }
+    const bool hasPresented = Frames(preview, 3);
+    INFO(preview.Status().toStdString());
+    REQUIRE(hasPresented);
+    const QString player = workspace.Document().FindEntityKey(QStringLiteral("player-start"));
+    // Project an object's centre into the presented image through the current (game) camera.
+    const auto locate = [&preview, &player](const QImage& image, QPoint& outPixel) {
+        for (const PreviewObject& object : preview.Scene().Objects)
+        {
+            if (object.Id != player)
+            {
+                continue;
+            }
+            ludus::graphics::renderer::ViewDescription view;
+            QString error;
+            if (preview.DescribeView(static_cast<uint32>(image.width()),
+                                     static_cast<uint32>(image.height()),
+                                     view,
+                                     error) == false)
+            {
+                return false;
+            }
+            const math::Vector3 centre = object.Transform.Translation;
+            const math::Vector4 clip = view.WorldToClip * math::Vector4{centre.X, centre.Y, centre.Z, 1};
+            const float32 x = (clip.X / clip.W * 0.5F + 0.5F) * static_cast<float32>(image.width());
+            const float32 y = (0.5F - clip.Y / clip.W * 0.5F) * static_cast<float32>(image.height());
+            outPixel = QPoint(static_cast<int32>(x), static_cast<int32>(y));
+            return image.rect().contains(outPixel);
+        }
+        return false;
+    };
+    const QImage before = ReadViewport();
+    REQUIRE_FALSE(before.isNull());
+    if (qEnvironmentVariableIsSet("LUDUS_WORLD_DEMO_VIEWPORT_IMAGE") == true)
+    {
+        REQUIRE(before.save(qEnvironmentVariable("LUDUS_WORLD_DEMO_VIEWPORT_IMAGE")));
+    }
+    QPoint playerPixel;
+    REQUIRE(locate(before, playerPixel));
+    // The orange player: red over green over blue, unlike the dark floor and the green exit.
+    const QColor drawn = before.pixelColor(playerPixel);
+    CHECK(drawn.red() > drawn.green());
+    CHECK(drawn.green() > drawn.blue());
+    CHECK(drawn != before.pixelColor(0, 0));
+
+    // An applied World edit re-extracts, and the player leaves its old pixel.
+    QListWidget* entities = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entities != nullptr);
+    for (int32 row = 0; row < entities->count(); ++row)
+    {
+        if (entities->item(row)->data(Qt::UserRole).toString() == player)
+        {
+            entities->setCurrentRow(row);
+        }
+    }
+    QLineEdit* x = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));
+    REQUIRE(x != nullptr);
+    x->setFocus();
+    x->selectAll();
+    const QByteArray identityBeforeEdit = preview.Scene().Identity;
+    QTest::keyClicks(x, QString::number(x->text().toDouble() + 2));
+    REQUIRE(workspace.Apply());
+    QElapsedTimer timer;
+    timer.start();
+    while (preview.Scene().Identity == identityBeforeEdit && timer.elapsed() < 10000)
+    {
+        QTest::qWait(20);
+    }
+    REQUIRE(Frames(preview, preview.Frames() + 3));
+    const QImage after = ReadViewport();
+    CHECK(after.pixelColor(playerPixel) != drawn);
+    QPoint movedPixel;
+    REQUIRE(locate(after, movedPixel));
+    CHECK(movedPixel.x() > playerPixel.x());
+    CHECK(after.pixelColor(movedPixel) == drawn);
+    workspace.StopPreview();
 }

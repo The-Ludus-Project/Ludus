@@ -1,5 +1,5 @@
 // Best-effort scene import: a front-end (pbrt-v4, glTF 2.0/GLB or Wavefront
-// OBJ/MTL) builds SceneIR -> budget plan -> LUSCN v3 bundle and a deterministic
+// OBJ/MTL) builds SceneIR -> budget plan -> LUSCN v4 bundle and a deterministic
 // import report. See docs/development/best-effort-scene-import.md.
 
 #include <ludus/content/scene_cook/best_effort_import.h>
@@ -172,7 +172,6 @@ struct CookedTexture final
 struct CookedMesh final
 {
     Array<float32> Vertices;
-    Array<float32> BakeUvs;
     Array<uint32> Indices;
 };
 
@@ -260,7 +259,7 @@ struct CookedMesh final
 }
 
 /// Fold metallic/roughness data textures of each slot's representative material into
-/// its scalar terms (LUSCN v3 materials carry scalars only).
+/// its scalar terms (LUSCN v4 materials carry scalars only).
 [[nodiscard]] Status
 ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inoutPlan, DiagnosticLog& inoutLog) noexcept
 {
@@ -573,45 +572,6 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
     return Status::Ok;
 }
 
-// Bake charts have independent triangle-corner ownership; source texture UVs
-// and normals remain unchanged. The planner budgets these deindexed vertices.
-[[nodiscard]] Status PrepareBakeCharts(Array<CookedMesh>& inoutMeshes) noexcept
-{
-    for (CookedMesh& mesh : inoutMeshes)
-    {
-        format::BakeChartLayout layout;
-        if (format::TryMakeBakeChartLayout(static_cast<uint32>(mesh.Indices.GetSize() / 3), layout) == false)
-        {
-            return Status::Invalid;
-        }
-        Array<float32> vertices;
-        if (vertices.TryResize(mesh.Indices.GetSize() * format::VERTEX_COMPONENTS) == false ||
-            mesh.BakeUvs.TryResize(mesh.Indices.GetSize() * 2) == false)
-        {
-            return Status::OutOfMemory;
-        }
-        for (usize i = 0; i < mesh.Indices.GetSize(); ++i)
-        {
-            const usize source = usize{mesh.Indices[i]} * format::VERTEX_COMPONENTS;
-            for (usize component = 0; component < format::VERTEX_COMPONENTS; ++component)
-            {
-                vertices[i * format::VERTEX_COMPONENTS + component] = mesh.Vertices[source + component];
-            }
-            if (format::TryGetBakeChartUv(layout,
-                                          static_cast<uint32>(i / 3),
-                                          static_cast<uint32>(i % 3),
-                                          mesh.BakeUvs[i * 2],
-                                          mesh.BakeUvs[i * 2 + 1]) == false)
-            {
-                return Status::Invalid;
-            }
-            mesh.Indices[i] = static_cast<uint32>(i);
-        }
-        mesh.Vertices.Swap(vertices);
-    }
-    return Status::Ok;
-}
-
 /// Camera from the IR, or framed on the cooked bounds when absent or degenerate.
 void ResolveCamera(const SceneIr& scene,
                    const Array<CookedMesh>& meshes,
@@ -660,7 +620,7 @@ void PackBundle(const IrCamera& camera,
                 detail::ByteWriter& inoutBlob) noexcept
 {
     inoutBlob.Append(format::MAGIC);
-    inoutBlob.AppendUint32(format::VERSION_3);
+    inoutBlob.AppendUint32(format::VERSION_4);
     const uint32 count = static_cast<uint32>(plan.Materials.GetSize());
     inoutBlob.AppendUint32(count); // Meshes.
     inoutBlob.AppendUint32(count); // Materials.
@@ -708,8 +668,6 @@ void PackBundle(const IrCamera& camera,
             {
                 inoutBlob.AppendFloat32(static_cast<float64>(mesh.Vertices[i * format::VERTEX_COMPONENTS + component]));
             }
-            inoutBlob.AppendFloat32(static_cast<float64>(mesh.BakeUvs[i * 2]));
-            inoutBlob.AppendFloat32(static_cast<float64>(mesh.BakeUvs[i * 2 + 1]));
         }
         for (const uint32 index : mesh.Indices)
         {
@@ -851,7 +809,7 @@ void WriteReport(const SceneIr& scene,
     writeCount("objects", summary.CookedObjects);
     writeCount("vertices", summary.CookedVertices);
     writeCount("bundle_bytes", summary.BundleBytes);
-    writeCount("scene_format_version", format::VERSION_3);
+    writeCount("scene_format_version", format::VERSION_4);
     writeCount("analytic_lights", facts.LightingOrNull != nullptr ? facts.LightingOrNull->Lights.GetSize() : 0);
     writeCount("dropped_placements", plan.DroppedPlacements);
     writeCount("dropped_vertices", plan.DroppedVertices);
@@ -1219,17 +1177,14 @@ void ResetResult(BestEffortResult& outResult) noexcept
     Array<CookedMesh> meshes;
     if (status == Status::Ok)
     {
+        // Version 4 keeps meshes indexed: consumers derive the per-triangle bake
+        // charts (format::TryGetBakeChartUv) instead of reading stored corners.
         status = BakeMeshes(scene, plan, meshes, cancelOrNull);
-    }
-    if (status == Status::Ok)
-    {
-        status = PrepareBakeCharts(meshes);
     }
     usize geometryBytes = 0;
     for (const CookedMesh& mesh : meshes)
     {
-        geometryBytes += sizeof(format::MeshRecord) +
-                         (mesh.Vertices.GetSize() + mesh.BakeUvs.GetSize()) * sizeof(float32) +
+        geometryBytes += sizeof(format::MeshRecord) + mesh.Vertices.GetSize() * sizeof(float32) +
                          mesh.Indices.GetSize() * sizeof(uint32);
     }
     IrCamera camera;

@@ -182,12 +182,12 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
     uint32 objects = 0;
     SceneDefinition scene;
     if (std::memcmp(magic, format::MAGIC.data(), format::MAGIC.size()) != 0 || reader.Read(version) == false ||
-        (version != format::VERSION_1 && version != format::VERSION_2 && version != format::VERSION_3) ||
-        reader.Read(meshes) == false || meshes == 0 || meshes > format::MAX_MESHES || reader.Read(materials) == false ||
-        materials == 0 || materials > format::MAX_MATERIALS || reader.Read(textures) == false ||
-        textures > format::MAX_TEXTURES || reader.Read(objects) == false || objects == 0 ||
-        objects > format::MAX_OBJECTS || reader.Read(scene.Eye) == false || reader.Read(scene.Target) == false ||
-        reader.Read(scene.Up) == false || reader.Read(scene.VerticalFov) == false)
+        format::IsSupportedVersion(version) == false || reader.Read(meshes) == false || meshes == 0 ||
+        meshes > format::MAX_MESHES || reader.Read(materials) == false || materials == 0 ||
+        materials > format::MAX_MATERIALS || reader.Read(textures) == false || textures > format::MAX_TEXTURES ||
+        reader.Read(objects) == false || objects == 0 || objects > format::MAX_OBJECTS ||
+        reader.Read(scene.Eye) == false || reader.Read(scene.Target) == false || reader.Read(scene.Up) == false ||
+        reader.Read(scene.VerticalFov) == false)
     {
         return Status::Failed;
     }
@@ -247,7 +247,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             return Status::Failed;
         }
         material.AreaSourceId = IsNonzero(material.Emission) == true ? materialIndex + 1 : 0;
-        if (version == format::VERSION_3)
+        if (format::HasLightingRecords(version) == true)
         {
             uint32 flags = 0;
             uint32 reserved = 0;
@@ -268,8 +268,9 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
         }
     }
     usize vertexTotal = 0;
-    const usize vertexBytes =
-        version == format::VERSION_3 ? sizeof(format::VertexRecordV3) : sizeof(format::VertexRecord);
+    usize indexTotal = 0;
+    const usize vertexBytes = format::GetVertexRecordBytes(version);
+    const bool hasBakeCoordinates = format::HasStoredBakeCoordinates(version);
     for (SceneMesh& mesh : scene.Meshes)
     {
         uint32 vertices = 0;
@@ -277,13 +278,14 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
         if (reader.Read(vertices) == false || reader.Read(indices) == false || vertices == 0 ||
             vertices > format::MAX_VERTICES || indices == 0 || indices > format::MAX_INDICES || indices % 3 != 0 ||
             vertexTotal + vertices > format::MAX_VERTICES ||
+            (version == format::VERSION_4 && indexTotal + indices > format::MAX_TOTAL_INDICES) ||
             usize(vertices) * vertexBytes + usize(indices) * sizeof(uint32) > reader.Remaining())
         {
             return Status::Failed;
         }
         if (mesh.Positions.TryResize(vertices) == false || mesh.Normals.TryResize(vertices) == false ||
             mesh.Texcoords.TryResize(vertices) == false || mesh.Indices.TryResize(indices) == false ||
-            (version == format::VERSION_3 && mesh.BakeTexcoords.TryResize(vertices) == false))
+            (hasBakeCoordinates == true && mesh.BakeTexcoords.TryResize(vertices) == false))
         {
             return Status::OutOfMemory;
         }
@@ -294,7 +296,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             {
                 return Status::Failed;
             }
-            if (version == format::VERSION_3 &&
+            if (hasBakeCoordinates == true &&
                 (reader.Read(mesh.BakeTexcoords[i]) == false || mesh.BakeTexcoords[i].X < 0 ||
                  mesh.BakeTexcoords[i].X > 1 || mesh.BakeTexcoords[i].Y < 0 || mesh.BakeTexcoords[i].Y > 1))
             {
@@ -309,6 +311,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             }
         }
         vertexTotal += vertices;
+        indexTotal += indices;
     }
     for (usize i = 0; i < scene.Objects.GetSize(); ++i)
     {
@@ -332,7 +335,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
         {
             return Status::Failed;
         }
-        if (version == format::VERSION_3)
+        if (format::HasLightingRecords(version) == true)
         {
             if (reader.Read(object.SourceId) == false || object.SourceId == 0)
             {
@@ -347,7 +350,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             }
         }
     }
-    if (version == format::VERSION_3)
+    if (format::HasLightingRecords(version) == true)
     {
         const Status lightingStatus = ReadLighting(reader, scene);
         if (lightingStatus != Status::Ok)

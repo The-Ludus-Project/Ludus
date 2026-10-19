@@ -1,7 +1,9 @@
 #include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
+#include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/render_scene_limits.h"
 #include "internal/static_lighting_job.h"
 
 #include <ludus/foundation/containers/array.hpp>
@@ -26,22 +28,6 @@
 #include <QImage>
 #include <QString>
 #include <QVector>
-
-#if defined(LUDUS_EDITOR_GPU_PREVIEW)
-#    include "renderer_clustered_authored.h"
-#    include "renderer_clustered_authored_debug.h"
-#    include "renderer_clustered_authored_debug_shadow.h"
-#    include "renderer_clustered_authored_shadow.h"
-#    include "renderer_composite.h"
-#    include "renderer_flat.h"
-#    include "renderer_lit.h"
-#    include "renderer_lit_debug.h"
-#    include "renderer_lit_debug_shadow.h"
-#    include "renderer_lit_shadow.h"
-#    include "renderer_material.h"
-#    include "renderer_output.h"
-#    include "renderer_shadow.h"
-#endif
 
 namespace ludus::editor
 {
@@ -92,8 +78,11 @@ QVector<math::Vector3> ComputeVertexNormals(const PreviewMesh& mesh)
 #endif
 } // namespace
 
-PreviewGpuGeneration::PreviewGpuGeneration(rhi::DeviceHandle device, const RenderScene& source, PreviewShading shading)
-    : Device(device), Source(source), Shading(shading), LightingKey(preview_lighting::MakeKey(source))
+PreviewGpuGeneration::PreviewGpuGeneration(rhi::DeviceHandle device,
+                                           const RenderScene& source,
+                                           PreviewShading shading,
+                                           const PreviewShaderSet& shaders)
+    : Device(device), Source(source), Shading(shading), Shaders(shaders), LightingKey(preview_lighting::MakeKey(source))
 {
 }
 PreviewGpuGeneration::~PreviewGpuGeneration() noexcept
@@ -183,8 +172,8 @@ bool PreviewGpuGeneration::prepareRenderer() noexcept
     limits.Snapshots = 8;
     limits.HostBytes = usize{128} * 1024 * 1024;
     return acceptStage(Renderer.Initialize(Device,
-                                           ludus::shaders::renderer_flat::Vertex(),
-                                           ludus::shaders::renderer_flat::Fragment(),
+                                           Shaders.Get(PreviewShaderProgram::Flat, PreviewShaderStage::Vertex),
+                                           Shaders.Get(PreviewShaderProgram::Flat, PreviewShaderStage::Fragment),
                                            limits),
                        PreparationStage::Views);
 #else
@@ -198,9 +187,10 @@ bool PreviewGpuGeneration::prepareViews() noexcept
     const rhi::RasterStatus status = Renderer.Poll();
     return status == rhi::RasterStatus::Pending ||
            (status == rhi::RasterStatus::Ready &&
-            acceptStage(Renderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
-                                                 ludus::shaders::renderer_composite::Fragment()),
-                        PreparationStage::Materials));
+            acceptStage(
+                Renderer.InitializeViews(Shaders.Get(PreviewShaderProgram::Composite, PreviewShaderStage::Vertex),
+                                         Shaders.Get(PreviewShaderProgram::Composite, PreviewShaderStage::Fragment)),
+                PreparationStage::Materials));
 #else
     return false;
 #endif
@@ -214,9 +204,10 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
     {
         if (mIsLightingInitialized == false)
         {
-            const rhi::RasterStatus lighting = Renderer.InitializeLighting(ludus::shaders::renderer_output::Vertex(),
-                                                                           ludus::shaders::renderer_output::Fragment(),
-                                                                           ludus::shaders::renderer_shadow::Fragment());
+            const rhi::RasterStatus lighting =
+                Renderer.InitializeLighting(Shaders.Get(PreviewShaderProgram::Output, PreviewShaderStage::Vertex),
+                                            Shaders.Get(PreviewShaderProgram::Output, PreviewShaderStage::Fragment),
+                                            Shaders.Get(PreviewShaderProgram::Shadow, PreviewShaderStage::Fragment));
             if (IsAccepted(lighting) == false)
             {
                 return false;
@@ -235,44 +226,50 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
         if (shouldUseAuthoredLighting() == true && IsPreviewDebugShading(Shading) == true)
         {
             return acceptStage(
-                Renderer.PrewarmLitProgram(ludus::shaders::renderer_clustered_authored_debug::Vertex(),
-                                           ludus::shaders::renderer_clustered_authored_debug::Fragment(),
-                                           ludus::shaders::renderer_clustered_authored_debug_shadow::Fragment(),
-                                           mProgram),
+                Renderer.PrewarmLitProgram(
+                    Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebug, PreviewShaderStage::Vertex),
+                    Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebug, PreviewShaderStage::Fragment),
+                    Shaders.Get(PreviewShaderProgram::ClusteredAuthoredDebugShadow, PreviewShaderStage::Fragment),
+                    mProgram),
                 PreparationStage::Assets);
         }
         if (shouldUseAuthoredLighting() == true)
         {
             return acceptStage(
-                Renderer.PrewarmLitProgram(ludus::shaders::renderer_clustered_authored::Vertex(),
-                                           ludus::shaders::renderer_clustered_authored::Fragment(),
-                                           ludus::shaders::renderer_clustered_authored_shadow::Fragment(),
-                                           mProgram),
+                Renderer.PrewarmLitProgram(
+                    Shaders.Get(PreviewShaderProgram::ClusteredAuthored, PreviewShaderStage::Vertex),
+                    Shaders.Get(PreviewShaderProgram::ClusteredAuthored, PreviewShaderStage::Fragment),
+                    Shaders.Get(PreviewShaderProgram::ClusteredAuthoredShadow, PreviewShaderStage::Fragment),
+                    mProgram),
                 PreparationStage::Assets);
         }
         if (shouldUseUnlitDebugView() == true)
         {
-            return acceptStage(Renderer.PrewarmLitProgram(ludus::shaders::renderer_lit_debug::Vertex(),
-                                                          ludus::shaders::renderer_lit_debug::Fragment(),
-                                                          ludus::shaders::renderer_lit_debug_shadow::Fragment(),
-                                                          mProgram),
+            return acceptStage(Renderer.PrewarmLitProgram(
+                                   Shaders.Get(PreviewShaderProgram::LitDebug, PreviewShaderStage::Vertex),
+                                   Shaders.Get(PreviewShaderProgram::LitDebug, PreviewShaderStage::Fragment),
+                                   Shaders.Get(PreviewShaderProgram::LitDebugShadow, PreviewShaderStage::Fragment),
+                                   mProgram),
                                PreparationStage::Assets);
         }
-        return acceptStage(shouldUseLitMaterials() == true
-                               ? Renderer.PrewarmLitProgram(ludus::shaders::renderer_lit::Vertex(),
-                                                            ludus::shaders::renderer_lit::Fragment(),
-                                                            ludus::shaders::renderer_lit_shadow::Fragment(),
-                                                            mProgram)
-                               : Renderer.PrewarmMaterialProgram(ludus::shaders::renderer_material::Vertex(),
-                                                                 ludus::shaders::renderer_material::Fragment(),
-                                                                 mProgram),
-                           PreparationStage::Assets);
+        return acceptStage(
+            shouldUseLitMaterials() == true
+                ? Renderer.PrewarmLitProgram(Shaders.Get(PreviewShaderProgram::Lit, PreviewShaderStage::Vertex),
+                                             Shaders.Get(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment),
+                                             Shaders.Get(PreviewShaderProgram::LitShadow, PreviewShaderStage::Fragment),
+                                             mProgram)
+                : Renderer.PrewarmMaterialProgram(
+                      Shaders.Get(PreviewShaderProgram::Material, PreviewShaderStage::Vertex),
+                      Shaders.Get(PreviewShaderProgram::Material, PreviewShaderStage::Fragment),
+                      mProgram),
+            PreparationStage::Assets);
     }
     return status == rhi::RasterStatus::Pending ||
            (status == rhi::RasterStatus::Ready &&
-            acceptStage(Renderer.PrewarmMaterialProgram(ludus::shaders::renderer_material::Vertex(),
-                                                        ludus::shaders::renderer_material::Fragment(),
-                                                        mProgram),
+            acceptStage(Renderer.PrewarmMaterialProgram(
+                            Shaders.Get(PreviewShaderProgram::Material, PreviewShaderStage::Vertex),
+                            Shaders.Get(PreviewShaderProgram::Material, PreviewShaderStage::Fragment),
+                            mProgram),
                         PreparationStage::Assets));
 #else
     return false;
@@ -482,7 +479,7 @@ bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& 
     {
         return prepareLighting(surface, outError);
     }
-    StaticArray<renderer::SceneItem, content::scene_format::MAX_OBJECTS> items{};
+    StaticArray<renderer::SceneItem, MAX_PREVIEW_OBJECTS> items{};
     for (int32 i = 0; i < Source.Objects.size(); ++i)
     {
         const PreviewObject& object = Source.Objects[i];

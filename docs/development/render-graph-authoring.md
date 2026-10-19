@@ -801,7 +801,10 @@ project are discarded. Build resolves the saved project's current native profile
 through the same SDK resolver as ordinary project builds: a saved local SDK
 selection takes precedence over an installed locked SDK in the shared store.
 Its installed `lib/cmake/Ludus/shaders` directory supplies the shader helper and
-toolchain pins. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
+toolchain pins. Ordinary offline compilation does not require the optional
+`native_worker.py` client, so SDKs that predate native-worker support remain usable.
+That client is required and included in tool identity only when a native worker
+is selected. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
 from the selected local setup preset or the editor's prepared shader tools.
 No path entry is needed for **New Graph → Build & Preview**. Loading and building
 do not download tools, repair the project or write into the engine/SDK.
@@ -1004,6 +1007,29 @@ RG3b completes the editor half of the
 a visual node canvas over the same draft, and a trusted preview of the cooked
 runtime generation on the editor's existing viewport device.
 
+### Edit shader sources in a code editor
+
+On native desktop, select a file in the **Source** view and click **Open in Code
+Editor**. The first use opens a native application picker; **Choose Code
+Editor…** changes that saved preference. On macOS, select the editor's `.app`
+from Applications. No command-line launcher or shell command is required.
+The selected application receives the saved project file; completion and
+formatting come from that application's language support. This first launcher
+opens the file without a diagnostic line argument. External application launch
+is unavailable in the browser editor.
+
+If the graph or text pane has unsaved changes, opening asks to save them first.
+For the engine default, opening asks to create an editable copy in the project;
+the engine sources stay unchanged. Cancelling retains the current text/draft.
+
+Save in the code editor, then use **Build & Preview**. Validation and builds
+refresh external saves when the draft is clean; **Reload Sources** performs the
+same refresh without starting a job. Refresh uses the existing package limits
+and creates one undoable revision. When local and external changes conflict,
+the current draft is retained and the job does not start. Undo local edits or
+reopen the graph to resolve the conflict. Apply or revert unapplied text before
+reloading; source refresh never silently replaces that text.
+
 ### Edit on the canvas
 
 The **Canvas** view sits beside the source tree and shows the selected
@@ -1019,7 +1045,9 @@ stay in step.
 | Select a link and press Delete | `Disconnect` |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
-| Wheel, or drag empty space | Zoom or pan the view only |
+| Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
+| Wheel or vertical two-finger scroll | Zoom around the pointer, including smooth pixel scrolling |
+| Drag empty space | Pan the view only |
 
 Header colours show the connection domain: blue scene/view (Scene, Camera),
 orange execution (Raster, Present), green resource (Target, Export), purple
@@ -1487,6 +1515,13 @@ identity still match. **Live Preview** opts into debounced background builds;
 layout-only moves do not schedule a build. Saving is independent. **Cancel Render
 Graph Job** disables live building; failures retain the last drawable preview. The existing preview's
 static-material/profile restrictions still apply.
+
+The scene viewport's **Live shaders** toggle uses the same worker for the
+built-in renderer recipes of the editor's own engine checkout. It starts a
+private worker from the build tree when `LUDUS_BUILD_SHADER_WORKER` is on, or
+connects to this endpoint or `LUDUS_SHADER_WORKER_SOCKET`. Recipe names, sources
+and entries come from the renderer manifest; see
+[Editor workspace](editor-workspace.md).
 
 Standalone native games can link `Ludus::ShaderDevelopment` and create a
 `ludus::runtime::shader_development::ReloadSession` over their producer's final

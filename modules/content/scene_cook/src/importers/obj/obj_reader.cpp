@@ -1005,7 +1005,7 @@ Status WavefrontReader::finishMaterial(const MtlTerms& terms, uint32 line) noexc
     }
     if (material.NormalTexture != IR_NONE)
     {
-        warn(codes::NORMALMAP_DROPPED, line, "MTL bump/normal map not stored by LUSCN v3");
+        warn(codes::NORMALMAP_DROPPED, line, "MTL bump/normal map not stored by LUSCN v4");
     }
     if (material.SpecularTexture != IR_NONE || material.SpecularExponentTexture != IR_NONE)
     {
@@ -1393,6 +1393,16 @@ Status WavefrontReader::ReadEntry(ByteSource& inoutEntry) noexcept
 
 Status WavefrontReader::buildMesh(MeshBuilder& inoutBuilder) noexcept
 {
+    const bool hasNormals = inoutBuilder.HasNormal == true && inoutBuilder.HasMissingNormal == false;
+    if (hasNormals == true)
+    {
+        // Smoothing groups only steer generated normals. With an explicit vn on every
+        // corner, equal (v, vt, vn) tuples are the same vertex in any smoothing group.
+        for (Corner& corner : inoutBuilder.Corners)
+        {
+            corner.Smoothing = 0;
+        }
+    }
     const Array<Corner>& corners = inoutBuilder.Corners;
     Array<uint32> order;
     if (order.TryResize(corners.GetSize()) == false)
@@ -1413,7 +1423,6 @@ Status WavefrontReader::buildMesh(MeshBuilder& inoutBuilder) noexcept
     });
     IrMesh mesh;
     const bool hasUvs = inoutBuilder.HasUv;
-    const bool hasNormals = inoutBuilder.HasNormal == true && inoutBuilder.HasMissingNormal == false;
     if (mesh.Indices.TryResize(corners.GetSize()) == false)
     {
         return Status::OutOfMemory;

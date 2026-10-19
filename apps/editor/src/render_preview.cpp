@@ -2,6 +2,7 @@
 #include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
+#include "internal/render_scene_limits.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/projection.hpp>
@@ -140,8 +141,12 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     bool valid = scene.Identity.isEmpty()
                      ? (scene.Meshes.isEmpty() && scene.Textures.isEmpty() && scene.Surfaces.isEmpty() &&
                         scene.Objects.isEmpty() && scene.Cameras.isEmpty())
-                     : (scene.Meshes.isEmpty() == false && scene.Meshes.size() <= 6 && scene.Textures.size() <= 8 &&
-                        scene.Surfaces.size() <= 8 && scene.Objects.size() <= 128 && scene.Cameras.size() <= 128);
+                     : (scene.Meshes.isEmpty() == false &&
+                        static_cast<usize>(scene.Meshes.size()) <= content::scene_format::MAX_MESHES &&
+                        static_cast<usize>(scene.Textures.size()) <= content::scene_format::MAX_TEXTURES &&
+                        static_cast<usize>(scene.Surfaces.size()) <= content::scene_format::MAX_MATERIALS &&
+                        static_cast<usize>(scene.Objects.size()) <= MAX_PREVIEW_OBJECTS &&
+                        static_cast<usize>(scene.Cameras.size()) <= MAX_PREVIEW_CAMERAS);
     for (const auto& surface : scene.Surfaces)
     {
         valid = valid && surface.Texture >= (scene.Lit ? -1 : 0) && surface.Texture < scene.Textures.size();
@@ -258,7 +263,7 @@ bool RenderPreview::beginResourceRestart() noexcept
         return false;
     }
     foundation::UniquePtr<PreviewGpuGeneration> candidate;
-    candidate.Reset(new (std::nothrow) PreviewGpuGeneration(Device_, Scene_, mShading));
+    candidate.Reset(new (std::nothrow) PreviewGpuGeneration(Device_, Scene_, mShading, mShaders));
     if (candidate.Get() == nullptr)
     {
         fail(QStringLiteral("GPU preview staging allocation failed. Previous view retained."));
@@ -285,6 +290,28 @@ bool RenderPreview::beginResourceRestart() noexcept
     Report_ = {};
     Frames_ = 0;
     ViewDirty_ = true;
+    return true;
+}
+void RenderPreview::SetShaders(const PreviewShaderSet& shaders)
+{
+    mShaders = shaders;
+    if (OwnsDevice_ == true)
+    {
+        restartResources();
+    }
+}
+bool RenderPreview::rejectShaders()
+{
+    if (mResources.Get() == nullptr || mResources->Shaders.GetRevision() == mPresentedShaders.GetRevision())
+    {
+        return false;
+    }
+    const uint64 rejected = mResources->Shaders.GetRevision();
+    const QString reason = mPreparationFailure.isEmpty() == false ? mPreparationFailure
+                                                                  : QStringLiteral("GPU pipeline preparation failed.");
+    mShaders = mPresentedShaders;
+    restartResources();
+    Q_EMIT ShadersRejected(rejected, reason);
     return true;
 }
 bool RenderPreview::Start()
@@ -1112,11 +1139,24 @@ void RenderPreview::Tick()
         mIsAwaitingProducer = false;
         ++Frames_;
         const uint64 ownerFrame = Frames_;
+        const bool hasNewShaders = mResources->Shaders.GetRevision() != mPresentedShaders.GetRevision();
+        if (hasNewShaders == true)
+        {
+            mPresentedShaders = mResources->Shaders;
+        }
         Q_EMIT FrameReady();
         // A receiver can stop/replace the preview at this transaction boundary.
         if (OwnsDevice_ == false || Frames_ != ownerFrame)
         {
             return;
+        }
+        if (hasNewShaders == true)
+        {
+            Q_EMIT ShadersApplied(mPresentedShaders.GetRevision());
+            if (OwnsDevice_ == false || Frames_ != ownerFrame)
+            {
+                return;
+            }
         }
     }
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -1163,6 +1203,11 @@ void RenderPreview::Tick()
     }
     if (prepare() == false)
     {
+        // A replacement shader set that cannot build pipelines falls back to the presented set.
+        if (rejectShaders() == true)
+        {
+            return;
+        }
         // Keep a stage's specific reason; the generic text covers unexplained failures.
         fail(
             mPreparationFailure.isEmpty() == false
