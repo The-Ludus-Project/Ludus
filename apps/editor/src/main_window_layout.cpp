@@ -621,6 +621,8 @@ void MainWindow::buildWindowMenu(QMenu* menu)
     connect(next, &QAction::triggered, this, [this]() { static_cast<void>(mDocuments->MoveActiveDocument(1)); });
     connect(previous, &QAction::triggered, this, [this]() { static_cast<void>(mDocuments->MoveActiveDocument(-1)); });
     connect(merge, &QAction::triggered, mDocuments, &DocumentWell::MergeGroups);
+    // Both close commands go through the well, so an owner-closed document asks its owner
+    // through DocumentWell::CloseRequested instead of being hidden.
     connect(close, &QAction::triggered, this, [this]() {
         QWidget* activeOrNull = mDocuments->GetActiveDocumentOrNull();
         if (activeOrNull != nullptr)

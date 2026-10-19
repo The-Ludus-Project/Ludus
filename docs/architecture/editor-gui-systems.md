@@ -144,8 +144,9 @@ document per open `.lurender.json`.
 
 ### One document per render graph
 
-This design is not implemented yet. Each open root `.lurender.json` becomes its
-own Render Graph document, in the way Visual Studio opens one editor per file.
+Only slice 1 below, owner-closed `DocumentWell` documents, is implemented. Each
+open root `.lurender.json` becomes its own Render Graph document, in the way
+Visual Studio opens one editor per file.
 The document owner, `RendererWorkspace`, keeps its contract: one typed
 `RenderGraphDocument` draft, one history, one `RenderGraphJob`, and one
 `RenderGraphPreview`. A new private component, `RenderGraphDocuments`, owns the

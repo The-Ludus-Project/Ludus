@@ -10,6 +10,7 @@
 #include <QLatin1StringView>
 #include <QMenu>
 #include <QPoint>
+#include <QPointer>
 #include <QSplitter>
 #include <QTabBar>
 #include <QTabWidget>
@@ -145,13 +146,38 @@ bool DocumentWell::eventFilter(QObject* watched, QEvent* event)
     return QWidget::eventFilter(watched, event);
 }
 
-void DocumentWell::AddDocument(QWidget* document, const QString& title)
+void DocumentWell::AddDocument(QWidget* document, const QString& title, DocumentCloseMode closeMode)
 {
     LUDUS_REQUIRE(document != nullptr && document->objectName().isEmpty() == false);
     LUDUS_REQUIRE(findEntryOrNull(document) == nullptr);
-    mEntries.append({ .Document = document, .Title = title, .IsAvailable = true });
+    mEntries.append({ .Document = document, .Title = title, .IsAvailable = true, .CloseMode = closeMode });
     document->setParent(mParking);
     document->hide();
+}
+
+bool DocumentWell::RemoveDocument(QWidget* document)
+{
+    qsizetype index = 0;
+    while (index < mEntries.size() && mEntries.at(index).Document != document)
+    {
+        ++index;
+    }
+    if (index == mEntries.size())
+    {
+        return false;
+    }
+    const bool wasOpen = groupOfOrNull(document) != nullptr;
+    detach(document);
+    mEntries.removeAt(index);
+    document->hide();
+    document->setParent(nullptr);
+    if (wasOpen == true)
+    {
+        removeEmptyGroups();
+        publishActiveDocument();
+        Q_EMIT LayoutChanged();
+    }
+    return true;
 }
 
 const DocumentWell::Entry* DocumentWell::findEntryOrNull(const QWidget* document) const
@@ -242,21 +268,69 @@ void DocumentWell::CloseDocument(QWidget* document)
     {
         return;
     }
+    if (findEntryOrNull(document)->CloseMode == DocumentCloseMode::OwnerCloses)
+    {
+        requestClose({document});
+        return;
+    }
+    hideDocument(document);
+}
+
+void DocumentWell::hideDocument(QWidget* document)
+{
+    if (groupOfOrNull(document) == nullptr)
+    {
+        return;
+    }
     detach(document);
     removeEmptyGroups();
     publishActiveDocument();
     Q_EMIT LayoutChanged();
 }
 
+void DocumentWell::requestClose(const QList<QWidget*>& documents)
+{
+    // A handler may remove, and its owner then delete, any view in the list.
+    QList<QPointer<QWidget>> pending;
+    for (QWidget* document : documents)
+    {
+        pending.append(document);
+    }
+    for (const QPointer<QWidget>& document : pending)
+    {
+        if (document.isNull() == false && findEntryOrNull(document.data()) != nullptr &&
+            groupOfOrNull(document.data()) != nullptr)
+        {
+            Q_EMIT CloseRequested(document.data());
+        }
+    }
+}
+
 void DocumentWell::CloseAllDocuments()
 {
+    QList<QWidget*> requests;
+    for (const QTabWidget* group : mGroups)
+    {
+        for (foundation::int32 tab = 0; tab < group->count(); ++tab)
+        {
+            QWidget* document = group->widget(tab);
+            if (findEntryOrNull(document)->CloseMode == DocumentCloseMode::OwnerCloses)
+            {
+                requests.append(document);
+            }
+        }
+    }
     for (const Entry& entry : mEntries)
     {
-        detach(entry.Document);
+        if (entry.CloseMode == DocumentCloseMode::Hide)
+        {
+            detach(entry.Document);
+        }
     }
     removeEmptyGroups();
     publishActiveDocument();
     Q_EMIT LayoutChanged();
+    requestClose(requests);
 }
 
 void DocumentWell::SetDocumentAvailable(QWidget* document, bool isAvailable)
@@ -269,7 +343,8 @@ void DocumentWell::SetDocumentAvailable(QWidget* document, bool isAvailable)
     entryOrNull->IsAvailable = isAvailable;
     if (isAvailable == false)
     {
-        CloseDocument(document);
+        // Unavailability is not a user close, so an owner-closed view is hidden as well.
+        hideDocument(document);
     }
 }
 
@@ -282,6 +357,12 @@ bool DocumentWell::IsDocumentAvailable(const QWidget* document) const
 bool DocumentWell::IsDocumentOpen(const QWidget* document) const
 {
     return groupOfOrNull(document) != nullptr;
+}
+
+bool DocumentWell::IsDocumentOwnerClosed(const QWidget* document) const
+{
+    const Entry* entryOrNull = findEntryOrNull(document);
+    return entryOrNull != nullptr && entryOrNull->CloseMode == DocumentCloseMode::OwnerCloses;
 }
 
 void DocumentWell::SetDocumentTitle(QWidget* document, const QString& title)
@@ -490,9 +571,18 @@ void DocumentWell::showTabMenu(QTabWidget* group, foundation::int32 index, const
     }
     else if (chosenOrNull == closeOthers)
     {
+        QList<QWidget*> requests;
         for (const Entry& entry : mEntries)
         {
-            if (entry.Document != document)
+            if (entry.Document == document || groupOfOrNull(entry.Document) == nullptr)
+            {
+                continue;
+            }
+            if (entry.CloseMode == DocumentCloseMode::OwnerCloses)
+            {
+                requests.append(entry.Document);
+            }
+            else
             {
                 detach(entry.Document);
             }
@@ -500,6 +590,7 @@ void DocumentWell::showTabMenu(QTabWidget* group, foundation::int32 index, const
         removeEmptyGroups();
         OpenDocument(document);
         Q_EMIT LayoutChanged();
+        requestClose(requests);
     }
     else if (chosenOrNull == vertical)
     {
@@ -593,9 +684,16 @@ bool DocumentWell::RestoreState(const QJsonObject& state)
             currents.append(currentOrNull);
         }
     }
-    CloseAllDocuments();
+    // Restoring only rearranges: every view is hidden, without asking owners to close.
+    for (const Entry& entry : mEntries)
+    {
+        detach(entry.Document);
+    }
+    removeEmptyGroups();
     if (resolved.isEmpty() == true)
     {
+        publishActiveDocument();
+        Q_EMIT LayoutChanged();
         return true;
     }
     mSplitter->setOrientation(orientation == HORIZONTAL ? Qt::Horizontal : Qt::Vertical);

@@ -36,8 +36,10 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalSpy>
 #include <QSize>
 #include <QStackedWidget>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
@@ -695,6 +697,161 @@ TEST_CASE("Document well refuses malformed arrangements and keeps closed views a
     CHECK(well.OpenDocument(second) == false);
     well.MergeGroups();
     CHECK(well.GetGroupCount() == 1);
+}
+
+namespace
+{
+QWidget* MakeDocument(const QString& name)
+{
+    QWidget* document = new QWidget;
+    document->setObjectName(name);
+    return document;
+}
+
+QStringList GetSavedDocumentNames(const QJsonObject& state)
+{
+    QStringList names;
+    for (const QJsonValueConstRef group : state.value(QStringLiteral("groups")).toArray())
+    {
+        for (const QJsonValueConstRef name : group.toObject().value(QStringLiteral("documents")).toArray())
+        {
+            names.append(name.toString());
+        }
+        names.append(group.toObject().value(QStringLiteral("current")).toString());
+    }
+    return names;
+}
+} // namespace
+
+TEST_CASE("Document well hides ordinary views and asks owners to close owner-closed views", "[editor][layout][shell]")
+{
+    DocumentWell well;
+    QWidget* hidden = MakeDocument(QStringLiteral("hidden"));
+    QWidget* owned = MakeDocument(QStringLiteral("owned"));
+    well.AddDocument(hidden, QStringLiteral("Hidden"));
+    well.AddDocument(owned, QStringLiteral("Owned"), DocumentCloseMode::OwnerCloses);
+    well.resize(800, 600);
+    well.show();
+    CHECK(well.IsDocumentOwnerClosed(hidden) == false);
+    CHECK(well.IsDocumentOwnerClosed(owned) == true);
+    QSignalSpy requests(&well, &DocumentWell::CloseRequested);
+    REQUIRE(well.OpenDocument(hidden) == true);
+    REQUIRE(well.OpenDocument(owned) == true);
+
+    // An ordinary view hides without asking; an ignored request keeps the owned view open.
+    well.CloseDocument(hidden);
+    CHECK(well.IsDocumentOpen(hidden) == false);
+    CHECK(requests.isEmpty() == true);
+    well.CloseDocument(owned);
+    REQUIRE(requests.size() == 1);
+    CHECK(requests.at(0).at(0).value<QWidget*>() == owned);
+    CHECK(well.IsDocumentOpen(owned) == true);
+    CHECK(well.GetActiveDocumentOrNull() == owned);
+
+    // The tab close button and Close All route through the same request.
+    QTabWidget* group = well.findChild<QTabWidget*>(QStringLiteral("documentGroup"));
+    REQUIRE(group != nullptr);
+    Q_EMIT group->tabCloseRequested(group->indexOf(owned));
+    CHECK(requests.size() == 2);
+    REQUIRE(well.OpenDocument(hidden) == true);
+    well.CloseAllDocuments();
+    CHECK(well.IsDocumentOpen(hidden) == false);
+    CHECK(requests.size() == 3);
+    CHECK(well.IsDocumentOpen(owned) == true);
+
+    // Unavailability is not a user close, so the owned view hides without a request.
+    well.SetDocumentAvailable(owned, false);
+    CHECK(well.IsDocumentOpen(owned) == false);
+    CHECK(requests.size() == 3);
+    // Closing a view that is not open asks nothing.
+    well.CloseDocument(owned);
+    CHECK(requests.size() == 3);
+}
+
+TEST_CASE("Document well removes owner-closed views while active or split", "[editor][layout][shell]")
+{
+    DocumentWell well;
+    QWidget* first = MakeDocument(QStringLiteral("first"));
+    QWidget* second = MakeDocument(QStringLiteral("second"));
+    QWidget* third = MakeDocument(QStringLiteral("third"));
+    well.AddDocument(first, QStringLiteral("First"));
+    well.AddDocument(second, QStringLiteral("Second"), DocumentCloseMode::OwnerCloses);
+    well.AddDocument(third, QStringLiteral("Third"), DocumentCloseMode::OwnerCloses);
+    well.resize(800, 600);
+    well.show();
+    QSignalSpy active(&well, &DocumentWell::ActiveDocumentChanged);
+    // Owners close on request; removing during Close All must not reach a deleted view.
+    QObject::connect(&well, &DocumentWell::CloseRequested, &well, [&well](QWidget* document) {
+        REQUIRE(well.RemoveDocument(document) == true);
+        CHECK(document->parent() == nullptr);
+        CHECK(document->isVisible() == false);
+        delete document;
+    });
+
+    // Removing the active view publishes its replacement and hands the view back.
+    REQUIRE(well.OpenDocument(first) == true);
+    REQUIRE(well.OpenDocument(second) == true);
+    REQUIRE(well.GetActiveDocumentOrNull() == second);
+    const QJsonObject withSecond = well.SaveState();
+    CHECK(GetSavedDocumentNames(withSecond).contains(QStringLiteral("second")) == true);
+    active.clear();
+    well.CloseDocument(second);
+    CHECK(well.GetDocuments() == QList<QWidget*>{first, third});
+    CHECK(well.GetActiveDocumentOrNull() == first);
+    REQUIRE(active.isEmpty() == false);
+    CHECK(active.last().at(0).value<QWidget*>() == first);
+    CHECK(GetSavedDocumentNames(well.SaveState()).contains(QStringLiteral("second")) == false);
+    // A saved arrangement naming the removed view restores without it.
+    REQUIRE(well.RestoreState(withSecond) == true);
+    CHECK(well.GetDocuments() == QList<QWidget*>{first, third});
+    CHECK(well.IsDocumentOpen(first) == true);
+    CHECK(GetSavedDocumentNames(well.SaveState()).contains(QStringLiteral("second")) == false);
+
+    // Removing the only view of a split group removes that group.
+    REQUIRE(well.OpenDocument(third) == true);
+    REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
+    REQUIRE(well.GetGroupCount() == 2);
+    REQUIRE(well.GetGroupIndex(third) == 1);
+    well.CloseAllDocuments();
+    CHECK(well.GetGroupCount() == 1);
+    CHECK(well.GetDocuments() == QList<QWidget*>{first});
+    CHECK(well.GetActiveDocumentOrNull() == nullptr);
+    CHECK(GetSavedDocumentNames(well.SaveState()).contains(QStringLiteral("third")) == false);
+
+    // Removing a closed or unknown view changes nothing.
+    QWidget unknown;
+    CHECK(well.RemoveDocument(&unknown) == false);
+    CHECK(well.RemoveDocument(first) == true);
+    CHECK(well.GetDocuments().isEmpty() == true);
+    delete first;
+}
+
+TEST_CASE("Window Close Document and Close All ask owners of owner-closed documents", "[editor][layout][shell]")
+{
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    Settle();
+    DocumentWell& well = Well(window);
+    QWidget* welcome = Document(window, QStringLiteral("projectWelcome"));
+    QWidget* owned = MakeDocument(QStringLiteral("ownedDocument"));
+    well.AddDocument(owned, QStringLiteral("Owned"), DocumentCloseMode::OwnerCloses);
+    QSignalSpy requests(&well, &DocumentWell::CloseRequested);
+    REQUIRE(well.OpenDocument(owned) == true);
+
+    Action(window, QStringLiteral("window.closeDocument"))->trigger();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests.at(0).at(0).value<QWidget*>() == owned);
+    CHECK(well.IsDocumentOpen(owned) == true);
+    REQUIRE(well.OpenDocument(welcome) == true);
+    Action(window, QStringLiteral("window.closeAllDocuments"))->trigger();
+    CHECK(requests.size() == 2);
+    CHECK(well.IsDocumentOpen(welcome) == false);
+    CHECK(well.IsDocumentOpen(owned) == true);
+    REQUIRE(well.RemoveDocument(owned) == true);
+    delete owned;
+    CHECK(well.GetActiveDocumentOrNull() == nullptr);
 }
 
 TEST_CASE("Properties follows the render-graph canvas selection", "[editor][layout][shell][render-graph]")
