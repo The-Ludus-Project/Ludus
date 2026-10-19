@@ -131,9 +131,13 @@ public:
     HostedWindowEndpoint() noexcept;
     /// Stop the session, closing the channel and removing its directory.
     ~HostedWindowEndpoint() noexcept;
+    /// Not copyable: one endpoint owns the session's socket, directory and token.
     HostedWindowEndpoint(const HostedWindowEndpoint&) = delete;
+    /// Not copyable: one endpoint owns the session's socket, directory and token.
     HostedWindowEndpoint& operator=(const HostedWindowEndpoint&) = delete;
+    /// Not movable: the editor keeps one endpoint per session in place for its lifetime.
     HostedWindowEndpoint(HostedWindowEndpoint&&) = delete;
+    /// Not movable: the editor keeps one endpoint per session in place for its lifetime.
     HostedWindowEndpoint& operator=(HostedWindowEndpoint&&) = delete;
 
     /// @brief Create the session directory, socket and token, and start listening.
