@@ -523,8 +523,8 @@ float3 ComputeDebugColour(int mode,
 #ifdef LUDUS_DEBUG_VIEW
     int debugView = int(material.Options.w + 0.5);
     if (debugView != int(MATERIAL_DEBUG_VIEW_NONE))
-        return float4(EncodeDebugDisplay(ComputeDebugColour(
-                          debugView, input, normalWorld, metallic, roughness, lightCount, result)),
+        return float4(EncodeDebugDisplay(
+                          ComputeDebugColour(debugView, input, normalWorld, metallic, roughness, lightCount, result)),
                       1);
 #endif
     float alpha = material.Options.z == 2 ? baseColor.a : 1;
