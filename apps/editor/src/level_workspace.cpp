@@ -1,4 +1,5 @@
 #include "internal/level_workspace.h"
+#include "internal/item_selection.h"
 
 #include "internal/editor_identity.h"
 #include "internal/import_report.h"
@@ -55,6 +56,7 @@ LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     layout->addWidget(File_);
     auto* body = new QHBoxLayout;
     Objects_ = new QListWidget(this);
+    ConfigureItemSelection(*Objects_);
     Objects_->setObjectName(QStringLiteral("levelObjects"));
     body->addWidget(Objects_, 1);
     Viewport_ = new PreviewViewport(&Preview_, this, false);

@@ -1,5 +1,6 @@
 #include "internal/world_workspace.h"
 #include "internal/import_report.h"
+#include "internal/item_selection.h"
 
 #include "internal/controller.h"
 #include "internal/editor_files.h"
@@ -25,9 +26,12 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QItemSelectionModel>
 #include <QJsonDocument>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QListWidget>
 #include <QLockFile>
 #include <QMenu>
@@ -36,6 +40,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QSplitter>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -232,6 +237,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     hierarchy->setSizeConstraint(QLayout::SetMinimumSize);
     hierarchyScroll->setWidget(left);
     Entities_ = new QListWidget(left);
+    ConfigureItemSelection(*Entities_);
     Entities_->setObjectName(QStringLiteral("worldEntities"));
     Entities_->setAccessibleName(QStringLiteral("World entities"));
     hierarchy->addWidget(Entities_, 1);
@@ -348,14 +354,58 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     };
     connect(open, &QPushButton::clicked, this, [pick]() { pick(false); });
     connect(create, &QPushButton::clicked, this, [pick]() { pick(true); });
-    connect(Entities_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* item) {
-        if (Rendering_ == false && Pending_ == false)
+    const auto updateSelection = [this]() {
+        if (Rendering_ == true || Pending_ == true)
         {
-            Selected_ = item == nullptr ? QString() : item->data(Qt::UserRole).toString();
-            RenderInspector();
-            Changed();
+            return;
         }
-    });
+        mSelectedEntities.clear();
+        for (const QListWidgetItem* item : Entities_->selectedItems())
+        {
+            mSelectedEntities.append(item->data(Qt::UserRole).toString());
+        }
+        const QListWidgetItem* currentOrNull = Entities_->currentItem();
+        Selected_ = currentOrNull != nullptr && currentOrNull->isSelected() == true
+                        ? currentOrNull->data(Qt::UserRole).toString()
+                        : mSelectedEntities.value(0);
+        RenderInspector();
+        Changed();
+    };
+    connect(Entities_, &QListWidget::currentItemChanged, this, updateSelection);
+    connect(Entities_, &QListWidget::itemSelectionChanged, this, updateSelection);
+    const auto bindCommand = [this](const QKeySequence& key, QPushButton* button) {
+        QShortcut* shortcut = new QShortcut(key, Entities_);
+        shortcut->setContext(Qt::WidgetShortcut);
+        connect(shortcut, &QShortcut::activated, button, &QPushButton::click);
+    };
+    bindCommand(QKeySequence(Qt::CTRL | Qt::Key_D), Duplicate_);
+    QList<QKeySequence> deleteKeys = QKeySequence::keyBindings(QKeySequence::Delete);
+#if defined(Q_OS_MACOS)
+    const QKeySequence backspace(Qt::Key_Backspace);
+    if (deleteKeys.contains(backspace) == false)
+    {
+        deleteKeys.append(backspace);
+    }
+#endif
+    for (const QKeySequence& key : deleteKeys)
+    {
+        bindCommand(key, Remove_);
+    }
+    const auto rename = [this]() {
+        if (Entities_->isEnabled() == true && mSelectedEntities.size() == 1 && Name_ != nullptr)
+        {
+            Name_->setFocus();
+            Name_->selectAll();
+        }
+    };
+    QShortcut* renameShortcut = new QShortcut(QKeySequence(Qt::Key_F2), Entities_);
+    renameShortcut->setContext(Qt::WidgetShortcut);
+    connect(renameShortcut, &QShortcut::activated, this, rename);
+#if defined(Q_OS_MACOS)
+    QShortcut* renameReturn = new QShortcut(QKeySequence(Qt::Key_Return), Entities_);
+    renameReturn->setContext(Qt::WidgetShortcut);
+    connect(renameReturn, &QShortcut::activated, this, rename);
+#endif
     connect(Add_, &QPushButton::clicked, this, [this]() {
         QString id, error;
         if (Document_.CreateEntity(mEntropy, error, QStringLiteral("Entity"), id) == false)
@@ -364,44 +414,49 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
             return;
         }
         Selected_ = foundation::Move(id);
+        mSelectedEntities = {Selected_};
         Render();
         Snapshot();
         Changed(QStringLiteral("Entity created. Give it a meaningful name in the inspector."));
     });
     connect(Duplicate_, &QPushButton::clicked, this, [this]() {
-        QString id, error;
-        if (Document_.DuplicateEntity(mEntropy, error, Selected_, id) == false)
+        QStringList copies;
+        QString error;
+        if (Document_.DuplicateEntities(mEntropy, mSelectedEntities, copies, error) == false)
         {
             Changed(error);
             return;
         }
-        Selected_ = foundation::Move(id);
+        mSelectedEntities = copies;
+        Selected_ = copies.value(0);
         Render();
         Snapshot();
-        Changed(QStringLiteral("Duplicate created with a new stable ID."));
+        Changed(QStringLiteral("Selected entities duplicated with new stable IDs. Undo is available."));
     });
     connect(Remove_, &QPushButton::clicked, this, [this]() {
-        const auto answer = QMessageBox::question(
-            this,
-            QStringLiteral("Delete Entity"),
-            QStringLiteral("Delete %1? Undo can restore it. References from other entities must be cleared first.")
-                .arg(Document_.Entity(Selected_).value(QStringLiteral("name")).toString()),
-            QMessageBox::Yes | QMessageBox::Cancel,
-            QMessageBox::Cancel);
+        const QMessageBox::StandardButton answer =
+            QMessageBox::question(this,
+                                  QStringLiteral("Delete Entities"),
+                                  QStringLiteral("Delete %1 selected entities? Undo can restore them. References from "
+                                                 "surviving entities must be cleared first.")
+                                      .arg(mSelectedEntities.size()),
+                                  QMessageBox::Yes | QMessageBox::Cancel,
+                                  QMessageBox::Cancel);
         if (answer != QMessageBox::Yes)
         {
             return;
         }
         QString error;
-        if (Document_.RemoveEntity(Selected_, error) == false)
+        if (Document_.RemoveEntities(mSelectedEntities, error) == false)
         {
             Changed(error);
             return;
         }
         Selected_.clear();
+        mSelectedEntities.clear();
         Render();
         Snapshot();
-        Changed(QStringLiteral("Entity deleted. Undo is available."));
+        Changed(QStringLiteral("Selected entities deleted. Undo is available."));
     });
     connect(Attach_, &QPushButton::clicked, this, [this]() {
         QString error;
@@ -464,6 +519,7 @@ void WorldWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     Epoch_ = epoch;
     Path_.clear();
     Selected_.clear();
+    mSelectedEntities.clear();
     Disk_.clear();
     SchemaDisk_.clear();
     Pending_ = false;
@@ -621,6 +677,7 @@ bool WorldWorkspace::Open(const QString& path)
     Disk_ = legacy ? QByteArray() : bytes;
     Path_ = QFileInfo(destination).absoluteFilePath();
     Selected_.clear();
+    mSelectedEntities.clear();
     Pending_ = false;
     Unsaved_ = legacy;
     Render();
@@ -668,6 +725,7 @@ bool WorldWorkspace::Create(const QString& path)
     Disk_.clear();
     Path_ = QFileInfo(path).absoluteFilePath();
     Selected_.clear();
+    mSelectedEntities.clear();
     Pending_ = false;
     Unsaved_ = true;
     Render();
@@ -905,6 +963,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
         Unsaved_ = true;
         Pending_ = false;
         Selected_.clear();
+        mSelectedEntities.clear();
         ++DocumentGeneration_;
         Render_->SetWorld(Root_, &Document_);
     }
@@ -955,22 +1014,29 @@ void WorldWorkspace::Render()
 {
     Rendering_ = true;
     Entities_->clear();
-    for (const auto value : Document_.Draft().value(QStringLiteral("entities")).toArray())
+    QStringList retained;
+    for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
     {
-        const auto entity = value.toObject();
-        auto* item = new QListWidgetItem(entity.value(QStringLiteral("name")).toString(), Entities_);
+        const QJsonObject entity = value.toObject();
+        QListWidgetItem* item = new QListWidgetItem(entity.value(QStringLiteral("name")).toString(), Entities_);
         const QString id = Document_.GetEntityKey(entity);
         const QString label = Document_.GetEntityLabel(entity);
         item->setData(Qt::UserRole, id);
         item->setToolTip(label == id ? id : label + QLatin1Char('\n') + id);
+        if (mSelectedEntities.contains(id) == true)
+        {
+            item->setSelected(true);
+            retained.append(id);
+        }
         if (id == Selected_)
         {
-            Entities_->setCurrentItem(item);
+            Entities_->setCurrentItem(item, QItemSelectionModel::NoUpdate);
         }
     }
-    if (Document_.Entity(Selected_).isEmpty())
+    mSelectedEntities = retained;
+    if (mSelectedEntities.contains(Selected_) == false)
     {
-        Selected_.clear();
+        Selected_ = mSelectedEntities.value(0);
     }
     Rendering_ = false;
     RenderInspector();
@@ -1002,8 +1068,18 @@ void WorldWorkspace::RenderInspector()
         delete item->widget();
         delete item;
     }
-    const auto entity = Document_.Entity(Selected_);
     Components_->clear();
+    if (mSelectedEntities.size() > 1)
+    {
+        QLabel* summary = new QLabel(QStringLiteral("%1 entities selected. Duplicate or Delete acts on the whole "
+                                                    "selection. Select one entity to edit its properties.")
+                                         .arg(mSelectedEntities.size()));
+        summary->setWordWrap(true);
+        Inspector_->addWidget(summary);
+        Inspector_->addStretch();
+        return;
+    }
+    const auto entity = Document_.Entity(Selected_);
     if (entity.isEmpty())
     {
         auto* hint = new QLabel(
@@ -1315,9 +1391,10 @@ void WorldWorkspace::Changed(const QString& message)
     Add_->setEnabled(Document_.Loaded() && Pending_ == false && Entities_->count() < WorldDocument::MAX_ENTITIES &&
                      isBusy == false);
     Duplicate_->setEnabled(Selected_.isEmpty() == false && Pending_ == false &&
-                           Entities_->count() < WorldDocument::MAX_ENTITIES && isBusy == false);
+                           Entities_->count() + mSelectedEntities.size() <= WorldDocument::MAX_ENTITIES &&
+                           isBusy == false);
     Remove_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
-    Attach_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && Components_->count() > 0 &&
+    Attach_->setEnabled(mSelectedEntities.size() == 1 && Pending_ == false && Components_->count() > 0 &&
                         isBusy == false);
     Components_->setEnabled(Pending_ == false && isBusy == false);
     Apply_->setEnabled(Pending_ && isBusy == false);
@@ -1459,6 +1536,7 @@ QJsonObject WorldWorkspace::Session() const
 {
     return {{QStringLiteral("world"), Path_.isEmpty() ? QString() : QDir(Root_).relativeFilePath(Path_)},
             {QStringLiteral("selection"), Selected_},
+            {QStringLiteral("selections"), QJsonArray::fromStringList(mSelectedEntities)},
             {QStringLiteral("splitter"), QString::fromLatin1(Split_->saveState().toBase64())},
             {QStringLiteral("boundCamera"), Render_->Preview().Navigation()},
             {QStringLiteral("sceneCamera"), Scene_->Navigation()}};
@@ -1482,12 +1560,23 @@ void WorldWorkspace::RestoreSession(const QJsonObject& state)
     {
         (void)Split_->restoreState(bytes);
     }
-    const auto selected = state.value(QStringLiteral("selection")).toString();
-    if (Document_.Entity(selected).isEmpty() == false)
+    const QString selected = state.value(QStringLiteral("selection")).toString();
+    mSelectedEntities.clear();
+    for (const QJsonValue value : state.value(QStringLiteral("selections")).toArray())
     {
-        Selected_ = selected;
-        Render();
+        const QString id = value.toString();
+        if (Document_.Entity(id).isEmpty() == false && mSelectedEntities.contains(id) == false)
+        {
+            mSelectedEntities.append(id);
+        }
     }
+    if (mSelectedEntities.isEmpty() == true && Document_.Entity(selected).isEmpty() == false)
+    {
+        mSelectedEntities.append(selected);
+    }
+    Selected_ = mSelectedEntities.contains(selected) == true ? selected : mSelectedEntities.value(0);
+    Render();
+    Changed();
 }
 bool WorldWorkspace::Apply()
 {
@@ -1690,6 +1779,7 @@ bool WorldWorkspace::Recover()
     }
     Pending_ = false;
     Selected_.clear();
+    mSelectedEntities.clear();
     Render();
     RefreshScene();
     Render_->WorldChanged();

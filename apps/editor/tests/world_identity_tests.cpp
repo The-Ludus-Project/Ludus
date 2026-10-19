@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QItemSelectionModel>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLineEdit>
@@ -164,7 +165,7 @@ void Select(WorldWorkspace& view, const QString& key)
     {
         if (list->item(row)->data(Qt::UserRole).toString() == key)
         {
-            list->setCurrentRow(row);
+            list->setCurrentRow(row, QItemSelectionModel::ClearAndSelect);
             return;
         }
     }

@@ -1,4 +1,5 @@
 #include "internal/content_browser.h"
+#include "internal/item_selection.h"
 
 #include <QAbstractItemView>
 #include <QFileDialog>
@@ -35,7 +36,7 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     Table_->setAccessibleName(QStringLiteral("Project content resources"));
     Table_->setModel(Proxy_);
     Table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    Table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    ConfigureItemSelection(*Table_);
     Table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     Table_->setSortingEnabled(true);
     Table_->sortByColumn(0, Qt::AscendingOrder);
@@ -85,6 +86,17 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
         }
         RenderActions();
     });
+    connect(Table_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
+        if (Applying_ == true)
+        {
+            return;
+        }
+        mSelectedIds.clear();
+        for (const QModelIndex& index : Table_->selectionModel()->selectedRows())
+        {
+            mSelectedIds.append(index.data(Qt::UserRole).toString());
+        }
+    });
     connect(Table_, &QTableView::activated, this, [this](const QModelIndex& index) {
         const auto* row = Model_->Row(Proxy_->mapToSource(index));
         if (row != nullptr && (row->Kind == content::Kind::Sound || row->Kind == content::Kind::Music))
@@ -123,6 +135,7 @@ void ContentWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     ActiveOperation_ = 0;
     HasCatalog_ = false;
     SelectedId_.clear();
+    mSelectedIds.clear();
     Applying_ = true;
     Model_->SetRows({});
     Applying_ = false;
@@ -225,6 +238,7 @@ void ContentWorkspace::Accept(const ContentResult& result)
     if (result.Request.Id.isEmpty() == false)
     {
         SelectedId_ = result.Request.Id;
+        mSelectedIds = {SelectedId_};
         // Retain the explicit import result while refreshing its new catalog.
         RefreshPending_ = true;
         HasCatalog_ = false;
@@ -242,7 +256,16 @@ void ContentWorkspace::RestoreSelection()
 {
     const auto index = Proxy_->mapFromSource(Model_->FindId(SelectedId_));
     Applying_ = true;
-    Table_->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    Table_->selectionModel()->clearSelection();
+    for (const QString& id : mSelectedIds)
+    {
+        const QModelIndex selected = Proxy_->mapFromSource(Model_->FindId(id));
+        if (selected.isValid() == true)
+        {
+            Table_->selectionModel()->select(selected, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
+    }
+    Table_->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
     Applying_ = false;
     RenderActions();
 }
