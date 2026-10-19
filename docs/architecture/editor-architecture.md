@@ -154,7 +154,12 @@ Renderer tab with typed graph/source drafts, undo, explicit save, mapped
 diagnostics and shared CLI jobs. RG3b adds a node canvas over the same document
 operations and a trusted preview that activates cooked generations on the World
 viewport's device without replacing its last drawable view until a new frame is
-complete. See [edit and reload graphs](../development/render-graph-authoring.md#edit-and-reload-graphs-rg3)
+complete. A project without a graph shows the engine-owned default read-only, so
+the workspace never asks for a graph. The first edit makes that default an
+undoable project draft, and Save creates it under `graphs/Main/`. Builds detect
+shader tools from the project's selected SDK. See
+[start customizing the renderer](../development/render-graph-authoring.md#start-customizing-the-renderer),
+[edit and reload graphs](../development/render-graph-authoring.md#edit-and-reload-graphs-rg3)
 and [node canvas and preview](../development/render-graph-authoring.md#node-canvas-and-preview-rg3b).
 
 ## Performance and observability

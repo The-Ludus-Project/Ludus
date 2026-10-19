@@ -147,7 +147,7 @@ void MakeShaderHelper(const QString& directory)
 }
 } // namespace
 
-TEST_CASE("Renderer creates a complete project-owned graph from its empty state", "[editor][render-graph][creation]")
+TEST_CASE("Renderer creates a complete project-owned graph with New Graph", "[editor][render-graph][creation]")
 {
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
@@ -161,6 +161,8 @@ TEST_CASE("Renderer creates a complete project-owned graph from its empty state"
     REQUIRE(createFirstOrNull != nullptr);
     CHECK(createOrNull->isEnabled() == false);
     CHECK(previewOrNull->isEnabled() == false);
+    // Without a project, the empty page offers nothing to create into.
+    CHECK(createFirstOrNull->isEnabled() == false);
     workspace.SetProject(root, 1);
     ApplyWorkspaceStyle(&workspace);
     workspace.resize(CREATION_WORKSPACE_WIDTH, CREATION_WORKSPACE_HEIGHT);
@@ -171,8 +173,11 @@ TEST_CASE("Renderer creates a complete project-owned graph from its empty state"
     {
         REQUIRE(workspace.grab().save(capture + QStringLiteral("-empty.png")) == true);
     }
+    // A project without graphs shows the engine default instead of an empty page; New Graph
+    // stays available in the toolbar.
     CHECK(createOrNull->isEnabled() == true);
-    CHECK(createFirstOrNull->isVisible() == true);
+    CHECK(workspace.IsBuiltIn() == true);
+    CHECK(createFirstOrNull->isVisible() == false);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
     QTimer::singleShot(0, &workspace, [&root]() {
         QInputDialog* dialogOrNull = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
@@ -181,13 +186,14 @@ TEST_CASE("Renderer creates a complete project-owned graph from its empty state"
         dialogOrNull->setTextValue(QStringLiteral("MyGraph"));
         dialogOrNull->accept();
     });
-    createFirstOrNull->click();
+    createOrNull->click();
     CHECK(createOrNull->isEnabled() == false);
     // Repeated state publications for this project must not cancel creation.
     workspace.SetProject(project.path(), 1);
     REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
     INFO(workspace.GetStatusText().toStdString());
     CHECK(workspace.GetDocument().IsLoaded() == true);
+    CHECK(workspace.IsBuiltIn() == false);
     CHECK(workspace.GetDocument().IsDirty() == false);
     CHECK(workspace.GetDocument().GetFiles().size() == 6);
     CHECK(workspace.GetRuntimePackagePath().startsWith(root + QStringLiteral("/out/render-graph/")) == true);

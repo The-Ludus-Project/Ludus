@@ -23,6 +23,38 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/lighting_layout.h shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+# Engine-owned default render graph: the RendererStatic static opaque profile the editor
+# shows when a project has no graph of its own, and the read-only starting point a project
+# copies when it customizes the renderer. Profiles follow the host device family, as the
+# editor's cooked host fixture does. The configured package is published through a global
+# property for the editor and installed read-only with the SDK.
+# See docs/development/render-graph-authoring.md#start-customizing-the-renderer.
+set(default_render_graph_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/default")
+set(default_render_graph "${CMAKE_CURRENT_BINARY_DIR}/render_graphs/default")
+set(default_render_graph_files
+    main.lurender.json
+    rasterize.lurender.json
+    main.lushader.json
+    main_shaders/color.slang
+    main_shaders/depth.slang
+    main_shaders/geometry.slang)
+if(EMSCRIPTEN)
+    set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"wgsl\"]")
+elseif(APPLE)
+    set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"metal\", \"wgsl\"]")
+else()
+    set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"spirv\", \"wgsl\"]")
+endif()
+foreach(file IN LISTS default_render_graph_files)
+    if(file STREQUAL "main.lushader.json")
+        configure_file("${default_render_graph_source}/${file}.in" "${default_render_graph}/${file}" @ONLY)
+    else()
+        configure_file("${default_render_graph_source}/${file}" "${default_render_graph}/${file}" COPYONLY)
+    endif()
+endforeach()
+set_property(GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR "${default_render_graph}")
+set_property(GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_FILES "${default_render_graph_files}")
+install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/render-graphs/default")
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
