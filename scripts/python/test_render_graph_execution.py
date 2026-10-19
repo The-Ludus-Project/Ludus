@@ -203,6 +203,33 @@ class ExecutionTests(unittest.TestCase):
         records = 104 + 6 * 4 * 2 + 4 + 9 * 4
         self.assertEqual(struct.unpack('<5I', data[records:records + 20]), (0, 0, 2, 0, 4))
 
+    def test_runtime_package_names_its_resources_in_record_order(self):
+        self.run_build()
+        destination = self.root / 'named.lurgrt'
+        runtime = execution.cook_runtime(self.output, destination)
+        sidecar = execution.resource_names_path(destination)
+        self.assertEqual(runtime['resource_names'], str(sidecar))
+        self.assertEqual(sidecar.name, 'named.lurgrt.resources.json')
+        names = json.loads(sidecar.read_text())
+        self.assertEqual(names['version'], execution.RESOURCE_NAMES_VERSION)
+        self.assertEqual(names['generation'], runtime['generation'])
+        contents = execution._runtime_contents(self.output, 'Default')
+        self.assertEqual(len(names['resources']), len(contents['resources']))
+        self.assertEqual([entry['name'] for entry in names['resources']], sorted(contents['plan']['resources']))
+        for entry, record in zip(names['resources'], contents['resources']):
+            self.assertEqual(entry['extent'], [record['Width'], record['Height']])
+            self.assertEqual(entry['type'] == 'DepthTexture', record['Kind'] == 'Depth')
+            self.assertIn(entry['format'], ('RGBA8Unorm', 'Depth32Float'))
+        operations = {operation['id']: operation for operation in names['operations']}
+        raster = next(operation for operation in operations.values() if operation['kind'] == 'Raster')
+        self.assertIn(raster['attachments']['color']['resource'], [entry['name'] for entry in names['resources']])
+        self.assertEqual(raster['attachments']['depth']['store'], 'Store')
+        roots = [operation for operation in operations.values() if operation['kind'] in ('Export', 'Present')]
+        self.assertEqual(len(roots), 1)
+        self.assertEqual(set(roots[0]['attachments']), {'texture'})
+        self.assertTrue(all(camera['target'] for camera in names['cameras']))
+        self.assertEqual(sidecar.read_bytes(), execution.encode_resource_names(contents))
+
     def test_vertex_and_fragment_sharing_a_slot_merge_into_one_binding(self):
         self.edit(lambda value: self.bind_material(value, vertex=True))
         self.run_build()

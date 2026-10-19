@@ -5,6 +5,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
+#include "internal/render_target_reader.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -181,6 +182,8 @@ struct RenderGraphPreview::State final
         uint32 Width = 0;
         uint32 Height = 0;
         uint32 Cameras = 0;
+        /// Every texture of the generation, for the texture viewer.
+        RenderGraphTargetCatalogue Catalogue;
     };
     StaticArray<uint8, format::IDENTITY_BYTES> Interface{};
     rhi::RasterShaderDescription CompositeVertex{};
@@ -205,6 +208,12 @@ struct RenderGraphPreview::State final
     uint32 ProducerTicks = 0;
     uint64 RenderedGeneration = 0;
     uint64 RenderedRevision = 0;
+    /// Texture viewer readback; runs only between frames, after the export copy.
+    RenderTargetReader Inspector;
+    QString InspectedName;
+    bool IsInspectionRequested = false;
+    uint64 InspectingGeneration = 0;
+    uint64 InspectingRevision = 0;
 };
 
 RenderGraphPreview::RenderGraphPreview(BorrowedView<const uint8> interfaceIdentity,
@@ -229,6 +238,7 @@ RenderGraphPreview::~RenderGraphPreview()
 {
     // Same release order as Detach, without notifying observers during destruction.
     mState->Reader.Cancel();
+    mState->Inspector.Release();
     mState->Activation.Reset();
 }
 
@@ -275,8 +285,9 @@ void RenderGraphPreview::Detach() noexcept
     {
         return;
     }
-    // Drop the export consumer before the generations that own its texture.
+    // Drop the export and inspection consumers before the generations that own their textures.
     state.Reader.Cancel();
+    state.Inspector.Release();
     state.Activation.Reset();
     state.Device = {};
     state.Surface = {};
@@ -355,6 +366,11 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         return RenderGraphPreviewLoad::Unsupported;
     }
     target.Cameras = static_cast<uint32>(plan.Description.CameraCount);
+    // Names are optional: a missing or stale sidecar only leaves numeric texture names.
+    QFile names(GetTargetNamesPath(runtimePackagePath));
+    const QByteArray namesDocument =
+        names.open(QIODevice::ReadOnly) == true ? names.read(MAX_PACKAGE_BYTES) : QByteArray();
+    target.Catalogue = MakeTargetCatalogue(plan, package->GetGenerationIdentity(), namesDocument);
     state.Waiting = target;
     state.WaitingOrNull.Swap(package);
     if (state.IsAttached == false)
@@ -416,6 +432,11 @@ void RenderGraphPreview::Tick()
         finishCopy();
         return;
     }
+    if (state.Inspector.IsBusy() == true)
+    {
+        finishInspection();
+        return;
+    }
     if (state.IsAwaitingProducer == true)
     {
         renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
@@ -443,6 +464,12 @@ void RenderGraphPreview::Tick()
         finishCopy();
         return;
     }
+    // No frame is open and no export copy is in flight: the active graph's attachments hold
+    // the last completed frame until the next Render, so the viewer reads them now.
+    if (state.IsInspectionRequested == true && beginInspection() == true)
+    {
+        return;
+    }
     advance();
 }
 
@@ -457,6 +484,8 @@ void RenderGraphPreview::finishCopy()
         mPresentedRevision = state.RenderedRevision;
         mPresentedSession = state.Session;
         setStatus({});
+        // Live refresh: the viewed texture follows every presented frame.
+        state.IsInspectionRequested = state.InspectedName.isEmpty() == false;
         Q_EMIT FramePresented();
     }
     else if (status == OffscreenReadStatus::Failed)
@@ -477,6 +506,8 @@ void RenderGraphPreview::advance()
     {
         state.Active = state.Candidate;
         state.Candidate = {};
+        // A rebuilt generation renumbers textures; the selection follows its name.
+        Q_EMIT TargetsChanged();
     }
     if (report.Candidate != before.Candidate || report.ActiveGeneration != before.ActiveGeneration)
     {
@@ -536,6 +567,117 @@ void RenderGraphPreview::advance()
     state.RenderedRevision = drawable;
     state.IsAwaitingProducer = true;
     state.ProducerTicks = 0;
+}
+
+const RenderGraphTargetCatalogue& RenderGraphPreview::GetTargetCatalogue() const noexcept
+{
+    return mState->Active.Catalogue;
+}
+
+void RenderGraphPreview::SetInspectedTarget(const QString& name)
+{
+    State& state = *mState;
+    // Reselecting reads again; a read already in flight for the old choice is dropped.
+    state.Inspector.Cancel();
+    state.InspectedName = name;
+    state.IsInspectionRequested = name.isEmpty() == false;
+    if (name.isEmpty() == true)
+    {
+        mInspected = {};
+        mInspectionStatus.clear();
+        mInspectedGeneration = 0;
+        mInspectedRevision = 0;
+        Q_EMIT TargetInspected();
+    }
+}
+
+const QString& RenderGraphPreview::GetInspectedTarget() const noexcept
+{
+    return mState->InspectedName;
+}
+
+bool RenderGraphPreview::beginInspection()
+{
+    State& state = *mState;
+    renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
+    if (activeOrNull == nullptr || mPresentedSession != state.Session || mPresentedGeneration == 0)
+    {
+        return false;
+    }
+    const qsizetype index = state.Active.Catalogue.Find(state.InspectedName);
+    if (index < 0)
+    {
+        state.IsInspectionRequested = false;
+        mInspected = {};
+        mInspectionStatus =
+            QStringLiteral("%1 is not a texture of generation %2.").arg(state.InspectedName).arg(mPresentedGeneration);
+        Q_EMIT TargetInspected();
+        return false;
+    }
+    const RenderGraphTarget& target = state.Active.Catalogue.Targets[index];
+    rhi::TextureHandle texture;
+    rhi::TextureAspect aspect = rhi::TextureAspect::Color;
+    const rhi::RasterStatus allocated = activeOrNull->GetResourceAllocation(target.Resource, texture, aspect);
+    if (allocated == rhi::RasterStatus::NotReady)
+    {
+        // The producer is still running; keep the request and let the frame continue.
+        return false;
+    }
+    state.IsInspectionRequested = false;
+    if (allocated != rhi::RasterStatus::Ready)
+    {
+        mInspected = {};
+        mInspectionStatus =
+            allocated == rhi::RasterStatus::Unsupported
+                ? QStringLiteral("%1 is the presentation surface, which the game host owns.").arg(target.Name)
+                : QStringLiteral("%1 cannot be inspected (%2).").arg(target.Name, DescribeRasterStatus(allocated));
+        Q_EMIT TargetInspected();
+        return false;
+    }
+    state.InspectingGeneration = mPresentedGeneration;
+    state.InspectingRevision = mPresentedRevision;
+    const RenderTargetReadStatus started =
+        state.Inspector.Begin(state.Device, state.Surface, texture, aspect, target.Width, target.Height);
+    if (started == RenderTargetReadStatus::Pending)
+    {
+        return true;
+    }
+    mInspected = {};
+    mInspectedGeneration = state.InspectingGeneration;
+    mInspectedRevision = state.InspectingRevision;
+    mInspectionStatus =
+        started == RenderTargetReadStatus::Undefined
+            ? QStringLiteral("%1 holds no stored contents after the frame: its last pass discards it (Store = "
+                             "Discard) or nothing writes it.")
+                  .arg(target.Name)
+            : QStringLiteral("%1 could not be read back on this device.").arg(target.Name);
+    Q_EMIT TargetInspected();
+    return false;
+}
+
+void RenderGraphPreview::finishInspection()
+{
+    State& state = *mState;
+    const RenderTargetReadStatus status = state.Inspector.Poll();
+    if (status == RenderTargetReadStatus::Pending)
+    {
+        return;
+    }
+    if (status == RenderTargetReadStatus::Complete)
+    {
+        mInspected = state.Inspector.TakeTexture();
+        mInspectionStatus.clear();
+    }
+    else
+    {
+        state.Inspector.Cancel();
+        mInspected = {};
+        mInspectionStatus =
+            QStringLiteral("The %1 readback failed; select it again to retry.").arg(state.InspectedName);
+    }
+    mInspectedGeneration = state.InspectingGeneration;
+    mInspectedRevision = state.InspectingRevision;
+    Q_EMIT TargetInspected();
 }
 
 renderer::RenderGraphActivationReport RenderGraphPreview::GetReport() const noexcept

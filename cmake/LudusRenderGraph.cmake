@@ -71,7 +71,7 @@ function(ludus_compile_render_graph)
     set(outputs "${output}/${GRAPH_NAME}.h")
     if(GRAPH_RUNTIME_PACKAGE)
         list(APPEND arguments --runtime-package "${output}/${GRAPH_NAME}.lurgrt")
-        list(APPEND outputs "${output}/${GRAPH_NAME}.lurgrt")
+        list(APPEND outputs "${output}/${GRAPH_NAME}.lurgrt" "${output}/${GRAPH_NAME}.lurgrt.resources.json")
         set(${GRAPH_NAME}_RUNTIME_PACKAGE "${output}/${GRAPH_NAME}.lurgrt" PARENT_SCOPE)
     endif()
     add_custom_command(OUTPUT ${outputs}

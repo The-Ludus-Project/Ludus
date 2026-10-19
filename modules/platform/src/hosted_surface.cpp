@@ -1,9 +1,9 @@
 #include <ludus/platform/hosted_surface.h>
 
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
 #    include <mach/mach.h>
 #endif
-#if defined(LUDUS_PLATFORM_MACOS) || defined(LUDUS_PLATFORM_LINUX)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_LINUX
 #    include <unistd.h>
 #endif
 
@@ -80,13 +80,13 @@ foundation::int32 HostedImageHandle::ReleaseFileDescriptor() noexcept
 
 void HostedImageHandle::Reset() noexcept
 {
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     if (mKind == HostedHandleKind::MachPort)
     {
         static_cast<void>(::mach_port_deallocate(::mach_task_self(), mMachPort));
     }
 #endif
-#if defined(LUDUS_PLATFORM_MACOS) || defined(LUDUS_PLATFORM_LINUX)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_LINUX
     if (mKind == HostedHandleKind::OpaqueFileDescriptor)
     {
         static_cast<void>(::close(mFileDescriptor));

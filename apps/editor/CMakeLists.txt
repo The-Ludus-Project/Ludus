@@ -43,25 +43,24 @@ endif()
 # Q_SLOTS/Q_EMIT and the typed (pointer-to-member) connect overloads instead.
 # AUTOMOC is enabled per target below, not globally.
 
-# Native editor builds include rendering; lightweight builds explicitly opt out.
-# Browser builds use a separate WebGPU canvas without Qt Quick interop.
-set(editor_render_preview_default ON)
-if(EMSCRIPTEN)
-    set(editor_render_preview_default OFF)
-endif()
-option(LUDUS_EDITOR_RENDER_PREVIEW "Build the trusted native authoring surface (requires pinned shader tools)" ${editor_render_preview_default})
-
 set(editor_viewport_sources
     src/internal/viewport_frame_source.h
     src/viewport_frame_source.cpp
     src/preview_viewport.cpp
-    src/viewport_navigation.cpp)
+    src/viewport_navigation.cpp
+    src/internal/texture_inspection.h
+    src/texture_inspection.cpp)
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Quick)
     # The readback fallback is selected only on Linux, but the shared viewport code references it.
     list(APPEND editor_viewport_sources src/internal/offscreen_frame_reader.h src/offscreen_frame_reader.cpp)
     # RG3b trusted render-graph preview reads exported color back through the same frame reader.
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp)
+    # The Renderer tab's texture viewer reads any graph attachment (colour or depth) back the same way.
+    list(APPEND editor_viewport_sources
+        src/internal/render_graph_targets.h src/render_graph_targets.cpp
+        src/internal/render_target_reader.h src/render_target_reader.cpp
+        src/internal/texture_viewer.h src/texture_viewer.cpp)
     if(APPLE)
         list(APPEND editor_viewport_sources src/qt_viewport_device_metal.mm)
     else()
@@ -133,6 +132,10 @@ function(ludus_editor_compile_render_graph_host target)
         MANIFEST "${default_graph}/main.lushader.json" RUNTIME_PACKAGE)
     target_compile_definitions(${target} PRIVATE
         "LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME=\"${editor_default_graph_RUNTIME_PACKAGE}\"")
+    # Texture viewer depth readback: packs Depth32Float bits into an RGBA8 attachment.
+    ludus_compile_shader(TARGET ${target} NAME editor_texture_depth_pack RASTER
+        SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/texture_depth_pack.slang"
+        VERTEX VertexMain FRAGMENT FragmentMain)
 endfunction()
 
 # The default graph's authored sources, read-only inside the editor (also in builds
@@ -460,6 +463,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/renderer_workspace_tests.cpp
         tests/render_graph_default_tests.cpp
         tests/render_graph_canvas_tests.cpp
+        tests/texture_inspection_tests.cpp
         tests/external_code_editor_tests.cpp
         tests/live_journey_tests.cpp
         tests/macos_journey_tests.cpp

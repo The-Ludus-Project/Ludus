@@ -6,7 +6,7 @@
 #include <mach/mach.h>
 #include <servers/bootstrap.h>
 
-#if !defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS != LUDUS_OS_MACOS
 #    error "The hosted surface Mach rendezvous requires macOS"
 #endif
 

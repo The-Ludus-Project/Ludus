@@ -1,6 +1,6 @@
 #include "internal/window_hosted.hpp"
 
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
 #    include "internal/hosted_mach.hpp"
 #endif
 
@@ -409,7 +409,7 @@ private:
         return HostedSurfaceStatus::Ok;
     }
 
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     [[nodiscard]] HostedSurfaceStatus publishMachPorts(HostedSurfaceImages& inoutImages) noexcept
     {
         if (mRendezvous.IsConnected() == false)
@@ -465,7 +465,7 @@ public:
         {
             status = publishDescriptors(inoutImages);
         }
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
         if (inoutImages.Handles[0].GetKind() == HostedHandleKind::MachPort)
         {
             status = publishMachPorts(inoutImages);
@@ -610,7 +610,7 @@ private:
     /// Authenticates Mach rendezvous messages (macOS only).
     [[maybe_unused]] Token mToken = {};
     RendezvousNonce mNonce = {};
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     RendezvousClient mRendezvous;
 #endif
     foundation::StaticArray<uint8, SEND_BUFFER_BYTES> mSend = {};

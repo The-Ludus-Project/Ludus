@@ -1174,6 +1174,100 @@ which the preview parity tests cook, on the same interface. Graphs scaffolded wi
 a candidate whose camera count differs from the active generation's fails, because
 one extraction feeds both; preview it after a viewport restart instead.
 
+### Texture viewer
+
+The Renderer tab's **Textures** page shows any texture of the previewed generation,
+not only its export: every Target (colour and depth), including transient
+attachments that are never exported. It needs the native GPU preview, the same as
+the Preview page.
+
+- **Select** a texture from the list, or click a node on the canvas:
+  - A Target node selects its texture.
+  - A Raster node, or a Subgraph node containing Raster passes, selects the
+    attachments the pass writes. Clicking it again cycles from colour to depth.
+  - An Export or Present node selects the texture it publishes.
+  - A Camera node selects its destination target.
+  - A Raster node in a subgraph document opened on its own matches every
+    instance of that subgraph.
+- **Channel** offers RGBA, R, G, B, A, or Rec. 709 luminance. Single channels and
+  luminance show as grey, and alpha is never composited. A depth texture has one
+  channel.
+- **Range** is either *Manual* (minimum and maximum) or *Auto min/max*.
+  - Auto measures the finite shown values. For depth, it leaves out the cleared
+    far plane (exactly 1), so a scene's depth spans black to white. Switching to
+    Manual starts from the measured range.
+  - RGBA8 colour starts on Manual [0, 1]. Depth and float data start on Auto.
+  - NaN and infinite values show in magenta.
+- **Exposure** (in stops) scales HDR formats before the range is applied, and is
+  hidden for other formats. The cooker currently admits only `RGBA8Unorm` and
+  `Depth32Float`, so it is hidden for every graph texture today. The viewer's
+  `RGBA16Float` decoding is unit tested for when HDR targets are admitted.
+- **Mip and layer:** graph attachments are single-mip, single-layer 2D textures
+  (the cooker's admission rule), so there is nothing to pick. The info line says
+  "1 mip, 1 layer".
+- **Zoom and pan** use nearest-neighbour sampling, so texels stay square. The
+  wheel zooms about the cursor, dragging pans, and a double-click fits the view.
+- **Pixel probe:** hovering shows the texel under the cursor, and clicking pins
+  it. The probe shows the coordinates and the raw stored value: RGBA8 bytes with
+  their normalized values, or the binary32 depth with its bits (for example
+  `depth 0.5 (0x3f000000)`).
+- **Info line:** the expanded resource name, resolution, format, and each use
+  with its load and store operations, for example
+  `colour attachment of Main/raster/draw (Clear → Store)`. It also notes
+  `exported by …`, the shared allocation for a depth texture, or `transient`.
+
+Readback never stalls the GUI thread:
+
+- The preview reads the selected texture after each presented frame. This happens
+  only between frames, once the export copy finishes and before the next Poll or
+  Render. While the read is outstanding, the graph's attachments are not
+  rewritten or released.
+- Colour textures use the same banded RGBA8 copy as the preview image.
+- RHI readback is RGBA8 only. So an editor shader
+  (`apps/editor/shaders/texture_depth_pack.slang`) first draws the depth aspect
+  into an RGBA8 attachment, packing each texel's IEEE bits into its four bytes.
+  The editor then copies that attachment and rebuilds the depth bit-exactly.
+- Every step is a request polled on later ticks. Nothing waits on a fence.
+- The textures come from `RenderGraph::GetResourceAllocation`. It hands out a
+  graph's non-surface allocation once the producer has completed, under the same
+  rules as an export lease, and it is meant for diagnostics only.
+
+What the viewer shows is the allocation's contents at the end of the frame:
+
+- A depth resource shares its colour resource's allocation (in the private
+  depth aspect).
+- A pooled transient shows its last write in this graph.
+- A subresource whose last pass discards it (`Store = Discard`) or that nothing
+  writes has no stored contents. The viewer says so instead of showing stale
+  data.
+
+With **Live Preview**, the selection is kept by name:
+
+- Every new World revision re-reads it.
+- Every rebuilt generation re-reads it as soon as that generation's first frame
+  is presented.
+- If a rebuild removes the texture, the viewer reports that it is not part of
+  the active generation.
+
+**Resource names:** the runtime package is numeric, so `ludus render-graph`
+cooking writes `<name>.lurgrt.resources.json` beside it. The file holds the
+generation identity, each resource's expanded ID, type, format and extent in
+record order, the expanded operations with their attachments, and the camera
+targets.
+
+- The editor uses the file only when its generation and every record's extent and
+  kind match the package.
+- Otherwise the textures are listed as `Resource N`, uses are described per pass,
+  and canvas selection is unavailable. The info line says why.
+- Runtime activation never reads the file.
+
+**Browser editor:** the texture viewer is disabled there. The render-graph
+preview it reads from is native only (`LUDUS_EDITOR_NATIVE_PREVIEW`): the browser
+editor has no RenderGraph preview device, so there is nothing to inspect. The
+packing shader is portable Slang, and the readback uses only RGBA8 texture
+transfers, so enabling it in the browser needs a browser render-graph preview
+first.
+
 ### RG3b acceptance evidence
 
 - Editor `[render-graph][canvas]` tests cover domain and port display, dependency
@@ -1200,6 +1294,26 @@ one extraction feeds both; preview it after a viewport restart instead.
   through the preview (cooked `.lurgrt`, activation, World extraction adapter) and
   through the live runtime path (the compiled header and a directly owned
   `RenderGraph` with independently written inputs) and requires identical bytes.
+- Editor `[texture-viewer]` tests cover:
+  - binary16 and binary32 decoding, and probe text per format (RGBA8, RGBA16F,
+    Depth32F);
+  - channel selection, luminance, remapping (including empty, NaN and infinite
+    inputs), automatic ranges that leave out the depth background, display images
+    with exposure and magenta non-finite texels, and the zoom, pan and probe
+    mapping;
+  - the fixture's names sidecar, with uses, canvas resolution for Target, Subgraph,
+    Export and Camera nodes and for a subgraph document, and refusal of a stale
+    sidecar;
+  - on a headless device, the transient depth target read bit-exactly (plane depth
+    0.5, background 1) and the colour target byte-identical to the presented frame;
+  - a reader that reports never-written attachments as undefined and returns
+    Pending before completing over later polls;
+  - Live Preview refresh across a World revision and a rebuilt generation, keeping
+    the selection by name.
+
+  The renderer's `[render-graph]` tests cover `GetResourceAllocation` admission
+  (out of range, before and after producer completion, and the transient depth
+  that GetExport refuses).
 
 Local qualification ran these suites with Clang 18 on macOS (Metal) under the
 offscreen Qt platform. A native (cocoa) editor run on a copy of an imported
@@ -1450,7 +1564,8 @@ verified Slang distribution; default is `out/shader-tools/slang`. Configuration
 and compilation perform no tool downloads. The tools-only closure contains Base,
 Memory, Hash, Strings, Containers, Filesystem and Parsing, plus the compiler and
 client; it does not configure Qt, Platform, RHI, audio or game modules. A full SDK
-can instead enable `LUDUS_BUILD_SHADER_WORKER=ON`.
+can instead enable `LUDUS_BUILD_SHADER_WORKER=ON`. Native editor builds with 3D
+preview enable the worker automatically.
 
 The worker/API library supports native Linux and macOS. The pinned upstream macOS
 Slang API library requires macOS 15; the compiler target advertises that deployment

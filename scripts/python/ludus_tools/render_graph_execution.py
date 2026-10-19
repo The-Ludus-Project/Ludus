@@ -476,13 +476,54 @@ def encode_runtime_package(contents):
     return bytes(data)
 
 
+RESOURCE_NAMES_SUFFIX = '.resources.json'
+RESOURCE_NAMES_VERSION = 1
+
+
+def resource_names_path(runtime_package):
+    """Sidecar beside a runtime package naming its plan resources for editor inspection."""
+    runtime_package = Path(runtime_package)
+    return runtime_package.with_name(runtime_package.name + RESOURCE_NAMES_SUFFIX)
+
+
+def encode_resource_names(contents):
+    """Name each plan resource in record order, for tools that inspect a generation.
+
+    The runtime package carries numeric records only. Record i is the i-th authored
+    resource in sorted expanded-ID order (`<graph id>/<node id>`, with subgraph
+    instance IDs between them), matching lower_plan. The generation identity ties
+    the names to exactly one package; runtime activation never reads this file.
+    """
+    plan = contents['plan']
+    names = sorted(plan['resources'])
+    entries = [{'name': name, 'type': plan['resources'][name]['type'], 'format': plan['resources'][name]['format'],
+                'extent': list(plan['resources'][name]['extent'])} for name in names]
+    # Expanded operation IDs let a canvas node (Raster, Subgraph, Export, Present) find what it wrote or read.
+    operations = []
+    for operation in plan['passes']:
+        if operation['kind'] == 'Raster':
+            attachments = {aspect: {'resource': value['resource'], 'load': value['load'], 'store': value['store']}
+                           for aspect, value in sorted(operation['attachments'].items())}
+        else:
+            attachments = {'texture': {'resource': operation['resource']}}
+        operations.append({'id': operation['id'], 'kind': operation['kind'], 'source': operation['source'],
+                           'attachments': attachments})
+    cameras = [{'id': camera['id'], 'target': camera['target']} for camera in plan['cameras'] if camera['target']]
+    document = {'version': RESOURCE_NAMES_VERSION, 'generation': contents['generation'], 'resources': entries,
+                'operations': operations, 'cameras': cameras}
+    return (json.dumps(document, indent=2, sort_keys=True) + '\n').encode()
+
+
 def _cook_runtime(path, destination, *, configuration='Default'):
     contents = _runtime_contents(path, configuration)
     data = encode_runtime_package(contents)
     destination = Path(destination).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # Names first: a reader that sees the new package always finds its matching names.
+    build.atomic(resource_names_path(destination), encode_resource_names(contents))
     build.atomic(destination, data)
-    return {'runtime_package': str(destination), 'stage': 'RG3', 'configuration': configuration,
+    return {'runtime_package': str(destination), 'resource_names': str(resource_names_path(destination)),
+            'stage': 'RG3', 'configuration': configuration,
             'generation': contents['generation'], 'interface_identity': contents['interface_identity'],
             'bytes': len(data), 'resources': len(contents['resources']), 'passes': len(contents['passes']),
             'uniform_values': contents['uniform_values'], 'uniform_bindings': len(contents['bindings']),

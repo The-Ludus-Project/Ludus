@@ -8,7 +8,7 @@ namespace
 {
 /// Welcome or overflow resize, visibility, overflow reset, focus and close.
 constexpr usize MAX_SYNCHRONIZATION_MESSAGES = 5;
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
 /// Rendezvous messages from other processes skipped while matching one Images message.
 constexpr usize MAX_REJECTED_RENDEZVOUS_MESSAGES = 16;
 #endif
@@ -37,13 +37,13 @@ void EndpointSession::Configure(const Token& token, uint32 expectedUserId, const
     mRefusalCount = 0;
     mNonce = {};
     mPeerProcessId = -1;
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     mRendezvous.Stop();
 #endif
     clearSurfaceState();
 }
 
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
 bool EndpointSession::TryStartRendezvous(const RendezvousNonce& nonce) noexcept
 {
     RendezvousName name;
@@ -350,7 +350,7 @@ bool EndpointSession::tryAttachHandles(const Message& message, HostedSurfaceImag
         mDescriptorCount -= HOSTED_SURFACE_IMAGE_COUNT;
         return true;
     }
-#if defined(LUDUS_PLATFORM_MACOS)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     // The window sends the Mach message before the socket message, so it is queued by now.
     for (usize attempt = 0; attempt < MAX_REJECTED_RENDEZVOUS_MESSAGES; ++attempt)
     {

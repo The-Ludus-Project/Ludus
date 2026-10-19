@@ -8,7 +8,9 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 
+#include "internal/render_graph_targets.h"
 #include "internal/render_scene.h"
+#include "internal/texture_inspection.h"
 
 #include <QImage>
 #include <QObject>
@@ -118,6 +120,35 @@ public:
         return mPresentedRevision;
     }
     [[nodiscard]] graphics::renderer::RenderGraphActivationReport GetReport() const noexcept;
+
+    /// Textures of the active generation; empty before one is active.
+    [[nodiscard]] const RenderGraphTargetCatalogue& GetTargetCatalogue() const noexcept;
+    /// Choose the texture the viewer reads back, by expanded resource name; empty stops reading.
+    /// The name is resolved against each newly active generation, so a selection survives
+    /// rebuilds while the texture still exists. The texture is read after every presented
+    /// frame (and once immediately when a frame is already shown), never while a frame or the
+    /// export copy is in flight, and without waiting for the GPU.
+    void SetInspectedTarget(const QString& name);
+    [[nodiscard]] const QString& GetInspectedTarget() const noexcept;
+    /// Last read of the inspected texture; invalid when none completed or the texture was undefined.
+    [[nodiscard]] const InspectedTexture& GetInspectedTexture() const noexcept
+    {
+        return mInspected;
+    }
+    /// Why the inspected texture is not shown; empty after a successful read.
+    [[nodiscard]] const QString& GetInspectionStatus() const noexcept
+    {
+        return mInspectionStatus;
+    }
+    /// Activation serial and World revision of the frame GetInspectedTexture came from.
+    [[nodiscard]] foundation::uint64 GetInspectedGeneration() const noexcept
+    {
+        return mInspectedGeneration;
+    }
+    [[nodiscard]] foundation::uint64 GetInspectedRevision() const noexcept
+    {
+        return mInspectedRevision;
+    }
     /// Human-readable state, distinguishing the shown frame from a pending or failed candidate.
     [[nodiscard]] QString GetStatus() const;
 
@@ -126,12 +157,18 @@ Q_SIGNALS:
     void FramePresented();
     /// Activation or candidate state changed; the status text may differ.
     void Changed();
+    /// A new generation became active; GetTargetCatalogue may list other textures.
+    void TargetsChanged();
+    /// GetInspectedTexture or GetInspectionStatus changed.
+    void TargetInspected();
 
 private:
     struct State;
     [[nodiscard]] RenderGraphPreviewLoad stage();
     void advance();
     void finishCopy();
+    [[nodiscard]] bool beginInspection();
+    void finishInspection();
     void setStatus(const QString& text);
 
     foundation::UniquePtr<State> mState;
@@ -140,5 +177,9 @@ private:
     foundation::uint64 mPresentedRevision = 0;
     foundation::uint64 mPresentedSession = 0;
     QString mStatus;
+    InspectedTexture mInspected;
+    QString mInspectionStatus;
+    foundation::uint64 mInspectedGeneration = 0;
+    foundation::uint64 mInspectedRevision = 0;
 };
 } // namespace ludus::editor

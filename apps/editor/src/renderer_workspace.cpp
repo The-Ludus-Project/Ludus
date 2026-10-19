@@ -7,6 +7,7 @@
 #    include "editor_default_graph.h"
 #    include "editor_renderer_static.h"
 #    include "internal/render_graph_preview.h"
+#    include "internal/texture_viewer.h"
 #    include "renderer_composite.h"
 #endif
 
@@ -56,7 +57,7 @@ constexpr int32 MAX_COORDINATE = 32768;
 constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 // The source tree stays wide enough for nested node names.
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
-// Initial share of the document's width: source tree, then the Canvas/Source/Plan views.
+// Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
 constexpr int32 SOURCE_TREE_SHARE = 1;
 constexpr int32 VIEWS_SHARE = 4;
 constexpr int32 SOURCE_TREE_COLUMN = 0;
@@ -67,6 +68,7 @@ enum DocumentView : int32
     CANVAS_VIEW,
     SOURCE_VIEW,
     PLAN_VIEW,
+    TEXTURES_VIEW,
 };
 const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
 const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
@@ -453,6 +455,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mViews->insertTab(CANVAS_VIEW, mCanvas, QStringLiteral("Canvas"));
     mViews->insertTab(SOURCE_VIEW, sourcePage, QStringLiteral("Source"));
     mViews->insertTab(PLAN_VIEW, mPlan, QStringLiteral("Plan"));
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // Textures: any target or attachment of the previewed generation (native GPU builds).
+    mTextureViewerOrNull = new TextureViewer(this);
+    mViews->insertTab(TEXTURES_VIEW, mTextureViewerOrNull, QStringLiteral("Textures"));
+#endif
 
     mStatus->setObjectName(QStringLiteral("renderGraphStatus"));
     mStatus->setWordWrap(true);
@@ -543,6 +550,15 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         mSelectedConfiguration = mCanvas->GetConfiguration();
         mSelectedNode = node;
         renderTree();
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        // A node that writes or publishes textures shows them in the texture viewer.
+        QJsonObject graph;
+        if (mTextureViewerOrNull != nullptr && mDocument.GetGraph(mSelectedFile, graph) == true)
+        {
+            static_cast<void>(
+                mTextureViewerOrNull->SelectCanvasNode(graph.value(QStringLiteral("id")).toString(), node));
+        }
+#endif
     });
     connect(mCanvas,
             &RenderGraphCanvas::MoveRequested,
@@ -576,6 +592,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         this);
     connect(mPreviewOrNull, &RenderGraphPreview::Changed, this, &RendererWorkspace::renderPreview);
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, &RendererWorkspace::renderPreview);
+    mTextureViewerOrNull->SetPreview(mPreviewOrNull);
     mPreviewTimer.setInterval(PREVIEW_INTERVAL_MILLISECONDS);
     connect(&mPreviewTimer, &QTimer::timeout, this, &RendererWorkspace::ServicePreview);
 #endif
