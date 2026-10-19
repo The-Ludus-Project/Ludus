@@ -38,6 +38,40 @@ incremental deltas; it must not reimplement document validation/history in
 JavaScript or serialize an entire project on each keystroke. Choose the smallest
 binding needed by the accepted workflow, not a general RPC/object proxy system.
 
+## Source editing direction
+
+The current Renderer Source pane is a Qt `QPlainTextEdit` over the graph draft.
+Its platform clipboard, selection, undo/redo and cursor-navigation behavior is
+part of the editing baseline, including modifier keys and keyboard-only use.
+The current pane does not provide language completion or formatting. Qt's
+[QPlainTextEdit documentation](https://doc.qt.io/qt-6/qplaintextedit.html)
+describes the supplied text operations; those must remain intact when adding
+code-specific behavior.
+
+Use lightweight in-editor editing plus **Open in Code Editor** for full code
+work. The Renderer Source pane now lets native users choose an installed
+application and open the selected saved project file. It asks before saving
+pending changes or creating a project copy of the built-in graph. External saves
+refresh a clean draft before validation/build, as one undoable revision; local
+conflicts retain the draft and block the operation. Project-owned sources stay
+in the project, and builds continue to consume a captured revision. The first
+launcher opens files; diagnostic line navigation and editor-specific command
+arguments are not yet integrated.
+
+Full embedded code editing would require a maintained editor component,
+project-aware completion and diagnostics, language-specific formatting, file
+tabs, indentation, search, native Home/End and modifier-key behavior, clipboard,
+IME and accessibility acceptance. Completion must see the same manifest-generated
+shader interfaces and bindings as compilation, including unsaved source buffers.
+Evaluate that as a separate integration rather
+than growing a bespoke text widget. Slang's official
+[editor extensions](https://shader-slang.org/tools/) already offer completion,
+semantic highlighting and navigation; its
+[VS Code extension](https://github.com/shader-slang/slang-vscode-extension)
+uses `clang-format` for shader formatting. Prettier supports
+[JSON and other listed languages](https://prettier.io/docs); formatter selection
+must follow the source language and project configuration.
+
 ## Toolkit evaluation
 
 | Option | Where it helps | Cost or constraint | Decision |
@@ -62,8 +96,63 @@ Start with Qt's built-in docking and a small number of named panels. Prototype
 advanced docking middleware only if cross-window tab groups or other required
 workflows cannot be served well; evaluate recovery, accessibility, supported
 platforms and dependency terms before adoption. A single new feature is not a
-reason to replace the entire shell. [KDDockWidgets](https://github.com/KDAB/KDDockWidgets)
-is an evaluation candidate, not an added dependency.
+reason to replace the entire shell. The native shell now uses Qt's docking for
+a Visual Studio-style layout (below); the evaluation records what middleware
+would add.
+
+### Visual Studio-style shell on Qt docking
+
+The native editor follows Visual Studio's arrangement, which users of game and
+engine tools already know: a central **document well** and **tool windows**
+docked around it ([user guide](../development/editor-workspace.md#workspace-layout)).
+Thanks to Microsoft for *Customize window layouts and personalize document tabs
+in Visual Studio* (Visual Studio documentation, "Tab groups" and "Arrange
+windows"); its tab-group, tool-window and reset-layout model informs this shell.
+[Microsoft documentation](https://learn.microsoft.com/visualstudio/ide/customizing-window-layouts-in-visual-studio).
+
+| Part | Qt Widgets mechanism | Owner and contract |
+| --- | --- | --- |
+| Document well | `QMainWindow` central widget: a `QSplitter` of `QTabWidget` tab groups (one direction, at most four groups) | `DocumentWell` owns presentation only: open views, order, active group and split. Closing a tab hides a view; its document owner keeps the draft |
+| Tool windows | One `QDockWidget` per tool window with a stable `objectName` (Project Explorer, Properties, Error List, Output, Content, Live Inspector, Timing) | Each reads its owner's copied state; none owns a draft |
+| Commands | One `QAction` per command from a small catalogue (stable ID, label, short toolbar label, shortcut, help) shared by menus, toolbars and shortcuts | Document and controller operations validate at dispatch |
+| Active document | The current tab of the active group | Save/Undo/Redo route to it; focus in a tool window keeps the document active |
+| Layout | `saveState`/`restoreState` (version 4) per user, plus per-project open documents and groups | Older, other-Qt or corrupt layouts fall back to the default |
+
+Properties hosts the World's entity inspector panel, which keeps editing the
+World document's draft. The Error List copies render-graph results and parses
+build output; navigation calls the producer's existing location mapping
+(`RendererWorkspace::ActivateDiagnostic`). Remaining work: split the Renderer
+into a render-graph canvas document (one per open `.lurender.json`) with its
+node inspector in Properties, its preview as a Render Preview tool window and
+its build tools in a Tools > Options dialog.
+
+### Docking middleware evaluation
+
+Qt Widgets docking lacks three Visual Studio behaviours: auto-hide (pinned) tool
+windows, a drag-target guide diamond, and floating or cross-window document tab
+groups. Two maintained Qt libraries provide some of them. Neither is added by
+this change; adoption needs a prototype against the gates below and its own
+reviewed change.
+
+| | [Qt Advanced Docking System](https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System) | [KDDockWidgets](https://github.com/KDAB/KDDockWidgets) |
+| --- | --- | --- |
+| Licence | LGPL-2.1 | GPL-2.0 or GPL-3.0, or a commercial KDAB licence |
+| Ludus licence fit | Usable from MIT-licensed Ludus when dynamically linked or relinkable, with notices; the static Qt/Wasm build already carries comparable LGPL obligations | GPL terms would apply to distributed editor binaries; avoiding them needs a commercial licence. A blocker for an MIT project without that purchase |
+| Frontends | Qt Widgets (Qt 5 and 6) | Qt Widgets and Qt Quick (Qt 5 and 6) |
+| Auto-hide | Yes, main window and floating containers | Not stated in its README; verify in a prototype |
+| Drop guides | Drop overlays while dragging | Arrow drop indicators, customizable |
+| Floating windows / tab groups | Docking into floating windows; named perspectives | Nested floating windows; partial layout save/restore |
+| Stated platform support | Developed and tested on Windows; macOS reported working but untested by the author; Linux depends on the compositor, with Wayland limits (native decorations, compositor stacking, no restored floating positions, Qt 6.6.3+) | Lists macOS, Linux (X11, Wayland), Windows, WebAssembly and EGLFS |
+| Integration cost | Replaces `QMainWindow` docking with its own dock manager; every tool window and the document well move to its API | Replaces `QMainWindow` docking with its own main window and layout serializer |
+
+Read on 2026-10-19 from each project's README. Gates before adopting either:
+macOS and Linux (X11 and Wayland) acceptance of drag, float, re-dock and restore;
+keyboard access and accessible names for every dock and tab; recovery from
+corrupt or old layouts at least as robust as the current versioned fallback;
+the Qt/Wasm build; no exception-dependent API on normal paths; and a licence
+review. On today's evidence the Qt Advanced Docking System is the candidate to
+prototype if auto-hide becomes a required workflow; KDDockWidgets is not
+viable without a commercial licence.
 
 ## Dependency and ownership map
 
@@ -312,11 +401,12 @@ defines the frontend selection gates and persistence limits.
 
 ## Play in the editor viewport
 
-Status: accepted 2026-10-19 and delivered in the stages below. Stage P4, the
-Platform [hosted window channel](#hosted-window-channel), is implemented; the
-editor does not use it until P6.
-It replaces the separate World-demo authoring window, the World-demo private
-shader and the separate-window default for Play.
+Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer)
+and P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) are
+implemented. P4, the Platform [hosted window channel](#hosted-window-channel), is
+implemented; the editor does not use it until P6. P3 and P5–P7 are pending. It
+replaces the separate World-demo authoring window, the World-demo private shader
+and the separate-window default for Play.
 
 While a game plays, the World viewport is that game's window. The game owns
 rendering and input there and behaves as it would in its own OS window. A
@@ -698,9 +788,10 @@ Keep common actions visible in a stable menu or contextual strip as well as
 shortcuts/context menus. Place frequent context actions near their work; advanced
 options and infrequent panels can be disclosed. Do not shuffle action positions
 based on live usage metrics. Narrow containers switch secondary panels to tabs or
-drawers, rather than clipping form fields behind empty docks. Hide the Inspector
-when it has no applicable selection and keep empty Output collapsed by default;
-show actionable job/error indicators without stealing focus. Large desktop
+drawers, rather than clipping form fields behind empty docks. Tool windows scroll
+their own overflow so a tabbed neighbour's minimum size never widens a dock
+column at the documents' expense. Output stays a background tab behind the Error
+List; a failed job raises the Error List without stealing focus. Large desktop
 workspaces remain customizable with a recoverable default.
 
 A small semantic design system owns surfaces, text, focus, selection, error,

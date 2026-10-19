@@ -1,7 +1,9 @@
+#include "internal/preview_shader_reload.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
+#include "shader_reload_fixture.h"
 #include "viewport_fixture.h"
 
 #include <ludus/graphics/rhi/rhi.h>
@@ -10,9 +12,11 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QWindow>
@@ -29,6 +33,8 @@ namespace
 constexpr uint64 PRESENTED_FRAMES = 3;
 /// Upper bound for Lit preparation, the shadow atlas and presentation on an integrated GPU.
 constexpr int32 SHARED_TIMEOUT_MILLISECONDS = 60000;
+/// Upper bound for live shader builds of every viewport stage through the worker.
+constexpr int32 SHADER_TIMEOUT_MILLISECONDS = 600000;
 /// Qt event-loop slice between preview ticks while waiting for frames.
 constexpr int32 POLL_MILLISECONDS = 20;
 /// Embedded viewport size in device-independent pixels.
@@ -284,5 +290,173 @@ TEST_CASE("Linux shared viewport keeps presenting after it is hidden and shown",
     preview.Stop();
 #else
     SKIP("Editor-created Vulkan device sharing is Linux-only");
+#endif
+}
+
+TEST_CASE("Statistics overlay draws inside the shared Qt Quick viewport", "[editor][viewport][shared][gpu][statistics]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    const QString skipReason = GetSharedDisplaySkipReason();
+    if (skipReason.isEmpty() == false)
+    {
+        SKIP(skipReason.toStdString());
+    }
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasLamps = false });
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    viewport.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&viewport) == true);
+    REQUIRE(preview.SetScene(scene) == true);
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(AwaitPresentedFrames(viewport, preview, PRESENTED_FRAMES) == true);
+    QQuickWindow* window = static_cast<QQuickWindow*>(FindWindow(QStringLiteral("LudusGpuViewport")));
+    REQUIRE(window != nullptr);
+    QQuickItem* overlay = window->contentItem()->findChild<QQuickItem*>(QStringLiteral("viewportStatisticsOverlay"));
+    REQUIRE(overlay != nullptr);
+    CHECK(overlay->isVisible() == false);
+    const QImage hidden = window->grabWindow();
+
+    QToolButton* statistics = viewport.findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    REQUIRE(statistics != nullptr);
+    statistics->click();
+    REQUIRE(AwaitPresentedFrames(viewport, preview, viewport.PresentedFrames() + PRESENTED_FRAMES) == true);
+    REQUIRE(
+        QTest::qWaitFor([&viewport]() { return viewport.GetStatisticsText().contains(QStringLiteral("…")) == false; },
+                        SHARED_TIMEOUT_MILLISECONDS) == true);
+    INFO(viewport.GetStatisticsText().toStdString());
+    // The overlay is an item of the viewport's own scene graph, stacked above the frame item.
+    CHECK(overlay->isVisible() == true);
+    CHECK(overlay->width() > 0);
+    CHECK(overlay->height() > 0);
+    for (QQuickItem* sibling : window->contentItem()->childItems())
+    {
+        // Overlays (statistics, live shader status) share a layer above the frame item.
+        if (sibling->objectName().endsWith(QStringLiteral("Overlay")) == false)
+        {
+            CHECK(sibling->z() < overlay->z());
+        }
+    }
+    const QImage shown = window->grabWindow();
+    const QString shotDirectory = qEnvironmentVariable("LUDUS_VIEWPORT_DEBUG_SHOTS");
+    if (shotDirectory.isEmpty() == false)
+    {
+        CHECK(shown.save(shotDirectory + QStringLiteral("/stats-overlay-shared.png")) == true);
+    }
+    if (IsOpaque(hidden) == true && IsOpaque(shown) == true)
+    {
+        const QPoint centre = overlay->mapToScene(QPointF(overlay->width() / 2, overlay->height() / 2)).toPoint() *
+                              window->devicePixelRatio();
+        const QRect panel(centre - QPoint(2, 2), QSize(4, 4));
+        bool isDifferent = false;
+        for (int32 y = panel.top(); y <= panel.bottom(); ++y)
+        {
+            for (int32 x = panel.left(); x <= panel.right(); ++x)
+            {
+                isDifferent = isDifferent || hidden.pixel(x, y) != shown.pixel(x, y);
+            }
+        }
+        CHECK(isDifferent == true);
+    }
+    else
+    {
+        WARN("Pixels not compared: Qt misreads this swapchain format in grabWindow");
+    }
+    statistics->click();
+    CHECK(overlay->isVisible() == false);
+    preview.Stop();
+#else
+    SKIP("Shared Qt Quick presentation is Linux-only");
+#endif
+}
+
+TEST_CASE("Live shader errors draw inside the shared Qt Quick viewport",
+          "[editor][viewport][shared][gpu][shader-reload][worker]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    const QString skipReason = GetSharedDisplaySkipReason();
+    if (skipReason.isEmpty() == false)
+    {
+        SKIP(skipReason.toStdString());
+    }
+    if (QFileInfo(QString::fromUtf8(shader_reload_paths::WORKER_EXECUTABLE)).isExecutable() == false)
+    {
+        SKIP("Configure with -DLUDUS_BUILD_SHADER_WORKER=ON to run the live shader worker test");
+    }
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const PreviewShaderSources sources =
+        tests::CopySources(tests::GetCheckoutSources(), root + QStringLiteral("/shaders"));
+    RenderScene scene;
+    tests::MakeLitScene(root + QStringLiteral("/world"), scene, { .HasLamps = false });
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    PreviewShaderReload* reload = viewport.GetShaderReloadOrNull();
+    REQUIRE(reload != nullptr);
+    REQUIRE(reload->SetSources(sources) == true);
+    viewport.resize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    viewport.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&viewport) == true);
+    REQUIRE(preview.SetScene(scene) == true);
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(AwaitPresentedFrames(viewport, preview, PRESENTED_FRAMES) == true);
+    QQuickWindow* window = static_cast<QQuickWindow*>(FindWindow(QStringLiteral("LudusGpuViewport")));
+    REQUIRE(window != nullptr);
+    QQuickItem* overlay = window->contentItem()->findChild<QQuickItem*>(QStringLiteral("viewportShaderStatusOverlay"));
+    REQUIRE(overlay != nullptr);
+    CHECK(overlay->isVisible() == false);
+
+    QToolButton* toggle = viewport.findChild<QToolButton*>(QStringLiteral("viewportLiveShaders"));
+    REQUIRE(toggle != nullptr);
+    toggle->click();
+    REQUIRE(QTest::qWaitFor([&reload]() { return reload->GetState() == PreviewShaderReloadState::Idle; },
+                            SHADER_TIMEOUT_MILLISECONDS) == true);
+    const QString flat = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_flat.slang"));
+    const QByteArray original = tests::ReadText(flat);
+    tests::WriteText(flat, original + "\nfloat4 BrokenLiveShader() { return undefinedLiveShaderName; }\n");
+    REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == true; }, SHADER_TIMEOUT_MILLISECONDS) == true);
+    INFO(reload->GetStatusText().toStdString());
+    CHECK(reload->GetStatusText().contains(QDir::toNativeSeparators(flat) + QLatin1Char(':')) == true);
+    // The error panel is an item of the viewport's scene graph, above the frame like the statistics.
+    REQUIRE(AwaitPresentedFrames(viewport, preview, viewport.PresentedFrames() + PRESENTED_FRAMES) == true);
+    CHECK(overlay->isVisible() == true);
+    CHECK(overlay->width() > 0);
+    CHECK(overlay->width() <= window->width());
+    CHECK(preview.Running() == true);
+    const QString shotDirectory = qEnvironmentVariable("LUDUS_VIEWPORT_DEBUG_SHOTS");
+    if (shotDirectory.isEmpty() == false)
+    {
+        CHECK(window->grabWindow().save(shotDirectory + QStringLiteral("/live-shaders-error-overlay-shared.png")) ==
+              true);
+    }
+    tests::WriteText(flat, original);
+    REQUIRE(QTest::qWaitFor([&reload]() { return reload->HasError() == false; }, SHADER_TIMEOUT_MILLISECONDS) == true);
+    toggle->click();
+    CHECK(overlay->isVisible() == false);
+    preview.Stop();
+#else
+    SKIP("Shared Qt Quick presentation is Linux-only");
 #endif
 }

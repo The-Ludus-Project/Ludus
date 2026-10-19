@@ -19,6 +19,7 @@
 #include <ludus/graphics/renderer/viewport.hpp>
 
 #include "internal/preview_lighting.h"
+#include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
 
@@ -54,7 +55,11 @@ enum class PreviewLightingStage : foundation::uint8
 class PreviewGpuGeneration final
 {
 public:
-    PreviewGpuGeneration(graphics::rhi::DeviceHandle device, const RenderScene& source, PreviewShading shading);
+    /// shaders is copied; the generation draws every program with it for its whole lifetime.
+    PreviewGpuGeneration(graphics::rhi::DeviceHandle device,
+                         const RenderScene& source,
+                         PreviewShading shading,
+                         const PreviewShaderSet& shaders);
     ~PreviewGpuGeneration() noexcept;
     PreviewGpuGeneration(const PreviewGpuGeneration&) = delete;
     PreviewGpuGeneration& operator=(const PreviewGpuGeneration&) = delete;
@@ -88,6 +93,8 @@ public:
     foundation::uint32 ExternalLeases = 0;
     const RenderScene Source;
     const PreviewShading Shading;
+    /// Renderer shaders of this generation; owns any run-time replacement code its pipelines use.
+    const PreviewShaderSet Shaders;
     const QByteArray LightingKey;
     preview_lighting::Inputs Lighting;
     graphics::renderer::EnvironmentMap Environment;
@@ -114,6 +121,23 @@ private:
     {
         return Source.Lit == true && Shading != PreviewShading::Albedo;
     }
+    /// Cooked scenes take the authored-lighting path for Lit and every debug view, so debug
+    /// views read the same surface maps, clusters and lights as Lit.
+    [[nodiscard]] LUDUS_INLINE bool shouldUseAuthoredLighting() const noexcept
+    {
+        return Source.Lit == true && (Shading == PreviewShading::Lit || IsPreviewDebugShading(Shading) == true);
+    }
+    /// Unlit authored Worlds draw debug views with the L4 debug program and editor-derived normals.
+    [[nodiscard]] LUDUS_INLINE bool shouldUseUnlitDebugView() const noexcept
+    {
+        return Source.Lit == false && IsPreviewDebugShading(Shading) == true;
+    }
+    /// Material slot shared by untextured objects in unlit debug views, after the scene's surfaces.
+    [[nodiscard]] LUDUS_INLINE foundation::int32 getDefaultDebugMaterial() const noexcept
+    {
+        return static_cast<foundation::int32>(Source.Surfaces.size());
+    }
+    [[nodiscard]] bool createUnlitDebugMaterials() noexcept;
     [[nodiscard]] bool acceptStage(graphics::rhi::RasterStatus status, PreparationStage next) noexcept;
     [[nodiscard]] bool prepareRenderer() noexcept;
     [[nodiscard]] bool prepareViews() noexcept;

@@ -117,3 +117,59 @@ TEST_CASE("Owned conversion agrees with independent CRT binary32 rounding", "[ba
         }
     }
 }
+
+TEST_CASE("Owned conversion agrees with CRT binary32 rounding for long fractional inputs", "[base][parse]")
+{
+    // Test-only CRT oracle over long digit strings, fractions, subnormals and range edges,
+    // which exercise multi-word arithmetic in the exact converter.
+    constexpr usize CASE_COUNT = 20000;
+    constexpr uint32 MAX_DIGITS = 60;
+    constexpr uint32 DECIMAL_RADIX = 10;
+    constexpr uint32 EXPONENT_SPAN = 100;
+    constexpr int32 EXPONENT_OFFSET = 60;
+    constexpr usize TEXT_BYTES = 96;
+    constexpr uint32 LCG_MULTIPLIER = 1664525U;
+    constexpr uint32 LCG_INCREMENT = 1013904223U;
+    constexpr uint32 BINARY32_INFINITY_BITS = 0x7f800000U;
+    constexpr float32 UNCHANGED = 17;
+    uint32 state = 0x2468aceU;
+    const auto next = [&state]() {
+        state = state * LCG_MULTIPLIER + LCG_INCREMENT;
+        return state >> 8;
+    };
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        char text[TEXT_BYTES] = {};
+        usize size = 0;
+        const uint32 digits = 1 + next() % MAX_DIGITS;
+        const uint32 point = next() % (digits + 1);
+        text[size++] = static_cast<char>('1' + next() % (DECIMAL_RADIX - 1));
+        for (uint32 digit = 1; digit < digits; ++digit)
+        {
+            if (digit == point)
+            {
+                text[size++] = '.';
+            }
+            text[size++] = static_cast<char>('0' + next() % DECIMAL_RADIX);
+        }
+        const int32 exponent = static_cast<int32>(next() % EXPONENT_SPAN) - EXPONENT_OFFSET;
+        const int32 written = std::snprintf(text + size, sizeof(text) - size, "e%d", exponent);
+        REQUIRE(written > 0);
+        size += static_cast<usize>(written);
+        const float32 expected = std::strtof(text, nullptr);
+        const uint32 bits = std::bit_cast<uint32>(expected);
+        float32 actual = UNCHANGED;
+        const NumberParseStatus result = ParseFloat32(text, size, actual);
+        CAPTURE(text);
+        if (bits == 0 || bits >= BINARY32_INFINITY_BITS)
+        {
+            REQUIRE(result == NumberParseStatus::OutOfRange);
+            REQUIRE(actual == UNCHANGED);
+        }
+        else
+        {
+            REQUIRE(result == NumberParseStatus::Success);
+            REQUIRE(std::bit_cast<uint32>(actual) == bits);
+        }
+    }
+}

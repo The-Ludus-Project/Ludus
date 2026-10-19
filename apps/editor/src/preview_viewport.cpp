@@ -1,5 +1,6 @@
 #include "internal/preview_viewport.h"
 #include "internal/preview_shading.h"
+#include "internal/viewport_statistics.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -7,6 +8,8 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QFontDatabase>
+#include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -21,10 +24,12 @@
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/offscreen_frame_reader.h"
+#    include "internal/preview_shader_reload.h"
 #    include "internal/qt_viewport_device.h"
 #    include <QLibraryInfo>
 #    include <QPainter>
 #    include <QQuickItem>
+#    include <QQuickPaintedItem>
 #    include <QQuickWindow>
 #    include <QSGSimpleTextureNode>
 #    include <QSGTexture>
@@ -41,6 +46,125 @@ namespace rhi = graphics::rhi;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 namespace
 {
+/// Inset of the statistics panel from the viewport's top-left corner, in logical pixels.
+constexpr qreal STATISTICS_MARGIN = 8;
+/// Padding between the statistics panel edge and its text, in logical pixels.
+constexpr qreal STATISTICS_PADDING = 6;
+/// Corner radius of the statistics panel, in logical pixels.
+constexpr qreal STATISTICS_CORNER_RADIUS = 4;
+/// Translucent dark panel behind the statistics text, kept readable over any debug view.
+constexpr QRgb STATISTICS_BACKGROUND = qRgba(9, 12, 15, 190);
+/// Statistics text colour.
+constexpr QRgb STATISTICS_TEXT = qRgb(232, 236, 240);
+/// Translucent red panel behind live shader errors and restart notices.
+constexpr QRgb SHADER_ERROR_BACKGROUND = qRgba(110, 20, 24, 215);
+/// Live shaders toggle tooltip; while an error is shown the tooltip carries its full text instead.
+QString GetLiveShadersToolTip()
+{
+    return QStringLiteral(
+        "Watch this engine checkout's renderer shaders (modules/graphics/renderer/shaders and their "
+        "includes). Saved edits compile in the background with ludus-shader-worker and replace the "
+        "viewport's shaders in every shading mode without restarting. Compile errors keep the last good "
+        "shaders and are shown over the viewport.");
+}
+/// Stacking order above the frame item, so clearFrames recreating that item never covers it.
+constexpr qreal STATISTICS_Z = 1;
+QFont GetStatisticsFont()
+{
+    return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+}
+/// Size of the padded statistics panel for text, in logical pixels; empty text has no panel.
+QSizeF MeasureStatistics(const QString& text)
+{
+    if (text.isEmpty() == true)
+    {
+        return {};
+    }
+    const QRectF bounds = QFontMetricsF(GetStatisticsFont()).boundingRect(QRectF(), Qt::AlignLeft, text);
+    return {bounds.width() + 2 * STATISTICS_PADDING, bounds.height() + 2 * STATISTICS_PADDING};
+}
+/// Paint an overlay panel (statistics or live shader status) with its top-left corner at origin.
+void PaintStatistics(QPainter& inoutPainter,
+                     const QString& text,
+                     QPointF origin,
+                     QRgb background = STATISTICS_BACKGROUND)
+{
+    if (text.isEmpty() == true)
+    {
+        return;
+    }
+    const QRectF panel(origin, MeasureStatistics(text));
+    inoutPainter.save();
+    inoutPainter.setRenderHint(QPainter::Antialiasing);
+    inoutPainter.setPen(Qt::NoPen);
+    inoutPainter.setBrush(QColor::fromRgba(background));
+    inoutPainter.drawRoundedRect(panel, STATISTICS_CORNER_RADIUS, STATISTICS_CORNER_RADIUS);
+    inoutPainter.setFont(GetStatisticsFont());
+    inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
+    inoutPainter.drawText(
+        panel.adjusted(STATISTICS_PADDING, STATISTICS_PADDING, -STATISTICS_PADDING, -STATISTICS_PADDING),
+        Qt::AlignLeft | Qt::AlignTop,
+        text);
+    inoutPainter.restore();
+}
+/// Shorten each line of an overlay to fit maxWidth (the viewport minus margins), keeping both
+/// ends so a long path still shows its file name and line. A non-positive maxWidth keeps text.
+QString FitOverlayText(const QString& text, qreal maxWidth)
+{
+    const qreal available = maxWidth - 2 * (STATISTICS_MARGIN + STATISTICS_PADDING);
+    if (text.isEmpty() == true || maxWidth <= 0 || available <= 0)
+    {
+        return text;
+    }
+    const QFontMetricsF metrics(GetStatisticsFont());
+    QStringList lines = text.split(QLatin1Char('\n'));
+    for (QString& line : lines)
+    {
+        line = metrics.elidedText(line, Qt::ElideMiddle, available);
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+/// Top-left of the live shader status panel: below the statistics panel when it is shown.
+QPointF GetShaderStatusOrigin(const QString& statisticsText)
+{
+    const qreal statisticsHeight = MeasureStatistics(statisticsText).height();
+    return {STATISTICS_MARGIN, STATISTICS_MARGIN + (statisticsHeight > 0 ? statisticsHeight + STATISTICS_MARGIN : 0)};
+}
+/// Overlay panel inside the viewport's QQuickWindow. A sibling QWidget would sit under the
+/// native window that createWindowContainer embeds on macOS and Linux; a scene-graph item is
+/// composited by Qt Quick in the same Metal/Vulkan pass as the frame, so it is always on top.
+class StatisticsItem final : public QQuickPaintedItem
+{
+public:
+    StatisticsItem(QQuickItem* parent, const QString& name) : QQuickPaintedItem(parent)
+    {
+        setObjectName(name);
+        setZ(STATISTICS_Z);
+        setPosition({STATISTICS_MARGIN, STATISTICS_MARGIN});
+        setAntialiasing(true);
+        setVisible(false);
+    }
+    void SetText(const QString& text, QRgb background = STATISTICS_BACKGROUND)
+    {
+        if (text == mText && background == mBackground)
+        {
+            return;
+        }
+        mText = text;
+        mBackground = background;
+        setSize(MeasureStatistics(text));
+        setVisible(text.isEmpty() == false);
+        update();
+    }
+    void paint(QPainter* painter) override
+    {
+        PaintStatistics(*painter, mText, {0, 0}, mBackground);
+    }
+
+private:
+    QString mText;
+    QRgb mBackground = STATISTICS_BACKGROUND;
+};
 /// Plain widget that paints the last complete CPU or offscreen frame, scaled to its rectangle.
 class FrameCanvas final : public QWidget
 {
@@ -57,6 +181,25 @@ public:
         mImage = image;
         update();
     }
+    /// Overlay text painted over the frame; empty hides the statistics panel.
+    void SetStatisticsText(const QString& text)
+    {
+        if (text != mStatisticsText)
+        {
+            mStatisticsText = text;
+            update();
+        }
+    }
+    /// Live shader status painted below the statistics; empty hides the panel.
+    void SetShaderStatusText(const QString& text, bool isError)
+    {
+        if (text != mShaderStatusText || isError != mHasShaderError)
+        {
+            mShaderStatusText = text;
+            mHasShaderError = isError;
+            update();
+        }
+    }
     [[nodiscard]] const QImage& GetImage() const noexcept
     {
         return mImage;
@@ -72,10 +215,18 @@ protected:
             painter.setRenderHint(QPainter::SmoothPixmapTransform);
             painter.drawImage(rect(), mImage);
         }
+        PaintStatistics(painter, mStatisticsText, {STATISTICS_MARGIN, STATISTICS_MARGIN});
+        PaintStatistics(painter,
+                        FitOverlayText(mShaderStatusText, width()),
+                        GetShaderStatusOrigin(mStatisticsText),
+                        mHasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
     }
 
 private:
     QImage mImage;
+    QString mStatisticsText;
+    QString mShaderStatusText;
+    bool mHasShaderError = false;
 };
 #    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Service period for frame polling, about one 60 Hz display refresh.
@@ -106,6 +257,13 @@ struct PreviewViewport::State final
     QVBoxLayout* Layout = nullptr;
     QLabel* Message = nullptr;
     uint64 Presented = 0;
+    /// Statistics overlay text currently shown; empty while the overlay is off.
+    QString StatisticsText;
+    /// Browser fallback: the engine's DOM canvas covers Qt widgets, so text goes in the toolbar.
+    QLabel* StatisticsLabelOrNull = nullptr;
+    /// Live shader status shown below the statistics; empty while there is nothing to report.
+    QString ShaderStatusText;
+    bool HasShaderError = false;
     bool IsAutomatic = true;
     bool CanShowFrames = true;
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -181,6 +339,10 @@ struct PreviewViewport::State final
         State& mState;
     };
     QQuickWindow* Window = nullptr;
+    StatisticsItem* StatisticsOrNull = nullptr;
+    StatisticsItem* ShaderStatusOrNull = nullptr;
+    /// Live shader rebuilds of this viewport's preview; null where unsupported.
+    PreviewShaderReload* ShaderReloadOrNull = nullptr;
     QWidget* Container = nullptr;
     FrameCanvas* CanvasOrNull = nullptr;
     OffscreenFrameReader Reader;
@@ -221,6 +383,31 @@ struct PreviewViewport::State final
     friend class PreviewViewport;
 
 private:
+    void applyStatistics()
+    {
+        if (StatisticsOrNull != nullptr)
+        {
+            StatisticsOrNull->SetText(StatisticsText);
+        }
+        if (CanvasOrNull != nullptr)
+        {
+            CanvasOrNull->SetStatisticsText(StatisticsText);
+        }
+        applyShaderStatus();
+    }
+    void applyShaderStatus()
+    {
+        if (ShaderStatusOrNull != nullptr)
+        {
+            ShaderStatusOrNull->SetText(FitOverlayText(ShaderStatusText, Window->width()),
+                                        HasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
+            ShaderStatusOrNull->setPosition(GetShaderStatusOrigin(StatisticsText));
+        }
+        if (CanvasOrNull != nullptr)
+        {
+            CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
+        }
+    }
     void createItem()
     {
         Item = new ImageItem(*this, Window->contentItem());
@@ -229,6 +416,8 @@ private:
     void createCanvas()
     {
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
+        CanvasOrNull->SetStatisticsText(StatisticsText);
+        CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
         Layout->addWidget(CanvasOrNull, 1);
         Message->hide();
         CanvasOrNull->show();
@@ -412,6 +601,10 @@ private:
             static_cast<PreviewViewport*>(Widget)->resizeSurface();
         });
         createItem();
+        StatisticsOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportStatisticsOverlay"));
+        StatisticsOrNull->SetText(StatisticsText);
+        ShaderStatusOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportShaderStatusOverlay"));
+        applyShaderStatus();
         Container = QWidget::createWindowContainer(Window, Widget);
         Container->setFocusPolicy(Qt::NoFocus);
         Container->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -557,6 +750,8 @@ private:
             // The container owns and destroys Window and its content items.
             Item = nullptr;
         }
+        StatisticsOrNull = nullptr;
+        ShaderStatusOrNull = nullptr;
         Window = nullptr;
         Device.Reset();
         IsDestroyingWindow = false;
@@ -633,13 +828,17 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
     shading->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     shading->setMinimumContentsLength(4);
     shading->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-    shading->addItem(QStringLiteral("Solid — neutral preview shading"));
-    shading->addItem(QStringLiteral("Albedo — unlit surface colors"));
-    shading->addItem(QStringLiteral("Lit — scene lighting"));
+    // Combo indices equal PreviewShading values; new modes are appended so saved indices stay valid.
+    for (foundation::usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        shading->addItem(GetPreviewShadingLabel(static_cast<PreviewShading>(i)));
+    }
     shading->setToolTip(
         QStringLiteral("Solid uses an editor-only neutral material and preview light; Albedo shows "
-                       "base colors without illumination. Lit shows authored lights, emitting surfaces "
-                       "as shadowed area lights. The viewport uses direct lighting without baking lightmaps."));
+                       "base colours without illumination. Lit shows authored lights, emitting surfaces "
+                       "as shadowed area lights. The viewport uses direct lighting without baking lightmaps.\n"
+                       "Debug views (Normal, Depth, Roughness, Metallic, UV, Light count) replace shading with "
+                       "one material or lighting quantity per pixel so it can be inspected directly."));
     shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
     QHBoxLayout* controls = new QHBoxLayout;
     controls->addWidget(shading, 1);
@@ -650,7 +849,42 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
     frameAll->setToolTip(QStringLiteral("Fit all visible geometry in the viewport (Home)."));
     controls->addWidget(frameAll);
     connect(frameAll, &QToolButton::clicked, preview, &RenderPreview::FrameAll);
+    QToolButton* statistics = new QToolButton(this);
+    statistics->setObjectName(QStringLiteral("viewportStatistics"));
+    statistics->setText(QStringLiteral("Stats"));
+    statistics->setCheckable(true);
+    statistics->setChecked(preview->IsStatisticsVisible());
+    statistics->setAccessibleName(QStringLiteral("Show viewport statistics"));
+    statistics->setToolTip(QStringLiteral("Overlay GPU frame time, CPU frame time, resolution and draw count, "
+                                          "averaged over recent frames. GPU shows n/a when the device has no "
+                                          "timestamp queries."));
+    controls->addWidget(statistics);
+    connect(statistics, &QToolButton::toggled, preview, &RenderPreview::SetStatisticsVisible);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (PreviewShaderReload::IsSupported() == true)
+    {
+        mState->ShaderReloadOrNull = new PreviewShaderReload(*preview, this);
+        QToolButton* liveShaders = new QToolButton(this);
+        liveShaders->setObjectName(QStringLiteral("viewportLiveShaders"));
+        liveShaders->setText(QStringLiteral("Live shaders"));
+        liveShaders->setCheckable(true);
+        liveShaders->setAccessibleName(QStringLiteral("Reload renderer shaders when their sources change"));
+        liveShaders->setToolTip(GetLiveShadersToolTip());
+        controls->addWidget(liveShaders);
+        PreviewShaderReload* reload = mState->ShaderReloadOrNull;
+        connect(liveShaders, &QToolButton::toggled, reload, &PreviewShaderReload::SetEnabled);
+        connect(reload, &PreviewShaderReload::StatusChanged, this, [this]() { updateShaderStatus(); });
+    }
+#endif
     mState->Layout->addLayout(controls);
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    mState->StatisticsLabelOrNull = new QLabel(this);
+    mState->StatisticsLabelOrNull->setObjectName(QStringLiteral("viewportStatisticsOverlay"));
+    mState->StatisticsLabelOrNull->setTextFormat(Qt::PlainText);
+    mState->StatisticsLabelOrNull->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    mState->StatisticsLabelOrNull->hide();
+    mState->Layout->addWidget(mState->StatisticsLabelOrNull, 0, Qt::AlignTop);
+#endif
     QLabel* navigationHint = new QLabel(this);
     navigationHint->setObjectName(QStringLiteral("viewportNavigationHint"));
     navigationHint->setTextFormat(Qt::PlainText);
@@ -670,6 +904,11 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
         const QSignalBlocker blocker(shading);
         shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
     });
+    connect(preview, &RenderPreview::NavigationChanged, statistics, [preview, statistics]() {
+        const QSignalBlocker blocker(statistics);
+        statistics->setChecked(preview->IsStatisticsVisible());
+    });
+    connect(preview, &RenderPreview::StatisticsChanged, this, [this]() { updateStatistics(); });
     mState->Message = new QLabel(QStringLiteral("Open a World to render it here."), this);
     mState->Message->setAlignment(Qt::AlignCenter);
     mState->Message->setWordWrap(true);
@@ -770,6 +1009,54 @@ void PreviewViewport::ClearFrame(const QString& text)
 #endif
     mState->Message->setText(text);
 }
+QString PreviewViewport::GetStatisticsText() const
+{
+    return mState->StatisticsText;
+}
+QString PreviewViewport::GetShaderStatusText() const
+{
+    return mState->ShaderStatusText;
+}
+PreviewShaderReload* PreviewViewport::GetShaderReloadOrNull() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    return mState->ShaderReloadOrNull;
+#else
+    return nullptr;
+#endif
+}
+void PreviewViewport::updateShaderStatus()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const PreviewShaderReload* reload = mState->ShaderReloadOrNull;
+    mState->ShaderStatusText = reload->GetStatusText();
+    mState->HasShaderError = reload->HasError();
+    mState->applyShaderStatus();
+    // The overlay shortens long lines to the viewport; the toggle's tooltip keeps the whole error.
+    QToolButton* liveShaders = findChild<QToolButton*>(QStringLiteral("viewportLiveShaders"));
+    if (liveShaders != nullptr)
+    {
+        liveShaders->setToolTip(mState->HasShaderError == true ? mState->ShaderStatusText : GetLiveShadersToolTip());
+    }
+#endif
+}
+void PreviewViewport::updateStatistics()
+{
+    const QString text =
+        Preview_->IsStatisticsVisible() == true ? FormatViewportStatistics(Preview_->GetStatistics()) : QString();
+    if (text == mState->StatisticsText)
+    {
+        return;
+    }
+    mState->StatisticsText = text;
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    mState->StatisticsLabelOrNull->setText(text);
+    mState->StatisticsLabelOrNull->setVisible(text.isEmpty() == false);
+#endif
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mState->applyStatistics();
+#endif
+}
 bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -860,6 +1147,7 @@ void PreviewViewport::resizeSurface()
                          qRound(static_cast<foundation::float64>(mState->Window->height()) * ratio));
         mState->Item->setSize(QSizeF(mState->Window->size()));
         mState->Item->update();
+        mState->applyShaderStatus();
     }
 #endif
 }

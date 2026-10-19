@@ -364,14 +364,13 @@ QByteArray EncodeCanonicalJson(const QJsonObject& value)
     return bytes;
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — named package/file/configuration identities.
-RenderGraphDocumentStatus RenderGraphDocument::Load(const QString& packageRoot, const QString& rootGraph)
+namespace
 {
-    const QString root = QFileInfo(packageRoot).canonicalFilePath();
-    if (root.isEmpty() == true || QFileInfo(root).isDir() == false)
-    {
-        return RenderGraphDocumentStatus::NotFound;
-    }
+/// Read every authored source below root into outSnapshot (bounded, no symlinks, no hidden or
+/// `out` directories). root may be a Qt resource directory. outSnapshot is unchanged on failure.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — named package directory and root-graph identities.
+RenderGraphDocumentStatus ReadPackage(const QString& root, const QString& rootGraph, RenderGraphSnapshot& outSnapshot)
+{
     RenderGraphSnapshot snapshot;
     qsizetype total = 0;
     QStringList directories{root};
@@ -402,13 +401,13 @@ RenderGraphDocumentStatus RenderGraphDocument::Load(const QString& packageRoot, 
                 continue;
             }
             QByteArray bytes;
-            if (static_cast<usize>(snapshot.Files.size()) >= MAX_FILES ||
+            if (static_cast<usize>(snapshot.Files.size()) >= RenderGraphDocument::MAX_FILES ||
                 ReadBounded(entry.absoluteFilePath(), bytes) == false)
             {
                 return RenderGraphDocumentStatus::Capacity;
             }
             total += bytes.size();
-            if (total > MAX_TOTAL_BYTES)
+            if (total > RenderGraphDocument::MAX_TOTAL_BYTES)
             {
                 return RenderGraphDocumentStatus::Capacity;
             }
@@ -419,18 +418,65 @@ RenderGraphDocumentStatus RenderGraphDocument::Load(const QString& packageRoot, 
     {
         return RenderGraphDocumentStatus::NotFound;
     }
-    mPackageRoot = root;
+    outSnapshot.Files.swap(snapshot.Files);
+    return RenderGraphDocumentStatus::Ok;
+}
+} // namespace
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — named package/file/configuration identities.
+RenderGraphDocumentStatus RenderGraphDocument::Load(const QString& packageRoot, const QString& rootGraph)
+{
+    const QString root = QFileInfo(packageRoot).canonicalFilePath();
+    if (root.isEmpty() == true || QFileInfo(root).isDir() == false)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    RenderGraphSnapshot snapshot;
+    const RenderGraphDocumentStatus status = ReadPackage(root, rootGraph, snapshot);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        return status;
+    }
+    adopt(root, rootGraph, snapshot, false);
+    return RenderGraphDocumentStatus::Ok;
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — named source/file/destination identities.
+RenderGraphDocumentStatus
+RenderGraphDocument::LoadBuiltIn(const QString& sourceRoot, const QString& rootGraph, const QString& destinationRoot)
+{
+    if (QFileInfo(sourceRoot).isDir() == false || QDir::isAbsolutePath(destinationRoot) == false)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    RenderGraphSnapshot snapshot;
+    const RenderGraphDocumentStatus status = ReadPackage(sourceRoot, rootGraph, snapshot);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        return status;
+    }
+    adopt(QDir::cleanPath(destinationRoot), rootGraph, snapshot, true);
+    return RenderGraphDocumentStatus::Ok;
+}
+
+void RenderGraphDocument::adopt(const QString& packageRoot,
+                                const QString& rootGraph,
+                                const RenderGraphSnapshot& snapshot,
+                                bool isBuiltIn)
+{
+    mPackageRoot = packageRoot;
     mRootGraph = rootGraph;
     mSaved = snapshot;
     mDraft = snapshot;
+    mIsBuiltIn = isBuiltIn;
     mLastMove.clear();
     // A new document identity is the only reason to reset the monotonic revision.
     mHistory.Reset();
-    return RenderGraphDocumentStatus::Ok;
 }
 
 void RenderGraphDocument::Reset()
 {
+    mIsBuiltIn = false;
     mPackageRoot.clear();
     mRootGraph.clear();
     mSaved = {};
@@ -651,12 +697,51 @@ RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& dire
     return RenderGraphDocumentStatus::Ok;
 }
 
+RenderGraphDocumentStatus RenderGraphDocument::RefreshFromDisk(bool& outHasChanged)
+{
+    outHasChanged = false;
+    if (IsLoaded() == false)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    if (mIsBuiltIn == true)
+    {
+        return RenderGraphDocumentStatus::Ok;
+    }
+    if (QFileInfo(mPackageRoot).canonicalFilePath() != mPackageRoot)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    RenderGraphSnapshot candidate;
+    const RenderGraphDocumentStatus status = ReadPackage(mPackageRoot, mRootGraph, candidate);
+    if (status != RenderGraphDocumentStatus::Ok || candidate == mSaved)
+    {
+        return status;
+    }
+    if (IsDirty() == true)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    const RenderGraphDocumentStatus committed = commit(candidate, false);
+    if (committed == RenderGraphDocumentStatus::Ok)
+    {
+        mSaved = candidate;
+        mLastMove.clear();
+        outHasChanged = true;
+    }
+    return committed;
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
 {
     outSavedFiles.clear();
     if (IsLoaded() == false)
     {
         return RenderGraphDocumentStatus::NotFound;
+    }
+    if (mIsBuiltIn == true)
+    {
+        return createPackage(outSavedFiles);
     }
     QLockFile lock(QDir(mPackageRoot).filePath(LOCK_NAME));
     if (lock.tryLock(0) == false)
@@ -694,6 +779,67 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
         mSaved.Files.insert(file, bytes);
         outSavedFiles.append(file);
     }
+    return RenderGraphDocumentStatus::Ok;
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::createPackage(QStringList& outSavedFiles)
+{
+    // A customized built-in becomes a new package: every file is created, none replaced.
+    const QDir destination(mPackageRoot);
+    const auto hasExistingFile = [this, &destination]() {
+        for (QMap<QString, QByteArray>::const_iterator file = mDraft.Files.constBegin();
+             file != mDraft.Files.constEnd();
+             ++file)
+        {
+            if (QFileInfo::exists(destination.filePath(file.key())) == true ||
+                QFileInfo(destination.filePath(file.key())).isSymLink() == true)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (hasExistingFile() == true)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    if (QDir().mkpath(mPackageRoot) == false)
+    {
+        return RenderGraphDocumentStatus::WriteFailed;
+    }
+    QLockFile lock(destination.filePath(LOCK_NAME));
+    if (lock.tryLock(0) == false)
+    {
+        return RenderGraphDocumentStatus::Locked;
+    }
+    // Another writer may have created a file between the first check and the lock.
+    if (hasExistingFile() == true)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    QStringList created;
+    for (QMap<QString, QByteArray>::const_iterator file = mDraft.Files.constBegin(); file != mDraft.Files.constEnd();
+         ++file)
+    {
+        const QString path = destination.filePath(file.key());
+        QSaveFile output(path);
+        output.setDirectWriteFallback(false);
+        if (QDir().mkpath(QFileInfo(path).absolutePath()) == false || output.open(QIODevice::WriteOnly) == false ||
+            output.write(file.value()) != file.value().size() || output.commit() == false)
+        {
+            // Remove this call's files so a retry still finds an empty destination.
+            for (const QString& written : created)
+            {
+                static_cast<void>(QFile::remove(destination.filePath(written)));
+            }
+            return RenderGraphDocumentStatus::WriteFailed;
+        }
+        created.append(file.key());
+    }
+    // The package root keeps the destination's spelling, so project-relative paths are unchanged.
+    mSaved = mDraft;
+    mIsBuiltIn = false;
+    outSavedFiles = created;
     return RenderGraphDocumentStatus::Ok;
 }
 } // namespace ludus::editor

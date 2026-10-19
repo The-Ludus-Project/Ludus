@@ -1,5 +1,6 @@
 #include "internal/configuration_workspace.h"
 #include "internal/controller.h"
+#include "internal/document_well.h"
 #include "internal/main_window.h"
 #include "internal/project_creation_dialog.h"
 #include "internal/workspace_style.h"
@@ -24,7 +25,6 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QPushButton>
-#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -49,16 +49,16 @@ TEST_CASE("Close Project retires identity and returns to Welcome with recent his
     EditorController controller({}, nullptr, directory.filePath(QStringLiteral("recent.json")));
     MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
     window.show();
-    auto* tabs = window.findChild<QTabWidget*>();
+    DocumentWell* well = window.findChild<DocumentWell*>();
     auto* welcome = window.findChild<QWidget*>(QStringLiteral("projectWelcome"));
     auto* close = window.findChild<QAction*>(QStringLiteral("closeProjectAction"));
     auto* configuration = window.findChild<ConfigurationWorkspace*>(QStringLiteral("configurationWorkspace"));
-    REQUIRE(tabs != nullptr);
+    REQUIRE(well != nullptr);
     REQUIRE(welcome != nullptr);
     REQUIRE(close != nullptr);
     REQUIRE(configuration != nullptr);
-    CHECK(tabs->isTabVisible(tabs->indexOf(configuration)));
-    CHECK(tabs->currentWidget() == welcome);
+    CHECK(well->IsDocumentAvailable(configuration));
+    CHECK(well->GetActiveDocumentOrNull() == welcome);
     CHECK_FALSE(close->isEnabled());
     const auto path = Project(directory);
     controller.OpenProject(path);
@@ -66,7 +66,7 @@ TEST_CASE("Close Project retires identity and returns to Welcome with recent his
     CHECK_FALSE(welcome->isVisible());
     CHECK(close->isEnabled());
     REQUIRE(configuration->Edit("host.headless", QStringLiteral("true")));
-    tabs->setCurrentWidget(configuration);
+    REQUIRE(well->OpenDocument(configuration));
     const auto epoch = controller.State().ProjectEpoch;
     const auto nextJob = controller.State().NextJob;
     QTest::keyClick(&window, Qt::Key_W, Qt::ControlModifier | Qt::ShiftModifier);
@@ -78,8 +78,8 @@ TEST_CASE("Close Project retires identity and returns to Welcome with recent his
     CHECK(controller.State().SetupStatus.isEmpty());
     CHECK(controller.RecentProjects().first().DescriptorPath == path);
     CHECK(welcome->isVisible());
-    CHECK(tabs->currentWidget() == welcome);
-    CHECK(tabs->isTabVisible(tabs->indexOf(configuration)));
+    CHECK(well->GetActiveDocumentOrNull() == welcome);
+    CHECK(well->IsDocumentAvailable(configuration));
     CHECK(configuration->Dirty()); // The separately loaded preview remains accessible.
     controller.OpenProject(path);
     CHECK(controller.State().Saved.Name == QStringLiteral("Demo"));
@@ -242,6 +242,10 @@ TEST_CASE("Project overview explains setup and reveals build details without edi
     window.show();
     controller.OpenProject(Project(directory));
     QApplication::processEvents();
+    // A project opens with Project Settings as a background document tab.
+    QWidget* settings = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
+    REQUIRE(window.GetDocumentWell().IsDocumentOpen(settings) == true);
+    REQUIRE(window.GetDocumentWell().OpenDocument(settings) == true);
     auto* identity = window.findChild<QLabel*>(QStringLiteral("projectIdentity"));
     auto* setup = window.findChild<QLabel*>(QStringLiteral("projectSetupStatus"));
     auto* next = window.findChild<QLabel*>(QStringLiteral("projectNextStep"));

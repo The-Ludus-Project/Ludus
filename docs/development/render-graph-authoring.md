@@ -11,7 +11,8 @@ using the same CLI/backend. RG2 adds bounded static opaque Renderer admission an
 execution through cooked headers. RG3a adds the editor's Renderer tab, mapped
 diagnostics, runtime generations and atomic activation; the node canvas and live
 in-editor preview are RG3b. RG4a adds measured exact-descriptor pooling of
-transient attachments with a serial control.
+transient attachments with a serial control. To begin in the editor, see
+[Start customizing the renderer](#start-customizing-the-renderer).
 
 **RG0 plans are contract diagnostics, not executable renderer packages.** They
 do not compile shaders, evaluate scene draw-item coverage, negotiate device
@@ -20,10 +21,71 @@ Renderer/RHI integration. `DefaultOpaque`, `DefaultMasked` and `RendererStatic`
 identify the qualified static profile described below; arbitrary mesh/material
 compatibility is never inferred from those labels.
 
+## Start customizing the renderer
+
+You don't need to create a render graph first. The engine ships a default one, and
+the editor uses it for any project that has no graph of its own.
+
+1. **Look at the default.** Open a project and choose the **Renderer** tab. If the
+   project has no `graphs/Main/main.lurender.json`, the tab shows the **Engine default
+   renderer**. This is the static opaque `RendererStatic` graph: Scene and Camera feed
+   `RasterizeGraph` into 640×360 color and depth targets, and the color target is
+   exported. Its sources live in
+   [`modules/graphics/renderer/render_graphs/default`](../../modules/graphics/renderer/render_graphs/default/main.lurender.json).
+   The SDK installs a read-only copy to `share/Ludus/render-graphs/default`, and
+   the editor embeds the same copy. Showing the default writes nothing to the
+   project.
+2. **Preview it.** Start the World viewport, then choose **Build & Preview**. While
+   the default is unedited, the preview uses the generation that was cooked when the
+   editor was built. No build, tools or project files are involved. The
+   [preview rules](#preview-a-cooked-generation) below still apply.
+3. **Edit it.** Change anything: move a node on the canvas, edit a field in the
+   Inspector, or apply shader text in the Source tab. The first edit turns the
+   default into a project draft:
+   - The path label changes to `graphs/Main/main.lurender.json (new, unsaved)`, and the
+     status line names the folder that Save will create.
+   - Undo works as usual. Undoing every edit returns to the unedited default.
+   - **Save** (Ctrl+S or Command-S) creates the whole package under `graphs/Main/`,
+     beside graphs made with **New Graph…**, and reports where it went. After that,
+     the project always opens its own graph.
+
+   To copy the default without editing it, right-click the source tree and choose
+   **Customize in Project**. Neither path ever replaces a file. If `graphs/Main/`
+   already holds any of the package's files, nothing is written; open that graph with
+   **Open Graph...** instead. A linked `graphs` folder is refused, as for New Graph.
+4. **Iterate.** **Build & Preview** and **Live Preview** build the draft and preview
+   the result. Like any project graph, the build detects shader tools from the
+   project's selected SDK, so no paths need to be entered. Unsaved drafts build
+   too, from an immutable snapshot (see [Validate, build and cook a draft](#validate-build-and-cook-a-draft)).
+
+**New Graph…** remains the way to start additional graphs from scratch in
+`graphs/<name>/`. A graph you create with the name `Main` is the one the project
+opens instead of the default.
+
+The feature stays out of the way if you don't use it:
+
+- World rendering doesn't depend on render graphs.
+- No banner, prompt or required step appears; with a project open, the Renderer tab
+  shows the default rather than an empty page.
+- Saving the unedited default writes nothing.
+- Closing a project asks to save only after you have edited the graph.
+
+Limits:
+
+- The default covers the `RendererStatic` profile only. The editor's preview interface
+  identity is the default's, and a compile-time check keeps the
+  [RG2 offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json)
+  on the same interface.
+- The default's profiles follow the host: `metal` and `wgsl` on macOS, `spirv` and
+  `wgsl` on Linux, and `wgsl` for web builds.
+- A project opens only `graphs/Main/main.lurender.json` by itself. Open other graphs
+  with **Open Graph...**.
+
 ## Create a saved graph and import it
 
-In the native editor, open your game project and choose **Renderer → New Graph…**
-(or **Create Render Graph…** in the empty workspace). Enter a graph name and
+In the native editor, open your game project and choose **Renderer → New Graph…**.
+(Without any graph, the tab already shows the
+[engine default](#start-customizing-the-renderer).) Enter a graph name and
 choose **Create**. The editor creates `graphs/<name>/` inside the selected game
 project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
 `main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
@@ -668,15 +730,18 @@ in-editor preview; see [Node canvas and preview (RG3b)](#node-canvas-and-preview
 
 ### Edit in the Renderer tab
 
-Open a project, choose **Renderer**, then **Open Graph...** and select a root
-`.lurender.json` inside the project. Its directory is the package root. The tab
+Open a project and choose **Renderer**. The tab shows the project's
+`graphs/Main/main.lurender.json`, or else the
+[engine default](#start-customizing-the-renderer). To edit another graph, choose
+**Open Graph...** and select a root `.lurender.json` inside the project. Its
+directory is the package root. The tab
 loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
 most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
 symlinks are skipped).
 
-For a project without graph sources, use **New Graph…** first, as described in
-[graph creation](#create-a-saved-graph-and-import-it). The empty workspace offers
-creation directly; build actions become available once a graph is open.
+For a project without graph sources, the tab shows the engine default, and build
+actions work on it right away. Use **New Graph…**, as described in
+[graph creation](#create-a-saved-graph-and-import-it), to start another graph.
 
 - **Inspector** edits the selected node's authored fields by stable ID, adds or
   removes nodes (removal also drops their connections and layout position), and
@@ -713,7 +778,10 @@ project are discarded. Build resolves the saved project's current native profile
 through the same SDK resolver as ordinary project builds: a saved local SDK
 selection takes precedence over an installed locked SDK in the shared store.
 Its installed `lib/cmake/Ludus/shaders` directory supplies the shader helper and
-toolchain pins. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
+toolchain pins. Ordinary offline compilation does not require the optional
+`native_worker.py` client, so SDKs that predate native-worker support remain usable.
+That client is required and included in tool identity only when a native worker
+is selected. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
 from the selected local setup preset or the editor's prepared shader tools.
 No path entry is needed for **New Graph → Build & Preview**. Loading and building
 do not download tools, repair the project or write into the engine/SDK.
@@ -909,6 +977,29 @@ RG3b completes the editor half of the
 a visual node canvas over the same draft, and a trusted preview of the cooked
 runtime generation on the editor's existing viewport device.
 
+### Edit shader sources in a code editor
+
+On native desktop, select a file in the **Source** tab and click **Open in Code
+Editor**. The first use opens a native application picker; **Choose Code
+Editor…** changes that saved preference. On macOS, select the editor's `.app`
+from Applications. No command-line launcher or shell command is required.
+The selected application receives the saved project file; completion and
+formatting come from that application's language support. This first launcher
+opens the file without a diagnostic line argument. External application launch
+is unavailable in the browser editor.
+
+If the graph or text pane has unsaved changes, opening asks to save them first.
+For the engine default, opening asks to create an editable copy in the project;
+the engine sources stay unchanged. Cancelling retains the current text/draft.
+
+Save in the code editor, then use **Build & Preview**. Validation and builds
+refresh external saves when the draft is clean; **Reload Sources** performs the
+same refresh without starting a job. Refresh uses the existing package limits
+and creates one undoable revision. When local and external changes conflict,
+the current draft is retained and the job does not start. Undo local edits or
+reopen the graph to resolve the conflict. Apply or revert unapplied text before
+reloading; source refresh never silently replaces that text.
+
 ### Edit on the canvas
 
 The canvas sits between the source tree and the inspector and shows the selected
@@ -923,7 +1014,9 @@ undo, explicit save, validation and the inspector stay in step.
 | Select a link and press Delete | `Disconnect` |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source tab; not an edit |
-| Wheel, or drag empty space | Zoom or pan the view only |
+| Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
+| Wheel or vertical two-finger scroll | Zoom around the pointer, including smooth pixel scrolling |
+| Drag empty space | Pan the view only |
 
 Header colours show the connection domain: blue scene/view (Scene, Camera),
 orange execution (Raster, Present), green resource (Target, Export), purple
@@ -951,7 +1044,8 @@ CLI backend, which owns legality and reports the same codes as
 ### Preview a cooked generation
 
 1. Build and **Cook Runtime** as above, so `out/render-graph/<graph>.lurgrt`
-   exists.
+   exists. **Build & Preview** does both, then previews the result. An unedited
+   engine default skips this step and uses the generation cooked with the editor.
 2. Open a World and start its viewport; the preview borrows that device and the
    World extraction. It never starts a device of its own. The preview follows
    the viewport the World shows: the scene viewport of an imported-scene World
@@ -1038,10 +1132,12 @@ revision R`) from the candidate's state. The copy to the CPU is asynchronous and
 always finishes before the preview polls for activation or renders again, so a
 replaced generation is never reset while its export is being read.
 
-The editor is built against the RendererStatic interface of the checked-in
-[offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json):
-CMake cooks it into the editor and its interface identity is the one every
-previewed generation must match. Graphs scaffolded with
+The editor is built against the RendererStatic interface of the
+[engine default graph](#start-customizing-the-renderer). CMake cooks it into the
+editor, and its interface identity is the one every previewed generation must
+match. A compile-time check keeps the checked-in
+[offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json),
+which the preview parity tests cook, on the same interface. Graphs scaffolded with
 `ludus render-graph new-build --renderer-static` use that interface. Hot-swapping
 a candidate whose camera count differs from the active generation's fails, because
 one extraction feeds both; preview it after a viewport restart instead.
@@ -1386,6 +1482,13 @@ identity still match. **Live Preview** opts into debounced background builds;
 layout-only moves do not schedule a build. Saving is independent. Cancel disables
 live building; failures retain the last drawable preview. The existing preview's
 static-material/profile restrictions still apply.
+
+The scene viewport's **Live shaders** toggle uses the same worker for the
+built-in renderer recipes of the editor's own engine checkout. It starts a
+private worker from the build tree when `LUDUS_BUILD_SHADER_WORKER` is on, or
+connects to this endpoint or `LUDUS_SHADER_WORKER_SOCKET`. Recipe names, sources
+and entries come from the renderer manifest; see
+[Editor workspace](editor-workspace.md).
 
 Standalone native games can link `Ludus::ShaderDevelopment` and create a
 `ludus::runtime::shader_development::ReloadSession` over their producer's final

@@ -5,6 +5,7 @@
 #include <ludus/content/scene_cook/scene_assets.h>
 #include <ludus/content/scene_cook/scene_cook.h>
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/runtime/resources/scene.h>
@@ -819,13 +820,87 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
         request.Catalog = {};
         EditorSceneResult assembled;
         REQUIRE(OperateEditorScene(request, options, assembled, error));
-        CHECK(assembled.Scene.IsEmpty() == false);
+        REQUIRE(assembled.Scene.IsEmpty() == false);
+        // Best-effort imports are LUSCN v4: indexed meshes with implicit bake charts.
+        ludus::resources::SceneDefinition decoded;
+        REQUIRE(ludus::resources::SceneDefinition::Decode(assembled.Scene.GetData(),
+                                                          assembled.Scene.GetSize(),
+                                                          decoded) == ludus::resources::Status::Ok);
+        bool hasSharedVertices = false;
+        for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+        {
+            CHECK(mesh.BakeTexcoords.IsEmpty() == true);
+            hasSharedVertices = hasSharedVertices == true || mesh.Positions.GetSize() < mesh.Indices.GetSize();
+        }
+        CHECK(hasSharedVertices == true);
         const std::string reports = GetResponseMember(assembled.Response, "import_reports");
         CHECK(reports.find("\"importer\":\"" + std::string(fixture.Profile) + "\"") != std::string::npos);
 
         std::error_code ignored;
         std::filesystem::remove_all(work, ignored);
     }
+}
+
+TEST_CASE("local smoke test: a licensed scene imports through the editor catalog and assembles",
+          "[scene_assets][licensed]")
+{
+    // Env-gated: LUDUS_EDITOR_IMPORT_ENTRY names a licensed glTF/OBJ/pbrt entry file
+    // (for example Khronos Sponza). Its directory is the import root.
+    const char* entryOrNull = std::getenv("LUDUS_EDITOR_IMPORT_ENTRY");
+    if (entryOrNull == nullptr || entryOrNull[0] == '\0')
+    {
+        SKIP("set LUDUS_EDITOR_IMPORT_ENTRY to a licensed scene entry file");
+    }
+    const std::filesystem::path entry(entryOrNull);
+    const std::filesystem::path work = MakeWorkDirectory();
+    const std::filesystem::path project = work / "project";
+    std::filesystem::create_directories(project);
+    const std::string root = project.string();
+    const std::string sourceText = entry.parent_path().string();
+    const std::string entryName = entry.filename().string();
+    SequentialUuids counter;
+    UuidSource uuids{&SequentialUuids::Generate, &counter};
+    AssetOptions options;
+    options.UuidsOrNull = &uuids;
+    options.SourceOrigin = VIRTUAL_ORIGIN;
+    options.SourceEntry = entryName;
+    AssetError error;
+    Array<uint8> level;
+    REQUIRE(CreateLevel("Licensed", options, level, error));
+    EditorSceneRequest request;
+    request.Root = root;
+    request.Source = sourceText;
+    request.Level = ToSpan(level);
+    request.Operation = EditorSceneOperation::Import;
+    EditorSceneResult imported;
+    const bool isImported = OperateEditorScene(request, options, imported, error);
+    INFO(Describe(error));
+    REQUIRE(isImported);
+    const std::string candidate = GetResponseMember(imported.Response, "level");
+    request.Operation = EditorSceneOperation::CommitImport;
+    request.Level = ToSpan(candidate);
+    request.Catalog = ToSpan(imported.Catalog);
+    EditorSceneResult committed;
+    REQUIRE(OperateEditorScene(request, options, committed, error));
+    request.Operation = EditorSceneOperation::Assemble;
+    request.Catalog = {};
+    EditorSceneResult assembled;
+    REQUIRE(OperateEditorScene(request, options, assembled, error));
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(assembled.Scene.GetData(), assembled.Scene.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize vertices = 0;
+    usize indices = 0;
+    for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+    {
+        vertices += mesh.Positions.GetSize();
+        indices += mesh.Indices.GetSize();
+    }
+    UNSCOPED_INFO("assembled " << decoded.Meshes.GetSize() << " meshes, " << vertices << " vertices, " << indices
+                               << " indices, " << assembled.Scene.GetSize() << " bytes");
+    CHECK(vertices > 0);
+    std::error_code ignored;
+    std::filesystem::remove_all(work, ignored);
 }
 
 TEST_CASE("Catalogs larger than the 1 MiB metadata limit still import", "[scene_assets]")
@@ -1080,7 +1155,7 @@ bool CookLightingFixture(std::string_view source,
     writer.AppendFloat32(1);
     writer.AppendFloat32(2);
     writer.AppendFloat32(3);
-    if (profile.Version == format::VERSION_3)
+    if (format::HasLightingRecords(profile.Version) == true)
     {
         writer.AppendUint32(format::EMISSION_TWO_SIDED | format::EMISSION_HAS_POWER);
         writer.AppendUint32(static_cast<uint32>(TEST_AREA_SOURCE));
@@ -1096,8 +1171,8 @@ bool CookLightingFixture(std::string_view source,
         StaticArray<float64, AUTHORED_VERTEX_COMPONENTS>{0, 1, 0, 0, 0, 1, 0, 1, .25, .5}};
     for (const StaticArray<float64, AUTHORED_VERTEX_COMPONENTS>& vertex : VERTICES)
     {
-        const usize components =
-            profile.Version == format::VERSION_3 ? AUTHORED_VERTEX_COMPONENTS : format::VERTEX_COMPONENTS;
+        const usize components = format::HasStoredBakeCoordinates(profile.Version) == true ? AUTHORED_VERTEX_COMPONENTS
+                                                                                           : format::VERTEX_COMPONENTS;
         for (usize i = 0; i < components; ++i)
         {
             writer.AppendFloat32(vertex[i]);
@@ -1112,7 +1187,7 @@ bool CookLightingFixture(std::string_view source,
     {
         writer.AppendFloat32(i == 0 || i == 4 || i == 8 ? 1 : 0);
     }
-    if (profile.Version == format::VERSION_3)
+    if (format::HasLightingRecords(profile.Version) == true)
     {
         writer.AppendUint32(17);
         writer.AppendUint32(0xf0000000U);
@@ -1155,6 +1230,13 @@ bool CookV3(std::string_view source,
             const Cancellation* cancelOrNull) noexcept
 {
     return CookLightingFixture(source, outResult, outError, cancelOrNull, {});
+}
+bool CookV4(std::string_view source,
+            CookResult& outResult,
+            CookError& outError,
+            const Cancellation* cancelOrNull) noexcept
+{
+    return CookLightingFixture(source, outResult, outError, cancelOrNull, { .Version = format::VERSION_4 });
 }
 bool CookV2(std::string_view source,
             CookResult& outResult,
@@ -1330,6 +1412,67 @@ TEST_CASE("Multiple lighting imports scope IDs sum environments and upgrade lega
     Array<uint8> catalogAfter;
     REQUIRE(ReadCatalog(root, catalogAfter, error));
     CHECK(ToText(catalogBefore) == ToText(catalogAfter));
+}
+
+TEST_CASE("A version 4 import upgrades the assembled level and drops stored v3 bake coordinates",
+          "[scene_assets][lighting]")
+{
+    GoldenProject golden;
+    const std::string root = golden.Project.string();
+    AssetOptions options = golden.Options;
+    options.CookOrNull = CookV3;
+    options.SourceOrigin = "/indexed/v3";
+    AssetError error;
+    Array<uint8> empty;
+    Array<uint8> first;
+    Array<uint8> second;
+    Array<uint8> third;
+    REQUIRE(CreateLevel("Indexed", options, empty, error));
+    INFO(Describe(error));
+    REQUIRE(ImportScene(root, golden.Source, ToSpan(empty), options, first, error));
+    CHECK(DecodeAssembled(root, first).Meshes[0].BakeTexcoords.GetSize() == TRIANGLE_VERTICES);
+    options.CookOrNull = CookV2;
+    options.SourceOrigin = "/indexed/legacy";
+    REQUIRE(ImportScene(root, golden.Source, ToSpan(first), options, second, error));
+    options.CookOrNull = CookV4;
+    options.SourceOrigin = "/indexed/v4";
+    REQUIRE(ImportScene(root, golden.Source, ToSpan(second), options, third, error));
+    Array<uint8> bytes;
+    REQUIRE(AssembleLevel(root, ToSpan(third), {}, bytes, error));
+    REQUIRE(bytes.GetSize() > format::MAGIC.size() + sizeof(uint32));
+    uint32 version = 0;
+    REQUIRE(
+        ludus::foundation::core::TryReadLittleEndian<uint32>({bytes.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                                                             version) == true);
+    CHECK(version == format::VERSION_4);
+    const resources::SceneDefinition upgraded = DecodeAssembled(root, third);
+    CHECK(upgraded.Meshes.GetSize() == 3);
+    CHECK(upgraded.Lights.GetSize() == 2);
+    CHECK(upgraded.Objects.GetSize() == 3);
+    for (const resources::SceneMesh& mesh : upgraded.Meshes)
+    {
+        CHECK(mesh.BakeTexcoords.IsEmpty() == true);
+        CHECK(mesh.Positions.GetSize() == TRIANGLE_VERTICES);
+        CHECK(mesh.Normals[0].Z == 1);
+    }
+    Array<uint8> catalog;
+    REQUIRE(ReadCatalog(root, catalog, error));
+    CHECK(ToText(catalog).find("portable-rgba8-f32-le-v4") != std::string::npos);
+    Array<uint8> saved;
+    REQUIRE(SaveLevel(root, "scenes/indexed.lulevel", ToSpan(third), nullptr, saved, error));
+    Array<uint8> reopened;
+    REQUIRE(OpenLevel(root, "scenes/indexed.lulevel", reopened, error));
+    Array<uint8> after;
+    REQUIRE(AssembleLevel(root, ToSpan(reopened), {}, after, error));
+    CHECK(ToText(bytes) == ToText(after));
+    Array<uint8> published;
+    REQUIRE(PublishLevel(root,
+                         ToSpan(third),
+                         (golden.Work / "indexed-release").string(),
+                         DumpLayout::Canonical,
+                         published,
+                         error));
+    CHECK(ToText(bytes) == ReadWhole(golden.Work / "indexed-release/scene.luscn"));
 }
 
 TEST_CASE("Combined authored light and environment overflow rejects catalog publication", "[scene_assets][lighting]")

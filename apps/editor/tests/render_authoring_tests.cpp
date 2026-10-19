@@ -1,4 +1,5 @@
 #include "internal/controller.h"
+#include "internal/document_well.h"
 #include "internal/main_window.h"
 #include "internal/preview_area_lights.h"
 #include "internal/preview_shading.h"
@@ -11,6 +12,7 @@
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
 
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
@@ -39,6 +41,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -589,6 +592,56 @@ TEST_CASE("Viewport shading is visible by default and restores independently of 
     CHECK(preview.GetShading() == PreviewShading::Solid);
     CHECK(shading->currentIndex() == 0);
 }
+TEST_CASE("Viewport debug shading and the Stats overlay persist with navigation", "[editor][render-authoring]")
+{
+    Fixture fixture;
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    REQUIRE(preview.SetScene(fixture.Scene));
+    QComboBox* shading = viewport.findChild<QComboBox*>(QStringLiteral("viewportShading"));
+    QToolButton* statistics = viewport.findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    REQUIRE(shading != nullptr);
+    REQUIRE(statistics != nullptr);
+    REQUIRE(static_cast<usize>(shading->count()) == PREVIEW_SHADING_COUNT);
+    CHECK(statistics->text() == QStringLiteral("Stats"));
+    CHECK(statistics->isCheckable() == true);
+    CHECK(statistics->isChecked() == false);
+    CHECK(preview.IsStatisticsVisible() == false);
+    CHECK(viewport.GetStatisticsText().isEmpty() == true);
+    for (usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        const PreviewShading mode = static_cast<PreviewShading>(i);
+        INFO(GetPreviewShadingKey(mode).toStdString());
+        CHECK(shading->itemText(static_cast<int32>(i)) == GetPreviewShadingLabel(mode));
+        shading->setCurrentIndex(static_cast<int32>(i));
+        CHECK(preview.GetShading() == mode);
+        const QJsonObject saved = preview.Navigation();
+        CHECK(saved.value(QStringLiteral("shading")).toString() == GetPreviewShadingKey(mode));
+        shading->setCurrentIndex(0);
+        preview.RestoreNavigation(saved);
+        CHECK(preview.GetShading() == mode);
+        CHECK(shading->currentIndex() == static_cast<int32>(i));
+    }
+
+    statistics->click();
+    CHECK(preview.IsStatisticsVisible() == true);
+    // No device yet: the overlay is shown with placeholders rather than stale numbers.
+    CHECK(viewport.GetStatisticsText().startsWith(QStringLiteral("GPU: ")) == true);
+    QJsonObject navigation = preview.Navigation();
+    CHECK(navigation.value(QStringLiteral("statistics")).toBool() == true);
+    statistics->click();
+    CHECK(preview.IsStatisticsVisible() == false);
+    CHECK(viewport.GetStatisticsText().isEmpty() == true);
+    preview.RestoreNavigation(navigation);
+    CHECK(preview.IsStatisticsVisible() == true);
+    CHECK(statistics->isChecked() == true);
+    navigation.remove(QStringLiteral("statistics"));
+    navigation.insert(QStringLiteral("shading"), QStringLiteral("overdraw"));
+    preview.RestoreNavigation(navigation);
+    CHECK(preview.IsStatisticsVisible() == false);
+    CHECK(statistics->isChecked() == false);
+    CHECK(preview.GetShading() == PreviewShading::Solid);
+}
 TEST_CASE("Renderer snapshot admission protects fixed handle arrays even for an invalid private caller",
           "[editor][render-authoring]")
 {
@@ -652,6 +705,77 @@ TEST_CASE("World composes schema meshes into cooked renderer data with bounded f
         combined = {};
         REQUIRE(preview.SetScene({}));
         CHECK(lastDefinition.IsExpired() == true);
+    }
+}
+
+TEST_CASE("World composition keeps imported LUSCN v4 meshes indexed beside schema meshes",
+          "[editor][unified][render-authoring]")
+{
+    namespace format = ludus::content::scene_format;
+    Fixture fixture;
+    // One indexed quad: four shared vertices, six indices, v3-style records.
+    QByteArray cooked;
+    {
+        QDataStream stream(&cooked, QIODevice::WriteOnly);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+        stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
+        stream << format::VERSION_4 << uint32{1} << uint32{1} << uint32{0} << uint32{1};
+        for (const float32 value : {0.F, 0.F, 3.F, 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 1.F})
+        {
+            stream << value;
+        }
+        stream << format::NO_TEXTURE << format::ADDRESS_CLAMP << 0.F << .5F << 0.F << 0.F << 0.F << uint32{0}
+               << uint32{0} << uint32{0} << 0.F << uint32{0};
+        stream << uint32{4} << uint32{6};
+        for (const math::Vector2 corner :
+             {math::Vector2{0, 0}, math::Vector2{1, 0}, math::Vector2{1, 1}, math::Vector2{0, 1}})
+        {
+            stream << corner.X << corner.Y << 0.F << 0.F << 0.F << 1.F << corner.X << corner.Y;
+        }
+        for (const uint32 index : {0U, 1U, 2U, 0U, 2U, 3U})
+        {
+            stream << index;
+        }
+        stream << uint32{0} << uint32{0};
+        for (const float32 value : {1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F})
+        {
+            stream << value;
+        }
+        stream << uint32{7} << uint32{0};
+        stream << format::LIGHTING_PROFILE_REC709_PHOTOMETRIC << uint32{0} << uint32{0} << uint32{0} << 0.F << 0.F
+               << 0.F;
+    }
+    ludus::resources::SceneDefinition imported;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(reinterpret_cast<const uint8*>(cooked.constData()),
+                                                      static_cast<usize>(cooked.size()),
+                                                      imported) == ludus::resources::Status::Ok);
+    const QJsonObject level{
+        {QStringLiteral("id"), QStringLiteral("a8517f65-8127-4bf4-99c2-e53b1a6d9701")},
+        {QStringLiteral("objects"),
+         QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("imported-quad")},
+                                {QStringLiteral("name"), QStringLiteral("Quad")},
+                                {QStringLiteral("mesh"), QStringLiteral("imported/mesh")},
+                                {QStringLiteral("material"), QStringLiteral("imported/material")}}}},
+        {QStringLiteral("camera"),
+         QJsonObject{{QStringLiteral("eye"), QJsonArray{0, 0, 3}},
+                     {QStringLiteral("target"), QJsonArray{0, 0, 0}},
+                     {QStringLiteral("up"), QJsonArray{0, 1, 0}},
+                     {QStringLiteral("fov"), 1.0}}},
+    };
+    RenderScene combined;
+    const bool isMerged = RenderScene::Merge(fixture.Scene, cooked, level, combined, fixture.Error, {});
+    INFO(fixture.Error.toStdString());
+    REQUIRE(isMerged);
+    REQUIRE(combined.Definition != nullptr);
+    REQUIRE(combined.Definition->Meshes.GetSize() == 1 + static_cast<usize>(fixture.Scene.Meshes.size()));
+    const ludus::resources::SceneMesh& quad = combined.Definition->Meshes[0];
+    CHECK(quad.Positions.GetSize() == 4);
+    CHECK(quad.Indices.GetSize() == 6);
+    CHECK(quad.BakeTexcoords.IsEmpty() == true);
+    for (const ludus::resources::SceneMesh& mesh : combined.Definition->Meshes)
+    {
+        CHECK(mesh.Normals.GetSize() == mesh.Positions.GetSize());
     }
 }
 
@@ -789,7 +913,7 @@ TEST_CASE("Reopening projects restores their own embedded viewport and dock layo
         CHECK(world->Document().Loaded());
         CHECK_FALSE(world->Dirty());
         CHECK(world->Session().value(QStringLiteral("boundCamera")).toObject() == navigation);
-        CHECK(window.centralWidget() == world);
+        CHECK(window.GetDocumentWell().GetActiveDocumentOrNull() == world);
         CHECK(world->isVisible() == true);
         CHECK(window.dockWidgetArea(window.findChild<QDockWidget*>(QStringLiteral("outputDock"))) ==
               Qt::LeftDockWidgetArea);

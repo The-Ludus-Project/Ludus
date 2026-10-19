@@ -109,6 +109,10 @@ struct Varying
 #ifdef LUDUS_CLUSTERED
     float IsDirectReference : TEXCOORD6;
 #endif
+#ifdef LUDUS_DEBUG_VIEW
+    // Last member, so ordinary shadow fragments still match the earlier varying locations.
+    float2 DebugDepthRange : TEXCOORD10;
+#endif
 };
 
 [shader("vertex")] Varying VertexMain(Input input) {
@@ -154,6 +158,9 @@ struct Varying
 #ifdef LUDUS_CLUSTERED
     output.IsDirectReference = input.Color.y;
 #endif
+#ifdef LUDUS_DEBUG_VIEW
+    output.DebugDepthRange = input.Color.zw;
+#endif
     return output;
 } float ComputeFifth(float x)
 {
@@ -186,9 +193,16 @@ float3 EvaluateBrdf(float3 baseColor,
     return nl * (distribution * visibility * fresnel +
                  baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse ? 0 : 1) / PI);
 }
+// Instance flags in EyeWorld.w: bit 0 receives shadows, bit 1 orthographic eye. The value is
+// constant per instance but reaches the fragment through a perspective-interpolated varying,
+// so it may arrive as 0.9999...; round instead of truncating or whole pixel rows lose a flag.
+int GetEyeFlags(Varying input)
+{
+    return int(input.EyeWorld.w + 0.5);
+}
 float ComputeShadowVisibility(int light, Varying input)
 {
-    if ((int(input.EyeWorld.w) & 1) == 0)
+    if ((GetEyeFlags(input) & 1) == 0)
         return 1;
     bool hasLocalShadowCoverage = false;
     for (int region = 0; region < SHADOW_REGION_CAPACITY; ++region)
@@ -278,6 +292,57 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
     return float2(-1.04, 1.04) * approximation + coefficients.zw;
 }
 #endif
+#ifdef LUDUS_DEBUG_VIEW
+// Largest display-linear value before the inverse Reinhard grows without bound (about 0.998 sRGB).
+static const float DEBUG_DISPLAY_LINEAR_LIMIT = 0.995;
+// Inverts RasterViewport's presentation (renderer_output.slang: Reinhard, then sRGB encode at
+// exposure one) so a diagnostic colour authored in display sRGB appears unchanged on screen.
+float3 EncodeDebugDisplay(float3 displaySrgb)
+{
+    float3 encoded = saturate(displaySrgb);
+    float3 linearColor = float3(encoded.x <= 0.04045 ? encoded.x / 12.92 : pow((encoded.x + 0.055) / 1.055, 2.4),
+                                encoded.y <= 0.04045 ? encoded.y / 12.92 : pow((encoded.y + 0.055) / 1.055, 2.4),
+                                encoded.z <= 0.04045 ? encoded.z / 12.92 : pow((encoded.z + 0.055) / 1.055, 2.4));
+    linearColor = min(linearColor, float3(DEBUG_DISPLAY_LINEAR_LIMIT));
+    return linearColor / (1 - linearColor);
+}
+// Four-segment blue, cyan, green, yellow, red ramp over t in [0,1].
+float3 ComputeHeatColour(float t)
+{
+    float x = saturate(t) * 4;
+    return saturate(float3(x - 2, x < 2 ? x : 4 - x, 2 - x));
+}
+float3 ComputeDebugColour(int mode,
+                          Varying input,
+                          float3 normalWorld,
+                          float metallic,
+                          float roughness,
+                          int lightCount,
+                          float3 shaded)
+{
+    if (mode == int(MATERIAL_DEBUG_VIEW_NORMAL_WORLD))
+        return normalWorld * 0.5 + 0.5;
+    if (mode == int(MATERIAL_DEBUG_VIEW_LINEAR_DEPTH))
+    {
+        // Perspective: radial distance from the eye. Orthographic (eye flag bit 1): distance
+        // along the view direction; the renderer shifted the range into this frame.
+        float distance = (GetEyeFlags(input) & 2) != 0 ? -dot(input.PositionWorld, input.EyeWorld.xyz)
+                                                       : length(input.PositionWorld - input.EyeWorld.xyz);
+        float span = input.DebugDepthRange.y - input.DebugDepthRange.x;
+        return float3(span > 0 ? saturate((distance - input.DebugDepthRange.x) / span) : 0);
+    }
+    if (mode == int(MATERIAL_DEBUG_VIEW_ROUGHNESS))
+        return float3(roughness);
+    if (mode == int(MATERIAL_DEBUG_VIEW_METALLIC))
+        return float3(metallic);
+    if (mode == int(MATERIAL_DEBUG_VIEW_TEXCOORD_UV))
+        return float3(frac(input.TexcoordUv), 0);
+    if (mode == int(MATERIAL_DEBUG_VIEW_LIGHT_COUNT))
+        return lightCount == 0 ? float3(0)
+                               : ComputeHeatColour(float(lightCount) / float(MATERIAL_DEBUG_LIGHT_COUNT_SATURATION));
+    return shaded;
+}
+#endif
 [shader("fragment")] float4 FragmentMain(Varying input) : SV_Target
 {
     float4 baseColor = SampleBaseTexel(input);
@@ -287,8 +352,9 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
     float3 positionDerivativeXWorld = ddx(input.PositionWorld);
     float3 positionDerivativeYWorld = ddy(input.PositionWorld);
     float3 normalWorld = NormalizeOrZero(input.NormalWorld);
-    float3 viewDirectionWorld = input.EyeWorld.w >= 2 ? NormalizeOrZero(input.EyeWorld.xyz)
-                                                      : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
+    float3 viewDirectionWorld = (GetEyeFlags(input) & 2) != 0
+                                    ? NormalizeOrZero(input.EyeWorld.xyz)
+                                    : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
     float metallic = material.Pbr.x;
     float roughness = material.Pbr.y;
 #ifdef LUDUS_SURFACE_FIDELITY
@@ -371,6 +437,9 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
 #endif
     if (nv > 0)
         result += irradiance * baseColor.rgb * (1 - metallic) * (1 - f) / PI + specularEnvironment;
+#ifdef LUDUS_DEBUG_VIEW
+    int lightCount = 0;
+#endif
 #ifdef LUDUS_CLUSTERED
     float4 world = float4(input.PositionWorld, 1);
     float3 grid =
@@ -446,15 +515,26 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
                 attenuation *= color.w == 4 ? abs(emitterCosine) : max(emitterCosine, 0);
             }
         }
-        result += EvaluateBrdf(baseColor.rgb,
-                               normalWorld,
-                               viewDirectionWorld,
-                               lightDirectionWorld,
-                               metallic,
-                               roughness,
-                               input.IsBakeValid > 0.5 && extra.y > 0.5) *
-                  color.rgb * attenuation * ComputeShadowVisibility(i, input);
+        float3 contribution = EvaluateBrdf(baseColor.rgb,
+                                           normalWorld,
+                                           viewDirectionWorld,
+                                           lightDirectionWorld,
+                                           metallic,
+                                           roughness,
+                                           input.IsBakeValid > 0.5 && extra.y > 0.5) *
+                              color.rgb * attenuation * ComputeShadowVisibility(i, input);
+        result += contribution;
+#ifdef LUDUS_DEBUG_VIEW
+        lightCount += any(contribution > 0) ? 1 : 0;
+#endif
     }
+#ifdef LUDUS_DEBUG_VIEW
+    int debugView = int(material.Options.w + 0.5);
+    if (debugView != int(MATERIAL_DEBUG_VIEW_NONE))
+        return float4(EncodeDebugDisplay(
+                          ComputeDebugColour(debugView, input, normalWorld, metallic, roughness, lightCount, result)),
+                      1);
+#endif
     float alpha = material.Options.z == 2 ? baseColor.a : 1;
     return float4(min(max(result, float3(0)), float3(65504)) * alpha, alpha);
 }

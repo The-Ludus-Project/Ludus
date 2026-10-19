@@ -88,8 +88,7 @@ QString Display(const QJsonValue& value)
 }
 } // namespace
 WorldWorkspace::WorldWorkspace(QWidget* parent) : WorldWorkspace(ToolingPaths{}, parent) {}
-WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
-    : QWidget(parent), DemoPreview_(&DemoDocument_, this)
+WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("worldWorkspace"));
     auto* layout = new QVBoxLayout(this);
@@ -117,7 +116,6 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     CancelScene_->setObjectName(QStringLiteral("worldCancelScene"));
     files->addWidget(CancelScene_, 1, 0, 1, 2);
     connect(CancelScene_, &QPushButton::clicked, this, [this]() {
-        DemoPreview_.Stop();
         Scene_->CancelOperation();
         // The Level status label is hidden inside the World workspace; mirror the cancel state here.
         Changed(Scene_->StatusText());
@@ -151,13 +149,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         }
     });
 #endif
-    PreviewButton_ = new QPushButton(QStringLiteral("Open rendered preview"), this);
-    PreviewButton_->setObjectName(QStringLiteral("worldPreview"));
     PlayButton_ = new QPushButton(QStringLiteral("Play saved World"), this);
     PlayButton_->setObjectName(QStringLiteral("worldPlay"));
-    files->addWidget(PreviewButton_, 1, 2);
-    files->addWidget(PlayButton_, 1, 3);
-    connect(PreviewButton_, &QPushButton::clicked, this, [this]() { (void)StartPreview(); });
+    files->addWidget(PlayButton_, 1, 2);
     connect(PlayButton_, &QPushButton::clicked, this, [this]() {
         if (Save() && Dirty() == false && SceneBusy() == false)
         {
@@ -165,7 +159,6 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
             Q_EMIT PlayRequested();
         }
     });
-    connect(&DemoPreview_, &ScenePreview::Changed, this, &WorldWorkspace::WorldDemoChanged);
     files->setColumnStretch(4, 1);
     layout->addLayout(files);
     QHBoxLayout* previewRow = new QHBoxLayout;
@@ -273,6 +266,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         Q_EMIT PreviewStarting();
     });
     QWidget* inspectorPanel = new QWidget(split);
+    inspectorPanel->setObjectName(QStringLiteral("worldProperties"));
+    mPropertiesPanel = inspectorPanel;
     QVBoxLayout* inspectorPanelLayout = new QVBoxLayout(inspectorPanel);
     inspectorPanelLayout->setContentsMargins(0, 0, 0, 0);
     QScrollArea* scroll = new QScrollArea(inspectorPanel);
@@ -475,7 +470,6 @@ void WorldWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     Unsaved_ = false;
     ++DocumentGeneration_;
     Document_.Clear();
-    DemoDocument_.Clear();
     Render_->SetWorld(Root_, &Document_);
     RecoveryFailed_ = false;
     Render();
@@ -630,7 +624,6 @@ bool WorldWorkspace::Open(const QString& path)
     Pending_ = false;
     Unsaved_ = legacy;
     Render();
-    RefreshWorldDemo();
     RefreshScene();
     Changed(QStringLiteral("World opened. Select an entity or add one; recovery is restored only when requested."));
     return true;
@@ -983,11 +976,10 @@ void WorldWorkspace::Render()
     RenderInspector();
     const bool scene = Document_.Draft().contains(QStringLiteral("scene"));
     Viewport_->setVisible(scene);
-    const bool demo = IsWorldDemo(Document_);
-    BoundViewport_->setVisible(scene == false && demo == false);
-    Render_->setVisible(scene == false && demo == false);
-    PreviewButton_->setVisible(demo);
-    PlayButton_->setVisible(demo);
+    // World-demo Worlds render in the same bound viewport as every other scene-less World.
+    BoundViewport_->setVisible(scene == false);
+    Render_->setVisible(scene == false);
+    PlayButton_->setVisible(IsWorldDemo(Document_));
     updateShownRenderPreview(scene);
 }
 void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)
@@ -1003,17 +995,6 @@ void WorldWorkspace::RenderInspector()
 {
     Scene_->SetSelection(Selected_);
     Render_->SetSelection(Selected_, Pending_);
-    world_demo::Name selected;
-    // The world-demo runtime names each recipe by its label (the version-1 ID).
-    const QByteArray selectedBytes = Document_.GetEntityLabel(Document_.Entity(Selected_)).toLatin1();
-    if (selectedBytes.size() < 32)
-    {
-        for (foundation::usize i = 0; i < static_cast<foundation::usize>(selectedBytes.size()); ++i)
-        {
-            selected.Text[i] = selectedBytes.constData()[i];
-        }
-    }
-    DemoPreview_.Select(selected);
     Fields_.clear();
     Name_ = nullptr;
     while (auto* item = Inspector_->takeAt(0))
@@ -1302,7 +1283,6 @@ void WorldWorkspace::PickTint(const QString& id, const QJsonObject& binding)
 }
 void WorldWorkspace::Pending()
 {
-    DemoPreview_.Stop(); // A focused inspector buffer may not race a keyboard gesture.
     Pending_ = true;
     DraftTimer_.start();
     Changed(QStringLiteral(
@@ -1318,30 +1298,31 @@ void WorldWorkspace::Changed(const QString& message)
                  ? QStringLiteral(" Recovery could not be written; Save World is required to preserve this edit.")
                  : QString()));
     }
-    const bool busy = SceneBusy() || DemoDocument_.Previewing();
+    const bool isBusy = SceneBusy();
     if (Name_ != nullptr)
     {
-        Name_->setEnabled(busy == false || DraftPreview_);
+        Name_->setEnabled(isBusy == false || DraftPreview_);
     }
     for (auto* field : Fields_)
     {
-        field->setEnabled(busy == false || DraftPreview_);
+        field->setEnabled(isBusy == false || DraftPreview_);
     }
-    Entities_->setEnabled(Pending_ == false && busy == false);
-    Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false && busy == false);
-    PreviewButton_->setEnabled(Document_.Loaded() && busy == false);
-    PlayButton_->setEnabled(Document_.Loaded() && busy == false);
-    CancelScene_->setVisible(busy);
+    Entities_->setEnabled(Pending_ == false && isBusy == false);
+    Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false && isBusy == false);
+    PlayButton_->setEnabled(Document_.Loaded() && isBusy == false);
+    CancelScene_->setVisible(isBusy);
     CancelScene_->setEnabled(Scene_->CanCancel());
-    Add_->setEnabled(Document_.Loaded() && Pending_ == false && Entities_->count() < 128 && busy == false);
-    Duplicate_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && Entities_->count() < 128 &&
-                           busy == false);
-    Remove_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && busy == false);
-    Attach_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && Components_->count() > 0 && busy == false);
-    Components_->setEnabled(Pending_ == false && busy == false);
-    Apply_->setEnabled(Pending_ && busy == false);
-    Reset_->setEnabled(Pending_ && busy == false);
-    Recovery_->setEnabled(Document_.Loaded() && busy == false && Dirty() == false && Unsaved_ == false &&
+    Add_->setEnabled(Document_.Loaded() && Pending_ == false && Entities_->count() < WorldDocument::MAX_ENTITIES &&
+                     isBusy == false);
+    Duplicate_->setEnabled(Selected_.isEmpty() == false && Pending_ == false &&
+                           Entities_->count() < WorldDocument::MAX_ENTITIES && isBusy == false);
+    Remove_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && isBusy == false);
+    Attach_->setEnabled(Selected_.isEmpty() == false && Pending_ == false && Components_->count() > 0 &&
+                        isBusy == false);
+    Components_->setEnabled(Pending_ == false && isBusy == false);
+    Apply_->setEnabled(Pending_ && isBusy == false);
+    Reset_->setEnabled(Pending_ && isBusy == false);
+    Recovery_->setEnabled(Document_.Loaded() && isBusy == false && Dirty() == false && Unsaved_ == false &&
                           QFileInfo::exists(Path_ + QStringLiteral(".ludus-recovery")));
     PathLabel_->setText(Path_.isEmpty()
                             ? QStringLiteral("No world open")
@@ -1446,10 +1427,6 @@ void WorldWorkspace::PreviewDraft()
         DraftTimer_.start();
         return;
     }
-    if (IsWorldDemo(Document_))
-    {
-        return;
-    }
     auto draft = Document_;
     QString error;
     QWidget* invalid = nullptr;
@@ -1471,6 +1448,12 @@ void WorldWorkspace::PreviewDraft()
             DraftPreview_ = false;
         }
     }
+}
+QWidget* WorldWorkspace::TakePropertiesPanel(QWidget* newParent)
+{
+    LUDUS_REQUIRE(newParent != nullptr && mPropertiesPanel->parentWidget() == Split_);
+    mPropertiesPanel->setParent(newParent);
+    return mPropertiesPanel;
 }
 QJsonObject WorldWorkspace::Session() const
 {
@@ -1508,7 +1491,7 @@ void WorldWorkspace::RestoreSession(const QJsonObject& state)
 }
 bool WorldWorkspace::Apply()
 {
-    if (SceneBusy() || DemoDocument_.Previewing())
+    if (SceneBusy())
     {
         return false;
     }
@@ -1638,7 +1621,6 @@ QByteArray WorldWorkspace::RecoveryHeader() const
 }
 void WorldWorkspace::Snapshot()
 {
-    RefreshWorldDemo();
     RefreshScene();
     Render_->WorldChanged();
     RecoveryFailed_ = Document_.Dirty() && Unsaved_ == false;
@@ -1709,7 +1691,6 @@ bool WorldWorkspace::Recover()
     Pending_ = false;
     Selected_.clear();
     Render();
-    RefreshWorldDemo();
     RefreshScene();
     Render_->WorldChanged();
     Changed(QStringLiteral("Recovery restored for review. Save World to publish it."));
@@ -1744,8 +1725,6 @@ bool WorldWorkspace::ConfirmDiscard()
     }
     Pending_ = false;
     Document_.Discard();
-    DemoPreview_.Stop();
-    RefreshWorldDemo();
     RefreshScene();
     Render_->WorldChanged();
     // Keep a new world marked unsaved until its caller closes/replaces it.
@@ -1764,92 +1743,9 @@ RenderPreview& WorldWorkspace::GetRenderPreview() noexcept
 {
     return mShownRenderPreviewOrNull != nullptr ? *mShownRenderPreviewOrNull : Render_->Preview();
 }
-bool WorldWorkspace::StartPreview()
-{
-    if (IsWorldDemo(Document_) == false || Apply() == false)
-    {
-        return false;
-    }
-    RefreshWorldDemo();
-    world_demo::Level projection;
-    QString error;
-    if (ProjectWorldDemo(Document_, projection, error) == false)
-    {
-        Changed(error);
-        return false;
-    }
-    if (DemoDocument_.Loaded() == false)
-    {
-        Changed(QStringLiteral("The World preview projection could not be prepared. Authoring edits were retained."));
-        return false;
-    }
-    Render_->Stop();
-    Scene_->StopPreview();
-    Q_EMIT PreviewStarting();
-    return DemoPreview_.Start();
-}
-void WorldWorkspace::RefreshWorldDemo()
-{
-    if (IsWorldDemo(Document_) == false || DemoSyncing_)
-    {
-        return;
-    }
-    world_demo::Level projection;
-    QString error;
-    if (ProjectWorldDemo(Document_, projection, error) == false)
-    {
-        DemoPreview_.Stop();
-        DemoDocument_.Clear();
-        return;
-    }
-    foundation::core::Array<char> bytes;
-    if (world_demo::WriteLevel(projection, bytes) == false)
-    {
-        DemoPreview_.Stop();
-        DemoDocument_.Clear();
-        return;
-    }
-    DemoSyncing_ = true;
-    const auto result = DemoDocument_.Load(bytes.GetData(), bytes.GetSize());
-    DemoSyncing_ = false;
-    if (result.Error != world_demo::LevelError::None)
-    {
-        DemoPreview_.Stop();
-        DemoDocument_.Clear();
-    }
-}
-void WorldWorkspace::WorldDemoChanged()
-{
-    if (DemoSyncing_ || IsWorldDemo(Document_) == false)
-    {
-        return;
-    }
-    // The preview selects by runtime label; the World selects by entity key (a version-2 UUID).
-    const QString selected = Document_.FindEntityKey(QString::fromLatin1(DemoPreview_.Selected().Text));
-    if (DemoDocument_.Previewing() == false && DemoDocument_.Dirty())
-    {
-        QString error;
-        if (Pending_ == false && CommitWorldDemoGesture(Document_, DemoDocument_.Draft(), error))
-        {
-            Snapshot();
-        }
-        else
-        {
-            RefreshWorldDemo();
-            Changed(error);
-            return;
-        }
-    }
-    if (Pending_ == false && DemoDocument_.Previewing() == false)
-    {
-        Selected_ = selected;
-        Render();
-    }
-    Changed(DemoPreview_.Status());
-}
 bool WorldWorkspace::PreviewRunning() const noexcept
 {
-    return DemoPreview_.Running() || Render_->Preview().Running() || Scene_->PreviewRunning();
+    return Render_->Preview().Running() || Scene_->PreviewRunning();
 }
 void WorldWorkspace::ResumePreview()
 {
@@ -1857,11 +1753,7 @@ void WorldWorkspace::ResumePreview()
     {
         return;
     }
-    if (IsWorldDemo(Document_))
-    {
-        (void)StartPreview();
-    }
-    else if (Document_.SceneLevel().isEmpty())
+    if (Document_.SceneLevel().isEmpty())
     {
         (void)Render_->Refresh(true);
     }
@@ -1872,13 +1764,12 @@ void WorldWorkspace::ResumePreview()
 }
 void WorldWorkspace::StopPreview() noexcept
 {
-    DemoPreview_.Stop();
     Render_->Stop();
     Scene_->StopPreview();
 }
 void WorldWorkspace::Undo()
 {
-    if (Pending_ == false && DemoDocument_.Previewing() == false && SceneBusy() == false && Document_.Undo())
+    if (Pending_ == false && SceneBusy() == false && Document_.Undo())
     {
         Render();
         Snapshot();
@@ -1887,7 +1778,7 @@ void WorldWorkspace::Undo()
 }
 void WorldWorkspace::Redo()
 {
-    if (Pending_ == false && DemoDocument_.Previewing() == false && SceneBusy() == false && Document_.Redo())
+    if (Pending_ == false && SceneBusy() == false && Document_.Redo())
     {
         Render();
         Snapshot();

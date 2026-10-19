@@ -54,7 +54,7 @@ bool AwaitFrame(RenderPreview& inoutPreview)
 TEST_CASE("Preview preparation failure is terminal for its resource generation", "[editor][preview-generation]")
 {
     const RenderScene scene;
-    PreviewGpuGeneration generation({}, scene, PreviewShading::Solid);
+    PreviewGpuGeneration generation({}, scene, PreviewShading::Solid, PreviewShaderSet{});
     QString error;
     CHECK(generation.IsPrepared() == false);
     CHECK(generation.Prepare({}, error) == PreviewPreparationStatus::Failed);

@@ -16,7 +16,7 @@ avoid repeatedly rebuilding an incompatible or stale setup.
 | Operation reports Busy | Another managed operation owns that build tree; let it complete or stop it before retrying |
 | Close Project disabled | Stop owned build/run/Play work and wait for confirmed cleanup |
 | Save failed or external file conflict | Keep the draft; inspect permissions and reconcile the external file before saving again |
-| Panel missing | Use View to show it, or Reset Layout to restore panel placement |
+| Panel missing | Use View or the Window menu to show it, or Window → Reset Window Layout to restore placement |
 | Browser runtime cannot start | Follow the browser/device acceptance guide; documentation hosting does not establish WebGPU support |
 
 ## Gather a useful report

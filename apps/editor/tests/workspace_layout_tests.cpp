@@ -1,5 +1,6 @@
 #include "internal/browser_player.h"
 #include "internal/controller.h"
+#include "internal/document_well.h"
 #include "internal/main_window.h"
 #include "internal/world_workspace.h"
 
@@ -17,7 +18,6 @@
 #include <QPixmap>
 #include <QScrollArea>
 #include <QSize>
-#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
@@ -83,21 +83,25 @@ void Reset(MainWindow& window)
 void CheckDefaultPanels(MainWindow& window)
 {
     CHECK(window.findChild<QDockWidget*>(QStringLiteral("recentProjectsDock")) == nullptr);
+    CHECK(window.findChild<QDockWidget*>(QStringLiteral("authoringToolsDock")) == nullptr);
+    CHECK(window.centralWidget() == window.findChild<DocumentWell*>());
     auto* inspector = Dock(window, QStringLiteral("liveInspectorDock"));
     auto* output = Dock(window, QStringLiteral("outputDock"));
+    QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
     CHECK(window.dockWidgetArea(inspector) == Qt::RightDockWidgetArea);
     CHECK(window.dockWidgetArea(output) == Qt::BottomDockWidgetArea);
-    for (QDockWidget* dock : {inspector, Dock(window, QStringLiteral("authoringToolsDock"))})
+    for (QDockWidget* dock : {inspector, output, errors, Dock(window, QStringLiteral("projectExplorerDock"))})
     {
         CHECK_FALSE(dock->isHidden());
         CHECK_FALSE(dock->isFloating());
     }
-    CHECK(output->isHidden() == true);
-    // Runtime panels share the tools area as background tabs.
+    // Runtime panels are background tabs: Live Inspector behind Properties, Timing and
+    // Output behind the Error List.
     QDockWidget* timing = Dock(window, QStringLiteral("timingDock"));
-    CHECK(window.dockWidgetArea(timing) == Qt::RightDockWidgetArea);
-    CHECK(window.tabifiedDockWidgets(inspector).contains(timing));
-    CHECK(window.tabifiedDockWidgets(inspector).contains(Dock(window, QStringLiteral("authoringToolsDock"))));
+    CHECK(window.dockWidgetArea(timing) == Qt::BottomDockWidgetArea);
+    CHECK(window.tabifiedDockWidgets(errors).contains(timing));
+    CHECK(window.tabifiedDockWidgets(errors).contains(output));
+    CHECK(window.tabifiedDockWidgets(inspector).contains(Dock(window, QStringLiteral("propertiesDock"))));
     CHECK_FALSE(timing->isFloating());
 }
 } // namespace
@@ -195,6 +199,10 @@ TEST_CASE("Invalid or incompatible layout preferences fall back to recoverable d
     {
         WriteSetting(preferences, QStringLiteral("version"), 999);
     }
+    SECTION("Older single-dock layout")
+    {
+        WriteSetting(preferences, QStringLiteral("version"), 3);
+    }
     SECTION("Different Qt version")
     {
         WriteSetting(preferences, QStringLiteral("qtVersion"), QStringLiteral("0.0.0"));
@@ -261,21 +269,21 @@ TEST_CASE("Authoring areas remain reachable at smaller workspace sizes", "[edito
     MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
     window.show();
     QApplication::processEvents();
-    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
-    REQUIRE(tabs != nullptr);
+    DocumentWell* well = window.findChild<DocumentWell*>();
+    REQUIRE(well != nullptr);
     auto* project = window.findChild<QScrollArea*>(QStringLiteral("projectSettingsScroll"));
     auto* audio = window.findChild<QScrollArea*>(QStringLiteral("audioWorkspaceScroll"));
     REQUIRE(project != nullptr);
     REQUIRE(audio != nullptr);
-    CHECK(tabs->indexOf(project) >= 0);
-    CHECK(tabs->indexOf(audio) >= 0);
+    CHECK(well->GetDocuments().contains(project));
+    CHECK(well->GetDocuments().contains(audio));
     QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
     REQUIRE(descriptor.open(QIODevice::WriteOnly));
     descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
 "source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
     descriptor.close();
     controller.OpenProject(descriptor.fileName());
-    tabs->setCurrentWidget(project);
+    REQUIRE(well->OpenDocument(project) == true);
     auto* inspector = window.findChild<QScrollArea*>(QStringLiteral("liveInspectorScroll"));
     REQUIRE(inspector != nullptr);
     // Optional captures are for human review, never a golden-image assertion.
@@ -283,7 +291,6 @@ TEST_CASE("Authoring areas remain reachable at smaller workspace sizes", "[edito
     for (const auto& size : {QSize(1100, 760), QSize(900, 640), QSize(800, 640)})
     {
         window.resize(size);
-        Dock(window, QStringLiteral("authoringToolsDock"))->raise();
         QApplication::processEvents();
         CHECK(window.width() <= size.width());
         CHECK(window.height() <= size.height());
@@ -293,14 +300,12 @@ TEST_CASE("Authoring areas remain reachable at smaller workspace sizes", "[edito
         QApplication::processEvents();
         CHECK(inspector->viewport()->width() > 100);
         CHECK(inspector->viewport()->height() > 100);
-        Dock(window, QStringLiteral("authoringToolsDock"))->raise();
-        QApplication::processEvents();
         if (captures.isEmpty() == false)
         {
             REQUIRE(window.grab().save(captures + QStringLiteral("-%1.png").arg(size.width())));
         }
     }
-    tabs->setCurrentWidget(audio);
+    REQUIRE(well->OpenDocument(audio) == true);
     QApplication::processEvents();
     CHECK(audio->isVisible());
     CHECK(audio->viewport()->width() > 100);
@@ -330,7 +335,7 @@ TEST_CASE("Layout save failure does not prevent normal close or alter documents"
     CHECK(controller.State().Saved == initial.Saved);
 }
 
-TEST_CASE("World stays visible beside tool documents and receives focused document actions", "[editor][layout]")
+TEST_CASE("World stays visible beside tool windows and receives focused document actions", "[editor][layout]")
 {
     QTemporaryDir directory;
     EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
@@ -345,41 +350,37 @@ TEST_CASE("World stays visible beside tool documents and receives focused docume
     controller.OpenProject(descriptor.fileName());
     QApplication::processEvents();
     WorldWorkspace* world = window.findChild<WorldWorkspace*>();
-    QTabWidget* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
+    DocumentWell* well = window.findChild<DocumentWell*>();
     QAction* save = window.findChild<QAction*>(QStringLiteral("document.save"));
     REQUIRE(world != nullptr);
-    REQUIRE(tabs != nullptr);
+    REQUIRE(well != nullptr);
     REQUIRE(save != nullptr);
-    CHECK(window.centralWidget() == world);
-    CHECK(tabs->indexOf(world) == -1);
+    CHECK(well->GetActiveDocumentOrNull() == world);
     CHECK(world->isVisible() == true);
-    CHECK(world->width() > Dock(window, QStringLiteral("authoringToolsDock"))->width());
+    CHECK(world->width() > Dock(window, QStringLiteral("projectExplorerDock"))->width());
     REQUIRE(world->Create(QFileInfo(directory.path()).canonicalFilePath() + QStringLiteral("/layout.world.json")) ==
             true);
     for (const QSize& size : {QSize(1400, 900), QSize(1100, 760), QSize(900, 640)})
     {
         window.resize(size);
-        for (ludus::foundation::int32 index = 0; index < tabs->count(); ++index)
+        // Raising each tool window tab never hides the World document.
+        for (QDockWidget* dock : window.findChildren<QDockWidget*>())
         {
-            if (tabs->isTabVisible(index) == false)
-            {
-                continue;
-            }
-            tabs->setCurrentIndex(index);
+            dock->raise();
             QApplication::processEvents();
             CHECK(world->isVisible() == true);
             CHECK(world->width() > 400);
-            CHECK(world->height() > 400);
+            CHECK(world->height() > 300);
             CHECK(window.width() <= size.width());
             CHECK(window.height() <= size.height());
         }
     }
-    tabs->setCurrentWidget(window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll")));
+    REQUIRE(well->OpenDocument(window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"))) == true);
     CHECK(save->text() == QStringLiteral("&Save Project Settings"));
-    world->setFocus();
+    REQUIRE(well->OpenDocument(world) == true);
     QApplication::processEvents();
     CHECK(save->text() == QStringLiteral("&Save World"));
-    Dock(window, QStringLiteral("authoringToolsDock"))->hide();
+    Dock(window, QStringLiteral("projectExplorerDock"))->hide();
     QApplication::processEvents();
     CHECK(world->isVisible() == true);
     Reset(window);

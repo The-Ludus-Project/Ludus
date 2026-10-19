@@ -2,6 +2,7 @@
 #include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
+#include "internal/render_scene_limits.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/projection.hpp>
@@ -13,6 +14,7 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
+#include <ludus/graphics/rhi/measurement.h>
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/graphics/rhi/rhi.h>
 
@@ -28,6 +30,10 @@ using namespace foundation;
 namespace rhi = graphics::rhi;
 namespace rr = graphics::renderer;
 constexpr int32 NAVIGATION_STATE_VERSION = 2;
+/// Minimum interval between statistics overlay refreshes, so the text stays readable.
+constexpr int64 STATISTICS_REFRESH_MILLISECONDS = 250;
+/// Nanoseconds per millisecond, for GPU timestamp durations.
+constexpr float64 NANOSECONDS_PER_MILLISECOND = 1000000.0;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
 bool Accepted(rhi::RasterStatus s) noexcept
 {
@@ -51,6 +57,9 @@ rhi::DeviceDescription MakeViewportDeviceDescription() noexcept
     description.RequiredProfile.Raster.MinUniformRange = 16384;
     description.RequiredProfile.Raster.MinVertexAttributes = 16;
     description.RequiredProfile.Raster.MinTextureDimension2D = preview_lighting::SHADOW_ATLAS_PIXELS;
+    // Optional frame timestamps for the viewport statistics overlay; backends without
+    // timestamp queries report Unavailable and the overlay shows "GPU: n/a".
+    description.EnableGpuTiming = true;
     return description;
 }
 #endif
@@ -132,8 +141,12 @@ bool RenderPreview::SetScene(const RenderScene& scene)
     bool valid = scene.Identity.isEmpty()
                      ? (scene.Meshes.isEmpty() && scene.Textures.isEmpty() && scene.Surfaces.isEmpty() &&
                         scene.Objects.isEmpty() && scene.Cameras.isEmpty())
-                     : (scene.Meshes.isEmpty() == false && scene.Meshes.size() <= 6 && scene.Textures.size() <= 8 &&
-                        scene.Surfaces.size() <= 8 && scene.Objects.size() <= 128 && scene.Cameras.size() <= 128);
+                     : (scene.Meshes.isEmpty() == false &&
+                        static_cast<usize>(scene.Meshes.size()) <= content::scene_format::MAX_MESHES &&
+                        static_cast<usize>(scene.Textures.size()) <= content::scene_format::MAX_TEXTURES &&
+                        static_cast<usize>(scene.Surfaces.size()) <= content::scene_format::MAX_MATERIALS &&
+                        static_cast<usize>(scene.Objects.size()) <= MAX_PREVIEW_OBJECTS &&
+                        static_cast<usize>(scene.Cameras.size()) <= MAX_PREVIEW_CAMERAS);
     for (const auto& surface : scene.Surfaces)
     {
         valid = valid && surface.Texture >= (scene.Lit ? -1 : 0) && surface.Texture < scene.Textures.size();
@@ -250,7 +263,7 @@ bool RenderPreview::beginResourceRestart() noexcept
         return false;
     }
     foundation::UniquePtr<PreviewGpuGeneration> candidate;
-    candidate.Reset(new (std::nothrow) PreviewGpuGeneration(Device_, Scene_, mShading));
+    candidate.Reset(new (std::nothrow) PreviewGpuGeneration(Device_, Scene_, mShading, mShaders));
     if (candidate.Get() == nullptr)
     {
         fail(QStringLiteral("GPU preview staging allocation failed. Previous view retained."));
@@ -277,6 +290,28 @@ bool RenderPreview::beginResourceRestart() noexcept
     Report_ = {};
     Frames_ = 0;
     ViewDirty_ = true;
+    return true;
+}
+void RenderPreview::SetShaders(const PreviewShaderSet& shaders)
+{
+    mShaders = shaders;
+    if (OwnsDevice_ == true)
+    {
+        restartResources();
+    }
+}
+bool RenderPreview::rejectShaders()
+{
+    if (mResources.Get() == nullptr || mResources->Shaders.GetRevision() == mPresentedShaders.GetRevision())
+    {
+        return false;
+    }
+    const uint64 rejected = mResources->Shaders.GetRevision();
+    const QString reason = mPreparationFailure.isEmpty() == false ? mPreparationFailure
+                                                                  : QStringLiteral("GPU pipeline preparation failed.");
+    mShaders = mPresentedShaders;
+    restartResources();
+    Q_EMIT ShadersRejected(rejected, reason);
     return true;
 }
 bool RenderPreview::Start()
@@ -338,6 +373,7 @@ bool RenderPreview::AdmitDevice(const rhi::NativeDeviceDescription& native)
     mIsStarting = false;
     OwnsDevice_ = true;
     ++mDeviceSerial;
+    resetStatistics();
     Width_ = Height_ = 0;
     Frames_ = 0;
     restartResources();
@@ -374,6 +410,7 @@ bool RenderPreview::AdmitOffscreenDevice()
     mIsStarting = false;
     OwnsDevice_ = true;
     ++mDeviceSerial;
+    resetStatistics();
     Width_ = Height_ = 0;
     Frames_ = 0;
     restartResources();
@@ -417,6 +454,7 @@ bool RenderPreview::AdmitBrowserDevice(const char* canvasSelector)
     mIsStarting = false;
     OwnsDevice_ = true;
     ++mDeviceSerial;
+    resetStatistics();
     Width_ = 0;
     Height_ = 0;
     Frames_ = 0;
@@ -452,10 +490,82 @@ void RenderPreview::Stop() noexcept
         Q_EMIT Stopped();
     }
 }
+void RenderPreview::SetStatisticsVisible(bool isVisible)
+{
+    if (isVisible == mIsStatisticsVisible)
+    {
+        return;
+    }
+    mIsStatisticsVisible = isVisible;
+    resetStatistics();
+    Q_EMIT NavigationChanged();
+    Q_EMIT StatisticsChanged();
+}
+void RenderPreview::resetStatistics() noexcept
+{
+    mStatistics.GpuMilliseconds.Reset();
+    mStatistics.CpuMilliseconds.Reset();
+    mStatistics.GpuState = ViewportGpuTimeState::Waiting;
+    mStatisticsRefresh.invalidate();
+}
+void RenderPreview::serviceGpuTiming() noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (mIsStatisticsVisible == false || mStatistics.GpuState == ViewportGpuTimeState::Unavailable)
+    {
+        return;
+    }
+    rhi::GpuTiming timing;
+    if (rhi::GetGpuTiming(Device_, timing) != rhi::RasterStatus::Ready)
+    {
+        return;
+    }
+    switch (timing.State)
+    {
+        case rhi::GpuTimingState::Armed:
+        case rhi::GpuTimingState::Pending:
+            // Read back with latency: the previous frame's query is still in flight.
+            return;
+        case rhi::GpuTimingState::Available:
+            mStatistics.GpuMilliseconds.Add(timing.DurationNanoseconds / NANOSECONDS_PER_MILLISECOND);
+            mStatistics.GpuState = ViewportGpuTimeState::Available;
+            break;
+        case rhi::GpuTimingState::Unavailable:
+            mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+            return;
+        case rhi::GpuTimingState::Empty:
+        case rhi::GpuTimingState::Disjoint:
+        case rhi::GpuTimingState::Failed:
+            break;
+    }
+    if (rhi::ArmGpuTiming(Device_) == rhi::RasterStatus::Unsupported)
+    {
+        mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+    }
+#else
+    // CPU-only previews have no device timestamps.
+    mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+#endif
+}
+void RenderPreview::recordFrameStatistics(const QElapsedTimer& frameTimer)
+{
+    if (mIsStatisticsVisible == false)
+    {
+        return;
+    }
+    mStatistics.CpuMilliseconds.Add(static_cast<float64>(frameTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND);
+    mStatistics.Width = Width_;
+    mStatistics.Height = Height_;
+    mStatistics.Draws = Report_.Draws;
+    if (mStatisticsRefresh.isValid() == false || mStatisticsRefresh.elapsed() >= STATISTICS_REFRESH_MILLISECONDS)
+    {
+        mStatisticsRefresh.start();
+        Q_EMIT StatisticsChanged();
+    }
+}
 void RenderPreview::SetShading(PreviewShading shading)
 {
-    if ((shading != PreviewShading::Solid && shading != PreviewShading::Albedo && shading != PreviewShading::Lit) ||
-        shading == mShading)
+    if (static_cast<usize>(shading) >= PREVIEW_SHADING_COUNT || shading == mShading)
     {
         return;
     }
@@ -692,10 +802,8 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("zoom"), Zoom_},
             {QStringLiteral("camera"), CameraId_},
             {QStringLiteral("reference"), Reference_},
-            {QStringLiteral("shading"),
-             mShading == PreviewShading::Lit
-                 ? QStringLiteral("lit")
-                 : (mShading == PreviewShading::Albedo ? QStringLiteral("albedo") : QStringLiteral("solid"))},
+            {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
+            {QStringLiteral("statistics"), mIsStatisticsVisible},
             {QStringLiteral("x"), OrbitCenter_.X},
             {QStringLiteral("y"), OrbitCenter_.Y},
             {QStringLiteral("z"), OrbitCenter_.Z},
@@ -801,11 +909,10 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     Camera_ = -1;
     CameraId_ = state.value(QStringLiteral("camera")).toString().left(256);
     Reference_ = state.value(QStringLiteral("reference")).toBool();
-    SetShading(state.value(QStringLiteral("shading")).toString() == QStringLiteral("lit")
-                   ? PreviewShading::Lit
-                   : (state.value(QStringLiteral("shading")).toString() == QStringLiteral("albedo")
-                          ? PreviewShading::Albedo
-                          : PreviewShading::Solid));
+    PreviewShading shading = PreviewShading::Solid;
+    static_cast<void>(TryParsePreviewShading(state.value(QStringLiteral("shading")).toString(), shading));
+    SetShading(shading);
+    SetStatisticsVisible(state.value(QStringLiteral("statistics")).toBool(false));
     navigationChanged();
 }
 void RenderPreview::resetFrames() noexcept
@@ -925,6 +1032,18 @@ bool RenderPreview::prepare()
         {
             return false;
         }
+        if (mShading == PreviewShading::Depth)
+        {
+            const gameplay::camera::CameraLens& lens = Camera_ >= 0 && Camera_ < Scene_.Cameras.size()
+                                                           ? Scene_.Cameras[Camera_].Sample.Lens
+                                                           : mCameraController.GetSample().Lens;
+            math::Aabb3 boundsWorld;
+            const bool hasBounds = Scene_.TryGetBounds({}, boundsWorld);
+            description.DebugDepthRange = ComputeDebugDepthRange(description,
+                                                                 lens.NearPlane,
+                                                                 lens.FarPlane,
+                                                                 hasBounds == true ? &boundsWorld : nullptr);
+        }
         Description_ = description;
         if (Accepted(mResources->Viewport.Update(mResources->GetSnapshot(), description, Report_)) == false)
         {
@@ -946,6 +1065,8 @@ void RenderPreview::Tick()
     {
         return;
     }
+    QElapsedTimer frameTimer;
+    frameTimer.start();
     rhi::DeviceInfo device;
     const rhi::DeviceStatus ready = rhi::GetDeviceInfo(Device_, device);
     if (ready == rhi::DeviceStatus::Pending)
@@ -1018,11 +1139,24 @@ void RenderPreview::Tick()
         mIsAwaitingProducer = false;
         ++Frames_;
         const uint64 ownerFrame = Frames_;
+        const bool hasNewShaders = mResources->Shaders.GetRevision() != mPresentedShaders.GetRevision();
+        if (hasNewShaders == true)
+        {
+            mPresentedShaders = mResources->Shaders;
+        }
         Q_EMIT FrameReady();
         // A receiver can stop/replace the preview at this transaction boundary.
         if (OwnsDevice_ == false || Frames_ != ownerFrame)
         {
             return;
+        }
+        if (hasNewShaders == true)
+        {
+            Q_EMIT ShadersApplied(mPresentedShaders.GetRevision());
+            if (OwnsDevice_ == false || Frames_ != ownerFrame)
+            {
+                return;
+            }
         }
     }
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -1069,6 +1203,11 @@ void RenderPreview::Tick()
     }
     if (prepare() == false)
     {
+        // A replacement shader set that cannot build pipelines falls back to the presented set.
+        if (rejectShaders() == true)
+        {
+            return;
+        }
         // Keep a stage's specific reason; the generic text covers unexplained failures.
         fail(
             mPreparationFailure.isEmpty() == false
@@ -1094,6 +1233,8 @@ void RenderPreview::Tick()
     {
         return;
     }
+    // Arm immediately before the viewport frame so the probe encloses it, not a shadow submission.
+    serviceGpuTiming();
     mProducer = {};
     const rhi::RasterStatus rendered = mResources->Viewport.Render(Surface_, mProducer);
     if (rendered == rhi::RasterStatus::NotReady || rendered == rhi::RasterStatus::Pending)
@@ -1107,6 +1248,7 @@ void RenderPreview::Tick()
         return;
     }
     mIsAwaitingProducer = true;
+    recordFrameStatistics(frameTimer);
     if (FreshReport_ == true || Frames_ % 60 == 0)
     {
         FreshReport_ = false;
@@ -1116,18 +1258,18 @@ void RenderPreview::Tick()
                 .arg(Height_)
                 .arg(Report_.Visible)
                 .arg(Report_.Draws)
-                .arg(Scene_.Lit == true
+                .arg(IsPreviewDebugShading(mShading) == true ? GetPreviewShadingStatus(mShading)
+                     : Scene_.Lit == true
                          ? (mShading == PreviewShading::Lit
                                 ? QStringLiteral(" · Lit: %1 lights / %2 planar area proxies / %3 shadow faces · %4")
                                       .arg(mResources->Lighting.Lights.Count)
                                       .arg(mResources->Lighting.AreaCount)
                                       .arg(mResources->Lighting.ShadowCount)
                                       .arg(QStringLiteral("direct lighting"))
-                                : (mShading == PreviewShading::Solid
-                                       ? QStringLiteral(" · Solid: neutral preview shading")
-                                       : QStringLiteral(" · Albedo: unlit surface colors")))
-                         : (mShading == PreviewShading::Solid ? QStringLiteral(" · Solid: neutral preview shading")
-                                                              : QStringLiteral(" · Albedo: unlit surface colors")));
+                                : (mShading == PreviewShading::Solid ? GetPreviewShadingStatus(PreviewShading::Solid)
+                                                                     : GetPreviewShadingStatus(PreviewShading::Albedo)))
+                         : (mShading == PreviewShading::Solid ? GetPreviewShadingStatus(PreviewShading::Solid)
+                                                              : GetPreviewShadingStatus(PreviewShading::Albedo)));
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
         if (Scene_.Lit == true && mShading == PreviewShading::Lit)
         {

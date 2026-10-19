@@ -28,7 +28,7 @@ Project / document / save state       Save   useful context actions   Search
 ```
 
 The drawing describes roles, not fixed sizes or a promise of a particular viewport layout.
-Menus retain common commands and View/Reset Layout. The context strip presents
+Menus retain common commands, View tool windows and Window → Reset Window Layout. The context strip presents
 frequent actions for the current task; native-only actions do not consume a
 permanently disabled browser row. Advanced commands remain discoverable through
 stable menus and command search. Context menus and shortcuts provide faster
@@ -110,7 +110,7 @@ the workspace guide owns the implemented behavior and limits.
 | Browser round trip | Import, edit, download, reopen | Malformed/oversized admission retains current content; volatile storage/export limits stay explicit |
 | Tune Play | Start, pause, inspect, apply to session | Stale revisions rejected; failed game process cannot overwrite source |
 | Author audio | Select/create, edit, save, preview | Existing discard policy; native preview stops before game launch |
-| Recover workspace | View panel action or Reset Layout | Corrupt/incompatible preferences use useful defaults |
+| Recover workspace | Window tool-window toggle or Reset Window Layout | Corrupt/incompatible preferences use useful defaults |
 | Future asset import | Source, progress/result, optional cancellation | Last valid artifact retained; stale job cannot publish; actionable retry |
 | Future scene transform | Select, preview, accept, Undo | Cancel/invalid target safely drops preview; resized-scene picking cannot select obsolete data |
 | Future macOS authoring | Same operations with native menu/Command/text behavior | Host-specific capabilities and errors; engine Metal support alone does not qualify the editor |

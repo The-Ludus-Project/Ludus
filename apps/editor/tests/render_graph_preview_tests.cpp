@@ -4,11 +4,14 @@
 // path). Tests prove pending, failed and successful publication keep or replace the last
 // drawable view as documented, and that preview pixels equal the live path's pixels. Hosts
 // without a GPU adapter skip; this is not native Qt presentation evidence.
+#include "editor_default_graph.h"
 #include "editor_renderer_static.h"
 #include "internal/offscreen_frame_reader.h"
+#include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include "internal/world_demo_adapter.h"
 #include "renderer_composite.h"
 
 #include <ludus/foundation/base/types.h>
@@ -38,6 +41,7 @@ namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace format = ludus::content::render_graph_format;
 namespace host = ludus::render_graph_packages::editor_renderer_static;
+namespace default_graph = ludus::render_graph_packages::editor_default_graph;
 namespace shaders = ludus::shaders;
 namespace
 {
@@ -326,6 +330,40 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
     CHECK(MakeRenderGraphExtraction(scene, {}, 0, unchanged, error) == false);
 }
 
+TEST_CASE("RG3b World-demo Worlds feed the render-graph preview like any other World",
+          "[editor][render-graph][preview]")
+{
+    QFile schemaFile(QStringLiteral(":/world-demo/world.schema.json"));
+    REQUIRE(schemaFile.open(QIODevice::ReadOnly));
+    WorldDocument world;
+    QString error;
+    REQUIRE(world.LoadSchema(schemaFile.readAll(), error));
+    const std::string_view level = ludus::world_demo::ExampleLevel();
+    REQUIRE(world.Load(QByteArray(level.data(), static_cast<qsizetype>(level.size())), error));
+    REQUIRE(IsWorldDemo(world));
+    RenderScene scene;
+    REQUIRE(RenderScene::Load({}, world, scene, error));
+    // The viewport's own camera, converted for the conventional-depth runtime profile.
+    PreviewViewOptions options;
+    options.Camera = scene.DefaultCamera;
+    options.Width = 96;
+    options.Height = 64;
+    options.ShouldUseConventionalDepth = true;
+    renderer::ViewDescription view;
+    REQUIRE(scene.View(options, view, error));
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(scene, view, 1, extraction, error) == true);
+    REQUIRE(extraction.Meshes.size() == 1);
+    REQUIRE(extraction.Items.size() == scene.Objects.size());
+    for (qsizetype i = 0; i < extraction.Items.size(); ++i)
+    {
+        // Flat, opaque game colours with the game's transforms; no surface substitutes a tint.
+        CHECK(extraction.Items[i].Coverage == renderer::RenderGraphMaterial::Opaque);
+        CHECK(extraction.Items[i].Material.Color.X == scene.Objects[i].Tint.X);
+        CHECK(extraction.Items[i].MeshToWorld == scene.Objects[i].Transform);
+    }
+}
+
 TEST_CASE("RG3b cooked World extraction borrows the decoded definition's geometry", "[editor][render-graph][preview]")
 {
     const RenderScene cooked = MakeCookedScene();
@@ -564,13 +602,53 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     CHECK(preview.GetStatus().contains(QStringLiteral("last presented frame")) == true);
 }
 
-TEST_CASE("RG3b Renderer workspace previews only explicitly cooked generations", "[editor][render-graph][preview]")
+TEST_CASE("RG3b Renderer workspace previews only explicitly requested generations", "[editor][render-graph][preview]")
 {
     QTemporaryDir project;
     RendererWorkspace workspace({});
-    workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.GetPreviewOrNull() != nullptr);
-    // Nothing is open: no implicit preview.
+    // Nothing is open: nothing to preview.
     CHECK(workspace.PreviewRuntime() == false);
+    // Binding a project shows the engine default but never starts a preview by itself.
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.IsBuiltIn() == true);
     CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == 0);
+    CHECK(workspace.GetPreviewOrNull()->GetTargetSize().isEmpty() == true);
+    // The explicit request decodes the prebuilt default; it stages once a viewport device exists.
+    CHECK(workspace.PreviewRuntime() == true);
+    CHECK(workspace.GetPreviewOrNull()->GetTargetSize() ==
+          QSize(static_cast<int32>(default_graph::RESOURCES[0].Width),
+                static_cast<int32>(default_graph::RESOURCES[0].Height)));
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == 0);
+}
+
+TEST_CASE("The editor's prebuilt engine default previews with no project files", "[editor][render-graph][preview]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    const QString runtime = GetDefaultRenderGraphRuntime();
+    REQUIRE(runtime.isEmpty() == false);
+    const QSize extent(static_cast<int32>(default_graph::RESOURCES[0].Width),
+                       static_cast<int32>(default_graph::RESOURCES[0].Height));
+    RenderGraphPreview preview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment());
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({.25F, .5F, .75F, 1}, 1));
+    REQUIRE(preview.Load(runtime) == RenderGraphPreviewLoad::Staged);
+    CHECK(preview.GetTargetSize() == extent);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
+    const QImage image = preview.GetImage();
+    REQUIRE(image.size() == extent);
+    const QColor center = image.pixelColor(extent.width() / 2, extent.height() / 2);
+    CHECK(qAbs(center.red() - 64) <= COLOR_TOLERANCE);
+    CHECK(qAbs(center.green() - 128) <= COLOR_TOLERANCE);
+    CHECK(qAbs(center.blue() - 191) <= COLOR_TOLERANCE);
+    // The fixture's generation shares the host interface, so either previews in one editor.
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    preview.Detach();
 }

@@ -14,9 +14,12 @@
 #include <ludus/platform/native_window.h>
 
 #include "internal/editor_camera_controller.h"
+#include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/viewport_statistics.h"
 
+#include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
 #include <QTimer>
@@ -58,6 +61,29 @@ public:
     [[nodiscard]] LUDUS_INLINE PreviewShading GetShading() const noexcept
     {
         return mShading;
+    }
+    /// Show or hide the viewport statistics overlay. While visible, each submitted frame adds a
+    /// CPU sample and the GPU timestamp probe is re-armed only after its previous sample was read
+    /// (never waiting for the GPU). Showing restarts the rolling averages. Persisted by Navigation.
+    void SetStatisticsVisible(bool isVisible);
+    [[nodiscard]] LUDUS_INLINE bool IsStatisticsVisible() const noexcept
+    {
+        return mIsStatisticsVisible;
+    }
+    /// Smoothed measurements of the presented frames; meaningful while statistics are visible.
+    [[nodiscard]] LUDUS_INLINE const ViewportStatistics& GetStatistics() const noexcept
+    {
+        return mStatistics;
+    }
+    /// Draw with shaders from the next generation on. The live generation keeps drawing until the
+    /// replacement presents its first frame (the existing generation swap, so GPU work that still uses
+    /// the old pipelines completes first). A set with a new revision that fails preparation is
+    /// rejected: the last presented set is restored and ShadersRejected reports why.
+    void SetShaders(const PreviewShaderSet& shaders);
+    /// Most recently requested shader set (not necessarily presented yet).
+    [[nodiscard]] LUDUS_INLINE const PreviewShaderSet& GetShaders() const noexcept
+    {
+        return mShaders;
     }
     void Resize(foundation::int32 width, foundation::int32 height);
     /// Suppress repeated GPU submissions for hidden browser surfaces; allow the first
@@ -151,6 +177,13 @@ Q_SIGNALS:
     void DeviceStopping();
     void Stopped();
     void Failed(const QString& error);
+    /// Rate-limited notification that GetStatistics changed while the overlay is visible.
+    void StatisticsChanged();
+    /// A frame drawn with the shader set of this revision was presented for the first time.
+    void ShadersApplied(foundation::uint64 revision);
+    /// The shader set of this revision could not prepare GPU pipelines; the last presented set is
+    /// drawn again. reason is the preparation diagnostic.
+    void ShadersRejected(foundation::uint64 revision, const QString& reason);
 
 private:
     [[nodiscard]] PreviewViewOptions makeViewOptions(foundation::uint32 width,
@@ -161,14 +194,28 @@ private:
     QString mSelectedId;
     [[nodiscard]] LUDUS_INLINE bool usesLitMaterials() const noexcept
     {
-        return Scene_.Lit == true && mShading != PreviewShading::Albedo;
+        return (Scene_.Lit == true && mShading != PreviewShading::Albedo) || IsPreviewDebugShading(mShading) == true;
     }
     PreviewShading mShading = PreviewShading::Solid;
+    /// Read a completed GPU timing sample and re-arm the probe; call only between frames.
+    void serviceGpuTiming() noexcept;
+    /// Record the CPU time of a submitted frame and publish the overlay at its refresh rate.
+    void recordFrameStatistics(const QElapsedTimer& frameTimer);
+    void resetStatistics() noexcept;
+    bool mIsStatisticsVisible = false;
+    ViewportStatistics mStatistics;
+    QElapsedTimer mStatisticsRefresh;
     foundation::UniquePtr<PreviewGpuGeneration> mResources;
     foundation::UniquePtr<PreviewGpuGeneration> mRetiredResources;
     bool mNeedsResourceRestart = false;
     bool mHasPreparationFailed = false;
     [[nodiscard]] bool beginResourceRestart() noexcept;
+    /// Restore the last presented shader set after a generation built from mShaders failed.
+    /// Returns false when that generation already drew with the last presented set.
+    [[nodiscard]] bool rejectShaders();
+    PreviewShaderSet mShaders;
+    /// Shader set of the most recently presented frame; the fallback for a rejected set.
+    PreviewShaderSet mPresentedShaders;
     struct Residency;
     foundation::UniquePtr<Residency> Residency_;
     graphics::renderer::ViewportFrame mPendingFrame;
