@@ -368,6 +368,7 @@ namespace
 {
 /// Read every authored source below root into outSnapshot (bounded, no symlinks, no hidden or
 /// `out` directories). root may be a Qt resource directory. outSnapshot is unchanged on failure.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — named package directory and root-graph identities.
 RenderGraphDocumentStatus ReadPackage(const QString& root, const QString& rootGraph, RenderGraphSnapshot& outSnapshot)
 {
     RenderGraphSnapshot snapshot;
@@ -417,7 +418,7 @@ RenderGraphDocumentStatus ReadPackage(const QString& root, const QString& rootGr
     {
         return RenderGraphDocumentStatus::NotFound;
     }
-    outSnapshot = snapshot;
+    outSnapshot.Files.swap(snapshot.Files);
     return RenderGraphDocumentStatus::Ok;
 }
 } // namespace

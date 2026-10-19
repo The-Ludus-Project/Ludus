@@ -28,9 +28,9 @@ using namespace ludus::foundation;
 namespace
 {
 constexpr int32 JOB_TIMEOUT_MILLISECONDS = 120000;
-const QString CONFIGURATION = QStringLiteral("Default");
-const QString LIBRARY = QStringLiteral("rasterize.lurender.json");
-const QString COLOR_SHADER = QStringLiteral("main_shaders/color.slang");
+constexpr QLatin1String CONFIGURATION("Default");
+constexpr QLatin1String LIBRARY("rasterize.lurender.json");
+constexpr QLatin1String COLOR_SHADER("main_shaders/color.slang");
 
 QByteArray ReadFile(const QString& path)
 {

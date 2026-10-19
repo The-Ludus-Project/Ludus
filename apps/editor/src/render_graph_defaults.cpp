@@ -1,29 +1,32 @@
 #include "internal/render_graph_defaults.h"
 
 #include <QFileInfo>
+#include <QUtf8StringView>
 
 namespace ludus::editor
 {
 namespace
 {
+// Absolute UTF-8 build-tree paths from CMake (apps/editor/CMakeLists.txt); empty without them.
 #if defined(LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME)
-const QString DEFAULT_RUNTIME = QStringLiteral(LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME);
-const QString EDITOR_HELPER = QStringLiteral(LUDUS_EDITOR_SHADER_HELPER);
-const QString EDITOR_COMPILER = QStringLiteral(LUDUS_EDITOR_SLANG_COMPILER);
-const QString EDITOR_VALIDATOR = QStringLiteral(LUDUS_EDITOR_SPIRV_VALIDATOR);
-const QString EDITOR_SPIRV_CROSS = QStringLiteral(LUDUS_EDITOR_SPIRV_CROSS);
+constexpr QUtf8StringView DEFAULT_RUNTIME = LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME;
+constexpr QUtf8StringView EDITOR_HELPER = LUDUS_EDITOR_SHADER_HELPER;
+constexpr QUtf8StringView EDITOR_COMPILER = LUDUS_EDITOR_SLANG_COMPILER;
+constexpr QUtf8StringView EDITOR_VALIDATOR = LUDUS_EDITOR_SPIRV_VALIDATOR;
+constexpr QUtf8StringView EDITOR_SPIRV_CROSS = LUDUS_EDITOR_SPIRV_CROSS;
 #else
-const QString DEFAULT_RUNTIME;
-const QString EDITOR_HELPER;
-const QString EDITOR_COMPILER;
-const QString EDITOR_VALIDATOR;
-const QString EDITOR_SPIRV_CROSS;
+constexpr QUtf8StringView DEFAULT_RUNTIME;
+constexpr QUtf8StringView EDITOR_HELPER;
+constexpr QUtf8StringView EDITOR_COMPILER;
+constexpr QUtf8StringView EDITOR_VALIDATOR;
+constexpr QUtf8StringView EDITOR_SPIRV_CROSS;
 #endif
 
 /// A build-tree path is offered only while it still exists on this machine.
-QString GetExistingPath(const QString& path)
+QString GetExistingPath(QUtf8StringView path)
 {
-    return path.isEmpty() == false && QFileInfo::exists(path) == true ? path : QString();
+    const QString text = path.toString();
+    return text.isEmpty() == false && QFileInfo::exists(text) == true ? text : QString();
 }
 
 QString Choose(const QString& manual, const QString& fallback)

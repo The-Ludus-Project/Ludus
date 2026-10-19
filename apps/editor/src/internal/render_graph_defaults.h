@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QLatin1String>
 #include <QString>
 
 namespace ludus::editor
@@ -14,10 +15,10 @@ struct RenderGraphBuildTools final
 };
 
 /// Root graph of the engine default and of a project's customized copy.
-inline const QString DEFAULT_RENDER_GRAPH_ROOT = QStringLiteral("main.lurender.json");
+inline constexpr QLatin1String DEFAULT_RENDER_GRAPH_ROOT("main.lurender.json");
 /// Project-relative package directory that a customized default renderer is saved to. A
 /// project whose `renderer/main.lurender.json` exists uses that graph instead of the default.
-inline const QString PROJECT_RENDER_GRAPH_DIRECTORY = QStringLiteral("renderer");
+inline constexpr QLatin1String PROJECT_RENDER_GRAPH_DIRECTORY("renderer");
 
 // Defaults that let the Renderer tab work without setup (see
 // docs/development/render-graph-authoring.md#start-customizing-the-renderer).
