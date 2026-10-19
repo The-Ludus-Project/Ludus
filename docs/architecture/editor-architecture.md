@@ -114,10 +114,12 @@ Project settings and Audio are separate tabs. Welcome contains recent projects
 only while no project is open; File keeps its recent-project menu while authoring.
 The standalone offline Configuration tab stays accessible across project changes;
 its explicitly loaded preview and preference draft have independent ownership.
-Live Inspector is an optional right panel, and Output is an optional bottom
-panel. In the proposed redesign, empty/inapplicable panels start collapsed and
-narrow windows use tabs/drawers to preserve the central form. Menus expose every
-dock and a Reset Layout action. The current toolbar reuses menu action objects.
+The native shell follows Visual Studio's layout: documents in a central tabbed
+well, and Project Explorer, Properties, Error List, Output, Content, Live
+Inspector and Timing as dockable tool windows
+([GUI systems](editor-gui-systems.md#visual-studio-style-shell-on-qt-docking)).
+The Window menu shows or hides every tool window and resets the layout. Toolbars
+reuse menu action objects.
 The target compact contextual strip uses the same command catalogue as menus/shortcuts so capability gating
 cannot disagree; unsupported browser actions do not occupy a permanent row.
 A status area exposes workflow state. User layout is versioned, size-bounded, and saved on accepted close;

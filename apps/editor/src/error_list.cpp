@@ -155,10 +155,10 @@ QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& re
 QList<ErrorListEntry> ParseBuildErrorEntries(const QString& output)
 {
     // Clang/GCC: `path:line[:column]: error|warning|note: message`.
-    static const QRegularExpression compiler(QStringLiteral(
+    static const QRegularExpression COMPILER_DIAGNOSTIC(QStringLiteral(
         R"(^(?<file>[^:\s][^:]*?):(?<line>\d+)(?::\d+)?:\s*(?<severity>fatal error|error|warning|note):\s*(?<message>.*)$)"));
     // CMake: `CMake Error at path:line (command):`; the message follows on later lines.
-    static const QRegularExpression cmake(
+    static const QRegularExpression CMAKE_DIAGNOSTIC(
         QStringLiteral(R"(^CMake (?<severity>Error|Warning)(?: \(dev\))? at (?<file>.+?):(?<line>\d+))"));
     QList<ErrorListEntry> entries;
     const QStringList lines = output.split(QLatin1Char('\n'));
@@ -169,10 +169,10 @@ QList<ErrorListEntry> ParseBuildErrorEntries(const QString& output)
         {
             continue;
         }
-        QRegularExpressionMatch match = compiler.match(line);
+        QRegularExpressionMatch match = COMPILER_DIAGNOSTIC.match(line);
         if (match.hasMatch() == false)
         {
-            match = cmake.match(line);
+            match = CMAKE_DIAGNOSTIC.match(line);
         }
         if (match.hasMatch() == false)
         {
