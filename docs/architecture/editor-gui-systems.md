@@ -401,10 +401,11 @@ defines the frontend selection gates and persistence limits.
 
 ## Play in the editor viewport
 
-Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer)
-and P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) are
-implemented; P3–P7 are pending. It replaces the separate World-demo authoring
-window, the World-demo private shader and the separate-window default for Play.
+Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer),
+P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) and P3
+(the viewport frame source) are implemented; P4–P7 are pending. It replaces the
+separate World-demo authoring window, the World-demo private shader and the
+separate-window default for Play.
 
 While a game plays, the World viewport is that game's window. The game owns
 rendering and input there and behaves as it would in its own OS window. A
@@ -646,6 +647,15 @@ AGENTS.md gates.
 | P5 | RHI hosted surface: Metal IOSurface and Vulkan external-memory export and import | Two-process GPU tests: known colour, release-gated acquire, Skipped on exhaustion, retirement of resized generations, adapter-mismatch refusal |
 | P6 | Play in the viewport: launcher variable, play source, input forwarding, reserved chords and transitions | Controller and viewport state tests; Cocoa journey playing World-demo in the viewport with native keys and resize; return to edit after crash and Stop |
 | P7 | Separate-window preference and unavailable reasons | Preference persistence; launch without the variable; refusal-message tests |
+
+P3's private `ViewportFrameSource` carries only frame
+production and leases: `HasPendingFrame`, `TakeFrame`, `ReleaseFrame`, `Resize`,
+`FrameReady` and `ResettingFrames`. Device admission, navigation and the
+statistics overlay stay on `RenderPreview`, and the browser canvas still leases
+from `RenderPreview` directly.
+A source's images must live on the device that `RenderPreview` admitted. Its
+leases use the Renderer's `ViewportFrame`, which only `RasterViewport` can issue,
+so P6 must give the play source a way to issue leases.
 
 P1, P3 and P4 are independent of each other. P2 needs P1, P5 needs P4, and P6
 needs P2, P3 and P5. P5 opens with its macOS Mach rendezvous and Linux

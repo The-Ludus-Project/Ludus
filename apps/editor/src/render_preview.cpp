@@ -123,7 +123,7 @@ struct RenderPreview::Residency final
                payload == Definition.Get();
     }
 };
-RenderPreview::RenderPreview(QObject* parent) : QObject(parent)
+RenderPreview::RenderPreview(QObject* parent) : ViewportFrameSource(parent)
 {
     Timer_.setInterval(16);
     connect(&Timer_, &QTimer::timeout, this, &RenderPreview::Tick);

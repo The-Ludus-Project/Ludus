@@ -52,6 +52,8 @@ endif()
 option(LUDUS_EDITOR_RENDER_PREVIEW "Build the trusted native authoring surface (requires pinned shader tools)" ${editor_render_preview_default})
 
 set(editor_viewport_sources
+    src/internal/viewport_frame_source.h
+    src/viewport_frame_source.cpp
     src/preview_viewport.cpp
     src/viewport_navigation.cpp)
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
@@ -392,6 +394,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
         tests/world_identity_tests.cpp
         src/internal/controller.h
