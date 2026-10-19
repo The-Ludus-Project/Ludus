@@ -8,7 +8,7 @@ installation. See [host tools](host-tools.md) for installation and the
 [architecture](../architecture/render-graph-authoring.md) for ownership and later
 stages. RG1 adds explicit offline shader/schema builds and immutable packages,
 using the same CLI/backend. RG2 adds bounded static opaque Renderer admission and
-execution through cooked headers. RG3a adds the editor's Renderer tab, mapped
+execution through cooked headers. RG3a adds the editor's Render Graph document, mapped
 diagnostics, runtime generations and atomic activation; the node canvas and live
 in-editor preview are RG3b. RG4a adds measured exact-descriptor pooling of
 transient attachments with a serial control. To begin in the editor, see
@@ -26,8 +26,9 @@ compatibility is never inferred from those labels.
 You don't need to create a render graph first. The engine ships a default one, and
 the editor uses it for any project that has no graph of its own.
 
-1. **Look at the default.** Open a project and choose the **Renderer** tab. If the
-   project has no `graphs/Main/main.lurender.json`, the tab shows the **Engine default
+1. **Look at the default.** Open a project and open the **Render Graph** document
+   from the **Window** menu (or a render graph in Project Explorer). If the project has
+   no `graphs/Main/main.lurender.json`, the document shows the **Engine default
    renderer**. This is the static opaque `RendererStatic` graph: Scene and Camera feed
    `RasterizeGraph` into 640×360 color and depth targets, and the color target is
    exported. Its sources live in
@@ -35,38 +36,40 @@ the editor uses it for any project that has no graph of its own.
    The SDK installs a read-only copy to `share/Ludus/render-graphs/default`, and
    the editor embeds the same copy. Showing the default writes nothing to the
    project.
-2. **Preview it.** Start the World viewport, then choose **Build & Preview**. While
-   the default is unedited, the preview uses the generation that was cooked when the
+2. **Preview it.** Start the World viewport, then choose **Build → Build Render Graph
+   and Preview** (Shift+F7, or **Build & Preview** on the Render Graph toolbar). The
+   result appears in the **Render Preview** tool window. While the default is unedited, the preview uses the generation that was cooked when the
    editor was built. No build, tools or project files are involved. The
    [preview rules](#preview-a-cooked-generation) below still apply.
-3. **Edit it.** Change anything: move a node on the canvas, edit a field in the
-   Inspector, or apply shader text in the Source tab. The first edit turns the
+3. **Edit it.** Change anything: move a node on the canvas, edit a selected node's
+   field in **Properties**, or apply shader text in the **Source** view. The first edit turns the
    default into a project draft:
    - The path label changes to `graphs/Main/main.lurender.json (new, unsaved)`, and the
      status line names the folder that Save will create.
    - Undo works as usual. Undoing every edit returns to the unedited default.
    - **Save** (Ctrl+S or Command-S) creates the whole package under `graphs/Main/`,
-     beside graphs made with **New Graph…**, and reports where it went. After that,
+     beside graphs made with **New Render Graph...**, and reports where it went. After that,
      the project always opens its own graph.
 
    To copy the default without editing it, right-click the source tree and choose
    **Customize in Project**. Neither path ever replaces a file. If `graphs/Main/`
    already holds any of the package's files, nothing is written; open that graph with
-   **Open Graph...** instead. A linked `graphs` folder is refused, as for New Graph.
+   **File → Open Render Graph...** instead. A linked `graphs` folder is refused, as for
+   New Render Graph.
 4. **Iterate.** **Build & Preview** and **Live Preview** build the draft and preview
    the result. Like any project graph, the build detects shader tools from the
    project's selected SDK, so no paths need to be entered. Unsaved drafts build
    too, from an immutable snapshot (see [Validate, build and cook a draft](#validate-build-and-cook-a-draft)).
 
-**New Graph…** remains the way to start additional graphs from scratch in
+**File → New Render Graph...** remains the way to start additional graphs from scratch in
 `graphs/<name>/`. A graph you create with the name `Main` is the one the project
 opens instead of the default.
 
 The feature stays out of the way if you don't use it:
 
 - World rendering doesn't depend on render graphs.
-- No banner, prompt or required step appears; with a project open, the Renderer tab
-  shows the default rather than an empty page.
+- No banner, prompt or required step appears; with a project open, the Render Graph
+  document shows the default rather than an empty page.
 - Saving the unedited default writes nothing.
 - Closing a project asks to save only after you have edited the graph.
 
@@ -79,12 +82,13 @@ Limits:
 - The default's profiles follow the host: `metal` and `wgsl` on macOS, `spirv` and
   `wgsl` on Linux, and `wgsl` for web builds.
 - A project opens only `graphs/Main/main.lurender.json` by itself. Open other graphs
-  with **Open Graph...**.
+  with **File → Open Render Graph...** or from Project Explorer. One render graph is
+  open at a time; opening another asks to save or discard a dirty draft first.
 
 ## Create a saved graph and import it
 
-In the native editor, open your game project and choose **Renderer → New Graph…**.
-(Without any graph, the tab already shows the
+In the native editor, open your game project and choose **File → New Render Graph...**.
+(Without any graph, the Render Graph document already shows the
 [engine default](#start-customizing-the-renderer).) Enter a graph name and
 choose **Create**. The editor creates `graphs/<name>/` inside the selected game
 project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
@@ -96,7 +100,8 @@ running viewport and never overwrites an existing graph folder. A failed creatio
 keeps the previously open draft. Graphs and shader sources belong to the game
 project; engine/SDK files are read-only inputs.
 
-Next, open a World viewport and choose **Build & Preview**. The editor detects the
+Next, open a World viewport and choose **Build & Preview**. The result appears in the
+**Render Preview** tool window. The editor detects the
 selected project's SDK shader helper and prepared shader compiler automatically;
 SPIR-V/GLSL dependencies are detected only when the graph declares those targets. See
 [editing and building](#edit-and-reload-graphs-rg3) and the
@@ -728,42 +733,60 @@ a tree, field inspector, connection table and source editor, and runtime
 generations with atomic activation. RG3b adds the node canvas and the trusted
 in-editor preview; see [Node canvas and preview (RG3b)](#node-canvas-and-preview-rg3b).
 
-### Edit in the Renderer tab
+### Edit in the Render Graph document
 
-Open a project and choose **Renderer**. The tab shows the project's
+Open a project and open the **Render Graph** document. It shows the project's
 `graphs/Main/main.lurender.json`, or else the
 [engine default](#start-customizing-the-renderer). To edit another graph, choose
-**Open Graph...** and select a root `.lurender.json` inside the project. Its
-directory is the package root. The tab
+**File → Open Render Graph...** and select a root `.lurender.json` inside the
+project, or double-click a render graph or shader in Project Explorer. Its
+directory is the package root. The document
 loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
 most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
 symlinks are skipped).
 
-For a project without graph sources, the tab shows the engine default, and build
-actions work on it right away. Use **New Graph…**, as described in
+For a project without graph sources, the document shows the engine default, and build
+actions work on it right away. Use **File → New Render Graph...**, as described in
 [graph creation](#create-a-saved-graph-and-import-it), to start another graph.
 
-- **Inspector** edits the selected node's authored fields by stable ID, adds or
-  removes nodes (removal also drops their connections and layout position), and
-  connects or disconnects `node.port` endpoints. Layout x/y edits only change
-  the `layout` record; consecutive moves of one node coalesce into one undo step.
+![The Render Graph document at 1280×800: source tree and node canvas in the centre, the node inspector in Properties on the right](images/editor-render-graph-document-1280.png)
+
+The document is the package's source tree beside three views, switched by the tabs
+below them: **Canvas**, **Source** and **Plan**. A bar above them shows the open
+graph's path and the root **Configuration** to validate and cook. The document has
+no command buttons of its own; its commands are in the **File** and **Build** menus
+and on the Render Graph toolbar (see the
+[editor workspace layout](editor-workspace.md#workspace-layout)).
+
+- **Properties** (the tool window, F4) edits the node selected on the canvas, in the
+  source tree or by Error List navigation: its authored fields by stable ID, its
+  layout position, removal (which also drops its connections and layout position),
+  new nodes, and `node.port` connections in the configuration. Layout x/y edits
+  only change the `layout` record; consecutive moves of one node coalesce into one
+  undo step.
 - **Source** edits graph, build-manifest/schema and shader text; **Apply Text to
   Draft** makes it one undoable document edit. Generated wrappers and packages
   are build products and never editable sources.
-- Edit > Undo/Redo and Save act on the Renderer draft when the tab is focused.
+- **Plan** shows the deterministic serial plan of the last validation, or the last
+  build's report.
+- Edit > Undo/Redo and Save act on the render-graph draft while the Render Graph is
+  the active document, including while you edit it in Properties.
   Save writes only changed files, each through an atomic replacement, and first
   checks that disk still holds the bytes that were loaded or last saved. An
   external change returns a conflict and writes nothing. Graph documents are
   saved in the same canonical form as `ludus render-graph new`.
 
 Closing the project, opening another one or launching a build asks to save or
-discard a dirty Renderer draft.
+discard a dirty render-graph draft.
 
 ### Validate, build and cook a draft
 
-**Validate Draft**, **Build Draft** and **Cook Runtime** run the installed
+**Build → Validate Render Graph** (Ctrl+F7), **Build Render Graph** (F7) and **Cook
+Render Graph Runtime** run the installed
 `ludus --json render-graph` backend as a separate process; the GUI never waits
-for it. Validate and Build first write an immutable copy of the current draft to
+for it; **Cancel Render Graph Job** (Ctrl+Break) stops the running job. Results and
+diagnostics appear in the **Error List**; double-click a row to select its graph
+node or open its source line. Validate and Build first write an immutable copy of the current draft to
 `out/render-graph/drafts/` in the project and delete it afterwards, so unsaved
 edits can be checked without touching saved sources. The same files give the
 same result through the CLI:
@@ -786,20 +809,27 @@ from the selected local setup preset or the editor's prepared shader tools.
 No path entry is needed for **New Graph → Build & Preview**. Loading and building
 do not download tools, repair the project or write into the engine/SDK.
 
-**Build Settings** displays the resolved paths after a successful build. Its
-**Override detected shader tools (advanced)** checkbox explicitly enables manual
-paths for an exceptional tool setup. Old editor-wide path preferences do not
-override project detection, and switching projects clears these overrides.
-Each automatic build resolves selection again, so SDK switches and repairs take
-effect without restarting the editor. Missing/incomplete SDKs or tools report a
-setup error; use **Project → Repair Project Setup**. A selection change during
-compilation/cooking rejects publication and retains the previous runtime.
-
 Build publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
 `out/render-graph/<graph>.lurgrt` from that build tree. These paths are resolved
 from the project's canonical location, so a project opened through a symlink
 still builds inside its own folder. Build and Cook Runtime refuse a graph whose
 package lies outside the project.
+
+### Build settings
+
+**Tools → Options... → Render Graph** holds the render-graph build settings and
+shows the paths the last automatic build resolved. Its **Override detected shader
+tools (advanced)** checkbox explicitly enables manual paths for an exceptional tool
+setup; an override needs at least the SDK shader helper and the Slang compiler, and
+the dialog refuses OK until both are set. Turning the override off keeps the paths
+for later but builds detect tools again. Old editor-wide path preferences do not
+override project detection, and switching projects clears these overrides.
+Each automatic build resolves selection again, so SDK switches and repairs take
+effect without restarting the editor. Missing/incomplete SDKs or tools report a
+setup error; use **Project → Repair Project Setup**. A selection change during
+compilation/cooking rejects publication and retains the previous runtime.
+**Native shader worker** is an editor preference that stays across projects (see
+[editor and game clients](#editor-and-game-clients)).
 
 The same automatic path is available to tooling without the editor:
 
@@ -979,7 +1009,7 @@ runtime generation on the editor's existing viewport device.
 
 ### Edit shader sources in a code editor
 
-On native desktop, select a file in the **Source** tab and click **Open in Code
+On native desktop, select a file in the **Source** view and click **Open in Code
 Editor**. The first use opens a native application picker; **Choose Code
 Editor…** changes that saved preference. On macOS, select the editor's `.app`
 from Applications. No command-line launcher or shell command is required.
@@ -1002,10 +1032,11 @@ reloading; source refresh never silently replaces that text.
 
 ### Edit on the canvas
 
-The canvas sits between the source tree and the inspector and shows the selected
-configuration (a selected file shows its `default`). It is another view of the
-same typed draft: every canvas edit is a `RenderGraphDocument` operation, so
-undo, explicit save, validation and the inspector stay in step.
+The **Canvas** view sits beside the source tree and shows the selected
+configuration (a selected file shows its `default`); Properties shows the selected
+node. It is another view of the same typed draft: every canvas edit is a
+`RenderGraphDocument` operation, so undo, explicit save, validation and Properties
+stay in step.
 
 | Gesture | Draft operation |
 | --- | --- |
@@ -1013,7 +1044,7 @@ undo, explicit save, validation and the inspector stay in step.
 | Drag from an output port to an input port | `Connect`, after the pre-check below |
 | Select a link and press Delete | `Disconnect` |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
-| Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source tab; not an edit |
+| Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
 | Wheel or vertical two-finger scroll | Zoom around the pointer, including smooth pixel scrolling |
 | Drag empty space | Pan the view only |
@@ -1024,7 +1055,7 @@ Subgraph and grey for a configuration's `input` ports and outputs. Port colours
 show the value type. Nodes without a `layout` position are arranged by
 dependency order for display only; nothing is written until you move them.
 Configuration outputs appear as dashed, read-only links; edit them in the
-Source tab.
+Source view.
 
 Before a link reaches the draft, the canvas checks it against the configuration
 and rejects it with the shared validator's error name and a reason in the status
@@ -1037,7 +1068,7 @@ line:
 | `TypeMismatch` | The output and input types differ, for example `DepthTexture` into a color input |
 | `Cycle` | The link would make a node depend on its own result within a frame |
 
-The pre-check gives immediate feedback; **Validate Draft** still runs the shared
+The pre-check gives immediate feedback; **Validate Render Graph** still runs the shared
 CLI backend, which owns legality and reports the same codes as
 `RenderGraph<Code>` for drafts edited another way.
 
@@ -1052,7 +1083,8 @@ CLI backend, which owns legality and reports the same codes as
    (such as a converted `.lulevel` or a World with a `scene` section), otherwise
    the schema-bound render panel. Switching Worlds re-attaches the preview and
    re-stages the requested generation on the newly shown viewport's device.
-3. Open the **Preview** tab and choose **Preview Runtime**.
+3. In the **Render Preview** tool window (**View → Render Preview**), choose
+   **Preview Runtime**.
 
 Preview is an explicit action: it reads the last cooked file once, decodes it and
 stages it in a `RenderGraphActivation` beside the generation already shown. Editing,
@@ -1255,7 +1287,7 @@ first.
   x, y and w rows and in-range depths, and that the scene renders through the
   graph from the editor camera in its red base-color texture's flat color. Merged
   scenes with a non-white 1×1 texture (straight alpha 128) and a white/black 2×1
-  texture check the linear mean, opaque coverage and the untouched lit tint. A World test checks that the Renderer tab's source
+  texture check the linear mean, opaque coverage and the untouched lit tint. A World test checks that the Render Graph document's preview source
   follows a schema World's render panel, an imported World's scene viewport and
   back. A Renderer test builds a broken `color.slang` with the pinned compiler and
   opens line 3 from the diagnostic. Preview/live parity renders the frozen fixture
@@ -1289,7 +1321,8 @@ staircase World (17 objects, 6 meshes) attached the preview to the World's scene
 viewport, presented the offscreen fixture's generation from the editor camera, and
 opened `main_shaders/color.slang` line 3 for an undefined identifier while keeping
 the presented generation. They prove the preview's renderer output and publication
-rules, not native Qt presentation of the Preview tab or a live GameHost session.
+rules, not native Qt presentation of the Render Preview tool window or a live GameHost
+session.
 Linux/Vulkan and browser execution are not established by these local runs, and
 RG3b makes no scheduling, memory or performance claim.
 
@@ -1589,12 +1622,12 @@ owns it. Clients never silently switch to an offline compiler after worker failu
 
 ### Editor and game clients
 
-In the Renderer tab's Build Settings, set **Native shader worker** to the shared
+In **Tools → Options... → Render Graph**, set **Native shader worker** to the shared
 endpoint. **Build & Preview** builds/cooks an immutable draft and previews a
 successful result only if its project/request and semantic source/configuration
 identity still match. **Live Preview** opts into debounced background builds;
-layout-only moves do not schedule a build. Saving is independent. Cancel disables
-live building; failures retain the last drawable preview. The existing preview's
+layout-only moves do not schedule a build. Saving is independent. **Cancel Render
+Graph Job** disables live building; failures retain the last drawable preview. The existing preview's
 static-material/profile restrictions still apply.
 
 The scene viewport's **Live shaders** toggle uses the same worker for the

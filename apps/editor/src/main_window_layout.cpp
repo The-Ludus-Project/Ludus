@@ -60,8 +60,8 @@ namespace ludus::editor
 {
 namespace
 {
-// Version 4: Visual Studio-style document well and tool windows; older layouts reset.
-constexpr foundation::int32 LAYOUT_VERSION = 4;
+// Version 5: the render-graph Render Preview tool window; older layouts reset.
+constexpr foundation::int32 LAYOUT_VERSION = 5;
 constexpr foundation::int32 PERCENT = 100;
 // First-run window: this share of the screen, at least the minimum below.
 constexpr foundation::int32 DEFAULT_WINDOW_PERCENT = 85;
@@ -244,7 +244,8 @@ void MainWindow::BuildUi()
     });
     Configuration_ = new ConfigurationWorkspace(mDocuments);
 
-    // Properties follows the active document: the World's entity inspector, or a hint.
+    // Properties follows the active document: the World's entity inspector, the render
+    // graph's node inspector, or a hint. Page order matches PropertiesPage.
     mPropertiesDock->setObjectName(QStringLiteral("propertiesDock"));
     mProperties->setObjectName(QStringLiteral("propertiesStack"));
     mNoProperties->setObjectName(QStringLiteral("propertiesEmpty"));
@@ -254,8 +255,14 @@ void MainWindow::BuildUi()
     mNoProperties->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     mProperties->addWidget(mNoProperties);
     mProperties->addWidget(World_->TakePropertiesPanel(mProperties));
+    mProperties->addWidget(Renderer_->TakeInspectorPanel(mProperties));
     mProperties->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     mPropertiesDock->setWidget(mProperties);
+    // The render-graph preview shows the World viewport through the open graph.
+    mRenderPreviewDock->setObjectName(QStringLiteral("renderPreviewDock"));
+    QWidget* renderPreview = Renderer_->TakePreviewPanel(mRenderPreviewDock);
+    renderPreview->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    mRenderPreviewDock->setWidget(renderPreview);
 
     mProjectExplorerDock->setObjectName(QStringLiteral("projectExplorerDock"));
     mProjectExplorerDock->setWidget(mProjectExplorer);
@@ -505,11 +512,13 @@ void MainWindow::showEvent(QShowEvent* event)
 
 void MainWindow::arrangeDefaultDocks()
 {
-    // Right: Project Explorer (with Content) above Properties (with Live Inspector).
-    // Bottom, under the documents: Error List with Output and Timing.
+    // Right: Project Explorer (with Content and Render Preview) above Properties (with Live
+    // Inspector), so a node's properties stay visible beside its preview. Bottom, under the
+    // documents: Error List with Output and Timing.
     const QList<QDockWidget*> docks{
         mProjectExplorerDock,
         mContentDock,
+        mRenderPreviewDock,
         mPropertiesDock,
         InspectorDock_,
         mErrorListDock,
@@ -524,6 +533,7 @@ void MainWindow::arrangeDefaultDocks()
     addDockWidget(Qt::RightDockWidgetArea, mProjectExplorerDock);
     splitDockWidget(mProjectExplorerDock, mPropertiesDock, Qt::Vertical);
     tabifyDockWidget(mProjectExplorerDock, mContentDock);
+    tabifyDockWidget(mProjectExplorerDock, mRenderPreviewDock);
     tabifyDockWidget(mPropertiesDock, InspectorDock_);
     addDockWidget(Qt::BottomDockWidgetArea, mErrorListDock);
     tabifyDockWidget(mErrorListDock, OutputDock_);
@@ -611,6 +621,7 @@ void MainWindow::buildWindowMenu(QMenu* menu)
                               mErrorListDock,
                               OutputDock_,
                               mContentDock,
+                              mRenderPreviewDock,
                               InspectorDock_,
                               TimingDock_})
     {

@@ -5,6 +5,7 @@
 #include "internal/document_well.h"
 #include "internal/error_list.h"
 #include "internal/main_window.h"
+#include "internal/options_dialog.h"
 #include "internal/project_explorer.h"
 #include "internal/renderer_workspace.h"
 #include "internal/world_workspace.h"
@@ -16,6 +17,8 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
@@ -24,6 +27,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLatin1StringView>
 #include <QLineEdit>
 #include <QListWidget>
@@ -31,7 +35,9 @@
 #include <QMenuBar>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSize>
+#include <QStackedWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
@@ -53,13 +59,32 @@ QStringList GetToolWindows()
         QStringLiteral("errorListDock"),
         QStringLiteral("outputDock"),
         QStringLiteral("contentDock"),
+        QStringLiteral("renderPreviewDock"),
         QStringLiteral("liveInspectorDock"),
         QStringLiteral("timingDock"),
+    };
+}
+/// objectNames of the command buttons the Renderer document had before its commands
+/// moved to the shell's menus and Render Graph toolbar.
+QStringList GetRetiredRendererButtons()
+{
+    return {
+        QStringLiteral("renderGraphNew"),
+        QStringLiteral("renderGraphOpen"),
+        QStringLiteral("renderGraphValidate"),
+        QStringLiteral("renderGraphBuild"),
+        QStringLiteral("renderGraphBuildPreview"),
+        QStringLiteral("renderGraphCook"),
+        QStringLiteral("renderGraphLivePreview"),
     };
 }
 constexpr QLatin1StringView PACKAGE_GRAPH{"renderer/main.lurender.json"};
 // Diagnostic rows the default Error List shows without scrolling.
 constexpr int32 MIN_VISIBLE_DIAGNOSTIC_ROWS = 2;
+// The render-graph canvas keeps room for several nodes beside the source tree, and the
+// tree keeps room for nested node names.
+constexpr int32 MIN_CANVAS_WIDTH_PIXELS = 300;
+constexpr int32 MIN_SOURCE_TREE_WIDTH_PIXELS = 150;
 
 QByteArray ReadBytes(const QString& path)
 {
@@ -153,6 +178,7 @@ void CheckDefaultToolWindows(const MainWindow& window)
     // Project Explorer and Properties are stacked, not tabbed, so both stay visible.
     CHECK(window.tabifiedDockWidgets(explorer).contains(properties) == false);
     CHECK(window.tabifiedDockWidgets(explorer).contains(Dock(window, QStringLiteral("contentDock"))) == true);
+    CHECK(window.tabifiedDockWidgets(explorer).contains(Dock(window, QStringLiteral("renderPreviewDock"))) == true);
     CHECK(window.tabifiedDockWidgets(properties).contains(Dock(window, QStringLiteral("liveInspectorDock"))) == true);
     CHECK(window.tabifiedDockWidgets(errors).contains(Dock(window, QStringLiteral("outputDock"))) == true);
     CHECK(window.tabifiedDockWidgets(errors).contains(Dock(window, QStringLiteral("timingDock"))) == true);
@@ -198,6 +224,38 @@ void CheckButtonsUnclipped(const QWidget& root)
         INFO(button->text().toStdString());
         CHECK(button->width() >= button->sizeHint().width());
     }
+}
+
+/// The page the Properties tool window shows.
+QWidget* CurrentProperties(const MainWindow& window)
+{
+    QStackedWidget* stack = window.findChild<QStackedWidget*>(QStringLiteral("propertiesStack"));
+    REQUIRE(stack != nullptr);
+    REQUIRE(stack->currentWidget() != nullptr);
+    return stack->currentWidget();
+}
+
+/// True when a visible label in root shows exactly text.
+bool ShowsLabel(const QWidget& root, const QString& text)
+{
+    for (const QLabel* label : root.findChildren<QLabel*>())
+    {
+        if (label->isVisible() == true && label->text() == text)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Click a node on the canvas, as a user selects it.
+void ClickNode(RenderGraphCanvas& inoutCanvas, const QString& node)
+{
+    REQUIRE(inoutCanvas.HasNode(node) == true);
+    const QPointF position = inoutCanvas.GetNodePosition(node) + QPointF(20, 10);
+    inoutCanvas.centerOn(position);
+    QTest::mouseClick(inoutCanvas.viewport(), Qt::LeftButton, Qt::NoModifier, inoutCanvas.mapFromScene(position));
+    Settle();
 }
 
 void Capture(MainWindow& inoutWindow, const QString& name)
@@ -281,7 +339,30 @@ TEST_CASE("Shell puts documents in the centre and tool windows around them", "[e
         Capture(window, QStringLiteral("world-%1").arg(size.width()));
         REQUIRE(well.OpenDocument(renderer) == true);
         Settle();
+        // The render-graph document is a canvas with its source tree; its commands are the
+        // shell's, and its inspector and preview are tool windows.
+        REQUIRE(renderer->GetDocument().IsLoaded() == true);
+        CHECK(renderer->GetCanvas().isVisible() == true);
+        CHECK(renderer->GetCanvas().width() > MIN_CANVAS_WIDTH_PIXELS);
+        QWidget* tree = renderer->findChild<QWidget*>(QStringLiteral("renderGraphTree"));
+        REQUIRE(tree != nullptr);
+        CHECK(tree->width() >= MIN_SOURCE_TREE_WIDTH_PIXELS);
+        for (const QString& name : GetRetiredRendererButtons())
+        {
+            INFO(name.toStdString());
+            CHECK(window.findChild<QWidget*>(name) == nullptr);
+        }
+        CheckButtonsUnclipped(*renderer);
+        CHECK(CurrentProperties(window)->objectName() == QStringLiteral("renderGraphProperties"));
+        CheckButtonsUnclipped(*Dock(window, QStringLiteral("propertiesDock")));
+        CheckToolbarsUnclipped(window);
         Capture(window, QStringLiteral("render-graph-%1").arg(size.width()));
+        QDockWidget* preview = Dock(window, QStringLiteral("renderPreviewDock"));
+        preview->raise();
+        Settle();
+        CHECK(preview->isAncestorOf(window.findChild<QWidget*>(QStringLiteral("renderGraphPreviewPanel"))) == true);
+        CheckButtonsUnclipped(*preview);
+        Capture(window, QStringLiteral("render-preview-%1").arg(size.width()));
     }
 }
 
@@ -397,11 +478,11 @@ TEST_CASE("Tool windows and document groups restore and corrupt layouts fall bac
         CHECK(window.dockWidgetArea(Dock(window, QStringLiteral("errorListDock"))) == Qt::LeftDockWidgetArea);
         CloseWindow(window);
     }
-    // Layouts saved by an older shell (version 3: one Authoring Tools dock) are not restored.
+    // Layouts saved by an older shell (version 4: no Render Preview tool window) are not restored.
     for (const QString& path : {preferences, ProjectLayoutFile(settings)})
     {
         QJsonObject old = QJsonDocument::fromJson(ReadBytes(path)).object();
-        old.insert(QStringLiteral("version"), 3);
+        old.insert(QStringLiteral("version"), 4);
         WriteBytes(path, QJsonDocument(old).toJson(QJsonDocument::Compact));
     }
     {
@@ -614,4 +695,172 @@ TEST_CASE("Document well refuses malformed arrangements and keeps closed views a
     CHECK(well.OpenDocument(second) == false);
     well.MergeGroups();
     CHECK(well.GetGroupCount() == 1);
+}
+
+TEST_CASE("Properties follows the render-graph canvas selection", "[editor][layout][shell][render-graph]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.resize(1280, 800);
+    window.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&window) == true);
+    controller.OpenProject(WriteProject(directory));
+    Settle();
+    DocumentWell& well = Well(window);
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    REQUIRE(renderer != nullptr);
+    const QString graph = QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(PACKAGE_GRAPH);
+    REQUIRE(window.findChild<ProjectExplorer*>()->ActivateItem(ProjectItemKind::RenderGraph, graph) == true);
+    REQUIRE(well.GetActiveDocumentOrNull() == renderer);
+    Settle();
+    QWidget* properties = CurrentProperties(window);
+    CHECK(properties->objectName() == QStringLiteral("renderGraphProperties"));
+    CHECK(properties->isVisible() == true);
+    CHECK(Dock(window, QStringLiteral("propertiesDock"))->isAncestorOf(properties) == true);
+
+    // A node clicked on the canvas is the node Properties shows and edits.
+    RenderGraphCanvas& canvas = renderer->GetCanvas();
+    ClickNode(canvas, QStringLiteral("color"));
+    CHECK(renderer->GetSelection() == QStringLiteral("main.lurender.json#Default/color"));
+    CHECK(ShowsLabel(*properties, QStringLiteral("color (Target)")) == true);
+    QComboBox* format = properties->findChild<QComboBox*>(QStringLiteral("renderGraphField_format"));
+    REQUIRE(format != nullptr);
+    CHECK(format->isVisible() == true);
+    ClickNode(canvas, QStringLiteral("camera"));
+    CHECK(ShowsLabel(*properties, QStringLiteral("camera (Camera)")) == true);
+    CHECK(ShowsLabel(*properties, QStringLiteral("color (Target)")) == false);
+    QComboBox* role = properties->findChild<QComboBox*>(QStringLiteral("renderGraphField_role"));
+    REQUIRE(role != nullptr);
+    const int32 other = role->currentIndex() == 0 ? 1 : 0;
+    role->setCurrentIndex(other);
+    Q_EMIT role->activated(other);
+    Settle();
+    CHECK(renderer->IsDirty() == true);
+    CHECK(renderer->CanUndo() == true);
+
+    // Another document shows its own page; returning keeps the canvas selection.
+    REQUIRE(well.OpenDocument(window.findChild<WorldWorkspace*>()) == true);
+    Settle();
+    CHECK(CurrentProperties(window)->objectName() == QStringLiteral("worldProperties"));
+    REQUIRE(well.OpenDocument(renderer) == true);
+    Settle();
+    CHECK(CurrentProperties(window) == properties);
+    CHECK(ShowsLabel(*properties, QStringLiteral("camera (Camera)")) == true);
+    // Error List navigation selects the authored node, which Properties then shows.
+    REQUIRE(renderer->SelectNode(QStringLiteral("rasterize.lurender.json"),
+                                 QStringLiteral("ColorAndDepth"),
+                                 QStringLiteral("draw")) == true);
+    Settle();
+    CHECK(ShowsLabel(*properties, QStringLiteral("draw (Raster)")) == true);
+}
+
+TEST_CASE("Live Preview and Cancel are shell commands over the Renderer document",
+          "[editor][layout][shell][render-graph]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    QAction* live = Action(window, QStringLiteral("renderGraph.livePreview"));
+    QAction* cancel = Action(window, QStringLiteral("renderGraph.cancel"));
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    REQUIRE(renderer != nullptr);
+    // Without a project nothing is open, so the toggle stays off.
+    CHECK(live->isEnabled() == false);
+    renderer->SetLivePreview(true);
+    CHECK(renderer->IsLivePreviewEnabled() == false);
+
+    controller.OpenProject(WriteProject(directory));
+    Settle();
+    REQUIRE(renderer->GetDocument().IsLoaded() == true);
+    CHECK(live->isEnabled() == true);
+    CHECK(cancel->isEnabled() == false);
+    live->trigger();
+    CHECK(renderer->IsLivePreviewEnabled() == true);
+    CHECK(live->isChecked() == true);
+    // Cancel (from any caller) turns Live Preview off, and the toggle follows.
+    renderer->CancelJob();
+    CHECK(renderer->IsLivePreviewEnabled() == false);
+    CHECK(live->isChecked() == false);
+    renderer->SetLivePreview(true);
+    CHECK(live->isChecked() == true);
+    live->trigger();
+    CHECK(renderer->IsLivePreviewEnabled() == false);
+    CHECK(live->isChecked() == false);
+}
+
+TEST_CASE("Tools Options round-trips the render-graph build settings", "[editor][layout][shell][render-graph]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    controller.OpenProject(WriteProject(directory));
+    Settle();
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    REQUIRE(renderer != nullptr);
+    QMenu* tools = window.findChild<QMenu*>(QStringLiteral("toolsMenu"));
+    REQUIRE(tools != nullptr);
+    QAction* options = Action(window, QStringLiteral("tools.options"));
+    CHECK(tools->actions().contains(options) == true);
+    // The worker socket is an editor preference; it is left as it is.
+    RenderGraphBuildSettings initial = renderer->GetBuildSettings();
+    initial.ShouldOverrideTools = true;
+    initial.Tools = RenderGraphBuildTools
+    {
+        .Helper = QStringLiteral("/tools/helper"),
+        .Compiler = QStringLiteral("/tools/slangc"),
+        .Validator = QStringLiteral("/tools/spirv-val"),
+        .SpirvCross = {},
+    };
+    renderer->SetBuildSettings(initial);
+
+    const auto openOptions = [&window, options]() {
+        options->trigger();
+        Settle();
+        OptionsDialog* dialog = window.findChild<OptionsDialog*>();
+        REQUIRE(dialog != nullptr);
+        CHECK(dialog->isVisible() == true);
+        return dialog;
+    };
+    OptionsDialog* dialog = openOptions();
+    CHECK(dialog->GetBuildSettings() == initial);
+    QLineEdit* compiler = dialog->findChild<QLineEdit*>(QStringLiteral("renderGraphCompiler"));
+    REQUIRE(compiler != nullptr);
+    CHECK(compiler->text() == QStringLiteral("/tools/slangc"));
+    CHECK(compiler->isEnabled() == true);
+    compiler->setText(QStringLiteral("  /tools/other-slangc "));
+    dialog->accept();
+    Settle();
+    RenderGraphBuildSettings expected = initial;
+    expected.Tools.Compiler = QStringLiteral("/tools/other-slangc");
+    CHECK(renderer->GetBuildSettings() == expected);
+
+    // An incomplete override is refused in place; Cancel changes nothing.
+    dialog = openOptions();
+    dialog->findChild<QLineEdit*>(QStringLiteral("renderGraphCompiler"))->clear();
+    dialog->accept();
+    CHECK(dialog->isVisible() == true);
+    QLabel* problem = dialog->findChild<QLabel*>(QStringLiteral("optionsProblem"));
+    REQUIRE(problem != nullptr);
+    CHECK(problem->text().isEmpty() == false);
+    dialog->reject();
+    Settle();
+    CHECK(renderer->GetBuildSettings() == expected);
+
+    // Turning the override off keeps the paths for later and builds use the project's SDK.
+    dialog = openOptions();
+    QCheckBox* overrideTools = dialog->findChild<QCheckBox*>(QStringLiteral("renderGraphOverrideTools"));
+    REQUIRE(overrideTools != nullptr);
+    overrideTools->setChecked(false);
+    CHECK(dialog->findChild<QLineEdit*>(QStringLiteral("renderGraphCompiler"))->isEnabled() == false);
+    dialog->accept();
+    Settle();
+    CHECK(renderer->GetBuildSettings().ShouldOverrideTools == false);
+    CHECK(renderer->GetBuildSettings().Tools == expected.Tools);
+    CHECK(window.findChild<OptionsDialog*>() == nullptr);
 }

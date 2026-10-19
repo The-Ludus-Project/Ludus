@@ -55,6 +55,10 @@ or keyboard layout. Left/right modifiers use device-specific modifier bits;
 Caps Lock uses its stateless physical bit rather than its persistent latch.
 OS repeats are marked as repeats for the Input reducer. Unmapped ISO/JIS, Fn,
 media and keypad-equals positions are ignored. Text input and IME are deferred.
+The same table is public as `ludus::platform::MapCocoaKeyCode`
+(`<ludus/platform/native_keymap.h>`), so an adapter that receives Cocoa key codes
+from another toolkit, such as the editor's Qt viewport during Play, converts them
+without a second table; see [the hosted window](editor-gui-systems.md#the-hosted-window).
 
 Focus entry copies the held-key baseline using CoreGraphics key-state queries.
 Window focus loss, application deactivation and close deliver an empty, unfocused reset; they do not fabricate

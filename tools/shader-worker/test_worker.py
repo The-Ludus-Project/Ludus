@@ -20,6 +20,9 @@ sys.dont_write_bytecode = True
 from ludus_tools import render_graph, render_graph_build, render_graph_reload
 from ludus_tools.errors import ToolingError
 
+# Worker builds hash and load the native client beside the ordinary helper bundle.
+WORKER_HELPERS = render_graph_build.HELPERS + (render_graph_build.NATIVE_WORKER_HELPER,)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -91,7 +94,7 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             # same verified helper bundle used by the normal build adapter.
             bound_helper = root / 'bound-helper'
             bound_helper.mkdir()
-            for name in render_graph_build.HELPERS:
+            for name in WORKER_HELPERS:
                 origin = ROOT / ('config' if name.endswith('.json') else 'cmake/shaders') / name
                 (bound_helper / name).write_bytes(origin.read_bytes())
             bound_options['helper'] = bound_helper
@@ -114,7 +117,7 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             manifest = render_graph_build.new_build_sources(source, profiles=('metal', 'wgsl') if sys.platform == 'darwin' else ('spirv', 'wgsl'), renderer_static=True)
             helper = root / 'helper'
             helper.mkdir()
-            for name in render_graph_build.HELPERS:
+            for name in WORKER_HELPERS:
                 origin = ROOT / ('config' if name.endswith('.json') else 'cmake/shaders') / name
                 (helper / name).write_bytes(origin.read_bytes())
             options = dict(helper=helper, compiler=args.compiler, worker_socket=str(endpoint))

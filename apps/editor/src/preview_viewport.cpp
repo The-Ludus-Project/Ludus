@@ -252,7 +252,10 @@ bool IsHiddenSubsurfaceBroken() noexcept
 #endif
 struct PreviewViewport::State final
 {
+    /// Admits the device and reports its status; the frame source's images live on that device.
     QPointer<RenderPreview> Preview;
+    /// Produces the presented frames and owns their leases.
+    QPointer<ViewportFrameSource> Source;
     PreviewViewport* Widget = nullptr;
     QVBoxLayout* Layout = nullptr;
     QLabel* Message = nullptr;
@@ -439,7 +442,7 @@ private:
         Reader.Cancel();
         if (HasReadLease == true)
         {
-            Preview->ReleaseFrame(ReadLease);
+            Source->ReleaseFrame(ReadLease);
             ReadLease = {};
             HasReadLease = false;
         }
@@ -464,12 +467,12 @@ private:
             }
             return;
         }
-        if (CanShowFrames == false || Preview->HasPendingFrame() == false)
+        if (CanShowFrames == false || Source->HasPendingFrame() == false)
         {
             return;
         }
         renderer::ViewportImage image;
-        if (Preview->TakeFrame(ReadLease, image) == false)
+        if (Source->TakeFrame(ReadLease, image) == false)
         {
             return;
         }
@@ -673,7 +676,7 @@ private:
             const rhi::RasterStatus released = rhi::ReleaseNativeTextureRead(frame.Read);
             if (released == rhi::RasterStatus::Ready)
             {
-                Preview->ReleaseFrame(frame.Lease);
+                Source->ReleaseFrame(frame.Lease);
                 frame = {};
             }
         }
@@ -709,7 +712,7 @@ private:
             {
                 const rhi::RasterStatus released = rhi::DrainNativeTextureRead(frame.Read);
                 LUDUS_REQUIRE(released == rhi::RasterStatus::Ready);
-                Preview->ReleaseFrame(frame.Lease);
+                Source->ReleaseFrame(frame.Lease);
                 frame = {};
             }
         }
@@ -759,12 +762,13 @@ private:
     }
     void showFrame()
     {
-        if (CanvasOrNull != nullptr && Preview.isNull() == false)
+        if (CanvasOrNull != nullptr && Preview.isNull() == false && Source.isNull() == false)
         {
             serviceCanvas();
             return;
         }
-        if (Preview.isNull() == true || Window == nullptr || Pending >= 0 || Preview->HasPendingFrame() == false)
+        if (Preview.isNull() == true || Source.isNull() == true || Window == nullptr || Pending >= 0 ||
+            Source->HasPendingFrame() == false)
         {
             return;
         }
@@ -776,7 +780,7 @@ private:
                 continue;
             }
             renderer::ViewportImage image;
-            if (Preview->TakeFrame(frame.Lease, image) == false)
+            if (Source->TakeFrame(frame.Lease, image) == false)
             {
                 return;
             }
@@ -788,7 +792,7 @@ private:
                                                                              frame.Image);
             if (acquired != rhi::RasterStatus::Ready)
             {
-                Preview->ReleaseFrame(frame.Lease);
+                Source->ReleaseFrame(frame.Lease);
                 Message->setText(QStringLiteral("GPU texture sharing failed. Editing remains available."));
                 return;
             }
@@ -802,9 +806,17 @@ private:
 #endif
 };
 PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, bool isAutomatic)
-    : QWidget(parentOrNull), Preview_(preview)
+    : PreviewViewport(preview, preview, parentOrNull, isAutomatic)
+{
+}
+PreviewViewport::PreviewViewport(RenderPreview* preview,
+                                 ViewportFrameSource* frameSource,
+                                 QWidget* parentOrNull,
+                                 bool isAutomatic)
+    : QWidget(parentOrNull), Preview_(preview), mFrameSource(frameSource)
 {
     LUDUS_REQUIRE(preview != nullptr);
+    LUDUS_REQUIRE(frameSource != nullptr);
     mState.Reset(new State);
     setMinimumSize(160, 160);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
@@ -817,6 +829,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
                        "Shift-Alt/Option-left-drag or middle-drag to pan · "
                        "wheel to dolly (right mouse: speed) · F frames selection · Home frames all"));
     mState->Preview = preview;
+    mState->Source = frameSource;
     mState->IsAutomatic = isAutomatic;
     mState->CanShowFrames = isAutomatic;
     mState->Widget = this;
@@ -935,7 +948,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     connect(preview, &RenderPreview::DeviceRequested, this, [this]() { mState->createWindow(); });
-    connect(preview, &RenderPreview::ResettingFrames, this, [this]() { mState->clearFrames(); });
+    connect(mFrameSource, &ViewportFrameSource::ResettingFrames, this, [this]() { mState->clearFrames(); });
     // A stopped preview uncovers the message label; replace the workspace's
     // placeholder with the failure so the viewport says why it is empty.
     connect(preview, &RenderPreview::Failed, this, [this](const QString& error) { mState->Message->setText(error); });
@@ -966,7 +979,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
 #endif
     if (isAutomatic == true)
     {
-        connect(preview, &RenderPreview::FrameReady, this, &PreviewViewport::ShowFrame);
+        connect(mFrameSource, &ViewportFrameSource::FrameReady, this, &PreviewViewport::ShowFrame);
     }
 }
 PreviewViewport::~PreviewViewport()
@@ -1136,15 +1149,15 @@ void PreviewViewport::resizeSurface()
     {
         // RenderPreview recreates the offscreen targets when the requested size changes.
         const float64 ratio = mState->CanvasOrNull->devicePixelRatioF();
-        Preview_->Resize(qRound(static_cast<float64>(mState->CanvasOrNull->width()) * ratio),
-                         qRound(static_cast<float64>(mState->CanvasOrNull->height()) * ratio));
+        mFrameSource->Resize(qRound(static_cast<float64>(mState->CanvasOrNull->width()) * ratio),
+                             qRound(static_cast<float64>(mState->CanvasOrNull->height()) * ratio));
         return;
     }
     if (mState->Window != nullptr && mState->Item != nullptr)
     {
         const foundation::float64 ratio = mState->Window->devicePixelRatio();
-        Preview_->Resize(qRound(static_cast<foundation::float64>(mState->Window->width()) * ratio),
-                         qRound(static_cast<foundation::float64>(mState->Window->height()) * ratio));
+        mFrameSource->Resize(qRound(static_cast<foundation::float64>(mState->Window->width()) * ratio),
+                             qRound(static_cast<foundation::float64>(mState->Window->height()) * ratio));
         mState->Item->setSize(QSizeF(mState->Window->size()));
         mState->Item->update();
         mState->applyShaderStatus();

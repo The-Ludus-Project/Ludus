@@ -18,7 +18,6 @@
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
-#include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -74,13 +73,18 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mProperties(new QStackedWidget(mPropertiesDock)), mNoProperties(new QLabel(mProperties)),
       mErrorListDock(new QDockWidget(QStringLiteral("Error List"), this)), mErrorList(new ErrorList(mErrorListDock)),
       mContentDock(new QDockWidget(QStringLiteral("Content"), this)),
+      mRenderPreviewDock(new QDockWidget(QStringLiteral("Render Preview"), this)),
       mStandardToolbar(new QToolBar(QStringLiteral("Standard"), this)),
       mRenderGraphToolbar(new QToolBar(QStringLiteral("Render Graph"), this)),
+      mNewGraphAction(CreateEditorCommand(RENDER_GRAPH_NEW_COMMAND, this)),
+      mOpenGraphAction(CreateEditorCommand(RENDER_GRAPH_OPEN_COMMAND, this)),
       mValidateGraphAction(CreateEditorCommand(RENDER_GRAPH_VALIDATE_COMMAND, this)),
       mBuildGraphAction(CreateEditorCommand(RENDER_GRAPH_BUILD_COMMAND, this)),
       mBuildPreviewGraphAction(CreateEditorCommand(RENDER_GRAPH_BUILD_PREVIEW_COMMAND, this)),
       mLivePreviewGraphAction(CreateEditorCommand(RENDER_GRAPH_LIVE_PREVIEW_COMMAND, this)),
       mCookGraphAction(CreateEditorCommand(RENDER_GRAPH_COOK_COMMAND, this)),
+      mCancelGraphAction(CreateEditorCommand(RENDER_GRAPH_CANCEL_COMMAND, this)),
+      mOptionsAction(CreateEditorCommand(TOOLS_OPTIONS_COMMAND, this)),
       mProjectSettingsAction(CreateEditorCommand(PROJECT_SETTINGS_COMMAND, this)),
       mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this))
 {
@@ -137,6 +141,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::renderGraphCommands);
     connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderGraphErrors);
+    connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::renderGraphCommands);
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* before, QWidget* after) {
         LastEditedField_ = nullptr;
         disconnect(FocusUndoConnection_);
@@ -205,6 +210,23 @@ void MainWindow::BuildMenus()
             OpenProjectPath(descriptor);
         });
     }
+    // Render graphs open as documents, like a file in Visual Studio's File > New and Open.
+    fileMenu->addSeparator();
+    fileMenu->addAction(mNewGraphAction);
+    fileMenu->addAction(mOpenGraphAction);
+    connect(mNewGraphAction, &QAction::triggered, this, [this]() {
+        if (Renderer_->PromptNewGraph() == true)
+        {
+            static_cast<void>(mDocuments->OpenDocument(Renderer_));
+        }
+    });
+    connect(mOpenGraphAction, &QAction::triggered, this, [this]() {
+        if (Renderer_->PromptOpenGraph() == true)
+        {
+            static_cast<void>(mDocuments->OpenDocument(Renderer_));
+        }
+    });
+    fileMenu->addSeparator();
     RecentMenu_ = fileMenu->addMenu(QStringLiteral("Recent &Projects"));
     RecentMenu_->setObjectName(QStringLiteral("recentProjectsMenu"));
     connect(RecentMenu_, &QMenu::aboutToShow, this, &MainWindow::RenderRecentProjects);
@@ -281,8 +303,12 @@ void MainWindow::BuildMenus()
     StopAction_ = buildMenu->addAction(QStringLiteral("&Stop"));
     // Render-graph commands: one QAction each, shared with the Render Graph toolbar.
     buildMenu->addSeparator();
-    for (QAction* action :
-         {mValidateGraphAction, mBuildGraphAction, mBuildPreviewGraphAction, mLivePreviewGraphAction, mCookGraphAction})
+    for (QAction* action : {mValidateGraphAction,
+                            mBuildGraphAction,
+                            mBuildPreviewGraphAction,
+                            mLivePreviewGraphAction,
+                            mCookGraphAction,
+                            mCancelGraphAction})
     {
         buildMenu->addAction(action);
     }
@@ -295,6 +321,9 @@ void MainWindow::BuildMenus()
         renderGraphCommands();
     });
     connect(mBuildPreviewGraphAction, &QAction::triggered, this, [this]() {
+        // The explicit gesture shows its result; Live Preview rebuilds never raise the window.
+        mRenderPreviewDock->show();
+        mRenderPreviewDock->raise();
         static_cast<void>(Renderer_->BuildAndPreview());
         renderGraphCommands();
     });
@@ -302,11 +331,21 @@ void MainWindow::BuildMenus()
         static_cast<void>(Renderer_->CookRuntime());
         renderGraphCommands();
     });
-    // The Renderer document's own Live Preview toggle stays the single source of state.
-    QCheckBox* livePreview = Renderer_->findChild<QCheckBox*>(QStringLiteral("renderGraphLivePreview"));
-    LUDUS_REQUIRE(livePreview != nullptr);
-    connect(mLivePreviewGraphAction, &QAction::toggled, livePreview, &QCheckBox::setChecked);
-    connect(livePreview, &QCheckBox::toggled, mLivePreviewGraphAction, &QAction::setChecked);
+    connect(mCancelGraphAction, &QAction::triggered, this, [this]() {
+        Renderer_->CancelJob();
+        renderGraphCommands();
+    });
+    // The Renderer document owns Live Preview; the toggle shows its state, including when
+    // Cancel or a project change turns it off or an enable request is refused.
+    connect(mLivePreviewGraphAction, &QAction::toggled, this, [this](bool isEnabled) {
+        Renderer_->SetLivePreview(isEnabled);
+        const QSignalBlocker blocker(mLivePreviewGraphAction);
+        mLivePreviewGraphAction->setChecked(Renderer_->IsLivePreviewEnabled());
+    });
+    connect(Renderer_, &RendererWorkspace::LivePreviewChanged, this, [this](bool isEnabled) {
+        const QSignalBlocker blocker(mLivePreviewGraphAction);
+        mLivePreviewGraphAction->setChecked(isEnabled);
+    });
 
     // Toolbars use short text labels (QAction::iconText) so every command stays readable
     // in a 1280-pixel window; menus and tooltips keep the full names.
@@ -417,7 +456,11 @@ void MainWindow::BuildMenus()
     mRenderGraphToolbar->setObjectName(QStringLiteral("renderGraphToolbar"));
     mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     addToolBar(mRenderGraphToolbar);
-    for (QAction* action : {mValidateGraphAction, mBuildGraphAction, mBuildPreviewGraphAction, mLivePreviewGraphAction})
+    for (QAction* action : {mValidateGraphAction,
+                            mBuildGraphAction,
+                            mBuildPreviewGraphAction,
+                            mLivePreviewGraphAction,
+                            mCancelGraphAction})
     {
         mRenderGraphToolbar->addAction(action);
     }
@@ -444,6 +487,7 @@ void MainWindow::BuildMenus()
     addToolWindowCommand(VIEW_ERROR_LIST_COMMAND, mErrorListDock);
     addToolWindowCommand(VIEW_OUTPUT_COMMAND, OutputDock_);
     addToolWindowCommand(VIEW_CONTENT_COMMAND, mContentDock);
+    addToolWindowCommand(VIEW_RENDER_PREVIEW_COMMAND, mRenderPreviewDock);
     addToolWindowCommand(VIEW_LIVE_INSPECTOR_COMMAND, InspectorDock_);
     addToolWindowCommand(VIEW_TIMING_COMMAND, TimingDock_);
     viewMenu->addSeparator();
@@ -452,6 +496,12 @@ void MainWindow::BuildMenus()
     {
         toolbars->addAction(toolbar->toggleViewAction());
     }
+
+    // Visual Studio keeps editor-wide preferences in Tools > Options.
+    QMenu* toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
+    toolsMenu->setObjectName(QStringLiteral("toolsMenu"));
+    toolsMenu->addAction(mOptionsAction);
+    connect(mOptionsAction, &QAction::triggered, this, &MainWindow::showOptions);
 
     QMenu* windowMenu = menuBar()->addMenu(QStringLiteral("&Window"));
     windowMenu->setObjectName(QStringLiteral("windowMenu"));
