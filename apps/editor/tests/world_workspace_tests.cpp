@@ -1,5 +1,6 @@
 #include "entropy_fixture.h"
 #include "internal/controller.h"
+#include "internal/document_well.h"
 #include "internal/editor_identity.h"
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
@@ -15,6 +16,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
+#include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -29,7 +31,6 @@
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QStandardPaths>
-#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -96,7 +97,8 @@ QJsonObject Property(const QString& key)
 }
 QLineEdit* Field(WorldWorkspace& view, const QString& key)
 {
-    auto* field = view.findChild<QLineEdit*>(QStringLiteral("worldField:") + key);
+    // In the editor window the entity inspector is the Properties tool window.
+    QLineEdit* field = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:") + key);
     REQUIRE(field != nullptr);
     return field;
 }
@@ -525,8 +527,6 @@ TEST_CASE("World menu Save and history own the active document and Close Project
     auto* world = window.findChild<WorldWorkspace*>();
     REQUIRE(world != nullptr);
     REQUIRE(world->Open(path));
-    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
-    REQUIRE(tabs != nullptr);
     world->setFocus();
     world->findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
     Type(Field(*world, QStringLiteral("transform/x")), QStringLiteral("4"));
@@ -757,25 +757,28 @@ TEST_CASE("World provides scene authoring without a project component schema", "
     unsafe.SetProject(root, 3);
     CHECK_FALSE(unsafe.Create(QDir(root).filePath(QStringLiteral("unsafe.world.json"))));
 }
-TEST_CASE("Editor keeps the unified World workspace outside tool tabs", "[editor][world][unified]")
+TEST_CASE("Editor shows the unified World as a document beside tool windows", "[editor][world][unified]")
 {
     QTemporaryDir directory;
     ToolingPaths tools;
     tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
     EditorController controller(tools, nullptr, directory.filePath(QStringLiteral("recent.json")));
     MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
-    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
-    REQUIRE(tabs != nullptr);
+    DocumentWell& well = window.GetDocumentWell();
     ludus::foundation::int32 worlds = 0;
-    for (ludus::foundation::int32 i = 0; i < tabs->count(); ++i)
+    for (QWidget* document : well.GetDocuments())
     {
-        const auto text = tabs->tabText(i).remove(QLatin1Char('&'));
-        worlds += text == QStringLiteral("World") ? 1 : 0;
-        CHECK(text != QStringLiteral("3D Levels"));
-        CHECK(text != QStringLiteral("Scene"));
+        const QString title = well.GetDocumentTitle(document);
+        worlds += qobject_cast<WorldWorkspace*>(document) != nullptr ? 1 : 0;
+        CHECK(title != QStringLiteral("3D Levels"));
+        CHECK(title != QStringLiteral("Scene"));
     }
-    CHECK(worlds == 0);
-    CHECK(window.centralWidget() == window.findChild<WorldWorkspace*>());
+    // One World document; its entity inspector is the Properties tool window.
+    CHECK(worlds == 1);
+    CHECK(window.centralWidget() == &well);
+    QDockWidget* properties = window.findChild<QDockWidget*>(QStringLiteral("propertiesDock"));
+    REQUIRE(properties != nullptr);
+    CHECK(properties->isAncestorOf(window.findChild<QWidget*>(QStringLiteral("worldProperties"))) == true);
 }
 
 TEST_CASE("Renderer preview follows the viewport the World shows", "[editor][world][render-graph]")

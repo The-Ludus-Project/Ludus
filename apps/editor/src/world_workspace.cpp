@@ -273,6 +273,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         Q_EMIT PreviewStarting();
     });
     QWidget* inspectorPanel = new QWidget(split);
+    inspectorPanel->setObjectName(QStringLiteral("worldProperties"));
+    mPropertiesPanel = inspectorPanel;
     QVBoxLayout* inspectorPanelLayout = new QVBoxLayout(inspectorPanel);
     inspectorPanelLayout->setContentsMargins(0, 0, 0, 0);
     QScrollArea* scroll = new QScrollArea(inspectorPanel);
@@ -1471,6 +1473,12 @@ void WorldWorkspace::PreviewDraft()
             DraftPreview_ = false;
         }
     }
+}
+QWidget* WorldWorkspace::TakePropertiesPanel(QWidget* newParent)
+{
+    LUDUS_REQUIRE(newParent != nullptr && mPropertiesPanel->parentWidget() == Split_);
+    mPropertiesPanel->setParent(newParent);
+    return mPropertiesPanel;
 }
 QJsonObject WorldWorkspace::Session() const
 {

@@ -23,17 +23,29 @@ editor package; launching the native editor does not need those files on disk.
 
 ## Work areas and document ownership
 
-| Surface | Purpose |
+The editor follows Visual Studio's layout: **documents** open as tabs in the
+central document well, and **tool windows** dock around it (see
+[Workspace layout](#workspace-layout)).
+
+| Document | Purpose |
 | --- | --- |
-| Welcome | New/Open and recent projects while no project is open |
-| Project | Setup/engine overview, lifecycle actions, name/profile and expandable build/launch details |
+| Start Page | New/Open and recent projects while no project is open |
 | World | 2D/3D placement, game-owned entities/components, typed fields, references, shared history/save/recovery and trusted preview |
+| Render Graph | The project's render-graph package: graph sources, node canvas, inspector, shader/source editor and preview ([render-graph authoring](render-graph-authoring.md)) |
+| Project Settings | Setup/engine overview, lifecycle actions, name/profile and expandable build/launch details |
 | Scripts | Project-owned script and sequence drafts |
 | Audio | Content selection, definitions, save and preview |
 | Configuration | Independent offline configuration preview and preference editing |
+
+| Tool window | Purpose |
+| --- | --- |
+| Project Explorer | The project's worlds, render graphs, shaders, scripts, audio and content; opening an item opens its document |
+| Properties | Fields of the active document's selection (the selected World entity) |
+| Error List | Render-graph, shader and build diagnostics; double-click navigates to the source |
+| Output | Selectable build/tool/runtime diagnostics |
+| Content | Content catalog, search and imports |
 | Live Inspector | Copied runtime state and supported live property operations |
 | Timing | Runtime-reported frame pacing and interval statistics for the running session |
-| Output | Selectable build/tool/runtime diagnostics |
 
 The Configuration workspace retains its explicitly loaded preview/draft across
 project changes. Quitting prompts for unsaved preferences. Project settings,
@@ -317,18 +329,71 @@ ludus project create /path/to/new-game --name MyGame --tools /path/to/Ludus
 
 ## Workspace layout
 
-Opening a project shows **World** in the central workspace immediately. The World
-stays visible when switching between Project, Content, Audio, Scripts, Renderer
-and Configuration in the **Authoring Tools** dock. Runtime Inspector and Timing
-share that dock area. Move, resize or close docks through **View**; **View → Reset
-Layout** restores the default arrangement. Output starts hidden and can be opened
-through **View → Output**. Older saved layouts reset once to this arrangement.
+![Default editor layout at 1920×1080: documents in the centre, Project Explorer and Properties on the right, Error List below](images/editor-workspace-vs-1920.png)
 
-The World hierarchy and component inspector flank the viewport. Component actions
-stay below the scrollable inspector fields. The render surface receives the remaining
-height below its shading, framing and navigation controls, including after resize.
-Save, Undo and Redo follow the focused workspace; switching tool tabs selects that
-tool's document, and returning to World selects the World document.
+The layout follows Visual Studio, built on Qt Widgets' own docking:
+
+- **Documents** occupy the centre. Opening a project opens its **World**, with
+  **Project Settings** as a background tab. Open other documents from **Project
+  Explorer**, **Project → Project Settings** or the document list at the bottom of
+  the **Window** menu. A tab shows the document's file and a `*` while it has
+  unsaved changes. Closing a tab (**Window → Close Document**, Ctrl+W) hides
+  that view only; its draft stays open and quitting still asks about unsaved work.
+- **Tab groups.** **Window → New Vertical Tab Group** puts the active document
+  beside the others (for example a render graph next to the World);
+  **New Horizontal Tab Group** puts it below. **Move to Next/Previous Tab
+  Group**, **Merge All Tab Groups** and the tab context menu move documents
+  between groups. Groups share one direction at a time, up to four groups.
+- **Tool windows** dock around the documents. By default Project Explorer
+  (tabbed with Content) sits above Properties (tabbed with Live Inspector) on
+  the right, and the Error List (tabbed with Output and Timing) sits below the
+  documents. Drag a title bar to move, tab or float a tool window. **View**
+  shows and focuses one (Project Explorer Ctrl+Alt+L, Properties F4, Error List
+  Ctrl+Alt+E, Output Ctrl+Alt+O). The **Window** menu lists every tool window
+  with a check mark to show or hide it.
+- **Window → Reset Window Layout** restores the default documents-first
+  arrangement, all tool windows and toolbars, sized for the current window
+  (the right column takes about a fifth of the width and the bottom group about
+  a quarter of the height, enough for several Error List rows). It never changes
+  drafts, saved files or a Play session.
+- **Save, Undo and Redo follow the active document tab.** Focus in a tool
+  window does not change the active document: editing a World entity in
+  Properties and pressing Ctrl+S saves the World. Focus entering another
+  document's tab makes that document active. Undo still acts on focused text
+  first.
+- **Properties** shows the World's entity inspector (name, component fields,
+  Add Component, Apply and Reset) while the World is the active document. The
+  render-graph node inspector remains in the Render Graph document's
+  **Inspector** tab until the Renderer is split into a canvas document and
+  tool windows.
+- **Error List** collects the last render-graph result (graph errors and mapped
+  shader diagnostics) and compiler/CMake diagnostics found in build output.
+  Toggle Errors, Warnings and Messages to filter. Double-click a render-graph
+  row to select its graph node or open its source line in the Render Graph
+  document; double-click a build row to select its line in Output. A failed
+  render-graph job brings the Error List forward without taking focus.
+- **Toolbars** share the menus' commands: Standard (Open, Save, Undo, Redo),
+  Game (build, run, debug and Play controls) and Render Graph (Validate, Build
+  Graph, Build & Preview, Live Preview). Toolbar buttons use short labels so a
+  1280-pixel window shows them all; tooltips give the full name and shortcut.
+  **View → Toolbars** hides or shows each toolbar.
+
+Layout preferences are local to this computer. The window's tool-window layout
+is saved in `workspace.json` (see [Workspace layout (S1)](#workspace-layout-s1));
+each project also remembers its open documents, tab groups and World
+navigation. Layout version 4 introduced this arrangement: layouts saved by
+older editors, other Qt versions, or invalid/corrupt files fall back to the
+default, and a malformed document arrangement leaves the World open.
+
+Qt Widgets docking has no auto-hide (pinned) tool windows, no drag-target
+guide diamond and no floating document windows. The
+[docking evaluation](../architecture/editor-gui-systems.md#docking-middleware-evaluation)
+records the libraries that would provide them.
+
+The World hierarchy flanks the viewport inside the World document; the entity
+inspector is the Properties tool window. Component actions stay below the
+scrollable inspector fields. The render surface receives the remaining height
+below its shading, framing and navigation controls, including after resize.
 
 **Lit** shading previews authored lights and emitting surfaces using direct lighting
 and supported real-time shadows. The interactive viewport does not start static
@@ -348,12 +413,17 @@ keeps the window and its draft open.
 | Shortcut (Linux) | Action |
 | --- | --- |
 | Ctrl+N / Ctrl+O | New / Open Project |
-| Ctrl+S | Save the active Project Settings, Audio or Configuration document |
-| Ctrl+Z / platform Redo | Undo / Redo in focused text, or Project Settings history |
+| Ctrl+S | Save the active document (World, Render Graph, Scripts, Project Settings, Audio or Configuration) |
+| Ctrl+Z / platform Redo | Undo / Redo in focused text, or the active document's history |
+| Ctrl+W | Close the active document tab (its draft stays open) |
 | Ctrl+Shift+W | Close Project |
 | Ctrl+Shift+B | Build |
 | Ctrl+F5 / F5 | Build and Run / Build and Debug in RAD |
 | F6 / Shift+F6 | Build and Play / Stop |
+| Ctrl+F7 / F7 | Validate Render Graph / Build Render Graph |
+| Shift+F7 / Ctrl+Shift+F7 | Build Render Graph and Preview / toggle Live Render Graph Preview |
+| Ctrl+Alt+L / F4 | Show Project Explorer / Properties |
+| Ctrl+Alt+E / Ctrl+Alt+O | Show Error List / Output |
 | F1 | Keyboard Shortcuts help |
 
 The help dialog reads the same QAction bindings used by menus/toolbars. Qt's
@@ -1338,17 +1408,21 @@ for setup, session files and compatibility acceptance.
 
 ![Historical S1 workspace captured from Qt at 1100×760](images/editor-workspace-default.png)
 
-This historical S1 offscreen capture predates the Welcome/recent-project changes.
-It records presentation at that stage; use the work-area table above for current
-layout roles. It does not establish native interaction or game-frame acceptance.
+![Current default layout at 1280×800](images/editor-workspace-vs-1280.png)
 
-The current [workspace layout](#workspace-layout) keeps World central and tools
-in a dock. Recents appear on Welcome and in the File menu. The Game toolbar
-exposes the existing build/debug and Play controls; toolbar and menu actions
-share controller capability gating.
+The first, historical S1 offscreen capture predates the Welcome/recent-project
+changes and the document well. It records presentation at that stage; the second
+capture shows the current default layout at 1280×800. Use the work-area tables
+above for current layout roles. It does not establish native interaction or game-frame acceptance.
 
-Use **View** to recover a hidden panel or Game toolbar. **View → Reset Layout**
-restores the default panel arrangement without changing project drafts or Play.
+The current [workspace layout](#workspace-layout) puts documents in a central
+tabbed well with tool windows around it. Recents appear on the Start Page and in
+the File menu. The Game toolbar exposes the existing build/debug and Play
+controls; toolbar and menu actions share controller capability gating.
+
+Use the **Window** menu or **View** to recover a hidden tool window, and **View →
+Toolbars** for a toolbar. **Window → Reset Window Layout** restores the default
+arrangement without changing project drafts or Play.
 A normally accepted close writes local layout preferences to
 `$XDG_CONFIG_HOME/Ludus/Editor/workspace.json` (Qt platform config location when
 that environment variable is absent). Preferences are independent of projects

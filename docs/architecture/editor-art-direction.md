@@ -121,8 +121,9 @@ the implemented Ludus Block theme. Workspace captures are available in
   new folder. Engine discovery and preparation happen behind this explicit action;
   specialist override lives in Advanced. Explain first-time downloads before Create.
 - **Workspace:** Welcome carries recents while no project is open. Loaded projects
-  receive the authoring area; File → Recent Projects remains available. Empty
-  inspectors can be hidden through View; Reset Layout always restores access.
+  receive the authoring area; File → Recent Projects remains available. Tool
+  windows can be hidden through the Window menu; Window → Reset Window Layout
+  always restores access.
 - **Ownership:** a dialog has an unmistakable outer edge, title, primary action,
   and Cancel. Panels have visible title and splitter boundaries. Keyboard focus
   is visible, and disabled actions use the same capability rules everywhere.

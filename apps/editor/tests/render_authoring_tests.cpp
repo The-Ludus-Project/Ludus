@@ -1,4 +1,5 @@
 #include "internal/controller.h"
+#include "internal/document_well.h"
 #include "internal/main_window.h"
 #include "internal/preview_area_lights.h"
 #include "internal/preview_shading.h"
@@ -840,7 +841,7 @@ TEST_CASE("Reopening projects restores their own embedded viewport and dock layo
         CHECK(world->Document().Loaded());
         CHECK_FALSE(world->Dirty());
         CHECK(world->Session().value(QStringLiteral("boundCamera")).toObject() == navigation);
-        CHECK(window.centralWidget() == world);
+        CHECK(window.GetDocumentWell().GetActiveDocumentOrNull() == world);
         CHECK(world->isVisible() == true);
         CHECK(window.dockWidgetArea(window.findChild<QDockWidget*>(QStringLiteral("outputDock"))) ==
               Qt::LeftDockWidgetArea);

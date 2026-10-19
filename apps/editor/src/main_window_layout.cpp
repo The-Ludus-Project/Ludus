@@ -1,7 +1,11 @@
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
+#include "internal/document_well.h"
+#include "internal/editor_commands.h"
+#include "internal/error_list.h"
 #include "internal/main_window.h"
+#include "internal/project_explorer.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
 #include "internal/timing_panel.h"
@@ -23,6 +27,7 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
@@ -34,12 +39,16 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRect>
 #include <QSaveFile>
+#include <QScreen>
 #include <QScrollArea>
+#include <QShowEvent>
+#include <QSize>
 #include <QSizePolicy>
+#include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
-#include <QTabWidget>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -51,8 +60,24 @@ namespace ludus::editor
 {
 namespace
 {
-constexpr foundation::int32 LAYOUT_VERSION = 3;
-constexpr foundation::int32 DEFAULT_TOOLS_WIDTH_PIXELS = 300;
+// Version 4: Visual Studio-style document well and tool windows; older layouts reset.
+constexpr foundation::int32 LAYOUT_VERSION = 4;
+constexpr foundation::int32 PERCENT = 100;
+// First-run window: this share of the screen, at least the minimum below.
+constexpr foundation::int32 DEFAULT_WINDOW_PERCENT = 85;
+constexpr foundation::int32 MIN_WINDOW_WIDTH_PIXELS = 1100;
+constexpr foundation::int32 MIN_WINDOW_HEIGHT_PIXELS = 760;
+// Default tool-window extents leave documents roughly two thirds of the window.
+constexpr foundation::int32 SIDE_DOCK_PERCENT = 22;
+constexpr foundation::int32 MIN_SIDE_DOCK_PIXELS = 260;
+constexpr foundation::int32 MAX_SIDE_DOCK_PIXELS = 420;
+// The bottom group needs a tab bar, the Error List filters and header, and a few rows.
+constexpr foundation::int32 BOTTOM_DOCK_PERCENT = 27;
+constexpr foundation::int32 MIN_BOTTOM_DOCK_PIXELS = 160;
+constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 300;
+// Project Explorer's share of the right column; Properties gets the rest.
+constexpr foundation::int32 EXPLORER_SHARE_PERCENT = 40;
+constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = 8;
 constexpr foundation::int64 MAX_SETTINGS_BYTES = foundation::int64{64} * 1024;
 constexpr foundation::int32 MAX_STATE_BYTES = 32 * 1024;
 LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR_LAYOUT, "Editor.Layout");
@@ -60,19 +85,14 @@ LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR_LAYOUT, "Editor.Layout");
 
 void MainWindow::BuildUi()
 {
-    WorkTabs_ = new QTabWidget(this);
-    WorkTabs_->setObjectName(QStringLiteral("workspaceTabs"));
-    WorkTabs_->setAccessibleName(QStringLiteral("Authoring work areas"));
-    // Tab labels must not force the whole workspace wider than its container.
-    WorkTabs_->setUsesScrollButtons(true);
-    WorkTabs_->setElideMode(Qt::ElideNone);
-    // The central area can shrink; scrollable work areas own content overflow.
-    WorkTabs_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    mToolsDockOrNull = new QDockWidget(QStringLiteral("Authoring Tools"), this);
-    mToolsDockOrNull->setObjectName(QStringLiteral("authoringToolsDock"));
-    mToolsDockOrNull->setWidget(WorkTabs_);
-    addDockWidget(Qt::RightDockWidgetArea, mToolsDockOrNull);
-    auto* projectScroll = new QScrollArea(WorkTabs_);
+    // Visual Studio layout: documents in the central well; tool windows dock around it.
+    // The right dock area owns both right corners, so Project Explorer and Properties run
+    // the full height and the bottom tool windows sit under the documents only.
+    setCentralWidget(mDocuments);
+    setDockNestingEnabled(true);
+    setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+    QScrollArea* projectScroll = new QScrollArea(mDocuments);
     ProjectSettings_ = projectScroll;
     projectScroll->setObjectName(QStringLiteral("projectSettingsScroll"));
     projectScroll->setWidgetResizable(true);
@@ -195,31 +215,52 @@ void MainWindow::BuildUi()
     formLayout->addRow(QString(), argsButtons);
 
     projectScroll->setWidget(form);
-    WorkTabs_->addTab(projectScroll, QStringLiteral("&Project"));
-    Content_ = new ContentWorkspace(WorkTabs_);
-    WorkTabs_->addTab(Content_, QStringLiteral("&Content"));
-    auto* audioScroll = new QScrollArea(WorkTabs_);
+    // Tool windows scroll their own overflow, so a tabbed neighbour's minimum width never
+    // widens the dock column at the documents' expense.
+    QScrollArea* contentScroll = new QScrollArea(mContentDock);
+    contentScroll->setObjectName(QStringLiteral("contentScroll"));
+    contentScroll->setWidgetResizable(true);
+    contentScroll->setFrameShape(QFrame::NoFrame);
+    contentScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    Content_ = new ContentWorkspace(contentScroll);
+    contentScroll->setWidget(Content_);
+    mContentDock->setObjectName(QStringLiteral("contentDock"));
+    mContentDock->setWidget(contentScroll);
+    QScrollArea* audioScroll = mAudioDocument;
     audioScroll->setObjectName(QStringLiteral("audioWorkspaceScroll"));
     audioScroll->setWidgetResizable(true);
     audioScroll->setFrameShape(QFrame::NoFrame);
     Audio_ = new AudioWorkspace(audioScroll);
     audioScroll->setWidget(Audio_);
-    WorkTabs_->addTab(audioScroll, QStringLiteral("&Audio"));
-    World_ = new WorldWorkspace(Controller_->Tooling(), this);
+    World_ = new WorldWorkspace(Controller_->Tooling(), mDocuments);
     World_->setFocusPolicy(Qt::StrongFocus);
-    setCentralWidget(World_);
-    Scripts_ = new ScriptWorkspace(Controller_, WorkTabs_);
-    WorkTabs_->addTab(Scripts_, QStringLiteral("&Scripts"));
-    Renderer_ = new RendererWorkspace(Controller_->Tooling(), WorkTabs_);
-    WorkTabs_->addTab(Renderer_, QStringLiteral("&Renderer"));
+    Scripts_ = new ScriptWorkspace(Controller_, mDocuments);
+    Renderer_ = new RendererWorkspace(Controller_->Tooling(), mDocuments);
     // The render-graph preview borrows the device and extraction of whichever viewport the
     // World shows (its imported scene or its schema-bound panel) and follows it when it changes.
     Renderer_->SetPreviewSource(&World_->GetRenderPreview());
     connect(World_, &WorldWorkspace::RenderPreviewChanged, Renderer_, [this]() {
         Renderer_->SetPreviewSource(&World_->GetRenderPreview());
     });
-    Configuration_ = new ConfigurationWorkspace(WorkTabs_);
-    WorkTabs_->addTab(Configuration_, QStringLiteral("&Configuration"));
+    Configuration_ = new ConfigurationWorkspace(mDocuments);
+
+    // Properties follows the active document: the World's entity inspector, or a hint.
+    mPropertiesDock->setObjectName(QStringLiteral("propertiesDock"));
+    mProperties->setObjectName(QStringLiteral("propertiesStack"));
+    mNoProperties->setObjectName(QStringLiteral("propertiesEmpty"));
+    mNoProperties->setWordWrap(true);
+    mNoProperties->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    mNoProperties->setMargin(PROPERTIES_HINT_MARGIN_PIXELS);
+    mNoProperties->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    mProperties->addWidget(mNoProperties);
+    mProperties->addWidget(World_->TakePropertiesPanel(mProperties));
+    mProperties->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    mPropertiesDock->setWidget(mProperties);
+
+    mProjectExplorerDock->setObjectName(QStringLiteral("projectExplorerDock"));
+    mProjectExplorerDock->setWidget(mProjectExplorer);
+    mErrorListDock->setObjectName(QStringLiteral("errorListDock"));
+    mErrorListDock->setWidget(mErrorList);
 
     InspectorDock_ = new QDockWidget(QStringLiteral("Live Inspector"), this);
     InspectorDock_->setObjectName(QStringLiteral("liveInspectorDock"));
@@ -268,27 +309,29 @@ void MainWindow::BuildUi()
     inspectorLayout->addWidget(ApplyDocumentButton_);
     inspectorScroll->setWidget(inspector);
     InspectorDock_->setWidget(inspectorScroll);
-    addDockWidget(Qt::RightDockWidgetArea, InspectorDock_);
 
-    // Runtime panels share the tools dock area, leaving the central World visible.
     TimingDock_->setObjectName(QStringLiteral("timingDock"));
     Timing_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     TimingDock_->setWidget(Timing_);
-    addDockWidget(Qt::RightDockWidgetArea, TimingDock_);
-    tabifyDockWidget(mToolsDockOrNull, InspectorDock_);
-    tabifyDockWidget(mToolsDockOrNull, TimingDock_);
-    mToolsDockOrNull->raise();
 
     OutputDock_ = new QDockWidget(QStringLiteral("Output"), this);
     OutputDock_->setObjectName(QStringLiteral("outputDock"));
-    Output_ = new QPlainTextEdit(OutputDock_);
+    QWidget* output = new QWidget(OutputDock_);
+    QVBoxLayout* outputLayout = new QVBoxLayout(output);
+    outputLayout->setContentsMargins(0, 0, 0, 0);
+    outputLayout->setSpacing(0);
+    QToolBar* outputTools = new QToolBar(QStringLiteral("Output"), output);
+    outputTools->setObjectName(QStringLiteral("outputToolbar"));
+    outputTools->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    outputLayout->addWidget(outputTools);
+    Output_ = new QPlainTextEdit(output);
     Output_->setObjectName(QStringLiteral("workspaceOutput"));
     Output_->setAccessibleName(QStringLiteral("Build and runtime output"));
     Output_->setReadOnly(true);
     Output_->setMaximumBlockCount(5000);
-    OutputDock_->setWidget(Output_);
-    addDockWidget(Qt::BottomDockWidgetArea, OutputDock_);
-    OutputDock_->hide();
+    outputLayout->addWidget(Output_, 1);
+    OutputDock_->setWidget(output);
+    arrangeDefaultDocks();
 
     StatusLabel_ = new QLabel(this);
     StatusLabel_->setObjectName(QStringLiteral("workspaceStatus"));
@@ -299,7 +342,7 @@ void MainWindow::BuildUi()
     // Development Tools (2015), ch. 5, pp. 80-86, 112-115: show task-relevant choices
     // progressively. Recents belong to Welcome and File, freeing authoring space.
     // https://www.uxofgametools.com/; docs/architecture/editor-design-review.md.
-    Welcome_ = new QWidget(WorkTabs_);
+    Welcome_ = new QWidget(mDocuments);
     Welcome_->setObjectName(QStringLiteral("projectWelcome"));
     auto* recentPanel = Welcome_;
     auto* recentLayout = new QVBoxLayout(recentPanel);
@@ -351,8 +394,15 @@ void MainWindow::BuildUi()
     recentActions->addWidget(RecentOpenButton_);
     recentActions->addStretch();
     recentLayout->addLayout(recentActions);
-    WorkTabs_->insertTab(0, Welcome_, QStringLiteral("Welcome"));
-    WorkTabs_->setCurrentWidget(Welcome_);
+    // Document registration order is the Window menu order.
+    mDocuments->AddDocument(Welcome_, QStringLiteral("Start Page"));
+    mDocuments->AddDocument(World_, QStringLiteral("World"));
+    mDocuments->AddDocument(Renderer_, QStringLiteral("Render Graph"));
+    mDocuments->AddDocument(Scripts_, QStringLiteral("Scripts"));
+    mDocuments->AddDocument(ProjectSettings_, QStringLiteral("Project Settings"));
+    mDocuments->AddDocument(audioScroll, QStringLiteral("Audio"));
+    mDocuments->AddDocument(Configuration_, QStringLiteral("Configuration"));
+    static_cast<void>(mDocuments->OpenDocument(Welcome_));
     connect(RecentList_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
         const QString path = item->data(Qt::UserRole).toString();
         QTimer::singleShot(0, this, [this, path]() { OpenProjectPath(path); });
@@ -381,9 +431,16 @@ void MainWindow::BuildUi()
 
 void MainWindow::InitializeWorkspace()
 {
-    resize(1100, 760);
-    resizeToolsDock();
-    resizeDocks({OutputDock_}, {180}, Qt::Vertical);
+    // Most of the screen goes to the editor, and most of the editor to documents.
+    QSize size(MIN_WINDOW_WIDTH_PIXELS, MIN_WINDOW_HEIGHT_PIXELS);
+    if (const QScreen* screenOrNull = QGuiApplication::primaryScreen(); screenOrNull != nullptr)
+    {
+        const QRect available = screenOrNull->availableGeometry();
+        size = size.expandedTo(QSize(available.width() * DEFAULT_WINDOW_PERCENT / PERCENT,
+                                     available.height() * DEFAULT_WINDOW_PERCENT / PERCENT));
+    }
+    resize(size);
+    applyDefaultDockSizes();
     DefaultLayout_ = saveState(LAYOUT_VERSION);
     if (WorkspaceSettingsFile_.isEmpty())
     {
@@ -429,29 +486,179 @@ void MainWindow::InitializeWorkspace()
         ResetWorkspaceLayout();
         statusBar()->showMessage(QStringLiteral("Workspace layout was incompatible or invalid. Using defaults."),
                                  10000);
+        return;
+    }
+    mShouldSizeDefaultDocks = false;
+}
+
+void MainWindow::showEvent(QShowEvent* event)
+{
+    QMainWindow::showEvent(event);
+    if (mShouldSizeDefaultDocks == true)
+    {
+        // Dock sizes requested before the first layout pass are not honoured reliably;
+        // size the default arrangement against the real window once it is shown.
+        mShouldSizeDefaultDocks = false;
+        QTimer::singleShot(0, this, &MainWindow::applyDefaultDockSizes);
     }
 }
 
-void MainWindow::resizeToolsDock()
+void MainWindow::arrangeDefaultDocks()
 {
-    resizeDocks({mToolsDockOrNull}, {DEFAULT_TOOLS_WIDTH_PIXELS}, Qt::Horizontal);
+    // Right: Project Explorer (with Content) above Properties (with Live Inspector).
+    // Bottom, under the documents: Error List with Output and Timing.
+    const QList<QDockWidget*> docks{
+        mProjectExplorerDock,
+        mContentDock,
+        mPropertiesDock,
+        InspectorDock_,
+        mErrorListDock,
+        OutputDock_,
+        TimingDock_,
+    };
+    for (QDockWidget* dock : docks)
+    {
+        dock->setFloating(false);
+        removeDockWidget(dock);
+    }
+    addDockWidget(Qt::RightDockWidgetArea, mProjectExplorerDock);
+    splitDockWidget(mProjectExplorerDock, mPropertiesDock, Qt::Vertical);
+    tabifyDockWidget(mProjectExplorerDock, mContentDock);
+    tabifyDockWidget(mPropertiesDock, InspectorDock_);
+    addDockWidget(Qt::BottomDockWidgetArea, mErrorListDock);
+    tabifyDockWidget(mErrorListDock, OutputDock_);
+    tabifyDockWidget(mErrorListDock, TimingDock_);
+    for (QDockWidget* dock : docks)
+    {
+        dock->show();
+    }
+    mProjectExplorerDock->raise();
+    mPropertiesDock->raise();
+    mErrorListDock->raise();
+}
+
+void MainWindow::applyDefaultDockSizes()
+{
+    const foundation::int32 side =
+        qBound(MIN_SIDE_DOCK_PIXELS, width() * SIDE_DOCK_PERCENT / PERCENT, MAX_SIDE_DOCK_PIXELS);
+    const foundation::int32 bottom =
+        qBound(MIN_BOTTOM_DOCK_PIXELS, height() * BOTTOM_DOCK_PERCENT / PERCENT, MAX_BOTTOM_DOCK_PIXELS);
+    resizeDocks({mProjectExplorerDock}, {side}, Qt::Horizontal);
+    resizeDocks({mErrorListDock}, {bottom}, Qt::Vertical);
+    const foundation::int32 explorer = height() * EXPLORER_SHARE_PERCENT / PERCENT;
+    resizeDocks({mProjectExplorerDock, mPropertiesDock}, {explorer, height() - explorer}, Qt::Vertical);
 }
 
 void MainWindow::ResetWorkspaceLayout()
 {
     (void)restoreState(DefaultLayout_, LAYOUT_VERSION);
-    // Also recover a pane that was floating when the user requested reset.
-    for (QDockWidget* dock : {mToolsDockOrNull, InspectorDock_, TimingDock_})
+    // Also recover panes that were floating, closed or moved when the user requested reset.
+    arrangeDefaultDocks();
+    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar})
     {
-        dock->setFloating(false);
-        dock->show();
+        toolbar->show();
     }
-    OutputDock_->setFloating(false);
-    OutputDock_->hide();
-    mToolsDockOrNull->raise();
-    GameToolbar_->show();
-    resizeToolsDock();
-    resizeDocks({OutputDock_}, {180}, Qt::Vertical);
+    applyDefaultDockSizes();
+}
+
+void MainWindow::buildWindowMenu(QMenu* menu)
+{
+    const auto addCommand = [this, menu](const EditorCommand& command) {
+        QAction* action = CreateEditorCommand(command, this);
+        menu->addAction(action);
+        return action;
+    };
+    QAction* vertical = addCommand(WINDOW_NEW_VERTICAL_GROUP_COMMAND);
+    QAction* horizontal = addCommand(WINDOW_NEW_HORIZONTAL_GROUP_COMMAND);
+    QAction* next = addCommand(WINDOW_MOVE_NEXT_GROUP_COMMAND);
+    QAction* previous = addCommand(WINDOW_MOVE_PREVIOUS_GROUP_COMMAND);
+    QAction* merge = addCommand(WINDOW_MERGE_GROUPS_COMMAND);
+    menu->addSeparator();
+    QAction* close = addCommand(WINDOW_CLOSE_DOCUMENT_COMMAND);
+    QAction* closeAll = addCommand(WINDOW_CLOSE_ALL_DOCUMENTS_COMMAND);
+    connect(vertical, &QAction::triggered, this, [this]() {
+        static_cast<void>(mDocuments->SplitActiveDocument(Qt::Horizontal));
+    });
+    connect(horizontal, &QAction::triggered, this, [this]() {
+        static_cast<void>(mDocuments->SplitActiveDocument(Qt::Vertical));
+    });
+    connect(next, &QAction::triggered, this, [this]() { static_cast<void>(mDocuments->MoveActiveDocument(1)); });
+    connect(previous, &QAction::triggered, this, [this]() { static_cast<void>(mDocuments->MoveActiveDocument(-1)); });
+    connect(merge, &QAction::triggered, mDocuments, &DocumentWell::MergeGroups);
+    connect(close, &QAction::triggered, this, [this]() {
+        QWidget* activeOrNull = mDocuments->GetActiveDocumentOrNull();
+        if (activeOrNull != nullptr)
+        {
+            mDocuments->CloseDocument(activeOrNull);
+        }
+    });
+    connect(closeAll, &QAction::triggered, mDocuments, &DocumentWell::CloseAllDocuments);
+    // Group commands are enabled from the well's current arrangement when the menu opens.
+    connect(menu, &QMenu::aboutToShow, this, [this, menu, vertical, horizontal, next, previous, merge, close]() {
+        vertical->setEnabled(mDocuments->CanSplit(Qt::Horizontal));
+        horizontal->setEnabled(mDocuments->CanSplit(Qt::Vertical));
+        const foundation::int32 group = mDocuments->GetActiveGroupIndex();
+        next->setEnabled(mDocuments->GetActiveDocumentOrNull() != nullptr && group + 1 < mDocuments->GetGroupCount());
+        previous->setEnabled(mDocuments->GetActiveDocumentOrNull() != nullptr && group > 0);
+        merge->setEnabled(mDocuments->GetGroupCount() > 1);
+        close->setEnabled(mDocuments->GetActiveDocumentOrNull() != nullptr);
+        renderWindowDocuments(menu);
+    });
+    menu->addSeparator();
+    // Every tool window can be shown or hidden here (checked while visible).
+    for (QDockWidget* dock : {mProjectExplorerDock,
+                              mPropertiesDock,
+                              mErrorListDock,
+                              OutputDock_,
+                              mContentDock,
+                              InspectorDock_,
+                              TimingDock_})
+    {
+        menu->addAction(dock->toggleViewAction());
+    }
+    menu->addSeparator();
+    menu->addAction(mResetLayoutAction);
+    connect(mResetLayoutAction, &QAction::triggered, this, &MainWindow::ResetWorkspaceLayout);
+    menu->addSeparator()->setObjectName(QStringLiteral("windowDocumentsSeparator"));
+}
+
+void MainWindow::renderWindowDocuments(QMenu* menu)
+{
+    // Visual Studio lists open windows last; Ludus lists every available document, checked
+    // when its tab is open, so closed documents can be reopened from here too.
+    for (QAction* action : menu->actions())
+    {
+        if (action->property("windowDocument").isValid() == true)
+        {
+            menu->removeAction(action);
+            action->deleteLater();
+        }
+    }
+    foundation::int32 number = 1;
+    for (QWidget* document : mDocuments->GetDocuments())
+    {
+        if (mDocuments->IsDocumentAvailable(document) == false)
+        {
+            continue;
+        }
+        QString title = mDocuments->GetDocumentTitle(document);
+        title.replace(QStringLiteral("&"), QStringLiteral("&&"));
+        QAction* action = menu->addAction(QStringLiteral("&%1 %2").arg(number).arg(title));
+        action->setProperty("windowDocument", document->objectName());
+        action->setCheckable(true);
+        action->setChecked(mDocuments->IsDocumentOpen(document));
+        connect(action, &QAction::triggered, this, [this, document]() {
+            static_cast<void>(mDocuments->OpenDocument(document));
+        });
+        ++number;
+    }
+}
+
+void MainWindow::showToolWindow(QDockWidget* dock)
+{
+    dock->show();
+    dock->raise();
+    dock->widget()->setFocus(Qt::ShortcutFocusReason);
 }
 
 void MainWindow::SaveWorkspaceLayout() const
@@ -497,7 +704,7 @@ void MainWindow::SaveProjectWorkspace() const
                        {QStringLiteral("qtVersion"), QString::fromLatin1(qVersion())},
                        {QStringLiteral("root"), ProjectLayoutRoot_},
                        {QStringLiteral("state"), QString::fromLatin1(saveState(LAYOUT_VERSION).toBase64())},
-                       {QStringLiteral("tab"), WorkTabs_->currentWidget()->objectName()},
+                       {QStringLiteral("documents"), mDocuments->SaveState()},
                        {QStringLiteral("world"), World_->Session()}};
     const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
     QSaveFile file(path);
@@ -555,13 +762,11 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
         (void)restoreState(previous, LAYOUT_VERSION);
     }
     World_->RestoreSession(object.value(QStringLiteral("world")).toObject());
-    const auto tab = object.value(QStringLiteral("tab")).toString();
-    for (int index = 0; index < WorkTabs_->count(); ++index)
+    // Malformed or stale arrangements leave the project's default World document open.
+    static_cast<void>(mDocuments->RestoreState(object.value(QStringLiteral("documents")).toObject()));
+    if (mDocuments->GetActiveDocumentOrNull() == nullptr)
     {
-        if (WorkTabs_->widget(index)->objectName() == tab && WorkTabs_->isTabVisible(index))
-        {
-            WorkTabs_->setCurrentIndex(index);
-        }
+        static_cast<void>(mDocuments->OpenDocument(World_));
     }
 }
 
