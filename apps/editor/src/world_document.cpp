@@ -65,6 +65,8 @@ namespace identity_records = content::identity_records;
 /// Longest label minted for a new version-2 entity: it fits the world-demo sample's
 /// 32-byte name field with its terminator, and the 64-character World ID rule.
 constexpr qsizetype MAX_MINTED_LABEL_CHARACTERS = 31;
+/// Bytes per KiB, for reporting the World size limit in the unit users read.
+constexpr foundation::int64 BYTES_PER_KIBIBYTE = 1024;
 /// Root `version` value of a World document of envelope version `version`.
 QJsonValue MakeVersionValue(foundation::uint64 version)
 {
@@ -561,7 +563,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     const auto entities = candidate.value(QStringLiteral("entities")).toArray();
     if (entities.size() > MAX_ENTITIES || QJsonDocument(candidate).toJson(QJsonDocument::Compact).size() + 1 > MaxBytes)
     {
-        return Fail(error, QStringLiteral("World supports at most 128 entities and 512 KiB."));
+        return Fail(error,
+                    QStringLiteral("World supports at most %1 entities and %2 KiB.")
+                        .arg(MAX_ENTITIES)
+                        .arg(MaxBytes / BYTES_PER_KIBIBYTE));
     }
     // Entity keys: version-2 UUIDs or version-1 IDs, the values entity-typed properties hold.
     QSet<QString> ids;
