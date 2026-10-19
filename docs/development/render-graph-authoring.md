@@ -903,15 +903,35 @@ stages it in a `RenderGraphActivation` beside the generation already shown. Edit
 saving, building or cooking never changes the preview by itself. The preview shows
 the configuration's first exported `ColorTexture` at its authored extent, using the
 World viewport's current camera or orbit. Each World object becomes one static
-opaque item with its flat tint (object tint times surface tint); a tint with alpha
-below one is declared `Transparent`, and the editor's `DiagnosticColor` coverage
-policy draws unsupported items in magenta instead of hiding them. Textures, lights
-and other materials are outside the current static profile.
+opaque item with its flat tint (object tint times the surface's flat tint); a
+straight tint with alpha below one is declared `Transparent`, and the editor's
+`DiagnosticColor` coverage policy draws unsupported items in magenta instead of
+hiding them. Textures, lights and other materials are outside the current static
+profile. An authored surface's flat tint is its schema tint.
 
 Imported and merged Worlds are cooked: their geometry lives only in the decoded
 scene definition, which the extraction borrows (and keeps alive) without copying.
-Their base color lives in textures, which the static profile does not sample, so
-textured surfaces preview as flat white and untextured ones as flat black.
+Their base color lives only in textures, which the static profile does not sample.
+The preview approximates each cooked material by one flat color instead:
+
+- A textured material's flat tint is the mean of its base-color texture's mip-zero
+  texels in linear space. Each sRGB byte is decoded before averaging; every texel
+  has equal weight. White and black texels average to linear one half, not to the
+  decode of sRGB code 128.
+- Alpha is one. The World viewport draws cooked materials `Opaque` and ignores
+  sampled alpha, so a texture with partial alpha previews opaque rather than as a
+  magenta `Transparent` item.
+- An untextured cooked material stays black, as the cooked format defines it.
+- The mean is computed once per texture when the World is decoded and stored on
+  each material that uses it. Decoding has already applied the scene format's
+  texture limits (4096 texels per axis, 16 MiB per texture, 32 MiB per scene), so
+  the work is linear in a bounded byte count.
+
+This is a coverage-free average, not a lit or textured image: a texture with
+strong detail or high contrast previews as its overall color. Merged Worlds bake
+each authored object's schema tint into its cooked texture, so authored objects in
+a merged World preview in their schema color. The viewport's lit path still
+samples the texture under a white multiplier and does not read the flat tint.
 
 The runtime profile admits only conventional depth (near 0, far 1, `Less`, clear
 1). The World viewport's editor camera is an infinite reverse-Z perspective, so the
@@ -981,7 +1001,9 @@ one extraction feeds both; preview it after a viewport restart instead.
   `RenderScene::Merge` checks that the extraction borrows the definition's geometry,
   that the reverse-Z editor camera yields a finite conventional view with the same
   x, y and w rows and in-range depths, and that the scene renders through the
-  graph from the editor camera. A World test checks that the Renderer tab's source
+  graph from the editor camera in its red base-color texture's flat color. Merged
+  scenes with a non-white 1×1 texture (straight alpha 128) and a white/black 2×1
+  texture check the linear mean, opaque coverage and the untouched lit tint. A World test checks that the Renderer tab's source
   follows a schema World's render panel, an imported World's scene viewport and
   back. A Renderer test builds a broken `color.slang` with the pinned compiler and
   opens line 3 from the diagnostic. Preview/live parity renders the frozen fixture

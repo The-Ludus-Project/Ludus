@@ -15,13 +15,18 @@
 
 #include <ludus/content/render_graph_format/runtime_package.h>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/rhi/device.h>
 
+#include <initializer_list>
+
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <QDir>
 #include <QFile>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QTemporaryDir>
@@ -45,6 +50,12 @@ constexpr qsizetype INTERFACE_OFFSET = format::HEADER_FIELD_COUNT * sizeof(uint3
 constexpr qsizetype TRUNCATED_BYTES = 40;
 constexpr int32 COLOR_TOLERANCE = 1;
 constexpr usize MATRIX_COLUMNS = 4;
+/// Bytes per RGBA8 test texel.
+constexpr usize TEXEL_BYTES = 4;
+/// Largest 8-bit channel code, which encodes 1.
+constexpr float32 MAX_CHANNEL_CODE = 255.0F;
+/// Absolute linear tolerance of a flat tint against its independently decoded expectation.
+constexpr float32 LINEAR_TOLERANCE = 1e-6F;
 
 QByteArray ReadFixture()
 {
@@ -112,9 +123,33 @@ RenderScene MakeScene(math::Vector4 tint)
     return scene;
 }
 
+/// An RGBA8 sRGB test texture of one row, filled from straight RGBA texel bytes.
+QImage MakeTexture(std::initializer_list<StaticArray<uint8, TEXEL_BYTES>> texels)
+{
+    QImage image(static_cast<int32>(texels.size()), 1, QImage::Format_RGBA8888);
+    REQUIRE(image.isNull() == false);
+    uint8* bytes = image.scanLine(0);
+    usize offset = 0;
+    for (const StaticArray<uint8, TEXEL_BYTES>& texel : texels)
+    {
+        for (usize channel = 0; channel < TEXEL_BYTES; ++channel)
+        {
+            bytes[offset++] = texel[channel];
+        }
+    }
+    return image;
+}
+
+/// Linear value of one sRGB channel byte, decoded independently of the editor's flat tint.
+float32 DecodeChannel(uint8 code)
+{
+    return math::DecodeSrgb(static_cast<float32>(code) / MAX_CHANNEL_CODE);
+}
+
 /// The same triangle composed the way an imported or merged World delivers it: cooked into a
-/// decoded definition that owns the geometry, with empty PreviewMesh arrays.
-RenderScene MakeCookedScene()
+/// decoded definition that owns the geometry, with empty PreviewMesh arrays. A non-null texture
+/// becomes the object's base-color texture.
+RenderScene MakeCookedScene(const QImage& texture = QImage())
 {
     const QJsonObject level{
         {QStringLiteral("id"), QStringLiteral("0f4c2a8e-3b1d-4e6a-9c7f-2d5b8a1e4c90")},
@@ -129,6 +164,11 @@ RenderScene MakeCookedScene()
     // Cooking requires a complete static vertex: normals and texture coordinates per position.
     authored.Meshes[0].Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
     authored.Meshes[0].Uvs = {{0, 0}, {1, 0}, {.5F, 1}};
+    if (texture.isNull() == false)
+    {
+        authored.Textures.append({QStringLiteral("albedo"), texture});
+        authored.Objects[0].Texture = 0;
+    }
     RenderScene cooked;
     QString error;
     const bool isMerged = RenderScene::Merge(authored, {}, level, cooked, error, {});
@@ -257,7 +297,9 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
 {
     RenderScene scene = MakeScene({1, .5F, .25F, 1});
     PreviewSurface surface;
-    surface.Tint = {.5F, 1, 1, 1};
+    // The lit tint is not the static profile's color; the flat approximation is.
+    surface.Tint = {.25F, 1, 1, 1};
+    surface.FlatTint = {.5F, 1, 1, 1};
     scene.Surfaces.append(surface);
     scene.Objects[0].Surface = 0;
     PreviewObject translucent = scene.Objects[0];
@@ -300,6 +342,43 @@ TEST_CASE("RG3b cooked World extraction borrows the decoded definition's geometr
     CHECK(extraction.Meshes[0].Geometry.IndexCount == 3);
     REQUIRE(extraction.Items.size() == 1);
     CHECK(extraction.Items[0].MeshIndex == 0);
+}
+
+TEST_CASE("RG3b cooked textured materials preview as their linear mean base color", "[editor][render-graph][preview]")
+{
+    // Straight alpha 128: the cooked viewport transport draws LUSCN materials Opaque, so the
+    // flat tint stays opaque instead of turning the item into a magenta Transparent diagnostic.
+    const RenderScene cooked = MakeCookedScene(MakeTexture({{188, 96, 40, 128}}));
+    REQUIRE(cooked.Definition->Textures.GetSize() == 1);
+    const ludus::resources::SceneTexture& texture = cooked.Definition->Textures[0];
+    REQUIRE(texture.Pixels.GetSize() == TEXEL_BYTES);
+    REQUIRE(cooked.Surfaces.size() == 1);
+    // The lit and textured paths keep the white multiplier the texture is sampled under.
+    CHECK(cooked.Surfaces[0].Tint == math::Vector4{1, 1, 1, 1});
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(cooked, {}, 4, extraction, error) == true);
+    REQUIRE(extraction.Items.size() == 1);
+    const math::Vector4 color = extraction.Items[0].Material.Color;
+    CHECK(color.X == Catch::Approx(DecodeChannel(texture.Pixels[0])).margin(LINEAR_TOLERANCE));
+    CHECK(color.Y == Catch::Approx(DecodeChannel(texture.Pixels[1])).margin(LINEAR_TOLERANCE));
+    CHECK(color.Z == Catch::Approx(DecodeChannel(texture.Pixels[2])).margin(LINEAR_TOLERANCE));
+    CHECK(color.X < 1);
+    CHECK(color.Z < color.Y);
+    CHECK(color.Y < color.X);
+    CHECK(color.W == 1);
+    CHECK(extraction.Items[0].Coverage == renderer::RenderGraphMaterial::Opaque);
+
+    // Texels average in linear space: white and black make linear one half, not the much
+    // darker decode of the averaged sRGB code.
+    const RenderScene halves = MakeCookedScene(MakeTexture({{255, 255, 255, 255}, {0, 0, 0, 255}}));
+    REQUIRE(MakeRenderGraphExtraction(halves, {}, 5, extraction, error) == true);
+    REQUIRE(extraction.Items.size() == 1);
+    const math::Vector4 half = extraction.Items[0].Material.Color;
+    CHECK(half.X == Catch::Approx(.5F).margin(LINEAR_TOLERANCE));
+    CHECK(half.Y == Catch::Approx(.5F).margin(LINEAR_TOLERANCE));
+    CHECK(half.Z == Catch::Approx(.5F).margin(LINEAR_TOLERANCE));
+    CHECK(half.X > math::DecodeSrgb(.5F));
 }
 
 TEST_CASE("RG3b editor reverse-Z camera yields a finite conventional view of the same camera",
@@ -360,15 +439,15 @@ TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[edi
     // each rejected by RenderGraph::Update and no generation ever presented.
     RenderPreview viewport;
     viewport.Resize(WIDTH, HEIGHT);
-    REQUIRE(viewport.SetScene(MakeCookedScene()) == true);
+    REQUIRE(viewport.SetScene(MakeCookedScene(MakeTexture({{255, 0, 0, 255}}))) == true);
     renderer::ViewDescription view;
     QString error;
     REQUIRE(viewport.DescribeConventionalView(WIDTH, HEIGHT, view, error) == true);
     RenderGraphExtraction extraction;
     REQUIRE(MakeRenderGraphExtraction(viewport.Scene(), view, 1, extraction, error) == true);
-    // The schema tint is baked into the cooked texture; the flat profile draws its white surface.
+    // The base color lives in the cooked texture; the flat profile draws its linear mean.
     REQUIRE(extraction.Items.size() == 1);
-    CHECK(extraction.Items[0].Material.Color == math::Vector4{1, 1, 1, 1});
+    CHECK(extraction.Items[0].Material.Color == math::Vector4{1, 0, 0, 1});
 
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
@@ -377,7 +456,7 @@ TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[edi
     REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
     CHECK(preview.GetPresentedRevision() == 1);
     // The framed triangle covers the center; the corner stays the graph's clear color.
-    CheckCenter(preview.GetImage(), 255, 255, 255);
+    CheckCenter(preview.GetImage(), 255, 0, 0);
     CHECK(preview.GetImage().pixelColor(0, 0) != preview.GetImage().pixelColor(WIDTH / 2, HEIGHT / 2));
     preview.Detach();
 }
