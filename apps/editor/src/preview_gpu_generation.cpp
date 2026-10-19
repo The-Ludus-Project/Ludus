@@ -25,13 +25,18 @@
 
 #include <QImage>
 #include <QString>
+#include <QVector>
 
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
 #    include "renderer_clustered_authored.h"
+#    include "renderer_clustered_authored_debug.h"
+#    include "renderer_clustered_authored_debug_shadow.h"
 #    include "renderer_clustered_authored_shadow.h"
 #    include "renderer_composite.h"
 #    include "renderer_flat.h"
 #    include "renderer_lit.h"
+#    include "renderer_lit_debug.h"
+#    include "renderer_lit_debug_shadow.h"
 #    include "renderer_lit_shadow.h"
 #    include "renderer_material.h"
 #    include "renderer_output.h"
@@ -46,9 +51,43 @@ using namespace foundation;
 namespace rhi = graphics::rhi;
 namespace renderer = graphics::renderer;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+/// Indices per triangle in a preview mesh's triangle list.
+constexpr qsizetype TRIANGLE_INDEX_COUNT = 3;
+/// Lowest perceptual roughness CreateLitMaterial admits (its GGX alpha floor).
+constexpr float32 MINIMUM_LIT_ROUGHNESS = 0.045F;
 bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
+}
+/// Area-weighted vertex normals for unlit authored meshes, which carry none. Debug views need
+/// normals for the lit program; degenerate fans fall back to +Y so every normal is nonzero.
+QVector<math::Vector3> ComputeVertexNormals(const PreviewMesh& mesh)
+{
+    QVector<math::Vector3> normals(mesh.Positions.size(), math::Vector3{});
+    for (qsizetype i = 0; i + 2 < mesh.Indices.size(); i += TRIANGLE_INDEX_COUNT)
+    {
+        const uint32 first = mesh.Indices[i];
+        const uint32 second = mesh.Indices[i + 1];
+        const uint32 third = mesh.Indices[i + 2];
+        const uint32 vertexCount = static_cast<uint32>(normals.size());
+        if (first >= vertexCount || second >= vertexCount || third >= vertexCount)
+        {
+            continue; // CreateMesh rejects the mesh; never read outside its positions here.
+        }
+        const math::Vector3 faceMesh =
+            math::Cross(mesh.Positions[second] - mesh.Positions[first], mesh.Positions[third] - mesh.Positions[first]);
+        normals[first] = normals[first] + faceMesh;
+        normals[second] = normals[second] + faceMesh;
+        normals[third] = normals[third] + faceMesh;
+    }
+    for (math::Vector3& normal : normals)
+    {
+        if (math::TryNormalize(normal, 0.0F, normal) != math::MathStatus::Success)
+        {
+            normal = {0, 1, 0};
+        }
+    }
+    return normals;
 }
 #endif
 } // namespace
@@ -193,7 +232,16 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
         {
             return false;
         }
-        if (Source.Lit == true && Shading == PreviewShading::Lit)
+        if (shouldUseAuthoredLighting() == true && IsPreviewDebugShading(Shading) == true)
+        {
+            return acceptStage(
+                Renderer.PrewarmLitProgram(ludus::shaders::renderer_clustered_authored_debug::Vertex(),
+                                           ludus::shaders::renderer_clustered_authored_debug::Fragment(),
+                                           ludus::shaders::renderer_clustered_authored_debug_shadow::Fragment(),
+                                           mProgram),
+                PreparationStage::Assets);
+        }
+        if (shouldUseAuthoredLighting() == true)
         {
             return acceptStage(
                 Renderer.PrewarmLitProgram(ludus::shaders::renderer_clustered_authored::Vertex(),
@@ -201,6 +249,14 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
                                            ludus::shaders::renderer_clustered_authored_shadow::Fragment(),
                                            mProgram),
                 PreparationStage::Assets);
+        }
+        if (shouldUseUnlitDebugView() == true)
+        {
+            return acceptStage(Renderer.PrewarmLitProgram(ludus::shaders::renderer_lit_debug::Vertex(),
+                                                          ludus::shaders::renderer_lit_debug::Fragment(),
+                                                          ludus::shaders::renderer_lit_debug_shadow::Fragment(),
+                                                          mProgram),
+                               PreparationStage::Assets);
         }
         return acceptStage(shouldUseLitMaterials() == true
                                ? Renderer.PrewarmLitProgram(ludus::shaders::renderer_lit::Vertex(),
@@ -251,7 +307,9 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
                 description.Texcoords = source.Texcoords.GetData();
                 description.Normals = source.Normals.GetData();
             }
-            else
+            // CreateMesh copies the normals, so derived storage only lives for this call.
+            QVector<math::Vector3> derivedNormals;
+            if (Source.Lit == false)
             {
                 description.Positions = mesh.Positions.constData();
                 description.VertexCount = static_cast<usize>(mesh.Positions.size());
@@ -259,6 +317,11 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
                 description.IndexCount = static_cast<usize>(mesh.Indices.size());
                 description.Texcoords = mesh.Uvs.constData();
                 description.Normals = mesh.Normals.isEmpty() == true ? nullptr : mesh.Normals.constData();
+                if (description.Normals == nullptr && shouldUseUnlitDebugView() == true)
+                {
+                    derivedNormals = ComputeVertexNormals(mesh);
+                    description.Normals = derivedNormals.constData();
+                }
             }
             if (IsAccepted(Renderer.CreateMesh(description, mMeshes[i])) == false)
             {
@@ -310,8 +373,17 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
             return true;
         }
     }
-    if (Source.Lit == true && Shading == PreviewShading::Lit)
+    if (shouldUseAuthoredLighting() == true)
     {
+        mStage = PreparationStage::Snapshot;
+        return true;
+    }
+    if (shouldUseUnlitDebugView() == true)
+    {
+        if (createUnlitDebugMaterials() == false)
+        {
+            return false;
+        }
         mStage = PreparationStage::Snapshot;
         return true;
     }
@@ -369,10 +441,44 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
 #endif
 }
 
+bool PreviewGpuGeneration::createUnlitDebugMaterials() noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    // One material per authored surface plus a default for untextured objects. No lights are
+    // invented: unlit Worlds have none, so Light count truthfully shows black.
+    for (int32 i = 0; i <= Source.Surfaces.size(); ++i)
+    {
+        renderer::LitMaterialDescription material;
+        if (i < Source.Surfaces.size())
+        {
+            const PreviewSurface& surface = Source.Surfaces[i];
+            if (surface.Texture >= 0)
+            {
+                material.Surface.Texture = Textures[surface.Texture];
+            }
+            material.Surface.Sampler.U = material.Surface.Sampler.V =
+                surface.Repeat == true ? rhi::RasterAddress::Repeat : rhi::RasterAddress::Clamp;
+            material.Metallic = surface.Metallic;
+            material.Roughness = math::Clamp(surface.Roughness, MINIMUM_LIT_ROUGHNESS, 1.0F);
+        }
+        material.Surface.Sampler.Filter = rhi::RasterFilter::Linear;
+        material.DebugView = GetMaterialDebugView(Shading);
+        renderer::LightSelection selection;
+        if (IsAccepted(Renderer.CreateLitMaterial(mProgram, material, mMaterials[i], selection)) == false)
+        {
+            return false;
+        }
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& outError) noexcept
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
-    if (Source.Lit == true && Shading == PreviewShading::Lit)
+    if (shouldUseAuthoredLighting() == true)
     {
         return prepareLighting(surface, outError);
     }
@@ -385,9 +491,12 @@ bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& 
         item.Transform = object.Transform;
         item.Material.Color = Shading == PreviewShading::Solid ? math::Vector4{1, 1, 1, 1} : object.Tint;
         item.SourceId = static_cast<uint64>(i) + 1;
-        if (Source.Lit == true || object.Texture >= 0)
+        const bool isDebugView = shouldUseUnlitDebugView();
+        if (Source.Lit == true || object.Texture >= 0 || isDebugView == true)
         {
-            const rhi::RasterStatus status = Renderer.GetStatus(mMaterials[object.Surface]);
+            // Debug views need a lit material on every object; untextured ones share the default slot.
+            const int32 slot = object.Surface >= 0 ? object.Surface : getDefaultDebugMaterial();
+            const rhi::RasterStatus status = Renderer.GetStatus(mMaterials[slot]);
             if (IsAccepted(status) == false)
             {
                 return false;
@@ -396,7 +505,11 @@ bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& 
             {
                 return true;
             }
-            item.Surface = mMaterials[object.Surface];
+            item.Surface = mMaterials[slot];
+            if (isDebugView == true)
+            {
+                item.Material.Color = {1, 1, 1, 1};
+            }
         }
     }
     if (IsAccepted(Renderer.CreateSnapshot(items.GetData(), static_cast<usize>(Source.Objects.size()), mSnapshot)) ==
@@ -443,6 +556,7 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
     {
         material.Shadows = resources.Shadows;
     }
+    material.DebugView = GetMaterialDebugView(Shading);
     if (resources.HasEnvironment == true)
     {
         material.EnvironmentOrNull = &resources.Environment;

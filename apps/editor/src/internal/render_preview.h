@@ -16,7 +16,9 @@
 #include "internal/editor_camera_controller.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/viewport_statistics.h"
 
+#include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
 #include <QTimer>
@@ -58,6 +60,19 @@ public:
     [[nodiscard]] LUDUS_INLINE PreviewShading GetShading() const noexcept
     {
         return mShading;
+    }
+    /// Show or hide the viewport statistics overlay. While visible, each submitted frame adds a
+    /// CPU sample and the GPU timestamp probe is re-armed only after its previous sample was read
+    /// (never waiting for the GPU). Showing restarts the rolling averages. Persisted by Navigation.
+    void SetStatisticsVisible(bool isVisible);
+    [[nodiscard]] LUDUS_INLINE bool IsStatisticsVisible() const noexcept
+    {
+        return mIsStatisticsVisible;
+    }
+    /// Smoothed measurements of the presented frames; meaningful while statistics are visible.
+    [[nodiscard]] LUDUS_INLINE const ViewportStatistics& GetStatistics() const noexcept
+    {
+        return mStatistics;
     }
     void Resize(foundation::int32 width, foundation::int32 height);
     /// Suppress repeated GPU submissions for hidden browser surfaces; allow the first
@@ -151,6 +166,8 @@ Q_SIGNALS:
     void DeviceStopping();
     void Stopped();
     void Failed(const QString& error);
+    /// Rate-limited notification that GetStatistics changed while the overlay is visible.
+    void StatisticsChanged();
 
 private:
     [[nodiscard]] PreviewViewOptions makeViewOptions(foundation::uint32 width,
@@ -161,9 +178,17 @@ private:
     QString mSelectedId;
     [[nodiscard]] LUDUS_INLINE bool usesLitMaterials() const noexcept
     {
-        return Scene_.Lit == true && mShading != PreviewShading::Albedo;
+        return (Scene_.Lit == true && mShading != PreviewShading::Albedo) || IsPreviewDebugShading(mShading) == true;
     }
     PreviewShading mShading = PreviewShading::Solid;
+    /// Read a completed GPU timing sample and re-arm the probe; call only between frames.
+    void serviceGpuTiming() noexcept;
+    /// Record the CPU time of a submitted frame and publish the overlay at its refresh rate.
+    void recordFrameStatistics(const QElapsedTimer& frameTimer);
+    void resetStatistics() noexcept;
+    bool mIsStatisticsVisible = false;
+    ViewportStatistics mStatistics;
+    QElapsedTimer mStatisticsRefresh;
     foundation::UniquePtr<PreviewGpuGeneration> mResources;
     foundation::UniquePtr<PreviewGpuGeneration> mRetiredResources;
     bool mNeedsResourceRestart = false;

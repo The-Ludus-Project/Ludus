@@ -37,6 +37,8 @@ struct LitSceneOptions final
     bool HasCollapsedTriangle = false;
     /// Append a cells x cells quad patch below the cube so the bake runs long enough to cancel.
     foundation::uint32 ExtraPatchCells = 0;
+    /// Add the authored lamps; without them the World stays on the unlit authored path.
+    bool HasLamps = true;
 };
 /// Reads a test input completely; a missing file fails the current test.
 inline QByteArray ReadTestFile(const QString& path)
@@ -124,7 +126,7 @@ inline void MakeLitScene(const QString& root, RenderScene& outScene, const LitSc
         components.insert(QStringLiteral("transform"), transform);
         REQUIRE(world.Edit(casterId, components, QStringLiteral("Caster"), error) == true);
     }
-    for (foundation::int32 i = 0; i < LAMP_COUNT; ++i)
+    for (foundation::int32 i = 0; i < LAMP_COUNT && options.HasLamps == true; ++i)
     {
         // Lamps carry no renderable, so they add lights without adding meshes.
         QString lampId;
@@ -151,7 +153,8 @@ inline void MakeLitScene(const QString& root, RenderScene& outScene, const LitSc
     const bool isLoaded = RenderScene::Load(root, world, outScene, error);
     INFO(error.toStdString());
     REQUIRE(isLoaded == true);
-    REQUIRE(outScene.Lit == true);
-    REQUIRE(outScene.AuthoredLights.Count == static_cast<foundation::uint32>(LAMP_COUNT));
+    REQUIRE(outScene.Lit == options.HasLamps);
+    REQUIRE(outScene.AuthoredLights.Count ==
+            (options.HasLamps == true ? static_cast<foundation::uint32>(LAMP_COUNT) : 0U));
 }
 } // namespace ludus::editor::tests

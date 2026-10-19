@@ -4,6 +4,7 @@
 #include "resource_mesh.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <limits>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -178,6 +179,31 @@ TEST_CASE("Invalid scene admission preserves outputs and stale identities never 
     invalid.WorldToClip = {};
     CHECK(session.Renderer.PrepareView(snapshot, invalid, view, report) == rhi::RasterStatus::InvalidDescription);
     CHECK(report.Visible == 77);
+}
+TEST_CASE("Debug depth ranges are validated before a view is prepared", "[renderer]")
+{
+    Session session;
+    const rr::SceneItem item = session.Item(1);
+    rr::Snapshot snapshot;
+    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+    rr::PreparedView view;
+    rr::ViewReport report;
+    constexpr float32 INFINITE = std::numeric_limits<float32>::infinity();
+    const math::Vector2 invalidRanges[]{{1, 1}, {2, 1}, {-1, 1}, {0, INFINITE}, {0, 2e7F}, {0, std::nanf("")}};
+    for (const math::Vector2 range : invalidRanges)
+    {
+        rr::ViewDescription description;
+        description.DebugDepthRange = range;
+        CHECK(session.Renderer.PrepareView(snapshot, description, view, report) ==
+              rhi::RasterStatus::InvalidDescription);
+    }
+    for (const math::Vector2 range : {math::Vector2{0, 0}, math::Vector2{0.1F, 100}})
+    {
+        rr::ViewDescription description;
+        description.DebugDepthRange = range;
+        rr::PreparedView prepared;
+        CHECK(session.Renderer.PrepareView(snapshot, description, prepared, report) == rhi::RasterStatus::Ready);
+    }
 }
 TEST_CASE("Prepared submission retries skipped targets and creates no new resources", "[renderer]")
 {
