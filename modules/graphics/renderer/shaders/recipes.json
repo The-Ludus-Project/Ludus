@@ -97,5 +97,25 @@
     "source": "renderer_clustered_authored.slang",
     "vertex": "VertexMain",
     "fragment": "ShadowMain"
+  },
+  "renderer_lit_debug": {
+    "source": "renderer_lit_debug.slang",
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
+  },
+  "renderer_lit_debug_shadow": {
+    "source": "renderer_lit_debug.slang",
+    "vertex": "VertexMain",
+    "fragment": "ShadowMain"
+  },
+  "renderer_clustered_authored_debug": {
+    "source": "renderer_clustered_authored_debug.slang",
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
+  },
+  "renderer_clustered_authored_debug_shadow": {
+    "source": "renderer_clustered_authored_debug.slang",
+    "vertex": "VertexMain",
+    "fragment": "ShadowMain"
   }
 }

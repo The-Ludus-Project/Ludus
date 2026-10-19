@@ -38,6 +38,16 @@ apps/editor/src/timing_view.cpp
 apps/editor/src/internal/timing_panel.h
 apps/editor/src/timing_panel.cpp
 apps/editor/tests/timing_view_tests.cpp
+apps/editor/src/internal/document_well.h
+apps/editor/src/document_well.cpp
+apps/editor/src/internal/editor_commands.h
+apps/editor/src/editor_commands.cpp
+apps/editor/src/internal/error_list.h
+apps/editor/src/error_list.cpp
+apps/editor/src/internal/project_explorer.h
+apps/editor/src/project_explorer.cpp
+apps/editor/src/main_window_tools.cpp
+apps/editor/tests/editor_shell_tests.cpp
 modules/runtime/game_host/src/internal/timing_telemetry.h
 modules/runtime/game_host/src/timing_telemetry.cpp
 modules/runtime/game_host/tests/timing_tests.cpp

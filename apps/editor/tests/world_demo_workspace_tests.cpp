@@ -60,7 +60,8 @@ void Select(WorldWorkspace& view, const QString& id)
 }
 QLineEdit* Field(WorldWorkspace& view, const QString& key)
 {
-    auto* field = view.findChild<QLineEdit*>(QStringLiteral("worldField:") + key);
+    // In the editor window the entity inspector is the Properties tool window.
+    QLineEdit* field = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:") + key);
     REQUIRE(field != nullptr);
     return field;
 }

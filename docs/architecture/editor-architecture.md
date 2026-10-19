@@ -114,10 +114,12 @@ Project settings and Audio are separate tabs. Welcome contains recent projects
 only while no project is open; File keeps its recent-project menu while authoring.
 The standalone offline Configuration tab stays accessible across project changes;
 its explicitly loaded preview and preference draft have independent ownership.
-Live Inspector is an optional right panel, and Output is an optional bottom
-panel. In the proposed redesign, empty/inapplicable panels start collapsed and
-narrow windows use tabs/drawers to preserve the central form. Menus expose every
-dock and a Reset Layout action. The current toolbar reuses menu action objects.
+The native shell follows Visual Studio's layout: documents in a central tabbed
+well, and Project Explorer, Properties, Error List, Output, Content, Live
+Inspector and Timing as dockable tool windows
+([GUI systems](editor-gui-systems.md#visual-studio-style-shell-on-qt-docking)).
+The Window menu shows or hides every tool window and resets the layout. Toolbars
+reuse menu action objects.
 The target compact contextual strip uses the same command catalogue as menus/shortcuts so capability gating
 cannot disagree; unsupported browser actions do not occupy a permanent row.
 A status area exposes workflow state. User layout is versioned, size-bounded, and saved on accepted close;
@@ -153,7 +155,12 @@ Renderer tab with typed graph/source drafts, undo, explicit save, mapped
 diagnostics and shared CLI jobs. RG3b adds a node canvas over the same document
 operations and a trusted preview that activates cooked generations on the World
 viewport's device without replacing its last drawable view until a new frame is
-complete. See [edit and reload graphs](../development/render-graph-authoring.md#edit-and-reload-graphs-rg3)
+complete. A project without a graph shows the engine-owned default read-only, so
+the workspace never asks for a graph. The first edit makes that default an
+undoable project draft, and Save creates it under `graphs/Main/`. Builds detect
+shader tools from the project's selected SDK. See
+[start customizing the renderer](../development/render-graph-authoring.md#start-customizing-the-renderer),
+[edit and reload graphs](../development/render-graph-authoring.md#edit-and-reload-graphs-rg3)
 and [node canvas and preview](../development/render-graph-authoring.md#node-canvas-and-preview-rg3b).
 
 ## Performance and observability
