@@ -13,9 +13,11 @@
 #include <ludus/graphics/rhi/rhi.h>
 
 #include <new>
+#include <string_view>
 
 #include <QByteArray>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QImage>
 #include <QRegularExpression>
@@ -38,23 +40,118 @@ constexpr const char* ERROR_MARKER = "LUDUS_TEST_ERROR";
 constexpr const char* TINT_MARKER = "LUDUS_TEST_TINT";
 /// Marker that makes FakeCompiler return changed fragment code using an undeclared binding.
 constexpr const char* INTERFACE_MARKER = "LUDUS_TEST_INTERFACE";
-/// SPIR-V OpNop, appended to built-in fragment code to make it differ without changing behaviour.
+/// SPIR-V OpNop, appended to built-in SPIR-V to make it differ without changing behaviour.
 constexpr uint32 SPIRV_NOP = 0x00010000U;
+/// Metal comment, appended to built-in Metal source to make it differ without changing behaviour.
+constexpr const char* METAL_NOP = "\n// LUDUS_TEST_NOP\n";
 /// Upper bound for one fake (in-process) build, including debounce and thread hops.
 constexpr int32 FAKE_TIMEOUT_MILLISECONDS = 30000;
-/// Upper bound for real worker builds of every viewport stage plus lit preparation on lavapipe.
-constexpr int32 WORKER_TIMEOUT_MILLISECONDS = 600000;
-/// Directory for PNG captures of the live shader overlay; captures are skipped when unset.
-constexpr const char* SHOT_DIRECTORY_VARIABLE = "LUDUS_VIEWPORT_DEBUG_SHOTS";
-/// Pause before grabbing the viewport so the canvas has painted the newest frame and overlay.
-constexpr int32 SETTLE_MILLISECONDS = 500;
-/// Capture size of the viewport overlay test.
-constexpr int32 VIEWPORT_WIDTH = 480;
-constexpr int32 VIEWPORT_HEIGHT = 320;
+/// Period without a new build after which the file watcher is taken to have reported every
+/// earlier write. FSEvents on macOS delivers a write up to about half a second after it, later
+/// than the controller's 250 ms debounce, so a late notification may start its own build.
+constexpr int32 WATCHER_QUIET_MILLISECONDS = 1500;
+/// SPIR-V module header: magic number, version 1.0, generator, id bound and schema.
+constexpr uint32 SPIRV_MAGIC = 0x07230203U;
+constexpr uint32 SPIRV_VERSION_1_0 = 0x00010000U;
+constexpr uint32 SPIRV_ID_BOUND = 2;
+constexpr qsizetype SPIRV_HEADER_WORDS = 5;
+/// OpEntryPoint and the word count shift of a SPIR-V instruction's first word.
+constexpr uint32 SPIRV_OP_ENTRY_POINT = 15;
+constexpr uint32 SPIRV_WORD_COUNT_SHIFT = 16;
+/// OpEntryPoint operands before the name: execution model (Vertex = 0) and entry id.
+constexpr uint32 SPIRV_EXECUTION_MODEL_VERTEX = 0;
+constexpr uint32 SPIRV_ENTRY_ID = 1;
+constexpr qsizetype BITS_PER_BYTE = 8;
 
 QByteArray ToBytes(BorrowedView<const char> view)
 {
     return QByteArray(view.GetDataOrNull(), static_cast<qsizetype>(view.GetSize()));
+}
+QByteArray ToBytes(std::string_view view)
+{
+    return QByteArray(view.data(), static_cast<qsizetype>(view.size()));
+}
+/// Whether the viewport draws Metal source (macOS) rather than SPIR-V; the build compiles the
+/// built-in renderer shaders for that target only.
+bool IsMetalHost() noexcept
+{
+    return PreviewShaderReload::GetHostTarget() == compiler::Target::Metal;
+}
+/// Host target code of description: Metal source text or SPIR-V words as bytes.
+QByteArray GetCode(const rhi::RasterShaderDescription& description)
+{
+    if (IsMetalHost() == true)
+    {
+        return ToBytes(description.Artifact.Msl);
+    }
+    return QByteArray(reinterpret_cast<const char*>(description.Artifact.Spirv.data()),
+                      static_cast<qsizetype>(description.Artifact.Spirv.size_bytes()));
+}
+/// Host target code of artifact, in the representation GetCode returns.
+QByteArray GetCode(const PreviewShaderArtifact& artifact)
+{
+    if (IsMetalHost() == true)
+    {
+        return artifact.Msl;
+    }
+    return QByteArray(reinterpret_cast<const char*>(artifact.Spirv.constData()),
+                      artifact.Spirv.size() * static_cast<qsizetype>(sizeof(uint32)));
+}
+/// Entry name of description in the host target code.
+QByteArray GetEntry(const rhi::RasterShaderDescription& description)
+{
+    return ToBytes(IsMetalHost() == true ? description.Artifact.MslEntry : description.Artifact.SpirvEntry);
+}
+/// Minimal SPIR-V module with one OpEntryPoint per name, for entry parsing on every host.
+QList<uint32> MakeSpirvEntryModule(const QList<QByteArray>& names)
+{
+    QList<uint32> words{SPIRV_MAGIC, SPIRV_VERSION_1_0, 0, SPIRV_ID_BOUND, 0};
+    REQUIRE(words.size() == SPIRV_HEADER_WORDS);
+    for (const QByteArray& name : names)
+    {
+        // Literal strings are nul-terminated and padded to whole little-endian words.
+        QByteArray literal = name;
+        literal.append('\0');
+        while (literal.size() % static_cast<qsizetype>(sizeof(uint32)) != 0)
+        {
+            literal.append('\0');
+        }
+        const qsizetype literalWords = literal.size() / static_cast<qsizetype>(sizeof(uint32));
+        const uint32 wordCount = static_cast<uint32>(3 + literalWords);
+        words.append((wordCount << SPIRV_WORD_COUNT_SHIFT) | SPIRV_OP_ENTRY_POINT);
+        words.append(SPIRV_EXECUTION_MODEL_VERTEX);
+        words.append(SPIRV_ENTRY_ID);
+        for (qsizetype word = 0; word < literalWords; ++word)
+        {
+            uint32 value = 0;
+            for (qsizetype byte = 0; byte < static_cast<qsizetype>(sizeof(uint32)); ++byte)
+            {
+                const uint8 character =
+                    static_cast<uint8>(literal[word * static_cast<qsizetype>(sizeof(uint32)) + byte]);
+                value |= static_cast<uint32>(character) << static_cast<uint32>(byte * BITS_PER_BYTE);
+            }
+            words.append(value);
+        }
+    }
+    return words;
+}
+/// Built-in host target code and entry of program and stage, made to differ from the built-in
+/// code without changing what it draws.
+PreviewShaderArtifact MakeChangedBuiltInArtifact(PreviewShaderProgram program, PreviewShaderStage stage)
+{
+    const rhi::RasterShaderDescription builtIn = GetBuiltInPreviewShader(program, stage);
+    PreviewShaderArtifact artifact;
+    artifact.Entry = GetEntry(builtIn);
+    if (IsMetalHost() == true)
+    {
+        artifact.Msl = ToBytes(builtIn.Artifact.Msl) + METAL_NOP;
+    }
+    else
+    {
+        artifact.Spirv = QList<uint32>(builtIn.Artifact.Spirv.begin(), builtIn.Artifact.Spirv.end());
+        artifact.Spirv.append(SPIRV_NOP);
+    }
+    return artifact;
 }
 bool Fill(Array<uint8>& outBytes, const char* dataOrNull, usize size)
 {
@@ -137,23 +234,22 @@ public:
             isTinted = isTinted || text.contains(TINT_MARKER);
             isInterfaceChanged = isInterfaceChanged || text.contains(INTERFACE_MARKER);
         }
-        rhi::RasterShaderDescription builtIn;
+        REQUIRE(request.OutputTarget == PreviewShaderReload::GetHostTarget());
+        QByteArray code;
         for (usize program = 0; program < PREVIEW_SHADER_PROGRAM_COUNT; ++program)
         {
             const PreviewShaderRecipe& recipe = mRecipes[program];
             const QByteArray entry = stage == PreviewShaderStage::Vertex ? recipe.VertexEntry : recipe.FragmentEntry;
             if (recipe.Source.toUtf8() == source && entry == ToBytes(request.Entry))
             {
-                builtIn = GetBuiltInPreviewShader(static_cast<PreviewShaderProgram>(program), stage);
+                const PreviewShaderProgram match = static_cast<PreviewShaderProgram>(program);
+                code = stage == PreviewShaderStage::Fragment && (isTinted == true || isInterfaceChanged == true)
+                           ? GetCode(MakeChangedBuiltInArtifact(match, stage))
+                           : GetCode(GetBuiltInPreviewShader(match, stage));
                 break;
             }
         }
-        QList<uint32> words(builtIn.Artifact.Spirv.begin(), builtIn.Artifact.Spirv.end());
         QByteArray reflection = QByteArrayLiteral("{}");
-        if (stage == PreviewShaderStage::Fragment && (isTinted == true || isInterfaceChanged == true))
-        {
-            words.append(SPIRV_NOP);
-        }
         if (stage == PreviewShaderStage::Fragment && isInterfaceChanged == true)
         {
             reflection = QByteArrayLiteral(
@@ -162,9 +258,7 @@ public:
                 R"("elementCount":4,"elementType":{"kind":"scalar","scalarType":"float32"}}}}],)"
                 R"("nativeEntryPointResourceUsage":{"extraTexture":true}})");
         }
-        if (Fill(outResult.Artifact,
-                 reinterpret_cast<const char*>(words.constData()),
-                 static_cast<usize>(words.size()) * sizeof(uint32)) == false ||
+        if (Fill(outResult.Artifact, code.constData(), static_cast<usize>(code.size())) == false ||
             Fill(outResult.Reflection, reflection.constData(), static_cast<usize>(reflection.size())) == false ||
             outResult.SourceReadMask.TryResize(request.Files.GetSize(), 0) == false)
         {
@@ -199,6 +293,26 @@ bool WaitForSettled(const PreviewShaderReload& reload, int32 timeoutMilliseconds
         },
         timeoutMilliseconds);
 }
+/// Wait until the controller is settled and no build started for WATCHER_QUIET_MILLISECONDS.
+bool WaitForWatcherQuiet(const PreviewShaderReload& reload, int32 timeoutMilliseconds)
+{
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < timeoutMilliseconds)
+    {
+        if (WaitForSettled(reload, timeoutMilliseconds) == false)
+        {
+            return false;
+        }
+        const int32 builds = reload.GetBuildCount();
+        QTest::qWait(WATCHER_QUIET_MILLISECONDS);
+        if (builds == reload.GetBuildCount() && WaitForSettled(reload, 0) == true)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 /// Append text after the last line of path.
 void AppendLine(const QString& path, const QByteArray& line)
 {
@@ -213,21 +327,25 @@ TEST_CASE("Preview shader sets replace one stage and identify their content", "[
     const QByteArray builtInDigest = shaders.ComputeDigest();
     const rhi::RasterShaderDescription builtIn =
         GetBuiltInPreviewShader(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment);
-    REQUIRE(builtIn.Artifact.Spirv.empty() == false);
-    PreviewShaderArtifact artifact;
-    artifact.Spirv = QList<uint32>(builtIn.Artifact.Spirv.begin(), builtIn.Artifact.Spirv.end());
-    artifact.Spirv.append(SPIRV_NOP);
-    artifact.Entry = QByteArrayLiteral("FragmentMain");
+    // The build compiles the built-in shaders for the target the viewport draws.
+    REQUIRE(GetCode(builtIn).isEmpty() == false);
+    REQUIRE(GetEntry(builtIn).isEmpty() == false);
+    const PreviewShaderArtifact artifact =
+        MakeChangedBuiltInArtifact(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment);
     shaders.SetArtifact(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment, artifact);
     CHECK(shaders.HasArtifact(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment) == true);
     CHECK(shaders.HasArtifact(PreviewShaderProgram::Lit, PreviewShaderStage::Vertex) == false);
     const rhi::RasterShaderDescription replaced = shaders.Get(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment);
-    CHECK(replaced.Artifact.Spirv.size() == builtIn.Artifact.Spirv.size() + 1);
-    CHECK(replaced.Artifact.Spirv.back() == SPIRV_NOP);
+    CHECK(GetCode(replaced) != GetCode(builtIn));
+    CHECK(GetCode(replaced) == GetCode(artifact));
+    CHECK(GetEntry(replaced) == artifact.Entry);
     // Bindings and uniform layout always come from the built-in description.
     CHECK(replaced.Bindings.size() == builtIn.Bindings.size());
-    CHECK(shaders.Get(PreviewShaderProgram::Lit, PreviewShaderStage::Vertex).Artifact.Spirv.data() ==
-          GetBuiltInPreviewShader(PreviewShaderProgram::Lit, PreviewShaderStage::Vertex).Artifact.Spirv.data());
+    const rhi::RasterShaderDescription vertex = shaders.Get(PreviewShaderProgram::Lit, PreviewShaderStage::Vertex);
+    const rhi::RasterShaderDescription builtInVertex =
+        GetBuiltInPreviewShader(PreviewShaderProgram::Lit, PreviewShaderStage::Vertex);
+    CHECK(vertex.Artifact.Spirv.data() == builtInVertex.Artifact.Spirv.data());
+    CHECK(vertex.Artifact.Msl.data() == builtInVertex.Artifact.Msl.data());
     CHECK(shaders.ComputeDigest() != builtInDigest);
     shaders.SetArtifact(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment, {});
     CHECK(shaders.HasArtifacts() == false);
@@ -263,12 +381,28 @@ TEST_CASE("Shader diagnostics keep the first Slang error with its location", "[e
 TEST_CASE("Compiled shader entry names come from SPIR-V and Metal output", "[editor][shader-reload]")
 {
     QByteArray entry;
-    const rhi::RasterShaderDescription builtIn =
-        GetBuiltInPreviewShader(PreviewShaderProgram::Flat, PreviewShaderStage::Vertex);
-    REQUIRE(FindSpirvEntry(QList<uint32>(builtIn.Artifact.Spirv.begin(), builtIn.Artifact.Spirv.end()), entry) == true);
-    CHECK(entry ==
-          QByteArray(builtIn.Artifact.SpirvEntry.data(), static_cast<qsizetype>(builtIn.Artifact.SpirvEntry.size())));
+    // The entry of each built-in stage, as the build recorded it, is found in its host target code.
+    for (const PreviewShaderStage stage : {PreviewShaderStage::Vertex, PreviewShaderStage::Fragment})
+    {
+        const rhi::RasterShaderDescription builtIn = GetBuiltInPreviewShader(PreviewShaderProgram::Flat, stage);
+        entry.clear();
+        if (IsMetalHost() == true)
+        {
+            REQUIRE(FindMetalEntry(ToBytes(builtIn.Artifact.Msl), stage, entry) == true);
+        }
+        else
+        {
+            REQUIRE(FindSpirvEntry(QList<uint32>(builtIn.Artifact.Spirv.begin(), builtIn.Artifact.Spirv.end()),
+                                   entry) == true);
+        }
+        CHECK(entry == GetEntry(builtIn));
+    }
+    // SPIR-V parsing is checked on every host, including those whose built-in code is Metal.
+    REQUIRE(FindSpirvEntry(MakeSpirvEntryModule({QByteArrayLiteral("VertexMain")}), entry) == true);
+    CHECK(entry == QByteArrayLiteral("VertexMain"));
     QByteArray unchanged = QByteArrayLiteral("keep");
+    CHECK(FindSpirvEntry(MakeSpirvEntryModule({QByteArrayLiteral("VertexMain"), QByteArrayLiteral("Other")}),
+                         unchanged) == false);
     CHECK(FindSpirvEntry({1, 2, 3}, unchanged) == false);
     CHECK(unchanged == QByteArrayLiteral("keep"));
     const QByteArray metal = "#include <metal_stdlib>\n"
@@ -335,7 +469,7 @@ TEST_CASE("Shader builder reuses unchanged stages and keeps the last good output
     REQUIRE(directory.isValid() == true);
     const PreviewShaderSources sources = tests::CopySources(tests::GetCheckoutSources(), directory.path());
     FakeCompiler compiler(sources);
-    PreviewShaderBuilder builder(sources, compiler::Target::Spirv, QString());
+    PreviewShaderBuilder builder(sources, PreviewShaderReload::GetHostTarget(), QString());
     QAtomicInt cancel;
     const PreviewShaderBuildResult first = builder.Build(compiler, cancel);
     INFO(first.Message.toStdString());
@@ -383,7 +517,7 @@ TEST_CASE("Live shaders debounce edits, report errors and recover", "[editor][sh
     PreviewShaderReload reload(preview,
                                sources,
                                UniquePtr<PreviewShaderCompiler>(compilerOrNull),
-                               compiler::Target::Spirv);
+                               PreviewShaderReload::GetHostTarget());
     CHECK(reload.GetState() == PreviewShaderReloadState::Off);
     reload.SetEnabled(true);
     REQUIRE(WaitForSettled(reload, FAKE_TIMEOUT_MILLISECONDS) == true);
@@ -396,19 +530,27 @@ TEST_CASE("Live shaders debounce edits, report errors and recover", "[editor][sh
     CHECK(preview.GetShaders().HasArtifacts() == false);
     const QByteArray original = tests::ReadText(lit);
 
-    // Several notifications within the quiet period share one build.
+    // The file watcher alone notices a save.
     AppendLine(lit, QByteArrayLiteral("// ") + TINT_MARKER);
-    reload.NotifyChanged(lit);
-    reload.NotifyChanged(lit);
-    reload.NotifyChanged(lit);
     REQUIRE(QTest::qWaitFor([&reload]() { return reload.GetBuildCount() > 1; }, FAKE_TIMEOUT_MILLISECONDS) == true);
-    REQUIRE(WaitForSettled(reload, FAKE_TIMEOUT_MILLISECONDS) == true);
-    QTest::qWait(1000);
-    CHECK(reload.GetBuildCount() == 2);
+    REQUIRE(WaitForWatcherQuiet(reload, FAKE_TIMEOUT_MILLISECONDS) == true);
     CHECK(reload.GetState() == PreviewShaderReloadState::Idle);
     // Without a device the set waits in the preview for its next generation.
     CHECK(preview.GetShaders().HasArtifact(PreviewShaderProgram::Lit, PreviewShaderStage::Fragment) == true);
     const QByteArray tinted = preview.GetShaders().ComputeDigest();
+
+    // Several notifications within the quiet period share one build. The file is unchanged, so
+    // the watcher adds none of its own and the count is exact on every platform.
+    const int32 builds = reload.GetBuildCount();
+    reload.NotifyChanged(lit);
+    reload.NotifyChanged(lit);
+    reload.NotifyChanged(lit);
+    REQUIRE(QTest::qWaitFor([&reload, builds]() { return reload.GetBuildCount() > builds; },
+                            FAKE_TIMEOUT_MILLISECONDS) == true);
+    REQUIRE(WaitForWatcherQuiet(reload, FAKE_TIMEOUT_MILLISECONDS) == true);
+    CHECK(reload.GetBuildCount() == builds + 1);
+    CHECK(reload.GetState() == PreviewShaderReloadState::Idle);
+    CHECK(preview.GetShaders().ComputeDigest() == tinted);
 
     // A compile error keeps the last good set and explains itself with file:line.
     const int32 calls = fake.GetCalls();
@@ -465,7 +607,7 @@ TEST_CASE("Live shaders without a compiler explain how to get one", "[editor][sh
     PreviewShaderReload reload(preview,
                                sources,
                                UniquePtr<PreviewShaderCompiler>(compilerOrNull),
-                               compiler::Target::Spirv);
+                               PreviewShaderReload::GetHostTarget());
     reload.SetEnabled(true);
     REQUIRE(WaitForSettled(reload, FAKE_TIMEOUT_MILLISECONDS) == true);
     CHECK(reload.GetState() == PreviewShaderReloadState::Unavailable);
@@ -477,6 +619,15 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
           "[editor][shader-reload][worker][gpu]")
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    // Upper bound for real worker builds of every viewport stage plus lit preparation on lavapipe.
+    constexpr int32 WORKER_TIMEOUT_MILLISECONDS = 600000;
+    // Directory for PNG captures of the live shader overlay; captures are skipped when unset.
+    constexpr const char* SHOT_DIRECTORY_VARIABLE = "LUDUS_VIEWPORT_DEBUG_SHOTS";
+    // Pause before grabbing the viewport so the canvas has painted the newest frame and overlay.
+    constexpr int32 SETTLE_MILLISECONDS = 500;
+    // Capture size of the viewport overlay test.
+    constexpr int32 VIEWPORT_WIDTH = 480;
+    constexpr int32 VIEWPORT_HEIGHT = 320;
     if (QFileInfo(QString::fromUtf8(shader_reload_paths::WORKER_EXECUTABLE)).isExecutable() == false)
     {
         SKIP("Configure with -DLUDUS_BUILD_SHADER_WORKER=ON to run the live shader worker test");
