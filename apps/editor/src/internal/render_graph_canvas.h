@@ -15,6 +15,7 @@
 QT_BEGIN_NAMESPACE
 class QGraphicsPathItem;
 class QGraphicsScene;
+class QShowEvent;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -136,6 +137,7 @@ Q_SIGNALS:
     void LinkRejected(const QString& reason);
 
 protected:
+    void showEvent(QShowEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -153,6 +155,7 @@ private:
     [[nodiscard]] QString portAt(QPointF position, bool& outIsOutput) const;
     [[nodiscard]] QString edgeAt(QPointF position, QString& outTo) const;
     void cancelLink();
+    void fitGraph();
 
     const RenderGraphDocument& mDocument;
     QGraphicsScene* mScene;
@@ -167,5 +170,6 @@ private:
     QString mLinkFrom;
     QGraphicsPathItem* mLinkPreviewOrNull = nullptr;
     bool mIsDragging = false;
+    bool mShouldFitOnShow = false;
 };
 } // namespace ludus::editor

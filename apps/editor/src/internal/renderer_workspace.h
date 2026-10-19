@@ -7,6 +7,7 @@
 
 #include "internal/controller.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_creation.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
 #include "internal/render_graph_live_build.h"
@@ -27,6 +28,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QStackedWidget;
 class QTabWidget;
 class QTableWidget;
 class QTreeWidget;
@@ -59,6 +61,10 @@ public:
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
+    /// Create and open an offscreen Renderer graph in the selected project's
+    /// graphs/name directory. Completion is asynchronous through JobFinished.
+    /// Existing files and the current draft are retained if creation fails.
+    [[nodiscard]] bool CreateGraph(const QString& name);
     [[nodiscard]] bool ConfirmDiscard();
     [[nodiscard]] bool IsDirty() const;
     [[nodiscard]] bool CanSave() const;
@@ -80,6 +86,7 @@ public:
     [[nodiscard]] bool CookRuntime();
     void CancelJob();
     [[nodiscard]] bool IsJobActive() const;
+    /// Explicitly opt into advanced shader path overrides; two empty paths restore project detection.
     void SetBuildTools(const QString& helper, const QString& compiler);
     /// Publish a finished job result. Results for another request, project epoch or a
     /// closed document are ignored, so stale jobs never replace current diagnostics.
@@ -147,9 +154,11 @@ private:
     void renderEdges();
     void renderSource();
     void renderStatus();
+    void updateActions();
     void documentEdited(RenderGraphDocumentStatus status);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
     void addNode();
+    void promptNewGraph();
     void openSourceLine(const QString& file, foundation::int32 line);
     [[nodiscard]] QJsonObject selectedConfiguration() const;
     [[nodiscard]] QJsonObject selectedNode() const;
@@ -169,11 +178,17 @@ private:
     bool mIsRendering = false;
     RenderGraphDocument mDocument;
     RenderGraphJob mJob;
+    RenderGraphCreation mCreation;
     RenderGraphJobResult mLastResult;
     QString mSelectedFile;
     QString mSelectedConfiguration;
     QString mSelectedNode;
     QLabel* mPath;
+    QPushButton* mNewGraph;
+    QPushButton* mOpenGraph;
+    QPushButton* mBuildPreview;
+    QStackedWidget* mContent;
+    QLabel* mEmptyMessage;
     QComboBox* mConfiguration;
     QPushButton* mValidate;
     QPushButton* mBuild;
@@ -198,6 +213,8 @@ private:
     QLineEdit* mValidator;
     QLineEdit* mSpirvCross;
     QLineEdit* mWorkerSocket;
+    QCheckBox* mOverrideBuildTools;
+    QLabel* mBuildToolsStatus;
     QCheckBox* mLivePreview;
     RenderGraphLiveBuild mLiveBuild;
     QListWidget* mDiagnostics;

@@ -472,6 +472,39 @@ class RenderGraphTests(unittest.TestCase):
         self.assertFalse(destination.exists())
         self.assertFalse(list(self.directory.parent.glob(".bad.*.staging")))
 
+    def test_renderer_creation_publishes_complete_sources_with_cli_equivalence(self):
+        destination = self.directory.parent / "editor"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(0, cli.main(["--json", "render-graph", "new", str(destination),
+                             "--output", "offscreen", "--renderer-static", "--profiles", "metal", "wgsl"]))
+        self.assertEqual(str(destination / "main.lurender.json"), json.loads(output.getvalue())["created"])
+        manifest = json.loads((destination / "main.lushader.json").read_text())
+        self.assertEqual(["metal", "wgsl"], manifest["profiles"])
+        self.assertEqual("RendererStaticBuild", manifest["id"])
+        for program in manifest["programs"]:
+            self.assertTrue((destination / program["source"]).is_file())
+        plan = graph.compile_graph(destination / "main.lurender.json")
+        self.assertEqual("Export", plan["roots"][0]["kind"])
+        separate = graph.new_workspace(self.directory.parent / "separate", output="offscreen")
+        from ludus_tools.render_graph_build import new_build_sources
+        new_build_sources(separate, renderer_static=True, profiles=["metal", "wgsl"])
+        self.assertEqual({p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()},
+                         {p.relative_to(separate.parent): p.read_bytes() for p in separate.parent.rglob("*") if p.is_file()})
+
+    def test_renderer_creation_failure_never_publishes_partial_graph(self):
+        from ludus_tools import render_graph_build
+        destination = self.directory.parent / "failed-renderer"
+        with patch.object(render_graph_build, "new_build_sources", side_effect=ToolingError("Injected", "fail")):
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output="offscreen", renderer_static=True, profiles=["metal"])
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(destination.parent.glob(".failed-renderer.*.staging")))
+        for options in ({"renderer_static": True}, {"profiles": ["metal"]}):
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, **options)
+        self.assertFalse(destination.exists())
+
     def test_cli_json_success_failure_and_library(self):
         for action, extra, field in (("validate", [], "plan"), ("dump", [], "plan"),
                                     ("validate", ["--library"], "library")):

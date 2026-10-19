@@ -708,7 +708,7 @@ void MainWindow::OnStateChanged()
             SetProjectWorkspace(root, true);
         }
         Scripts_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), root, state.Saved.Preset);
-        Renderer_->SetProject(root, state.ProjectEpoch);
+        Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
         Audio_->SetRoot(QDir(root).absoluteFilePath(QStringLiteral("content")));
         Content_->SetProject(QDir(root).absoluteFilePath(QStringLiteral("content")), state.ProjectEpoch);
     }
