@@ -689,7 +689,10 @@ an older revision. Results from a cancelled job, an earlier request or another
 project are discarded. Build uses the **Build Settings** tab's SDK helper and
 pinned compiler paths (stored in editor preferences, never in the project) and
 publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
-`out/render-graph/<graph>.lurgrt` from that build tree.
+`out/render-graph/<graph>.lurgrt` from that build tree. These paths are resolved
+from the project's canonical location, so a project opened through a symlink
+still builds inside its own folder. Build and Cook Runtime refuse a graph whose
+package lies outside the project.
 
 ### Mapped diagnostics
 
