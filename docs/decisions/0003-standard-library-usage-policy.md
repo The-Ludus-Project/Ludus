@@ -218,3 +218,33 @@ writes never raise SIGPIPE. Browser and Windows builds compile none of these
 calls; the endpoint reports Unavailable there. Socket-pair and listening-socket
 tests cover each event, refusal and channel loss. See
 [the hosted window](../architecture/editor-gui-systems.md#the-hosted-window).
+
+The hosted surface (P5) adds the following calls, under the same rules.
+
+- **File descriptors** (`hosted_socket.cpp`).
+  - `sendmsg` and `recvmsg` carry them as `SCM_RIGHTS` control messages
+    (`CMSG_*` macros, `MSG_CMSG_CLOEXEC` on Linux, `fcntl(FD_CLOEXEC)` on macOS).
+  - A receive accepts at most twelve descriptors. A surplus or a truncated
+    control message closes every descriptor that call received.
+- **Peer pid.** `getsockopt` reads the socket peer's pid: `LOCAL_PEERPID` on
+  macOS, `SO_PEERCRED` on Linux.
+- **Mach rendezvous** (`hosted_mach.cpp`, macOS only).
+  - `bootstrap_check_in` registers a per-session name, and `bootstrap_look_up`
+    finds it.
+  - `mach_msg` sends and receives with a zero timeout and the
+    `MACH_RCV_TRAILER_AUDIT` trailer. `audit_token_to_pid` and
+    `audit_token_to_euid` from libbsm authenticate the sender.
+  - `mach_port_set_attributes` bounds the queue to sixteen messages.
+  - `mach_port_mod_refs`, `mach_port_deallocate` and `mach_msg_destroy` release
+    rights. That includes the copies a timed-out send pseudo-receives.
+- **Image handles** (`hosted_surface.cpp`). `HostedImageHandle` releases what
+  it owns with `mach_port_deallocate` or `close`.
+- **IOSurfaces** (RHI `hosted_metal.mm` and `hosted_consumer_metal.mm`).
+  - Creation uses `IOSurfaceCreate`, `IOSurfaceAlignProperty` and
+    CoreFoundation property dictionaries.
+  - Sharing uses `IOSurfaceCreateMachPort` and `IOSurfaceLookupFromMachPort`.
+    `IOSurfaceGet*` validates the shared surface before import.
+  - Global surfaces and `IOSurfaceLookup` by ID are never used.
+
+Linux and macOS builds compile these calls; browser builds compile none of
+them. See [the hosted surface channel](../architecture/editor-gui-systems.md#hosted-surface-channel).

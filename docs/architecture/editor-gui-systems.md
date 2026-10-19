@@ -548,8 +548,9 @@ defines the frontend selection gates and persistence limits.
 Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer),
 P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) and P3
 (the viewport frame source) are implemented. P4, the Platform
-[hosted window channel](#hosted-window-channel), is implemented; the editor does
-not use it until P6. P5–P7 are pending. It replaces the separate World-demo
+[hosted window channel](#hosted-window-channel), and P5, the RHI
+[hosted surface](#hosted-surface-channel), are implemented; the editor does not
+use them until P6. P6 and P7 are pending. It replaces the separate World-demo
 authoring window, the World-demo private shader and the separate-window default
 for Play.
 
@@ -639,7 +640,9 @@ Unavailable.
   address, a refusal or a timeout fails creation; it never falls back to a native
   window. `CreateInfo` dimensions are ignored, because the host decides the
   extent. `NativeWindowInfo` reports `WindowSystem::Hosted` with backing-pixel
-  `Width`/`Height` and `Scale`. RHI refuses hosted windows until P5.
+  `Width`/`Height` and `Scale`. RHI renders into the window's
+  [hosted surface](#hosted-surface-channel), reached through
+  `NativeWindowInfo::HostedSurfaceOrNull`.
 - **Admission.** The endpoint first checks the peer's effective uid
   (`getpeereid` on macOS, `SO_PEERCRED` on Linux). It then requires a complete
   Hello within 5 seconds, carrying the protocol version, `input::KEY_COUNT` and
@@ -647,25 +650,31 @@ Unavailable.
   message with the reason (WrongUser, BadToken, IncompatibleVersion,
   MalformedHello or HandshakeTimeout) and is disconnected. The endpoint keeps
   listening for the real window and counts each refusal.
-- **Protocol.** The protocol is version 1. Each message is a little-endian
-  4-byte header (`uint16` kind, `uint16` payload size) followed by a fixed-size
-  payload. A frame payload is at most 255 bytes, so a peer can read and refuse
-  another version's Hello.
+- **Protocol.** The protocol is version 2; version 1 had no hosted surface, and
+  either side refuses the other version as IncompatibleVersion. Each message is
+  a little-endian 4-byte header (`uint16` kind, `uint16` payload size) followed
+  by a fixed-size payload. A frame payload is at most 255 bytes, so a peer can
+  read and refuse another version's Hello. The address keeps its own format
+  version, `1:`.
 
 | Message | Direction | Payload |
 | --- | --- | --- |
 | Hello | window → endpoint | magic `LHWN`, version, key count, 32-byte token |
-| Welcome | endpoint → window | version, visibility, width, height, scale |
+| Welcome | endpoint → window | version, visibility, width, height, scale, 16-byte Mach rendezvous nonce (zero on Linux) |
 | Refused | endpoint → window | refusal reason |
 | Resize | endpoint → window | width and height in backing pixels (each ≤ 32768), scale (finite, in (0, 16]) |
 | Visibility | endpoint → window | Visible, Occluded or Minimized |
 | Reset | endpoint → window | FocusEntered, FocusLost or Overflow, plus a held-key bit mask (FocusEntered only) |
 | Key | endpoint → window | physical `input::Key`, Down/Up, repeat flag |
 | Close | endpoint → window | none |
+| Images | window → endpoint | generation, width and height (1 to 32768), format (RGBA8), handle kind, and for Vulkan three allocation sizes, the memory type, `deviceUUID` and `driverUUID`; the handles travel alongside |
+| Present | window → endpoint | generation, image index, frame sequence |
+| Release | endpoint → window | generation, image index |
 
-Either side treats an unknown kind, a wrong size or an out-of-range value as a
-violation and closes the channel. After the Hello, a version-1 window sends
-nothing. The endpoint therefore treats any later byte as a disconnection.
+Either side treats an unknown kind, a wrong size, a nonzero reserved byte or an
+out-of-range value as a violation and closes the channel. After the Hello, a
+window sends only Images and Present; the endpoint treats anything else as a
+violation and disconnects it.
 
 The window reproduces the Cocoa contract:
 
@@ -728,9 +737,12 @@ Backends:
   `IOSurfaceLookupFromMachPort`) through a per-session Mach rendezvous port that
   the editor registers. A Unix socket cannot carry Mach rights. Global IOSurface
   IDs are rejected because any process can look them up. The editor creates its
-  texture on Qt's `MTLDevice` from the IOSurface. The P5 probe must confirm this
-  exchange against Apple's [IOSurface](https://developer.apple.com/documentation/iosurface)
-  documentation before the backend lands.
+  texture on Qt's `MTLDevice` from the IOSurface. The P5 probe,
+  `ludus_platform_hosted_mach_tests`, confirmed this exchange against Apple's
+  [IOSurface](https://developer.apple.com/documentation/iosurface)
+  documentation before the backend landed: `IOSurfaceCreateMachPort` passes a
+  surface without making it global, and `kIOSurfaceIsGlobal` is deprecated as
+  insecure.
 - **Linux Vulkan.** Images use `VK_KHR_external_memory_fd`: export with
   `vkGetMemoryFdKHR`, import with `VkImportMemoryFdInfoKHR`. The fds travel over
   the same Unix socket with `SCM_RIGHTS`. Opaque fd handles require the same
@@ -762,6 +774,84 @@ Each source owns its leases and generations. The play source keeps a retired
 generation alive until its last lease is released, as `PreviewGpuGeneration`
 does. Play frames are shown 1:1 at the full viewport pixel size. The 1024-pixel
 cap and the stretch mapping apply only to edit previews.
+
+### Hosted surface channel
+
+P5 implements the hosted surface on macOS Metal and Linux Vulkan. The editor
+does not use it until P6.
+
+- **Transport.** Platform moves the handles; RHI never sees the socket.
+  - File descriptors ride on the first byte of their Images message with
+    `SCM_RIGHTS`. They are received close-on-exec, and a surplus is a violation.
+  - Mach send rights go through the session's rendezvous. `Start` draws a
+    16-byte nonce and registers the bootstrap name
+    `org.ludus.hosted-window.<nonce hex>` with `bootstrap_check_in`. The Welcome
+    carries the nonce, and the window finds the port with `bootstrap_look_up`.
+  - The name is not a secret. The endpoint accepts a Mach message only when all
+    three hold: the kernel's audit-token pid equals the admitted socket peer's
+    (`LOCAL_PEERPID`), the euid is the editor's, and the session token matches.
+    Any other message is destroyed with its rights.
+  - The window sends the Mach message before the socket message that announces
+    it, so the endpoint finds the rights already queued.
+  - Images, Present and Release travel on the same socket in order.
+- **Window side.** The hosted window implements `platform::HostedSurfaceChannel`
+  (`<ludus/platform/hosted_surface.h>`): `PublishImages`, `Present` and
+  `TakeRelease`, all nonblocking.
+  - `TakeRelease` takes Release messages out of the receive buffer. Window
+    events stay queued, in order, for `HandleEvent`.
+  - A full socket returns Busy, and nothing is consumed.
+- **Endpoint side.** `HostedWindowEndpoint::TryTakeSurfaceEvent` yields Images
+  (with owned handles) and Present events in arrival order.
+  - At most eight events wait. While the queue is full the endpoint stops
+    reading, so the game sees Busy instead of losing frames.
+  - `SendRelease` is never dropped: up to twelve releases wait in order for a
+    full send queue.
+- **Producer.** The RHI backends share `HostedRing`:
+  - It keeps at most three live generations, the current one and two retiring.
+  - `BeginFrame` returns Skipped without waiting in four cases: the consumer
+    holds every image, the new generation is not yet published, a resize finds
+    every generation slot held, or the channel is gone.
+  - A frame is announced only after its command buffer (Metal) or frame fence
+    (Vulkan) has completed. Frames of a retired generation are freed
+    unannounced.
+  - Metal draws surface pipelines in the session's surface format: RGBA8 when
+    hosted, BGRA8 otherwise.
+  - Vulkan enables `VK_KHR_external_memory_fd` and skips adapters without it.
+    After the last pass it releases the image from `TRANSFER_SRC_OPTIMAL` to
+    `VK_QUEUE_FAMILY_EXTERNAL` in `SHADER_READ_ONLY_OPTIMAL`. A depth epoch
+    replaces the generation whenever the shared depth attachment is recreated.
+- **Consumer.** `rhi::HostedSurfaceConsumer`
+  (`<ludus/graphics/rhi/hosted_surface.h>`) is Qt-free. It takes the editor's
+  `NativeDeviceIdentity` and imports each generation onto that device.
+  - `Pump` runs after the endpoint's `Pump`.
+  - `AcquireFrame` returns the newest completed frame. A frame superseded
+    before acquisition, or a late frame of a replaced generation, goes back
+    unseen.
+  - `ReleaseFrame` goes after the editor's sampling has completed. A replaced
+    generation's imports are destroyed once none of its frames is held.
+  - On Vulkan, the editor records the acquire barrier from
+    `VK_QUEUE_FAMILY_EXTERNAL` that `HostedFrame` describes. It needs no barrier
+    to return an image, because the game discards the contents.
+  - A refusal is terminal for the session and has a reason: `AdapterMismatch`
+    (Vulkan UUIDs differ), `UnsupportedHandle`, `ImportFailed` or
+    `ProtocolViolation`.
+  - IOSurfaces work across GPUs, so Metal has no adapter check.
+  - Qt's Vulkan device must enable `VK_KHR_external_memory_fd`; P6 configures
+    that.
+  - The game picks its adapter as usual. It has no adapter hint from the
+    editor, so a multi-GPU Linux host may be refused.
+- **Evidence.**
+  - `ludus_platform_hosted_tests` covers the version-2 codec, descriptor and
+    Mach transport over socketpairs, release extraction, backpressure, deferred
+    releases and violations.
+  - `ludus_platform_hosted_mach_tests` is the Mach probe.
+  - `ludus_rhi_lifecycle_tests` pins `HostedRing` transitions.
+  - `ludus_rhi_hosted_surface_tests` runs `ludus_rhi_hosted_producer`, an
+    ordinary RHI application, in a hosted window. It covers: the known colour,
+    no reuse of a held image, Skipped while every image is held (each call
+    returns in under 100 ms), recovery on release, five resizes that need
+    retirement, and refusal of forged images. On Linux it opens with the
+    device-UUID probe and refuses forged adapter UUIDs.
 
 ### Input, focus and capture
 
