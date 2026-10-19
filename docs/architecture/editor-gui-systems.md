@@ -524,7 +524,7 @@ other World. `GetRenderPreview` returns that preview, so the render-graph
 preview also works for World-demo Worlds. Edit and Play draw identical
 geometry, scatter included, because both use the game's own extraction.
 
-A World-demo frame holds up to 176 draws (`MAX_RENDER_DRAWS`). That is more
+A World-demo frame holds up to 192 draws (`MAX_RENDER_DRAWS`). That is more
 than RenderScene's current 128-object bound but within the Renderer's default
 of 256. P2 raises the RenderScene bound to a named constant owned by the
 Renderer limit, so the limit is not written as a second literal.
