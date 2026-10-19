@@ -43,14 +43,6 @@ endif()
 # Q_SLOTS/Q_EMIT and the typed (pointer-to-member) connect overloads instead.
 # AUTOMOC is enabled per target below, not globally.
 
-# Native editor builds include rendering; lightweight builds explicitly opt out.
-# Browser builds use a separate WebGPU canvas without Qt Quick interop.
-set(editor_render_preview_default ON)
-if(EMSCRIPTEN)
-    set(editor_render_preview_default OFF)
-endif()
-option(LUDUS_EDITOR_RENDER_PREVIEW "Build the trusted native authoring surface (requires pinned shader tools)" ${editor_render_preview_default})
-
 set(editor_viewport_sources
     src/internal/viewport_frame_source.h
     src/viewport_frame_source.cpp

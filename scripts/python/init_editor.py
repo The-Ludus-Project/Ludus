@@ -28,6 +28,11 @@ def validate_editor_options(args, engine) -> None:
     family = "macos-" if platform.system() == "Darwin" else "linux-"
     if args.preset not in SUPPORTED_PRESETS or not args.preset.startswith(family):
         raise engine.EngineError("Editor setup requires " + ", ".join(SUPPORTED_PRESETS) + "; browser editor setup is unsupported")
+    if args.with_editor_preview and platform.system() == "Darwin":
+        version = platform.mac_ver()[0]
+        if version and int(version.split(".")[0]) < 15:
+            raise engine.EngineError("Editor 3D preview requires macOS 15 or newer for live shader compilation; "
+                                     "use --no-editor-preview for a document-only editor")
 
 
 def preview_tool_args(root: Path) -> list[str]:

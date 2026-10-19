@@ -102,6 +102,21 @@ class SetupTests(unittest.TestCase):
                         init_editor.validate_editor_options(self.args(preset), engine)
         self.assertIn("macos-clang-development", editor_launch.SUPPORTED_PRESETS)
 
+    def test_older_macos_rejects_rendered_editor_before_shader_bootstrap(self):
+        with patch.object(platform, "system", return_value="Darwin"), \
+             patch.object(platform, "machine", return_value="arm64"), \
+             patch.object(platform, "mac_ver", return_value=("14.7.1", (), "")), \
+             patch.object(engine, "run") as run:
+            with self.assertRaisesRegex(engine.EngineError, "macOS 15.*--no-editor-preview"):
+                init_editor.prepare_editor_preview(self.args(), engine)
+            run.assert_not_called()
+            init_editor.validate_editor_options(self.args("macos-clang-development", "--no-editor-preview"), engine)
+        for version in ("15.0", "26.0"):
+            with self.subTest(version=version), patch.object(platform, "system", return_value="Darwin"), \
+                 patch.object(platform, "machine", return_value="arm64"), \
+                 patch.object(platform, "mac_ver", return_value=(version, (), "")):
+                init_editor.validate_editor_options(self.args(), engine)
+
     def test_existing_qt_uses_local_cache_without_installing(self):
         with tempfile.TemporaryDirectory() as temporary:
             qt = Path(temporary) / "Qt with spaces"
