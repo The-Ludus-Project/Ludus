@@ -215,7 +215,8 @@ class RequiredGateTests(unittest.TestCase):
             condition = conditions.get(name, "")
             self.assertEqual("validation_tier != 'pull-request'" in condition, name in ci_scope.MERGE_QUEUE_JOBS)
             self.assertEqual("validation_tier == 'nightly'" in condition, name in ci_scope.NIGHTLY_JOBS)
-            self.assertEqual("validation_tier == 'integration'" in condition, name in ci_scope.INTEGRATION_ONLY_JOBS)
+            self.assertEqual("validation_tier != 'integration'" in condition or "validation_tier == 'nightly'" in condition,
+                             name in ci_scope.INTEGRATION_JOBS, name)
 
     def test_advisory_analyzers_run_nightly_and_required_inventory_runs_in_the_queue(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
@@ -309,12 +310,11 @@ class RequiredGateTests(unittest.TestCase):
             results[name]["result"] = "success"
             self.assertTrue(ci_scope.gate_failures(results), name)
             results[name]["result"] = "skipped"
-        # The cached compile is required on integration PRs and nowhere else.
-        for name in ("formatting", *ci_scope.INTEGRATION_ONLY_JOBS):
-            for status in ("skipped", "failure", "cancelled"):
-                results[name]["result"] = status
-                self.assertTrue(ci_scope.gate_failures(results), (name, status))
-            results[name]["result"] = "success"
+        # Source/tooling validation remains required before accepting engine changes.
+        for status in ("skipped", "failure", "cancelled"):
+            results["formatting"]["result"] = status
+            self.assertTrue(ci_scope.gate_failures(results), status)
+        results["formatting"]["result"] = "success"
         self.assertEqual(ci_scope.gate_failures(results), [])
         self.assertEqual(ci_scope.gate_failures(self.results(False, ci_scope.INTEGRATION_TIER)), [])
 
@@ -334,7 +334,6 @@ class RequiredGateTests(unittest.TestCase):
         def expected(name):
             deferred = ((tier == ci_scope.PULL_REQUEST_TIER and name in ci_scope.MERGE_QUEUE_JOBS)
                         or (tier == ci_scope.INTEGRATION_TIER and name in ci_scope.INTEGRATION_JOBS)
-                        or (tier != ci_scope.INTEGRATION_TIER and name in ci_scope.INTEGRATION_ONLY_JOBS)
                         or (tier != ci_scope.NIGHTLY_TIER and name in ci_scope.NIGHTLY_JOBS))
             return "success" if native_required and not deferred else "skipped"
         return {
@@ -350,7 +349,7 @@ class RequiredGateTests(unittest.TestCase):
     def test_failed_cancelled_or_skipped_native_jobs_fail_full_validation(self):
         for name in ci_scope.NATIVE_JOBS:
             statuses = (("failure", "cancelled", "success")
-                        if name in (*ci_scope.NIGHTLY_JOBS, *ci_scope.INTEGRATION_ONLY_JOBS)
+                        if name in ci_scope.NIGHTLY_JOBS
                         else ("failure", "cancelled", "skipped"))
             for status in statuses:
                 with self.subTest(name=name, status=status):
@@ -363,7 +362,7 @@ class RequiredGateTests(unittest.TestCase):
         self.assertEqual(ci_scope.gate_failures(self.results(False, ci_scope.PULL_REQUEST_TIER)), [])
         for name in ci_scope.NATIVE_JOBS:
             statuses = ("failure", "cancelled", "success") if name in (
-                *ci_scope.MERGE_QUEUE_JOBS, *ci_scope.NIGHTLY_JOBS, *ci_scope.INTEGRATION_ONLY_JOBS) else (
+                *ci_scope.MERGE_QUEUE_JOBS, *ci_scope.NIGHTLY_JOBS) else (
                 "failure", "cancelled", "skipped")
             for status in statuses:
                 with self.subTest(name=name, status=status):
@@ -375,15 +374,9 @@ class RequiredGateTests(unittest.TestCase):
         results = self.results(tier=ci_scope.NIGHTLY_TIER)
         self.assertEqual(ci_scope.gate_failures(results), [])
         for name in ci_scope.NATIVE_JOBS:
-            if name in ci_scope.INTEGRATION_ONLY_JOBS:
-                continue
             results[name]["result"] = "skipped"
             self.assertTrue(ci_scope.gate_failures(results), name)
             results[name]["result"] = "success"
-        for name in ci_scope.INTEGRATION_ONLY_JOBS:
-            results[name]["result"] = "success"
-            self.assertTrue(ci_scope.gate_failures(results), name)
-            results[name]["result"] = "skipped"
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         for name in ("ci.yml", "wiki.yml", "project-sdk.yml"):
             triggers = root.joinpath(name).read_text().split("\npermissions:", 1)[0]
@@ -415,17 +408,45 @@ class RequiredGateTests(unittest.TestCase):
             results["changes"]["outputs"]["native_required"] = output
             self.assertTrue(ci_scope.gate_failures(results))
 
-    def test_older_batch_coordinators_may_omit_only_integration_only_jobs(self):
+    def test_older_trusted_workflows_can_report_only_a_skipped_legacy_compile(self):
         for tier in (ci_scope.FULL_TIER, ci_scope.PULL_REQUEST_TIER, ci_scope.NIGHTLY_TIER):
-            with self.subTest(tier=tier):
-                results = self.results(tier=tier)
-                for name in ci_scope.INTEGRATION_ONLY_JOBS:
-                    del results[name]
-                self.assertEqual(ci_scope.gate_failures(results), [])
+            for status in ("skipped", "success", "failure", "cancelled", None):
+                with self.subTest(tier=tier, status=status):
+                    results = self.results(tier=tier)
+                    results[ci_scope.LEGACY_INTEGRATION_JOB] = {"result": status}
+                    self.assertEqual(bool(ci_scope.gate_failures(results)), status != "skipped")
         results = self.results(tier=ci_scope.INTEGRATION_TIER)
-        for name in ci_scope.INTEGRATION_ONLY_JOBS:
-            del results[name]
+        results[ci_scope.LEGACY_INTEGRATION_JOB] = {"result": "skipped"}
         self.assertTrue(ci_scope.gate_failures(results))
+
+    def test_batch_editor_retains_all_deferred_authoring_coverage(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        editor = workflow.split("\n  editor:\n", 1)[1].split("\n  # Debug runtime", 1)[0]
+        self.assertIn("-DLUDUS_EDITOR_RENDER_PREVIEW=ON", editor)
+        self.assertIn("-DLUDUS_BUILD_SHADER_WORKER=ON", editor)
+        # A target-limited Editor build misses worker/client/protocol targets.
+        build = next(line.strip() for line in editor.splitlines() if line.strip().startswith("run:")
+                     and "cmake --build" in line)
+        self.assertEqual(build, "run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development")
+        self.assertIn("--label-regex '^(unit|editor)$' --no-tests=error", editor)
+        self.assertIn("--tests-regex '^ludus_target_detection$' --output-on-failure --no-tests=error", editor)
+        self.assertEqual(editor.count('--label-regex'), 1, 'Tests carrying both labels must run once.')
+        self.assertIn('QT_QPA_PLATFORM: offscreen', editor)
+        self.assertIn("'[.script-journey]'", editor)
+
+    def test_batch_identity_overrides_pr_routing_and_requires_compiled_jobs(self):
+        event = {"pull_request": {"base": {"ref": "develop"}, "labels": []}}
+        tier = ci_scope.validation_tier("pull_request", event, is_batch=True)
+        self.assertEqual(tier, ci_scope.FULL_TIER)
+        results = self.results(tier=tier)
+        for name in ci_scope.INTEGRATION_JOBS:
+            if name in ci_scope.NIGHTLY_JOBS:
+                continue
+            with self.subTest(job=name):
+                results[name]["result"] = "skipped"
+                self.assertTrue(ci_scope.gate_failures(results))
+                results[name]["result"] = "success"
+        self.assertEqual(ci_scope.gate_failures(results), [])
 
     def test_missing_or_unexpected_native_jobs_fail(self):
         results = self.results()
