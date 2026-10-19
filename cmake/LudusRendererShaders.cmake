@@ -2,19 +2,28 @@ include_guard(GLOBAL)
 
 # Built-in renderer recipes have one owner, shared by engine and installed SDK.
 # Callers choose artifacts; source paths, entry points and includes stay here.
+# Recipe directory (with recipes.json) and include roots of the built-in recipes.
+# Run-time recompilers (the editor's live viewport shaders) capture these same roots.
+function(ludus_get_renderer_shader_roots out_directory out_includes)
+    set(directory "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders")
+    set(includes "${directory}")
+    if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/shaders/recipes.json")
+        get_filename_component(root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+        set(directory "${root}/modules/graphics/renderer/shaders")
+        set(includes "${root}/modules/foundation/math/shaders"
+                     "${root}/modules/graphics/rhi/shaders"
+                     "${root}/modules/graphics/renderer/include/ludus/graphics/renderer")
+    endif()
+    set(${out_directory} "${directory}" PARENT_SCOPE)
+    set(${out_includes} "${includes}" PARENT_SCOPE)
+endfunction()
+
 function(ludus_compile_renderer_shaders)
     cmake_parse_arguments(PARSE_ARGV 0 RENDERER "" "TARGET" "SHADERS")
     if(RENDERER_UNPARSED_ARGUMENTS OR NOT TARGET "${RENDERER_TARGET}" OR NOT RENDERER_SHADERS)
         message(FATAL_ERROR "ludus_compile_renderer_shaders requires TARGET and SHADERS")
     endif()
-    set(directory "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders")
-    set(includes "${directory}")
-    if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/shaders/recipes.json")
-        set(directory "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/shaders")
-        set(includes "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/foundation/math/shaders"
-                     "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/rhi/shaders"
-                     "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/include/ludus/graphics/renderer")
-    endif()
+    ludus_get_renderer_shader_roots(directory includes)
     set(manifest "${directory}/recipes.json")
     ludus_require_file("${manifest}" "Renderer shader recipes" "Restore the renderer source/SDK installation.")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${manifest}")

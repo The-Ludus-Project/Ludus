@@ -903,6 +903,45 @@ frame. In the browser, the engine canvas covers Qt widgets, so the statistics
 appear as a line under the viewport toolbar. The toggle is saved with the
 viewport preferences.
 
+The **Live shaders** toolbar toggle reloads the viewport's renderer shaders while
+you edit them. It watches the engine checkout the editor was built from: the
+recipes in `modules/graphics/renderer/shaders/recipes.json`, their sources and
+their include roots, as returned by `ludus_get_renderer_shader_roots`. Saving a
+file starts a background build after 250 ms without further changes. The build
+runs `ludus-shader-worker` for each recipe stage whose files changed; other
+stages reuse their last output. The UI thread never compiles. Once every stage
+succeeds, validates with `spirv-val` and keeps its interface, the preview
+prepares a new resource generation. It swaps at a frame boundary, after the old
+generation's GPU work has retired. Every shading mode, debug views included,
+uses the new code. The overlay below the statistics then shows
+`Shader reloaded (N ms)` for three seconds. N is the time from the start of the
+build to the first frame drawn with the new shaders.
+
+When a stage does not compile, the viewport keeps drawing with its last good
+shaders. A red overlay names the file and line, the compiler's message and the
+first lines of its output. Long lines are shortened to the viewport; the
+toggle's tooltip holds the whole text. The next successful build clears the
+error. Running pipelines keep the built-in binding layout, uniform layout and
+vertex inputs. A stage may stop using a resource. Adding a resource, moving a
+binding, resizing or reordering a uniform buffer, or changing vertex inputs needs
+new pipeline layouts. These edits show `Shader interface changed · restart
+required` and keep the last good shaders. Rebuild and restart the editor to draw
+them. Turning the toggle off stops watching and returns to the shaders the
+editor was built with. The toggle is not saved, so the editor never starts a
+worker unasked.
+
+The editor starts its own worker from the build tree, with a private socket that
+it removes on exit. Configure with `-DLUDUS_BUILD_SHADER_WORKER=ON` to build that
+worker; see
+[Native shader worker](render-graph-authoring.md#native-shader-worker-and-live-development-builds).
+On macOS this needs macOS 15. To use a worker you started yourself, set
+`LUDUS_SHADER_WORKER_SOCKET`, or set the Renderer tab's **Native shader worker**
+endpoint. Without a worker the overlay explains how to get one. Live shaders
+are available in the native editor on macOS (Metal) and Linux (Vulkan). The
+browser editor has neither the worker nor a source tree, so it has no toggle.
+Project render-graph shaders reload through the Renderer tab's **Live Preview**
+instead.
+
 Lit uses raster direct lighting and real-time shadows. HDR or constant authored
 environments supply irradiance and specular reflection. No editor fill is added
 to Lit. Navigation, resize and scene edits never start a static lightmap bake.
