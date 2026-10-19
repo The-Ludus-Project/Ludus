@@ -1,0 +1,117 @@
+#pragma once
+
+// One hosted-window session on the endpoint side: admission of a connected
+// peer, the Hello handshake, the mirrored window state and the bounded send
+// queue. HostedWindowEndpoint adds the listening socket and session directory;
+// tests drive a session directly over a socketpair.
+
+#include <ludus/foundation/base/core.h>
+
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/time/time.hpp>
+#include <ludus/input/keyboard_event.h>
+#include <ludus/platform/hosted_window.h>
+
+#include "hosted_protocol.hpp"
+#include "hosted_socket.hpp"
+
+namespace ludus::platform::hosted
+{
+/// Bytes the endpoint queues for a window that has not drained its socket.
+inline constexpr usize MAX_PENDING_SEND_BYTES = static_cast<usize>(16) * 1024;
+/// Time a connected peer has to deliver a complete Hello.
+inline constexpr foundation::uint64 HANDSHAKE_TIMEOUT_NANOSECONDS = static_cast<foundation::uint64>(5) * 1'000'000'000;
+
+/// Lifecycle of a session.
+enum class SessionPhase : uint8
+{
+    /// No peer is admitted.
+    Idle,
+    /// A same-user peer is connected and its Hello has not completed.
+    Handshaking,
+    /// The peer is authenticated.
+    Connected,
+    /// The authenticated peer is gone. Terminal until Configure().
+    Disconnected,
+};
+
+/// Window state the endpoint reproduces in a Welcome and after an overflow.
+struct MirroredWindowState final
+{
+    uint32 Width = 0;
+    uint32 Height = 0;
+    float32 Scale = 1.0F;
+    WindowVisibility Visibility = WindowVisibility::Visible;
+};
+
+class EndpointSession final
+{
+public:
+    /// @brief Reset to Idle with a token, the accepted user id and the initial window state.
+    /// @pre The state is valid for the protocol (extent, scale, visibility).
+    void Configure(const Token& token, uint32 expectedUserId, const MirroredWindowState& state) noexcept;
+
+    /// @brief Take ownership of a newly connected peer.
+    ///
+    /// A peer under another user id is refused at once. Otherwise the session enters
+    /// Handshaking. Ignored (and the peer closed) unless the session is Idle.
+    void Admit(SocketDescriptor&& connection, foundation::time::Timestamp now) noexcept;
+
+    /// Progress the handshake, flush queued bytes and detect disconnection.
+    void Pump(foundation::time::Timestamp now) noexcept;
+
+    /// Close any connection. A connected session becomes Disconnected; otherwise Idle.
+    void Close() noexcept;
+
+    [[nodiscard]] LUDUS_INLINE SessionPhase GetPhase() const noexcept
+    {
+        return mPhase;
+    }
+    [[nodiscard]] LUDUS_INLINE HostedRefusal GetLastRefusal() const noexcept
+    {
+        return mLastRefusal;
+    }
+    [[nodiscard]] LUDUS_INLINE uint32 GetRefusalCount() const noexcept
+    {
+        return mRefusalCount;
+    }
+
+    HostedEndpointStatus SendResize(uint32 width, uint32 height, float32 scale) noexcept;
+    HostedEndpointStatus SendVisibility(WindowVisibility visibility) noexcept;
+    HostedEndpointStatus SendFocusEntered(const input::FocusBaseline& baseline) noexcept;
+    HostedEndpointStatus SendFocusLost() noexcept;
+    HostedEndpointStatus SendKey(input::Key key, input::KeyTransition transition, bool isRepeat) noexcept;
+    HostedEndpointStatus SendClose() noexcept;
+
+private:
+    void refuse(HostedRefusal refusal) noexcept;
+    void receiveHello(foundation::time::Timestamp now) noexcept;
+    void detectDisconnection() noexcept;
+    void disconnect() noexcept;
+    [[nodiscard]] bool enqueue(const Message& message) noexcept;
+    [[nodiscard]] bool enqueueSynchronization(bool isOverflow) noexcept;
+    [[nodiscard]] Message makeFocusMessage() const noexcept;
+    [[nodiscard]] HostedEndpointStatus send(const Message& message) noexcept;
+    void flush() noexcept;
+
+private:
+    Token mToken = {};
+    uint32 mExpectedUserId = 0;
+    MirroredWindowState mState = {};
+    bool mIsFocused = false;
+    input::FocusBaseline mHeldKeys = {};
+    bool mIsCloseRequested = false;
+    bool mIsResynchronizationPending = false;
+
+    SessionPhase mPhase = SessionPhase::Idle;
+    SocketDescriptor mConnection;
+    foundation::time::Timestamp mConnectedAt = {};
+    foundation::StaticArray<uint8, MAX_FRAME_BYTES> mHelloBytes = {};
+    usize mHelloSize = 0;
+    foundation::StaticArray<uint8, MAX_PENDING_SEND_BYTES> mPending = {};
+    usize mPendingSize = 0;
+
+    HostedRefusal mLastRefusal = HostedRefusal::None;
+    uint32 mRefusalCount = 0;
+};
+} // namespace ludus::platform::hosted

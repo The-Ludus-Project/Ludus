@@ -20,8 +20,11 @@ syntax checks, tooling regressions, the installed host-tooling tests, and public
 API/documentation validation. Drafts retain these inexpensive checks. When the
 change is not documentation-only, they also run **Integration compile (Linux
 Clang, Editor)**: one `ubuntu-24.04` job that prepares `linux-clang-development`
-with the Editor and its trusted render preview, builds every default target with
-warnings as errors, and runs the `unit` CTest label (Editor tests offscreen). It
+with the Editor, its trusted render preview and the native shader worker
+(`LUDUS_BUILD_SHADER_WORKER`, which live shader reload uses), builds every default
+target with warnings as errors, and runs the `unit` CTest label (Editor tests
+offscreen, plus the shader compiler and worker protocol tests) and
+`ludus_target_detection`. It
 restores the Conan and `editor` compiler caches that the batch's Optional editor
 job saves on `main` and never writes its own, so it takes about 10 minutes with a
 warm cache and about 30 minutes cold. The `Ubuntu Clang` gate requires it on

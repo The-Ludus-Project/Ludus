@@ -3,12 +3,13 @@
 #include "codec.hpp"
 
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <cstring>
 #include <new>
 
-#if defined(__linux__) || defined(__APPLE__)
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS
 #    include <cerrno>
 #    include <fcntl.h>
 #    include <sys/socket.h>
@@ -41,7 +42,7 @@ Client::~Client() noexcept
 }
 void Client::Cancel() noexcept
 {
-#if defined(__linux__) || defined(__APPLE__)
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS
     if (mState.Get() != nullptr && mState->Descriptor >= 0)
     {
         static_cast<void>(::close(mState->Descriptor));
@@ -55,7 +56,7 @@ Status Client::Submit(BorrowedView<const char> endpoint, const Request& request)
     {
         return Status::InvalidState;
     }
-#if defined(__linux__) || defined(__APPLE__)
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS
     sockaddr_un address{};
     if (endpoint.IsValid() == false || endpoint.GetSize() == 0 || endpoint.GetSize() >= sizeof(address.sun_path) ||
         std::memchr(endpoint.GetDataOrNull(), '\0', endpoint.GetSize()) != nullptr ||
@@ -88,7 +89,7 @@ Status Client::Submit(BorrowedView<const char> endpoint, const Request& request)
         static_cast<void>(::close(descriptor));
         return Status::Unavailable;
     }
-#    if defined(__APPLE__)
+#    if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     const int32 shouldSuppressPipeSignal = 1;
     if (::setsockopt(descriptor,
                      SOL_SOCKET,
@@ -122,12 +123,12 @@ Status Client::Poll(Result& outResult) noexcept
     {
         return Status::InvalidState;
     }
-#if defined(__linux__) || defined(__APPLE__)
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS
     State& state = *mState;
     const auto sendBytes = [&](const uint8* bytes, usize size, usize& inoutOffset) {
         while (inoutOffset < size)
         {
-#    if defined(__linux__)
+#    if LUDUS_TARGET_OS == LUDUS_OS_LINUX
             const ssize_t count = ::send(state.Descriptor, bytes + inoutOffset, size - inoutOffset, MSG_NOSIGNAL);
 #    else
             const ssize_t count = ::send(state.Descriptor, bytes + inoutOffset, size - inoutOffset, 0);

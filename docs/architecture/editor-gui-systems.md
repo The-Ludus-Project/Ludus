@@ -139,11 +139,136 @@ and parses build output; navigation calls the producer's existing location mappi
 (`RendererWorkspace::ActivateDiagnostic`), whose rows are the Error List's rows in
 the same order.
 
-One render graph is open at a time. One canvas document per open `.lurender.json`
-needs its own design first: each document would need its own job, Error List
-producer identity and Properties page, and the preview, which holds a
-RenderGraphActivation on the shared World viewport device, would have to follow the
-active graph document.
+Today one render graph is open at a time. The next subsection designs one canvas
+document per open `.lurender.json`.
+
+### One document per render graph
+
+This design is not implemented yet. Each open root `.lurender.json` becomes its
+own Render Graph document, in the way Visual Studio opens one editor per file.
+The document owner, `RendererWorkspace`, keeps its contract: one typed
+`RenderGraphDocument` draft, one history, one `RenderGraphJob`, and one
+`RenderGraphPreview`. A new private component, `RenderGraphDocuments`, owns the
+set of these documents for the bound project. `MainWindow` still only routes
+commands and tool windows to it. This follows the
+[refactoring rules](#implementation-boundaries-and-refactoring): the set is a
+narrow owner with its own state, not new branches spread through `MainWindow`.
+
+**Identity and admission.** A document's identity is the canonical path of its
+root graph. Opening a path that is already open activates that document.
+`RenderGraphDocument::Load` reads every authored source below its package root.
+Two documents whose package roots are equal, or where one root contains the
+other, would therefore keep two drafts of the same files. The set refuses such an
+open, names the open document that owns the package, and leaves that document
+unchanged. The set holds at most `MAX_RENDER_GRAPH_DOCUMENTS` documents (8) plus
+the main graph described below. A refused open reports its reason and loads
+nothing. Project Explorer, File > Open Render Graph and shader items
+(`FindPackageGraph`) all go through this one admission path.
+
+**Main graph and engine default.** `graphs/Main/main.lurender.json` is a
+permanent slot. While a project is bound there is always one main document. It
+keeps today's `rendererWorkspace` objectName, so existing layouts restore, and
+closing its tab only hides it, as now. When the file does not exist, the slot
+shows the read-only engine default. Its identity is already the destination
+path, so Save or Customize creates the package without re-keying the document.
+New Graph refuses a name whose root graph would collide with an open document,
+including an unsaved engine default. That stops creation from writing beneath a
+draft. Every other graph document is dynamic: the set creates it when it opens
+and destroys it when it closes.
+
+**Jobs and creation.** Each document keeps its own job, and the existing checks
+on request, epoch and loaded document reject stale results. Documents in
+different packages may run jobs at the same time. Their build trees
+(`out/render-graph/<package>/<graph>/`) and draft snapshots are disjoint. The set
+adds no global queue until measurements show contention for the shared worker
+socket. `RenderGraphCreation` moves from `RendererWorkspace` into the set, with
+one creation per project at a time. New Graph and Open Graph add a document
+instead of replacing a draft, so they no longer ask to discard one.
+`CanCreateGraph` means "a project is bound and no creation is running". It no
+longer depends on another document's job.
+
+**Current graph document.** The commands that act on a graph target the *current
+graph document*: Validate, Build, Build & Preview, Cook Runtime, Cancel, Live
+Preview, Tools > Options' resolved tools, and Render Preview. This is the most
+recently activated graph document. It stays current while a World or another
+non-graph document is active, because Build & Preview is normally used with the
+World tab in front. When the current document closes, the next most recently
+active graph document takes over, and otherwise the main document. Save, Undo
+and Redo still route to the active document only.
+
+**Error List identity.** `ErrorListEntry` gains a nonzero `Owner`, the
+document's serial. The set assigns serials from a per-session counter and never
+reuses them. `ReplaceEntries(producer, owner, entries)` replaces only that
+document's rows; build output uses owner 0. Render-graph rows show the File as a
+project-relative path (package plus package-relative file), so rows from two
+graphs can be told apart. To activate a row, the shell looks up the document by
+`Owner`, opens it, and calls its own `ActivateDiagnostic(SourceIndex)`, so row
+order still matches `MakeRenderGraphErrorEntries`. Closing a document removes its
+rows. A project change removes every render-graph row. A row whose owner is gone
+cannot navigate to another document.
+
+**Properties.** Properties keeps one page per document instead of re-binding a
+shared page. Each inspector panel is built over its own workspace's selection,
+draft and edit callbacks. Re-binding one page would first require moving
+inspector state out of `RendererWorkspace`, which is a separate extraction. The
+set adds the document's `TakeInspectorPanel` page to the Properties stack when it
+creates the document, and removes it when the document closes. Properties shows
+the page of the active document, or the World page or the hint, as today.
+
+**Render Preview and the shared device.** The Render Preview tool window holds a
+stack of each document's `TakePreviewPanel` page and shows the current graph
+document's page. Only the current document has a preview source:
+`SetPreviewSource(&World->GetRenderPreview())`. Every other document has
+`SetPreviewSource(nullptr)`, which detaches its `RenderGraphActivation` and
+releases its generations on the World viewport device. Its last image stays
+visible, marked stale, and its requested generation re-stages through
+`ServicePreview` when it becomes current again. So at most one activation uses
+the shared device, and `RenderPreview::DeviceStopping` still has a single
+consumer to release. `WorldWorkspace::RenderPreviewChanged` re-targets only the
+current document. A document without a source stops its preview timer.
+
+Live Preview stays a per-document state, but at most one document may have it
+on. Changing the current document turns it off on the previous one, and
+`LivePreviewChanged` updates the toggle, because a background document's results
+could not be shown. The set owns the project's `RenderGraphBuildSettings` and
+applies them to every document, including new ones. Options shows the resolved
+tools and SDK of the current document.
+
+**Document well lifecycle.** `DocumentWell` gains documents that the owner
+closes. They are registered with that flag, and a tab close, Window > Close
+Document or Close All emits `CloseRequested(document)` instead of hiding the
+document. The set asks to discard a dirty draft and cancels the document's job
+and creation callback. It sets the preview source to null, removes the Error
+List rows and the Properties and Render Preview pages, and calls
+`RemoveDocument`, which unregisters the view without deleting it. It then
+deletes the workspace before the panels it gave away; their connections use the
+workspace as context, so they are already disconnected. A dynamic document's
+objectName is `renderGraph.` followed by the first 16 hexadecimal digits of the
+SHA-256 of its project-relative root graph path. So `DocumentWell::SaveState`
+still contains no paths. Tab titles are the root graph's file name, with its
+package folder added when two open documents share a file name, plus `*` while
+dirty. Closing the project or the editor asks about every dirty graph document
+in well order.
+
+**Per-project layout.** The project workspace file adds `renderGraphs`: the
+project-relative root graph paths of the dynamic documents, in opening order, at
+most `MAX_RENDER_GRAPH_DOCUMENTS`. The layout version stays 5, because files
+without the key restore only the main document and the Qt dock state does not
+change. On restore, the set binds the project first. For each entry it rejects
+absolute or escaping paths, requires an existing `.lurender.json` inside the
+canonical project root, and applies the admission rules, skipping refused
+entries and naming them in the status bar. Restore reads sources and writes
+nothing. Only then does `DocumentWell::RestoreState` arrange the restored
+objectNames. This reverses today's order, where the well restores before
+`RendererWorkspace::SetProject`.
+
+| Slice | Scope | Regression evidence |
+| --- | --- | --- |
+| 1 | `DocumentWell` owner-closed documents: `CloseRequested`, `RemoveDocument`; Close Document and Close All route through them | Well tests: hide versus request-close, removal while active or split, `SaveState` after removal |
+| 2 | Error List `Owner` and project-relative render-graph File | Per-owner replacement keeps other owners' rows; activation reaches the owning document's `ActivateDiagnostic` |
+| 3 | Extract `RenderGraphDocuments` holding only the main document, with no behaviour change: creation, build settings, preview-source assignment, current-graph tracking. `RendererWorkspace` gains a project binding that does not open the main graph | Existing `editor_shell_tests` and `renderer_workspace_tests` pass unchanged |
+| 4 | Dynamic documents: admission, cap, per-document Properties and preview pages, current-graph routing, Live Preview handoff, close and destroy | `editor_shell_tests`: two graphs open in two tabs, Properties follows the active one, B's rows navigate to B, closing B cancels its job and removes its rows and pages, an overlapping package is refused, only the current document is attached (native preview builds) |
+| 5 | Per-project restore of `renderGraphs`; user guides ([workspace layout](../development/editor-workspace.md#workspace-layout), [render-graph authoring](../development/render-graph-authoring.md#node-canvas-and-preview-rg3b)) | Restore reopens graphs by relative path, skips missing or escaping entries, and keeps the main document's objectName |
 
 ### Docking middleware evaluation
 
@@ -422,9 +547,11 @@ defines the frontend selection gates and persistence limits.
 
 Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer),
 P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) and P3
-(the viewport frame source) are implemented; P4–P7 are pending. It replaces the
-separate World-demo authoring window, the World-demo private shader and the
-separate-window default for Play.
+(the viewport frame source) are implemented. P4, the Platform
+[hosted window channel](#hosted-window-channel), is implemented; the editor does
+not use it until P6. P5–P7 are pending. It replaces the separate World-demo
+authoring window, the World-demo private shader and the separate-window default
+for Play.
 
 While a game plays, the World viewport is that game's window. The game owns
 rendering and input there and behaves as it would in its own OS window. A
@@ -487,6 +614,90 @@ Key translation has one owner. Platform publishes its existing native key-code
 maps: Cocoa's `MapKeyCode` and the evdev keymap. The editor's Qt adapter converts
 `QKeyEvent::nativeVirtualKey`/`nativeScanCode` through those maps, not through a
 second table.
+
+### Hosted window channel
+
+Platform implements the hosted backend on macOS and Linux, with or without
+Wayland. Browser and Windows builds have none: there the endpoint reports
+Unavailable.
+
+- **Endpoint.** `HostedWindowEndpoint` (`<ludus/platform/hosted_window.h>`) is
+  Qt-free and nonblocking. `Start` creates a `mkdtemp` directory (mode 0700) in a
+  caller-chosen parent, binds the socket `window` inside it (mode 0600) and draws
+  a 32-byte token from system entropy. The caller pumps it each frame and sends
+  resize, visibility, focus, key and close events through it. It admits one
+  window. After admission it removes the socket file, so no other process can
+  connect. `Stop` closes the channel and removes the directory.
+- **Address.** The value of `LUDUS_HOSTED_WINDOW` is
+  `1:<64 lowercase hex token digits>:<absolute socket path>`. The path is at most
+  103 bytes, so it fits `sockaddr_un` on both systems; keep the parent directory
+  short.
+- **Game side.** When the variable is present, `WindowManager::Initialize` only
+  validates the address. It does not start AppKit, so no Dock icon or menu
+  appears. `CreateWindow` connects, checks that the endpoint has the same
+  effective uid, sends Hello and waits up to 5 seconds for Welcome. An invalid
+  address, a refusal or a timeout fails creation; it never falls back to a native
+  window. `CreateInfo` dimensions are ignored, because the host decides the
+  extent. `NativeWindowInfo` reports `WindowSystem::Hosted` with backing-pixel
+  `Width`/`Height` and `Scale`. RHI refuses hosted windows until P5.
+- **Admission.** The endpoint first checks the peer's effective uid
+  (`getpeereid` on macOS, `SO_PEERCRED` on Linux). It then requires a complete
+  Hello within 5 seconds, carrying the protocol version, `input::KEY_COUNT` and
+  the token, which it compares in constant time. A refused peer gets a Refused
+  message with the reason (WrongUser, BadToken, IncompatibleVersion,
+  MalformedHello or HandshakeTimeout) and is disconnected. The endpoint keeps
+  listening for the real window and counts each refusal.
+- **Protocol.** The protocol is version 1. Each message is a little-endian
+  4-byte header (`uint16` kind, `uint16` payload size) followed by a fixed-size
+  payload. A frame payload is at most 255 bytes, so a peer can read and refuse
+  another version's Hello.
+
+| Message | Direction | Payload |
+| --- | --- | --- |
+| Hello | window → endpoint | magic `LHWN`, version, key count, 32-byte token |
+| Welcome | endpoint → window | version, visibility, width, height, scale |
+| Refused | endpoint → window | refusal reason |
+| Resize | endpoint → window | width and height in backing pixels (each ≤ 32768), scale (finite, in (0, 16]) |
+| Visibility | endpoint → window | Visible, Occluded or Minimized |
+| Reset | endpoint → window | FocusEntered, FocusLost or Overflow, plus a held-key bit mask (FocusEntered only) |
+| Key | endpoint → window | physical `input::Key`, Down/Up, repeat flag |
+| Close | endpoint → window | none |
+
+Either side treats an unknown kind, a wrong size or an out-of-range value as a
+violation and closes the channel. After the Hello, a version-1 window sends
+nothing. The endpoint therefore treats any later byte as a disconnection.
+
+The window reproduces the Cocoa contract:
+
+- FocusEntered delivers the baseline without press edges.
+- FocusLost, Overflow and close deliver an empty, unfocused reset. A repeated
+  FocusLost is ignored.
+- Keys that arrive without focus are dropped.
+- A newly attached sink receives the current focus state on the next
+  `HandleEvent`.
+- Minimized publishes a zero extent.
+- Close, and loss of the channel for any reason, deliver `WindowClosed`. Events
+  received before the loss are still delivered first. `HandleEvent` then returns
+  false.
+
+The endpoint mirrors the extent, visibility, focus, held keys and close request.
+State set before admission goes into the Welcome, followed by FocusEntered and
+Close when they apply. Outgoing bytes queue in a fixed 16 KiB buffer. When the
+game does not drain it, a send returns Overflow and drops that message. Once
+the queue drains, the endpoint resends the current extent and visibility, an
+Overflow reset and the current FocusEntered baseline, so no key stays stuck. The
+editor converts native keys with `MapCocoaKeyCode` (Qt's `nativeVirtualKey` on
+macOS) or `MapEvdevKeyCode` (Qt's `nativeScanCode` minus 8 on Linux), from
+`<ludus/platform/native_keymap.h>`.
+
+`ludus_platform_hosted_tests` covers this contract over socketpairs: every
+event, focus baselines, sink synchronization, overflow recovery, close,
+channel loss, protocol violations and each refusal. A uid refusal is produced
+by expecting another uid. The same target also runs `WindowManager` against a
+listening endpoint, checking the directory mode, socket removal after
+admission, a forged token and an invalid address.
+`ludus_platform_native_keymap_tests` checks that the public maps match the
+backend tables entry for entry.
 
 ### The hosted surface and frame ownership
 

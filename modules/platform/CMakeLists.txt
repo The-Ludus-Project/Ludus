@@ -69,6 +69,9 @@ endif()
 target_sources(
     ludus_platform
     PRIVATE
+        src/hosted_protocol.cpp
+        src/hosted_window_endpoint.cpp
+        src/native_keymap.cpp
         src/window.cpp
         src/window_base.cpp
     PUBLIC
@@ -79,8 +82,10 @@ target_sources(
         FILES
             include/ludus/platform/browser/window.h
             include/ludus/platform/config.h
+            include/ludus/platform/hosted_window.h
             include/ludus/platform/keyboard_sink.h
             include/ludus/platform/log_categories.h
+            include/ludus/platform/native_keymap.h
             include/ludus/platform/native_window.h
             include/ludus/platform/base/window.h
             include/ludus/platform/wayland/window.h
@@ -103,6 +108,11 @@ target_link_libraries(
         # One-way dependency: Platform depends on Input for the normalized
         # keyboard record/sink vocabulary. Input never depends on Platform.
         Ludus::Input
+    PRIVATE
+        # Bounded buffers, paths and handshake deadlines of the hosted-window channel.
+        Ludus::FoundationContainers
+        Ludus::FoundationStrings
+        Ludus::FoundationTime
 )
 
 if(EMSCRIPTEN)
@@ -165,6 +175,20 @@ else()
     target_compile_definitions(ludus_platform PRIVATE LUDUS_PLATFORM_HEADLESS=1)
 endif()
 
+# The hosted window backend needs only POSIX Unix sockets, so every native macOS
+# and Linux build has it, with or without Wayland. WindowManager selects it at run
+# time from LUDUS_HOSTED_WINDOW (docs/architecture/editor-gui-systems.md,
+# "The hosted window").
+set(LUDUS_PLATFORM_HOSTED_AVAILABLE OFF)
+if(NOT EMSCRIPTEN AND (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    set(LUDUS_PLATFORM_HOSTED_AVAILABLE ON)
+    target_sources(ludus_platform PRIVATE
+        src/hosted_endpoint_session.cpp
+        src/hosted_socket.cpp
+        src/window_hosted.cpp)
+    target_compile_definitions(ludus_platform PRIVATE LUDUS_PLATFORM_HOSTED=1)
+endif()
+
 ludus_apply_project_defaults(ludus_platform)
 
 if(LUDUS_BUILD_TESTS)
@@ -201,6 +225,30 @@ if(LUDUS_BUILD_TESTS)
     ludus_enable_test_exceptions(ludus_platform_cocoa_keymap_tests)
     add_test(NAME ludus_platform_cocoa_keymap_tests COMMAND ludus_platform_cocoa_keymap_tests)
     set_tests_properties(ludus_platform_cocoa_keymap_tests PROPERTIES LABELS "unit;platform;input")
+
+    # The public key-code maps must return exactly what the private backend tables do.
+    add_executable(ludus_platform_native_keymap_tests tests/native_keymap_tests.cpp)
+    target_include_directories(ludus_platform_native_keymap_tests PRIVATE src)
+    target_link_libraries(ludus_platform_native_keymap_tests PRIVATE Ludus::Platform Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_platform_native_keymap_tests)
+    ludus_enable_test_exceptions(ludus_platform_native_keymap_tests)
+    add_test(NAME ludus_platform_native_keymap_tests COMMAND ludus_platform_native_keymap_tests)
+    set_tests_properties(ludus_platform_native_keymap_tests PROPERTIES LABELS "unit;platform;input")
+endif()
+
+if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE)
+    # Hosted-window channel: codec, endpoint session and window over socketpairs,
+    # plus one end-to-end WindowManager run against a listening endpoint.
+    add_executable(ludus_platform_hosted_tests tests/hosted_window_tests.cpp)
+    target_include_directories(ludus_platform_hosted_tests PRIVATE src)
+    target_compile_definitions(ludus_platform_hosted_tests PRIVATE LUDUS_PLATFORM_HOSTED=1)
+    target_link_libraries(ludus_platform_hosted_tests PRIVATE
+        Ludus::Platform Ludus::FoundationContainers Ludus::FoundationStrings Ludus::FoundationTime
+        Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_platform_hosted_tests)
+    ludus_enable_test_exceptions(ludus_platform_hosted_tests)
+    add_test(NAME ludus_platform_hosted_tests COMMAND ludus_platform_hosted_tests)
+    set_tests_properties(ludus_platform_hosted_tests PROPERTIES LABELS "unit;platform;input" TIMEOUT 60)
 endif()
 
 if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
