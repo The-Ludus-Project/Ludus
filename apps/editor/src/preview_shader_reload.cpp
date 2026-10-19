@@ -251,8 +251,8 @@ bool PreviewShaderReload::prepareCompiler(QString& outError)
     }
     if (endpoint.isEmpty() == true)
     {
-        outError = QStringLiteral("No shader compiler worker. Configure the engine with "
-                                  "-DLUDUS_BUILD_SHADER_WORKER=ON (macOS 15 or Linux) and rebuild the editor, or set "
+        outError = QStringLiteral("No shader compiler worker. Rerun Ludus setup with "
+                                  "3D preview and live shaders enabled, then restart the editor, or set "
                                   "a running worker's socket in Renderer › Native shader worker.");
         return false;
     }

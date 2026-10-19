@@ -250,7 +250,7 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             included = [label for name, label in (("with_tests", "tests"), ("with_smoke_app", "samples"),
                         ("with_web_probes", "browser probes"), ("with_shader_probe", "shader probe"), ("with_editor", "editor")) if flags[name].get()]
             if flags["with_editor"].get():
-                included.append("3D preview + shader tools" if flags["with_editor_preview"].get() else "document-only editor")
+                included.append("3D preview + live shaders" if flags["with_editor_preview"].get() else "document-only editor")
             summary.set(f"{action} for {scope}.\nOptional targets: {', '.join(included) or 'none'}.\n"
                         "Progress and any sudo password prompt appear in the launching terminal.")
 
@@ -278,7 +278,7 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         advanced = ttk.LabelFrame(panel, text="Advanced editor setup", padding=8)
         advanced.grid(row=advanced_row + 1, column=0, columnspan=2, sticky="ew")
         controls["with_editor_preview"] = ttk.Checkbutton(
-            advanced, text="Include 3D preview and pinned shader tools (disable for a lightweight editor)",
+            advanced, text="Include 3D preview and live shaders (disable for a lightweight editor)",
             variable=flags["with_editor_preview"], command=refresh)
         controls["with_editor_preview"].pack(anchor="w")
         advanced.grid_remove()

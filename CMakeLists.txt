@@ -61,6 +61,7 @@ option(LUDUS_BUILD_SCRIPT_INTERACTION "Build the experimental S1 native/Luau hea
 option(LUDUS_BUILD_EDITOR "Build the optional Qt editor workspace (apps/editor)" OFF)
 option(LUDUS_BUILD_WEB_PROBES "Build browser feasibility probes" ON)
 include(EngineInitOptions)
+include(EngineEditorOptions)
 if(LUDUS_BUILD_BEHAVIOR)
     include(LudusBehaviorProfile)
     ludus_behavior_admit_profile("${PROJECT_SOURCE_DIR}/config/behavior_profiles.json" LUDUS_BEHAVIOR_TARGET_PROFILE)

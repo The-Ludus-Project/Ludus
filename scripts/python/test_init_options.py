@@ -85,6 +85,49 @@ class OptionsTests(unittest.TestCase):
                 self.assertEqual(engine.preset_bootstrap_fingerprint(root, engine.DEFAULT_PRESET)["build_tests"], enabled)
             self.assertTrue(engine.preset_bootstrap_fingerprint(root, "untouched")["build_tests"])
 
+    def test_rendered_editor_requires_worker_across_saved_and_direct_reconfiguration(self):
+        cmake = shutil.which("cmake")
+        if not cmake:
+            self.skipTest("CMake unavailable")
+        modules = Path(__file__).resolve().parents[2] / "cmake"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build = root / "out/build" / engine.DEFAULT_PRESET
+            (root / "CMakeLists.txt").write_text(
+                'cmake_minimum_required(VERSION 3.19)\nproject(EditorOptions NONE)\n'
+                'option(LUDUS_BUILD_EDITOR "editor" OFF)\n'
+                'option(LUDUS_BUILD_SHADER_WORKER "worker" OFF)\n'
+                f'include("{modules / "EngineInitOptions.cmake"}")\n'
+                f'include("{modules / "EngineEditorOptions.cmake"}")\n'
+                'file(WRITE "${CMAKE_BINARY_DIR}/worker.txt" "${LUDUS_BUILD_SHADER_WORKER}")\n',
+                encoding="utf-8")
+
+            def configure(*options):
+                subprocess.run([cmake, "-S", str(root), "-B", str(build), *options],
+                               check=True, capture_output=True)
+                return (build / "worker.txt").read_text(encoding="utf-8")
+
+            # Old setup files have no worker selection. A cached OFF must not
+            # disable the compiler the rendered editor needs.
+            for options, expected in ((("--with-editor",), "ON"),
+                                      (("--with-editor", "--no-editor-preview"), "OFF"),
+                                      (("--with-editor",), "ON"), (("--no-editor",), "OFF")):
+                with self.subTest(saved=options):
+                    init_options.save_options(root, (engine.DEFAULT_PRESET,), self.args(*options))
+                    self.assertEqual(configure("-DLUDUS_BUILD_SHADER_WORKER=OFF"), expected)
+
+            # Direct CMake users get the same dependency without onboarding.
+            self.assertEqual(configure("--fresh", "-DLUDUS_USE_INIT_OPTIONS=OFF", "-DLUDUS_BUILD_EDITOR=ON"), "ON")
+            self.assertEqual(configure("-DLUDUS_EDITOR_RENDER_PREVIEW=OFF"), "OFF")
+            self.assertEqual(configure("-DLUDUS_BUILD_SHADER_WORKER=ON"), "ON")
+            self.assertEqual(configure("-DLUDUS_BUILD_EDITOR=OFF", "-DLUDUS_BUILD_SHADER_WORKER=OFF"), "OFF")
+            # Browser previews cannot launch a native worker, even when enabled.
+            self.assertEqual(configure("-DEMSCRIPTEN=ON", "-DLUDUS_BUILD_EDITOR=ON",
+                                       "-DLUDUS_EDITOR_RENDER_PREVIEW=ON"), "OFF")
+            self.assertEqual(configure("--fresh", "-DLUDUS_USE_INIT_OPTIONS=OFF", "-DEMSCRIPTEN=ON",
+                                       "-DLUDUS_BUILD_EDITOR=ON"), "OFF")
+            self.assertEqual(engine.cmake_cache_value(build / "CMakeCache.txt", "LUDUS_EDITOR_RENDER_PREVIEW"), "OFF")
+
     def test_tests_disabled_error_precedes_build_or_configure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
