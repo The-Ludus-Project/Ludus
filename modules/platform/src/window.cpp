@@ -5,6 +5,10 @@
 
 #include <utility>
 
+#if defined(LUDUS_PLATFORM_HOSTED)
+#    include "internal/window_hosted.hpp"
+#endif
+
 #if defined(LUDUS_PLATFORM_BROWSER)
 #    include "internal/window_web.hpp"
 #elif defined(LUDUS_PLATFORM_COCOA)
@@ -21,6 +25,13 @@ namespace ludus::platform
 {
 bool WindowManager::Initialize(const InitializeInfo& info) noexcept
 {
+#if defined(LUDUS_PLATFORM_HOSTED)
+    // A hosted window never touches the native window server (no Dock icon or menu).
+    if (hosted::IsRequested() == true)
+    {
+        return hosted::Initialize();
+    }
+#endif
 #if defined(LUDUS_PLATFORM_BROWSER)
     return browser::InitializeBrowser(info);
 #elif defined(LUDUS_PLATFORM_COCOA)
@@ -35,6 +46,20 @@ bool WindowManager::Initialize(const InitializeInfo& info) noexcept
 bool WindowManager::CreateWindow(const WindowBase::CreateInfo& info,
                                  ludus::foundation::core::UniquePtr<Window>& outWindow) noexcept
 {
+#if defined(LUDUS_PLATFORM_HOSTED)
+    // The host channel selects the backend; failure never falls back to a native window.
+    if (hosted::IsRequested() == true)
+    {
+        outWindow.Reset();
+        ludus::foundation::core::UniquePtr<Window> hostedWindow = hosted::CreateWindow(info);
+        if (hostedWindow.Get() == nullptr)
+        {
+            return false;
+        }
+        outWindow = std::move(hostedWindow);
+        return true;
+    }
+#endif
 #if defined(LUDUS_PLATFORM_COCOA)
     // Reject before Reset(): destroying an existing Cocoa window off the main
     // thread would violate AppKit ownership even if creation itself is rejected.

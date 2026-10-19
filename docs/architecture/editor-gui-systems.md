@@ -547,9 +547,11 @@ defines the frontend selection gates and persistence limits.
 
 Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer),
 P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) and P3
-(the viewport frame source) are implemented; P4–P7 are pending. It replaces the
-separate World-demo authoring window, the World-demo private shader and the
-separate-window default for Play.
+(the viewport frame source) are implemented. P4, the Platform
+[hosted window channel](#hosted-window-channel), is implemented; the editor does
+not use it until P6. P5–P7 are pending. It replaces the separate World-demo
+authoring window, the World-demo private shader and the separate-window default
+for Play.
 
 While a game plays, the World viewport is that game's window. The game owns
 rendering and input there and behaves as it would in its own OS window. A
@@ -612,6 +614,90 @@ Key translation has one owner. Platform publishes its existing native key-code
 maps: Cocoa's `MapKeyCode` and the evdev keymap. The editor's Qt adapter converts
 `QKeyEvent::nativeVirtualKey`/`nativeScanCode` through those maps, not through a
 second table.
+
+### Hosted window channel
+
+Platform implements the hosted backend on macOS and Linux, with or without
+Wayland. Browser and Windows builds have none: there the endpoint reports
+Unavailable.
+
+- **Endpoint.** `HostedWindowEndpoint` (`<ludus/platform/hosted_window.h>`) is
+  Qt-free and nonblocking. `Start` creates a `mkdtemp` directory (mode 0700) in a
+  caller-chosen parent, binds the socket `window` inside it (mode 0600) and draws
+  a 32-byte token from system entropy. The caller pumps it each frame and sends
+  resize, visibility, focus, key and close events through it. It admits one
+  window. After admission it removes the socket file, so no other process can
+  connect. `Stop` closes the channel and removes the directory.
+- **Address.** The value of `LUDUS_HOSTED_WINDOW` is
+  `1:<64 lowercase hex token digits>:<absolute socket path>`. The path is at most
+  103 bytes, so it fits `sockaddr_un` on both systems; keep the parent directory
+  short.
+- **Game side.** When the variable is present, `WindowManager::Initialize` only
+  validates the address. It does not start AppKit, so no Dock icon or menu
+  appears. `CreateWindow` connects, checks that the endpoint has the same
+  effective uid, sends Hello and waits up to 5 seconds for Welcome. An invalid
+  address, a refusal or a timeout fails creation; it never falls back to a native
+  window. `CreateInfo` dimensions are ignored, because the host decides the
+  extent. `NativeWindowInfo` reports `WindowSystem::Hosted` with backing-pixel
+  `Width`/`Height` and `Scale`. RHI refuses hosted windows until P5.
+- **Admission.** The endpoint first checks the peer's effective uid
+  (`getpeereid` on macOS, `SO_PEERCRED` on Linux). It then requires a complete
+  Hello within 5 seconds, carrying the protocol version, `input::KEY_COUNT` and
+  the token, which it compares in constant time. A refused peer gets a Refused
+  message with the reason (WrongUser, BadToken, IncompatibleVersion,
+  MalformedHello or HandshakeTimeout) and is disconnected. The endpoint keeps
+  listening for the real window and counts each refusal.
+- **Protocol.** The protocol is version 1. Each message is a little-endian
+  4-byte header (`uint16` kind, `uint16` payload size) followed by a fixed-size
+  payload. A frame payload is at most 255 bytes, so a peer can read and refuse
+  another version's Hello.
+
+| Message | Direction | Payload |
+| --- | --- | --- |
+| Hello | window → endpoint | magic `LHWN`, version, key count, 32-byte token |
+| Welcome | endpoint → window | version, visibility, width, height, scale |
+| Refused | endpoint → window | refusal reason |
+| Resize | endpoint → window | width and height in backing pixels (each ≤ 32768), scale (finite, in (0, 16]) |
+| Visibility | endpoint → window | Visible, Occluded or Minimized |
+| Reset | endpoint → window | FocusEntered, FocusLost or Overflow, plus a held-key bit mask (FocusEntered only) |
+| Key | endpoint → window | physical `input::Key`, Down/Up, repeat flag |
+| Close | endpoint → window | none |
+
+Either side treats an unknown kind, a wrong size or an out-of-range value as a
+violation and closes the channel. After the Hello, a version-1 window sends
+nothing. The endpoint therefore treats any later byte as a disconnection.
+
+The window reproduces the Cocoa contract:
+
+- FocusEntered delivers the baseline without press edges.
+- FocusLost, Overflow and close deliver an empty, unfocused reset. A repeated
+  FocusLost is ignored.
+- Keys that arrive without focus are dropped.
+- A newly attached sink receives the current focus state on the next
+  `HandleEvent`.
+- Minimized publishes a zero extent.
+- Close, and loss of the channel for any reason, deliver `WindowClosed`. Events
+  received before the loss are still delivered first. `HandleEvent` then returns
+  false.
+
+The endpoint mirrors the extent, visibility, focus, held keys and close request.
+State set before admission goes into the Welcome, followed by FocusEntered and
+Close when they apply. Outgoing bytes queue in a fixed 16 KiB buffer. When the
+game does not drain it, a send returns Overflow and drops that message. Once
+the queue drains, the endpoint resends the current extent and visibility, an
+Overflow reset and the current FocusEntered baseline, so no key stays stuck. The
+editor converts native keys with `MapCocoaKeyCode` (Qt's `nativeVirtualKey` on
+macOS) or `MapEvdevKeyCode` (Qt's `nativeScanCode` minus 8 on Linux), from
+`<ludus/platform/native_keymap.h>`.
+
+`ludus_platform_hosted_tests` covers this contract over socketpairs: every
+event, focus baselines, sink synchronization, overflow recovery, close,
+channel loss, protocol violations and each refusal. A uid refusal is produced
+by expecting another uid. The same target also runs `WindowManager` against a
+listening endpoint, checking the directory mode, socket removal after
+admission, a forged token and an invalid address.
+`ludus_platform_native_keymap_tests` checks that the public maps match the
+backend tables entry for entry.
 
 ### The hosted surface and frame ownership
 
