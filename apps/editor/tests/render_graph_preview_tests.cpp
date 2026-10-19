@@ -9,8 +9,12 @@
 #include "internal/offscreen_frame_reader.h"
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
+#include "internal/render_graph_targets.h"
 #include "internal/render_preview.h"
+#include "internal/render_target_reader.h"
 #include "internal/renderer_workspace.h"
+#include "internal/texture_inspection.h"
+#include "internal/texture_viewer.h"
 #include "internal/world_demo_adapter.h"
 #include "renderer_composite.h"
 
@@ -20,8 +24,10 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
+#include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/device.h>
 
+#include <cstring>
 #include <initializer_list>
 
 #include <catch2/catch_approx.hpp>
@@ -650,5 +656,257 @@ TEST_CASE("The editor's prebuilt engine default previews with no project files",
     CHECK(qAbs(center.blue() - 191) <= COLOR_TOLERANCE);
     // The fixture's generation shares the host interface, so either previews in one editor.
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    preview.Detach();
+}
+
+namespace
+{
+/// The fixture's names sidecar, cooked beside its runtime package.
+QByteArray ReadFixtureNames()
+{
+    QFile file(GetTargetNamesPath(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)));
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    return file.readAll();
+}
+
+/// Inspected depth at a texel, decoded independently of the viewer's helpers.
+float32 GetInspectedDepth(const InspectedTexture& texture, uint32 x, uint32 y)
+{
+    REQUIRE(texture.Encoding == TexelEncoding::Depth32Float);
+    REQUIRE(texture.IsValid() == true);
+    float32 value = 0;
+    std::memcpy(&value,
+                texture.Bytes.constData() + (static_cast<usize>(y) * texture.Width + x) * sizeof(float32),
+                sizeof(float32));
+    return value;
+}
+} // namespace
+
+TEST_CASE("Texture viewer names every generation texture and resolves canvas nodes", "[editor][texture-viewer]")
+{
+    const QByteArray bytes = ReadFixture();
+    renderer::RenderGraphPackage package;
+    REQUIRE(package.Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())}) ==
+            renderer::RenderGraphPackageStatus::Ready);
+    const QByteArray names = ReadFixtureNames();
+    const RenderGraphTargetCatalogue catalogue =
+        MakeTargetCatalogue(package.GetPlan(), package.GetGenerationIdentity(), names);
+    INFO(catalogue.NamesProblem.toStdString());
+    REQUIRE(catalogue.HasNames == true);
+    // Every texture, not only the export: the transient depth target is listed too.
+    REQUIRE(catalogue.Targets.size() == 2);
+    const qsizetype color = catalogue.Find(QStringLiteral("Main/color"));
+    const qsizetype depth = catalogue.Find(QStringLiteral("Main/depth"));
+    REQUIRE(color >= 0);
+    REQUIRE(depth >= 0);
+    CHECK(catalogue.Targets[color].IsExported == true);
+    CHECK(catalogue.Targets[depth].IsDepth == true);
+    CHECK(catalogue.Targets[depth].IsExported == false);
+    CHECK(DescribeTarget(catalogue.Targets[color]) ==
+          QStringLiteral("96 × 64 · RGBA8Unorm · 1 mip, 1 layer · colour attachment of Main/raster/draw (Clear → "
+                         "Store) · exported by Main/output"));
+    CHECK(DescribeTarget(catalogue.Targets[depth])
+              .contains(QStringLiteral(
+                  "Depth32Float · 1 mip, 1 layer · depth attachment of Main/raster/draw (Clear → Store)")) == true);
+    CHECK(DescribeTarget(catalogue.Targets[depth]).contains(QStringLiteral("transient")) == true);
+
+    // Canvas nodes of the root document: Target, Subgraph (its Raster's attachments), Export, Camera.
+    const QStringList both{QStringLiteral("Main/color"), QStringLiteral("Main/depth")};
+    CHECK(ResolveCanvasTargets(catalogue, QStringLiteral("Main"), QStringLiteral("depth")) ==
+          QStringList{QStringLiteral("Main/depth")});
+    CHECK(ResolveCanvasTargets(catalogue, QStringLiteral("Main"), QStringLiteral("raster")) == both);
+    CHECK(ResolveCanvasTargets(catalogue, QStringLiteral("Main"), QStringLiteral("output")) ==
+          QStringList{QStringLiteral("Main/color")});
+    CHECK(ResolveCanvasTargets(catalogue, QStringLiteral("Main"), QStringLiteral("camera")) ==
+          QStringList{QStringLiteral("Main/color")});
+    CHECK(ResolveCanvasTargets(catalogue, QStringLiteral("Main"), QStringLiteral("scene")).isEmpty() == true);
+    // The Raster node inside the subgraph document, opened on its own, matches every instance.
+    CHECK(ResolveCanvasTargets(catalogue, QStringLiteral("RasterizeGraph"), QStringLiteral("draw")) == both);
+
+    // A sidecar from another generation is refused; textures keep numeric names and uses.
+    QByteArray stale = names;
+    const qsizetype at = stale.indexOf("\"generation\": \"") + qsizetype{sizeof("\"generation\": \"")} - 1;
+    stale[at] = stale.at(at) == '0' ? '1' : '0';
+    const RenderGraphTargetCatalogue numeric =
+        MakeTargetCatalogue(package.GetPlan(), package.GetGenerationIdentity(), stale);
+    CHECK(numeric.HasNames == false);
+    CHECK(numeric.NamesProblem.contains(QStringLiteral("another generation")) == true);
+    REQUIRE(numeric.Targets.size() == 2);
+    CHECK(numeric.Targets[0].Name == QStringLiteral("Resource 0"));
+    CHECK(DescribeTarget(numeric.Targets[depth]).contains(QStringLiteral("depth attachment of pass 0")) == true);
+    CHECK(ResolveCanvasTargets(numeric, QStringLiteral("Main"), QStringLiteral("depth")).isEmpty() == true);
+    CHECK(MakeTargetCatalogue(package.GetPlan(), package.GetGenerationIdentity(), QByteArrayLiteral("[]"))
+              .NamesProblem.isEmpty() == false);
+}
+
+TEST_CASE("Texture viewer reads colour and depth targets back without stalling", "[editor][texture-viewer]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({.25F, .5F, .75F, 1}, 1));
+    // Selected before any generation exists: resolved by name once one is active.
+    preview.SetInspectedTarget(QStringLiteral("Main/depth"));
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectedTexture().IsValid() == true; }) == true);
+    INFO(preview.GetInspectionStatus().toStdString());
+    CHECK(preview.GetTargetCatalogue().HasNames == true);
+    const InspectedTexture depth = preview.GetInspectedTexture();
+    REQUIRE(depth.Encoding == TexelEncoding::Depth32Float);
+    REQUIRE(depth.Width == static_cast<uint32>(WIDTH));
+    REQUIRE(depth.Height == static_cast<uint32>(HEIGHT));
+    CHECK(preview.GetInspectedGeneration() == 1);
+    CHECK(preview.GetInspectedRevision() == 1);
+    // The triangle's plane depth is exact (no colour quantization); the cleared background is 1.
+    const float32 expected = GetDepth(renderer::ViewDescription{}, {0, 0, .5F});
+    CHECK(GetInspectedDepth(depth, WIDTH / 2, HEIGHT / 2) == expected);
+    CHECK(GetInspectedDepth(depth, 0, 0) == 1.0F);
+    CHECK(DescribeTexel(depth, WIDTH / 2, HEIGHT / 2).contains(QStringLiteral("depth 0.5 (0x3f000000)")) == true);
+
+    // The colour target (here also the export) equals the presented frame byte for byte.
+    preview.SetInspectedTarget(QStringLiteral("Main/color"));
+    REQUIRE(TickUntil(preview, [&]() {
+                return preview.GetInspectedTexture().Encoding == TexelEncoding::Rgba8Unorm &&
+                       preview.GetInspectedTexture().IsValid() == true;
+            }) == true);
+    const QImage& image = preview.GetImage();
+    const InspectedTexture color = preview.GetInspectedTexture();
+    REQUIRE(color.Bytes.size() == image.sizeInBytes());
+    CHECK(std::memcmp(color.Bytes.constData(), image.constBits(), static_cast<usize>(color.Bytes.size())) == 0);
+
+    // An unknown name reports itself instead of showing a stale texture.
+    preview.SetInspectedTarget(QStringLiteral("Main/missing"));
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectionStatus().isEmpty() == false; }) == true);
+    CHECK(preview.GetInspectionStatus().contains(QStringLiteral("not a texture")) == true);
+    CHECK(preview.GetInspectedTexture().IsValid() == false);
+    preview.Detach();
+}
+
+TEST_CASE("Texture viewer readback is polled across ticks and reports undefined contents", "[editor][texture-viewer]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
+    // The reader is driven directly here: Begin only records requests and returns.
+    RenderTargetReader reader;
+    rhi::TextureDescription description;
+    description.Width = WIDTH;
+    description.Height = HEIGHT;
+    description.Attachment = true;
+    rhi::TextureHandle never;
+    REQUIRE(rhi::CreateTexture(device.Device, description, {}, never) == rhi::RasterStatus::Ready);
+    // A never-written attachment has no stored colour or depth to show.
+    CHECK(reader.Begin(device.Device, device.Surface, never, rhi::TextureAspect::Color, WIDTH, HEIGHT) ==
+          RenderTargetReadStatus::Undefined);
+    CHECK(reader.Begin(device.Device, device.Surface, never, rhi::TextureAspect::Depth, WIDTH, HEIGHT) ==
+          RenderTargetReadStatus::Undefined);
+    CHECK(reader.IsBusy() == false);
+
+    // A written attachment: the depth pack draw and band copies complete over later polls.
+    rhi::TextureHandle written;
+    REQUIRE(rhi::CreateTexture(device.Device, description, {}, written) == rhi::RasterStatus::Ready);
+    rhi::RasterPassDescription pass;
+    pass.Color = written;
+    pass.DepthStore = rhi::RasterStore::Store;
+    pass.ClearDepth = .25F;
+    REQUIRE(rhi::BeginFrame(device.Device, device.Surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginRasterPass(device.Device, pass) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(device.Device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(reader.Begin(device.Device, device.Surface, written, rhi::TextureAspect::Depth, WIDTH, HEIGHT) ==
+            RenderTargetReadStatus::Pending);
+    CHECK(reader.IsBusy() == true);
+    RenderTargetReadStatus status = reader.Poll();
+    for (usize attempt = 0; status == RenderTargetReadStatus::Pending && attempt < ATTEMPTS; ++attempt)
+    {
+        QThread::usleep(200);
+        status = reader.Poll();
+    }
+    REQUIRE(status == RenderTargetReadStatus::Complete);
+    // At least the first poll only issued band requests: the read never waited inside a call.
+    CHECK(reader.GetPendingPolls() >= 1);
+    const InspectedTexture depth = reader.TakeTexture();
+    CHECK(reader.IsBusy() == false);
+    CHECK(GetInspectedDepth(depth, 0, 0) == .25F);
+    CHECK(GetInspectedDepth(depth, WIDTH - 1, HEIGHT - 1) == .25F);
+    reader.Release();
+    static_cast<void>(rhi::Destroy(device.Device, written));
+    static_cast<void>(rhi::Destroy(device.Device, never));
+    preview.Detach();
+}
+
+TEST_CASE("Texture viewer follows Live Preview frames and rebuilt generations by name", "[editor][texture-viewer]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderGraphPreview preview = MakePreview();
+    TextureViewer viewer;
+    viewer.SetPreview(&preview);
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
+    // Canvas selection: the Raster subgraph node selects its colour attachment, then its depth.
+    REQUIRE(viewer.SelectCanvasNode(QStringLiteral("Main"), QStringLiteral("raster")) == true);
+    CHECK(viewer.GetSelectedTarget() == QStringLiteral("Main/color"));
+    REQUIRE(viewer.SelectCanvasNode(QStringLiteral("Main"), QStringLiteral("raster")) == true);
+    CHECK(viewer.GetSelectedTarget() == QStringLiteral("Main/depth"));
+    CHECK(viewer.SelectCanvasNode(QStringLiteral("Main"), QStringLiteral("scene")) == false);
+    viewer.SelectCanvasNode(QStringLiteral("Main"), QStringLiteral("color"));
+    REQUIRE(viewer.GetSelectedTarget() == QStringLiteral("Main/color"));
+    REQUIRE(TickUntil(preview, [&]() { return viewer.GetDisplayImage().isNull() == false; }) == true);
+    CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(0, 255, 0));
+    CHECK(viewer.GetInfoText().startsWith(QStringLiteral("Main/color · 96 × 64 · RGBA8Unorm")) == true);
+    viewer.ProbeTexel(WIDTH / 2, HEIGHT / 2);
+    CHECK(viewer.GetProbeText() ==
+          QStringLiteral("Pinned (48, 32)  R 0 (0.0000)  G 255 (1.0000)  B 0 (0.0000)  A 255 (1.0000)"));
+
+    // A new World revision re-reads the selected target after its frame is presented.
+    preview.SetExtraction(MakeExtraction({1, 0, 0, 1}, 2));
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectedRevision() == 2; }) == true);
+    CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0));
+    CHECK(viewer.GetProbeText().contains(QStringLiteral("R 255")) == true);
+
+    // A rebuilt generation (Live Preview republishes the runtime) keeps the selection by name.
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    const uint64 rebuilt = preview.GetReport().CandidateGeneration;
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectedGeneration() == rebuilt; }) == true);
+    CHECK(viewer.GetSelectedTarget() == QStringLiteral("Main/color"));
+    CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0));
+
+    // Depth remapped to its automatic range: the flat triangle is the range floor (black) and the
+    // background, left out of the range, clamps to white.
+    viewer.SelectTarget(QStringLiteral("Main/depth"));
+    REQUIRE(TickUntil(preview, [&]() {
+                return preview.GetInspectedTexture().Encoding == TexelEncoding::Depth32Float &&
+                       preview.GetInspectedTexture().IsValid() == true;
+            }) == true);
+    CHECK(viewer.GetDisplaySettings().Range == TextureRangeMode::Automatic);
+    CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(0, 0, 0));
+    CHECK(viewer.GetDisplayImage().pixelColor(0, 0) == QColor(255, 255, 255));
+    // Back on colour: the measured depth range does not leak into the normalized colour range.
+    viewer.SelectTarget(QStringLiteral("Main/color"));
+    REQUIRE(TickUntil(preview, [&]() {
+                return preview.GetInspectedTexture().Encoding == TexelEncoding::Rgba8Unorm &&
+                       preview.GetInspectedTexture().IsValid() == true;
+            }) == true);
+    CHECK(viewer.GetDisplaySettings().Range == TextureRangeMode::Manual);
+    CHECK(viewer.GetDisplaySettings().Minimum == 0.0F);
+    CHECK(viewer.GetDisplaySettings().Maximum == 1.0F);
+    CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0));
     preview.Detach();
 }

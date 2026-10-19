@@ -207,6 +207,32 @@ TEST_CASE("RG2 renders a retained extraction without creating shaders or pipelin
     REQUIRE(fixture.Graph.GetExport(0, output, aspect) == rhi::RasterStatus::Ready);
     CHECK(aspect == rhi::TextureAspect::Color);
 }
+TEST_CASE("RG2 diagnostic allocation access admits transient depth after producer completion", "[render-graph]")
+{
+    GraphFixture fixture;
+    rhi::TextureHandle texture;
+    rhi::TextureAspect aspect = rhi::TextureAspect::Color;
+    CHECK(fixture.Graph.GetResourceAllocation(0, texture, aspect) == rhi::RasterStatus::InvalidDescription);
+    REQUIRE(fixture.Initialize() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetResourceAllocation(RESOURCE_COUNT, texture, aspect) ==
+          rhi::RasterStatus::InvalidDescription);
+    // No completed frame yet: nothing to inspect.
+    CHECK(fixture.Graph.GetResourceAllocation(1, texture, aspect) == rhi::RasterStatus::NotReady);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetResourceAllocation(1, texture, aspect) == rhi::RasterStatus::NotReady);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    // The unexported depth resource is GetExport-invisible but inspectable, on its backing's allocation.
+    CHECK(fixture.Graph.GetExport(1, texture, aspect) == rhi::RasterStatus::InvalidDescription);
+    rhi::TextureHandle exported;
+    REQUIRE(fixture.Graph.GetExport(0, exported, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Graph.GetResourceAllocation(1, texture, aspect) == rhi::RasterStatus::Ready);
+    CHECK(aspect == rhi::TextureAspect::Depth);
+    REQUIRE(fixture.Graph.GetResourceAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
+    CHECK(aspect == rhi::TextureAspect::Color);
+}
 TEST_CASE("RG2 unsupported material coverage retains the previous drawable scene", "[render-graph]")
 {
     GraphFixture fixture;

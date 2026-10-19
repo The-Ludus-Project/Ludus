@@ -41,6 +41,7 @@ namespace ludus::editor
 {
 class RenderGraphPreview;
 class RenderPreview;
+class TextureViewer;
 // RG3 Renderer workspace: edits one render-graph package through the typed
 // RenderGraphDocument, and runs validation, builds and runtime cooking through
 // the shared `ludus render-graph` backend on explicit immutable draft snapshots.
@@ -215,6 +216,11 @@ public:
     {
         return mPreviewOrNull;
     }
+    /// Renderer tab texture viewer, or null in builds without the native GPU preview.
+    [[nodiscard]] TextureViewer* GetTextureViewerOrNull() noexcept
+    {
+        return mTextureViewerOrNull;
+    }
     /// Advance the preview from its source once (the timer calls this every display refresh).
     void ServicePreview();
 
@@ -309,6 +315,8 @@ private:
     QPushButton* mPreviewButton;
     RenderPreview* mPreviewSourceOrNull = nullptr;
     RenderGraphPreview* mPreviewOrNull = nullptr;
+    /// Renderer tab texture viewer; null in builds without the native GPU preview.
+    TextureViewer* mTextureViewerOrNull = nullptr;
     QTimer mPreviewTimer;
     foundation::uint64 mPreviewDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;
