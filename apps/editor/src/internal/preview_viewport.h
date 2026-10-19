@@ -16,6 +16,7 @@
 
 namespace ludus::editor
 {
+class PreviewShaderReload;
 /// How the viewport shows engine frames in this process.
 enum class ViewportPresentation : foundation::uint8
 {
@@ -50,6 +51,11 @@ public:
     void ClearFrame(const QString& text);
     /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.
     [[nodiscard]] QString GetStatisticsText() const;
+    /// Live shader status shown below the statistics (reload notices and errors); empty when none.
+    [[nodiscard]] QString GetShaderStatusText() const;
+    /// Live shader controller behind the toolbar's "Live shaders" toggle; null in the browser
+    /// editor, which has no compiler worker or shader source tree.
+    [[nodiscard]] PreviewShaderReload* GetShaderReloadOrNull() const noexcept;
     [[nodiscard]] foundation::uint64 PresentedFrames() const noexcept;
     /// True when either the shared-device or the offscreen readback path can show frames.
     [[nodiscard]] static bool CanPresent() noexcept;
@@ -75,6 +81,8 @@ private:
     void resizeSurface();
     /// Reformat the statistics overlay from RenderPreview and push it to the active presentation.
     void updateStatistics();
+    /// Copy the live shader status from its controller and push it to the active presentation.
+    void updateShaderStatus();
     RenderPreview* Preview_;
     ViewportFrameSource* mFrameSource;
     static constexpr foundation::usize MOVEMENT_KEY_COUNT = 7;

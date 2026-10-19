@@ -146,6 +146,10 @@ public:
     /// nothing was edited, and then becomes an ordinary project package. Any existing file
     /// there is a Conflict; a failed creation removes the files it wrote and stays built-in.
     [[nodiscard]] RenderGraphDocumentStatus Save(QStringList& outSavedFiles);
+    /// Read external saves using the package admission limits. Changed disk content is
+    /// adopted only when the draft is clean, as one undoable revision. Conflict, read
+    /// failure or capacity failure preserves the draft/history. Built-ins are unchanged.
+    [[nodiscard]] RenderGraphDocumentStatus RefreshFromDisk(bool& outHasChanged);
 
 private:
     using EditFunction = bool (*)(QJsonObject& inoutConfiguration, const QStringList& arguments);

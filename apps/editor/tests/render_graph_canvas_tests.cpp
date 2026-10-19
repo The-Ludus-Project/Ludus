@@ -9,13 +9,19 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
+#include <QNativeGestureEvent>
+#include <QPointingDevice>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QWheelEvent>
+
+#include <limits>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -156,6 +162,99 @@ TEST_CASE("RG3b canvas shows a configuration by domain with typed ports", "[edit
     CHECK(canvas.HasNode(QStringLiteral("input")) == true);
     CHECK(canvas.GetNodeDomain(QStringLiteral("input")) == RenderGraphDomain::Interface);
     CHECK(canvas.GetPortPosition(QStringLiteral("input.scene"), true).isNull() == false);
+}
+
+TEST_CASE("Graph pinch zoom keeps its focal point and never edits the draft", "[editor][render-graph][canvas]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(900, 600);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    canvas.resetTransform();
+    canvas.centerOn(600, 150);
+    canvas.SelectNode(QStringLiteral("raster"));
+    const QStringList selected = canvas.GetSelectedNodes();
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const QPointF position(170, 220);
+    const QPointF before = canvas.viewportTransform().inverted().map(position);
+    const QPointF global = canvas.viewport()->mapToGlobal(position.toPoint());
+    const QPointingDevice* device = QPointingDevice::primaryPointingDevice();
+    QNativeGestureEvent begin(Qt::BeginNativeGesture, device, 2, position, position, global, 0, {});
+    QCoreApplication::sendEvent(canvas.viewport(), &begin);
+    QNativeGestureEvent outward(Qt::ZoomNativeGesture, device, 2, position, position, global, 0.25, {});
+    QCoreApplication::sendEvent(canvas.viewport(), &outward);
+    CHECK(outward.isAccepted() == true);
+    CHECK(canvas.transform().m11() == 1.25);
+    const QPointF after = canvas.viewportTransform().inverted().map(position);
+    CHECK((after - before).manhattanLength() < 2);
+    QNativeGestureEvent inward(Qt::ZoomNativeGesture, device, 2, position, position, global, -0.2, {});
+    QCoreApplication::sendEvent(canvas.viewport(), &inward);
+    CHECK(canvas.transform().m11() == 1);
+    QNativeGestureEvent end(Qt::EndNativeGesture, device, 2, position, position, global, 0, {});
+    QCoreApplication::sendEvent(canvas.viewport(), &end);
+    CHECK(canvas.GetSelectedNodes() == selected);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    CHECK(document.GetRevision() == 0);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("Graph wheel and pixel scrolling zoom smoothly without a pinch", "[editor][render-graph][canvas]")
+{
+    RenderGraphDocument document;
+    RenderGraphCanvas canvas(document);
+    const QPointF position(100, 100);
+    QWheelEvent wheel(position, position, {}, QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(canvas.viewport(), &wheel);
+    CHECK(wheel.isAccepted() == true);
+    CHECK(canvas.transform().m11() > 1);
+    const float64 before = canvas.transform().m11();
+    QWheelEvent pixels(position, position, QPoint(0, 12), {}, Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+    QCoreApplication::sendEvent(canvas.viewport(), &pixels);
+    CHECK(canvas.transform().m11() > before);
+    QWheelEvent reverse(position, position, QPoint(0, -12), {}, Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+    QCoreApplication::sendEvent(canvas.viewport(), &reverse);
+    CHECK(qAbs(canvas.transform().m11() - before) < 0.000001);
+    CHECK(document.GetRevision() == 0);
+}
+
+TEST_CASE("Graph zoom is bounded and rejects invalid magnification", "[editor][render-graph][canvas]")
+{
+    RenderGraphDocument document;
+    RenderGraphCanvas canvas(document);
+    const QPointF position(100, 100);
+    const QPointingDevice* device = QPointingDevice::primaryPointingDevice();
+    for (int32 index = 0; index < 100; ++index)
+    {
+        QNativeGestureEvent zoom(Qt::ZoomNativeGesture, device, 2, position, position, position, 1, {});
+        QCoreApplication::sendEvent(canvas.viewport(), &zoom);
+    }
+    const float64 maximum = canvas.transform().m11();
+    CHECK(maximum > 1);
+    CHECK(maximum < 100);
+    for (const float64 value :
+         {-1.0, -2.0, std::numeric_limits<float64>::quiet_NaN(), std::numeric_limits<float64>::infinity()})
+    {
+        QNativeGestureEvent invalid(Qt::ZoomNativeGesture, device, 2, position, position, position, value, {});
+        QCoreApplication::sendEvent(canvas.viewport(), &invalid);
+        CHECK(canvas.transform().m11() == maximum);
+    }
+    QNativeGestureEvent rotate(Qt::RotateNativeGesture, device, 2, position, position, position, 30, {});
+    QCoreApplication::sendEvent(canvas.viewport(), &rotate);
+    CHECK(canvas.transform().m11() == maximum);
+    CHECK(canvas.transform().m12() == 0);
+    for (int32 index = 0; index < 100; ++index)
+    {
+        QNativeGestureEvent zoom(Qt::ZoomNativeGesture, device, 2, position, position, position, -0.5, {});
+        QCoreApplication::sendEvent(canvas.viewport(), &zoom);
+    }
+    CHECK(canvas.transform().m11() > 0);
+    CHECK(canvas.transform().m11() < 1);
+    CHECK(canvas.transform().isInvertible() == true);
+    CHECK(document.GetRevision() == 0);
 }
 
 TEST_CASE("RG3b canvas drag gestures are one undo step each", "[editor][render-graph][canvas]")

@@ -14,6 +14,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -21,7 +22,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPoint>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -29,7 +32,9 @@
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTextCursor>
 #include <QTimer>
 
 using namespace ludus::editor;
@@ -619,4 +624,118 @@ TEST_CASE("Renderer graph ownership follows the project descriptor rather than i
     CHECK(QDir(QDir(project.path()).filePath(QStringLiteral("code")))
               .entryList(QDir::NoDotAndDotDot | QDir::AllEntries)
               .isEmpty() == true);
+}
+
+TEST_CASE("External graph saves refresh a clean draft as one undoable revision",
+          "[editor][render-graph][source-editor]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString shader = QStringLiteral("main_shaders/color.slang");
+    const QByteArray original = document.GetDraft(shader);
+    bool hasChanged = true;
+    REQUIRE(document.RefreshFromDisk(hasChanged) == RenderGraphDocumentStatus::Ok);
+    CHECK(hasChanged == false);
+    CHECK(document.GetRevision() == 0);
+    const QByteArray external = QByteArray("// external save\n") + original;
+    WriteFile(QDir(package).filePath(shader), external);
+    REQUIRE(document.RefreshFromDisk(hasChanged) == RenderGraphDocumentStatus::Ok);
+    CHECK(hasChanged == true);
+    CHECK(document.GetDraft(shader) == external);
+    CHECK(document.GetSaved(shader) == external);
+    CHECK(document.IsDirty() == false);
+    CHECK(document.GetRevision() == 1);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(shader) == original);
+    CHECK(document.IsDirty() == true);
+    const uint64 revision = document.GetRevision();
+    WriteFile(QDir(package).filePath(shader), QByteArray("// another external save\n") + external);
+    CHECK(document.RefreshFromDisk(hasChanged) == RenderGraphDocumentStatus::Conflict);
+    CHECK(hasChanged == false);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(shader) == original);
+    CHECK(document.GetSaved(shader) == external);
+}
+
+TEST_CASE("External source refresh preserves a draft when files exceed admission limits",
+          "[editor][render-graph][source-editor]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString shader = QStringLiteral("main_shaders/color.slang");
+    const QByteArray original = document.GetDraft(shader);
+    WriteFile(QDir(package).filePath(shader), QByteArray(RenderGraphDocument::MAX_FILE_BYTES + 1, 'x'));
+    bool hasChanged = true;
+    CHECK(document.RefreshFromDisk(hasChanged) == RenderGraphDocumentStatus::Capacity);
+    CHECK(hasChanged == false);
+    CHECK(document.GetDraft(shader) == original);
+    CHECK(document.GetRevision() == 0);
+}
+
+TEST_CASE("Renderer validation automatically captures external shader saves", "[editor][render-graph][source-editor]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    const QString shader = QStringLiteral("main_shaders/color.slang");
+    const QByteArray external = QByteArray("// external save\n") + workspace.GetDocument().GetDraft(shader);
+    WriteFile(QDir(package).filePath(shader), external);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.Validate() == true);
+    CHECK(workspace.GetDocument().GetDraft(shader) == external);
+    CHECK(workspace.GetDocument().IsDirty() == false);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(workspace.GetLastResult().Code.toStdString() + ": " + workspace.GetLastResult().Message.toStdString());
+    CHECK(workspace.GetLastResult().IsSuccessful == true);
+    CHECK(workspace.GetLastResult().Request.Revision == workspace.GetDocument().GetRevision());
+}
+
+TEST_CASE("Code editor handoff cancellation retains unapplied source text", "[editor][render-graph][source-editor]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    QComboBox* selectorOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    QPlainTextEdit* sourceOrNull = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(selectorOrNull != nullptr);
+    REQUIRE(sourceOrNull != nullptr);
+    const QString shader = QStringLiteral("main_shaders/color.slang");
+    selectorOrNull->setCurrentText(shader);
+    const QByteArray original = workspace.GetDocument().GetDraft(shader);
+    const QString pending = QStringLiteral("// unapplied\n") + sourceOrNull->toPlainText();
+    sourceOrNull->moveCursor(QTextCursor::Start);
+    sourceOrNull->insertPlainText(QStringLiteral("// unapplied\n"));
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_SOURCE_EDITOR_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        ApplyWorkspaceStyle(&workspace);
+        workspace.resize(1500, 900);
+        QTabWidget* tabsOrNull = workspace.findChild<QTabWidget*>();
+        REQUIRE(tabsOrNull != nullptr);
+        tabsOrNull->setCurrentWidget(sourceOrNull->parentWidget());
+        workspace.show();
+        QApplication::processEvents();
+        REQUIRE(workspace.grab().save(capture) == true);
+    }
+    QTimer::singleShot(0, &workspace, []() {
+        QMessageBox* questionOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (questionOrNull != nullptr)
+        {
+            questionOrNull->done(QMessageBox::Cancel);
+        }
+    });
+    CHECK(workspace.OpenSourceInCodeEditor() == false);
+    CHECK(sourceOrNull->toPlainText() == pending);
+    CHECK(workspace.GetDocument().GetDraft(shader) == original);
+    CHECK(ReadFile(QDir(package).filePath(shader)) == original);
+    CHECK(workspace.ReloadSourcesFromDisk() == false);
+    CHECK(sourceOrNull->toPlainText() == pending);
 }
