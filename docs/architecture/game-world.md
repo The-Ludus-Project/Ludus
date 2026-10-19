@@ -44,7 +44,7 @@ Existing unrelated working-tree edits are outside this proposal.
 | [Foundation math](../modules/foundation/math.md) | Preserve its coordinate, angle, and numeric guarantees. Fixed ticks do not imply bit-exact floating-point simulation. |
 | [Input action records](../../modules/input/include/ludus/input/actions.h) | Preserve `Pressed`, `Released`, and `Cancelled` semantics when bridging presentation frames to simulation ticks. |
 | [RHI ownership contract](../modules/graphics/rhi.md) | Keep all current RHI operations serialized on the main thread. |
-| [Bounded public rendering](../decisions/0011-public-fullscreen-rendering.md) | The reference game composes bounded procedural rectangles in one fullscreen shader. Textured sprites and general meshes still require a separate graphics feature slice. |
+| [Bounded public rendering](../decisions/0011-public-fullscreen-rendering.md) | The reference game first composed bounded procedural rectangles in one fullscreen shader. It now draws them as engine Renderer scene items ([world reference](../examples/world-demo.md#rendering-and-validation)). Textured sprites still require a separate graphics feature slice. |
 | [Memory proposal](../decisions/0008-memory-management.md) | Reserve and reuse current containers first. A world must not require the proposed memory module or frame arena to exist. |
 | [Contributor guide](../../AGENTS.md) | C++23, no engine exceptions, explicit errors, Ludus primitive aliases, narrow headers, and the pinned validation workflow remain mandatory. |
 

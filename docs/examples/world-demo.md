@@ -10,7 +10,8 @@ generated for each room from the session's world seed.
 
 The reusable engine module contains only identity and component storage. This
 application owns the level schema, component roster, simulation policies, input
-bridge, session and renderer. The model builds and tests with the normal native
+bridge and session. It draws through the engine Renderer, the same renderer the
+Editor's World viewport uses. The model builds and tests with the normal native
 presets even when the graphical application is disabled.
 
 The renderer now consumes the [C0 camera sample and checked view adapter](../architecture/camera-systems.md#c0-runtime-and-usage).
@@ -229,7 +230,7 @@ A session parses an owned candidate, prepares all pool capacity, builds one reci
 per `PollLoad`, binds forward references and activates through a nonallocating move
 at the frame boundary. Failure, cancellation and supersession preserve the active
 world. The two procedural visual keys need no external asset loading or GPU leases.
-The old render frame is an owned value and the renderer's one pipeline survives
+The old render frame is an owned value; the Renderer and its one quad mesh survive
 level changes. Browser loading returns between construction steps.
 
 `BeginRequest` returns an owned ticket and reserves completion capacity before
@@ -254,13 +255,21 @@ cross-platform floating-point determinism are future work.
 
 ## Rendering and validation
 
-The game-owned renderer draws up to 192 procedural rectangles through the existing
-public fullscreen RHI API. Its 9248-byte uniform block uses fixed vector arrays;
-C++ offsets are asserted and independently checked against SPIR-V, WGSL and GLSL
-ES reflection. Collider boxes are axis-aligned; visual rotation affects drawing. Narrow windows
-expand the camera height to keep the authored horizontal bounds visible.
-This adapter demonstrates render extraction without adding textures, arbitrary
-meshes or a general sprite renderer to the RHI.
+The player draws each frame through the engine
+[Renderer](../architecture/renderer-systems.md#views-and-depth-l1) on one explicit
+RHI device; it keeps no shader of its own. `render_items` turns the extracted
+`RenderFrame` into scene items. Each of its up to 192 draws becomes one opaque
+flat-material item over a shared unit quad, scaled by its half extent and rotated
+by its angle. The draw's position in the frame becomes its depth key, so later
+draws cover earlier ones exactly as before, without blending. The gameplay camera
+sample becomes a reverse-Z orthographic view through the game's checked
+`camera_view` builder. `FrameRenderer` prepares the Renderer's flat and views
+profiles, replaces the snapshot every frame, and keeps drawing the last Ready view
+while a newer view's upload is Pending. Collider boxes are axis-aligned; visual
+rotation affects drawing. Narrow windows expand the camera height to keep the
+authored horizontal bounds visible. The item and view builders have no window,
+device or Qt dependency, so an Editor view of a World-demo World can draw the same
+geometry from the same extraction.
 
 Native tests cover identity retirement, stale/foreign handles, sparse removal,
 compiled and JSON definitions, canonical round trips, candidate ownership,
@@ -272,6 +281,12 @@ transform ranges leave existing placements), catalog and manifest rejection, and
 load failures that publish nothing. A separate non-sanitized allocator test
 injects every candidate storage allocation failure, including the two scatter
 allocations, and proves prepared simulation/extraction paths allocate no storage.
+`ludus_world_render_items_tests` compares every sampled pixel centre of the
+example room with the retired fullscreen shader's coverage rule, and checks
+draw order, depth range, colours and rejected frames. The GPU test
+`ludus_world_frame_renderer_pixels` draws that room on a headless device through
+`FrameRenderer`, reads the image back and compares it with the same rule. It
+also checks that rejected and zero-extent frames keep the last drawable view.
 
 The contributor workflow also checks native ASan/UBSan, format/tidy, header/include
 boundaries and installed SDK consumption. Browser QA uses the repository's pinned

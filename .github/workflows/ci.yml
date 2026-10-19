@@ -282,8 +282,8 @@ jobs:
         timeout-minutes: 8
         run: |
           out/host-tools/venv/bin/cmake --preset macos-clang-development -DLUDUS_BUILD_WORLD_DEMO=ON -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc"
-          out/host-tools/venv/bin/cmake --build --preset macos-clang-development --target ludus_world_demo ludus_world_demo_tests ludus_world_demo_allocation_tests ludus_foundation_base_tests
-          out/host-tools/venv/bin/ctest --preset macos-clang-development --tests-regex '^(ludus_foundation_base_tests|ludus_world_demo_tests|ludus_world_demo_allocation_tests|ludus_world_shader_layout)$' --no-tests=error
+          out/host-tools/venv/bin/cmake --build --preset macos-clang-development --target ludus_world_demo ludus_world_demo_tests ludus_world_demo_allocation_tests ludus_world_render_items_tests ludus_world_frame_renderer_tests ludus_foundation_base_tests
+          out/host-tools/venv/bin/ctest --preset macos-clang-development --tests-regex '^(ludus_foundation_base_tests|ludus_world_demo_tests|ludus_world_demo_allocation_tests|ludus_world_render_items_tests|ludus_world_frame_renderer_pixels|ludus_world_shader_layout)$' --no-tests=error
           out/build/macos-clang-development/apps/world_demo/ludus_world_demo --headless
           out/build/macos-clang-development/apps/world_demo/ludus_world_demo --frames 3
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/base/src/parse_number.cpp
