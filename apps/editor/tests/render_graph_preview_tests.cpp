@@ -11,6 +11,7 @@
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include "internal/world_demo_adapter.h"
 #include "renderer_composite.h"
 
 #include <ludus/foundation/base/types.h>
@@ -327,6 +328,40 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
     CHECK(MakeRenderGraphExtraction(RenderScene{}, {}, 10, unchanged, error) == false);
     CHECK(unchanged.Revision == 9);
     CHECK(MakeRenderGraphExtraction(scene, {}, 0, unchanged, error) == false);
+}
+
+TEST_CASE("RG3b World-demo Worlds feed the render-graph preview like any other World",
+          "[editor][render-graph][preview]")
+{
+    QFile schemaFile(QStringLiteral(":/world-demo/world.schema.json"));
+    REQUIRE(schemaFile.open(QIODevice::ReadOnly));
+    WorldDocument world;
+    QString error;
+    REQUIRE(world.LoadSchema(schemaFile.readAll(), error));
+    const std::string_view level = ludus::world_demo::ExampleLevel();
+    REQUIRE(world.Load(QByteArray(level.data(), static_cast<qsizetype>(level.size())), error));
+    REQUIRE(IsWorldDemo(world));
+    RenderScene scene;
+    REQUIRE(RenderScene::Load({}, world, scene, error));
+    // The viewport's own camera, converted for the conventional-depth runtime profile.
+    PreviewViewOptions options;
+    options.Camera = scene.DefaultCamera;
+    options.Width = 96;
+    options.Height = 64;
+    options.ShouldUseConventionalDepth = true;
+    renderer::ViewDescription view;
+    REQUIRE(scene.View(options, view, error));
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(scene, view, 1, extraction, error) == true);
+    REQUIRE(extraction.Meshes.size() == 1);
+    REQUIRE(extraction.Items.size() == scene.Objects.size());
+    for (qsizetype i = 0; i < extraction.Items.size(); ++i)
+    {
+        // Flat, opaque game colours with the game's transforms; no surface substitutes a tint.
+        CHECK(extraction.Items[i].Coverage == renderer::RenderGraphMaterial::Opaque);
+        CHECK(extraction.Items[i].Material.Color.X == scene.Objects[i].Tint.X);
+        CHECK(extraction.Items[i].MeshToWorld == scene.Objects[i].Transform);
+    }
 }
 
 TEST_CASE("RG3b cooked World extraction borrows the decoded definition's geometry", "[editor][render-graph][preview]")

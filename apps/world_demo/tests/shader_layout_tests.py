@@ -1,4 +1,4 @@
-"""Independent std140 checks for the reference renderer's fixed vector/matrix arrays."""
+"""Independent std140 checks of compile_shader.py's GLSL ES uniform layout for fixed vector/matrix arrays."""
 import importlib.util
 from pathlib import Path
 import unittest
@@ -9,10 +9,6 @@ spec.loader.exec_module(shader)
 class LayoutTests(unittest.TestCase):
     def layout(self, fields):
         return shader.glsl_es_layout("layout(std140) uniform World {" + fields + "};")
-    def test_game_upload(self):
-        result = self.layout("vec4 view; vec4 settings; vec4 geometry[192]; vec4 color[192]; vec4 rotation[192];")
-        self.assertEqual(result['offsets'], dict(view=0, settings=16, geometry=32, color=3104, rotation=6176))
-        self.assertEqual(result['size'], 9248)
     def test_compiler_array_wrapper(self):
         result = shader.glsl_es_layout("struct A { highp vec4 data[192]; }; layout(std140) uniform World { vec4 view; vec4 settings; A geometry; A color; A rotation; } world;")
         self.assertEqual(result['offsets'], dict(view=0, settings=16, geometry=32, color=3104, rotation=6176))

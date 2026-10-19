@@ -1,6 +1,7 @@
 #include "internal/render_scene.h"
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_demo_adapter.h"
 
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
@@ -130,67 +131,79 @@ uint64 ComputeSourceId(const QString& id)
     }
     return value == 0 ? 1 : value;
 }
-bool WriteChartedMesh(QDataStream& inoutStream,
-                      foundation::BorrowedView<const math::Vector3> positions,
-                      foundation::BorrowedView<const math::Vector3> normals,
-                      foundation::BorrowedView<const math::Vector2> texcoords,
-                      foundation::BorrowedView<const uint32> indices,
-                      usize& inoutVertexCount,
-                      QString& outError)
+// LUSCN v4 mesh: indexed VertexRecords; consumers derive the per-triangle bake charts.
+// Meshes without normals are expanded per corner so each triangle keeps its face normal.
+bool WriteSceneMesh(QDataStream& inoutStream,
+                    foundation::BorrowedView<const math::Vector3> positions,
+                    foundation::BorrowedView<const math::Vector3> normals,
+                    foundation::BorrowedView<const math::Vector2> texcoords,
+                    foundation::BorrowedView<const uint32> indices,
+                    usize& inoutVertexCount,
+                    usize& inoutIndexCount,
+                    QString& outError)
 {
     format::BakeChartLayout layout;
+    const bool isExpanded = normals.IsEmpty() == true;
+    const usize vertexCount = isExpanded == true ? indices.GetSize() : positions.GetSize();
     if (positions.IsValid() == false || normals.IsValid() == false || texcoords.IsValid() == false ||
-        indices.IsValid() == false || positions.IsEmpty() == true || indices.GetSize() % 3 != 0 ||
-        texcoords.GetSize() != positions.GetSize() ||
-        (normals.IsEmpty() == false && normals.GetSize() != positions.GetSize()) ||
-        indices.GetSize() > format::MAX_VERTICES - inoutVertexCount ||
+        indices.IsValid() == false || positions.IsEmpty() == true || indices.IsEmpty() == true ||
+        indices.GetSize() % format::TRIANGLE_CORNERS != 0 || texcoords.GetSize() != positions.GetSize() ||
+        (isExpanded == false && normals.GetSize() != positions.GetSize()) ||
+        vertexCount > format::MAX_VERTICES - inoutVertexCount || indices.GetSize() > format::MAX_INDICES ||
+        indices.GetSize() > format::MAX_TOTAL_INDICES - inoutIndexCount ||
         format::TryMakeBakeChartLayout(static_cast<uint32>(indices.GetSize() / 3), layout) == false)
     {
-        return Fail(outError, QStringLiteral("World geometry exceeds the separate triangle-chart profile."));
+        return Fail(outError, QStringLiteral("World geometry exceeds the scene vertex or index capacity."));
     }
-    inoutVertexCount += indices.GetSize();
-    inoutStream << static_cast<uint32>(indices.GetSize()) << static_cast<uint32>(indices.GetSize());
+    for (usize i = 0; i < indices.GetSize(); ++i)
+    {
+        if (indices[i] >= positions.GetSize())
+        {
+            return Fail(outError, QStringLiteral("Invalid World mesh index."));
+        }
+    }
+    inoutVertexCount += vertexCount;
+    inoutIndexCount += indices.GetSize();
+    inoutStream << static_cast<uint32>(vertexCount) << static_cast<uint32>(indices.GetSize());
+    if (isExpanded == false)
+    {
+        for (usize vertex = 0; vertex < positions.GetSize(); ++vertex)
+        {
+            const math::Vector3 position = positions[vertex];
+            const math::Vector3 normal = normals[vertex];
+            const math::Vector2 uv = texcoords[vertex];
+            inoutStream << position.X << position.Y << position.Z << normal.X << normal.Y << normal.Z << uv.X << uv.Y;
+        }
+        for (usize i = 0; i < indices.GetSize(); ++i)
+        {
+            inoutStream << indices[i];
+        }
+        return true;
+    }
     for (usize triangle = 0; triangle < indices.GetSize() / 3; ++triangle)
     {
-        for (usize corner = 0; corner < 3; ++corner)
+        const math::Vector3 cross =
+            math::Cross(positions[indices[triangle * 3 + 1]] - positions[indices[triangle * 3]],
+                        positions[indices[triangle * 3 + 2]] - positions[indices[triangle * 3]]);
+        if (math::IsFinite(cross) == false)
         {
-            if (indices[triangle * 3 + corner] >= positions.GetSize())
-            {
-                return Fail(outError, QStringLiteral("Invalid World mesh index."));
-            }
+            return Fail(outError, QStringLiteral("Schema mesh triangle area is not representable."));
         }
         math::Vector3 faceNormal;
-        if (normals.IsEmpty() == true)
+        if (math::TryNormalize(cross, faceNormal) != math::MathStatus::Success)
         {
-            const math::Vector3 cross =
-                math::Cross(positions[indices[triangle * 3 + 1]] - positions[indices[triangle * 3]],
-                            positions[indices[triangle * 3 + 2]] - positions[indices[triangle * 3]]);
-            if (math::IsFinite(cross) == false)
-            {
-                return Fail(outError, QStringLiteral("Schema mesh triangle area is not representable."));
-            }
-            if (math::TryNormalize(cross, faceNormal) != math::MathStatus::Success)
-            {
-                // A collapsed (zero-area) triangle covers no pixels and has no face
-                // normal; any unit normal is inert. The static bake skips and reports it
-                // instead of rejecting the World.
-                faceNormal = {0, 0, 1};
-            }
+            // A collapsed (zero-area) triangle covers no pixels and has no face
+            // normal; any unit normal is inert. The static bake skips and reports it
+            // instead of rejecting the World.
+            faceNormal = {0, 0, 1};
         }
         for (uint32 corner = 0; corner < 3; ++corner)
         {
             const uint32 index = indices[triangle * 3 + corner];
             const math::Vector3 position = positions[index];
-            const math::Vector3 normal = normals.IsEmpty() == true ? faceNormal : normals[index];
             const math::Vector2 uv = texcoords[index];
-            float32 u = 0;
-            float32 v = 0;
-            if (format::TryGetBakeChartUv(layout, static_cast<uint32>(triangle), corner, u, v) == false)
-            {
-                return Fail(outError, QStringLiteral("Invalid triangle bake chart."));
-            }
-            inoutStream << position.X << position.Y << position.Z << normal.X << normal.Y << normal.Z << uv.X << uv.Y
-                        << u << v;
+            inoutStream << position.X << position.Y << position.Z << faceNormal.X << faceNormal.Y << faceNormal.Z
+                        << uv.X << uv.Y;
         }
     }
     for (usize i = 0; i < indices.GetSize(); ++i)
@@ -487,9 +500,29 @@ int32 Find(const QVector<T>& values, const QString& id)
     return -1;
 }
 } // namespace
+RenderSceneSource RenderScene::GetSource(const QString& root, const WorldDocument& world)
+{
+    if (world.Loaded() == false)
+    {
+        return RenderSceneSource::None;
+    }
+    if (IsWorldDemo(world) == true)
+    {
+        return RenderSceneSource::WorldDemo;
+    }
+    const bool hasBindings =
+        root.isEmpty() == false &&
+        QFileInfo(QDir(root).filePath(QStringLiteral("authoring/render.preview.json"))).isFile() == true;
+    return hasBindings == true ? RenderSceneSource::ProjectBindings : RenderSceneSource::None;
+}
 bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderScene& output, QString& error)
 {
     error.clear();
+    if (GetSource(root, world) == RenderSceneSource::WorldDemo)
+    {
+        // The game's own extraction, so the World viewport draws exactly what the player draws.
+        return LoadWorldDemoScene(world, output, error);
+    }
     const auto canonical = QFileInfo(root).canonicalFilePath();
     QByteArray bytes;
     QJsonObject descriptor;
@@ -1078,7 +1111,7 @@ bool RenderScene::Merge(const RenderScene& authored,
     stream.setByteOrder(QDataStream::LittleEndian);
     stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
     stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
-    stream << format::VERSION_3 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
+    stream << format::VERSION_4 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
            << static_cast<uint32>(textureCount) << static_cast<uint32>(objectCount);
     const auto camera = level.value(QStringLiteral("camera")).toObject();
     for (const auto& key : {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up")})
@@ -1148,16 +1181,18 @@ bool RenderScene::Merge(const RenderScene& authored,
         WriteLittleEndianUint64(stream, 0);
         stream << float32{0} << uint32{0};
     }
-    usize expandedVertices = 0;
+    usize vertexCount = 0;
+    usize indexCount = 0;
     for (const resources::SceneMesh& mesh : imported.Meshes)
     {
-        if (WriteChartedMesh(stream,
-                             {mesh.Positions.GetData(), mesh.Positions.GetSize()},
-                             {mesh.Normals.GetData(), mesh.Normals.GetSize()},
-                             {mesh.Texcoords.GetData(), mesh.Texcoords.GetSize()},
-                             {mesh.Indices.GetData(), mesh.Indices.GetSize()},
-                             expandedVertices,
-                             error) == false)
+        if (WriteSceneMesh(stream,
+                           {mesh.Positions.GetData(), mesh.Positions.GetSize()},
+                           {mesh.Normals.GetData(), mesh.Normals.GetSize()},
+                           {mesh.Texcoords.GetData(), mesh.Texcoords.GetSize()},
+                           {mesh.Indices.GetData(), mesh.Indices.GetSize()},
+                           vertexCount,
+                           indexCount,
+                           error) == false)
         {
             return false;
         }
@@ -1166,13 +1201,14 @@ bool RenderScene::Merge(const RenderScene& authored,
     {
         for (const PreviewMesh& mesh : authored.Meshes)
         {
-            if (WriteChartedMesh(stream,
-                                 {mesh.Positions.constData(), static_cast<usize>(mesh.Positions.size())},
-                                 {mesh.Normals.constData(), static_cast<usize>(mesh.Normals.size())},
-                                 {mesh.Uvs.constData(), static_cast<usize>(mesh.Uvs.size())},
-                                 {mesh.Indices.constData(), static_cast<usize>(mesh.Indices.size())},
-                                 expandedVertices,
-                                 error) == false)
+            if (WriteSceneMesh(stream,
+                               {mesh.Positions.constData(), static_cast<usize>(mesh.Positions.size())},
+                               {mesh.Normals.constData(), static_cast<usize>(mesh.Normals.size())},
+                               {mesh.Uvs.constData(), static_cast<usize>(mesh.Uvs.size())},
+                               {mesh.Indices.constData(), static_cast<usize>(mesh.Indices.size())},
+                               vertexCount,
+                               indexCount,
+                               error) == false)
             {
                 return false;
             }

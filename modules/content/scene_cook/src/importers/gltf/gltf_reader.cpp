@@ -1449,15 +1449,15 @@ Status GltfReader::loadMaterial(usize index, uint32& outMaterial) noexcept
     }
     if (material.IsDoubleSided == true)
     {
-        inform(codes::SIDEDNESS_IGNORED, "doubleSided is not stored by LUSCN v3");
+        inform(codes::SIDEDNESS_IGNORED, "doubleSided is not stored by LUSCN v4");
     }
     if (material.NormalTexture != IR_NONE)
     {
-        warn(codes::NORMALMAP_DROPPED, "glTF normalTexture not stored by LUSCN v3");
+        warn(codes::NORMALMAP_DROPPED, "glTF normalTexture not stored by LUSCN v4");
     }
     if (material.OcclusionTexture != IR_NONE)
     {
-        inform(codes::TEXTURE_DROPPED, "glTF occlusionTexture not stored by LUSCN v3");
+        inform(codes::TEXTURE_DROPPED, "glTF occlusionTexture not stored by LUSCN v4");
     }
     if (material.EmissionTexture != IR_NONE)
     {

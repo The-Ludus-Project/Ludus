@@ -401,10 +401,11 @@ defines the frontend selection gates and persistence limits.
 
 ## Play in the editor viewport
 
-Status: approved 2026-10-19. Stages land one PR at a time; [delivery stages](#delivery-stages)
-records which are implemented.
-It replaces the separate World-demo authoring window, the World-demo private
-shader and the separate-window default for Play.
+Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer),
+P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) and P3
+(the viewport frame source) are implemented; P4–P7 are pending. It replaces the
+separate World-demo authoring window, the World-demo private shader and the
+separate-window default for Play.
 
 While a game plays, the World viewport is that game's window. The game owns
 rendering and input there and behaves as it would in its own OS window. A
@@ -647,7 +648,7 @@ AGENTS.md gates.
 | P6 | Play in the viewport: launcher variable, play source, input forwarding, reserved chords and transitions | Controller and viewport state tests; Cocoa journey playing World-demo in the viewport with native keys and resize; return to edit after crash and Stop |
 | P7 | Separate-window preference and unavailable reasons | Preference persistence; launch without the variable; refusal-message tests |
 
-P1 and P3 are implemented. P3's private `ViewportFrameSource` carries only frame
+P3's private `ViewportFrameSource` carries only frame
 production and leases: `HasPendingFrame`, `TakeFrame`, `ReleaseFrame`, `Resize`,
 `FrameReady` and `ResettingFrames`. Device admission, navigation and the
 statistics overlay stay on `RenderPreview`, and the browser canvas still leases
