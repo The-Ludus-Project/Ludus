@@ -38,6 +38,12 @@ struct PreviewSurface final
 {
     foundation::int32 Texture = 0;
     foundation::math::Vector4 Tint{1, 1, 1, 1};
+    /// Straight linear RGBA base color for consumers that sample no textures, such as the
+    /// render-graph RendererStatic preview. Authored surfaces use Tint. Cooked surfaces
+    /// compute it once at decode: Tint times the linear mean of the base-color texture's mip-zero
+    /// RGB, with alpha one because the cooked viewport transport draws LUSCN materials Opaque.
+    /// Untextured cooked surfaces keep their black Tint. The lit and textured paths ignore it.
+    foundation::math::Vector4 FlatTint{1, 1, 1, 1};
     bool Repeat = false;
     foundation::float32 Metallic = 0;
     foundation::float32 Roughness = .5F;

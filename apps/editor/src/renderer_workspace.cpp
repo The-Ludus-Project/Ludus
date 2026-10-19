@@ -237,6 +237,11 @@ QString DescribeLocation(const QJsonObject& location)
     }
     return parts.join(QLatin1Char(' '));
 }
+
+QString DescribePackageOutsideProject()
+{
+    return QStringLiteral("The render graph's package lies outside the project folder, so it has no build tree there.");
+}
 } // namespace
 
 RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* parentOrNull)
@@ -560,14 +565,17 @@ RendererWorkspace::~RendererWorkspace() = default;
 void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
 {
     mLiveBuild.Reset();
-    const bool isSameRoot = root == mProjectRoot;
+    // Package roots are canonical, so the project root is too; a symlinked or otherwise
+    // non-canonical root would make build trees climb out of the project.
+    const QString canonical = root.isEmpty() == true ? QString() : QFileInfo(root).canonicalFilePath();
+    const bool isSameRoot = canonical == mProjectRoot;
     mEpoch = epoch;
     if (isSameRoot == true)
     {
         return;
     }
     CancelJob();
-    mProjectRoot = root;
+    mProjectRoot = canonical;
     mDocument.Reset();
     mSelectedFile.clear();
     mSelectedConfiguration.clear();
@@ -777,8 +785,14 @@ bool RendererWorkspace::startBuild(bool shouldPreview)
             QStringLiteral("Create %1 with `ludus render-graph new-build` before building.").arg(manifestFile()));
         return false;
     }
+    const QString build = buildDirectory();
+    if (build.isEmpty() == true)
+    {
+        mStatus->setText(DescribePackageOutsideProject());
+        return false;
+    }
     QStringList arguments{QStringLiteral("{snapshot}/") + manifestFile(),
-                          buildDirectory(),
+                          build,
                           QStringLiteral("--root"),
                           QStringLiteral("{snapshot}"),
                           QStringLiteral("--helper"),
@@ -812,11 +826,17 @@ bool RendererWorkspace::startBuild(bool shouldPreview)
 
 bool RendererWorkspace::CookRuntime()
 {
+    const QString build = buildDirectory();
+    if (build.isEmpty() == true)
+    {
+        mStatus->setText(DescribePackageOutsideProject());
+        return false;
+    }
     const QString configuration = mConfiguration->currentText() == DEFAULT_CONFIGURATION
                                       ? QStringLiteral("Default")
                                       : mConfiguration->currentText();
     return startJob(QStringLiteral("cook-runtime"),
-                    {buildDirectory(), GetRuntimePackagePath(), QStringLiteral("--configuration"), configuration},
+                    {build, GetRuntimePackagePath(), QStringLiteral("--configuration"), configuration},
                     false);
 }
 
@@ -1348,18 +1368,33 @@ QString RendererWorkspace::manifestFile() const
 
 QString RendererWorkspace::buildDirectory() const
 {
+    if (mProjectRoot.isEmpty() == true || mDocument.IsLoaded() == false)
+    {
+        return {};
+    }
     QString name = mDocument.GetRootGraph();
     name.chop(static_cast<qsizetype>(QStringLiteral(".lurender.json").size()));
+    // Both roots are canonical, so a package outside the project shows as an escaping path.
     const QString package = QDir(mProjectRoot).relativeFilePath(mDocument.GetPackageRoot());
+    if (package == QStringLiteral("..") || package.startsWith(QStringLiteral("../")) == true ||
+        QDir::isAbsolutePath(package) == true)
+    {
+        return {};
+    }
     const QString owner = package == QStringLiteral(".") ? name : package + QLatin1Char('/') + name;
     return QDir(mProjectRoot).filePath(QStringLiteral("out/render-graph/") + owner + QStringLiteral("/build"));
 }
 
 QString RendererWorkspace::GetRuntimePackagePath() const
 {
+    const QString build = buildDirectory();
+    if (build.isEmpty() == true)
+    {
+        return {};
+    }
     QString name = mDocument.GetRootGraph();
     name.chop(static_cast<qsizetype>(QStringLiteral(".lurender.json").size()));
-    return QDir::cleanPath(QDir(buildDirectory()).filePath(QStringLiteral("../") + name + QStringLiteral(".lurgrt")));
+    return QDir::cleanPath(QDir(build).filePath(QStringLiteral("../") + name + QStringLiteral(".lurgrt")));
 }
 
 QString RendererWorkspace::GetStatusText() const
@@ -1448,11 +1483,12 @@ bool RendererWorkspace::PreviewRuntime()
         return false;
     }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mDocument.IsLoaded() == false)
+    const QString runtime = GetRuntimePackagePath();
+    if (runtime.isEmpty() == true)
     {
         return false;
     }
-    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(GetRuntimePackagePath());
+    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime);
     mPreviewTimer.start();
     ServicePreview();
     return loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting;
