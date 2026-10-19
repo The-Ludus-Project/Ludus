@@ -56,6 +56,8 @@ public:
     RendererWorkspace& operator=(const RendererWorkspace&) = delete;
 
     /// Bind a project root and epoch; a different root closes the document and cancels jobs.
+    /// The root is canonicalized, so a symlinked path binds the same project and its build
+    /// tree; an empty or missing root closes the project.
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
@@ -106,6 +108,8 @@ public:
     [[nodiscard]] bool ActivateDiagnostic(foundation::int32 row);
     [[nodiscard]] QString GetSourceFile() const;
     [[nodiscard]] foundation::int32 GetSourceLine() const;
+    /// Canonical `<project>/out/render-graph/<package>/<graph>.lurgrt` path that Build and
+    /// Cook Runtime write. Empty when nothing is open or the package lies outside the project.
     [[nodiscard]] QString GetRuntimePackagePath() const;
     [[nodiscard]] QString GetStatusText() const;
 

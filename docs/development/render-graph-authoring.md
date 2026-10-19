@@ -728,7 +728,10 @@ setup error; use **Project → Repair Project Setup**. A selection change during
 compilation/cooking rejects publication and retains the previous runtime.
 
 Build publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
-`out/render-graph/<graph>.lurgrt` from that build tree.
+`out/render-graph/<graph>.lurgrt` from that build tree. These paths are resolved
+from the project's canonical location, so a project opened through a symlink
+still builds inside its own folder. Build and Cook Runtime refuse a graph whose
+package lies outside the project.
 
 The same automatic path is available to tooling without the editor:
 
