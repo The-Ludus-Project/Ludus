@@ -1,12 +1,14 @@
 #pragma once
 
-// Budget planner: fits a SceneIR to the LUSCN limits of Ludus::SceneFormat.
+// Budget planner: fits a SceneIR to the LUSCN version 5 import profile of
+// Ludus::SceneFormat (format::IMPORT_LIMITS).
 //
 // Placements (world shapes plus expanded instances) are ranked by world-space
-// area and kept until the vertex budget is spent. Materials are clustered: the
-// largest source materials by area keep their own slot, one slot is reserved
-// for merged emissive surfaces, and the rest merge into their nearest kept
-// material. Each cluster becomes one world-space mesh and one object.
+// area and kept until the vertex/index budget is spent. Each source material
+// keeps its own slot, and each group of identical emitters gets one, while they
+// fit the mesh/material count; beyond it the largest source materials by area
+// keep their slot and the rest merge into their nearest kept material. Each slot
+// becomes one world-space mesh and one object.
 
 #include "import_diagnostics.h"
 #include "scene_ir.h"
@@ -27,6 +29,10 @@ struct PlannedMaterial final
     bool IsTextureRepeated = true;
     float64 Metallic = 0.0;
     float64 Roughness = 1.0;
+    /// Representative material is an alpha mask (glTF MASK, MTL map_d); see CookTextures.
+    bool IsAlphaMasked = false;
+    /// Mask threshold in [0, 1]; zero for opaque slots.
+    float64 AlphaCutoff = 0.0;
     float64 Emission[3] = {0.0, 0.0, 0.0};
     bool IsEmissive = false;
     bool IsEmissionTwoSided = false;

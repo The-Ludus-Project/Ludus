@@ -3,6 +3,8 @@
 #include <QFileInfo>
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/content/scene_format/luscn.h>
+
 #include <QJsonArray>
 #include <QStringList>
 
@@ -10,12 +12,9 @@ namespace ludus::editor
 {
 namespace
 {
-/// Runtime limits of LUSCN01 v2 shown beside the cooked counts.
-constexpr foundation::int32 MAX_MESHES = 6;
-constexpr foundation::int32 MAX_MATERIALS = 8;
-constexpr foundation::int32 MAX_TEXTURES = 8;
-constexpr foundation::int64 MAX_VERTICES = 500000;
-constexpr foundation::int64 MAX_BUNDLE_BYTES = foundation::int64{64} * 1024 * 1024;
+namespace format = content::scene_format;
+/// Reports written before the cooked format version was recorded describe version 4 bundles.
+constexpr foundation::int64 UNRECORDED_SCENE_FORMAT_VERSION = format::VERSION_4;
 
 [[nodiscard]] QString FormatCount(const QJsonObject& object, const QString& key)
 {
@@ -54,23 +53,31 @@ constexpr foundation::int64 MAX_BUNDLE_BYTES = foundation::int64{64} * 1024 * 10
                           QString::number(otherLights)));
     const foundation::int64 vertices = cooked.value(QStringLiteral("vertices")).toInteger();
     const foundation::int64 bytes = cooked.value(QStringLiteral("bundle_bytes")).toInteger();
+    // Runtime limits of the cooked LUSCN version, shown beside the cooked counts.
+    const foundation::int64 version =
+        cooked.value(QStringLiteral("scene_format_version")).toInteger(UNRECORDED_SCENE_FORMAT_VERSION);
+    const format::BundleLimits& limits =
+        format::GetBundleLimits(format::IsSupportedVersion(static_cast<foundation::uint32>(version)) == true
+                                    ? static_cast<foundation::uint32>(version)
+                                    : format::VERSION_4);
     lines.append(QStringLiteral("Cooked: %1/%2 meshes, %3/%4 materials, %5/%6 textures, %7 objects")
                      .arg(FormatCount(cooked, QStringLiteral("meshes")),
-                          QString::number(MAX_MESHES),
+                          QString::number(limits.Meshes),
                           FormatCount(cooked, QStringLiteral("materials")),
-                          QString::number(MAX_MATERIALS),
+                          QString::number(limits.Materials),
                           FormatCount(cooked, QStringLiteral("textures")),
-                          QString::number(MAX_TEXTURES),
+                          QString::number(limits.Textures),
                           FormatCount(cooked, QStringLiteral("objects"))));
     const bool isDryRun = report.value(QStringLiteral("dry_run")).toBool();
-    lines.append(
-        QStringLiteral("Budget: %1 of %2 vertices; %3; %4 placements dropped")
-            .arg(QString::number(vertices),
-                 QString::number(MAX_VERTICES),
-                 isDryRun == true
-                     ? QStringLiteral("bundle size measured on import")
-                     : QStringLiteral("%1 of %2").arg(FormatMebibytes(bytes), FormatMebibytes(MAX_BUNDLE_BYTES)),
-                 FormatCount(cooked, QStringLiteral("dropped_placements"))));
+    lines.append(QStringLiteral("Budget: %1 of %2 vertices; %3; %4 placements dropped")
+                     .arg(QString::number(vertices),
+                          QString::number(limits.Vertices),
+                          isDryRun == true
+                              ? QStringLiteral("bundle size measured on import")
+                              : QStringLiteral("%1 of %2")
+                                    .arg(FormatMebibytes(bytes),
+                                         FormatMebibytes(static_cast<foundation::int64>(limits.BundleBytes))),
+                          FormatCount(cooked, QStringLiteral("dropped_placements"))));
     QStringList fallbacks;
     for (const QJsonValue value : report.value(QStringLiteral("diagnostics")).toArray())
     {

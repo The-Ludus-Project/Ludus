@@ -169,8 +169,8 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
         description.SamplesPerTriangle > 65536 || description.MaxDepth < 2 ||
         description.MaxDepth > LUDUS_REFERENCE_MAX_DEPTH || math::IsFinite(description.SecondaryDistance) == false ||
         description.SecondaryDistance <= 0 || description.SecondaryDistance > 2000000 ||
-        scene.Objects.IsEmpty() == true || scene.Objects.GetSize() > format::MAX_OBJECTS ||
-        scene.Materials.GetSize() > format::MAX_MATERIALS || scene.Lights.GetSize() > format::MAX_LIGHTS ||
+        scene.Objects.IsEmpty() == true || scene.Objects.GetSize() > format::IMPORT_LIMITS.Objects ||
+        scene.Materials.GetSize() > format::IMPORT_LIMITS.Materials || scene.Lights.GetSize() > format::MAX_LIGHTS ||
         description.Surfaces.IsValid() == false ||
         (description.Surfaces.IsEmpty() == false && description.Surfaces.GetSize() != scene.Objects.GetSize()))
     {

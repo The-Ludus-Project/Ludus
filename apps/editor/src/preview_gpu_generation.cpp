@@ -41,6 +41,9 @@ namespace renderer = graphics::renderer;
 constexpr qsizetype TRIANGLE_INDEX_COUNT = 3;
 /// Lowest perceptual roughness CreateLitMaterial admits (its GGX alpha floor).
 constexpr float32 MINIMUM_LIT_ROUGHNESS = 0.045F;
+/// Live material versions per material slot: shadow caster, lit, and the replacement
+/// generation's while it prepares.
+constexpr uint32 MATERIAL_VERSIONS_PER_SLOT = 3;
 bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
@@ -168,7 +171,10 @@ bool PreviewGpuGeneration::prepareRenderer() noexcept
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     renderer::Limits limits;
     limits.Views = renderer::SHADOW_REGION_CAPACITY * 2 + 8;
-    limits.Materials = content::scene_format::MAX_OBJECTS * 3;
+    // Version 5 (import profile) scenes: every mesh, object and material version.
+    limits.Meshes = static_cast<uint32>(PREVIEW_MESH_CAPACITY);
+    limits.Objects = static_cast<uint32>(MAX_PREVIEW_OBJECTS);
+    limits.Materials = static_cast<uint32>(PREVIEW_MATERIAL_CAPACITY) * MATERIAL_VERSIONS_PER_SLOT;
     limits.Snapshots = 8;
     limits.HostBytes = usize{128} * 1024 * 1024;
     return acceptStage(Renderer.Initialize(Device,
@@ -393,10 +399,17 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
             description.Texture = Textures[surface.Texture];
         }
         description.Tint = surface.Tint;
+        if (surface.IsAlphaMasked == true)
+        {
+            description.Alpha = renderer::MaterialAlpha::Masked;
+            description.AlphaCutoff = surface.AlphaCutoff;
+        }
         if (Shading == PreviewShading::Solid)
         {
+            // Solid shading samples no texture, so masked surfaces draw fully covered.
             description.Texture = {};
             description.Tint = {.6F, .6F, .6F, 1};
+            description.Alpha = renderer::MaterialAlpha::Opaque;
         }
         description.Sampler.Filter = rhi::RasterFilter::Linear;
         description.Sampler.U = description.Sampler.V =
@@ -479,7 +492,11 @@ bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& 
     {
         return prepareLighting(surface, outError);
     }
-    StaticArray<renderer::SceneItem, MAX_PREVIEW_OBJECTS> items{};
+    Array<renderer::SceneItem> items;
+    if (items.TryResize(static_cast<usize>(Source.Objects.size())) == false)
+    {
+        return false;
+    }
     for (int32 i = 0; i < Source.Objects.size(); ++i)
     {
         const PreviewObject& object = Source.Objects[i];
@@ -652,7 +669,11 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             }
             ++resources.MaterialCursor;
         }
-        StaticArray<renderer::SceneItem, content::scene_format::MAX_OBJECTS> items{};
+        Array<renderer::SceneItem> items;
+        if (items.TryResize(count) == false)
+        {
+            return false;
+        }
         for (usize i = 0; i < count; ++i)
         {
             const rhi::RasterStatus ready = resources.Renderer.GetStatus(resources.CasterMaterials[i]);
@@ -742,7 +763,11 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             }
             ++resources.MaterialCursor;
         }
-        StaticArray<renderer::SceneItem, content::scene_format::MAX_OBJECTS> items{};
+        Array<renderer::SceneItem> items;
+        if (items.TryResize(count) == false)
+        {
+            return false;
+        }
         for (usize i = 0; i < count; ++i)
         {
             const rhi::RasterStatus ready = resources.Renderer.GetStatus(mMaterials[i]);

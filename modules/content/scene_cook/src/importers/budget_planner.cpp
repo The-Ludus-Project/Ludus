@@ -278,8 +278,9 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             }
         }
     }
-    // Each cooked mesh carries exactly one material, so the slot count is bounded by MAX_MESHES.
-    const usize slotLimit = format::MAX_MESHES < format::MAX_MATERIALS ? format::MAX_MESHES : format::MAX_MATERIALS;
+    // Each cooked mesh carries exactly one material, so the slot count is bounded by the
+    // version 5 import profile's mesh and material counts; within it no material merges.
+    const usize slotLimit = math::Min(usize{format::IMPORT_LIMITS.Meshes}, usize{format::IMPORT_LIMITS.Materials});
     // Decorative emitter groups beyond the slots left by required emitters (and one slot
     // for non-emissive surfaces) are demoted, smallest area first.
     usize requiredEmitters = 0;
@@ -425,6 +426,11 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         planned->IsTextureRepeated = terms.Texture == IR_NONE || scene.Textures[terms.Texture].IsRepeated == true;
         planned->Metallic = math::Clamp(terms.Metallic, 0.0, 1.0);
         planned->Roughness = math::Clamp(terms.Roughness, static_cast<float64>(format::MIN_ROUGHNESS), 1.0);
+        if (use.Material != IR_NONE && scene.Materials[use.Material].AlphaMode == IrAlphaMode::Mask)
+        {
+            planned->IsAlphaMasked = true;
+            planned->AlphaCutoff = math::Clamp(scene.Materials[use.Material].AlphaCutoff, 0.0, 1.0);
+        }
         use.Slot = static_cast<uint32>(rank);
     }
     uint32 mergedCount = 0;
@@ -529,12 +535,12 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             }
         }
         PlannedMaterial& planned = plan.Materials[slot];
-        // LUSCN v4 meshes stay indexed; consumers expand corners for bake charts,
-        // which MAX_TOTAL_INDICES bounds across the bundle.
+        // LUSCN v5 meshes stay indexed; consumers expand corners for bake charts,
+        // which the import profile's TotalIndices bounds across the bundle.
         const usize vertices = mesh.GetVertexCount();
         const usize indices = mesh.Indices.GetSize();
-        if (totalVertices + vertices > format::MAX_VERTICES || planned.IndexCount + indices > format::MAX_INDICES ||
-            totalIndices + indices > format::MAX_TOTAL_INDICES)
+        if (totalVertices + vertices > format::IMPORT_LIMITS.Vertices ||
+            totalIndices + indices > format::IMPORT_LIMITS.TotalIndices)
         {
             if (isEmitting == true && shape.IsEmissionOptional == false)
             {

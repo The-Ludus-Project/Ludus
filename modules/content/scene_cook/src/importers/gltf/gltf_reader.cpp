@@ -1443,21 +1443,21 @@ Status GltfReader::loadMaterial(usize index, uint32& outMaterial) noexcept
     bool isDoubleSided = false;
     (void)GetBoolean(object, "doubleSided", isDoubleSided);
     material.IsDoubleSided = isDoubleSided;
-    if (material.AlphaMode != IrAlphaMode::Opaque)
+    if (material.AlphaMode == IrAlphaMode::Blend)
     {
-        warn(codes::ALPHA_APPROXIMATED, "glTF alphaMode MASK/BLEND cooked as opaque");
+        warn(codes::ALPHA_APPROXIMATED, "glTF alphaMode BLEND cooked as opaque");
     }
     if (material.IsDoubleSided == true)
     {
-        inform(codes::SIDEDNESS_IGNORED, "doubleSided is not stored by LUSCN v4");
+        inform(codes::SIDEDNESS_IGNORED, "doubleSided is not stored by LUSCN v5");
     }
     if (material.NormalTexture != IR_NONE)
     {
-        warn(codes::NORMALMAP_DROPPED, "glTF normalTexture not stored by LUSCN v4");
+        warn(codes::NORMALMAP_DROPPED, "glTF normalTexture not stored by LUSCN v5");
     }
     if (material.OcclusionTexture != IR_NONE)
     {
-        inform(codes::TEXTURE_DROPPED, "glTF occlusionTexture not stored by LUSCN v4");
+        inform(codes::TEXTURE_DROPPED, "glTF occlusionTexture not stored by LUSCN v5");
     }
     if (material.EmissionTexture != IR_NONE)
     {

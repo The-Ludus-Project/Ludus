@@ -23,6 +23,7 @@ using namespace ludus::content::scene_cook::importers;
 using ludus::content::Status;
 using ludus::foundation::core::float32;
 using ludus::foundation::core::float64;
+using ludus::foundation::core::int32;
 using ludus::foundation::core::uint32;
 using ludus::foundation::core::usize;
 
@@ -355,17 +356,66 @@ TEST_CASE("OBJ reading honours cancellation", "[scene_cook][obj]")
     CHECK(ReadWavefront(text, scene, log, {}, &cancel) == Status::Cancelled);
 }
 
+TEST_CASE("OBJ map_d cooks LUSCN v5 alpha masks into the base texture", "[scene_cook][obj]")
+{
+    namespace format = ludus::content::scene_format;
+    constexpr usize ALPHA = 3;
+    constexpr usize TEXEL_BYTES = format::TEXEL_BYTES;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportObjBestEffort(GetFixture("obj/cutout/cutout.obj").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    CHECK(result.Summary.Errors == 0);
+    CHECK(ReportHasCode(result, codes::ALPHA_APPROXIMATED)); // map_d read at the 0.5 cutoff.
+    // Slots follow world area: Leaf (4), Halo (2), Solid (1); each slot owns its texture.
+    REQUIRE(decoded.Materials.GetSize() == 3);
+
+    // Leaf: the 4x4 grey mask is sampled nearest at the 8x8 base resolution.
+    const ludus::resources::SceneMaterial& leaf = decoded.Materials[0];
+    CHECK(leaf.IsAlphaMasked == true);
+    CHECK(leaf.AlphaCutoff == .5F);
+    const ludus::resources::SceneTexture& leafTexture = decoded.Textures[leaf.Texture];
+    REQUIRE(leafTexture.Width == 8);
+    for (uint32 x = 0; x < leafTexture.Width; ++x)
+    {
+        CHECK(leafTexture.Pixels[x * TEXEL_BYTES + ALPHA] == (x < 4 ? 0 : 255));
+    }
+    CHECK(leafTexture.Pixels[0] == 230); // Base colour is unchanged.
+
+    // Halo: an untextured red swatch takes the 2x2 mask's resolution and alpha channel.
+    const ludus::resources::SceneMaterial& halo = decoded.Materials[1];
+    CHECK(halo.IsAlphaMasked == true);
+    const ludus::resources::SceneTexture& haloTexture = decoded.Textures[halo.Texture];
+    REQUIRE(haloTexture.Width == 2);
+    REQUIRE(haloTexture.Height == 2);
+    CHECK(haloTexture.Pixels[0] == 255);
+    CHECK(haloTexture.Pixels[1] == 0);
+    CHECK(haloTexture.Pixels[ALPHA] == 0);
+    CHECK(haloTexture.Pixels[2 * TEXEL_BYTES + ALPHA] == 255);
+
+    // Solid: a mask that keeps every texel cooks opaque.
+    CHECK(decoded.Materials[2].IsAlphaMasked == false);
+    CHECK(decoded.Materials[2].AlphaCutoff == 0);
+}
+
 TEST_CASE("OBJ budget: excess materials merge and decorative emitters drop instead of failing", "[scene_cook][obj]")
 {
+    namespace format = ludus::content::scene_format;
+    // More materials, and more distinct emitters, than the version 5 import profile has slots.
+    constexpr int32 SLOTS = static_cast<int32>(format::IMPORT_LIMITS.Materials);
+    constexpr int32 MATERIAL_COUNT = SLOTS + 12;
+    constexpr int32 EMITTER_COUNT = SLOTS + 2;
     ScratchDirectory scratch;
     std::string wavefrontText = "mtllib m.mtl\n";
     std::string mtl;
-    for (int i = 0; i < 12; ++i)
+    for (int32 i = 0; i < MATERIAL_COUNT; ++i)
     {
         const std::string x = std::to_string(i * 2);
         mtl += "newmtl M" + std::to_string(i) + "\nKd 0." + std::to_string(i % 10) + " 0.5 0.5\n";
-        // Eight distinct emitters exceed the emitter slots; they are decorative in OBJ.
-        if (i < 8)
+        // Distinct emitters exceed the emitter slots; they are decorative in OBJ.
+        if (i < EMITTER_COUNT)
         {
             mtl += "Ke " + std::to_string(i + 1) + " 1 1\n";
         }
@@ -384,7 +434,7 @@ TEST_CASE("OBJ budget: excess materials merge and decorative emitters drop inste
     BestEffortResult result;
     CookError error;
     REQUIRE(ImportObjBestEffort((scratch.Path / "scene.obj").string(), {}, result, error) == true);
-    CHECK(result.Summary.CookedMaterials <= ludus::content::scene_format::MAX_MESHES);
+    CHECK(result.Summary.CookedMaterials <= format::IMPORT_LIMITS.Meshes);
     CHECK(ReportHasCode(result, codes::EMISSION_DROPPED));
     CHECK(ReportHasCode(result, codes::MATERIALS_MERGED));
     CHECK(result.Summary.Errors == 0);

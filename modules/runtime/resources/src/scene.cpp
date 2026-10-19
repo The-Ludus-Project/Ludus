@@ -26,6 +26,10 @@ static_assert(sizeof(format::VertexRecord) == 2 * sizeof(math::Vector3) + sizeof
 static_assert(sizeof(format::ObjectRecord::Linear) == sizeof(math::Affine3::Columns) &&
               sizeof(format::ObjectRecord::Translation) == sizeof(math::Affine3::Translation));
 static_assert(sizeof(format::Header::Eye) == sizeof(math::Vector3));
+/// Largest decoded definition an adapter binds: every admitted bundle's arrays, which
+/// are no larger than their wire records, plus the per-record container headers.
+constexpr uint64 MAX_RESIDENT_SCENE_BYTES = uint64{512} * 1024 * 1024;
+static_assert(MAX_RESIDENT_SCENE_BYTES > format::IMPORT_LIMITS.BundleBytes);
 class Reader final
 {
 public:
@@ -169,7 +173,7 @@ uint64 ReserveEpoch() noexcept
 } // namespace
 Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept
 {
-    if (bytesOrNull == nullptr || count < sizeof(format::Header) || count > format::MAX_BUNDLE_BYTES)
+    if (bytesOrNull == nullptr || count < sizeof(format::Header) || count > format::IMPORT_LIMITS.BundleBytes)
     {
         return Status::Failed;
     }
@@ -182,12 +186,16 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
     uint32 objects = 0;
     SceneDefinition scene;
     if (std::memcmp(magic, format::MAGIC.data(), format::MAGIC.size()) != 0 || reader.Read(version) == false ||
-        format::IsSupportedVersion(version) == false || reader.Read(meshes) == false || meshes == 0 ||
-        meshes > format::MAX_MESHES || reader.Read(materials) == false || materials == 0 ||
-        materials > format::MAX_MATERIALS || reader.Read(textures) == false || textures > format::MAX_TEXTURES ||
-        reader.Read(objects) == false || objects == 0 || objects > format::MAX_OBJECTS ||
-        reader.Read(scene.Eye) == false || reader.Read(scene.Target) == false || reader.Read(scene.Up) == false ||
-        reader.Read(scene.VerticalFov) == false)
+        format::IsSupportedVersion(version) == false)
+    {
+        return Status::Failed;
+    }
+    const format::BundleLimits& limits = format::GetBundleLimits(version);
+    if (count > limits.BundleBytes || reader.Read(meshes) == false || meshes == 0 || meshes > limits.Meshes ||
+        reader.Read(materials) == false || materials == 0 || materials > limits.Materials ||
+        reader.Read(textures) == false || textures > limits.Textures || reader.Read(objects) == false || objects == 0 ||
+        objects > limits.Objects || reader.Read(scene.Eye) == false || reader.Read(scene.Target) == false ||
+        reader.Read(scene.Up) == false || reader.Read(scene.VerticalFov) == false)
     {
         return Status::Failed;
     }
@@ -211,7 +219,7 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             texture.Width == 0 || texture.Height == 0 || texture.Width > format::MAX_TEXTURE_DIMENSION ||
             texture.Height > format::MAX_TEXTURE_DIMENSION ||
             size != usize(texture.Width) * texture.Height * format::TEXEL_BYTES || size > format::MAX_TEXTURE_BYTES ||
-            textureBytes + size > format::MAX_TOTAL_TEXTURE_BYTES)
+            textureBytes + size > limits.TotalTextureBytes)
         {
             return Status::Failed;
         }
@@ -250,14 +258,20 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
         if (format::HasLightingRecords(version) == true)
         {
             uint32 flags = 0;
+            uint32 alphaMode = format::ALPHA_OPAQUE;
             uint32 reserved = 0;
             if (reader.Read(flags) == false || (flags & ~format::EMISSION_FLAGS) != 0 ||
                 reader.Read(material.AreaSourceId) == false || reader.Read(material.EmissionPower) == false ||
+                (format::HasMaterialAlpha(version) == true &&
+                 (reader.Read(alphaMode) == false || reader.Read(material.AlphaCutoff) == false)) ||
                 reader.Read(reserved) == false || reserved != 0 || material.EmissionPower < 0 ||
-                material.EmissionPower > format::MAX_LIGHT_INTENSITY)
+                material.EmissionPower > format::MAX_LIGHT_INTENSITY || alphaMode > format::ALPHA_MASKED ||
+                material.AlphaCutoff < 0 || material.AlphaCutoff > 1 ||
+                (alphaMode == format::ALPHA_OPAQUE && material.AlphaCutoff != 0))
             {
                 return Status::Failed;
             }
+            material.IsAlphaMasked = alphaMode == format::ALPHA_MASKED;
             material.IsEmissionTwoSided = (flags & format::EMISSION_TWO_SIDED) != 0;
             material.HasEmissionPower = (flags & format::EMISSION_HAS_POWER) != 0;
             if ((material.HasEmissionPower == false && material.EmissionPower != 0) ||
@@ -276,9 +290,10 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
         uint32 vertices = 0;
         uint32 indices = 0;
         if (reader.Read(vertices) == false || reader.Read(indices) == false || vertices == 0 ||
-            vertices > format::MAX_VERTICES || indices == 0 || indices > format::MAX_INDICES || indices % 3 != 0 ||
-            vertexTotal + vertices > format::MAX_VERTICES ||
-            (version == format::VERSION_4 && indexTotal + indices > format::MAX_TOTAL_INDICES) ||
+            vertices > limits.Vertices || indices == 0 || indices > limits.TotalIndices ||
+            indices % format::TRIANGLE_CORNERS != 0 || vertexTotal + vertices > limits.Vertices ||
+            (format::HasImplicitBakeCoordinates(version) == true && indexTotal + indices > limits.TotalIndices) ||
+            (format::HasImplicitBakeCoordinates(version) == false && indices > format::MAX_INDICES) ||
             usize(vertices) * vertexBytes + usize(indices) * sizeof(uint32) > reader.Remaining())
         {
             return Status::Failed;
@@ -409,7 +424,7 @@ Status SceneDefinitionAdapter::Initialize(const content::Resource& resource, con
 {
     if (mState != nullptr || resource.Type != content::Kind::CookedScene ||
         content::ValidId(resource.Id.View()) == false || content::ValidPath(resource.Path.View()) == false ||
-        scene.Meshes.IsEmpty() == true || scene.Objects.IsEmpty() == true || scene.Bytes() > uint64{64} * 1024 * 1024)
+        scene.Meshes.IsEmpty() == true || scene.Objects.IsEmpty() == true || scene.Bytes() > MAX_RESIDENT_SCENE_BYTES)
     {
         return Status::InvalidState;
     }

@@ -121,6 +121,16 @@ TEST_CASE("import previews list source and cooked counts, budget and fallbacks",
     CHECK(gltfText.contains(QStringLiteral("Importer: gltf-best-effort-v1 (scene.glb)")) == true);
     CHECK(gltfText.contains(QStringLiteral("2.0 MiB of 64.0 MiB")) == true);
 
+    // Version 5 reports show the import profile's limits.
+    QJsonObject imported = MakeBestEffortReport(false);
+    QJsonObject cooked = imported.value(QStringLiteral("cooked")).toObject();
+    cooked.insert(QStringLiteral("scene_format_version"), 5);
+    imported.insert(QStringLiteral("cooked"), cooked);
+    const QString importedText = DescribeImportReport(imported);
+    CHECK(importedText.contains(QStringLiteral("Cooked: 6/256 meshes, 6/256 materials, 6/256 textures")) == true);
+    CHECK(importedText.contains(QStringLiteral("1200 of 2000000 vertices")) == true);
+    CHECK(importedText.contains(QStringLiteral("2.0 MiB of 384.0 MiB")) == true);
+
     const QJsonObject manifest{{QStringLiteral("source"), QStringLiteral("Modern Hall / staircase2")},
                                {QStringLiteral("meshes"), 6},
                                {QStringLiteral("materials"), 8},

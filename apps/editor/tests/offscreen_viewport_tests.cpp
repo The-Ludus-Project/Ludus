@@ -8,14 +8,19 @@
 
 #include <ludus/foundation/time/time.hpp>
 
+#include <ludus/content/scene_format/luscn.h>
+
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/rhi/rhi.h>
 
 #include <QByteArray>
+#include <QDataStream>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QPushButton>
 #include <QSet>
@@ -52,6 +57,81 @@ constexpr qsizetype MINIMUM_VARYING_COLOURS = 8;
 constexpr qsizetype MINIMUM_NORMAL_COLOURS = 4;
 /// Directory for PNG captures of each debug view; captures are skipped when unset.
 constexpr const char* DEBUG_SHOT_DIRECTORY_VARIABLE = "LUDUS_VIEWPORT_DEBUG_SHOTS";
+/// Alpha-mask capture size on lavapipe.
+constexpr int32 MASK_FRAME_SIZE = 64;
+/// A surface pixel is clearly red: its red channel exceeds this and twice green and blue.
+constexpr int32 MINIMUM_SURFACE_RED = 48;
+/// Write one cooked LUSCN version 5 quad facing +z and -z, textured 2x1 with a transparent left
+/// and an opaque right red texel, lit by a constant white environment. isMasked selects
+/// ALPHA_MASKED at a 0.5 cutoff; otherwise the material is opaque and ignores the alpha.
+QByteArray MakeMaskedQuadBundle(bool isMasked)
+{
+    namespace format = ludus::content::scene_format;
+    QByteArray bytes;
+    QDataStream stream(&bytes, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+    const auto writeIdentity = [&stream](uint64 value) {
+        stream << static_cast<uint32>(value) << static_cast<uint32>(value >> 32);
+    };
+    stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
+    stream << format::VERSION_5 << uint32{1} << uint32{1} << uint32{1} << uint32{1};
+    for (const float32 value : {0.F, 0.F, 3.F, 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 1.F})
+    {
+        stream << value;
+    }
+    constexpr uint8 RED[] = {255, 0, 0};
+    stream << uint32{2} << uint32{1} << uint32{2 * format::TEXEL_BYTES};
+    for (const uint8 alpha : {uint8{0}, uint8{255}})
+    {
+        stream << RED[0] << RED[1] << RED[2] << alpha;
+    }
+    stream << uint32{0} << format::ADDRESS_CLAMP << 0.F << 1.F << 0.F << 0.F << 0.F << uint32{0};
+    writeIdentity(0);
+    stream << 0.F << (isMasked == true ? format::ALPHA_MASKED : format::ALPHA_OPAQUE) << (isMasked == true ? .5F : 0.F)
+           << uint32{0};
+    // Two triangles per side so either winding faces the orbit camera.
+    stream << uint32{4} << uint32{12};
+    struct Corner final
+    {
+        float32 X = 0;
+        float32 Y = 0;
+    };
+    const Corner corners[] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    for (const Corner& corner : corners)
+    {
+        stream << corner.X << corner.Y << 0.F << 0.F << 0.F << 1.F << (corner.X + 1) * .5F << (1 - corner.Y) * .5F;
+    }
+    for (const uint32 index : {0U, 1U, 2U, 0U, 2U, 3U, 0U, 2U, 1U, 0U, 3U, 2U})
+    {
+        stream << index;
+    }
+    stream << uint32{0} << uint32{0};
+    for (const float32 value : {1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F})
+    {
+        stream << value;
+    }
+    writeIdentity(1);
+    stream << format::LIGHTING_PROFILE_REC709_PHOTOMETRIC << uint32{0} << uint32{0} << uint32{0} << 1.F << 1.F << 1.F;
+    return bytes;
+}
+/// Count the clearly red surface pixels of a capture.
+qsizetype CountSurfacePixels(const QImage& image)
+{
+    qsizetype count = 0;
+    for (int32 y = 0; y < image.height(); ++y)
+    {
+        for (int32 x = 0; x < image.width(); ++x)
+        {
+            const QColor colour = image.pixelColor(x, y);
+            count += colour.red() > MINIMUM_SURFACE_RED && colour.red() > 2 * colour.green() &&
+                             colour.red() > 2 * colour.blue()
+                         ? 1
+                         : 0;
+        }
+    }
+    return count;
+}
 uint8 GetPatternByte(uint32 x, uint32 y, uint32 channel)
 {
     return static_cast<uint8>((x * 7U + y * 13U + channel * 61U) & 0xFFU);
@@ -356,6 +436,61 @@ TEST_CASE("Debug shading views render distinct images on the offscreen Vulkan de
         RenderScene scene;
         tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasLamps = false });
         CheckDebugViews(scene, QStringLiteral("-unlit"));
+    }
+#else
+    SKIP("Offscreen Vulkan presentation is Linux-only");
+#endif
+}
+
+TEST_CASE("LUSCN v5 alpha masks cut out cooked surfaces in Albedo and Lit shading",
+          "[editor][viewport][offscreen][gpu][alpha]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    const QJsonObject level{
+        {QStringLiteral("id"), QStringLiteral("5b0c6c3e-6a43-4d8e-9a55-0f1f8d3c2a10")},
+        {QStringLiteral("objects"),
+         QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("quad")},
+                                {QStringLiteral("name"), QStringLiteral("Quad")},
+                                {QStringLiteral("mesh"), QStringLiteral("mesh/quad")},
+                                {QStringLiteral("material"), QStringLiteral("material/quad")}}}},
+    };
+    for (const PreviewShading shading : {PreviewShading::Albedo, PreviewShading::Lit})
+    {
+        INFO(GetPreviewShadingKey(shading).toStdString());
+        qsizetype counts[2]{};
+        for (const bool isMasked : {false, true})
+        {
+            RenderScene scene;
+            QString error;
+            REQUIRE(RenderScene::LoadCooked(MakeMaskedQuadBundle(isMasked), level, scene, error, {}) == true);
+            REQUIRE(scene.Surfaces[0].IsAlphaMasked == isMasked);
+            RenderPreview preview;
+            REQUIRE(preview.SetScene(scene) == true);
+            preview.SetShading(shading);
+            preview.Resize(MASK_FRAME_SIZE, MASK_FRAME_SIZE);
+            REQUIRE(preview.Start() == true);
+            if (preview.AdmitOffscreenDevice() == false)
+            {
+                SKIP("No Vulkan device (install lavapipe for this smoke test)");
+            }
+            const QImage image = CaptureFrame(preview);
+            INFO(preview.Status().toStdString());
+            REQUIRE(image.isNull() == false);
+            counts[isMasked == true ? 1 : 0] = CountSurfacePixels(image);
+            preview.Stop();
+        }
+        // The opaque quad draws its transparent texel; the masked one discards about half.
+        CHECK(counts[0] > 0);
+        CHECK(counts[1] > 0);
+        CHECK(counts[1] * 4 < counts[0] * 3);
     }
 #else
     SKIP("Offscreen Vulkan presentation is Linux-only");

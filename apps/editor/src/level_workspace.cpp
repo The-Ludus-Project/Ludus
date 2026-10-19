@@ -25,6 +25,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <ludus/content/scene_cook/scene_assets.h>
+#include <ludus/content/scene_format/limits.h>
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/platform/entropy.h>
 
@@ -739,9 +740,9 @@ void LevelWorkspace::Completed()
 }
 void LevelWorkspace::decodeCandidate()
 {
-    if (SceneBytes_.size() > foundation::int64{64} * 1024 * 1024)
+    if (SceneBytes_.size() > static_cast<qsizetype>(content::scene_format::IMPORT_LIMITS.BundleBytes))
     {
-        Error_ = QStringLiteral("Cooked scene exceeds 64 MiB.");
+        Error_ = QStringLiteral("Cooked scene exceeds 384 MiB.");
     }
     else
     {

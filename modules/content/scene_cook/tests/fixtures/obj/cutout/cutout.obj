@@ -1,0 +1,24 @@
+# Synthetic cut-out OBJ/MTL fixture for the Ludus best-effort importer (CC0).
+mtllib cutout.mtl
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+usemtl Leaf
+v 0 0 0
+v 2 0 0
+v 2 2 0
+v 0 2 0
+f -4/1 -3/2 -2/3 -1/4
+usemtl Halo
+v 3 0 0
+v 5 0 0
+v 5 1 0
+v 3 1 0
+f -4/1 -3/2 -2/3 -1/4
+usemtl Solid
+v 6 0 0
+v 7 0 0
+v 7 1 0
+v 6 1 0
+f -4/1 -3/2 -2/3 -1/4

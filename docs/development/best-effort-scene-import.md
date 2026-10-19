@@ -9,7 +9,7 @@ schema `1`.
 byte-identical cooker for the recorded goldens; it rejects anything it does
 not model exactly. The best-effort importers accept general pbrt-v4, glTF 2.0
 (JSON or GLB) and Wavefront OBJ scenes, approximate what the runtime cannot
-represent, fit the result into the LUSCN01 v4 limits and explain every
+represent, fit the result into the LUSCN01 v5 import profile and explain every
 compromise in a versioned JSON report. All of them are native C++; neither the
 cook nor its tests run Python.
 
@@ -19,7 +19,7 @@ format-neutral intermediate representation (SceneIR,
 shared budget planner, texture cook, bake and report writer. The IR keeps the
 complete source data a front-end can express, not the LUSCN capacities, so a
 later cooked-format revision can lift the limits without touching the parsers
-(see [what LUSCN v4 cannot carry](#what-luscn-v4-cannot-carry-yet)).
+(see [what LUSCN v5 cannot carry](#what-luscn-v5-cannot-carry-yet)).
 
 ## Running it
 
@@ -129,8 +129,13 @@ the engine's right-handed, +Y-up convention.
 - A material with no diffuse term (`max(Kd) < 0.04`), a strong specular colour
   (`max(Ks) > 0.5`), a specular illumination model and no `map_Kd` becomes a
   conductor with base colour `Ks` (mirrors and polished metals).
-- `d < 1`, `Tr > 0` or `map_d` keep the opacity in the IR and cook opaque
-  (`ALPHA_APPROXIMATED`); refractive `illum` models report `TRANSMISSION_DROPPED`.
+- `map_d` is a cut-out: the material cooks as a LUSCN v5 alpha mask with a 0.5
+  cutoff (MTL defines none; this is glTF's default), reported as
+  `ALPHA_APPROXIMATED` (info). The mask comes from `-imfchan` when given, otherwise
+  from the image's alpha if it has any, otherwise from its red (grey) channel;
+  `d`/`Tr` scale it. A constant `d < 1` or `Tr > 0` without `map_d` is blended
+  transparency, which LUSCN cannot store: it cooks opaque (`ALPHA_APPROXIMATED`
+  warning). Refractive `illum` models report `TRANSMISSION_DROPPED`.
 
 ## Texture and environment decoding
 
@@ -159,26 +164,30 @@ coordinates but no tangents, MikkTSpace tangents are generated with the
 reference implementation by Morten S. Mikkelsen (vendored, unmodified, in
 `third_party/mikktspace`), using the OpenGL texture convention (v up) that
 glTF and common bakers assume. Corners whose frames differ get their own
-vertices. LUSCN v4 does not store tangents yet, so the report says
+vertices. LUSCN v5 does not store tangents yet, so the report says
 `TANGENTS_GENERATED … not stored`; meshes without texture coordinates are
 reported instead.
 
 <a id="what-luscn-v3-cannot-carry-yet"></a>
+<a id="what-luscn-v4-cannot-carry-yet"></a>
 
-## What LUSCN v4 cannot carry yet
+## What LUSCN v5 cannot carry yet
 
-The planner fits the IR into LUSCN v4 (6 meshes, 8 materials, 8 textures, 128
-objects, 500k unique vertices, 1.5M indices, base-colour-only materials,
-flattened instancing). Meshes stay indexed, so a scene such as Khronos Sponza
-(262k triangles over 192k vertices) fits whole. The IR already holds, and the
-cook reports dropping:
+The planner fits the IR into the LUSCN v5 import profile (256 meshes, materials
+and textures, 1,024 objects, 2M unique vertices, 6M indices, 256 MiB of textures,
+base-colour materials with alpha masks, flattened instancing; see
+[the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)).
+Meshes stay indexed and every source material keeps its slot, so a scene such as
+Khronos Sponza (262k triangles over 192k vertices, 25 materials) fits whole with
+full-resolution base-colour textures. The IR already holds, and the cook reports
+dropping:
 
 - per-vertex tangents and normal/height maps (`NORMALMAP_DROPPED`);
 - occlusion, emissive, specular and opacity textures (`TEXTURE_DROPPED`,
   `EMISSION_APPROXIMATED`); metallic/roughness textures are averaged into the
   scalar terms (`TEXTURE_APPROXIMATED`);
-- alpha mode, cutoff and opacity (`ALPHA_APPROXIMATED`) and double-sidedness
-  (`SIDEDNESS_IGNORED`);
+- blended transparency (glTF `BLEND`, constant MTL dissolve) cooks opaque
+  (`ALPHA_APPROXIMATED`), and double-sidedness is not stored (`SIDEDNESS_IGNORED`);
 - camera aspect ratio and clip planes, and glTF light ranges;
 - instancing (objects and instances are expanded into world-space meshes).
 
@@ -200,6 +209,7 @@ cook reports dropping:
 | glTF / OBJ | Ludus |
 | --- | --- |
 | glTF metallic-roughness | base colour factor x texture, metallic/roughness factors x averaged texture channels |
+| glTF `alphaMode` | `MASK`: LUSCN v5 alpha mask at `alphaCutoff`, coverage = texture alpha x `baseColorFactor` alpha; `BLEND`: opaque (`ALPHA_APPROXIMATED`) |
 | glTF / MTL emissive (`emissiveFactor` x strength, `Ke`) | linear RGB nits; *decorative* emission (see the budget planner); emissive textures dropped |
 | MTL Phong terms | the deterministic conversion in the OBJ profile above |
 | `KHR_lights_punctual` | the analytic light path below: colour x intensity in candela or lux |
@@ -211,11 +221,13 @@ cited curve fit. Every approximation adds a diagnostic code.
 
 ## Authored lighting profile
 
-The shared scene profile is [LUSCN01 version 4](../architecture/content-resources.md#indexed-scene-meshes-luscn-v4):
+The shared scene profile is [LUSCN01 version 5](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5):
 the version 3 records, with stable placed-object and source identities, emission
-sidedness, requested lumens, analytic lights and HDR environment pixels, and
-indexed meshes whose per-triangle bake charts are derived rather than stored.
-Older v1/v2/v3 bundles remain readable; v1/v2 keep their historical two-sided emission.
+sidedness, requested lumens, analytic lights and HDR environment pixels; indexed
+meshes whose per-triangle bake charts are derived rather than stored
+([version 4](../architecture/content-resources.md#indexed-scene-meshes-luscn-v4));
+and alpha-masked materials within the import profile. Older v1 to v4 bundles remain
+readable; v1/v2 keep their historical two-sided emission.
 
 PBRT's spectral photometry is approximated by fixed Rec.709 RGB luminance:
 source color is divided by `0.2126 R + 0.7152 G + 0.0722 B`, then multiplied by
@@ -243,25 +255,33 @@ area-light, shadow and indirect-transport limits.
 
 ## Budget planner
 
-The cooked scene must fit 6 meshes, 8 materials, 8 textures, 500k unique
-vertices, 1.5M indices per mesh and in total, 128 objects and 64 MiB. Each cooked mesh carries one material, so the planner:
+The cooked scene must fit the LUSCN v5 import profile: 256 meshes, materials and
+textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
+384 MiB bundle. Each cooked mesh carries one material, so the planner:
 
 1. reserves one slot per distinct emitter radiance, sidedness and power-normalization
    group; groups record their source shapes and area-light directives in the report;
-2. ranks ordinary placements by world-space area and keeps the largest material
-   groups in the remaining slots;
+2. gives every other source material its own slot while they fit; beyond 256
+   slots it ranks ordinary placements by world-space area and keeps the largest
+   material groups;
 3. merges each remaining material into the nearest kept slot
-   (`MATERIALS_MERGED`);
+   (`MATERIALS_MERGED`); a merged material takes its slot's alpha mask;
 4. merges all geometry of a slot into one world-space mesh;
 5. keeps each placement's vertices shared (consumers derive the guttered
    per-triangle bake charts from the indices), then drops the smallest ordinary
    placements if the vertex or index budget is exceeded (`GEOMETRY_DROPPED`);
    required emitter geometry is never silently dropped;
-6. ranks textures and halves the largest until the byte budget is met
+6. writes each masked slot's coverage into its cooked base texture's alpha:
+   the texture's own alpha (glTF), or the MTL opacity map sampled nearest at the
+   base resolution, times the constant opacity. An untextured masked slot takes
+   the opacity map's resolution. A mask that keeps every texel cooks opaque, and an
+   unreadable opacity map leaves the slot opaque (`TEXTURE_UNREADABLE`);
+7. ranks textures and halves the largest until the byte budget is met
    (`TEXTURE_DOWNSCALED`). Geometry and authored lighting bytes are reserved first.
-   Untextured slots get a 4×4 sRGB swatch.
+   Untextured slots get a 4×4 sRGB swatch. Halving averages alpha too, which
+   slightly erodes thin cut-outs.
 
-A scene rejects when distinct emitter groups cannot fit the six mesh slots,
+A scene rejects when distinct emitter groups cannot fit the 256 mesh slots,
 required emitter geometry exceeds capacity, lighting exceeds 128 analytic lights,
 or authored energy cannot fit the finite profile. It does not merge all emitters
 into the brightest light or clamp their energy to make the import succeed.

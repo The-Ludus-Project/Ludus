@@ -871,10 +871,14 @@ nineteen-node source graph. The existing small `MeshDefinitionAdapter` remains
 unchanged. Per-asset GPU caching and streaming granularity remain later work.
 
 The renderer adapter copies mesh/texture data, prepares lit material bindings and
-owns GPU resources/retirement independently of the CPU lease. The initial profile
-admits six meshes, eight materials, eight textures and 128 instances; combined
-geometry is limited to 500000 vertices, each mesh to 1500000 indices, and textures
-to 16 MiB each/32 MiB combined. A decoded aggregate is capped at 64 MiB; renderer
+owns GPU resources/retirement independently of the CPU lease. The initial
+(LUSCN versions 1 to 4) profile admits six meshes, eight materials, eight textures
+and 128 instances; combined geometry is limited to 500000 vertices, each mesh to
+1500000 indices, and textures to 16 MiB each/32 MiB combined. Version 5 admits the
+larger import profile (256 meshes, materials and textures, 1,024 instances, 2M
+vertices, 6M indices, 256 MiB of textures; see
+[the import profile](content-resources.md#import-profile-and-alpha-masks-luscn-v5)).
+A bound decoded aggregate is capped at 512 MiB, above the largest 384 MiB bundle; renderer
 reference storage has an explicit 128 MiB budget, with RHI storage accounted in its
 separate R6 budgets. Worker scratch, retained candidate/last-good CPU definitions,
 Qt display images and driver allocations are not misreported as coordinator-owned

@@ -5,6 +5,7 @@
 #include "import_test_support.h"
 
 #include <ludus/content/scene_cook/best_effort_import.h>
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/runtime/resources/scene.h>
 
 #include "importers/gltf/gltf_reader.h"
@@ -67,6 +68,41 @@ float64 GetDeterminant(const ludus::foundation::math::Matrix4d& matrix)
     return ComputeLinearDeterminant(matrix);
 }
 } // namespace
+
+TEST_CASE("glTF alphaMode MASK cooks a LUSCN v5 mask; BLEND stays opaque", "[scene_cook][gltf]")
+{
+    namespace format = ludus::content::scene_format;
+    constexpr usize ALPHA = 3;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/cutout/scene.gltf").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    const std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
+    CHECK(report.find("\"code\": \"ALPHA_APPROXIMATED\"") != std::string_view::npos); // BLEND.
+    REQUIRE(decoded.Materials.GetSize() == 2);
+    usize maskedCount = 0;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        if (material.IsAlphaMasked == false)
+        {
+            CHECK(material.AlphaCutoff == 0);
+            continue;
+        }
+        ++maskedCount;
+        CHECK(material.AlphaCutoff == .25F);
+        // Texture alpha 0, 64, 128, 255 times baseColorFactor alpha 0.5.
+        const ludus::resources::SceneTexture& texture = decoded.Textures[material.Texture];
+        REQUIRE(texture.Pixels.GetSize() == 4 * format::TEXEL_BYTES);
+        const uint32 expected[] = {0, 32, 64, 128};
+        for (usize i = 0; i < 4; ++i)
+        {
+            CHECK(texture.Pixels[i * format::TEXEL_BYTES + ALPHA] == expected[i]);
+        }
+    }
+    CHECK(maskedCount == 1);
+}
 
 TEST_CASE("glTF fixture keeps hierarchy, instancing, cameras and punctual lights", "[scene_cook][gltf]")
 {

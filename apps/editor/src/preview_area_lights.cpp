@@ -66,7 +66,8 @@ rhi::RasterStatus AppendPreviewAreaLights(const resources::SceneMesh& mesh,
                                           uint32& outAdded) noexcept
 {
     if (objectSourceId == 0 || mesh.Indices.IsEmpty() == true || mesh.Indices.GetSize() % CORNERS != 0 ||
-        mesh.Indices.GetSize() > content::scene_format::MAX_VERTICES || inoutLights.Count > 128)
+        mesh.Indices.GetSize() > content::scene_format::IMPORT_LIMITS.Vertices ||
+        inoutLights.Count > content::scene_format::MAX_LIGHTS)
     {
         return rhi::RasterStatus::InvalidDescription;
     }

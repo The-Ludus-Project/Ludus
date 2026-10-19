@@ -29,6 +29,10 @@ struct SceneMaterial final
     uint64 AreaSourceId =
         0; ///< Stable emitter group ID; derived from material order in legacy bundles; zero for nonemitters.
     float32 EmissionPower = 0; ///< Total lumens after scale; zero without HasEmissionPower.
+    /// Discard surface points whose base texture alpha is below AlphaCutoff (v5 ALPHA_MASKED).
+    /// False before v5 and for opaque v5 materials, which ignore texture alpha.
+    bool IsAlphaMasked = false;
+    float32 AlphaCutoff = 0; ///< Masked threshold in [0,1]; zero when IsAlphaMasked is false.
 };
 /// Owned immutable CPU mesh arrays. Renderer installation copies these attributes.
 struct SceneMesh final
@@ -81,17 +85,20 @@ struct SceneEnvironment final
 /// Runtime reconstruction uses exact project artifact revisions; no source parser is called.
 struct SceneDefinition final
 {
-    foundation::Array<SceneTexture> Textures;   ///< At most eight textures, 32 MiB combined pixels.
-    foundation::Array<SceneMaterial> Materials; ///< At most eight distinct materials.
-    foundation::Array<SceneMesh> Meshes;        ///< At most six distinct meshes, 500000 combined vertices.
-    foundation::Array<SceneObject> Objects;     ///< At most 128 independent instances.
+    // Counts are bounded by the bundle version's content::scene_format::GetBundleLimits:
+    // the resident reference profile (versions 1-4) or the import profile (version 5).
+    foundation::Array<SceneTexture> Textures;   ///< Textures; 32 MiB (v1-v4) or 256 MiB (v5) combined pixels.
+    foundation::Array<SceneMaterial> Materials; ///< Distinct materials; at most 8 (v1-v4) or 256 (v5).
+    foundation::Array<SceneMesh> Meshes;        ///< Distinct meshes; at most 6 (v1-v4) or 256 (v5).
+    foundation::Array<SceneObject> Objects;     ///< Independent instances; at most 128 (v1-v4) or 1024 (v5).
     foundation::Array<SceneLight> Lights;       ///< At most 128 analytic sources; empty for legacy bundles.
     SceneEnvironment Environment;               ///< Authored environment; black for legacy bundles.
     foundation::math::Vector3 Eye;              ///< Authored perspective pinhole in world units.
     foundation::math::Vector3 Target;           ///< Finite look-at target distinct from Eye.
     foundation::math::Vector3 Up;               ///< Camera up direction not parallel to its forward direction.
     float32 VerticalFov = 1;                    ///< Perspective vertical field of view in radians, in (0,pi).
-    /// Decode LUSCN01 versions one through four little-endian interchange, at most 64 MiB. No file I/O or source
+    /// Decode LUSCN01 versions one through five little-endian interchange, at most 64 MiB for versions one to
+    /// four and 384 MiB for version five (BundleLimits::BundleBytes). No file I/O or source
     /// import. Failure preserves output; allocation failures return OutOfMemory. The caller owns all resulting arrays
     /// and must keep them immutable while any adapter/lease references them.
     [[nodiscard]] static Status Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept;
