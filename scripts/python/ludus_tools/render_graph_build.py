@@ -497,6 +497,29 @@ def checkpoint(cancel):
     require(not (cancel and cancel()), 'Cancelled', 'build', 'cancelled; prior package retained')
 
 
+def portable_stage_output(output, command):
+    """Helper/compiler report of one stage without machine paths (RG3).
+
+    compile_shader.py echoes each command it runs as `+ <tool> <arguments>`, with
+    absolute tool and temporary paths. Those lines are dropped: the stage descriptor
+    and build manifest already identify the tools and inputs, and the echoes would
+    consume the bounded error message before the compiler's diagnostics. Remaining
+    references name captured sources package-relative, stage outputs as `artifact/`,
+    helper files as `helper/` and the compiler by its file name.
+    """
+    def argument(name):
+        return Path(command[command.index(name) + 1])
+    text = ''.join(line for line in output.splitlines(keepends=True) if not line.startswith('+ '))
+    compiler = argument('--compiler')
+    roots = ((argument('--source').parent, ''), (argument('--output'), 'artifact/'), (Path(command[1]).parent, 'helper/'))
+    for path in (compiler, compiler.resolve()):
+        text = text.replace(str(path), compiler.name)
+    for root, label in roots:
+        for path in (root, root.resolve()):
+            text = text.replace(str(path) + '/', label)
+    return text
+
+
 def run_stage(command, cancel):
     """Poll cancellation; terminate/reap compiler process on cancellation/failure."""
     import signal
@@ -508,9 +531,7 @@ def run_stage(command, cancel):
                 time.sleep(0.05)
             log.seek(0)
             output = log.read(64 * 1024).decode('utf-8', errors='replace')
-            source_path = Path(command[command.index('--source') + 1]).parent
-            output = output.replace(str(source_path) + '/', '')
-            require(process.returncode == 0, 'Shader', 'shader helper', output)
+            require(process.returncode == 0, 'Shader', 'shader helper', portable_stage_output(output, command))
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)

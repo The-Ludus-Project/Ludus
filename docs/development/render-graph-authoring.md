@@ -759,6 +759,14 @@ With `--json`, a failure's `error.location` names its authored owner:
 Locations are package-relative and never contain machine paths. Activate a
 diagnostic (double-click or Enter) to navigate to it.
 
+Shader failure messages are portable too. The helper's own command echoes
+(`+ <tool> <arguments>`, with absolute tool and temporary paths) are dropped,
+because the stage descriptor and build manifest already identify tools and
+inputs, and they would otherwise use up the 4 KiB message bound before the
+compiler's diagnostics. In the remaining text, captured sources appear
+package-relative, stage outputs as `artifact/`, helper files as `helper/` and the
+compiler by its file name.
+
 The shader helper (`compile_shader.py`) reports a compiler failure as one stderr
 line prefixed `Ludus shader build: `, so the compiler's first diagnostic arrives as
 `Ludus shader build: main_shaders/color.slang(3): error 30015: ...`. The mapper
