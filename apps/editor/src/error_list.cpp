@@ -1,4 +1,5 @@
 #include "internal/error_list.h"
+#include "internal/item_selection.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -244,7 +245,7 @@ ErrorList::ErrorList(QWidget* parentOrNull)
     mTable->verticalHeader()->hide();
     mTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    mTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    ConfigureItemSelection(*mTable);
     mTable->setWordWrap(false);
     mTable->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     layout->addWidget(mTable, 1);

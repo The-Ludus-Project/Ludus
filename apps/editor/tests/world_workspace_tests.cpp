@@ -20,7 +20,9 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QItemSelectionModel>
 #include <QJsonDocument>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -304,7 +306,7 @@ TEST_CASE("World inspector preserves invalid text disables selection and saves o
     REQUIRE(view.Open(path));
     auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(list != nullptr);
-    list->setCurrentRow(0);
+    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     auto* x = Field(view, QStringLiteral("transform/x"));
     auto* name = view.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
     REQUIRE(name != nullptr);
@@ -342,7 +344,7 @@ TEST_CASE("World saves refuse changed files schemas locks and symlink paths whil
     view.SetProject(dir.path(), 1);
     REQUIRE(view.Open(path));
     auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    list->setCurrentRow(0);
+    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("3"));
     REQUIRE(view.Apply());
     const auto draft = view.Document().Draft();
@@ -362,7 +364,7 @@ TEST_CASE("World saves refuse changed files schemas locks and symlink paths whil
     lock.unlock();
     REQUIRE(view.Save());
     REQUIRE(lock.tryLock());
-    list->setCurrentRow(0);
+    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("5"));
     REQUIRE(view.Apply());
     CHECK(view.findChild<QLabel*>(QStringLiteral("worldStatus"))
@@ -391,7 +393,7 @@ TEST_CASE("World creation publishes only on Save and recovery is explicit bound 
     view.SetProject(dir.path(), 1);
     REQUIRE(view.Open(path));
     auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    list->setCurrentRow(0);
+    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     Type(Field(view, QStringLiteral("transform/x")), QStringLiteral("7"));
     REQUIRE(view.Apply());
     CHECK(Read(path) == Starter());
@@ -448,7 +450,8 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     ApplyWorkspaceStyle(&view);
     view.resize(800, 640);
     view.show();
-    view.findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
+    view.findChild<QListWidget*>(QStringLiteral("worldEntities"))
+        ->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     QTest::qWait(10);
     CHECK(view.minimumSizeHint().width() <= 800);
     for (QLineEdit* field : view.findChildren<QLineEdit*>())
@@ -464,12 +467,12 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
     CHECK(view.findChild<QPushButton*>(QStringLiteral("worldApply"))->geometry().bottom() <= view.height());
     // A long entity name plus persisted UUID must not widen the inspector.
     auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    list->setCurrentRow(1);
+    list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
     auto* name = view.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
     Type(name, QString(120, QLatin1Char('T')));
     REQUIRE(view.Apply());
-    list->setCurrentRow(0);
-    list->setCurrentRow(1);
+    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
     QTest::qWait(10);
     CHECK(view.minimumSizeHint().width() <= 800);
 
@@ -486,7 +489,8 @@ TEST_CASE("World failed replacement keeps pending fields and a cancelled close p
     WorldWorkspace view;
     view.SetProject(dir.path(), 1);
     REQUIRE(view.Open(path));
-    view.findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
+    view.findChild<QListWidget*>(QStringLiteral("worldEntities"))
+        ->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     auto* field = Field(view, QStringLiteral("transform/x"));
     Type(field, QStringLiteral("-"));
     CHECK_FALSE(
@@ -528,7 +532,8 @@ TEST_CASE("World menu Save and history own the active document and Close Project
     REQUIRE(world != nullptr);
     REQUIRE(world->Open(path));
     world->setFocus();
-    world->findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
+    world->findChild<QListWidget*>(QStringLiteral("worldEntities"))
+        ->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     Type(Field(*world, QStringLiteral("transform/x")), QStringLiteral("4"));
     auto* save = window.findChild<QAction*>(QStringLiteral("document.save"));
     REQUIRE(save != nullptr);
@@ -586,7 +591,8 @@ TEST_CASE("World recovery rejects damaged payloads and stale schemas without rep
     WorldWorkspace source;
     source.SetProject(dir.path(), 1);
     REQUIRE(source.Open(path));
-    source.findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
+    source.findChild<QListWidget*>(QStringLiteral("worldEntities"))
+        ->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     Type(Field(source, QStringLiteral("transform/x")), QStringLiteral("1"));
     REQUIRE(source.Apply());
     const auto recovery = path + QStringLiteral(".ludus-recovery");
@@ -884,7 +890,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     auto* entities = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(entities != nullptr);
     REQUIRE(entities->count() == 1);
-    entities->setCurrentRow(0);
+    entities->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldField:scene/position0")) == nullptr);
     Type(Field(workspace, QStringLiteral("transform/x")), QStringLiteral("0.25"));
     REQUIRE(workspace.Apply());
@@ -959,7 +965,7 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     CHECK(mixed.findChild<QListWidget*>(QStringLiteral("worldEntities"))->count() == 4);
     CHECK(mixed.findChild<QListWidget*>(QStringLiteral("worldEntities"))->isEnabled());
     auto* mixedEntities = mixed.findChild<QListWidget*>(QStringLiteral("worldEntities"));
-    mixedEntities->setCurrentRow(0);
+    mixedEntities->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     Type(Field(mixed, QStringLiteral("transform/x")), QStringLiteral("-1"));
     REQUIRE(mixed.Save()); // Save waits for the newly applied render snapshot.
     timer.restart();
@@ -1015,4 +1021,154 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     CHECK_FALSE(service->Dirty());
     mixed.StopPreview();
     (void)path;
+}
+
+TEST_CASE("World selection uses native toggle range and Select All shortcuts", "[editor][world][selection]")
+{
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    WorldWorkspace view;
+    view.SetProject(directory.path(), 1);
+    REQUIRE(view.Open(path) == true);
+    view.resize(1000, 700);
+    view.show();
+    view.activateWindow();
+    QApplication::processEvents();
+    QListWidget* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(list != nullptr);
+    REQUIRE(list->count() == 2);
+    list->setFocus();
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, list->visualItemRect(list->item(0)).center());
+    CHECK(list->selectedItems().size() == 1);
+    QTest::mouseClick(list->viewport(),
+                      Qt::LeftButton,
+                      Qt::ControlModifier,
+                      list->visualItemRect(list->item(1)).center());
+    CHECK(list->selectedItems().size() == 2);
+    QTest::mouseClick(list->viewport(),
+                      Qt::LeftButton,
+                      Qt::ControlModifier,
+                      list->visualItemRect(list->item(0)).center());
+    CHECK(list->selectedItems().size() == 1);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, list->visualItemRect(list->item(0)).center());
+    QTest::mouseClick(list->viewport(),
+                      Qt::LeftButton,
+                      Qt::ShiftModifier,
+                      list->visualItemRect(list->item(1)).center());
+    CHECK(list->selectedItems().size() == 2);
+    QTest::keyClick(list, Qt::Key_Escape);
+    CHECK(list->selectedItems().isEmpty() == true);
+    QTest::keySequence(list, QKeySequence(QKeySequence::SelectAll));
+    CHECK(list->selectedItems().size() == 2);
+    CHECK(view.findChild<QLineEdit*>(QStringLiteral("worldEntityName")) == nullptr);
+    const QJsonObject session = view.Session();
+    QTest::keyClick(list, Qt::Key_Escape);
+    view.RestoreSession(session);
+    CHECK(list->selectedItems().size() == 2);
+    list->setFocus();
+    QApplication::processEvents();
+    REQUIRE(list->hasFocus() == true);
+    REQUIRE(view.findChild<QPushButton*>(QStringLiteral("worldDuplicate"))->isEnabled() == true);
+    QTest::keySequence(list, QKeySequence(Qt::CTRL | Qt::Key_D));
+    INFO(view.findChild<QLabel*>(QStringLiteral("worldStatus"))->text().toStdString());
+    CHECK(list->count() == 4);
+    CHECK(list->selectedItems().size() == 2);
+    view.Undo();
+    CHECK(list->count() == 2);
+    view.Redo();
+    CHECK(list->count() == 4);
+    list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+    list->setFocus();
+    QTest::keyClick(list, Qt::Key_F2);
+    QLineEdit* name = view.findChild<QLineEdit*>(QStringLiteral("worldEntityName"));
+    REQUIRE(name != nullptr);
+    CHECK(name->hasFocus() == true);
+    CHECK(name->selectedText() == name->text());
+    // A focused text field keeps its own Select All; it cannot select entities.
+    QTest::keySequence(name, QKeySequence(QKeySequence::SelectAll));
+    CHECK(list->selectedItems().size() == 1);
+    list->setFocus();
+    QTest::keySequence(list, QKeySequence(QKeySequence::SelectAll));
+    QTimer::singleShot(0, []() {
+        QMessageBox* confirmation = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(confirmation != nullptr);
+        confirmation->button(QMessageBox::Yes)->click();
+    });
+    REQUIRE(view.findChild<QPushButton*>(QStringLiteral("worldDelete"))->isEnabled() == true);
+    QTest::keySequence(list, QKeySequence(QKeySequence::Delete));
+    INFO(view.findChild<QLabel*>(QStringLiteral("worldStatus"))->text().toStdString());
+    CHECK(list->count() == 0);
+    view.Undo();
+    CHECK(list->count() == 4);
+}
+
+TEST_CASE("World group operations preserve references and publish one transaction", "[editor][world][selection]")
+{
+    WorldDocument document = Document();
+    const QJsonObject original = document.Draft();
+    QString error;
+    QStringList copies;
+    const QStringList sources{QStringLiteral("starter.cube"), QStringLiteral("starter.target")};
+    REQUIRE(document.DuplicateEntities(ludus::platform::GetSystemEntropySource(), sources, copies, error) == true);
+    REQUIRE(copies.size() == 2);
+    CHECK(document.Entity(copies[1])
+              .value(QStringLiteral("components"))
+              .toObject()
+              .value(QStringLiteral("behavior"))
+              .toObject()
+              .value(QStringLiteral("target"))
+              .toString() == copies[0]);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.Draft() == original);
+    CHECK(document.CanUndo() == false);
+    REQUIRE(document.Redo() == true);
+    REQUIRE(document.RemoveEntities(copies, error) == true);
+    CHECK(document.Draft() == original);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.Entity(copies[0]).isEmpty() == false);
+    const QJsonObject beforeFailure = document.Draft();
+    CHECK(document.RemoveEntities({QStringLiteral("starter.cube")}, error) == false);
+    CHECK(document.Draft() == beforeFailure);
+    CHECK(document.DuplicateEntities(ludus::editor::tests::MakeUnavailableEntropySource(), sources, copies, error) ==
+          false);
+    CHECK(document.Draft() == beforeFailure);
+    CHECK(copies.size() == 2);
+    CHECK(document.DuplicateEntities(ludus::platform::GetSystemEntropySource(),
+                                     {QStringLiteral("starter.cube"), QStringLiteral("missing")},
+                                     copies,
+                                     error) == false);
+    CHECK(document.Draft() == beforeFailure);
+    REQUIRE(document.RemoveEntities(sources, error) == true);
+    CHECK(document.Entity(QStringLiteral("starter.cube")).isEmpty() == true);
+    CHECK(document.Entity(QStringLiteral("starter.target")).isEmpty() == true);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.Draft() == beforeFailure);
+}
+
+TEST_CASE("World group duplication rolls back when only the first copy fits", "[editor][world][selection]")
+{
+    WorldDocument document = Document();
+    const QJsonObject original = document.Draft();
+    QJsonObject bounded = original;
+    QJsonArray entities = bounded.value(QStringLiteral("entities")).toArray();
+    while (entities.size() < WorldDocument::MAX_ENTITIES - 1)
+    {
+        QJsonObject entity = entities[0].toObject();
+        entity.insert(QStringLiteral("id"), QStringLiteral("capacity.") + QString::number(entities.size()));
+        entities.append(entity);
+    }
+    bounded.insert(QStringLiteral("entities"), entities);
+    QString error;
+    REQUIRE(document.Restore(bounded, error) == true);
+    const QStringList unchanged{QStringLiteral("unchanged")};
+    QStringList copies = unchanged;
+    CHECK(document.DuplicateEntities(ludus::platform::GetSystemEntropySource(),
+                                     {QStringLiteral("starter.cube"), QStringLiteral("starter.target")},
+                                     copies,
+                                     error) == false);
+    CHECK(copies == unchanged);
+    CHECK(document.Draft() == bounded);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.Draft() == original);
+    CHECK(document.CanUndo() == false);
 }

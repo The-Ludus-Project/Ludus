@@ -55,6 +55,34 @@ Applying to a session does not save a file; copying a live value to a tuning dra
 requires a separate save. See [configuration](../wiki/guides/configuration.md)
 and [native live editing](project-live-reload.md).
 
+## Selection and keyboard shortcuts
+
+Selectable lists, tables and trees support the host platform's usual gestures:
+click to select, Ctrl-click on Windows/Linux or Command-click on macOS to toggle
+individual items, and Shift-click for a range. Ctrl+A / Command+A selects all
+selectable items in the focused view; Escape clears that view's selection. Arrow
+keys navigate and Shift+arrow extends selection. Text fields keep their own
+native selection, clipboard and undo shortcuts.
+
+In the World entity list, Ctrl+D / Command+D duplicates the selected group;
+Delete (also Backspace on macOS) asks to delete the group. Each group operation
+is one World undo step and publishes only after the whole candidate validates.
+Duplicated group references and scene parents point to their corresponding
+copies; references outside the group remain unchanged. A surviving reference
+blocks deletion of its target. Capacity or identity-generation failure leaves
+the World unchanged. F2 focuses the name field for a single selected entity;
+Return does the same on macOS. Multiple entities show a selection count in
+Properties; select one entity to edit fields or attach components. The viewport
+continues to use the primary selected entity for framing. World sessions retain
+the selected entity IDs.
+
+The render-graph canvas supports Ctrl+A / Command+A and Escape as well as
+Ctrl-click / Command-click toggling and Shift-click additive selection (a canvas
+has no list ordering for a range). Other document actions and inspectors retain
+their current-item behavior; selecting multiple rows does not imply batch field
+editing, reimport or opening every document. Existing Save, Undo/Redo and
+clipboard shortcuts retain their document and focus routing.
+
 ## Project lifecycle: tasks and audiences
 
 The **Project** tab shows the project folder, committed engine requirement and
@@ -638,7 +666,7 @@ the same document should use version control and separate working copies.
 Limits: schema 64 KiB, world 512 KiB, 128 entities, 16 component definitions,
 32 properties per component, 4096 declared assets and 32 applied history entries.
 These bounds keep this first slice predictable; large production-world UX,
-hierarchy/parenting, multi-selection, prefab/archetype workflows, schema migrations,
+hierarchy/parenting, batch property editing, prefab/archetype workflows, schema migrations,
 viewport gizmos, automatic runtime binding and browser import/export are still
 unsupported. The browser World workspace explains its native-editor requirement and
 disables its file actions. Both 2D and 3D authoring use the native World workspace.
@@ -1272,15 +1300,16 @@ See [rendering/platform obligations](../architecture/editor-gui-systems.md#rende
 
 The **Content** work area projects the saved `content/catalog.json` into a
 searchable table of resource IDs, kinds and paths. Search is case-insensitive
-and checks all three columns. Selection is an ID, so filtering, sorting and
-refreshing cannot reinterpret a row number as another resource. Hidden selections
+and checks all three columns. Selected rows retain their resource IDs, so filtering,
+sorting and refreshing cannot reinterpret a row number as another resource. Hidden selections
 are restored when their ID becomes visible again. Unchanged refreshes preserve
 the model and focused search buffer; changed paths update their roles. Structural
 changes restore selection by ID. Activate a Sound or Music row to open the
 existing Audio workspace, which retains its unsaved-change policy.
 
 **Import WAV / FLAC** asks for a stable resource ID. **Reimport selected** retains
-the selected audio-source ID and asks for its new export. Both entry points,
+the current audio-source ID and asks for its new export. It acts on the current row,
+including when several rows are selected. Both entry points,
 including the existing Audio import button (which opens Content), share the bounded decoder,
 dependency checks and publication implementation. Import validates saved loops
 and matching sample rates, captures catalog/dependency digests, and rechecks

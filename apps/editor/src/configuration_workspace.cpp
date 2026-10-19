@@ -1,5 +1,6 @@
 #include "internal/configuration_workspace.h"
 #include "internal/editor_files.h"
+#include "internal/item_selection.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/config/json.hpp>
@@ -87,7 +88,7 @@ ConfigurationWorkspace::ConfigurationWorkspace(QWidget* parent) : QWidget(parent
                                        QStringLiteral("Source"),
                                        QStringLiteral("Apply")});
     Table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    Table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    ConfigureItemSelection(*Table_);
     Table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     Table_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     layout->addWidget(Table_);

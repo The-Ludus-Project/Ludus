@@ -483,3 +483,35 @@ TEST_CASE("Mesh catalog entries retain identity during audio import and never ac
     CHECK_FALSE(workspace.findChild<QPushButton*>(QStringLiteral("contentReimport"))->isEnabled());
     workspace.Shutdown();
 }
+
+TEST_CASE("Content keeps a selected group by identity through search sorting and refresh",
+          "[editor][content][selection]")
+{
+    QTemporaryDir root;
+    QTemporaryDir exported;
+    const QString file = Wav(exported, 500);
+    for (const QString& id : {QStringLiteral("source/first"), QStringLiteral("source/second")})
+    {
+        ContentImportGate gate;
+        REQUIRE(ImportAudioSource({ .Root = root.path(), .File = file, .Id = id }, gate).Status == content::Status::Ok);
+    }
+    ContentWorkspace workspace;
+    workspace.SetProject(root.path(), 1);
+    Wait(workspace);
+    QTableView* table = workspace.findChild<QTableView*>(QStringLiteral("contentTable"));
+    QLineEdit* search = workspace.findChild<QLineEdit*>(QStringLiteral("contentSearch"));
+    REQUIRE(table != nullptr);
+    REQUIRE(search != nullptr);
+    table->setCurrentIndex(table->model()->index(0, 0));
+    table->selectAll();
+    CHECK(table->selectionModel()->selectedRows().size() == 2);
+    search->setText(QStringLiteral("first"));
+    CHECK(table->selectionModel()->selectedRows().size() == 1);
+    search->clear();
+    CHECK(table->selectionModel()->selectedRows().size() == 2);
+    table->sortByColumn(0, Qt::DescendingOrder);
+    workspace.Refresh();
+    Wait(workspace);
+    CHECK(table->selectionModel()->selectedRows().size() == 2);
+    CHECK(workspace.SelectedId() == QStringLiteral("source/first"));
+}
