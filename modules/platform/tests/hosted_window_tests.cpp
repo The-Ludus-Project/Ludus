@@ -206,6 +206,7 @@ void Connect(ConnectedPair& outPair, const hosted::Token& windowToken, HostedRef
     outPair.Session.Admit(ludus::foundation::Move(pair.EndpointSide), At(0));
     outPair.Session.Pump(At(1));
     outPair.HostedWindow = hosted::OpenWindow(ludus::foundation::Move(pair.WindowSide),
+                                              windowToken,
                                               MakeCreateInfo(),
                                               OPEN_TIMEOUT_MILLISECONDS,
                                               outRefusal);
@@ -495,6 +496,7 @@ TEST_CASE("A hosted window ignores keys that arrive without focus", "[platform][
     SinkRecorder recorder;
     HostedRefusal refusal = HostedRefusal::None;
     UniquePtr<Window> window = hosted::OpenWindow(ludus::foundation::Move(pair.WindowSide),
+                                                  MakeToken(0),
                                                   MakeCreateInfo(),
                                                   OPEN_TIMEOUT_MILLISECONDS,
                                                   refusal);
@@ -552,6 +554,7 @@ TEST_CASE("A hosted protocol violation closes the window", "[platform][hosted]")
     SinkRecorder recorder;
     HostedRefusal refusal = HostedRefusal::None;
     UniquePtr<Window> window = hosted::OpenWindow(ludus::foundation::Move(pair.WindowSide),
+                                                  MakeToken(0),
                                                   MakeCreateInfo(),
                                                   OPEN_TIMEOUT_MILLISECONDS,
                                                   refusal);
@@ -660,6 +663,7 @@ TEST_CASE("The endpoint refuses another protocol version or key vocabulary", "[p
     CHECK(session.GetLastRefusal() == HostedRefusal::IncompatibleVersion);
     HostedRefusal refusal = HostedRefusal::None;
     UniquePtr<Window> window = hosted::OpenWindow(ludus::foundation::Move(pair.WindowSide),
+                                                  MakeToken(0),
                                                   MakeCreateInfo(),
                                                   OPEN_TIMEOUT_MILLISECONDS,
                                                   refusal);

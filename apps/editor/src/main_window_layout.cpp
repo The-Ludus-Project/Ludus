@@ -4,6 +4,7 @@
 #include "internal/document_well.h"
 #include "internal/editor_commands.h"
 #include "internal/error_list.h"
+#include "internal/item_selection.h"
 #include "internal/main_window.h"
 #include "internal/project_explorer.h"
 #include "internal/renderer_workspace.h"
@@ -85,6 +86,31 @@ LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR_LAYOUT, "Editor.Layout");
 
 void MainWindow::BuildUi()
 {
+    mSetupNoticeOrNull = new QToolBar(QStringLiteral("Project setup needs attention"), this);
+    mSetupNoticeOrNull->setObjectName(QStringLiteral("projectSetupNotice"));
+    mSetupNoticeOrNull->setMovable(false);
+    mSetupNoticeOrNull->setFloatable(false);
+    QWidget* notice = new QWidget(mSetupNoticeOrNull);
+    notice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    QHBoxLayout* noticeLayout = new QHBoxLayout(notice);
+    mSetupNoticeTextOrNull = new QLabel(notice);
+    mSetupNoticeTextOrNull->setObjectName(QStringLiteral("projectSetupNoticeText"));
+    mSetupNoticeTextOrNull->setTextFormat(Qt::PlainText);
+    mSetupNoticeTextOrNull->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    noticeLayout->addWidget(mSetupNoticeTextOrNull, 1);
+    mSetupNoticeRepairOrNull = new QPushButton(QStringLiteral("Repair setup…"), notice);
+    mSetupNoticeRepairOrNull->setObjectName(QStringLiteral("projectSetupNoticeRepair"));
+    noticeLayout->addWidget(mSetupNoticeRepairOrNull);
+    mSetupNoticeCheckOrNull = new QPushButton(QStringLiteral("Check again"), notice);
+    mSetupNoticeCheckOrNull->setObjectName(QStringLiteral("projectSetupNoticeCheck"));
+    noticeLayout->addWidget(mSetupNoticeCheckOrNull);
+    mSetupNoticeOrNull->addWidget(notice);
+    addToolBar(mSetupNoticeOrNull);
+    addToolBarBreak();
+    mSetupNoticeOrNull->hide();
+    connect(mSetupNoticeRepairOrNull, &QPushButton::clicked, this, [this]() { SetupProjectAction_->trigger(); });
+    connect(mSetupNoticeCheckOrNull, &QPushButton::clicked, this, [this]() { CheckSetupAction_->trigger(); });
+
     // Visual Studio layout: documents in the central well; tool windows dock around it.
     // The right dock area owns both right corners, so Project Explorer and Properties run
     // the full height and the bottom tool windows sit under the documents only.
@@ -202,6 +228,7 @@ void MainWindow::BuildUi()
 
     // Argument list editor: one string per item, Add/Remove; never a shell line.
     ArgsList_ = new QListWidget(form);
+    ConfigureItemSelection(*ArgsList_);
     ArgsList_->setObjectName(QStringLiteral("projectArguments"));
     connect(ArgsList_->model(), &QAbstractItemModel::dataChanged, this, &MainWindow::OnFieldEdited);
     auto* argsButtons = new QWidget(form);
@@ -288,7 +315,7 @@ void MainWindow::BuildUi()
         {QStringLiteral("Property"), QStringLiteral("Value"), QStringLiteral("Scope")});
     Properties_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     Properties_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    Properties_->setSelectionMode(QAbstractItemView::SingleSelection);
+    ConfigureItemSelection(*Properties_);
     ApplySessionButton_ = new QPushButton(QStringLiteral("Apply to session"), inspector);
     ApplySessionButton_->setToolTip(QStringLiteral("Apply the selected edited value to the running session."));
     connect(ApplySessionButton_, &QPushButton::clicked, this, [this]() {
@@ -357,6 +384,7 @@ void MainWindow::BuildUi()
         new QLabel(QStringLiteral("No recent projects yet. Open a project to add it here."), recentPanel);
     RecentEmptyLabel_->setWordWrap(true);
     RecentList_ = new QListWidget(recentPanel);
+    ConfigureItemSelection(*RecentList_);
     RecentList_->setObjectName(QStringLiteral("recentProjectsList"));
     RecentList_->setAccessibleName(QStringLiteral("Recent projects"));
     RecentList_->setWordWrap(true);
@@ -569,6 +597,7 @@ void MainWindow::ResetWorkspaceLayout()
         toolbar->show();
     }
     applyDefaultDockSizes();
+    RenderStatus();
 }
 
 void MainWindow::buildWindowMenu(QMenu* menu)
@@ -595,6 +624,8 @@ void MainWindow::buildWindowMenu(QMenu* menu)
     connect(next, &QAction::triggered, this, [this]() { static_cast<void>(mDocuments->MoveActiveDocument(1)); });
     connect(previous, &QAction::triggered, this, [this]() { static_cast<void>(mDocuments->MoveActiveDocument(-1)); });
     connect(merge, &QAction::triggered, mDocuments, &DocumentWell::MergeGroups);
+    // Both close commands go through the well, so an owner-closed document asks its owner
+    // through DocumentWell::CloseRequested instead of being hidden.
     connect(close, &QAction::triggered, this, [this]() {
         QWidget* activeOrNull = mDocuments->GetActiveDocumentOrNull();
         if (activeOrNull != nullptr)

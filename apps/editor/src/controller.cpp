@@ -171,6 +171,7 @@ void EditorController::OpenProject(const QString& descriptorPath)
         return;
     }
 
+    State_.SetupProblem.clear();
     State_.Document = DocumentState::ProjectLoaded;
     State_.DescriptorPath = absolute;
     State_.SavedDigest = outcome.Digest;
@@ -722,6 +723,14 @@ void EditorController::OnToolEvent(const ProtocolEvent& event)
                         ? QStringLiteral("CMake setup ready: %1")
                               .arg(PendingSetupDetails_.isEmpty() ? result.Message : PendingSetupDetails_)
                         : QStringLiteral("CMake setup needs attention: %1").arg(result.Message);
+                if (result.Kind == Outcome::Success && State_.StopLatched == false)
+                {
+                    State_.SetupProblem.clear();
+                }
+                else if (result.Kind == Outcome::Failed || result.Kind == Outcome::CleanupUnknown)
+                {
+                    State_.SetupProblem = result.Message.isEmpty() == true ? State_.SetupStatus : result.Message;
+                }
                 SetupCheckJob_ = 0;
                 PendingSetupDetails_.clear();
             }
@@ -752,6 +761,7 @@ void EditorController::OnToolEvent(const ProtocolEvent& event)
             if (SetupCheckJob_ != 0)
             {
                 State_.SetupStatus = QStringLiteral("CMake setup validation unavailable: %1").arg(event.Message);
+                State_.SetupProblem = State_.SetupStatus;
                 SetupCheckJob_ = 0;
                 PendingSetupDetails_.clear();
             }

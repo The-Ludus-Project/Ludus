@@ -25,6 +25,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QLineEdit>
 #include <QListWidget>
@@ -858,7 +859,7 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     {
         if (entities->item(row)->data(Qt::UserRole).toString() == player)
         {
-            entities->setCurrentRow(row);
+            entities->setCurrentRow(row, QItemSelectionModel::ClearAndSelect);
         }
     }
     QLineEdit* x = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));

@@ -1,4 +1,5 @@
 #include "internal/project_explorer.h"
+#include "internal/item_selection.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -59,6 +60,7 @@ ProjectExplorer::ProjectExplorer(QWidget* parentOrNull)
     mTree->setObjectName(QStringLiteral("projectExplorerTree"));
     mTree->setAccessibleName(QStringLiteral("Project documents"));
     mTree->setHeaderHidden(true);
+    ConfigureItemSelection(*mTree);
     mTree->setUniformRowHeights(true);
     mTree->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     layout->addWidget(mTree, 1);

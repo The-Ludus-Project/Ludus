@@ -16,11 +16,12 @@ target_sources(ludus_graphics_rhi
         src/device.cpp
         src/profile.cpp
         src/raster.cpp
+        src/hosted_consumer.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
@@ -39,7 +40,7 @@ if(EMSCRIPTEN)
     # Browser Auto build: both web sub-backends plus the dispatcher are linked
     # into one artifact, each sub-backend in its own leaf namespace, and the
     # dispatcher provides backend:: with the WebGPU->WebGL 2 fallback policy.
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_web.cpp src/rhi_webgpu.cpp src/rhi_webgl.cpp src/ray_unsupported.cpp src/native_interop_unsupported.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_web.cpp src/rhi_webgpu.cpp src/rhi_webgl.cpp src/ray_unsupported.cpp src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
     set_source_files_properties(src/rhi_webgpu.cpp PROPERTIES
         COMPILE_DEFINITIONS "LUDUS_RHI_WEBGPU_NAMESPACE=webgpu")
     set_source_files_properties(src/rhi_webgl.cpp PROPERTIES
@@ -54,11 +55,12 @@ if(EMSCRIPTEN)
         "-sMIN_WEBGL_VERSION=2"
         "-sFULL_ES3=1")
 elseif(APPLE)
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_metal.mm)
-    target_link_libraries(ludus_graphics_rhi PRIVATE "-framework Metal" "-framework QuartzCore" "-framework AppKit")
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_metal.mm src/hosted_metal.mm src/hosted_consumer_metal.mm)
+    target_link_libraries(ludus_graphics_rhi PRIVATE
+        "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework IOSurface" "-framework CoreFoundation")
     ludus_configure_cocoa_target(ludus_graphics_rhi)
 else()
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/volk_impl.cpp src/vma.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp)
     target_link_libraries(ludus_graphics_rhi PRIVATE volk::volk_headers)
     file(READ "${PROJECT_SOURCE_DIR}/config/vulkan_memory_allocator.json" vma_pin)
     string(JSON vma_header_sha GET "${vma_pin}" sha256 "vk_mem_alloc.h")
@@ -108,7 +110,7 @@ endif()
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/profile.cpp src/raster.cpp src/ray_unsupported.cpp)
+    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/hosted_ring_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/profile.cpp src/raster.cpp src/ray_unsupported.cpp)
     target_compile_definitions(ludus_rhi_lifecycle_tests PRIVATE LUDUS_RHI_TEST_STORAGE=1)
     target_include_directories(ludus_rhi_lifecycle_tests PRIVATE include src)
     target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE Ludus::Platform Ludus::FoundationContainers Catch2::Catch2WithMain)
@@ -155,6 +157,44 @@ if(LUDUS_BUILD_TESTS AND APPLE)
         add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
         set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 60)
     endif()
+endif()
+
+if(LUDUS_BUILD_TESTS AND (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND NOT EMSCRIPTEN)
+    # Hosted surface: an ordinary RHI application renders into a hosted window
+    # whose endpoint and consumer live in the test process.
+    add_executable(ludus_rhi_hosted_producer tests/hosted_producer.cpp)
+    target_link_libraries(ludus_rhi_hosted_producer PRIVATE Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationTime)
+    ludus_apply_project_defaults(ludus_rhi_hosted_producer)
+endif()
+
+if(LUDUS_BUILD_TESTS AND APPLE)
+    add_executable(ludus_rhi_hosted_surface_tests tests/hosted_surface_tests.mm)
+    target_compile_definitions(ludus_rhi_hosted_surface_tests PRIVATE
+        LUDUS_HOSTED_PRODUCER="$<TARGET_FILE:ludus_rhi_hosted_producer>")
+    add_dependencies(ludus_rhi_hosted_surface_tests ludus_rhi_hosted_producer)
+    target_link_libraries(ludus_rhi_hosted_surface_tests PRIVATE
+        Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationStrings Ludus::FoundationTime
+        Catch2::Catch2WithMain "-framework Metal")
+    ludus_apply_project_defaults(ludus_rhi_hosted_surface_tests)
+    ludus_configure_cocoa_target(ludus_rhi_hosted_surface_tests)
+    ludus_enable_test_exceptions(ludus_rhi_hosted_surface_tests)
+    add_test(NAME ludus_rhi_hosted_surface_tests COMMAND ludus_rhi_hosted_surface_tests)
+    set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 120)
+endif()
+
+if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EMSCRIPTEN)
+    add_executable(ludus_rhi_hosted_surface_tests tests/hosted_surface_vulkan_tests.cpp)
+    target_include_directories(ludus_rhi_hosted_surface_tests PRIVATE src)
+    target_compile_definitions(ludus_rhi_hosted_surface_tests PRIVATE
+        VK_NO_PROTOTYPES LUDUS_HOSTED_PRODUCER="$<TARGET_FILE:ludus_rhi_hosted_producer>")
+    add_dependencies(ludus_rhi_hosted_surface_tests ludus_rhi_hosted_producer)
+    target_link_libraries(ludus_rhi_hosted_surface_tests PRIVATE
+        Ludus::GraphicsRhi Ludus::Platform Ludus::FoundationStrings Ludus::FoundationTime
+        volk::volk_headers Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_rhi_hosted_surface_tests)
+    ludus_enable_test_exceptions(ludus_rhi_hosted_surface_tests)
+    add_test(NAME ludus_rhi_hosted_surface_tests COMMAND ludus_rhi_hosted_surface_tests)
+    set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES LABELS "rhi;gpu;linux" TIMEOUT 120)
 endif()
 
 if(TARGET ludus_rhi_render_tests)

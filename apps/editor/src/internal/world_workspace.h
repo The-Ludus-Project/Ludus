@@ -8,6 +8,7 @@
 #include "internal/world_document.h"
 
 #include <QMap>
+#include <QStringList>
 #include <QTimer>
 #include <QWidget>
 
@@ -161,6 +162,7 @@ private:
     QString Root_;
     QString Path_;
     QString Selected_;
+    QStringList mSelectedEntities;
     QByteArray Disk_;
     QByteArray SchemaDisk_;
     foundation::uint64 Epoch_ = ~foundation::uint64{0};

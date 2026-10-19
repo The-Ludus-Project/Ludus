@@ -3,6 +3,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <QBrush>
+#include <QColor>
 #include <QFont>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
@@ -11,6 +12,7 @@
 #include <QGraphicsSimpleTextItem>
 #include <QJsonArray>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
 #include <QPainterPath>
@@ -28,6 +30,11 @@ namespace ludus::editor
 using namespace foundation;
 namespace
 {
+constexpr QRgb NODE_BACKGROUND_COLOR = 0xFF2E3239;
+constexpr QRgb NODE_BORDER_COLOR = 0xFF101215;
+constexpr float64 NODE_BORDER_WIDTH = 1.5;
+constexpr QRgb SELECTION_COLOR = 0xFFFFD25A;
+constexpr QRgb EDITABLE_EDGE_COLOR = 0xFFB4BAC4;
 constexpr float64 NODE_WIDTH = 190;
 constexpr float64 FRAME_PADDING = 40;
 constexpr float64 HEADER_HEIGHT = 26;
@@ -533,8 +540,9 @@ void RenderGraphCanvas::Rebuild()
         // NOLINTEND(bugprone-easily-swappable-parameters)
         const qsizetype rowCount = qMax(ports.Inputs.size(), ports.Outputs.size());
         const float64 height = HEADER_HEIGHT + static_cast<float64>(rowCount) * PORT_SPACING + NODE_PADDING;
-        NodeView* view = new NodeView(
-            mScene->addRect(QRectF(0, 0, NODE_WIDTH, height), QPen(QColor(16, 18, 21), 1.5), QColor(46, 50, 57)));
+        NodeView* view = new NodeView(mScene->addRect(QRectF(0, 0, NODE_WIDTH, height),
+                                                      QPen(QColor::fromRgba(NODE_BORDER_COLOR), NODE_BORDER_WIDTH),
+                                                      QColor::fromRgba(NODE_BACKGROUND_COLOR)));
         view->Id = identity;
         view->Domain = domain;
         view->Ports = ports;
@@ -638,7 +646,8 @@ void RenderGraphCanvas::Rebuild()
     }
     for (const CanvasLink& link : std::as_const(links))
     {
-        mEdges.append(new EdgeView(link, mScene->addPath(QPainterPath(), QPen(QColor(180, 186, 196), 2))));
+        mEdges.append(
+            new EdgeView(link, mScene->addPath(QPainterPath(), QPen(QColor::fromRgba(EDITABLE_EDGE_COLOR), 2))));
     }
     for (EdgeView* edge : std::as_const(mEdges))
     {
@@ -745,7 +754,9 @@ void RenderGraphCanvas::updateSelection()
 {
     for (NodeView* view : std::as_const(mNodes))
     {
-        view->Frame->setPen(QPen(view->Frame->isSelected() == true ? QColor(255, 210, 90) : QColor(16, 18, 21), 1.5));
+        view->Frame->setPen(QPen(view->Frame->isSelected() == true ? QColor::fromRgba(SELECTION_COLOR)
+                                                                   : QColor::fromRgba(NODE_BORDER_COLOR),
+                                 NODE_BORDER_WIDTH));
     }
 }
 
@@ -923,7 +934,7 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
     {
         mLinkFrom = port;
         mLinkPreviewOrNull =
-            mScene->addPath(MakeCurve(position, position), QPen(QColor(255, 210, 90), 2, Qt::DashLine));
+            mScene->addPath(MakeCurve(position, position), QPen(QColor::fromRgba(SELECTION_COLOR), 2, Qt::DashLine));
         event->accept();
         return;
     }
@@ -934,6 +945,11 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         if (event->modifiers().testFlag(Qt::ControlModifier) == true)
         {
             view->Frame->setSelected(view->Frame->isSelected() == false);
+            updateSelection();
+        }
+        else if (event->modifiers().testFlag(Qt::ShiftModifier) == true)
+        {
+            view->Frame->setSelected(true);
             updateSelection();
         }
         else if (view->Frame->isSelected() == false)
@@ -953,7 +969,9 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         edge->Path->setSelected(isSelected);
         if (edge->IsEditable == true)
         {
-            edge->Path->setPen(QPen(isSelected == true ? QColor(255, 210, 90) : QColor(180, 186, 196), 2));
+            edge->Path->setPen(
+                QPen(isSelected == true ? QColor::fromRgba(SELECTION_COLOR) : QColor::fromRgba(EDITABLE_EDGE_COLOR),
+                     2));
         }
         edge->Path->setData(0, isSelected);
     }
@@ -1019,6 +1037,36 @@ void RenderGraphCanvas::mouseDoubleClickEvent(QMouseEvent* event)
 
 void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
 {
+    if (event->matches(QKeySequence::SelectAll) == true)
+    {
+        for (NodeView* view : std::as_const(mNodes))
+        {
+            view->Frame->setSelected(true);
+        }
+        updateSelection();
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape)
+    {
+        cancelLink();
+        UpdateDrag({});
+        mIsDragging = false;
+        mDragNodes.clear();
+        mDragOrigins.clear();
+        mScene->clearSelection();
+        for (EdgeView* edge : std::as_const(mEdges))
+        {
+            edge->Path->setData(0, false);
+            if (edge->IsEditable == true)
+            {
+                edge->Path->setPen(QPen(QColor::fromRgba(EDITABLE_EDGE_COLOR), 2));
+            }
+        }
+        updateSelection();
+        event->accept();
+        return;
+    }
     if (event->key() != Qt::Key_Delete && event->key() != Qt::Key_Backspace)
     {
         QGraphicsView::keyPressEvent(event);

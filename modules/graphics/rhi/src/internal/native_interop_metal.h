@@ -97,6 +97,8 @@ void NativeTextureDestroy(usize slot) noexcept
 void NativeInteropDetachSurface() noexcept
 {
     ShutdownRendering();
+    gHosted.Disconnect();
+    gSurfaceFormat = MTLPixelFormatBGRA8Unorm;
     if (gView != nil && gView.layer == gLayer)
     {
         gView.layer = gPreviousLayer;

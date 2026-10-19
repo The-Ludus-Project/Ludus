@@ -177,6 +177,12 @@ yourself) but is outside the cooperative-lock guarantee.
 In the Editor choose **Project → Check Setup**. Eligible project opening also
 performs this read-only check: missing/stale presets, tools and SDK inputs are
 reported without downloading, configuring, building or rewriting the game.
+A failed check shows a persistent **Project setup needs attention** notice above
+all workspace tabs, including World. Choose **Repair setup…** to review and
+confirm repair, or keep editing and repair later. **Check again** reruns only the
+read-only check. Save changed project settings before either action. The notice
+stays through retries and failed/cancelled repairs until setup succeeds; closing
+or switching projects retires the previous project's notice.
 
 Save settings, then choose **Project → Repair Project Setup** and keep
 **Automatic (recommended)** unless changing the engine deliberately.

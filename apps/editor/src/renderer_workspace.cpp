@@ -1,4 +1,5 @@
 #include "internal/renderer_workspace.h"
+#include "internal/item_selection.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -319,6 +320,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     header->addWidget(mConfiguration);
 
     mTree->setObjectName(QStringLiteral("renderGraphTree"));
+    ConfigureItemSelection(*mTree);
     mTree->setHeaderLabel(QStringLiteral("Graph sources"));
     mTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
@@ -364,6 +366,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     addRow->addWidget(add);
     inspectorLayout->addLayout(addRow);
     mEdges->setObjectName(QStringLiteral("renderGraphEdges"));
+    ConfigureItemSelection(*mEdges);
     mEdges->setColumnCount(2);
     mEdges->setHorizontalHeaderLabels({QStringLiteral("From"), QStringLiteral("To")});
     mEdges->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
