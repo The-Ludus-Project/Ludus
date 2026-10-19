@@ -193,9 +193,16 @@ float3 EvaluateBrdf(float3 baseColor,
     return nl * (distribution * visibility * fresnel +
                  baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse ? 0 : 1) / PI);
 }
+// Instance flags in EyeWorld.w: bit 0 receives shadows, bit 1 orthographic eye. The value is
+// constant per instance but reaches the fragment through a perspective-interpolated varying,
+// so it may arrive as 0.9999...; round instead of truncating or whole pixel rows lose a flag.
+int GetEyeFlags(Varying input)
+{
+    return int(input.EyeWorld.w + 0.5);
+}
 float ComputeShadowVisibility(int light, Varying input)
 {
-    if ((int(input.EyeWorld.w) & 1) == 0)
+    if ((GetEyeFlags(input) & 1) == 0)
         return 1;
     bool hasLocalShadowCoverage = false;
     for (int region = 0; region < SHADOW_REGION_CAPACITY; ++region)
@@ -317,10 +324,10 @@ float3 ComputeDebugColour(int mode,
         return normalWorld * 0.5 + 0.5;
     if (mode == int(MATERIAL_DEBUG_VIEW_LINEAR_DEPTH))
     {
-        // Perspective: radial distance from the eye. Orthographic (EyeWorld.w >= 2): distance
+        // Perspective: radial distance from the eye. Orthographic (eye flag bit 1): distance
         // along the view direction; the renderer shifted the range into this frame.
-        float distance = input.EyeWorld.w >= 2 ? -dot(input.PositionWorld, input.EyeWorld.xyz)
-                                               : length(input.PositionWorld - input.EyeWorld.xyz);
+        float distance = (GetEyeFlags(input) & 2) != 0 ? -dot(input.PositionWorld, input.EyeWorld.xyz)
+                                                       : length(input.PositionWorld - input.EyeWorld.xyz);
         float span = input.DebugDepthRange.y - input.DebugDepthRange.x;
         return float3(span > 0 ? saturate((distance - input.DebugDepthRange.x) / span) : 0);
     }
@@ -345,8 +352,9 @@ float3 ComputeDebugColour(int mode,
     float3 positionDerivativeXWorld = ddx(input.PositionWorld);
     float3 positionDerivativeYWorld = ddy(input.PositionWorld);
     float3 normalWorld = NormalizeOrZero(input.NormalWorld);
-    float3 viewDirectionWorld = input.EyeWorld.w >= 2 ? NormalizeOrZero(input.EyeWorld.xyz)
-                                                      : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
+    float3 viewDirectionWorld = (GetEyeFlags(input) & 2) != 0
+                                    ? NormalizeOrZero(input.EyeWorld.xyz)
+                                    : NormalizeOrZero(input.EyeWorld.xyz - input.PositionWorld);
     float metallic = material.Pbr.x;
     float roughness = material.Pbr.y;
 #ifdef LUDUS_SURFACE_FIDELITY
