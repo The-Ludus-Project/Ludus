@@ -18,6 +18,7 @@ await new Promise(done => server.listen(0, '127.0.0.1', done));
 const report = {adapter:'Chromium SwiftShader software GPU; hardware performance not measured', checks:[], errors:[]};
 let browser;
 function check(message) {report.checks.push(message); console.log(message);}
+const isPlayer = (r,g,b) => r>=175 && r<=200 && g>=155 && g<=185 && b>=85 && b<=118;
 try {
   browser = await chromium.launch({headless:true, args:['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-webgpu-adapter=swiftshader', '--use-angle=swiftshader', '--use-vulkan=swiftshader', '--disable-vulkan-surface', '--enable-unsafe-swiftshader']});
   report.browser = browser.version();
@@ -42,12 +43,15 @@ try {
   const canvas = await page.locator('canvas').boundingBox();
   const scene = await page.screenshot({timeout:60000,path:resolve(output, 'scene.png'), clip:canvas});
   const pixels = PNG.sync.read(scene);
+  // The player presents through the Renderer's display transform (linear colour, Reinhard,
+  // sRGB encode), exactly like the Editor's World viewport. Expected codes: player (188,169,101),
+  // guard (183,101,113), exit (113,183,156); scatter stays below these bands.
   const colors = {player:0, guard:0, exit:0};
   for(let index=0; index<pixels.data.length; index+=4) {
     const [r,g,b] = pixels.data.subarray(index,index+3);
-    if(r>230 && g>120 && g<230 && b<100) ++colors.player;
-    if(r>200 && g<100 && b<110) ++colors.guard;
-    if(g>200 && r<120 && b>100 && b<180) ++colors.exit;
+    if(isPlayer(r,g,b)) ++colors.player;
+    if(r>=168 && r<=200 && g>=85 && g<=118 && b>=100 && b<=128) ++colors.guard;
+    if(r>=100 && r<=128 && g>=170 && g<=196 && b>=142 && b<=170) ++colors.exit;
   }
   assert.ok(colors.player>40 && colors.guard>40 && colors.exit>40, 'Presented scene must contain player, guard and exit pixels: '+JSON.stringify(colors));
   report.scenePixels = colors; check('visible player, guard and exit; pause freezes ticks');
@@ -83,7 +87,7 @@ try {
     let count = 0, sumX = 0, sumY = 0;
     for (let y=0; y<pixels.height; ++y) for (let x=0; x<pixels.width; ++x) {
       const index=(y*pixels.width+x)*4, [r,g,b]=pixels.data.subarray(index,index+3);
-      if (r>230 && g>120 && g<230 && b<100) {++count; sumX+=x+0.5; sumY+=y+0.5;}
+      if (isPlayer(r,g,b)) {++count; sumX+=x+0.5; sumY+=y+0.5;}
     }
     assert.ok(count>40, 'Follow frame must contain player pixels');
     assert.ok(Math.abs(sumX/count-pixels.width/2)<2 && Math.abs(sumY/count-pixels.height/2)<2,

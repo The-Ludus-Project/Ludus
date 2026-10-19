@@ -13,12 +13,10 @@
 #include <ludus/graphics/rhi/raster.h>
 namespace ludus::world_demo
 {
-/// Channels of a linear RGBA colour.
-inline constexpr usize RGBA_CHANNELS = 4;
+/// Channels of a linear RGBA colour, as a Draw stores it.
+inline constexpr usize RGBA_CHANNELS = DRAW_COLOR_CHANNELS;
 /// Index of the alpha channel in a linear RGBA colour.
 inline constexpr usize RGBA_ALPHA = 3;
-/// Linear RGBA cleared behind every frame; the dark room floor of the original reference renderer.
-inline constexpr foundation::float32 FRAME_BACKGROUND[RGBA_CHANNELS] = {0.025F, 0.04F, 0.08F, 1};
 /// World units in front of the z = 0 play plane that hold every draw's depth key.
 ///
 /// Draw order becomes depth so later draws cover earlier ones without blending.

@@ -1,13 +1,16 @@
 #include "internal/frame_renderer.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
-#include <ludus/graphics/rhi/graph.h>
+#include "renderer_output.h"
+#include "renderer_shadow.h"
 namespace ludus::world_demo
 {
 namespace
 {
 namespace rhi = graphics::rhi;
 namespace rr = graphics::renderer;
+/// Manual exposure of the display transform, the same as the Editor's World viewport.
+constexpr float32 DISPLAY_EXPOSURE = 1;
 bool IsAccepted(rhi::RasterStatus status) noexcept
 {
     return status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending;
@@ -25,6 +28,7 @@ rhi::RasterStatus FrameRenderer::Prepare(rhi::DeviceHandle device) noexcept
             {
                 return status;
             }
+            mDevice = device;
             mStage = FrameRendererStage::Flat;
             return rhi::RasterStatus::Pending;
         }
@@ -46,6 +50,23 @@ rhi::RasterStatus FrameRenderer::Prepare(rhi::DeviceHandle device) noexcept
         }
         case FrameRendererStage::Views: {
             rhi::RasterStatus status = mRenderer.PollViews();
+            if (status != rhi::RasterStatus::Ready)
+            {
+                return status;
+            }
+            // RasterViewport tone-maps and encodes through the lighting output profile.
+            status = mRenderer.InitializeLighting(shaders::renderer_output::Vertex(),
+                                                  shaders::renderer_output::Fragment(),
+                                                  shaders::renderer_shadow::Fragment());
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
+            mStage = FrameRendererStage::Lighting;
+            return rhi::RasterStatus::Pending;
+        }
+        case FrameRendererStage::Lighting: {
+            rhi::RasterStatus status = mRenderer.PollLighting();
             if (status != rhi::RasterStatus::Ready)
             {
                 return status;
@@ -72,47 +93,33 @@ rhi::RasterStatus FrameRenderer::Prepare(rhi::DeviceHandle device) noexcept
     return rhi::RasterStatus::InvalidState;
 }
 
-rhi::RasterStatus FrameRenderer::promoteCandidate() noexcept
+rhi::RasterStatus FrameRenderer::prepareViewport(uint32 width, uint32 height) noexcept
 {
-    const rhi::RasterStatus status = mRenderer.GetStatus(mCandidate);
-    if (status != rhi::RasterStatus::Ready)
+    if (mViewportWidth == width && mViewportHeight == height)
+    {
+        return rhi::RasterStatus::Ready;
+    }
+    // Accepted GPU work retires through the RHI; the old targets cannot match the new surface.
+    mViewport.Reset();
+    mViewportWidth = 0;
+    mViewportHeight = 0;
+    // Flat colours need no HDR target, and Linear8 is what the Editor uses for unlit scenes.
+    const rhi::RasterStatus status =
+        mViewport.Initialize(mRenderer, mDevice, width, height, DISPLAY_EXPOSURE, rr::ViewportColorMode::Linear8, true);
+    if (IsAccepted(status) == false)
     {
         return status;
     }
-    if (mHasView == true)
-    {
-        // Submitted GPU work keeps its own retention; releasing the CPU view is safe between frames.
-        const rhi::RasterStatus released = mRenderer.Release(mView);
-        if (released != rhi::RasterStatus::Ready)
-        {
-            return released;
-        }
-    }
-    mView = mCandidate;
-    mCandidate = {};
-    mHasView = true;
-    mHasCandidate = false;
+    mViewportWidth = width;
+    mViewportHeight = height;
     return rhi::RasterStatus::Ready;
 }
 
 rhi::RasterStatus FrameRenderer::Update(const RenderFrame& frame, uint32 width, uint32 height) noexcept
 {
-    if (mStage != FrameRendererStage::Ready)
+    if (mStage != FrameRendererStage::Ready || width == 0 || height == 0)
     {
         return rhi::RasterStatus::NotReady;
-    }
-    if (mHasCandidate == true)
-    {
-        const rhi::RasterStatus promoted = promoteCandidate();
-        if (promoted == rhi::RasterStatus::Pending)
-        {
-            // Keep drawing the last Ready view; this frame's extraction is superseded by the next.
-            return rhi::RasterStatus::NotReady;
-        }
-        if (promoted != rhi::RasterStatus::Ready)
-        {
-            return promoted;
-        }
     }
     rr::ViewDescription view;
     rhi::RasterStatus status = TryBuildFrameView(frame, width, height, view);
@@ -122,6 +129,11 @@ rhi::RasterStatus FrameRenderer::Update(const RenderFrame& frame, uint32 width, 
     }
     usize count = 0;
     status = TryBuildFrameItems(frame, mQuad, mItems, count);
+    if (status != rhi::RasterStatus::Ready)
+    {
+        return status;
+    }
+    status = prepareViewport(width, height);
     if (status != rhi::RasterStatus::Ready)
     {
         return status;
@@ -139,49 +151,53 @@ rhi::RasterStatus FrameRenderer::Update(const RenderFrame& frame, uint32 width, 
     }
     mHasSnapshot = true;
     rr::ViewReport report;
-    status = mRenderer.PrepareView(mSnapshot, view, mCandidate, report);
+    status = mViewport.Update(mSnapshot, view, report);
     if (status == rhi::RasterStatus::CapacityExceeded)
     {
         return rhi::RasterStatus::NotReady;
     }
-    if (IsAccepted(status) == false)
-    {
-        return status;
-    }
-    mHasCandidate = true;
-    // Native immutable uploads are usually Ready at once, so the frame draws without a delay.
-    status = promoteCandidate();
-    return status == rhi::RasterStatus::Pending ? rhi::RasterStatus::Ready : status;
+    return IsAccepted(status) == true ? rhi::RasterStatus::Ready : status;
 }
 
-rhi::RasterStatus FrameRenderer::Draw(rhi::TextureHandle target) noexcept
+rhi::RasterStatus FrameRenderer::Present(rhi::SurfaceHandle surface, rhi::SubmissionToken& outCompletion) noexcept
 {
-    if (mHasView == false)
+    if (mStage != FrameRendererStage::Ready || mViewportWidth == 0)
     {
         return rhi::RasterStatus::NotReady;
     }
-    rhi::RasterPassDescription pass;
-    pass.Color = target;
-    for (usize channel = 0; channel < RGBA_CHANNELS; ++channel)
+    rhi::SubmissionToken completion;
+    const rhi::RasterStatus status = mViewport.Render(surface, completion);
+    if (completion.IsNull() == false)
     {
-        pass.Clear[channel] = FRAME_BACKGROUND[channel];
+        outCompletion = completion;
     }
-    // Reverse-Z clears depth to zero; the nearest (latest) draw has the greatest depth.
-    pass.ClearDepth = 0;
-    return mRenderer.DrawView(mView, pass);
+    // A viewport without a drawable view yet reports the pending setup as InvalidHandle.
+    return status == rhi::RasterStatus::Pending || status == rhi::RasterStatus::InvalidHandle
+               ? rhi::RasterStatus::NotReady
+               : status;
+}
+
+rhi::RasterStatus FrameRenderer::Acquire(rr::ViewportFrame& outFrame, rr::ViewportImage& outImage) noexcept
+{
+    return mViewport.Acquire(outFrame, outImage);
+}
+
+rhi::RasterStatus FrameRenderer::Release(rr::ViewportFrame& inoutFrame) noexcept
+{
+    return mViewport.Release(inoutFrame);
 }
 
 void FrameRenderer::Reset() noexcept
 {
-    // Renderer::Reset releases every renderer handle at once.
+    // RasterViewport::Reset must precede Renderer::Reset, which releases every renderer handle.
+    mViewport.Reset();
     mRenderer.Reset();
     mQuad = {};
     mSnapshot = {};
-    mView = {};
-    mCandidate = {};
+    mDevice = {};
     mStage = FrameRendererStage::Idle;
+    mViewportWidth = 0;
+    mViewportHeight = 0;
     mHasSnapshot = false;
-    mHasView = false;
-    mHasCandidate = false;
 }
 } // namespace ludus::world_demo

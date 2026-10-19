@@ -216,10 +216,6 @@ bool Application::render(const platform::browser::WindowState& window) noexcept
         // This is a presentation failure, never an authoritative simulation fault.
         return false;
     }
-    if (mFrameRenderer.HasView() == false)
-    {
-        return true;
-    }
     const rhi::DeviceStatus target = rhi::SetFrameTarget(mDevice,
                                                          mSurface,
                                                          {
@@ -230,17 +226,12 @@ bool Application::render(const platform::browser::WindowState& window) noexcept
     {
         return target == rhi::DeviceStatus::Skipped;
     }
-    const rhi::DeviceStatus begun = rhi::BeginFrame(mDevice, mSurface);
-    if (begun != rhi::DeviceStatus::Ready)
-    {
-        return begun == rhi::DeviceStatus::Skipped;
-    }
-    const rhi::RasterStatus drawn = mFrameRenderer.Draw({});
+    // The viewport opens, draws, tone-maps, encodes and presents the frame in one submission.
     rhi::SubmissionToken completion;
-    const rhi::RasterStatus ended = rhi::EndFrame(mDevice, completion);
-    if (drawn != rhi::RasterStatus::Ready || ended != rhi::RasterStatus::Ready)
+    const rhi::RasterStatus presented = mFrameRenderer.Present(mSurface, completion);
+    if (presented != rhi::RasterStatus::Ready)
     {
-        return false;
+        return presented == rhi::RasterStatus::NotReady;
     }
     // A diagnostic reading for --pacing-report, independent of the frame's one simulation timestamp.
     mPresentReturn = foundation::time::Now();
