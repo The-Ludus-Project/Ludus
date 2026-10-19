@@ -35,7 +35,7 @@ constexpr int32 HALF_MANTISSA_BITS = 10;
 constexpr float32 DEPTH_BACKGROUND = 1.0F;
 /// Probe text digits: depth needs every binary32 digit to tell nearby surfaces apart.
 constexpr int32 DEPTH_DIGITS = 9;
-constexpr int32 COLOR_DIGITS = 4;
+constexpr int32 COLOUR_DIGITS = 4;
 constexpr int32 FLOAT_DIGITS = 6;
 constexpr int32 HEX_BASE = 16;
 constexpr int32 HALF_HEX_DIGITS = 4;
@@ -276,7 +276,7 @@ QString DescribeTexel(const InspectedTexture& texture, uint32 x, uint32 y)
                 text += QStringLiteral("  %1 %2 (%3)")
                             .arg(name)
                             .arg(value.Bits[channel])
-                            .arg(static_cast<float64>(value.Channels[channel]), 0, 'f', COLOR_DIGITS);
+                            .arg(static_cast<float64>(value.Channels[channel]), 0, 'f', COLOUR_DIGITS);
                 break;
             case TexelEncoding::Rgba16Float:
                 text += QStringLiteral("  %1 %2 (0x%3)")

@@ -1,5 +1,7 @@
 #include "internal/hosted_socket.hpp"
 
+#include <ludus/foundation/base/config.h>
+
 #include <cerrno>
 #include <fcntl.h>
 #include <poll.h>
@@ -7,7 +9,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#if !defined(__APPLE__) && !defined(__linux__)
+#if LUDUS_TARGET_OS != LUDUS_OS_MACOS && LUDUS_TARGET_OS != LUDUS_OS_LINUX
 #    error "The hosted window channel requires macOS or Linux"
 #endif
 
@@ -38,7 +40,7 @@ bool TryConfigureSocket(int32 descriptor) noexcept
     {
         return false;
     }
-#if defined(__APPLE__)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     const int32 shouldSuppressPipeSignal = 1;
     if (::setsockopt(descriptor,
                      SOL_SOCKET,
@@ -60,7 +62,7 @@ TransferStatus SendSome(int32 descriptor, foundation::BorrowedView<const uint8> 
     }
     while (true)
     {
-#if defined(__linux__)
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX
         const ssize_t count = ::send(descriptor, bytes.GetDataOrNull(), bytes.GetSize(), MSG_NOSIGNAL);
 #else
         const ssize_t count = ::send(descriptor, bytes.GetDataOrNull(), bytes.GetSize(), 0);
@@ -138,7 +140,7 @@ bool WaitUntilReadable(int32 descriptor, foundation::time::Duration timeout) noe
 
 bool TryReadPeerUserId(int32 descriptor, uint32& outUserId) noexcept
 {
-#if defined(__APPLE__)
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     uid_t userId = 0;
     gid_t groupId = 0;
     if (::getpeereid(descriptor, &userId, &groupId) != 0)

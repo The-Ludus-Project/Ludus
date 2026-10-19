@@ -37,8 +37,8 @@ constexpr int32 MINIMUM_CANVAS_EXTENT = 160;
 constexpr int32 LIST_WIDTH = 220;
 /// A press that moves less than this is a click, not a pan.
 constexpr float64 CLICK_SLOP = 3.0;
-const QColor BACKGROUND(9, 12, 15);
-const QColor FRAME(80, 88, 96);
+constexpr QRgb BACKGROUND_COLOUR = qRgb(9, 12, 15);
+constexpr QRgb FRAME_COLOUR = qRgb(80, 88, 96);
 
 struct ChannelChoice final
 {
@@ -415,7 +415,7 @@ void TextureCanvas::SetTransform(const TextureViewTransform& transform)
 void TextureCanvas::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
-    painter.fillRect(rect(), BACKGROUND);
+    painter.fillRect(rect(), QColor(BACKGROUND_COLOUR));
     if (mImage.isNull() == true)
     {
         return;
@@ -428,7 +428,7 @@ void TextureCanvas::paintEvent(QPaintEvent*)
     // Nearest neighbour: every texel stays a sharp square at any zoom.
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
     painter.drawImage(target, mImage);
-    painter.setPen(FRAME);
+    painter.setPen(QColor(FRAME_COLOUR));
     painter.drawRect(target.adjusted(-1, -1, 0, 0));
 }
 
