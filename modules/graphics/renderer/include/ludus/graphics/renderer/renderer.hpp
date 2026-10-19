@@ -201,6 +201,11 @@ struct ViewDescription final
     ludus::foundation::math::Vector3 CameraForward{0, 0, -1};
     /// Canonical overlay crop transform, applied independently of the world camera.
     ludus::foundation::math::Matrix4 OverlayToClip = ludus::foundation::math::Matrix4::Identity();
+    /// World-unit camera distances {near, far} that MaterialDebugView::LinearDepth maps to black
+    /// and white. Perspective views measure radial distance from CameraPosition; orthographic
+    /// views measure distance along CameraForward. Finite, 0 <= near < far <= 1e7, or {0, 0}
+    /// (the default) to leave depth unmapped (black). Ignored by ordinary lit programs.
+    ludus::foundation::math::Vector2 DebugDepthRange{0, 0};
 };
 /// Packet counts and a diagnostic prefix, copied to caller storage; IDs follow draw/instance order.
 struct ViewReport final

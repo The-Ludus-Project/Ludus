@@ -39,6 +39,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -588,6 +589,56 @@ TEST_CASE("Viewport shading is visible by default and restores independently of 
     preview.RestoreNavigation(navigation);
     CHECK(preview.GetShading() == PreviewShading::Solid);
     CHECK(shading->currentIndex() == 0);
+}
+TEST_CASE("Viewport debug shading and the Stats overlay persist with navigation", "[editor][render-authoring]")
+{
+    Fixture fixture;
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    REQUIRE(preview.SetScene(fixture.Scene));
+    QComboBox* shading = viewport.findChild<QComboBox*>(QStringLiteral("viewportShading"));
+    QToolButton* statistics = viewport.findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    REQUIRE(shading != nullptr);
+    REQUIRE(statistics != nullptr);
+    REQUIRE(static_cast<usize>(shading->count()) == PREVIEW_SHADING_COUNT);
+    CHECK(statistics->text() == QStringLiteral("Stats"));
+    CHECK(statistics->isCheckable() == true);
+    CHECK(statistics->isChecked() == false);
+    CHECK(preview.IsStatisticsVisible() == false);
+    CHECK(viewport.GetStatisticsText().isEmpty() == true);
+    for (usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        const PreviewShading mode = static_cast<PreviewShading>(i);
+        INFO(GetPreviewShadingKey(mode).toStdString());
+        CHECK(shading->itemText(static_cast<int32>(i)) == GetPreviewShadingLabel(mode));
+        shading->setCurrentIndex(static_cast<int32>(i));
+        CHECK(preview.GetShading() == mode);
+        const QJsonObject saved = preview.Navigation();
+        CHECK(saved.value(QStringLiteral("shading")).toString() == GetPreviewShadingKey(mode));
+        shading->setCurrentIndex(0);
+        preview.RestoreNavigation(saved);
+        CHECK(preview.GetShading() == mode);
+        CHECK(shading->currentIndex() == static_cast<int32>(i));
+    }
+
+    statistics->click();
+    CHECK(preview.IsStatisticsVisible() == true);
+    // No device yet: the overlay is shown with placeholders rather than stale numbers.
+    CHECK(viewport.GetStatisticsText().startsWith(QStringLiteral("GPU: ")) == true);
+    QJsonObject navigation = preview.Navigation();
+    CHECK(navigation.value(QStringLiteral("statistics")).toBool() == true);
+    statistics->click();
+    CHECK(preview.IsStatisticsVisible() == false);
+    CHECK(viewport.GetStatisticsText().isEmpty() == true);
+    preview.RestoreNavigation(navigation);
+    CHECK(preview.IsStatisticsVisible() == true);
+    CHECK(statistics->isChecked() == true);
+    navigation.remove(QStringLiteral("statistics"));
+    navigation.insert(QStringLiteral("shading"), QStringLiteral("overdraw"));
+    preview.RestoreNavigation(navigation);
+    CHECK(preview.IsStatisticsVisible() == false);
+    CHECK(statistics->isChecked() == false);
+    CHECK(preview.GetShading() == PreviewShading::Solid);
 }
 TEST_CASE("Renderer snapshot admission protects fixed handle arrays even for an invalid private caller",
           "[editor][render-authoring]")

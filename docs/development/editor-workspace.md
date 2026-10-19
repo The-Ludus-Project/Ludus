@@ -848,7 +848,7 @@ when available.
 The shading selector above each viewport defaults to **Solid — neutral preview
 shading**. It gives surfaces a neutral material and imported geometry an editor-only
 directional fill and ambient contribution, so imported rooms remain visible for
-inspection and editing. **Albedo — unlit surface colors** displays base-color textures and material tints; emitting meshes
+inspection and editing. **Albedo — unlit surface colours** displays base-color textures and material tints; emitting meshes
 with black authored albedo remain black in this view.
 **Lit — scene lighting** displays authored analytic lights, emitting surfaces,
 shadowed area-light proxies and authored environment lighting. During resource preparation, the viewport retains its last drawable GPU
@@ -860,8 +860,48 @@ Switching modes keeps the World, camera and layout; the shading choice
 is restored with the project's viewport preferences. Older preferences without a
 shading choice open in Solid mode. These visualization overrides do not change
 authored materials or add lights to the World. Solid lighting is a navigation
-aid, not the imported scene lighting. Wireframe and normal visualizations are
-not yet available.
+aid, not the imported scene lighting. Wireframe is not yet available.
+
+Debug views follow Lit in the selector. Each replaces shading with one quantity
+per pixel so you can inspect it directly:
+
+- **Normal — world-space normals as colour**: +X red, +Y green, +Z blue.
+- **Depth — distance from camera, near black to far white**: linear distance
+  between the camera's near plane and far plane, tightened to the scene's
+  bounds so visible geometry spans the full range.
+- **Roughness — smooth black to rough white**.
+- **Metallic — dielectric black to metal white**.
+- **UV — texture coordinates as red/green**: the first UV set.
+- **Light count — lights reaching each pixel as a heat map**: counts lights
+  whose shadowed contribution is nonzero: black for none, then blue (one) to
+  red (16 or more).
+
+Scenes with authored lights use the same surface maps, clusters and shadows as
+Lit. Authored Worlds without lights get editor-derived vertex normals when the
+mesh has none. Light count is black there because no lights exist. Overdraw is
+not offered, because the world pass has no additive blend state to count
+overlapping fragments. The debug view is saved like the other modes. Older
+preferences open in Solid.
+
+The **Stats** toolbar toggle overlays averaged frame statistics in the
+viewport's top-left corner:
+
+- **GPU**: device timestamp time for the frame.
+- **CPU**: time spent preparing and submitting the frame.
+- **Resolution** and **draw count**.
+
+Times are averaged over the last 30 frames (`VIEWPORT_STATISTICS_AVERAGE_FRAMES`)
+and refresh four times a second. GPU timestamps are read back with latency and
+the editor never waits for them, so the GPU line shows `…` until the first
+sample arrives. It shows `GPU: n/a` when the device or browser provides no
+timestamp queries.
+
+On macOS and Linux the overlay is an item in the viewport's own Qt Quick scene,
+so it is drawn above the frame. A sibling widget would be hidden under the
+embedded native window. The Linux readback canvas paints the overlay over its
+frame. In the browser, the engine canvas covers Qt widgets, so the statistics
+appear as a line under the viewport toolbar. The toggle is saved with the
+viewport preferences.
 
 Lit uses raster direct lighting and real-time shadows. HDR or constant authored
 environments supply irradiance and specular reflection. No editor fill is added
