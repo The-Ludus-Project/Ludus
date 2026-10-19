@@ -671,7 +671,12 @@ void RendererWorkspace::openProjectGraph()
     showDocument(candidate);
     if (problem.isEmpty() == false)
     {
-        mStatus->setText(QStringLiteral("%1/%2 could not be opened (%3) Showing the engine default; Save will not "
+        // The reason is a full sentence; drop its period so the parenthesis closes the clause.
+        if (problem.endsWith(QLatin1Char('.')) == true)
+        {
+            problem.chop(1);
+        }
+        mStatus->setText(QStringLiteral("%1/%2 could not be opened (%3). Showing the engine default; Save will not "
                                         "replace the existing files.")
                              .arg(PROJECT_RENDER_GRAPH_DIRECTORY, DEFAULT_RENDER_GRAPH_ROOT, problem));
     }

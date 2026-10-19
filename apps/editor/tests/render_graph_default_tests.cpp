@@ -247,6 +247,26 @@ TEST_CASE("Customize copies the default once and never replaces project files", 
     CHECK(closed.CustomizeBuiltIn() == false);
 }
 
+TEST_CASE("An unreadable project graph falls back to the default without replacing it", "[editor][render-graph]")
+{
+    // A project graph above the bounded per-file size cannot be loaded as a document.
+    QTemporaryDir project;
+    const QString graph = QDir(GetPackage(project)).filePath(DEFAULT_RENDER_GRAPH_ROOT);
+    const QByteArray oversized(RenderGraphDocument::MAX_FILE_BYTES + 1, ' ');
+    WriteFile(graph, oversized);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.IsBuiltIn() == true);
+    // The reason is one parenthesized clause, followed by its own sentence.
+    const QString status = workspace.GetStatusText();
+    CHECK(status.startsWith(QStringLiteral("renderer/main.lurender.json could not be opened (")) == true);
+    CHECK(status.contains(QStringLiteral(".). ")) == false);
+    CHECK(status.contains(QStringLiteral("). Showing the engine default;")) == true);
+    // Customizing never replaces the project's own file.
+    CHECK(workspace.CustomizeBuiltIn() == false);
+    CHECK(ReadFile(graph) == oversized);
+}
+
 TEST_CASE("Render-graph build tools default to the editor build and accept overrides", "[editor][render-graph]")
 {
     const RenderGraphBuildTools defaults
