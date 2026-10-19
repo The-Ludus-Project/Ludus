@@ -697,6 +697,41 @@ RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& dire
     return RenderGraphDocumentStatus::Ok;
 }
 
+RenderGraphDocumentStatus RenderGraphDocument::RefreshFromDisk(bool& outHasChanged)
+{
+    outHasChanged = false;
+    if (IsLoaded() == false)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    if (mIsBuiltIn == true)
+    {
+        return RenderGraphDocumentStatus::Ok;
+    }
+    if (QFileInfo(mPackageRoot).canonicalFilePath() != mPackageRoot)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    RenderGraphSnapshot candidate;
+    const RenderGraphDocumentStatus status = ReadPackage(mPackageRoot, mRootGraph, candidate);
+    if (status != RenderGraphDocumentStatus::Ok || candidate == mSaved)
+    {
+        return status;
+    }
+    if (IsDirty() == true)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    const RenderGraphDocumentStatus committed = commit(candidate, false);
+    if (committed == RenderGraphDocumentStatus::Ok)
+    {
+        mSaved = candidate;
+        mLastMove.clear();
+        outHasChanged = true;
+    }
+    return committed;
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
 {
     outSavedFiles.clear();
