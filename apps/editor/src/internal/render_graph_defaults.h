@@ -12,7 +12,7 @@ inline constexpr QLatin1String DEFAULT_RENDER_GRAPH_ROOT("main.lurender.json");
 /// `graphs/Main/main.lurender.json` exists opens that graph instead of the default.
 inline constexpr QLatin1String PROJECT_RENDER_GRAPH_DIRECTORY("graphs/Main");
 
-// The engine-owned default render graph that lets the Renderer tab work without setup (see
+// The engine-owned default render graph that lets the Render Graph document work without setup (see
 // docs/development/render-graph-authoring.md#start-customizing-the-renderer). The editor
 // embeds its authored sources and, in native preview builds, its prebuilt runtime
 // generation. Nothing here reads or writes project files.
