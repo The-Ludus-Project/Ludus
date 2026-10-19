@@ -8,8 +8,8 @@ namespace
 {
 /// Welcome or overflow resize, visibility, overflow reset, focus and close.
 constexpr usize MAX_SYNCHRONIZATION_MESSAGES = 5;
-/// Bytes read per check for unexpected traffic from a connected window.
-constexpr usize DISCONNECTION_PROBE_BYTES = 64;
+/// Rendezvous messages from other processes skipped while matching one Images message.
+constexpr usize MAX_REJECTED_RENDEZVOUS_MESSAGES = 16;
 
 bool IsValidVisibility(WindowVisibility visibility) noexcept
 {
@@ -33,6 +33,63 @@ void EndpointSession::Configure(const Token& token, uint32 expectedUserId, const
     mPendingSize = 0;
     mLastRefusal = HostedRefusal::None;
     mRefusalCount = 0;
+    mNonce = {};
+    mPeerProcessId = -1;
+#if defined(__APPLE__)
+    mRendezvous.Stop();
+#endif
+    clearSurfaceState();
+}
+
+#if defined(__APPLE__)
+bool EndpointSession::TryStartRendezvous(const RendezvousNonce& nonce) noexcept
+{
+    RendezvousName name;
+    if (mPhase != SessionPhase::Idle || mRendezvous.IsStarted() == true ||
+        TryFormatRendezvousName(nonce, name) == false || mRendezvous.TryStart(name) == false)
+    {
+        return false;
+    }
+    mNonce = nonce;
+    return true;
+}
+#endif
+
+void EndpointSession::clearSurfaceState() noexcept
+{
+    mReceivedSize = 0;
+    for (HostedImageHandle& handle : mDescriptors)
+    {
+        handle.Reset();
+    }
+    mDescriptorCount = 0;
+    for (HostedSurfaceEvent& event : mEvents)
+    {
+        event = {};
+    }
+    mEventFirst = 0;
+    mEventCount = 0;
+    mLastGeneration = 0;
+    mDeferredReleaseCount = 0;
+}
+
+bool EndpointSession::TryTakeSurfaceEvent(HostedSurfaceEvent& outEvent) noexcept
+{
+    if (mEventCount == 0)
+    {
+        return false;
+    }
+    outEvent = foundation::Move(mEvents[mEventFirst]);
+    mEvents[mEventFirst] = {};
+    mEventFirst = (mEventFirst + 1) % MAX_SURFACE_EVENTS;
+    --mEventCount;
+    return true;
+}
+
+void EndpointSession::pushEvent(HostedSurfaceEvent&& event) noexcept
+{
+    mEvents[(mEventFirst + mEventCount) % MAX_SURFACE_EVENTS] = foundation::Move(event);
+    ++mEventCount;
 }
 
 void EndpointSession::Admit(SocketDescriptor&& connection, foundation::time::Timestamp now) noexcept
@@ -44,11 +101,14 @@ void EndpointSession::Admit(SocketDescriptor&& connection, foundation::time::Tim
     }
     mConnection = foundation::Move(peer);
     uint32 peerUserId = 0;
-    if (TryReadPeerUserId(mConnection.Get(), peerUserId) == false || peerUserId != mExpectedUserId)
+    int32 peerProcessId = -1;
+    if (TryReadPeerUserId(mConnection.Get(), peerUserId) == false || peerUserId != mExpectedUserId ||
+        TryReadPeerProcessId(mConnection.Get(), peerProcessId) == false)
     {
         refuse(HostedRefusal::WrongUser);
         return;
     }
+    mPeerProcessId = peerProcessId;
     mPhase = SessionPhase::Handshaking;
     mConnectedAt = now;
     mHelloSize = 0;
@@ -66,7 +126,7 @@ void EndpointSession::Pump(foundation::time::Timestamp now) noexcept
     }
     if (mPhase == SessionPhase::Connected)
     {
-        detectDisconnection();
+        receiveFromWindow();
     }
 }
 
@@ -172,16 +232,145 @@ void EndpointSession::receiveHello(foundation::time::Timestamp now) noexcept
     flush();
 }
 
-void EndpointSession::detectDisconnection() noexcept
+void EndpointSession::receiveFromWindow() noexcept
 {
-    foundation::StaticArray<uint8, DISCONNECTION_PROBE_BYTES> probe{};
-    usize received = 0;
-    const TransferStatus status = ReceiveSome(mConnection.Get(), {probe.GetData(), probe.GetSize()}, received);
-    // A version-1 window sends nothing after its Hello, so any byte is a violation.
-    if (status != TransferStatus::WouldBlock)
+    while (mPhase == SessionPhase::Connected)
     {
-        disconnect();
+        // Decode what is buffered first; a full event queue holds the rest back.
+        while (mEventCount < MAX_SURFACE_EVENTS)
+        {
+            Message message;
+            usize consumed = 0;
+            const DecodeStatus decoded = TryDecodeMessage({mReceived.GetData(), mReceivedSize}, message, consumed);
+            if (decoded == DecodeStatus::NeedMore)
+            {
+                break;
+            }
+            if (decoded == DecodeStatus::Malformed || applyWindowMessage(message) == false)
+            {
+                disconnect();
+                return;
+            }
+            std::memmove(mReceived.GetData(), mReceived.GetData() + consumed, mReceivedSize - consumed);
+            mReceivedSize -= consumed;
+        }
+        if (mEventCount == MAX_SURFACE_EVENTS)
+        {
+            return;
+        }
+        foundation::StaticArray<int32, MAX_PENDING_DESCRIPTORS> descriptors{};
+        usize received = 0;
+        usize descriptorCount = 0;
+        const TransferStatus status =
+            ReceiveWithDescriptors(mConnection.Get(),
+                                   {mReceived.GetData() + mReceivedSize, mReceived.GetSize() - mReceivedSize},
+                                   received,
+                                   descriptors.GetData(),
+                                   MAX_PENDING_DESCRIPTORS - mDescriptorCount,
+                                   descriptorCount);
+        if (status == TransferStatus::WouldBlock)
+        {
+            return;
+        }
+        if (status != TransferStatus::Progress)
+        {
+            disconnect();
+            return;
+        }
+        mReceivedSize += received;
+        for (usize i = 0; i < descriptorCount; ++i)
+        {
+            mDescriptors[mDescriptorCount] = HostedImageHandle::FromFileDescriptor(descriptors[i]);
+            ++mDescriptorCount;
+        }
     }
+}
+
+bool EndpointSession::applyWindowMessage(const Message& message) noexcept
+{
+    if (message.Kind == MessageKind::Present)
+    {
+        // A frame of a later generation than any published one violates the protocol.
+        if (message.Generation > mLastGeneration)
+        {
+            return false;
+        }
+        HostedSurfaceEvent event;
+        event.Kind = HostedSurfaceEventKind::Present;
+        event.Generation = message.Generation;
+        event.Image = message.Image;
+        event.Sequence = message.Sequence;
+        pushEvent(foundation::Move(event));
+        return true;
+    }
+    if (message.Kind != MessageKind::Images || message.Generation <= mLastGeneration)
+    {
+        // A window sends only Images and Present after its Hello.
+        return false;
+    }
+    HostedSurfaceEvent event;
+    event.Kind = HostedSurfaceEventKind::Images;
+    HostedSurfaceImages& images = event.Images;
+    images.Generation = message.Generation;
+    images.Width = message.Width;
+    images.Height = message.Height;
+    images.Format = message.Format;
+    images.AllocationSizes = message.AllocationSizes;
+    images.MemoryTypeIndex = message.MemoryTypeIndex;
+    images.DeviceUuid = message.DeviceUuid;
+    images.DriverUuid = message.DriverUuid;
+    if (tryAttachHandles(message, images) == false)
+    {
+        return false;
+    }
+    mLastGeneration = message.Generation;
+    pushEvent(foundation::Move(event));
+    return true;
+}
+
+bool EndpointSession::tryAttachHandles(const Message& message, HostedSurfaceImages& inoutImages) noexcept
+{
+    if (message.HandleKind == HostedHandleKind::OpaqueFileDescriptor)
+    {
+        // The descriptors arrived with the first byte of this message, in send order.
+        if (mDescriptorCount < HOSTED_SURFACE_IMAGE_COUNT)
+        {
+            return false;
+        }
+        for (usize i = 0; i < HOSTED_SURFACE_IMAGE_COUNT; ++i)
+        {
+            inoutImages.Handles[i] = foundation::Move(mDescriptors[i]);
+        }
+        for (usize i = HOSTED_SURFACE_IMAGE_COUNT; i < mDescriptorCount; ++i)
+        {
+            mDescriptors[i - HOSTED_SURFACE_IMAGE_COUNT] = foundation::Move(mDescriptors[i]);
+        }
+        mDescriptorCount -= HOSTED_SURFACE_IMAGE_COUNT;
+        return true;
+    }
+#if defined(__APPLE__)
+    // The window sends the Mach message before the socket message, so it is queued by now.
+    for (usize attempt = 0; attempt < MAX_REJECTED_RENDEZVOUS_MESSAGES; ++attempt)
+    {
+        RendezvousImages received;
+        const RendezvousReceiveStatus status =
+            mRendezvous.TryReceive(mPeerProcessId, mExpectedUserId, mToken, received);
+        if (status == RendezvousReceiveStatus::Rejected)
+        {
+            continue;
+        }
+        if (status != RendezvousReceiveStatus::Ok || received.Generation != message.Generation)
+        {
+            return false;
+        }
+        for (usize i = 0; i < HOSTED_SURFACE_IMAGE_COUNT; ++i)
+        {
+            inoutImages.Handles[i] = foundation::Move(received.Handles[i]);
+        }
+        return true;
+    }
+#endif
+    return false;
 }
 
 void EndpointSession::disconnect() noexcept
@@ -190,6 +379,7 @@ void EndpointSession::disconnect() noexcept
     mPhase = SessionPhase::Disconnected;
     mPendingSize = 0;
     mIsResynchronizationPending = false;
+    clearSurfaceState();
 }
 
 bool EndpointSession::enqueue(const Message& message) noexcept
@@ -240,6 +430,7 @@ bool EndpointSession::enqueueSynchronization(bool isOverflow) noexcept
         messages[count].Height = mState.Height;
         messages[count].Scale = mState.Scale;
         messages[count].Visibility = mState.Visibility;
+        messages[count].Nonce = mNonce;
         ++count;
     }
     if (mIsFocused == true)
@@ -300,12 +491,45 @@ void EndpointSession::flush() noexcept
             std::memmove(mPending.GetData(), mPending.GetData() + sent, mPendingSize - sent);
             mPendingSize -= sent;
         }
-        if (mIsResynchronizationPending == false || enqueueSynchronization(true) == false)
+        bool hasQueued = false;
+        if (mIsResynchronizationPending == true)
+        {
+            if (enqueueSynchronization(true) == false)
+            {
+                return;
+            }
+            mIsResynchronizationPending = false;
+            hasQueued = true;
+        }
+        hasQueued = flushDeferredReleases() == true || hasQueued == true;
+        if (hasQueued == false)
         {
             return;
         }
-        mIsResynchronizationPending = false;
     }
+}
+
+bool EndpointSession::flushDeferredReleases() noexcept
+{
+    usize queued = 0;
+    while (queued < mDeferredReleaseCount)
+    {
+        Message message;
+        message.Kind = MessageKind::Release;
+        message.Generation = mDeferredReleases[queued].Generation;
+        message.Image = mDeferredReleases[queued].Image;
+        if (enqueue(message) == false)
+        {
+            break;
+        }
+        ++queued;
+    }
+    for (usize i = queued; i < mDeferredReleaseCount; ++i)
+    {
+        mDeferredReleases[i - queued] = mDeferredReleases[i];
+    }
+    mDeferredReleaseCount -= queued;
+    return queued > 0;
 }
 
 HostedEndpointStatus EndpointSession::SendResize(uint32 width, uint32 height, float32 scale) noexcept
@@ -410,5 +634,44 @@ HostedEndpointStatus EndpointSession::SendClose() noexcept
     Message message;
     message.Kind = MessageKind::Close;
     return send(message);
+}
+} // namespace ludus::platform::hosted
+
+namespace ludus::platform::hosted
+{
+HostedEndpointStatus EndpointSession::SendRelease(uint32 generation, uint32 image) noexcept
+{
+    if (generation == 0 || image >= HOSTED_SURFACE_IMAGE_COUNT)
+    {
+        return HostedEndpointStatus::InvalidArgument;
+    }
+    if (mPhase != SessionPhase::Connected)
+    {
+        return HostedEndpointStatus::NotConnected;
+    }
+    // A release is never dropped: the producer could not reuse the image. Releases
+    // that do not fit wait, in order, until the queue drains.
+    if (mIsResynchronizationPending == true || mDeferredReleaseCount > 0)
+    {
+        if (mDeferredReleaseCount == MAX_DEFERRED_RELEASES)
+        {
+            return HostedEndpointStatus::Overflow;
+        }
+        mDeferredReleases[mDeferredReleaseCount] = { .Generation = generation, .Image = image };
+        ++mDeferredReleaseCount;
+        flush();
+        return mPhase == SessionPhase::Connected ? HostedEndpointStatus::Ok : HostedEndpointStatus::NotConnected;
+    }
+    Message message;
+    message.Kind = MessageKind::Release;
+    message.Generation = generation;
+    message.Image = image;
+    if (enqueue(message) == false)
+    {
+        mDeferredReleases[0] = { .Generation = generation, .Image = image };
+        mDeferredReleaseCount = 1;
+    }
+    flush();
+    return mPhase == SessionPhase::Connected ? HostedEndpointStatus::Ok : HostedEndpointStatus::NotConnected;
 }
 } // namespace ludus::platform::hosted

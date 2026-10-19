@@ -25,8 +25,6 @@ namespace ludus::platform::hosted
 {
 using foundation::int32;
 
-/// Random bytes that make one session's bootstrap name unique.
-inline constexpr usize RENDEZVOUS_NONCE_BYTES = 16;
 /// Bootstrap name prefix; the nonce follows as lowercase hexadecimal.
 inline constexpr std::string_view RENDEZVOUS_NAME_PREFIX = "org.ludus.hosted-window.";
 /// Longest bootstrap name this protocol forms.
@@ -34,8 +32,6 @@ inline constexpr usize MAX_RENDEZVOUS_NAME_BYTES = RENDEZVOUS_NAME_PREFIX.size()
 /// Messages the rendezvous port queues before a sender sees Busy.
 inline constexpr uint32 RENDEZVOUS_QUEUE_LIMIT = 16;
 
-/// Per-session rendezvous nonce, carried by the Welcome.
-using RendezvousNonce = foundation::StaticArray<uint8, RENDEZVOUS_NONCE_BYTES>;
 /// A bootstrap service name.
 using RendezvousName = foundation::StaticString<MAX_RENDEZVOUS_NAME_BYTES>;
 

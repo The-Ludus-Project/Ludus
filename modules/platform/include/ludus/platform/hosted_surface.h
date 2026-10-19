@@ -140,6 +140,30 @@ struct HostedImageRelease final
     foundation::uint32 Image = 0;
 };
 
+/// @brief Kind of a HostedSurfaceEvent.
+enum class HostedSurfaceEventKind : foundation::uint8
+{
+    /// A new generation: HostedSurfaceEvent::Images is set.
+    Images,
+    /// A completed frame: Generation, Image and Sequence are set.
+    Present,
+};
+
+/// @brief One surface message the editor endpoint received from its window, in arrival order.
+struct HostedSurfaceEvent final
+{
+    /// Which fields are meaningful.
+    HostedSurfaceEventKind Kind = HostedSurfaceEventKind::Present;
+    /// Images: the generation and its owned sharing handles.
+    HostedSurfaceImages Images;
+    /// Present: generation of the completed image.
+    foundation::uint32 Generation = 0;
+    /// Present: index of the completed image in its generation.
+    foundation::uint32 Image = 0;
+    /// Present: the producer's frame sequence number.
+    foundation::uint64 Sequence = 0;
+};
+
 /// @brief Result of a HostedSurfaceChannel operation.
 enum class HostedSurfaceStatus : foundation::uint8
 {
@@ -153,6 +177,9 @@ enum class HostedSurfaceStatus : foundation::uint8
     /// An argument is out of range: zero generation or extent, an image index or
     /// handle kind the platform does not use, or a non-increasing sequence.
     InvalidArgument,
+    /// The endpoint offers no transport for the handle kind (no Mach rendezvous, or
+    /// a target without file-descriptor passing).
+    Unavailable,
 };
 
 /// @brief Producer side of the hosted surface channel, owned by a hosted window.
@@ -174,7 +201,7 @@ public:
     /// with the description using `SCM_RIGHTS`.
     /// @param inoutImages Generation to publish. On Ok its handles are consumed and
     /// left empty; on any other result they stay owned by the caller.
-    /// @return Ok, Busy, Disconnected or InvalidArgument.
+    /// @return Ok, Busy, Disconnected, InvalidArgument or Unavailable.
     [[nodiscard]] virtual HostedSurfaceStatus PublishImages(HostedSurfaceImages& inoutImages) noexcept = 0;
 
     /// @brief Announce one completed frame.

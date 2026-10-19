@@ -247,7 +247,7 @@ endif()
 if(LUDUS_BUILD_TESTS AND LUDUS_PLATFORM_HOSTED_AVAILABLE)
     # Hosted-window channel: codec, endpoint session and window over socketpairs,
     # plus one end-to-end WindowManager run against a listening endpoint.
-    add_executable(ludus_platform_hosted_tests tests/hosted_window_tests.cpp)
+    add_executable(ludus_platform_hosted_tests tests/hosted_window_tests.cpp tests/hosted_surface_tests.cpp)
     target_include_directories(ludus_platform_hosted_tests PRIVATE src)
     target_compile_definitions(ludus_platform_hosted_tests PRIVATE LUDUS_PLATFORM_HOSTED=1)
     target_link_libraries(ludus_platform_hosted_tests PRIVATE

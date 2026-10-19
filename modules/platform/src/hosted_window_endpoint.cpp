@@ -173,6 +173,20 @@ HostedEndpointStatus HostedWindowEndpoint::Start(const StartInfo& info) noexcept
     initial.Scale = info.Scale;
     initial.Visibility = info.Visibility;
     state->Session.Configure(token, hosted::GetCurrentUserId(), initial);
+#    if defined(__APPLE__)
+    // IOSurface send rights reach the editor through a per-session Mach rendezvous.
+    hosted::RendezvousNonce nonce{};
+    if (TryFillSystemEntropy(nonce.GetData(), nonce.GetSize()) == false)
+    {
+        return HostedEndpointStatus::OutOfMemory;
+    }
+    // A zero nonce means "no rendezvous"; one set bit keeps a random nonce nonzero.
+    nonce[0] = static_cast<uint8>(nonce[0] | 1U);
+    if (state->Session.TryStartRendezvous(nonce) == false)
+    {
+        return HostedEndpointStatus::Unavailable;
+    }
+#    endif
     mState = foundation::Move(state);
     return HostedEndpointStatus::Ok;
 }
@@ -285,6 +299,17 @@ HostedEndpointStatus HostedWindowEndpoint::SendClose() noexcept
 {
     return mState.Get() == nullptr ? HostedEndpointStatus::InvalidState : mState->Session.SendClose();
 }
+
+bool HostedWindowEndpoint::TryTakeSurfaceEvent(HostedSurfaceEvent& outEvent) noexcept
+{
+    return mState.Get() != nullptr && mState->Session.TryTakeSurfaceEvent(outEvent) == true;
+}
+
+HostedEndpointStatus HostedWindowEndpoint::SendRelease(foundation::uint32 generation, foundation::uint32 image) noexcept
+{
+    return mState.Get() == nullptr ? HostedEndpointStatus::InvalidState
+                                   : mState->Session.SendRelease(generation, image);
+}
 #else
 // Targets without POSIX Unix sockets have no hosted-window channel.
 HostedEndpointStatus HostedWindowEndpoint::Start([[maybe_unused]] const StartInfo& info) noexcept
@@ -341,6 +366,15 @@ HostedEndpointStatus HostedWindowEndpoint::SendKey([[maybe_unused]] input::Key k
     return HostedEndpointStatus::InvalidState;
 }
 HostedEndpointStatus HostedWindowEndpoint::SendClose() noexcept
+{
+    return HostedEndpointStatus::InvalidState;
+}
+bool HostedWindowEndpoint::TryTakeSurfaceEvent([[maybe_unused]] HostedSurfaceEvent& outEvent) noexcept
+{
+    return false;
+}
+HostedEndpointStatus HostedWindowEndpoint::SendRelease([[maybe_unused]] foundation::uint32 generation,
+                                                       [[maybe_unused]] foundation::uint32 image) noexcept
 {
     return HostedEndpointStatus::InvalidState;
 }
