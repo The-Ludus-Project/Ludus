@@ -367,9 +367,11 @@ two-sided emission, black environment and empty analytic light list. Stable IDs
 are derived from legacy object and emissive-material order.
 
 The allocation-free `BakeChartLayout` helpers assign a four-texel tile to each
-triangle: a two-by-two interior plus one-texel replicated gutter. Producers
-duplicate indexed vertices before assigning chart UVs; source texture UVs remain
-separate. Sample without mipmaps. Distinct placements require independent baked
+triangle: a two-by-two interior plus one-texel replicated gutter. A corner's chart
+UV depends only on its triangle and corner number. Version 3 producers duplicate
+indexed vertices and store those UVs; version 4 consumers duplicate vertices when
+they need charts and assign the same UVs (see [indexed scene meshes](#indexed-scene-meshes-luscn-v4)).
+Source texture UVs remain separate. Sample without mipmaps. Distinct placements require independent baked
 irradiance because transforms and visibility differ. Chart allocation, mesh
 vertex expansion and irradiance storage must all fit their explicit budgets;
 packing does not establish a valid bake or perform transport. The first layout
@@ -406,3 +408,31 @@ qualify a valid indirect bake. Producers must supply actual nonoverlapping bake
 charts before requesting baked lighting. The source asset regression suite exercises
 runtime decoding after multi-import, save/reopen, relocated reconstruction and
 release publication, alongside the unchanged legacy byte goldens.
+
+### Indexed scene meshes (LUSCN v4)
+
+Version 3 stores one 40-byte vertex per triangle corner, because each vertex
+carries its own bake chart UV. Its 500,000-vertex ceiling therefore admits at
+most about 166,000 triangles, which cuts real scenes such as Sponza (262,000
+triangles over 192,000 vertices) roughly in half. Version 4 keeps every
+version 3 header, texture, material, object and lighting record, but mesh
+vertices are the 32-byte version 1/2 `VertexRecord` again and meshes stay
+indexed. Bake chart UVs are not stored. A consumer that needs charts expands
+each triangle corner and assigns `TryGetBakeChartUv(layout, triangle, corner)`,
+which yields the same per-triangle layout that version 3 stored. The decoder
+leaves `SceneMesh::BakeTexcoords` empty for version 4, and the static lighting
+bake derives its tiles from the indices.
+
+`MAX_VERTICES` still bounds unique vertices across the bundle and `MAX_INDICES`
+each mesh. Because consumers expand corners, version 4 adds
+`MAX_TOTAL_INDICES` (1,500,000) across all meshes: three times the corner count
+that version 3's vertex ceiling allowed. The best-effort
+importers and the Editor's World composition write version 4. The reference
+profile keeps its version 1/2/3 output and byte goldens.
+
+The scene asset pipeline splits a version 4 bundle into parts with build target
+`portable-rgba8-f32-le-v4`. Version 4 mesh parts have the legacy vertex layout.
+Assembly selects version 4 whenever any mesh part is version 4. Version 3 mesh
+parts then drop their stored bake UVs, since consumers derive identical
+coordinates, and legacy mesh parts are copied unchanged. Without a version 4
+part, assembly produces exactly the version 2 or 3 bytes it produced before.

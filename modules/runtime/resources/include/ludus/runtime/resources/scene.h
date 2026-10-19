@@ -33,11 +33,12 @@ struct SceneMaterial final
 /// Owned immutable CPU mesh arrays. Renderer installation copies these attributes.
 struct SceneMesh final
 {
-    foundation::Array<foundation::math::Vector3> Positions;     ///< Finite mesh-local positions.
-    foundation::Array<foundation::math::Vector3> Normals;       ///< Finite nonzero authored shading normals.
-    foundation::Array<foundation::math::Vector2> Texcoords;     ///< Finite mip-zero texture coordinates.
-    foundation::Array<foundation::math::Vector2> BakeTexcoords; ///< V3 normalized independent bake UVs; empty in v1/v2.
-    foundation::Array<uint32> Indices;                          ///< Triangle list, bounded by Positions count.
+    foundation::Array<foundation::math::Vector3> Positions; ///< Finite mesh-local positions.
+    foundation::Array<foundation::math::Vector3> Normals;   ///< Finite nonzero authored shading normals.
+    foundation::Array<foundation::math::Vector2> Texcoords; ///< Finite mip-zero texture coordinates.
+    foundation::Array<foundation::math::Vector2>
+        BakeTexcoords; ///< Stored v3 bake UVs; empty in v1/v2/v4, whose charts are implicit (see TryGetBakeChartUv).
+    foundation::Array<uint32> Indices; ///< Triangle list, bounded by Positions count.
 };
 /// Transient resolved binding; persist resource IDs in the level, never these indices.
 struct SceneObject final
@@ -90,9 +91,9 @@ struct SceneDefinition final
     foundation::math::Vector3 Target;           ///< Finite look-at target distinct from Eye.
     foundation::math::Vector3 Up;               ///< Camera up direction not parallel to its forward direction.
     float32 VerticalFov = 1;                    ///< Perspective vertical field of view in radians, in (0,pi).
-    /// Decode LUSCN01 versions one/two/three little-endian interchange, at most 64 MiB. No file I/O or source import.
-    /// Failure preserves output; allocation failures return OutOfMemory. The caller owns all
-    /// resulting arrays and must keep them immutable while any adapter/lease references them.
+    /// Decode LUSCN01 versions one through four little-endian interchange, at most 64 MiB. No file I/O or source
+    /// import. Failure preserves output; allocation failures return OutOfMemory. The caller owns all resulting arrays
+    /// and must keep them immutable while any adapter/lease references them.
     [[nodiscard]] static Status Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept;
     /// Known owned array bytes, excluding allocator metadata and driver allocations.
     [[nodiscard]] uint64 Bytes() const noexcept;

@@ -28,4 +28,9 @@ inline constexpr usize MAX_TOTAL_TEXTURE_BYTES = usize{32} * 1024 * 1024;
 inline constexpr uint32 MAX_VERTICES = 500000;
 /// Most indices per mesh.
 inline constexpr uint32 MAX_INDICES = 1500000;
+/// Most indices combined across all meshes of a version 4 bundle. Version 4
+/// consumers expand every triangle corner to derive bake charts, so this bounds
+/// their expanded vertex count; version 3 stored those corners as vertices and
+/// MAX_VERTICES bounded them.
+inline constexpr uint32 MAX_TOTAL_INDICES = 1500000;
 } // namespace ludus::content::scene_format

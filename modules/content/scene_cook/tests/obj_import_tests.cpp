@@ -226,6 +226,21 @@ TEST_CASE("OBJ faces: fan triangulation, smoothing groups and degenerate corners
         REQUIRE(ReadWavefront("s 1\n" + std::string(quad), smooth, smoothLog) == Status::Ok);
         CHECK(smooth.Meshes[0].GetVertexCount() == 4);
     }
+    SECTION("explicit normals weld equal v/vt/vn corners whatever the smoothing group")
+    {
+        // Exporters often write vn without any s statement; the corners are still shared.
+        const std::string_view quad = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvn 0 0 1\n"
+                                      "f 1/1/1 2/1/1 3/1/1\nf 1/1/1 3/1/1 4/1/1\n";
+        for (const std::string_view prefix : {std::string_view(""), std::string_view("s off\n")})
+        {
+            SceneIr scene;
+            DiagnosticLog log;
+            REQUIRE(ReadWavefront(std::string(prefix) + std::string(quad), scene, log) == Status::Ok);
+            CHECK(scene.Meshes[0].GetVertexCount() == 4);
+            CHECK(scene.Meshes[0].Indices.GetSize() == 6);
+            CHECK(scene.Meshes[0].Normals.GetSize() == usize{4} * 3);
+        }
+    }
     SECTION("repeated positions are removed and reported")
     {
         SceneIr scene;
