@@ -193,10 +193,10 @@ bool LoadWorldDemoScene(const WorldDocument& document, RenderScene& outScene, QS
         quad.Indices.append(index);
     }
     candidate.Meshes.append(quad);
-    // Extract emits collision boxes, then scatter, then actors in creation order. An unticked
-    // world has every actor alive, so ordering the recipes the same way maps each draw back to
-    // its World entity by label.
-    if (count < level.CollisionCount + level.EntityCount)
+    // Extract emits the floor, collision boxes, scatter, then actors in creation order. An
+    // unticked world has every actor alive, so ordering the recipes the same way maps each draw
+    // back to its World entity by label. The floor spans the settings entity's bounds.
+    if (count < world_demo::ROOM_FLOOR_DRAWS + level.CollisionCount + level.EntityCount)
     {
         outError = QStringLiteral("The World demo's first frame is missing collision or actor draws.");
         return false;
@@ -214,21 +214,39 @@ bool LoadWorldDemoScene(const WorldDocument& document, RenderScene& outScene, QS
                          return registry.GetCreationSequence(world.FindAuthored(level.Entities[first].Id.View())) <
                                 registry.GetCreationSequence(world.FindAuthored(level.Entities[second].Id.View()));
                      });
+    QString settingsKey;
+    for (const QJsonValue& value : document.Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject entity = value.toObject();
+        if (entity.value(QStringLiteral("components")).toObject().contains(QStringLiteral("settings")) == true)
+        {
+            settingsKey = document.GetEntityKey(entity);
+        }
+    }
+    const foundation::usize collisionEnd = world_demo::ROOM_FLOOR_DRAWS + level.CollisionCount;
     foundation::math::Vector3 low{};
     foundation::math::Vector3 high{};
     bool hasBounds = false;
     for (foundation::usize index = 0; index < count; ++index)
     {
         PreviewObject object;
-        if (index < level.CollisionCount)
+        if (index < world_demo::ROOM_FLOOR_DRAWS)
         {
-            object.Name = Text(level.Collision[index].Id);
+            object.Id = settingsKey;
+            object.Name = QStringLiteral("Room floor");
+        }
+        else if (index < collisionEnd)
+        {
+            object.Name = Text(level.Collision[index - world_demo::ROOM_FLOOR_DRAWS].Id);
         }
         else if (index >= scatterEnd)
         {
             object.Name = Text(level.Entities[actorRecipes[index - scatterEnd]].Id);
         }
-        object.Id = object.Name.isEmpty() == true ? QString() : document.FindEntityKey(object.Name);
+        if (index >= world_demo::ROOM_FLOOR_DRAWS && object.Name.isEmpty() == false)
+        {
+            object.Id = document.FindEntityKey(object.Name);
+        }
         object.Transform = items[index].Transform;
         object.Tint = items[index].Material.Color;
         for (const foundation::math::Vector3& position : world_demo::UNIT_QUAD_POSITIONS)

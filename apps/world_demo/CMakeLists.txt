@@ -103,7 +103,8 @@ if(LUDUS_BUILD_WORLD_DEMO)
     target_include_directories(ludus_world_frame_renderer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(ludus_world_frame_renderer PUBLIC ludus_world_render_items Ludus::GraphicsRenderer Ludus::GraphicsRhi)
     ludus_apply_project_defaults(ludus_world_frame_renderer)
-    ludus_compile_renderer_shaders(TARGET ludus_world_frame_renderer SHADERS renderer_flat renderer_composite)
+    ludus_compile_renderer_shaders(TARGET ludus_world_frame_renderer SHADERS
+        renderer_flat renderer_composite renderer_output renderer_shadow)
     if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         # Draws a real extraction on a headless device and reads the pixels back.
         add_executable(ludus_world_frame_renderer_tests tests/frame_renderer_tests.cpp)

@@ -1136,11 +1136,10 @@ Discard re-extract the frame. Pending or invalid fields keep the last drawable
 image. The Renderer tab's render-graph preview attaches to this viewport as it
 does for any World.
 
-The viewport displays the Renderer's tone-mapped, sRGB-encoded image of the
-level's linear material colours over the editor's black clear colour. The
-standalone player writes the same colour values to its surface unchanged, over a
-dark blue floor. Geometry, positions and draw order match, but colours do not
-yet: the player is orange in the game and a desaturated olive in the viewport.
+The viewport and the standalone player both present through the Renderer's
+`RasterViewport`, so they show the same pixels: the level's linear material
+colours, tone-mapped and sRGB-encoded once, with the room floor as the first draw
+and the Renderer's black clear outside the level bounds.
 
 There is no separate authoring window and no keyboard transform gesture. Edit
 transforms in the World inspector, as for every other World. Viewport picking and
