@@ -7,9 +7,10 @@
 #include <filesystem>
 #include <fstream>
 #include <span>
-#include <stdlib.h> // mkdtemp (POSIX).
+#include <stdlib.h>
 #include <string>
 #include <string_view>
+#include <unistd.h> // mkdtemp (POSIX; <stdlib.h> alone does not declare it under strict C++23 on Darwin).
 
 #include <ludus/foundation/base/types.h>
 
