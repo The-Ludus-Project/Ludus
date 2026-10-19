@@ -84,6 +84,7 @@ public:
     [[nodiscard]] bool CookRuntime();
     void CancelJob();
     [[nodiscard]] bool IsJobActive() const;
+    /// Explicitly opt into advanced shader path overrides; two empty paths restore project detection.
     void SetBuildTools(const QString& helper, const QString& compiler);
     /// Publish a finished job result. Results for another request, project epoch or a
     /// closed document are ignored, so stale jobs never replace current diagnostics.
@@ -208,6 +209,8 @@ private:
     QLineEdit* mValidator;
     QLineEdit* mSpirvCross;
     QLineEdit* mWorkerSocket;
+    QCheckBox* mOverrideBuildTools;
+    QLabel* mBuildToolsStatus;
     QCheckBox* mLivePreview;
     RenderGraphLiveBuild mLiveBuild;
     QListWidget* mDiagnostics;

@@ -13,17 +13,20 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLineEdit>
 #include <QPixmap>
 #include <QPoint>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -109,7 +112,7 @@ QString FindPython()
 }
 
 /// Run the installed CLI exactly as a user would, for equivalence with the editor job.
-QByteArray RunCli(const QString& python, const QStringList& arguments)
+QByteArray RunToolCli(const QString& python, const QStringList& arguments)
 {
     QProcess process;
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
@@ -117,13 +120,30 @@ QByteArray RunCli(const QString& python, const QStringList& arguments)
     environment.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
     process.setProcessEnvironment(environment);
     process.start(python,
-                  QStringList{QStringLiteral("-m"),
-                              QStringLiteral("ludus_tools"),
-                              QStringLiteral("--json"),
-                              QStringLiteral("render-graph")} +
+                  QStringList{QStringLiteral("-m"), QStringLiteral("ludus_tools"), QStringLiteral("--json")} +
                       arguments);
     REQUIRE(process.waitForFinished(JOB_TIMEOUT_MILLISECONDS) == true);
     return process.readAllStandardOutput();
+}
+
+QByteArray RunCli(const QString& python, const QStringList& arguments)
+{
+    return RunToolCli(python, QStringList{QStringLiteral("render-graph")} + arguments);
+}
+
+void MakeShaderHelper(const QString& directory)
+{
+    const QDir helper(directory);
+    for (const QString& file : {QStringLiteral("cmake/shaders/compile_shader.py"),
+                                QStringLiteral("cmake/shaders/compile_raster.py"),
+                                QStringLiteral("cmake/shaders/compile_graph_stage.py"),
+                                QStringLiteral("cmake/shaders/native_worker.py"),
+                                QStringLiteral("config/shader_toolchain.json"),
+                                QStringLiteral("config/spirv_cross_toolchain.json")})
+    {
+        WriteFile(helper.filePath(QFileInfo(file).fileName()),
+                  ReadFile(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/") + file));
+    }
 }
 } // namespace
 
@@ -177,8 +197,6 @@ TEST_CASE("Renderer creates a complete project-owned graph from its empty state"
     CHECK(previewOrNull->isEnabled() == true);
     CHECK(workspace.GetStatusText().contains(QStringLiteral("Build & Preview")) == true);
     workspace.SetBuildTools({}, {});
-    CHECK(workspace.BuildAndPreview() == false);
-    CHECK(workspace.GetStatusText().contains(QStringLiteral("Build Settings")) == true);
     CHECK(workspace.IsJobActive() == false);
     QApplication::processEvents();
     CHECK(workspace.GetCanvas().width() >= MINIMUM_VISIBLE_CANVAS_WIDTH);
@@ -219,6 +237,66 @@ TEST_CASE("Renderer creation refuses linked graph directories and ignores cancel
     CHECK(creation.IsActive() == false);
     CHECK(created.count() == 0);
     CHECK(failed.count() == 0);
+}
+
+TEST_CASE("New Graph builds and cooks with the project's SDK without manual shader paths",
+          "[editor][render-graph][automatic-tools]")
+{
+    const QString python = FindPython();
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    if (python.isEmpty() == true || QFileInfo(compiler).isExecutable() == false)
+    {
+        SKIP("Prepared pinned Slang is required for the automatic build integration test");
+    }
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString sdk = QDir(root).filePath(QStringLiteral("selected-sdk"));
+    const QString manifest = QDir(sdk).filePath(QStringLiteral("share/Ludus/LudusSdkManifest.json"));
+    const QByteArray sdkIdentity = ReadFile(QStringLiteral(LUDUS_EDITOR_SDK_MANIFEST));
+    WriteFile(manifest, sdkIdentity);
+    MakeShaderHelper(QDir(sdk).filePath(QStringLiteral("lib/cmake/Ludus/shaders")));
+    const QString project = QDir(root).filePath(QStringLiteral("Game"));
+    const QByteArray created = RunToolCli(python,
+                                          {QStringLiteral("project"),
+                                           QStringLiteral("create"),
+                                           project,
+                                           QStringLiteral("--name"),
+                                           QStringLiteral("Game"),
+                                           QStringLiteral("--sdk"),
+                                           sdk});
+    INFO(created.toStdString());
+    REQUIRE(QJsonDocument::fromJson(created).object().contains(QStringLiteral("error")) == false);
+
+    QSettings preferences;
+    preferences.setValue(QStringLiteral("renderGraph/helper"), QStringLiteral("/stale/other-project/helper"));
+    preferences.setValue(QStringLiteral("renderGraph/compiler"), QStringLiteral("/stale/other-project/slangc"));
+    RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project, 1);
+    QCheckBox* overridesOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("renderGraphOverrideTools"));
+    QLineEdit* compilerOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("renderGraphCompiler"));
+    REQUIRE(overridesOrNull != nullptr);
+    REQUIRE(compilerOrNull != nullptr);
+    CHECK(overridesOrNull->isChecked() == false);
+    CHECK(compilerOrNull->text().isEmpty() == true);
+    CHECK(compilerOrNull->isEnabled() == false);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.CreateGraph(QStringLiteral("Automatic")) == true);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    const RenderGraphJobResult result = workspace.GetLastResult();
+    INFO(result.Code.toStdString() + ": " + result.Message.toStdString());
+    REQUIRE(result.IsSuccessful == true);
+    CHECK(result.Payload.value(QStringLiteral("toolchain")).toObject().value(QStringLiteral("sdk")).toString() == sdk);
+    CHECK(compilerOrNull->text() == compiler);
+    CHECK(overridesOrNull->isChecked() == false);
+    CHECK(QFileInfo(workspace.GetRuntimePackagePath()).isFile() == true);
+    CHECK(ReadFile(manifest) == sdkIdentity);
+    workspace.SetBuildTools(QStringLiteral("/advanced/helper"), QStringLiteral("/advanced/slangc"));
+    CHECK(overridesOrNull->isChecked() == true);
+    workspace.SetProject(root, 2);
+    CHECK(overridesOrNull->isChecked() == false);
+    CHECK(compilerOrNull->text().isEmpty() == true);
 }
 
 TEST_CASE("RG3 editor canonical JSON matches the CLI's saved graph bytes", "[editor][render-graph]")
@@ -437,16 +515,7 @@ TEST_CASE("RG3 a real compiler error opens the authored shader line", "[editor][
     const QString package = MakePackage(project);
     // The helper directory has the installed SDK layout: shader drivers beside their locks.
     const QDir helper(QDir(project.path()).filePath(QStringLiteral("sdk")));
-    for (const QString& file : {QStringLiteral("cmake/shaders/compile_shader.py"),
-                                QStringLiteral("cmake/shaders/compile_raster.py"),
-                                QStringLiteral("cmake/shaders/compile_graph_stage.py"),
-                                QStringLiteral("cmake/shaders/native_worker.py"),
-                                QStringLiteral("config/shader_toolchain.json"),
-                                QStringLiteral("config/spirv_cross_toolchain.json")})
-    {
-        WriteFile(helper.filePath(QFileInfo(file).fileName()),
-                  ReadFile(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/") + file));
-    }
+    MakeShaderHelper(helper.path());
     // An undefined identifier on line 3 of the authored color function.
     const QString color = QDir(package).filePath(QStringLiteral("main_shaders/color.slang"));
     QByteArray broken = ReadFile(color);

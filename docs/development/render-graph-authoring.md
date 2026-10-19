@@ -34,9 +34,9 @@ running viewport and never overwrites an existing graph folder. A failed creatio
 keeps the previously open draft. Graphs and shader sources belong to the game
 project; engine/SDK files are read-only inputs.
 
-Next, open a World viewport and choose **Build & Preview**. Set the installed SDK
-helper and pinned shader compiler in **Build Settings** when they have not been
-configured; SPIR-V profiles also require the validator. See
+Next, open a World viewport and choose **Build & Preview**. The editor detects the
+selected project's SDK shader helper and prepared shader compiler automatically;
+SPIR-V/GLSL dependencies are detected only when the graph declares those targets. See
 [editing and building](#edit-and-reload-graphs-rg3) and the
 [preview's supported rendering profile](#preview-a-cooked-generation).
 Creation and building do not change the game's selected runtime renderer.
@@ -709,10 +709,38 @@ ludus --json render-graph dump graphs/main.lurender.json --root graphs
 
 A result names the draft revision it checked; a later edit marks it as describing
 an older revision. Results from a cancelled job, an earlier request or another
-project are discarded. Build uses the **Build Settings** tab's SDK helper and
-pinned compiler paths (stored in editor preferences, never in the project) and
-publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
+project are discarded. Build resolves the saved project's current native profile
+through the same SDK resolver as ordinary project builds: a saved local SDK
+selection takes precedence over an installed locked SDK in the shared store.
+Its installed `lib/cmake/Ludus/shaders` directory supplies the shader helper and
+toolchain pins. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
+from the selected local setup preset or the editor's prepared shader tools.
+No path entry is needed for **New Graph → Build & Preview**. Loading and building
+do not download tools, repair the project or write into the engine/SDK.
+
+**Build Settings** displays the resolved paths after a successful build. Its
+**Override detected shader tools (advanced)** checkbox explicitly enables manual
+paths for an exceptional tool setup. Old editor-wide path preferences do not
+override project detection, and switching projects clears these overrides.
+Each automatic build resolves selection again, so SDK switches and repairs take
+effect without restarting the editor. Missing/incomplete SDKs or tools report a
+setup error; use **Project → Repair Project Setup**. A selection change during
+compilation/cooking rejects publication and retains the previous runtime.
+
+Build publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
 `out/render-graph/<graph>.lurgrt` from that build tree.
+
+The same automatic path is available to tooling without the editor:
+
+```bash
+ludus render-graph build graphs/Main/main.lushader.json out/graph-build \
+  --project /path/to/game --tooling-root /path/to/prepared/ludus \
+  --runtime-package out/graph.lurgrt
+```
+
+`--tooling-root` is unnecessary when the selected local preset records all required
+shader-tool paths. Explicit `--helper`/`--compiler` arguments remain supported for
+standalone packages. Pin/version, reflection and publication checks still apply.
 
 ### Mapped diagnostics
 

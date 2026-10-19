@@ -51,11 +51,7 @@ constexpr int32 INITIAL_CANVAS_WIDTH = 640;
 constexpr int32 INITIAL_INSPECTOR_WIDTH = 400;
 constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
-const QString HELPER_KEY = QStringLiteral("renderGraph/helper");
-const QString COMPILER_KEY = QStringLiteral("renderGraph/compiler");
-const QString VALIDATOR_KEY = QStringLiteral("renderGraph/validator");
 const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
-const QString SPIRV_CROSS_KEY = QStringLiteral("renderGraph/spirvCross");
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Preview service period, about one 60 Hz display refresh.
 constexpr int32 PREVIEW_INTERVAL_MILLISECONDS = 16;
@@ -261,9 +257,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mEdgeTo(new QLineEdit(this)), mSourceFile(new QComboBox(this)), mSource(new QPlainTextEdit(this)),
       mPlan(new QPlainTextEdit(this)), mHelper(new QLineEdit(this)), mCompiler(new QLineEdit(this)),
       mValidator(new QLineEdit(this)), mSpirvCross(new QLineEdit(this)), mWorkerSocket(new QLineEdit(this)),
-      mLivePreview(new QCheckBox(QStringLiteral("Live Preview"), this)), mDiagnostics(new QListWidget(this)),
-      mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)), mPreviewImage(new PreviewImage(this)),
-      mPreviewStatus(new QLabel(this)), mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), this))
+      mOverrideBuildTools(new QCheckBox(QStringLiteral("Override detected shader tools (advanced)"), this)),
+      mBuildToolsStatus(new QLabel(this)), mLivePreview(new QCheckBox(QStringLiteral("Live Preview"), this)),
+      mDiagnostics(new QListWidget(this)), mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)),
+      mPreviewImage(new PreviewImage(this)), mPreviewStatus(new QLabel(this)),
+      mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), this))
 {
     setObjectName(QStringLiteral("rendererWorkspace"));
     mNewGraph->setObjectName(QStringLiteral("renderGraphNew"));
@@ -363,18 +361,34 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QWidget* buildPage = new QWidget(this);
     QFormLayout* buildLayout = new QFormLayout(buildPage);
     QSettings settings;
-    mHelper->setText(settings.value(HELPER_KEY).toString());
-    mCompiler->setText(settings.value(COMPILER_KEY).toString());
-    mValidator->setText(settings.value(VALIDATOR_KEY).toString());
-    mSpirvCross->setText(settings.value(SPIRV_CROSS_KEY).toString());
     mWorkerSocket->setText(
         settings.value(WORKER_SOCKET_KEY, qEnvironmentVariable("LUDUS_SHADER_WORKER_SOCKET")).toString());
     mWorkerSocket->setObjectName(QStringLiteral("renderGraphWorkerSocket"));
+    mHelper->setObjectName(QStringLiteral("renderGraphShaderHelper"));
+    mCompiler->setObjectName(QStringLiteral("renderGraphCompiler"));
     mWorkerSocket->setPlaceholderText(QStringLiteral("existing ludus-shader-worker socket"));
-    mHelper->setPlaceholderText(QStringLiteral("<sdk>/lib/cmake/Ludus/shaders"));
-    mCompiler->setPlaceholderText(QStringLiteral("pinned slangc"));
-    mValidator->setPlaceholderText(QStringLiteral("pinned spirv-val (SPIR-V/GLSL profiles)"));
-    mSpirvCross->setPlaceholderText(QStringLiteral("verified spirv-cross (GLSL profile)"));
+    mHelper->setPlaceholderText(QStringLiteral("Automatic from this project's selected SDK"));
+    mCompiler->setPlaceholderText(QStringLiteral("Automatic from project setup / prepared editor tools"));
+    mValidator->setPlaceholderText(QStringLiteral("Automatic when SPIR-V/GLSL is selected"));
+    mSpirvCross->setPlaceholderText(QStringLiteral("Automatic when GLSL is selected"));
+    mOverrideBuildTools->setObjectName(QStringLiteral("renderGraphOverrideTools"));
+    mBuildToolsStatus->setObjectName(QStringLiteral("renderGraphBuildToolsStatus"));
+    mBuildToolsStatus->setWordWrap(true);
+    mBuildToolsStatus->setText(
+        QStringLiteral("Builds automatically use this project's selected SDK and prepared shader "
+                       "tools. Resolved paths are shown after a successful build."));
+    buildLayout->addRow(mBuildToolsStatus);
+    buildLayout->addRow(mOverrideBuildTools);
+    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+    {
+        tool->setEnabled(false);
+    }
+    connect(mOverrideBuildTools, &QCheckBox::toggled, this, [this](bool isEnabled) {
+        for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+        {
+            tool->setEnabled(isEnabled);
+        }
+    });
     buildLayout->addRow(QStringLiteral("SDK shader helper"), mHelper);
     buildLayout->addRow(QStringLiteral("Slang compiler"), mCompiler);
     buildLayout->addRow(QStringLiteral("SPIR-V validator"), mValidator);
@@ -594,17 +608,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mDiagnostics, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
         static_cast<void>(ActivateDiagnostic(mDiagnostics->row(item)));
     });
-    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross, mWorkerSocket})
-    {
-        connect(tool, &QLineEdit::editingFinished, this, [this]() {
-            QSettings preferences;
-            preferences.setValue(HELPER_KEY, mHelper->text());
-            preferences.setValue(COMPILER_KEY, mCompiler->text());
-            preferences.setValue(VALIDATOR_KEY, mValidator->text());
-            preferences.setValue(SPIRV_CROSS_KEY, mSpirvCross->text());
-            preferences.setValue(WORKER_SOCKET_KEY, mWorkerSocket->text());
-        });
-    }
+    connect(mWorkerSocket, &QLineEdit::editingFinished, this, [this]() {
+        QSettings preferences;
+        preferences.setValue(WORKER_SOCKET_KEY, mWorkerSocket->text());
+    });
     connect(&mJob, &RenderGraphJob::Finished, this, &RendererWorkspace::AcceptResult);
     renderStatus();
     renderPreview();
@@ -628,6 +635,14 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     }
     CancelJob();
     mProjectRoot = canonicalRoot;
+    mOverrideBuildTools->setChecked(false);
+    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+    {
+        tool->clear();
+    }
+    mBuildToolsStatus->setText(
+        QStringLiteral("Builds automatically use this project's selected SDK and prepared shader "
+                       "tools. Resolved paths are shown after a successful build."));
     mDocument.Reset();
     mSelectedFile.clear();
     mSelectedConfiguration.clear();
@@ -877,26 +892,33 @@ bool RendererWorkspace::startBuild(bool shouldPreview)
             QStringLiteral("Create %1 with `ludus render-graph new-build` before building.").arg(manifestFile()));
         return false;
     }
-    if (mHelper->text().trimmed().isEmpty() == true || mCompiler->text().trimmed().isEmpty() == true)
+    const bool shouldOverride = mOverrideBuildTools->isChecked();
+    if (shouldOverride == true &&
+        (mHelper->text().trimmed().isEmpty() == true || mCompiler->text().trimmed().isEmpty() == true))
     {
         mTabs->setCurrentWidget(mHelper->parentWidget());
-        mStatus->setText(QStringLiteral("Choose your installed SDK shader helper and Slang compiler in Build Settings, "
-                                        "then choose Build & Preview. These tools are read-only build inputs."));
+        mStatus->setText(QStringLiteral("Supply both advanced overrides, or disable Override detected shader tools "
+                                        "to use the project's SDK automatically."));
         return false;
     }
     QStringList arguments{QStringLiteral("{snapshot}/") + manifestFile(),
                           buildDirectory(),
                           QStringLiteral("--root"),
-                          QStringLiteral("{snapshot}"),
-                          QStringLiteral("--helper"),
-                          mHelper->text(),
-                          QStringLiteral("--compiler"),
-                          mCompiler->text()};
-    if (mValidator->text().isEmpty() == false)
+                          QStringLiteral("{snapshot}")};
+    if (shouldOverride == true)
+    {
+        arguments += {QStringLiteral("--helper"), mHelper->text(), QStringLiteral("--compiler"), mCompiler->text()};
+    }
+    else
+    {
+        arguments +=
+            {QStringLiteral("--project"), mProjectRoot, QStringLiteral("--tooling-root"), mTooling.ToolingRoot};
+    }
+    if (shouldOverride == true && mValidator->text().isEmpty() == false)
     {
         arguments += {QStringLiteral("--validator"), mValidator->text()};
     }
-    if (mSpirvCross->text().isEmpty() == false)
+    if (shouldOverride == true && mSpirvCross->text().isEmpty() == false)
     {
         arguments += {QStringLiteral("--spirv-cross"), mSpirvCross->text()};
     }
@@ -947,6 +969,7 @@ bool RendererWorkspace::IsJobActive() const
 
 void RendererWorkspace::SetBuildTools(const QString& helper, const QString& compiler)
 {
+    mOverrideBuildTools->setChecked(helper.isEmpty() == false || compiler.isEmpty() == false);
     mHelper->setText(helper);
     mCompiler->setText(compiler);
 }
@@ -970,6 +993,17 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     mDiagnostics->clear();
     if (result.IsSuccessful == true)
     {
+        const QJsonObject toolchain = result.Payload.value(QStringLiteral("toolchain")).toObject();
+        if (toolchain.isEmpty() == false && mOverrideBuildTools->isChecked() == false)
+        {
+            mHelper->setText(toolchain.value(QStringLiteral("helper")).toString());
+            mCompiler->setText(toolchain.value(QStringLiteral("compiler")).toString());
+            mValidator->setText(toolchain.value(QStringLiteral("validator")).toString());
+            mSpirvCross->setText(toolchain.value(QStringLiteral("spirv_cross")).toString());
+            mBuildToolsStatus->setText(QStringLiteral("Last build SDK: %1\nSelection and shader tools are detected "
+                                                      "again for each build.")
+                                           .arg(toolchain.value(QStringLiteral("sdk")).toString()));
+        }
         const QJsonObject plan = result.Payload.value(QStringLiteral("plan")).toObject();
         if (result.Request.Action == QStringLiteral("dump"))
         {
@@ -1342,6 +1376,11 @@ void RendererWorkspace::updateActions()
     mBuild->setEnabled(canBuild);
     mBuildPreview->setEnabled(canBuild);
     mLivePreview->setEnabled(canBuild);
+    mOverrideBuildTools->setEnabled(isBusy == false);
+    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+    {
+        tool->setEnabled(isBusy == false && mOverrideBuildTools->isChecked() == true);
+    }
     mCook->setEnabled(canBuild);
     mCancel->setEnabled(isBusy);
     mPreviewButton->setEnabled(canBuild == true && mPreviewOrNull != nullptr);

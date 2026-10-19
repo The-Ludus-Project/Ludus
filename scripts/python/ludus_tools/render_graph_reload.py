@@ -45,9 +45,11 @@ def rebuild(manifest, output, runtime_package, *, configuration='Default', **opt
     # acquiring the builder's own output lock. Two reload publishers cannot race.
     with BuildTreeLock(destination.parent / ('.' + destination.name + '.publication')):
         report = build.build_package(manifest, output, **options)
+        build.checkpoint(options.get('cancel'))
         staged = output / 'runtime-publication' / 'candidate.lurgrt'
         cooked = execution.cook_runtime(report['package'], staged, configuration=configuration)
         build.require(fingerprint(root) == before, 'Stale', 'reload', 'sources changed before runtime publication')
+        build.checkpoint(options.get('cancel'))
         build.atomic(destination, staged.read_bytes())
         cooked['runtime_package'] = str(destination)
         return {'build': report, 'runtime': cooked}
