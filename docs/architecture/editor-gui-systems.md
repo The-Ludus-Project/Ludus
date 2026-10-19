@@ -71,9 +71,9 @@ would add.
 The native editor follows Visual Studio's arrangement, which users of game and
 engine tools already know: a central **document well** and **tool windows**
 docked around it ([user guide](../development/editor-workspace.md#workspace-layout)).
-Thanks to Microsoft, *Customize window layouts and personalize document tabs in
-Visual Studio* (Visual Studio documentation, "Tab groups" and "Arrange windows"),
-for the tab-group, tool-window and reset-layout model.
+Thanks to Microsoft for *Customize window layouts and personalize document tabs
+in Visual Studio* (Visual Studio documentation, "Tab groups" and "Arrange
+windows"); its tab-group, tool-window and reset-layout model informs this shell.
 [Microsoft documentation](https://learn.microsoft.com/visualstudio/ide/customizing-window-layouts-in-visual-studio).
 
 | Part | Qt Widgets mechanism | Owner and contract |
