@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include "internal/document_history.h"
@@ -64,6 +65,19 @@ public:
     /// hidden or `out` directories). rootGraph is package-relative. Failure keeps
     /// the previous document.
     [[nodiscard]] RenderGraphDocumentStatus Load(const QString& packageRoot, const QString& rootGraph);
+    /// Load a read-only package that is not part of the project yet, such as the editor's
+    /// built-in default graph. sourceRoot may be a Qt resource directory and is never
+    /// written. destinationRoot (absolute) is where Save creates the package; the package
+    /// root reports it from the start, so builds and messages name the future location.
+    /// Edits are ordinary undoable drafts; undoing them returns to the clean built-in.
+    /// Failure keeps the previous document.
+    [[nodiscard]] RenderGraphDocumentStatus
+    LoadBuiltIn(const QString& sourceRoot, const QString& rootGraph, const QString& destinationRoot);
+    /// True while the saved state is a built-in package that Save has not created yet.
+    [[nodiscard]] LUDUS_INLINE bool IsBuiltIn() const noexcept
+    {
+        return mIsBuiltIn;
+    }
     void Reset();
     [[nodiscard]] bool IsLoaded() const noexcept
     {
@@ -128,6 +142,9 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus WriteSnapshot(const QString& directory) const;
     /// Replace each dirty file atomically after checking that disk still holds the saved bytes.
     /// Conflict or Locked writes nothing. A failed replacement keeps the remaining files dirty.
+    /// For a built-in document, Save creates every file below the destination, even when
+    /// nothing was edited, and then becomes an ordinary project package. Any existing file
+    /// there is a Conflict; a failed creation removes the files it wrote and stays built-in.
     [[nodiscard]] RenderGraphDocumentStatus Save(QStringList& outSavedFiles);
 
 private:
@@ -138,11 +155,15 @@ private:
                                                               EditFunction edit,
                                                               bool shouldMerge);
     [[nodiscard]] RenderGraphDocumentStatus commit(const RenderGraphSnapshot& candidate, bool shouldMerge);
+    [[nodiscard]] RenderGraphDocumentStatus createPackage(QStringList& outSavedFiles);
+    void
+    adopt(const QString& packageRoot, const QString& rootGraph, const RenderGraphSnapshot& snapshot, bool isBuiltIn);
     QString mPackageRoot;
     QString mRootGraph;
     RenderGraphSnapshot mSaved;
     RenderGraphSnapshot mDraft;
     QString mLastMove;
+    bool mIsBuiltIn = false;
     DocumentHistory<RenderGraphSnapshot, HISTORY_CAPACITY> mHistory;
 };
 } // namespace ludus::editor

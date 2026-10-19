@@ -11,6 +11,12 @@ on Windows and macOS. Work stealing is a later, measured milestone. This design 
 [profiling](profiling-final.md). It does not claim universal optimality or AAA
 scale performance from a small synthetic benchmark.
 
+The native RHI uses a separate bounded `WorkerQueue` for blocking driver
+preparation. This does not move facade ownership or rendering into `JobSystem`:
+worker tasks see immutable captures, and completion callbacks publish on the RHI
+owner. The dedicated lane never helps on the caller. See its
+[usage and lifetime contract](../modules/foundation/threading.md#dedicated-worker-and-owner-completions).
+
 ## Initial proposal, before the reference review
 
 Use tasks over explicit inputs instead of a thread for every engine subsystem.

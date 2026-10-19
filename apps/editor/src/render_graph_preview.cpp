@@ -2,6 +2,7 @@
 
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
 
@@ -105,18 +106,39 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                        .arg(format::MAX_ITEMS);
         return false;
     }
+    // Cooked (imported or merged) scenes keep geometry only in their immutable decoded
+    // definition, whose mesh table parallels Meshes; authored scenes carry it in PreviewMesh.
+    const resources::SceneDefinition* definitionOrNull = scene.Definition.Get();
+    if (definitionOrNull != nullptr && definitionOrNull->Meshes.GetSize() != static_cast<usize>(scene.Meshes.size()))
+    {
+        outError = QStringLiteral("The World's cooked scene does not match its mesh table.");
+        return false;
+    }
     RenderGraphExtraction extraction;
-    // Share the scene's geometry storage; borrowed pointers below stay valid while it lives.
+    // Share the scene's geometry storage (including the definition's reference count);
+    // borrowed pointers below stay valid while the extraction lives.
     extraction.Scene = scene;
     extraction.View = view;
     extraction.Revision = revision;
-    for (const PreviewMesh& mesh : std::as_const(extraction.Scene.Meshes))
+    for (qsizetype i = 0; i < extraction.Scene.Meshes.size(); ++i)
     {
         renderer::RenderGraphMesh record;
-        record.Geometry.Positions = mesh.Positions.constData();
-        record.Geometry.VertexCount = static_cast<usize>(mesh.Positions.size());
-        record.Geometry.Indices = mesh.Indices.constData();
-        record.Geometry.IndexCount = static_cast<usize>(mesh.Indices.size());
+        if (definitionOrNull != nullptr)
+        {
+            const resources::SceneMesh& mesh = definitionOrNull->Meshes[static_cast<usize>(i)];
+            record.Geometry.Positions = mesh.Positions.GetData();
+            record.Geometry.VertexCount = mesh.Positions.GetSize();
+            record.Geometry.Indices = mesh.Indices.GetData();
+            record.Geometry.IndexCount = mesh.Indices.GetSize();
+        }
+        else
+        {
+            const PreviewMesh& mesh = extraction.Scene.Meshes.at(i);
+            record.Geometry.Positions = mesh.Positions.constData();
+            record.Geometry.VertexCount = static_cast<usize>(mesh.Positions.size());
+            record.Geometry.Indices = mesh.Indices.constData();
+            record.Geometry.IndexCount = static_cast<usize>(mesh.Indices.size());
+        }
         record.Layout = renderer::RenderGraphLayout::Static;
         extraction.Meshes.append(record);
     }
@@ -131,7 +153,8 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         math::Vector4 color = object.Tint;
         if (object.Surface >= 0 && object.Surface < extraction.Scene.Surfaces.size())
         {
-            const math::Vector4& tint = extraction.Scene.Surfaces.at(object.Surface).Tint;
+            // The static profile samples no textures; the surface's flat approximation stands in.
+            const math::Vector4& tint = extraction.Scene.Surfaces.at(object.Surface).FlatTint;
             color = {color.X * tint.X, color.Y * tint.Y, color.Z * tint.Z, color.W * tint.W};
         }
         renderer::RenderGraphItem item;
@@ -143,7 +166,8 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
             color.W < OPAQUE_ALPHA ? renderer::RenderGraphMaterial::Transparent : renderer::RenderGraphMaterial::Opaque;
         extraction.Items.append(item);
     }
-    outExtraction = extraction;
+    // Moving keeps the shared geometry storage the borrowed pointers name.
+    outExtraction = Move(extraction);
     return true;
 }
 

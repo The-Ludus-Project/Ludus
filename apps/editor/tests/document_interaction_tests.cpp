@@ -1,5 +1,6 @@
 #include "internal/configuration_workspace.h"
 #include "internal/controller.h"
+#include "internal/document_well.h"
 #include "internal/main_window.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -12,7 +13,6 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -240,9 +240,7 @@ TEST_CASE("Save in Configuration preserves a different project's unsaved setting
     const auto preferences = directory.filePath(QStringLiteral("preferences.json"));
     REQUIRE(configuration->SavePreferences(preferences));
     REQUIRE(configuration->Edit("host.headless", QStringLiteral("true")));
-    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
-    REQUIRE(tabs != nullptr);
-    tabs->setCurrentWidget(configuration);
+    REQUIRE(window.GetDocumentWell().OpenDocument(configuration) == true);
     Action(window, "document.save")->trigger();
     CHECK_FALSE(configuration->Dirty());
     CHECK(controller.State().Dirty());

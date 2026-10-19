@@ -725,23 +725,31 @@ def _root_asset(output):
         {"id": "Default", "inputs": [], "outputs": [], "nodes": nodes, "edges": edges}]}
 
 
-def new_workspace(destination, *, output="presentation"):
+def new_workspace(destination, *, output="presentation", renderer_static=False, profiles=None):
     """Save a reusable raster asset and one example root in a new directory.
 
     output is presentation, offscreen or depth. Creation never overwrites an
     existing directory; staged files are validated before publication and cleaned
     up on failure. This is graph source creation, not game-project/SDK setup.
+    renderer_static also stages the Renderer-compatible manifest and editable
+    shader functions for explicitly selected profiles in the same transaction.
     Returns the saved root path; performs no downloads, shader builds or GPU work.
     """
     from .templates import TemplateFile, stage_project, publish_project, discard_staging
 
     _enum(output, ("presentation", "offscreen", "depth"), "new graph")
+    _require(renderer_static == (profiles is not None), "Schema", "new graph",
+             "Renderer sources require --renderer-static and explicit --profiles together")
     destination = Path(destination).absolute()
     files = [TemplateFile("rasterize.lurender.json", canonical_asset(_raster_asset()).decode()),
              TemplateFile("main.lurender.json", canonical_asset(_root_asset(output)).decode())]
     staged = stage_project(files, destination)
     try:
         compile_graph(staged.staging / "main.lurender.json")
+        if renderer_static:
+            from .render_graph_build import new_build_sources
+            new_build_sources(staged.staging / "main.lurender.json",
+                              renderer_static=True, profiles=profiles)
         publish_project(staged)
     except BaseException:
         discard_staging(staged)

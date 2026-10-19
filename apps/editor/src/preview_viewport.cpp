@@ -1,6 +1,6 @@
 #include "internal/preview_viewport.h"
-#include "internal/preview_bake.h"
 #include "internal/preview_shading.h"
+#include "internal/viewport_statistics.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -8,6 +8,8 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QFontDatabase>
+#include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -26,6 +28,7 @@
 #    include <QLibraryInfo>
 #    include <QPainter>
 #    include <QQuickItem>
+#    include <QQuickPaintedItem>
 #    include <QQuickWindow>
 #    include <QSGSimpleTextureNode>
 #    include <QSGTexture>
@@ -42,6 +45,86 @@ namespace rhi = graphics::rhi;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 namespace
 {
+/// Inset of the statistics panel from the viewport's top-left corner, in logical pixels.
+constexpr qreal STATISTICS_MARGIN = 8;
+/// Padding between the statistics panel edge and its text, in logical pixels.
+constexpr qreal STATISTICS_PADDING = 6;
+/// Corner radius of the statistics panel, in logical pixels.
+constexpr qreal STATISTICS_CORNER_RADIUS = 4;
+/// Translucent dark panel behind the statistics text, kept readable over any debug view.
+constexpr QRgb STATISTICS_BACKGROUND = qRgba(9, 12, 15, 190);
+/// Statistics text colour.
+constexpr QRgb STATISTICS_TEXT = qRgb(232, 236, 240);
+/// Stacking order above the frame item, so clearFrames recreating that item never covers it.
+constexpr qreal STATISTICS_Z = 1;
+QFont GetStatisticsFont()
+{
+    return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+}
+/// Size of the padded statistics panel for text, in logical pixels; empty text has no panel.
+QSizeF MeasureStatistics(const QString& text)
+{
+    if (text.isEmpty() == true)
+    {
+        return {};
+    }
+    const QRectF bounds = QFontMetricsF(GetStatisticsFont()).boundingRect(QRectF(), Qt::AlignLeft, text);
+    return {bounds.width() + 2 * STATISTICS_PADDING, bounds.height() + 2 * STATISTICS_PADDING};
+}
+/// Paint the statistics panel with its top-left corner at origin.
+void PaintStatistics(QPainter& inoutPainter, const QString& text, QPointF origin)
+{
+    if (text.isEmpty() == true)
+    {
+        return;
+    }
+    const QRectF panel(origin, MeasureStatistics(text));
+    inoutPainter.save();
+    inoutPainter.setRenderHint(QPainter::Antialiasing);
+    inoutPainter.setPen(Qt::NoPen);
+    inoutPainter.setBrush(QColor::fromRgba(STATISTICS_BACKGROUND));
+    inoutPainter.drawRoundedRect(panel, STATISTICS_CORNER_RADIUS, STATISTICS_CORNER_RADIUS);
+    inoutPainter.setFont(GetStatisticsFont());
+    inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
+    inoutPainter.drawText(
+        panel.adjusted(STATISTICS_PADDING, STATISTICS_PADDING, -STATISTICS_PADDING, -STATISTICS_PADDING),
+        Qt::AlignLeft | Qt::AlignTop,
+        text);
+    inoutPainter.restore();
+}
+/// Statistics overlay inside the viewport's QQuickWindow. A sibling QWidget would sit under the
+/// native window that createWindowContainer embeds on macOS and Linux; a scene-graph item is
+/// composited by Qt Quick in the same Metal/Vulkan pass as the frame, so it is always on top.
+class StatisticsItem final : public QQuickPaintedItem
+{
+public:
+    explicit StatisticsItem(QQuickItem* parent) : QQuickPaintedItem(parent)
+    {
+        setObjectName(QStringLiteral("viewportStatisticsOverlay"));
+        setZ(STATISTICS_Z);
+        setPosition({STATISTICS_MARGIN, STATISTICS_MARGIN});
+        setAntialiasing(true);
+        setVisible(false);
+    }
+    void SetText(const QString& text)
+    {
+        if (text == mText)
+        {
+            return;
+        }
+        mText = text;
+        setSize(MeasureStatistics(text));
+        setVisible(text.isEmpty() == false);
+        update();
+    }
+    void paint(QPainter* painter) override
+    {
+        PaintStatistics(*painter, mText, {0, 0});
+    }
+
+private:
+    QString mText;
+};
 /// Plain widget that paints the last complete CPU or offscreen frame, scaled to its rectangle.
 class FrameCanvas final : public QWidget
 {
@@ -58,6 +141,15 @@ public:
         mImage = image;
         update();
     }
+    /// Overlay text painted over the frame; empty hides the statistics panel.
+    void SetStatisticsText(const QString& text)
+    {
+        if (text != mStatisticsText)
+        {
+            mStatisticsText = text;
+            update();
+        }
+    }
     [[nodiscard]] const QImage& GetImage() const noexcept
     {
         return mImage;
@@ -73,10 +165,12 @@ protected:
             painter.setRenderHint(QPainter::SmoothPixmapTransform);
             painter.drawImage(rect(), mImage);
         }
+        PaintStatistics(painter, mStatisticsText, {STATISTICS_MARGIN, STATISTICS_MARGIN});
     }
 
 private:
     QImage mImage;
+    QString mStatisticsText;
 };
 #    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Service period for frame polling, about one 60 Hz display refresh.
@@ -107,6 +201,10 @@ struct PreviewViewport::State final
     QVBoxLayout* Layout = nullptr;
     QLabel* Message = nullptr;
     uint64 Presented = 0;
+    /// Statistics overlay text currently shown; empty while the overlay is off.
+    QString StatisticsText;
+    /// Browser fallback: the engine's DOM canvas covers Qt widgets, so text goes in the toolbar.
+    QLabel* StatisticsLabelOrNull = nullptr;
     bool IsAutomatic = true;
     bool CanShowFrames = true;
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -182,6 +280,7 @@ struct PreviewViewport::State final
         State& mState;
     };
     QQuickWindow* Window = nullptr;
+    StatisticsItem* StatisticsOrNull = nullptr;
     QWidget* Container = nullptr;
     FrameCanvas* CanvasOrNull = nullptr;
     OffscreenFrameReader Reader;
@@ -222,6 +321,17 @@ struct PreviewViewport::State final
     friend class PreviewViewport;
 
 private:
+    void applyStatistics()
+    {
+        if (StatisticsOrNull != nullptr)
+        {
+            StatisticsOrNull->SetText(StatisticsText);
+        }
+        if (CanvasOrNull != nullptr)
+        {
+            CanvasOrNull->SetStatisticsText(StatisticsText);
+        }
+    }
     void createItem()
     {
         Item = new ImageItem(*this, Window->contentItem());
@@ -230,7 +340,8 @@ private:
     void createCanvas()
     {
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
-        Layout->addWidget(CanvasOrNull);
+        CanvasOrNull->SetStatisticsText(StatisticsText);
+        Layout->addWidget(CanvasOrNull, 1);
         Message->hide();
         CanvasOrNull->show();
         if (Preview->AdmitOffscreenDevice() == false)
@@ -413,6 +524,8 @@ private:
             static_cast<PreviewViewport*>(Widget)->resizeSurface();
         });
         createItem();
+        StatisticsOrNull = new StatisticsItem(Window->contentItem());
+        StatisticsOrNull->SetText(StatisticsText);
         Container = QWidget::createWindowContainer(Window, Widget);
         Container->setFocusPolicy(Qt::NoFocus);
         Container->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -422,7 +535,9 @@ private:
             // The filter sees Hide before the container hides the embedded window.
             Container->installEventFilter(Widget);
         }
-        Layout->addWidget(Container);
+        Container->setObjectName(QStringLiteral("viewportRenderSurface"));
+        Container->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        Layout->addWidget(Container, 1);
         Message->hide();
         Container->show();
         Service.start(SERVICE_INTERVAL_MILLISECONDS);
@@ -556,6 +671,7 @@ private:
             // The container owns and destroys Window and its content items.
             Item = nullptr;
         }
+        StatisticsOrNull = nullptr;
         Window = nullptr;
         Device.Reset();
         IsDestroyingWindow = false;
@@ -632,12 +748,17 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
     shading->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     shading->setMinimumContentsLength(4);
     shading->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-    shading->addItem(QStringLiteral("Solid — neutral preview shading"));
-    shading->addItem(QStringLiteral("Albedo — unlit surface colors"));
-    shading->addItem(QStringLiteral("Lit — scene lighting"));
-    shading->setToolTip(QStringLiteral("Solid uses an editor-only neutral material and preview light; Albedo shows "
-                                       "base colors without illumination. Lit shows authored lights, emitting surfaces "
-                                       "as shadowed area lights and, once baked, static diffuse lighting."));
+    // Combo indices equal PreviewShading values; new modes are appended so saved indices stay valid.
+    for (foundation::usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        shading->addItem(GetPreviewShadingLabel(static_cast<PreviewShading>(i)));
+    }
+    shading->setToolTip(
+        QStringLiteral("Solid uses an editor-only neutral material and preview light; Albedo shows "
+                       "base colours without illumination. Lit shows authored lights, emitting surfaces "
+                       "as shadowed area lights. The viewport uses direct lighting without baking lightmaps.\n"
+                       "Debug views (Normal, Depth, Roughness, Metallic, UV, Light count) replace shading with "
+                       "one material or lighting quantity per pixel so it can be inspected directly."));
     shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
     QHBoxLayout* controls = new QHBoxLayout;
     controls->addWidget(shading, 1);
@@ -648,7 +769,26 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
     frameAll->setToolTip(QStringLiteral("Fit all visible geometry in the viewport (Home)."));
     controls->addWidget(frameAll);
     connect(frameAll, &QToolButton::clicked, preview, &RenderPreview::FrameAll);
+    QToolButton* statistics = new QToolButton(this);
+    statistics->setObjectName(QStringLiteral("viewportStatistics"));
+    statistics->setText(QStringLiteral("Stats"));
+    statistics->setCheckable(true);
+    statistics->setChecked(preview->IsStatisticsVisible());
+    statistics->setAccessibleName(QStringLiteral("Show viewport statistics"));
+    statistics->setToolTip(QStringLiteral("Overlay GPU frame time, CPU frame time, resolution and draw count, "
+                                          "averaged over recent frames. GPU shows n/a when the device has no "
+                                          "timestamp queries."));
+    controls->addWidget(statistics);
+    connect(statistics, &QToolButton::toggled, preview, &RenderPreview::SetStatisticsVisible);
     mState->Layout->addLayout(controls);
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    mState->StatisticsLabelOrNull = new QLabel(this);
+    mState->StatisticsLabelOrNull->setObjectName(QStringLiteral("viewportStatisticsOverlay"));
+    mState->StatisticsLabelOrNull->setTextFormat(Qt::PlainText);
+    mState->StatisticsLabelOrNull->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    mState->StatisticsLabelOrNull->hide();
+    mState->Layout->addWidget(mState->StatisticsLabelOrNull, 0, Qt::AlignTop);
+#endif
     QLabel* navigationHint = new QLabel(this);
     navigationHint->setObjectName(QStringLiteral("viewportNavigationHint"));
     navigationHint->setTextFormat(Qt::PlainText);
@@ -660,68 +800,23 @@ PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, 
     navigationHint->setWordWrap(true);
     navigationHint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     navigationHint->setToolTip(toolTip());
-    mState->Layout->addWidget(navigationHint);
-    // Keep bake diagnostics from squeezing the shading and framing controls.
-    QHBoxLayout* bakeControls = new QHBoxLayout;
-    bakeControls->setContentsMargins(0, 0, 0, 0);
-    QLabel* bakeNotice = new QLabel(this);
-    bakeNotice->setObjectName(QStringLiteral("viewportBakeNotice"));
-    bakeNotice->setWordWrap(true);
-    bakeNotice->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    bakeNotice->hide();
-    bakeControls->addWidget(bakeNotice, 1);
-    QPushButton* bakeAction = new QPushButton(this);
-    bakeAction->setObjectName(QStringLiteral("viewportBakeAction"));
-    bakeAction->hide();
-    bakeControls->addWidget(bakeAction);
-    mState->Layout->addLayout(bakeControls);
-    const auto updateBake = [preview, bakeNotice, bakeAction]() {
-        const PreviewBakeState state = preview->GetBakeState();
-        PreviewBakeNotice notice;
-        const bool hasNotice = preview->GetBakeNotice(notice) == true && state != PreviewBakeState::Idle;
-        bakeNotice->setVisible(hasNotice);
-        if (hasNotice == true)
-        {
-            bakeNotice->setText(QStringLiteral("⚠ %1 collapsed triangles skipped").arg(notice.SkippedTriangleCount));
-            bakeNotice->setToolTip(
-                QStringLiteral("The static bake skipped %1 zero-area triangles in %2: %3. They cover no surface, so "
-                               "the baked lighting is unaffected; fix the meshes to remove this warning. Cancel the "
-                               "bake to keep direct lighting only.")
-                    .arg(notice.SkippedTriangleCount)
-                    .arg(notice.AffectedObjectCount == 1 ? QStringLiteral("1 object")
-                                                         : QStringLiteral("%1 objects").arg(notice.AffectedObjectCount))
-                    .arg(notice.AffectedObjects));
-        }
-        bakeAction->setVisible(state == PreviewBakeState::Running || state == PreviewBakeState::Cancelled);
-        bakeAction->setText(state == PreviewBakeState::Cancelled ? QStringLiteral("Bake again")
-                                                                 : QStringLiteral("Cancel bake"));
-        bakeAction->setToolTip(state == PreviewBakeState::Cancelled
-                                   ? QStringLiteral("Restart the static lighting bake for this scene.")
-                                   : QStringLiteral("Stop the static lighting bake; direct lighting stays visible."));
-    };
-    connect(preview, &RenderPreview::BakeChanged, this, updateBake);
-    connect(bakeAction, &QPushButton::clicked, this, [preview]() {
-        if (preview->GetBakeState() == PreviewBakeState::Cancelled)
-        {
-            static_cast<void>(preview->RestartBake());
-        }
-        else
-        {
-            preview->CancelBake();
-        }
-    });
-    connect(shading, &QComboBox::currentIndexChanged, this, [preview, updateBake](foundation::int32 index) {
+    mState->Layout->addWidget(navigationHint, 0, Qt::AlignTop);
+    connect(shading, &QComboBox::currentIndexChanged, this, [preview](foundation::int32 index) {
         preview->SetShading(static_cast<PreviewShading>(index));
-        updateBake();
     });
     connect(preview, &RenderPreview::NavigationChanged, shading, [preview, shading]() {
         const QSignalBlocker blocker(shading);
         shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
     });
+    connect(preview, &RenderPreview::NavigationChanged, statistics, [preview, statistics]() {
+        const QSignalBlocker blocker(statistics);
+        statistics->setChecked(preview->IsStatisticsVisible());
+    });
+    connect(preview, &RenderPreview::StatisticsChanged, this, [this]() { updateStatistics(); });
     mState->Message = new QLabel(QStringLiteral("Open a World to render it here."), this);
     mState->Message->setAlignment(Qt::AlignCenter);
     mState->Message->setWordWrap(true);
-    mState->Layout->addWidget(mState->Message);
+    mState->Layout->addWidget(mState->Message, 1);
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->BrowserOrNull = new BrowserViewport(*preview, this);
     mState->BrowserOrNull->hide();
@@ -817,6 +912,27 @@ void PreviewViewport::ClearFrame(const QString& text)
     mState->clearFrames();
 #endif
     mState->Message->setText(text);
+}
+QString PreviewViewport::GetStatisticsText() const
+{
+    return mState->StatisticsText;
+}
+void PreviewViewport::updateStatistics()
+{
+    const QString text =
+        Preview_->IsStatisticsVisible() == true ? FormatViewportStatistics(Preview_->GetStatistics()) : QString();
+    if (text == mState->StatisticsText)
+    {
+        return;
+    }
+    mState->StatisticsText = text;
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    mState->StatisticsLabelOrNull->setText(text);
+    mState->StatisticsLabelOrNull->setVisible(text.isEmpty() == false);
+#endif
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mState->applyStatistics();
+#endif
 }
 bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
 {

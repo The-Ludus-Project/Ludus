@@ -1,9 +1,12 @@
 #include "entropy_fixture.h"
 #include "internal/controller.h"
+#include "internal/document_well.h"
 #include "internal/editor_identity.h"
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_preview.h"
+#include "internal/renderer_workspace.h"
 #include "internal/world_document.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
@@ -13,6 +16,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
+#include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -25,8 +29,8 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QStandardPaths>
-#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -93,7 +97,8 @@ QJsonObject Property(const QString& key)
 }
 QLineEdit* Field(WorldWorkspace& view, const QString& key)
 {
-    auto* field = view.findChild<QLineEdit*>(QStringLiteral("worldField:") + key);
+    // In the editor window the entity inspector is the Properties tool window.
+    QLineEdit* field = view.window()->findChild<QLineEdit*>(QStringLiteral("worldField:") + key);
     REQUIRE(field != nullptr);
     return field;
 }
@@ -522,9 +527,7 @@ TEST_CASE("World menu Save and history own the active document and Close Project
     auto* world = window.findChild<WorldWorkspace*>();
     REQUIRE(world != nullptr);
     REQUIRE(world->Open(path));
-    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
-    REQUIRE(tabs != nullptr);
-    tabs->setCurrentWidget(world);
+    world->setFocus();
     world->findChild<QListWidget*>(QStringLiteral("worldEntities"))->setCurrentRow(0);
     Type(Field(*world, QStringLiteral("transform/x")), QStringLiteral("4"));
     auto* save = window.findChild<QAction*>(QStringLiteral("document.save"));
@@ -754,24 +757,95 @@ TEST_CASE("World provides scene authoring without a project component schema", "
     unsafe.SetProject(root, 3);
     CHECK_FALSE(unsafe.Create(QDir(root).filePath(QStringLiteral("unsafe.world.json"))));
 }
-TEST_CASE("Editor exposes a single World tab for scene and component authoring", "[editor][world][unified]")
+TEST_CASE("Editor shows the unified World as a document beside tool windows", "[editor][world][unified]")
 {
     QTemporaryDir directory;
     ToolingPaths tools;
     tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
     EditorController controller(tools, nullptr, directory.filePath(QStringLiteral("recent.json")));
     MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
-    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("workspaceTabs"));
-    REQUIRE(tabs != nullptr);
+    DocumentWell& well = window.GetDocumentWell();
     ludus::foundation::int32 worlds = 0;
-    for (ludus::foundation::int32 i = 0; i < tabs->count(); ++i)
+    for (QWidget* document : well.GetDocuments())
     {
-        const auto text = tabs->tabText(i).remove(QLatin1Char('&'));
-        worlds += text == QStringLiteral("World") ? 1 : 0;
-        CHECK(text != QStringLiteral("3D Levels"));
-        CHECK(text != QStringLiteral("Scene"));
+        const QString title = well.GetDocumentTitle(document);
+        worlds += qobject_cast<WorldWorkspace*>(document) != nullptr ? 1 : 0;
+        CHECK(title != QStringLiteral("3D Levels"));
+        CHECK(title != QStringLiteral("Scene"));
     }
+    // One World document; its entity inspector is the Properties tool window.
     CHECK(worlds == 1);
+    CHECK(window.centralWidget() == &well);
+    QDockWidget* properties = window.findChild<QDockWidget*>(QStringLiteral("propertiesDock"));
+    REQUIRE(properties != nullptr);
+    CHECK(properties->isAncestorOf(window.findChild<QWidget*>(QStringLiteral("worldProperties"))) == true);
+}
+
+TEST_CASE("Renderer preview follows the viewport the World shows", "[editor][world][render-graph]")
+{
+    QTemporaryDir directory;
+    const QString starterPath = Fixture(directory);
+    QString prepareError;
+    INFO(prepareError.toStdString());
+    const QString external = QDir(directory.path()).filePath(QStringLiteral("external"));
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(external));
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(),
+                                                       QStringLiteral("scenes/room.lulevel"),
+                                                       external,
+                                                       prepareError));
+    const QString levelPath =
+        QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(QStringLiteral("scenes/room.lulevel"));
+    ToolingPaths tools;
+    tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    EditorController controller(tools, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    LevelWorkspace* level = window.findChild<LevelWorkspace*>();
+    REQUIRE(world != nullptr);
+    REQUIRE(renderer != nullptr);
+    REQUIRE(level != nullptr);
+    const auto waitUntilSettled = [world]() {
+        QElapsedTimer timer;
+        timer.start();
+        while (world->CanSave() == false && timer.elapsed() < 15000)
+        {
+            QTest::qWait(10);
+        }
+        REQUIRE(world->CanSave() == true);
+    };
+    QSignalSpy changed(world, &WorldWorkspace::RenderPreviewChanged);
+    world->SetProject(directory.path(), 1);
+
+    // A schema-bound World shows its render panel, never the scene viewport.
+    REQUIRE(world->Open(starterPath));
+    waitUntilSettled();
+    RenderPreview* const panel = &world->GetRenderPreview();
+    CHECK(panel != &level->GetRenderPreview());
+    CHECK(renderer->GetPreviewSourceOrNull() == panel);
+
+    // An imported-scene World shows the level viewport; the Renderer tab follows it, and the
+    // shown scene is cooked (geometry only in its decoded definition).
+    const qsizetype before = changed.count();
+    REQUIRE(world->Open(levelPath));
+    waitUntilSettled();
+    CHECK(&world->GetRenderPreview() == &level->GetRenderPreview());
+    CHECK(renderer->GetPreviewSourceOrNull() == &level->GetRenderPreview());
+    CHECK(changed.count() == before + 1);
+    REQUIRE(level->PreviewScene().Definition != nullptr);
+    CHECK(level->PreviewScene().Meshes.at(0).Positions.isEmpty() == true);
+
+    // Returning to the schema-bound World switches back. Opening a .lulevel converts it into an
+    // unsaved World; save it first so reopening does not ask to discard it.
+    REQUIRE(world->Save() == true);
+    waitUntilSettled();
+    REQUIRE(world->Dirty() == false);
+    REQUIRE(world->Open(starterPath));
+    waitUntilSettled();
+    CHECK(&world->GetRenderPreview() == panel);
+    CHECK(renderer->GetPreviewSourceOrNull() == panel);
+    CHECK(changed.count() == before + 2);
+    world->StopPreview();
 }
 
 TEST_CASE("Converted cooked levels edit placement and gameplay in World and survive reopening",

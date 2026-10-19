@@ -174,6 +174,15 @@ Status RendererAdmission(rhi::DeviceHandle device, bool mutation = true) noexcep
             return Status::Failed;
     }
 }
+/// Largest world-unit distance a debug depth range may name (matches the camera-position bound
+/// plus a full scene span), keeping the packed per-instance floats finite and ordered.
+constexpr float32 MAX_DEBUG_DEPTH_DISTANCE = 10000000.0F;
+bool IsDebugDepthRangeValid(math::Vector2 range) noexcept
+{
+    return math::IsFinite(range) == true && ((range.X == 0 && range.Y == 0) || (range.X >= 0 && range.X < range.Y &&
+                                                                                range.Y <= MAX_DEBUG_DEPTH_DISTANCE));
+}
+static_assert(static_cast<uint32>(MaterialDebugView::LightCount) == MATERIAL_DEBUG_VIEW_LIGHT_COUNT);
 bool ValidColor(math::Vector4 color) noexcept
 {
     return math::IsFinite(color) && color.X >= 0 && color.X <= 1 && color.Y >= 0 && color.Y <= 1 && color.Z >= 0 &&
@@ -2966,7 +2975,8 @@ Status Renderer::PrepareView(Snapshot handle,
         math::IsFinite(description.CameraPosition) == false || math::Abs(description.CameraPosition.X) > 1000000 ||
         math::Abs(description.CameraPosition.Y) > 1000000 || math::Abs(description.CameraPosition.Z) > 1000000 ||
         static_cast<uint8>(description.Depth) > static_cast<uint8>(DepthConvention::ReverseZ) ||
-        (description.InfiniteFar && description.Depth != DepthConvention::ReverseZ))
+        (description.InfiniteFar && description.Depth != DepthConvention::ReverseZ) ||
+        IsDebugDepthRangeValid(description.DebugDepthRange) == false)
     {
         return Status::InvalidDescription;
     }
@@ -2985,6 +2995,12 @@ Status Renderer::PrepareView(Snapshot handle,
     {
         return Status::InvalidDescription;
     }
+    // Orthographic debug depth is measured in shaders as dot(position, forward); shift the
+    // camera-relative range into that frame so LinearDepth keeps its camera-distance contract.
+    const float32 debugDepthOffset = description.OrthographicCamera == true &&
+                                             (description.DebugDepthRange.X != 0 || description.DebugDepthRange.Y != 0)
+                                         ? math::Dot(description.CameraPosition, cameraForward)
+                                         : 0.0F;
     math::Frustum frustum, overlay;
     if (math::TryExtractFrustum(description.WorldToClip,
                                 description.InfiniteFar ? math::FrustumMode::InfiniteReverseZPerspective
@@ -3101,6 +3117,9 @@ Status Renderer::PrepareView(Snapshot handle,
                 {
                     candidate.Data.NormalRows[row] = {normal.At(row, 0), normal.At(row, 1), normal.At(row, 2), 0};
                 }
+                // Lit programs never read Color.ZW; debug-view programs map camera distance with it.
+                candidate.Data.Color.Z = description.DebugDepthRange.X + debugDepthOffset;
+                candidate.Data.Color.W = description.DebugDepthRange.Y + debugDepthOffset;
                 const auto& bake = material.Bake;
                 candidate.Data.Color.X = material.HasBake && bake.SourceId == item.Input.SourceId &&
                                                  bake.SceneRevision == item.Input.BakeSceneRevision &&
@@ -3603,6 +3622,10 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     {
         return Status::InvalidDescription;
     }
+    if (static_cast<uint8>(description.DebugView) > static_cast<uint8>(MaterialDebugView::LightCount))
+    {
+        return Status::InvalidDescription;
+    }
     if (description.MaterialUvSet > 1 ||
         (description.MaterialUvSet != 0 && description.AreAuthoredInputsEnabled == false) ||
         (description.AreAuthoredInputsEnabled == true && p->HasAuthoredProfile == false) ||
@@ -3804,10 +3827,11 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     parameters = LitMaterialParameters{};
     parameters.Tint = description.Surface.Tint;
     parameters.UvTransform = description.Surface.UvTransform;
+    // Options.W is reserved by ordinary lit programs; debug-view programs read the mode from it.
     parameters.Options = {description.Surface.AlphaCutoff,
                           description.Surface.Lod,
                           static_cast<float32>(description.Surface.Alpha),
-                          0};
+                          static_cast<float32>(description.DebugView)};
     parameters.Pbr = {description.Metallic,
                       description.Roughness,
                       static_cast<float32>(selected.Count),

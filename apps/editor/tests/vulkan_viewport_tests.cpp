@@ -10,9 +10,11 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QWindow>
@@ -177,7 +179,7 @@ TEST_CASE("Linux viewport shares an editor-created Vulkan device with Qt Quick",
     // lease timing: the scene graph samples only the active, still-leased image, and
     // RHI and Qt submit on one serialized queue, so even a premature release could
     // show only a newer frame, never torn pixels. Lit is not compared because its
-    // static bake keeps changing the image.
+    // viewport keeps presenting the authored lighting.
     QQuickWindow* quickWindow = static_cast<QQuickWindow*>(window);
     const QImage reference = quickWindow->grabWindow();
     REQUIRE(reference.isNull() == false);
@@ -284,5 +286,93 @@ TEST_CASE("Linux shared viewport keeps presenting after it is hidden and shown",
     preview.Stop();
 #else
     SKIP("Editor-created Vulkan device sharing is Linux-only");
+#endif
+}
+
+TEST_CASE("Statistics overlay draws inside the shared Qt Quick viewport", "[editor][viewport][shared][gpu][statistics]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    const QString skipReason = GetSharedDisplaySkipReason();
+    if (skipReason.isEmpty() == false)
+    {
+        SKIP(skipReason.toStdString());
+    }
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasLamps = false });
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    viewport.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&viewport) == true);
+    REQUIRE(preview.SetScene(scene) == true);
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(AwaitPresentedFrames(viewport, preview, PRESENTED_FRAMES) == true);
+    QQuickWindow* window = static_cast<QQuickWindow*>(FindWindow(QStringLiteral("LudusGpuViewport")));
+    REQUIRE(window != nullptr);
+    QQuickItem* overlay = window->contentItem()->findChild<QQuickItem*>(QStringLiteral("viewportStatisticsOverlay"));
+    REQUIRE(overlay != nullptr);
+    CHECK(overlay->isVisible() == false);
+    const QImage hidden = window->grabWindow();
+
+    QToolButton* statistics = viewport.findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    REQUIRE(statistics != nullptr);
+    statistics->click();
+    REQUIRE(AwaitPresentedFrames(viewport, preview, viewport.PresentedFrames() + PRESENTED_FRAMES) == true);
+    REQUIRE(
+        QTest::qWaitFor([&viewport]() { return viewport.GetStatisticsText().contains(QStringLiteral("…")) == false; },
+                        SHARED_TIMEOUT_MILLISECONDS) == true);
+    INFO(viewport.GetStatisticsText().toStdString());
+    // The overlay is an item of the viewport's own scene graph, stacked above the frame item.
+    CHECK(overlay->isVisible() == true);
+    CHECK(overlay->width() > 0);
+    CHECK(overlay->height() > 0);
+    for (QQuickItem* sibling : window->contentItem()->childItems())
+    {
+        if (sibling != overlay)
+        {
+            CHECK(sibling->z() < overlay->z());
+        }
+    }
+    const QImage shown = window->grabWindow();
+    const QString shotDirectory = qEnvironmentVariable("LUDUS_VIEWPORT_DEBUG_SHOTS");
+    if (shotDirectory.isEmpty() == false)
+    {
+        CHECK(shown.save(shotDirectory + QStringLiteral("/stats-overlay-shared.png")) == true);
+    }
+    if (IsOpaque(hidden) == true && IsOpaque(shown) == true)
+    {
+        const QPoint centre = overlay->mapToScene(QPointF(overlay->width() / 2, overlay->height() / 2)).toPoint() *
+                              window->devicePixelRatio();
+        const QRect panel(centre - QPoint(2, 2), QSize(4, 4));
+        bool isDifferent = false;
+        for (int32 y = panel.top(); y <= panel.bottom(); ++y)
+        {
+            for (int32 x = panel.left(); x <= panel.right(); ++x)
+            {
+                isDifferent = isDifferent || hidden.pixel(x, y) != shown.pixel(x, y);
+            }
+        }
+        CHECK(isDifferent == true);
+    }
+    else
+    {
+        WARN("Pixels not compared: Qt misreads this swapchain format in grabWindow");
+    }
+    statistics->click();
+    CHECK(overlay->isVisible() == false);
+    preview.Stop();
+#else
+    SKIP("Shared Qt Quick presentation is Linux-only");
 #endif
 }

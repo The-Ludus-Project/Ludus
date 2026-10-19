@@ -479,6 +479,7 @@ struct RasterUniformMember final
 /// Hand-authored artifacts must supply independently verified matching reflection.
 struct RasterShaderDescription final
 {
+
     /// Target artifact and explicit entry; UniformSize is unused by the raster API.
     ShaderDescription Artifact{};
     /// Reflected float vertex inputs; empty for fragment stages. Copied before return.
@@ -507,6 +508,9 @@ struct RasterShaderDescription final
     /// allocation. Hand-authored artifacts must independently verify this contract;
     /// false rejects before shader creation. Fixed counts must match exactly.
     bool HasVerifiedArrayBounds = false;
+    /// Native development preparation copies sources and compiles on a dedicated worker.
+    /// Pending owns the handle; poll GetStatus. Browser keeps its existing backend policy.
+    bool ShouldPrepareAsynchronously = false;
 };
 /// One immutable binding snapshot entry; exactly the resource matching Kind is used.
 struct RasterBindingResource final
@@ -681,6 +685,8 @@ struct RasterPipelineDescription final
     ludus::foundation::uint32 StencilWriteMask = 255;
     /// Eight-bit reference, set by each accepted draw.
     ludus::foundation::uint32 StencilReference = 0;
+    /// Queue native driver creation; also enabled by either asynchronous shader input.
+    bool ShouldPrepareAsynchronously = false;
 };
 /// One vertex-stream slice, borrowed during DrawIndexed and retained through submission.
 struct RasterVertexSlice final

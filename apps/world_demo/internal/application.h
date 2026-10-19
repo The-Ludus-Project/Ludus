@@ -1,8 +1,9 @@
 #pragma once
 #include "frame_pacing.h"
+#include "frame_renderer.h"
 #include "world.h"
 #include <ludus/foundation/base/pointer.hpp>
-#include <ludus/graphics/rhi/render.h>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/rhi.h>
 #include <ludus/input/keyboard.h>
 #include <ludus/platform/base/window.h>
@@ -16,6 +17,7 @@ enum class AppState : uint8
     Playing,
     Failed
 };
+/// The World-demo player: one window, one explicit RHI device and the engine Renderer.
 class Application final
 {
 public:
@@ -55,26 +57,30 @@ public:
     {
         return mPresentReturn;
     }
+    /// Backend chosen by the device; meaningful once the device has reported Ready.
+    [[nodiscard]] graphics::rhi::Backend GetSelectedBackend() const noexcept
+    {
+        return mSelectedBackend;
+    }
 
 private:
-    [[nodiscard]] bool PrepareRenderer() noexcept;
-    [[nodiscard]] bool Render(const platform::browser::WindowState& window) noexcept;
-    void BrowserInput(const platform::browser::WindowState& window) noexcept;
+    [[nodiscard]] bool render(const platform::browser::WindowState& window) noexcept;
+    void browserInput(const platform::browser::WindowState& window) noexcept;
     input::InputSystem mInput;
     foundation::UniquePtr<platform::Window> mWindow;
     Session mSession;
     RenderFrame mFrame;
-    graphics::rhi::ShaderHandle mVertex;
-    graphics::rhi::ShaderHandle mFragment;
-    graphics::rhi::UniformHandle mUniform;
-    graphics::rhi::PipelineHandle mPipeline;
+    graphics::rhi::DeviceHandle mDevice;
+    graphics::rhi::SurfaceHandle mSurface;
+    graphics::rhi::Backend mSelectedBackend = graphics::rhi::Backend::Vulkan;
+    FrameRenderer mFrameRenderer;
+    bool mIsRendererReady = false;
     LoopPacing mPacing;
     foundation::time::Timestamp mPresentReturn;
     uint64 mPresentedFrames = 0;
     uint64 mPacedPresentedFrames = 0;
     uint64 mInputFrame = 0;
-    bool mCreated = false;
-    bool mRendererReady = false;
+    bool mHasDevice = false;
     bool mHadFocus = false;
     bool mCameraFollow = false;
     AppState mState = AppState::Stopped;

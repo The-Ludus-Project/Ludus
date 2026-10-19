@@ -2,11 +2,13 @@
 
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "editor_default_graph.h"
 #    include "editor_renderer_static.h"
 #    include "internal/render_graph_preview.h"
 #    include "renderer_composite.h"
 #endif
 
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
@@ -15,11 +17,13 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -27,6 +31,7 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextBlock>
@@ -44,12 +49,12 @@ constexpr int NODE_ROLE = Qt::UserRole + 2;
 constexpr int LOCATION_ROLE = Qt::UserRole + 3;
 constexpr int32 MAX_EXTENT = 16384;
 constexpr int32 MAX_COORDINATE = 32768;
+constexpr int32 INITIAL_SOURCE_TREE_WIDTH = 200;
+constexpr int32 INITIAL_CANVAS_WIDTH = 640;
+constexpr int32 INITIAL_INSPECTOR_WIDTH = 400;
+constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
-const QString HELPER_KEY = QStringLiteral("renderGraph/helper");
-const QString COMPILER_KEY = QStringLiteral("renderGraph/compiler");
-const QString VALIDATOR_KEY = QStringLiteral("renderGraph/validator");
 const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
-const QString SPIRV_CROSS_KEY = QStringLiteral("renderGraph/spirvCross");
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Preview service period, about one 60 Hz display refresh.
 constexpr int32 PREVIEW_INTERVAL_MILLISECONDS = 16;
@@ -91,6 +96,25 @@ private:
 };
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+namespace default_graph = render_graph_packages::editor_default_graph;
+namespace host_fixture = render_graph_packages::editor_renderer_static;
+
+constexpr bool AreHostInterfacesEqual()
+{
+    for (usize i = 0; i < default_graph::INTERFACE_IDENTITY.GetSize(); ++i)
+    {
+        if (default_graph::INTERFACE_IDENTITY[i] != host_fixture::INTERFACE_IDENTITY[i])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+// The engine default is the editor's host interface. The frozen RG2 fixture that the
+// preview parity tests cook must keep the same CPU interface, so either can be previewed.
+static_assert(AreHostInterfacesEqual() == true,
+              "The default render graph and the editor host fixture must share one RendererStatic interface");
+
 bool AreMatricesEqual(const math::Matrix4& left, const math::Matrix4& right)
 {
     for (usize i = 0; i < 4; ++i)
@@ -237,11 +261,20 @@ QString DescribeLocation(const QJsonObject& location)
     }
     return parts.join(QLatin1Char(' '));
 }
+
+QString DescribePackageOutsideProject()
+{
+    return QStringLiteral("The render graph's package lies outside the project folder, so it has no build tree there.");
+}
 } // namespace
 
 RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* parentOrNull)
     : QWidget(parentOrNull), mTooling(tooling), mPath(new QLabel(QStringLiteral("No render graph is open."), this)),
-      mConfiguration(new QComboBox(this)), mValidate(new QPushButton(QStringLiteral("&Validate Draft"), this)),
+      mNewGraph(new QPushButton(QStringLiteral("&New Graph..."), this)),
+      mOpenGraph(new QPushButton(QStringLiteral("&Open Graph..."), this)),
+      mBuildPreview(new QPushButton(QStringLiteral("Build && Preview"), this)), mContent(new QStackedWidget(this)),
+      mEmptyMessage(new QLabel(this)), mConfiguration(new QComboBox(this)),
+      mValidate(new QPushButton(QStringLiteral("&Validate Draft"), this)),
       mBuild(new QPushButton(QStringLiteral("&Build Draft"), this)),
       mCook(new QPushButton(QStringLiteral("Cook &Runtime"), this)),
       mCancel(new QPushButton(QStringLiteral("Cancel"), this)), mTree(new QTreeWidget(this)),
@@ -251,12 +284,23 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mEdgeTo(new QLineEdit(this)), mSourceFile(new QComboBox(this)), mSource(new QPlainTextEdit(this)),
       mPlan(new QPlainTextEdit(this)), mHelper(new QLineEdit(this)), mCompiler(new QLineEdit(this)),
       mValidator(new QLineEdit(this)), mSpirvCross(new QLineEdit(this)), mWorkerSocket(new QLineEdit(this)),
+      mOverrideBuildTools(new QCheckBox(QStringLiteral("Override detected shader tools (advanced)"), this)),
+      mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)), mBuildToolsStatus(new QLabel(this)),
       mLivePreview(new QCheckBox(QStringLiteral("Live Preview"), this)), mDiagnostics(new QListWidget(this)),
-      mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)), mPreviewImage(new PreviewImage(this)),
-      mPreviewStatus(new QLabel(this)), mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), this))
+      mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)), mPreviewPage(new QWidget(this)),
+      mPreviewImage(new PreviewImage(this)), mPreviewStatus(new QLabel(this)),
+      mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), this))
 {
     setObjectName(QStringLiteral("rendererWorkspace"));
-    QPushButton* open = new QPushButton(QStringLiteral("&Open Graph..."), this);
+    // The rarely needed explicit copy of the engine default sits in the source tree's context
+    // menu; editing the default does the same on Save. Neither is ever a prompt.
+    mCustomize->setObjectName(QStringLiteral("renderGraphCustomize"));
+    mCustomize->setToolTip(QStringLiteral("Copy the engine default renderer into graphs/Main/ in this project and "
+                                          "edit it there. Editing the default does the same on Save."));
+    mPath->setObjectName(QStringLiteral("renderGraphPath"));
+    mNewGraph->setObjectName(QStringLiteral("renderGraphNew"));
+    mNewGraph->setProperty("visualRole", QStringLiteral("primary"));
+    mOpenGraph->setObjectName(QStringLiteral("renderGraphOpen"));
     mConfiguration->setObjectName(QStringLiteral("renderGraphConfiguration"));
     mConfiguration->setToolTip(QStringLiteral("Root configuration to validate and cook; choices are authored."));
     mValidate->setObjectName(QStringLiteral("renderGraphValidate"));
@@ -264,24 +308,27 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mCook->setObjectName(QStringLiteral("renderGraphCook"));
     mCancel->setEnabled(false);
     QHBoxLayout* actions = new QHBoxLayout;
-    actions->addWidget(open);
+    actions->addWidget(mNewGraph);
+    actions->addWidget(mOpenGraph);
     actions->addWidget(mPath, 1);
     actions->addWidget(new QLabel(QStringLiteral("Configuration"), this));
     actions->addWidget(mConfiguration);
-    actions->addWidget(mValidate);
-    actions->addWidget(mBuild);
-    QPushButton* buildPreview = new QPushButton(QStringLiteral("Build && Preview"), this);
-    buildPreview->setObjectName(QStringLiteral("renderGraphBuildPreview"));
+    QHBoxLayout* buildActions = new QHBoxLayout;
+    buildActions->addWidget(mValidate);
+    buildActions->addWidget(mBuild);
+    mBuildPreview->setObjectName(QStringLiteral("renderGraphBuildPreview"));
     mLivePreview->setObjectName(QStringLiteral("renderGraphLivePreview"));
     mLivePreview->setToolTip(QStringLiteral("Rebuild changed drafts in the background and preview only matching "
                                             "successful results; saved files are unchanged."));
-    actions->addWidget(buildPreview);
-    actions->addWidget(mLivePreview);
-    actions->addWidget(mCook);
-    actions->addWidget(mCancel);
+    buildActions->addWidget(mBuildPreview);
+    buildActions->addWidget(mLivePreview);
+    buildActions->addStretch();
+    buildActions->addWidget(mCook);
+    buildActions->addWidget(mCancel);
 
     mTree->setObjectName(QStringLiteral("renderGraphTree"));
     mTree->setHeaderLabel(QStringLiteral("Graph sources"));
+    mTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     // Inspector: fields of the selected node, its layout position and node creation.
     QVBoxLayout* inspectorLayout = new QVBoxLayout(mInspector);
@@ -349,30 +396,48 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QWidget* buildPage = new QWidget(this);
     QFormLayout* buildLayout = new QFormLayout(buildPage);
     QSettings settings;
-    mHelper->setText(settings.value(HELPER_KEY).toString());
-    mCompiler->setText(settings.value(COMPILER_KEY).toString());
-    mValidator->setText(settings.value(VALIDATOR_KEY).toString());
-    mSpirvCross->setText(settings.value(SPIRV_CROSS_KEY).toString());
     mWorkerSocket->setText(
         settings.value(WORKER_SOCKET_KEY, qEnvironmentVariable("LUDUS_SHADER_WORKER_SOCKET")).toString());
     mWorkerSocket->setObjectName(QStringLiteral("renderGraphWorkerSocket"));
+    mHelper->setObjectName(QStringLiteral("renderGraphShaderHelper"));
+    mCompiler->setObjectName(QStringLiteral("renderGraphCompiler"));
+    mValidator->setObjectName(QStringLiteral("renderGraphValidator"));
     mWorkerSocket->setPlaceholderText(QStringLiteral("existing ludus-shader-worker socket"));
-    mHelper->setPlaceholderText(QStringLiteral("<sdk>/lib/cmake/Ludus/shaders"));
-    mCompiler->setPlaceholderText(QStringLiteral("pinned slangc"));
-    mValidator->setPlaceholderText(QStringLiteral("pinned spirv-val (SPIR-V/GLSL profiles)"));
-    mSpirvCross->setPlaceholderText(QStringLiteral("verified spirv-cross (GLSL profile)"));
+    mHelper->setPlaceholderText(QStringLiteral("Automatic from this project's selected SDK"));
+    mCompiler->setPlaceholderText(QStringLiteral("Automatic from project setup / prepared editor tools"));
+    mValidator->setPlaceholderText(QStringLiteral("Automatic when SPIR-V/GLSL is selected"));
+    mSpirvCross->setPlaceholderText(QStringLiteral("Automatic when GLSL is selected"));
+    mOverrideBuildTools->setObjectName(QStringLiteral("renderGraphOverrideTools"));
+    mBuildToolsStatus->setObjectName(QStringLiteral("renderGraphBuildToolsStatus"));
+    mBuildToolsStatus->setWordWrap(true);
+    mBuildToolsStatus->setText(
+        QStringLiteral("Builds automatically use this project's selected SDK and prepared shader "
+                       "tools. Resolved paths are shown after a successful build."));
+    buildLayout->addRow(mBuildToolsStatus);
+    buildLayout->addRow(mOverrideBuildTools);
+    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+    {
+        tool->setEnabled(false);
+    }
+    connect(mOverrideBuildTools, &QCheckBox::toggled, this, [this](bool isEnabled) {
+        for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+        {
+            tool->setEnabled(isEnabled);
+        }
+    });
     buildLayout->addRow(QStringLiteral("SDK shader helper"), mHelper);
     buildLayout->addRow(QStringLiteral("Slang compiler"), mCompiler);
     buildLayout->addRow(QStringLiteral("SPIR-V validator"), mValidator);
     buildLayout->addRow(QStringLiteral("SPIRV-Cross"), mSpirvCross);
     buildLayout->addRow(QStringLiteral("Native shader worker"), mWorkerSocket);
-    buildLayout->addRow(new QLabel(QStringLiteral("Builds and runtime generations go to out/render-graph in the "
+    QLabel* buildHint = new QLabel(QStringLiteral("Builds and runtime generations go to out/render-graph in the "
                                                   "project; saved sources are never modified by a build."),
-                                   this));
+                                   buildPage);
+    buildHint->setWordWrap(true);
+    buildLayout->addRow(buildHint);
 
     // Preview: the cooked runtime generation on the World viewport device (RG3b).
-    QWidget* previewPage = new QWidget(this);
-    QVBoxLayout* previewLayout = new QVBoxLayout(previewPage);
+    QVBoxLayout* previewLayout = new QVBoxLayout(mPreviewPage);
     mPreviewButton->setObjectName(QStringLiteral("renderGraphPreview"));
     mPreviewButton->setToolTip(QStringLiteral("Stage the last cooked .lurgrt beside the drawing generation; it is "
                                               "shown only after it activates and renders the World extraction."));
@@ -386,7 +451,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mTabs->addTab(sourcePage, QStringLiteral("Source"));
     mTabs->addTab(mPlan, QStringLiteral("Plan"));
     mTabs->addTab(buildPage, QStringLiteral("Build Settings"));
-    mTabs->addTab(previewPage, QStringLiteral("Preview"));
+    mTabs->addTab(mPreviewPage, QStringLiteral("Preview"));
 
     mDiagnostics->setObjectName(QStringLiteral("renderGraphDiagnostics"));
     mStatus->setObjectName(QStringLiteral("renderGraphStatus"));
@@ -395,18 +460,43 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     horizontal->addWidget(mTree);
     horizontal->addWidget(mCanvas);
     horizontal->addWidget(mTabs);
+    mCanvas->setMinimumWidth(MINIMUM_CANVAS_WIDTH);
+    horizontal->setSizes({INITIAL_SOURCE_TREE_WIDTH, INITIAL_CANVAS_WIDTH, INITIAL_INSPECTOR_WIDTH});
+    horizontal->setCollapsible(1, false);
     horizontal->setStretchFactor(1, 2);
     horizontal->setStretchFactor(2, 1);
+    // First show favours the canvas; the splitter scales these proportions to its width.
+    constexpr int32 SOURCE_TREE_SHARE = 2;
+    constexpr int32 CANVAS_SHARE = 6;
+    constexpr int32 INSPECTOR_SHARE = 3;
+    horizontal->setSizes({SOURCE_TREE_SHARE, CANVAS_SHARE, INSPECTOR_SHARE});
     QSplitter* vertical = new QSplitter(Qt::Vertical, this);
     vertical->addWidget(horizontal);
     vertical->addWidget(mDiagnostics);
     vertical->setStretchFactor(0, 1);
+    QWidget* emptyPage = new QWidget(this);
+    QVBoxLayout* emptyLayout = new QVBoxLayout(emptyPage);
+    emptyLayout->addStretch();
+    mEmptyMessage->setObjectName(QStringLiteral("renderGraphEmptyMessage"));
+    mEmptyMessage->setAlignment(Qt::AlignCenter);
+    mEmptyMessage->setWordWrap(true);
+    emptyLayout->addWidget(mEmptyMessage);
+    QPushButton* createFirst = new QPushButton(QStringLiteral("Create Render Graph..."), emptyPage);
+    createFirst->setObjectName(QStringLiteral("renderGraphCreateFirst"));
+    createFirst->setProperty("visualRole", QStringLiteral("primary"));
+    emptyLayout->addWidget(createFirst, 0, Qt::AlignHCenter);
+    emptyLayout->addStretch();
+    mContent->addWidget(emptyPage);
+    mContent->addWidget(vertical);
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->addLayout(actions);
-    layout->addWidget(vertical, 1);
+    layout->addLayout(buildActions);
+    layout->addWidget(mContent, 1);
     layout->addWidget(mStatus);
 
-    connect(open, &QPushButton::clicked, this, [this]() {
+    connect(mNewGraph, &QPushButton::clicked, this, &RendererWorkspace::promptNewGraph);
+    connect(createFirst, &QPushButton::clicked, mNewGraph, &QPushButton::click);
+    connect(mOpenGraph, &QPushButton::clicked, this, [this]() {
         if (mProjectRoot.isEmpty() == true || ConfirmDiscard() == false)
         {
             return;
@@ -424,7 +514,45 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mConfiguration, &QComboBox::currentTextChanged, this, [this]() { scheduleLiveBuild(); });
     connect(mValidate, &QPushButton::clicked, this, [this]() { static_cast<void>(Validate()); });
     connect(mBuild, &QPushButton::clicked, this, [this]() { static_cast<void>(Build()); });
-    connect(buildPreview, &QPushButton::clicked, this, [this]() { static_cast<void>(BuildAndPreview()); });
+    connect(mBuildPreview, &QPushButton::clicked, this, [this]() {
+        // The explicit gesture shows its result; Live Preview rebuilds never switch tabs.
+        showPreviewPage();
+        static_cast<void>(BuildAndPreview());
+    });
+    connect(mCustomize, &QAction::triggered, this, [this]() { static_cast<void>(CustomizeBuiltIn()); });
+    connect(mTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {
+        if (mCustomize->isVisible() == false)
+        {
+            return;
+        }
+        QMenu menu(this);
+        menu.addAction(mCustomize);
+        menu.exec(mTree->viewport()->mapToGlobal(position));
+    });
+    connect(&mCreation, &RenderGraphCreation::Finished, this, [this]() {
+        updateActions();
+        Q_EMIT JobFinished();
+    });
+    connect(&mCreation, &RenderGraphCreation::Created, this, [this](const QString& rootGraph, uint64 epoch) {
+        if (epoch == mEpoch)
+        {
+            if (OpenGraph(rootGraph) == true)
+            {
+                mStatus->setText(QStringLiteral("Created %1. Open a World viewport, then choose Build & Preview.")
+                                     .arg(QDir(mProjectRoot).relativeFilePath(rootGraph)));
+            }
+            else
+            {
+                mStatus->setText(QStringLiteral("Graph sources were created at %1 but could not be opened. "
+                                                "The previous draft is still open.")
+                                     .arg(rootGraph));
+            }
+        }
+    });
+    connect(&mCreation, &RenderGraphCreation::Failed, this, [this](const QString& message) {
+        renderStatus();
+        mStatus->setText(message);
+    });
     connect(&mLiveBuild, &RenderGraphLiveBuild::BuildRequested, this, [this]() {
         static_cast<void>(BuildAndPreview());
     });
@@ -480,11 +608,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mCanvas, &RenderGraphCanvas::SubgraphActivated, this, &RendererWorkspace::openSubgraph);
     connect(mPreviewButton, &QPushButton::clicked, this, [this]() { static_cast<void>(PreviewRuntime()); });
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    namespace host = render_graph_packages::editor_renderer_static;
-    mPreviewOrNull = new RenderGraphPreview({host::INTERFACE_IDENTITY.GetData(), host::INTERFACE_IDENTITY.GetSize()},
-                                            shaders::renderer_composite::Vertex(),
-                                            shaders::renderer_composite::Fragment(),
-                                            this);
+    mPreviewOrNull = new RenderGraphPreview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment(),
+        this);
     connect(mPreviewOrNull, &RenderGraphPreview::Changed, this, &RendererWorkspace::renderPreview);
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, &RendererWorkspace::renderPreview);
     mPreviewTimer.setInterval(PREVIEW_INTERVAL_MILLISECONDS);
@@ -534,17 +662,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mDiagnostics, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
         static_cast<void>(ActivateDiagnostic(mDiagnostics->row(item)));
     });
-    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross, mWorkerSocket})
-    {
-        connect(tool, &QLineEdit::editingFinished, this, [this]() {
-            QSettings preferences;
-            preferences.setValue(HELPER_KEY, mHelper->text());
-            preferences.setValue(COMPILER_KEY, mCompiler->text());
-            preferences.setValue(VALIDATOR_KEY, mValidator->text());
-            preferences.setValue(SPIRV_CROSS_KEY, mSpirvCross->text());
-            preferences.setValue(WORKER_SOCKET_KEY, mWorkerSocket->text());
-        });
-    }
+    connect(mWorkerSocket, &QLineEdit::editingFinished, this, [this]() {
+        QSettings preferences;
+        preferences.setValue(WORKER_SOCKET_KEY, mWorkerSocket->text());
+    });
     connect(&mJob, &RenderGraphJob::Finished, this, &RendererWorkspace::AcceptResult);
     renderStatus();
     renderPreview();
@@ -554,15 +675,29 @@ RendererWorkspace::~RendererWorkspace() = default;
 
 void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
 {
+    // Package and project roots share one canonical identity, including symlinked projects.
+    const QString canonicalRoot = root.isEmpty() == true ? QString() : QFileInfo(root).canonicalFilePath();
+    if (canonicalRoot != mProjectRoot || epoch != mEpoch)
+    {
+        mCreation.Cancel();
+    }
     mLiveBuild.Reset();
-    const bool isSameRoot = root == mProjectRoot;
+    const bool isSameRoot = canonicalRoot == mProjectRoot;
     mEpoch = epoch;
     if (isSameRoot == true)
     {
         return;
     }
     CancelJob();
-    mProjectRoot = root;
+    mProjectRoot = canonicalRoot;
+    mOverrideBuildTools->setChecked(false);
+    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+    {
+        tool->clear();
+    }
+    mBuildToolsStatus->setText(
+        QStringLiteral("Builds automatically use this project's selected SDK and prepared shader "
+                       "tools. Resolved paths are shown after a successful build."));
     mDocument.Reset();
     mSelectedFile.clear();
     mSelectedConfiguration.clear();
@@ -571,10 +706,90 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mIsValidated = false;
     mDiagnostics->clear();
     mPlan->clear();
+    mPath->setText(QStringLiteral("No render graph is open."));
     renderTree();
     renderSource();
     renderStatus();
+    openProjectGraph();
     Q_EMIT DocumentChanged();
+}
+
+void RendererWorkspace::openProjectGraph()
+{
+    if (mProjectRoot.isEmpty() == true)
+    {
+        return;
+    }
+    // The project's own graph wins; otherwise the engine default stands in, so rendering
+    // never asks for a graph. Neither path writes a file.
+    const QString package = QDir(mProjectRoot).filePath(PROJECT_RENDER_GRAPH_DIRECTORY);
+    const QString projectGraph = QDir(package).filePath(DEFAULT_RENDER_GRAPH_ROOT);
+    QString problem;
+    if (QFileInfo::exists(projectGraph) == true)
+    {
+        if (OpenGraph(projectGraph) == true)
+        {
+            return;
+        }
+        problem = mStatus->text();
+    }
+    RenderGraphDocument candidate;
+    if (candidate.LoadBuiltIn(GetDefaultRenderGraphSource(), DEFAULT_RENDER_GRAPH_ROOT, package) !=
+        RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(QStringLiteral("The engine default render graph is unavailable in this editor build."));
+        return;
+    }
+    showDocument(candidate);
+    if (problem.isEmpty() == false)
+    {
+        // The reason is a full sentence; drop its period so the parenthesis closes the clause.
+        if (problem.endsWith(QLatin1Char('.')) == true)
+        {
+            problem.chop(1);
+        }
+        mStatus->setText(QStringLiteral("%1/%2 could not be opened (%3). Showing the engine default; Save will not "
+                                        "replace the existing files.")
+                             .arg(PROJECT_RENDER_GRAPH_DIRECTORY, DEFAULT_RENDER_GRAPH_ROOT, problem));
+    }
+}
+
+void RendererWorkspace::promptNewGraph()
+{
+    if (mProjectRoot.isEmpty() == true || IsJobActive() == true || ConfirmDiscard() == false)
+    {
+        return;
+    }
+    const uint64 epoch = mEpoch;
+    QInputDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("newRenderGraphDialog"));
+    dialog.setWindowTitle(QStringLiteral("New Render Graph"));
+    dialog.setLabelText(QStringLiteral("Graph name\n\nCreates an editable graph and shaders in:\n%1/<name>/\n\n"
+                                       "Use letters, numbers, - or _, starting with a letter.\n"
+                                       "The graph will render your World into a color image for preview.")
+                            .arg(QDir(mProjectRoot).filePath(QStringLiteral("graphs"))));
+    dialog.setTextValue(QStringLiteral("Main"));
+    dialog.setOkButtonText(QStringLiteral("Create"));
+    if (dialog.exec() == QDialog::Accepted && epoch == mEpoch)
+    {
+        static_cast<void>(CreateGraph(dialog.textValue().trimmed()));
+    }
+}
+
+bool RendererWorkspace::CreateGraph(const QString& name)
+{
+    if (IsJobActive() == true)
+    {
+        return false;
+    }
+    QString error;
+    if (mCreation.Start(mTooling, mProjectRoot, name, mEpoch, error) == false)
+    {
+        mStatus->setText(error);
+        return false;
+    }
+    renderStatus();
+    return true;
 }
 
 bool RendererWorkspace::OpenGraph(const QString& path)
@@ -595,8 +810,15 @@ bool RendererWorkspace::OpenGraph(const QString& path)
         mStatus->setText(DescribeStatus(status));
         return false;
     }
+    showDocument(candidate);
+    Q_EMIT DocumentChanged();
+    return true;
+}
+
+void RendererWorkspace::showDocument(const RenderGraphDocument& document)
+{
     CancelJob();
-    mDocument = candidate;
+    mDocument = document;
     mSelectedFile = mDocument.GetRootGraph();
     mSelectedConfiguration.clear();
     mSelectedNode.clear();
@@ -604,12 +826,9 @@ bool RendererWorkspace::OpenGraph(const QString& path)
     mIsValidated = false;
     mDiagnostics->clear();
     mPlan->clear();
-    mPath->setText(QDir(mProjectRoot).relativeFilePath(canonical));
     renderTree();
     renderSource();
     renderStatus();
-    Q_EMIT DocumentChanged();
-    return true;
 }
 
 bool RendererWorkspace::ConfirmDiscard()
@@ -643,16 +862,62 @@ bool RendererWorkspace::CanSave() const
 
 bool RendererWorkspace::Save()
 {
+    if (isUneditedBuiltIn() == true)
+    {
+        // The unedited engine default is not project content; Save never copies it.
+        return true;
+    }
+    return writeDocument();
+}
+
+bool RendererWorkspace::IsBuiltIn() const
+{
+    return mDocument.IsBuiltIn();
+}
+
+bool RendererWorkspace::CustomizeBuiltIn()
+{
+    if (mDocument.IsBuiltIn() == false || mProjectRoot.isEmpty() == true)
+    {
+        return false;
+    }
+    return writeDocument();
+}
+
+bool RendererWorkspace::writeDocument()
+{
+    const bool wasBuiltIn = mDocument.IsBuiltIn();
+    // Like New Graph, never write project graphs through a linked graphs folder.
+    const QFileInfo graphs(QDir(mProjectRoot).filePath(QStringLiteral("graphs")));
+    if (wasBuiltIn == true && (graphs.isSymLink() == true || (graphs.exists() == true && graphs.isDir() == false)))
+    {
+        mStatus->setText(QStringLiteral("The project's graphs folder must be a local directory, not a link or file. "
+                                        "Nothing was written."));
+        Q_EMIT DocumentChanged();
+        return false;
+    }
     QStringList saved;
     const RenderGraphDocumentStatus status = mDocument.Save(saved);
     if (status != RenderGraphDocumentStatus::Ok)
     {
-        mStatus->setText(DescribeStatus(status));
+        mStatus->setText(wasBuiltIn == true && status == RenderGraphDocumentStatus::Conflict
+                             ? QStringLiteral("%1/ already holds render-graph files; nothing was written. Open "
+                                              "its graph with Open Graph... instead.")
+                                   .arg(PROJECT_RENDER_GRAPH_DIRECTORY)
+                             : DescribeStatus(status));
         Q_EMIT DocumentChanged();
         return false;
     }
     renderTree();
     renderStatus();
+    if (wasBuiltIn == true)
+    {
+        // Say where the copy went; from now on the project's graph replaces the default.
+        mStatus->setText(QStringLiteral("Created %1 in the project from the engine default (%2 files). This project "
+                                        "now uses it; edits save there.")
+                             .arg(QDir(mProjectRoot).relativeFilePath(mDocument.GetPackageRoot()))
+                             .arg(saved.size()));
+    }
     Q_EMIT DocumentChanged();
     return true;
 }
@@ -688,7 +953,7 @@ bool RendererWorkspace::startJob(const QString& action,
                                  bool shouldCaptureSnapshot,
                                  bool shouldPreview)
 {
-    if (mDocument.IsLoaded() == false || mProjectRoot.isEmpty() == true || mJob.IsActive() == true)
+    if (mDocument.IsLoaded() == false || mProjectRoot.isEmpty() == true || IsJobActive() == true)
     {
         return false;
     }
@@ -729,6 +994,7 @@ bool RendererWorkspace::startJob(const QString& action,
     mCancel->setEnabled(true);
     mStatus->setText(
         QStringLiteral("Running render-graph %1 on draft revision %2...").arg(action).arg(request.Revision));
+    renderStatus();
     return true;
 }
 
@@ -751,6 +1017,12 @@ bool RendererWorkspace::Build()
 
 bool RendererWorkspace::BuildAndPreview()
 {
+    // The unedited default already has a generation built with the editor: no tools needed.
+    if (isUneditedBuiltIn() == true && GetDefaultRenderGraphRuntime().isEmpty() == false && mPreviewOrNull != nullptr)
+    {
+        mLiveBuild.MarkRequested(getBuildIdentity());
+        return PreviewRuntime();
+    }
     if (startBuild(true) == false)
     {
         return false;
@@ -772,19 +1044,39 @@ bool RendererWorkspace::startBuild(bool shouldPreview)
             QStringLiteral("Create %1 with `ludus render-graph new-build` before building.").arg(manifestFile()));
         return false;
     }
+    const QString build = buildDirectory();
+    if (build.isEmpty() == true)
+    {
+        mStatus->setText(DescribePackageOutsideProject());
+        return false;
+    }
+    const bool shouldOverride = mOverrideBuildTools->isChecked();
+    if (shouldOverride == true &&
+        (mHelper->text().trimmed().isEmpty() == true || mCompiler->text().trimmed().isEmpty() == true))
+    {
+        mTabs->setCurrentWidget(mHelper->parentWidget());
+        mStatus->setText(QStringLiteral("Supply both advanced overrides, or disable Override detected shader tools "
+                                        "to use the project's SDK automatically."));
+        return false;
+    }
     QStringList arguments{QStringLiteral("{snapshot}/") + manifestFile(),
-                          buildDirectory(),
+                          build,
                           QStringLiteral("--root"),
-                          QStringLiteral("{snapshot}"),
-                          QStringLiteral("--helper"),
-                          mHelper->text(),
-                          QStringLiteral("--compiler"),
-                          mCompiler->text()};
-    if (mValidator->text().isEmpty() == false)
+                          QStringLiteral("{snapshot}")};
+    if (shouldOverride == true)
+    {
+        arguments += {QStringLiteral("--helper"), mHelper->text(), QStringLiteral("--compiler"), mCompiler->text()};
+    }
+    else
+    {
+        arguments +=
+            {QStringLiteral("--project"), mProjectRoot, QStringLiteral("--tooling-root"), mTooling.ToolingRoot};
+    }
+    if (shouldOverride == true && mValidator->text().isEmpty() == false)
     {
         arguments += {QStringLiteral("--validator"), mValidator->text()};
     }
-    if (mSpirvCross->text().isEmpty() == false)
+    if (shouldOverride == true && mSpirvCross->text().isEmpty() == false)
     {
         arguments += {QStringLiteral("--spirv-cross"), mSpirvCross->text()};
     }
@@ -807,28 +1099,41 @@ bool RendererWorkspace::startBuild(bool shouldPreview)
 
 bool RendererWorkspace::CookRuntime()
 {
+    const QString build = buildDirectory();
+    if (build.isEmpty() == true)
+    {
+        mStatus->setText(DescribePackageOutsideProject());
+        return false;
+    }
     const QString configuration = mConfiguration->currentText() == DEFAULT_CONFIGURATION
                                       ? QStringLiteral("Default")
                                       : mConfiguration->currentText();
     return startJob(QStringLiteral("cook-runtime"),
-                    {buildDirectory(), GetRuntimePackagePath(), QStringLiteral("--configuration"), configuration},
+                    {build, GetRuntimePackagePath(), QStringLiteral("--configuration"), configuration},
                     false);
 }
 
 void RendererWorkspace::CancelJob()
 {
+    const bool isCreating = mCreation.IsActive();
     mLivePreview->setChecked(false);
+    mCreation.Cancel();
     mLiveBuild.SetEnabled(false);
     mJob.Cancel();
+    if (isCreating == true)
+    {
+        mStatus->setText(QStringLiteral("Graph creation cancelled. Choose New Graph to try again."));
+    }
 }
 
 bool RendererWorkspace::IsJobActive() const
 {
-    return mJob.IsActive();
+    return mJob.IsActive() == true || mCreation.IsActive() == true;
 }
 
 void RendererWorkspace::SetBuildTools(const QString& helper, const QString& compiler)
 {
+    mOverrideBuildTools->setChecked(helper.isEmpty() == false || compiler.isEmpty() == false);
     mHelper->setText(helper);
     mCompiler->setText(compiler);
 }
@@ -852,6 +1157,17 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     mDiagnostics->clear();
     if (result.IsSuccessful == true)
     {
+        const QJsonObject toolchain = result.Payload.value(QStringLiteral("toolchain")).toObject();
+        if (toolchain.isEmpty() == false && mOverrideBuildTools->isChecked() == false)
+        {
+            mHelper->setText(toolchain.value(QStringLiteral("helper")).toString());
+            mCompiler->setText(toolchain.value(QStringLiteral("compiler")).toString());
+            mValidator->setText(toolchain.value(QStringLiteral("validator")).toString());
+            mSpirvCross->setText(toolchain.value(QStringLiteral("spirv_cross")).toString());
+            mBuildToolsStatus->setText(QStringLiteral("Last build SDK: %1\nSelection and shader tools are detected "
+                                                      "again for each build.")
+                                           .arg(toolchain.value(QStringLiteral("sdk")).toString()));
+        }
         const QJsonObject plan = result.Payload.value(QStringLiteral("plan")).toObject();
         if (result.Request.Action == QStringLiteral("dump"))
         {
@@ -1172,12 +1488,50 @@ void RendererWorkspace::renderSource()
 
 void RendererWorkspace::renderStatus()
 {
-    if (mDocument.IsLoaded() == false)
+    if (mCreation.IsActive() == true)
     {
-        mStatus->setText(QStringLiteral("Open a root .lurender.json to edit its graph, schema and shader sources."));
+        mStatus->setText(QStringLiteral("Creating the graph and shader sources in your project..."));
+    }
+    else if (mJob.IsActive() == true)
+    {
+        mStatus->setText(QStringLiteral("Working on the render graph..."));
+    }
+    else if (mDocument.IsLoaded() == false)
+    {
+        mPath->setText(QStringLiteral("No render graph is open."));
+        mPath->setToolTip({});
+        mStatus->setText(QStringLiteral("Choose New Graph to create a graph in this project, or Open Graph "
+                                        "to edit an existing one."));
+    }
+    else if (isUneditedBuiltIn() == true)
+    {
+        const QString destination = QDir(mProjectRoot).relativeFilePath(mDocument.GetPackageRoot());
+        mPath->setText(QStringLiteral("Engine default renderer"));
+        mPath->setToolTip(QStringLiteral("Read-only and versioned with the engine. Editing it starts a project copy "
+                                         "that Save creates in %1/.")
+                              .arg(destination));
+        mStatus->setText(QStringLiteral("Engine default renderer (read-only). This project has no render graph of "
+                                        "its own; edits start one in %1/.")
+                             .arg(destination));
+    }
+    else if (mDocument.IsBuiltIn() == true)
+    {
+        // Customized but unsaved: the draft belongs to the project, the files do not exist yet.
+        const QString destination = QDir(mProjectRoot).relativeFilePath(mDocument.GetPackageRoot());
+        mPath->setText(QStringLiteral("%1/%2 (new, unsaved)").arg(destination, mDocument.GetRootGraph()));
+        mPath->setToolTip(QStringLiteral("Customized from the engine default. Save creates the package in %1/; "
+                                         "undoing every edit returns to the default.")
+                              .arg(destination));
+        mStatus->setText(QStringLiteral("Customizing the engine default - draft revision %1. Save creates %2/ in the "
+                                        "project; Undo returns to the default.")
+                             .arg(mDocument.GetRevision())
+                             .arg(destination));
     }
     else
     {
+        mPath->setText(
+            QDir(mProjectRoot).relativeFilePath(QDir(mDocument.GetPackageRoot()).filePath(mDocument.GetRootGraph())));
+        mPath->setToolTip({});
         QString text = QStringLiteral("%1 - draft revision %2, %3.")
                            .arg(mDocument.GetRootGraph())
                            .arg(mDocument.GetRevision())
@@ -1191,11 +1545,51 @@ void RendererWorkspace::renderStatus()
         }
         mStatus->setText(text);
     }
+    updateActions();
+}
+
+bool RendererWorkspace::isUneditedBuiltIn() const
+{
+    return mDocument.IsBuiltIn() == true && mDocument.IsDirty() == false;
+}
+
+void RendererWorkspace::showPreviewPage()
+{
+    mTabs->setCurrentWidget(mPreviewPage);
+}
+
+void RendererWorkspace::updateActions()
+{
     const bool isOpen = mDocument.IsLoaded();
-    mValidate->setEnabled(isOpen);
-    mBuild->setEnabled(isOpen);
-    mCook->setEnabled(isOpen);
-    mPreviewButton->setEnabled(isOpen == true && mPreviewOrNull != nullptr);
+    const bool isBusy = IsJobActive();
+    const bool canCreate = mProjectRoot.isEmpty() == false && isBusy == false;
+    const bool canBuild = isOpen == true && isBusy == false;
+    mNewGraph->setEnabled(canCreate);
+    mOpenGraph->setEnabled(canCreate);
+    mContent->widget(0)->setEnabled(canCreate);
+    mContent->setCurrentIndex(isOpen == true ? 1 : 0);
+    mEmptyMessage->setText(
+        mProjectRoot.isEmpty() == true
+            ? QStringLiteral("Open a game project to create or edit its render graphs.")
+            : QStringLiteral("Create your first render graph\n\n"
+                             "Graphs and shader sources are saved in this project's graphs folder.\n"
+                             "Create a graph, then use Build & Preview with an open World viewport."));
+    mConfiguration->setEnabled(canBuild);
+    mValidate->setEnabled(canBuild);
+    mBuild->setEnabled(canBuild);
+    mBuildPreview->setEnabled(canBuild);
+    mLivePreview->setEnabled(canBuild);
+    mOverrideBuildTools->setEnabled(isBusy == false);
+    for (QLineEdit* tool : {mHelper, mCompiler, mValidator, mSpirvCross})
+    {
+        tool->setEnabled(isBusy == false && mOverrideBuildTools->isChecked() == true);
+    }
+    mCook->setEnabled(canBuild);
+    mCancel->setEnabled(isBusy);
+    mPreviewButton->setEnabled(canBuild == true && mPreviewOrNull != nullptr);
+    mCustomize->setVisible(mDocument.IsBuiltIn() == true);
+    mCustomize->setEnabled(mDocument.IsBuiltIn() == true && canCreate == true);
+    mDiagnostics->setVisible(mDiagnostics->count() > 0);
 }
 
 void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonValue& value)
@@ -1343,18 +1737,39 @@ QString RendererWorkspace::manifestFile() const
 
 QString RendererWorkspace::buildDirectory() const
 {
+    if (mProjectRoot.isEmpty() == true || mDocument.IsLoaded() == false)
+    {
+        return {};
+    }
     QString name = mDocument.GetRootGraph();
     name.chop(static_cast<qsizetype>(QStringLiteral(".lurender.json").size()));
+    // Both roots are canonical, so a package outside the project shows as an escaping path.
     const QString package = QDir(mProjectRoot).relativeFilePath(mDocument.GetPackageRoot());
+    if (package == QStringLiteral("..") || package.startsWith(QStringLiteral("../")) == true ||
+        QDir::isAbsolutePath(package) == true)
+    {
+        return {};
+    }
     const QString owner = package == QStringLiteral(".") ? name : package + QLatin1Char('/') + name;
     return QDir(mProjectRoot).filePath(QStringLiteral("out/render-graph/") + owner + QStringLiteral("/build"));
 }
 
 QString RendererWorkspace::GetRuntimePackagePath() const
 {
+    const QString build = buildDirectory();
+    if (build.isEmpty() == true)
+    {
+        return {};
+    }
     QString name = mDocument.GetRootGraph();
     name.chop(static_cast<qsizetype>(QStringLiteral(".lurender.json").size()));
-    return QDir::cleanPath(QDir(buildDirectory()).filePath(QStringLiteral("../") + name + QStringLiteral(".lurgrt")));
+    return QDir::cleanPath(QDir(build).filePath(QStringLiteral("../") + name + QStringLiteral(".lurgrt")));
+}
+
+QString RendererWorkspace::GetPreviewPackagePath() const
+{
+    const QString prebuilt = GetDefaultRenderGraphRuntime();
+    return isUneditedBuiltIn() == true && prebuilt.isEmpty() == false ? prebuilt : GetRuntimePackagePath();
 }
 
 QString RendererWorkspace::GetStatusText() const
@@ -1394,18 +1809,25 @@ void RendererWorkspace::openSubgraph(const QString& asset, const QString& config
 
 void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
 {
+    if (sourceOrNull == mPreviewSourceOrNull)
+    {
+        return;
+    }
     if (mPreviewSourceOrNull != nullptr)
     {
         disconnect(mPreviewSourceOrNull, nullptr, this, nullptr);
     }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mPreviewOrNull != nullptr && sourceOrNull != mPreviewSourceOrNull)
+    if (mPreviewOrNull != nullptr)
     {
+        // Release generations on the previous viewport's device; the new source's device (once
+        // it has one) is attached by ServicePreview, which also restages the requested generation.
         mPreviewOrNull->Detach();
     }
 #endif
     mPreviewSourceOrNull = sourceOrNull;
     mPreviewDeviceSerial = 0;
+    mPreviewSceneIdentity.clear();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mPreviewSourceOrNull != nullptr && mPreviewOrNull != nullptr)
     {
@@ -1436,11 +1858,14 @@ bool RendererWorkspace::PreviewRuntime()
         return false;
     }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mDocument.IsLoaded() == false)
+    // The unedited engine default previews the editor's prebuilt generation; anything else
+    // previews its canonical project build output, which is empty outside the project.
+    const QString runtime = GetPreviewPackagePath();
+    if (runtime.isEmpty() == true)
     {
         return false;
     }
-    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(GetRuntimePackagePath());
+    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime);
     mPreviewTimer.start();
     ServicePreview();
     return loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting;
@@ -1470,16 +1895,23 @@ void RendererWorkspace::ServicePreview()
     const QSize target = preview.GetTargetSize();
     if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false)
     {
-        // The World viewport's current camera or orbit, at the graph's exported extent.
+        // The World viewport's current camera or orbit, at the graph's exported extent. The
+        // runtime profile admits only conventional depth, so request a finite conventional
+        // projection of the same camera instead of the viewport's infinite reverse-Z one.
         graphics::renderer::ViewDescription view;
         QString error;
         const RenderScene& scene = mPreviewSourceOrNull->Scene();
-        if (mPreviewSourceOrNull->DescribeView(static_cast<uint32>(target.width()),
-                                               static_cast<uint32>(target.height()),
-                                               view,
-                                               error) == true &&
-            (scene.Identity != mPreviewSceneIdentity ||
-             AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
+        const bool hasView = mPreviewSourceOrNull->DescribeConventionalView(static_cast<uint32>(target.width()),
+                                                                            static_cast<uint32>(target.height()),
+                                                                            view,
+                                                                            error);
+        if (hasView == false && scene.Identity != mPreviewSceneIdentity)
+        {
+            mPreviewStatus->setText(error);
+            mPreviewSceneIdentity = scene.Identity;
+        }
+        if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
+                                AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
         {
             RenderGraphExtraction extraction;
             if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)

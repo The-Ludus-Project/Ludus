@@ -11,7 +11,8 @@ using the same CLI/backend. RG2 adds bounded static opaque Renderer admission an
 execution through cooked headers. RG3a adds the editor's Renderer tab, mapped
 diagnostics, runtime generations and atomic activation; the node canvas and live
 in-editor preview are RG3b. RG4a adds measured exact-descriptor pooling of
-transient attachments with a serial control.
+transient attachments with a serial control. To begin in the editor, see
+[Start customizing the renderer](#start-customizing-the-renderer).
 
 **RG0 plans are contract diagnostics, not executable renderer packages.** They
 do not compile shaders, evaluate scene draw-item coverage, negotiate device
@@ -20,7 +21,87 @@ Renderer/RHI integration. `DefaultOpaque`, `DefaultMasked` and `RendererStatic`
 identify the qualified static profile described below; arbitrary mesh/material
 compatibility is never inferred from those labels.
 
+## Start customizing the renderer
+
+You don't need to create a render graph first. The engine ships a default one, and
+the editor uses it for any project that has no graph of its own.
+
+1. **Look at the default.** Open a project and choose the **Renderer** tab. If the
+   project has no `graphs/Main/main.lurender.json`, the tab shows the **Engine default
+   renderer**. This is the static opaque `RendererStatic` graph: Scene and Camera feed
+   `RasterizeGraph` into 640×360 color and depth targets, and the color target is
+   exported. Its sources live in
+   [`modules/graphics/renderer/render_graphs/default`](../../modules/graphics/renderer/render_graphs/default/main.lurender.json).
+   The SDK installs a read-only copy to `share/Ludus/render-graphs/default`, and
+   the editor embeds the same copy. Showing the default writes nothing to the
+   project.
+2. **Preview it.** Start the World viewport, then choose **Build & Preview**. While
+   the default is unedited, the preview uses the generation that was cooked when the
+   editor was built. No build, tools or project files are involved. The
+   [preview rules](#preview-a-cooked-generation) below still apply.
+3. **Edit it.** Change anything: move a node on the canvas, edit a field in the
+   Inspector, or apply shader text in the Source tab. The first edit turns the
+   default into a project draft:
+   - The path label changes to `graphs/Main/main.lurender.json (new, unsaved)`, and the
+     status line names the folder that Save will create.
+   - Undo works as usual. Undoing every edit returns to the unedited default.
+   - **Save** (Ctrl+S or Command-S) creates the whole package under `graphs/Main/`,
+     beside graphs made with **New Graph…**, and reports where it went. After that,
+     the project always opens its own graph.
+
+   To copy the default without editing it, right-click the source tree and choose
+   **Customize in Project**. Neither path ever replaces a file. If `graphs/Main/`
+   already holds any of the package's files, nothing is written; open that graph with
+   **Open Graph...** instead. A linked `graphs` folder is refused, as for New Graph.
+4. **Iterate.** **Build & Preview** and **Live Preview** build the draft and preview
+   the result. Like any project graph, the build detects shader tools from the
+   project's selected SDK, so no paths need to be entered. Unsaved drafts build
+   too, from an immutable snapshot (see [Validate, build and cook a draft](#validate-build-and-cook-a-draft)).
+
+**New Graph…** remains the way to start additional graphs from scratch in
+`graphs/<name>/`. A graph you create with the name `Main` is the one the project
+opens instead of the default.
+
+The feature stays out of the way if you don't use it:
+
+- World rendering doesn't depend on render graphs.
+- No banner, prompt or required step appears; with a project open, the Renderer tab
+  shows the default rather than an empty page.
+- Saving the unedited default writes nothing.
+- Closing a project asks to save only after you have edited the graph.
+
+Limits:
+
+- The default covers the `RendererStatic` profile only. The editor's preview interface
+  identity is the default's, and a compile-time check keeps the
+  [RG2 offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json)
+  on the same interface.
+- The default's profiles follow the host: `metal` and `wgsl` on macOS, `spirv` and
+  `wgsl` on Linux, and `wgsl` for web builds.
+- A project opens only `graphs/Main/main.lurender.json` by itself. Open other graphs
+  with **Open Graph...**.
+
 ## Create a saved graph and import it
+
+In the native editor, open your game project and choose **Renderer → New Graph…**.
+(Without any graph, the tab already shows the
+[engine default](#start-customizing-the-renderer).) Enter a graph name and
+choose **Create**. The editor creates `graphs/<name>/` inside the selected game
+project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
+`main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
+graph on the canvas. The starter exports a color image and uses the
+RendererStatic interface required by the editor preview. Target profiles are
+Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
+running viewport and never overwrites an existing graph folder. A failed creation
+keeps the previously open draft. Graphs and shader sources belong to the game
+project; engine/SDK files are read-only inputs.
+
+Next, open a World viewport and choose **Build & Preview**. The editor detects the
+selected project's SDK shader helper and prepared shader compiler automatically;
+SPIR-V/GLSL dependencies are detected only when the graph declares those targets. See
+[editing and building](#edit-and-reload-graphs-rg3) and the
+[preview's supported rendering profile](#preview-a-cooked-generation).
+Creation and building do not change the game's selected runtime renderer.
 
 From a checkout, use `./scripts/ludus`; after installation use `ludus`:
 
@@ -649,11 +730,18 @@ in-editor preview; see [Node canvas and preview (RG3b)](#node-canvas-and-preview
 
 ### Edit in the Renderer tab
 
-Open a project, choose **Renderer**, then **Open Graph...** and select a root
-`.lurender.json` inside the project. Its directory is the package root. The tab
+Open a project and choose **Renderer**. The tab shows the project's
+`graphs/Main/main.lurender.json`, or else the
+[engine default](#start-customizing-the-renderer). To edit another graph, choose
+**Open Graph...** and select a root `.lurender.json` inside the project. Its
+directory is the package root. The tab
 loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
 most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
 symlinks are skipped).
+
+For a project without graph sources, the tab shows the engine default, and build
+actions work on it right away. Use **New Graph…**, as described in
+[graph creation](#create-a-saved-graph-and-import-it), to start another graph.
 
 - **Inspector** edits the selected node's authored fields by stable ID, adds or
   removes nodes (removal also drops their connections and layout position), and
@@ -686,10 +774,44 @@ ludus --json render-graph dump graphs/main.lurender.json --root graphs
 
 A result names the draft revision it checked; a later edit marks it as describing
 an older revision. Results from a cancelled job, an earlier request or another
-project are discarded. Build uses the **Build Settings** tab's SDK helper and
-pinned compiler paths (stored in editor preferences, never in the project) and
-publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
-`out/render-graph/<graph>.lurgrt` from that build tree.
+project are discarded. Build resolves the saved project's current native profile
+through the same SDK resolver as ordinary project builds: a saved local SDK
+selection takes precedence over an installed locked SDK in the shared store.
+Its installed `lib/cmake/Ludus/shaders` directory supplies the shader helper and
+toolchain pins. Ordinary offline compilation does not require the optional
+`native_worker.py` client, so SDKs that predate native-worker support remain usable.
+That client is required and included in tool identity only when a native worker
+is selected. Slang and, when needed, the SPIR-V validator and SPIRV-Cross come
+from the selected local setup preset or the editor's prepared shader tools.
+No path entry is needed for **New Graph → Build & Preview**. Loading and building
+do not download tools, repair the project or write into the engine/SDK.
+
+**Build Settings** displays the resolved paths after a successful build. Its
+**Override detected shader tools (advanced)** checkbox explicitly enables manual
+paths for an exceptional tool setup. Old editor-wide path preferences do not
+override project detection, and switching projects clears these overrides.
+Each automatic build resolves selection again, so SDK switches and repairs take
+effect without restarting the editor. Missing/incomplete SDKs or tools report a
+setup error; use **Project → Repair Project Setup**. A selection change during
+compilation/cooking rejects publication and retains the previous runtime.
+
+Build publishes to `out/render-graph/<graph>/build`. Cook Runtime writes
+`out/render-graph/<graph>.lurgrt` from that build tree. These paths are resolved
+from the project's canonical location, so a project opened through a symlink
+still builds inside its own folder. Build and Cook Runtime refuse a graph whose
+package lies outside the project.
+
+The same automatic path is available to tooling without the editor:
+
+```bash
+ludus render-graph build graphs/Main/main.lushader.json out/graph-build \
+  --project /path/to/game --tooling-root /path/to/prepared/ludus \
+  --runtime-package out/graph.lurgrt
+```
+
+`--tooling-root` is unnecessary when the selected local preset records all required
+shader-tool paths. Explicit `--helper`/`--compiler` arguments remain supported for
+standalone packages. Pin/version, reflection and publication checks still apply.
 
 ### Mapped diagnostics
 
@@ -704,6 +826,21 @@ With `--json`, a failure's `error.location` names its authored owner:
 
 Locations are package-relative and never contain machine paths. Activate a
 diagnostic (double-click or Enter) to navigate to it.
+
+Shader failure messages are portable too. The helper's own command echoes
+(`+ <tool> <arguments>`, with absolute tool and temporary paths) are dropped,
+because the stage descriptor and build manifest already identify tools and
+inputs, and they would otherwise use up the 4 KiB message bound before the
+compiler's diagnostics. In the remaining text, captured sources appear
+package-relative, stage outputs as `artifact/`, helper files as `helper/` and the
+compiler by its file name.
+
+The shader helper (`compile_shader.py`) reports a compiler failure as one stderr
+line prefixed `Ludus shader build: `, so the compiler's first diagnostic arrives as
+`Ludus shader build: main_shaders/color.slang(3): error 30015: ...`. The mapper
+accepts that prefix; later compiler lines arrive unprefixed. The installed CLI
+consumer and the editor tests assert the location from the pinned compiler's real
+output.
 
 ### Runtime generations and activation
 
@@ -882,9 +1019,14 @@ CLI backend, which owns legality and reports the same codes as
 ### Preview a cooked generation
 
 1. Build and **Cook Runtime** as above, so `out/render-graph/<graph>.lurgrt`
-   exists.
+   exists. **Build & Preview** does both, then previews the result. An unedited
+   engine default skips this step and uses the generation cooked with the editor.
 2. Open a World and start its viewport; the preview borrows that device and the
-   World extraction. It never starts a device of its own.
+   World extraction. It never starts a device of its own. The preview follows
+   the viewport the World shows: the scene viewport of an imported-scene World
+   (such as a converted `.lulevel` or a World with a `scene` section), otherwise
+   the schema-bound render panel. Switching Worlds re-attaches the preview and
+   re-stages the requested generation on the newly shown viewport's device.
 3. Open the **Preview** tab and choose **Preview Runtime**.
 
 Preview is an explicit action: it reads the last cooked file once, decodes it and
@@ -892,10 +1034,57 @@ stages it in a `RenderGraphActivation` beside the generation already shown. Edit
 saving, building or cooking never changes the preview by itself. The preview shows
 the configuration's first exported `ColorTexture` at its authored extent, using the
 World viewport's current camera or orbit. Each World object becomes one static
-opaque item with its flat tint (object tint times surface tint); a tint with alpha
-below one is declared `Transparent`, and the editor's `DiagnosticColor` coverage
-policy draws unsupported items in magenta instead of hiding them. Textures, lights
-and other materials are outside the current static profile.
+opaque item with its flat tint (object tint times the surface's flat tint); a
+straight tint with alpha below one is declared `Transparent`, and the editor's
+`DiagnosticColor` coverage policy draws unsupported items in magenta instead of
+hiding them. Textures, lights and other materials are outside the current static
+profile. An authored surface's flat tint is its schema tint.
+
+Imported and merged Worlds are cooked: their geometry lives only in the decoded
+scene definition, which the extraction borrows (and keeps alive) without copying.
+Their base color lives only in textures, which the static profile does not sample.
+The preview approximates each cooked material by one flat color instead:
+
+- A textured material's flat tint is the mean of its base-color texture's mip-zero
+  texels in linear space. Each sRGB byte is decoded before averaging; every texel
+  has equal weight. White and black texels average to linear one half, not to the
+  decode of sRGB code 128.
+- Alpha is one. The World viewport draws cooked materials `Opaque` and ignores
+  sampled alpha, so a texture with partial alpha previews opaque rather than as a
+  magenta `Transparent` item.
+- An untextured cooked material stays black, as the cooked format defines it.
+- The mean is computed once per texture when the World is decoded and stored on
+  each material that uses it. Decoding has already applied the scene format's
+  texture limits (4096 texels per axis, 16 MiB per texture, 32 MiB per scene), so
+  the work is linear in a bounded byte count.
+
+This is a coverage-free average, not a lit or textured image: a texture with
+strong detail or high contrast previews as its overall color. Merged Worlds bake
+each authored object's schema tint into its cooked texture, so authored objects in
+a merged World preview in their schema color. The viewport's lit path still
+samples the texture under a white multiplier and does not read the flat tint.
+
+The runtime profile admits only conventional depth (near 0, far 1, `Less`, clear
+1). The World viewport's editor camera is an infinite reverse-Z perspective, so the
+preview asks for a finite conventional projection of the same camera instead:
+
+- An infinite perspective lens becomes a finite one whose far plane is 1% beyond
+  the farthest corner of the World's geometry bounds from the camera (at least
+  twice the near plane). Finite authored perspective and orthographic lenses keep
+  their planes.
+- The finite reverse-Z clip z is rewritten as `w - z`. This is exact only for a
+  finite projection; applied to an infinite one it would leave a degenerate far
+  plane at depth 1.
+- Position, orientation, field of view, near plane and the clip x, y and w rows
+  are unchanged, so the image matches the viewport framing. Conventional depth
+  has less precision than reverse-Z far from the camera; distant coplanar
+  surfaces can z-fight in the preview where the viewport does not.
+- A World without finite geometry bounds reports that in the preview status
+  instead of drawing.
+
+Reverse-Z graphs are not admitted: that would need an authored and qualified graph
+configuration (depth compare `Greater`, clear 0), never an implicit variant of a
+conventional graph.
 
 The image changes only when a complete copy of a frame from the **active**
 generation arrives:
@@ -918,10 +1107,12 @@ revision R`) from the candidate's state. The copy to the CPU is asynchronous and
 always finishes before the preview polls for activation or renders again, so a
 replaced generation is never reset while its export is being read.
 
-The editor is built against the RendererStatic interface of the checked-in
-[offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json):
-CMake cooks it into the editor and its interface identity is the one every
-previewed generation must match. Graphs scaffolded with
+The editor is built against the RendererStatic interface of the
+[engine default graph](#start-customizing-the-renderer). CMake cooks it into the
+editor, and its interface identity is the one every previewed generation must
+match. A compile-time check keeps the checked-in
+[offscreen fixture](../../tests/sdk_consumer/rg2/offscreen/main.lurender.json),
+which the preview parity tests cook, on the same interface. Graphs scaffolded with
 `ludus render-graph new-build --renderer-static` use that interface. Hot-swapping
 a candidate whose camera count differs from the active generation's fails, because
 one extraction feeds both; preview it after a viewport restart instead.
@@ -939,13 +1130,26 @@ one extraction feeds both; preview it after a viewport restart instead.
   candidate showing nothing; the first successful frame; truncated, foreign-interface
   and missing generations keeping the previous frame and generation; a pending
   replacement keeping the previous frame until it presents; and the last
-  frame surviving a device stop. Preview/live parity renders the frozen fixture
+  frame surviving a device stop. A cooked (definition-backed) scene composed by
+  `RenderScene::Merge` checks that the extraction borrows the definition's geometry,
+  that the reverse-Z editor camera yields a finite conventional view with the same
+  x, y and w rows and in-range depths, and that the scene renders through the
+  graph from the editor camera in its red base-color texture's flat color. Merged
+  scenes with a non-white 1×1 texture (straight alpha 128) and a white/black 2×1
+  texture check the linear mean, opaque coverage and the untouched lit tint. A World test checks that the Renderer tab's source
+  follows a schema World's render panel, an imported World's scene viewport and
+  back. A Renderer test builds a broken `color.slang` with the pinned compiler and
+  opens line 3 from the diagnostic. Preview/live parity renders the frozen fixture
   through the preview (cooked `.lurgrt`, activation, World extraction adapter) and
   through the live runtime path (the compiled header and a directly owned
   `RenderGraph` with independently written inputs) and requires identical bytes.
 
 Local qualification ran these suites with Clang 18 on macOS (Metal) under the
-offscreen Qt platform. They prove the preview's renderer output and publication
+offscreen Qt platform. A native (cocoa) editor run on a copy of an imported
+staircase World (17 objects, 6 meshes) attached the preview to the World's scene
+viewport, presented the offscreen fixture's generation from the editor camera, and
+opened `main_shaders/color.slang` line 3 for an undefined identifier while keeping
+the presented generation. They prove the preview's renderer output and publication
 rules, not native Qt presentation of the Preview tab or a live GameHost session.
 Linux/Vulkan and browser execution are not established by these local runs, and
 RG3b makes no scheduling, memory or performance claim.
@@ -1355,12 +1559,32 @@ occupied endpoints and worker exit. The dedicated `ludus_shader_reload_gpu` test
 passes worker-produced generations through the native game loader, driver
 pipeline preparation and real pixel readback; it checks changed pixels, failed
 publication preservation, superseded reads and interface-mismatch preservation.
-On the first local Metal run, changed-generation read/preparation/activation
-took 65.3 ms; the largest delivery-service call, including initial driver
-preparation, took 251.3 ms. Native RHI driver preparation is currently synchronous
-on its owner thread. Thus source compilation is asynchronous, but this change
-does not establish hitch-free GPU pipeline preparation. These figures are single
-observations, not percentile estimates or shader-compiler timings. The test
-reports delivery/pipeline timing separately from the source benchmark and
-refuses a skipped GPU case. Linux, browser and physical-device qualification
-remain distinct from any local macOS result.
+Before asynchronous driver preparation, the first local Metal run's
+changed-generation read/preparation/activation took 65.3 ms, and its largest
+delivery-service call, including initial driver preparation, took 251.3 ms.
+
+Activation now explicitly queues native shader compilation, reflection checks and
+graphics/compute pipeline creation on a dedicated preparation lane. The owner
+thread consumes completions through normal RHI polling; it never waits for a
+replacement's driver compilation. The old generation stays active until every
+replacement pipeline is Ready and the latest accepted scene extraction is ready.
+Superseding a candidate detaches it immediately; its native dependencies remain
+retained until late completions can be retired safely. CPU interface mismatch,
+queue exhaustion, allocation failure and native compile failure leave the active
+view intact. RHI shutdown drains preparation before releasing device resources.
+Browser backend policy is preserved; see the
+[native RHI preparation contract](fullscreen-rendering.md#portable-raster-r1).
+
+The strengthened Metal regression pauses actual pipeline work on its worker,
+draws eight frames from the previous generation, supersedes that blocked
+candidate, and then admits the successful replacement. It also corrupts a valid
+MSL artifact to trigger a native asynchronous compiler failure and verifies the
+active green image survives. In the first local run of that regression, the
+largest delivery-service call took 0.371 ms, and replacement processing took
+24.67 ms including deliberately paused frames and supersession. These are single
+observations with different workloads, not percentile estimates or a comparable
+end-to-end speedup against the earlier synchronous run. Owner-side file observation,
+validation, allocation, completion collection and scene updates still have costs;
+no universal frame-time bound is claimed. The test reports service/pipeline timing
+separately from source compilation and refuses a skipped GPU case. Linux, browser
+and physical-device qualification remain distinct from any local macOS result.

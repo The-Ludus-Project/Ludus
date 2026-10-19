@@ -1,9 +1,9 @@
 #include "internal/offscreen_frame_reader.h"
-#include "internal/preview_bake.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
+#include "internal/viewport_statistics.h"
 #include "viewport_fixture.h"
 
 #include <ludus/foundation/time/time.hpp>
@@ -12,13 +12,16 @@
 #include <ludus/graphics/rhi/rhi.h>
 
 #include <QByteArray>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QImage>
 #include <QLabel>
 #include <QPushButton>
-#include <QSignalSpy>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolButton>
 #include <QtGlobal>
 
 #include <catch2/catch_test_macros.hpp>
@@ -40,10 +43,132 @@ constexpr uint64 TIMEOUT_SECONDS = 20;
 constexpr int32 LIT_TIMEOUT_MILLISECONDS = 120000;
 /// Qt event-loop slice between preview ticks while waiting for frames.
 constexpr int32 POLL_MILLISECONDS = 20;
+/// Debug-view capture size: small enough for lavapipe, large enough to resolve every cube face.
+constexpr int32 DEBUG_FRAME_WIDTH = 160;
+constexpr int32 DEBUG_FRAME_HEIGHT = 120;
+/// Depth and UV vary continuously, so they show many more colours than background plus faces.
+constexpr qsizetype MINIMUM_VARYING_COLOURS = 8;
+/// Flat cube faces: background plus at least the three faces a corner view always shows.
+constexpr qsizetype MINIMUM_NORMAL_COLOURS = 4;
+/// Directory for PNG captures of each debug view; captures are skipped when unset.
+constexpr const char* DEBUG_SHOT_DIRECTORY_VARIABLE = "LUDUS_VIEWPORT_DEBUG_SHOTS";
 uint8 GetPatternByte(uint32 x, uint32 y, uint32 channel)
 {
     return static_cast<uint8>((x * 7U + y * 13U + channel * 61U) & 0xFFU);
 }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+/// Wait for frames rendered in the current shading mode, then copy the newest one to the CPU.
+QImage CaptureFrame(RenderPreview& inoutPreview)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while ((inoutPreview.Frames() < 2 || inoutPreview.HasPendingFrame() == false) && inoutPreview.Running() == true &&
+           timer.elapsed() < LIT_TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    ludus::graphics::renderer::ViewportFrame frame;
+    ludus::graphics::renderer::ViewportImage image;
+    if (inoutPreview.HasPendingFrame() == false || inoutPreview.TakeFrame(frame, image) == false)
+    {
+        return {};
+    }
+    OffscreenFrameReader reader;
+    QImage result;
+    if (reader.Begin(inoutPreview.GetDevice(), image.Texture, image.Width, image.Height) == true)
+    {
+        OffscreenReadStatus status = OffscreenReadStatus::Pending;
+        while (status == OffscreenReadStatus::Pending && timer.elapsed() < LIT_TIMEOUT_MILLISECONDS)
+        {
+            static_cast<void>(rhi::PollLifetime(inoutPreview.GetDevice()));
+            status = reader.Poll();
+        }
+        if (status == OffscreenReadStatus::Complete)
+        {
+            result = reader.TakeImage();
+        }
+        reader.Cancel();
+    }
+    inoutPreview.ReleaseFrame(frame);
+    return result;
+}
+qsizetype CountColours(const QImage& image)
+{
+    QSet<QRgb> colours;
+    for (int32 y = 0; y < image.height(); ++y)
+    {
+        for (int32 x = 0; x < image.width(); ++x)
+        {
+            colours.insert(image.pixel(x, y));
+        }
+    }
+    return colours.size();
+}
+/// Render every debug view of scene on lavapipe; each must differ from the others and from Lit.
+void CheckDebugViews(const RenderScene& scene, const QString& captureSuffix)
+{
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetStatisticsVisible(true);
+    preview.Resize(DEBUG_FRAME_WIDTH, DEBUG_FRAME_HEIGHT);
+    REQUIRE(preview.Start() == true);
+    if (preview.AdmitOffscreenDevice() == false)
+    {
+        SKIP("No Vulkan device (install lavapipe for this smoke test)");
+    }
+    const QString shotDirectory = qEnvironmentVariable(DEBUG_SHOT_DIRECTORY_VARIABLE);
+    if (shotDirectory.isEmpty() == false)
+    {
+        REQUIRE(QDir().mkpath(shotDirectory) == true);
+    }
+    QSet<QByteArray> images;
+    for (usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
+    {
+        const PreviewShading shading = static_cast<PreviewShading>(i);
+        const QString key = GetPreviewShadingKey(shading);
+        INFO(key.toStdString());
+        preview.SetShading(shading);
+        const QImage image = CaptureFrame(preview);
+        INFO(preview.Status().toStdString());
+        REQUIRE(preview.Running() == true);
+        REQUIRE(image.isNull() == false);
+        CHECK(image.width() == DEBUG_FRAME_WIDTH);
+        CHECK(image.height() == DEBUG_FRAME_HEIGHT);
+        if (shotDirectory.isEmpty() == false)
+        {
+            CHECK(image.save(QStringLiteral("%1/%2%3.png").arg(shotDirectory, key, captureSuffix)) == true);
+        }
+        if (shading == PreviewShading::Depth || shading == PreviewShading::Uv)
+        {
+            CHECK(CountColours(image) >= MINIMUM_VARYING_COLOURS);
+        }
+        if (shading == PreviewShading::Normal)
+        {
+            CHECK(CountColours(image) >= MINIMUM_NORMAL_COLOURS);
+        }
+        if (IsPreviewDebugShading(shading) == true)
+        {
+            CHECK(preview.Status().contains(GetPreviewShadingStatus(shading)) == true);
+        }
+        // An unlit World has no lights: Lit falls back to Albedo, and Light count is honestly black
+        // and may match Metallic 0, so only the remaining views must be unique there.
+        if (scene.Lit == true || (shading != PreviewShading::LightCount && shading != PreviewShading::Lit))
+        {
+            const QByteArray bytes(reinterpret_cast<const char*>(image.constBits()), image.sizeInBytes());
+            CHECK(images.contains(bytes) == false);
+            images.insert(bytes);
+        }
+    }
+    // Statistics were gathered while the views rendered; the GPU sample is read back with latency.
+    const ViewportStatistics& statistics = preview.GetStatistics();
+    CHECK(statistics.CpuMilliseconds.GetCount() > 0);
+    CHECK(statistics.Draws > 0);
+    CHECK(statistics.Width == static_cast<uint32>(DEBUG_FRAME_WIDTH));
+    CHECK(statistics.Height == static_cast<uint32>(DEBUG_FRAME_HEIGHT));
+    CHECK(FormatViewportStatistics(statistics).startsWith(QStringLiteral("GPU: ")) == true);
+    preview.Stop();
+}
+#endif
 } // namespace
 
 TEST_CASE("Offscreen presentation is forced by the environment on Linux", "[editor][viewport][offscreen]")
@@ -173,7 +298,7 @@ TEST_CASE("Lit shading with many shadowed lights renders through the offscreen V
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
     RenderScene scene;
-    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene);
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasCollapsedTriangle = true });
     RenderPreview preview;
     REQUIRE(preview.SetScene(scene) == true);
     preview.SetShading(PreviewShading::Lit);
@@ -198,36 +323,46 @@ TEST_CASE("Lit shading with many shadowed lights renders through the offscreen V
     CHECK(preview.Status().contains(
               QStringLiteral("%1 shadow faces")
                   .arg(tests::LAMP_COUNT * static_cast<int32>(ludus::graphics::renderer::POINT_SHADOW_FACES))) == true);
+    CHECK(preview.Status().contains(QStringLiteral("direct lighting")) == true);
+    CHECK(preview.Status().contains(QStringLiteral("bake")) == false);
     preview.Stop();
 #else
     SKIP("Offscreen Vulkan presentation is Linux-only");
 #endif
 }
 
-namespace
+TEST_CASE("Debug shading views render distinct images on the offscreen Vulkan device",
+          "[editor][viewport][offscreen][gpu][shading]")
 {
-/// Sample cube instances in tests::MakeLitScene: the starter cube plus its copies.
-constexpr uint32 CUBE_INSTANCE_COUNT = 1 + static_cast<uint32>(tests::EXTRA_CASTER_COUNT);
-/// Patch density for a bake that runs long enough to cancel: 2 x 40^2 triangles per instance,
-/// within the authored preview mesh's 12288 index limit.
-constexpr uint32 LONG_BAKE_PATCH_CELLS = 40;
-/// Upper bound for a bake on a software rasterizer's CPU budget.
-constexpr int32 BAKE_TIMEOUT_MILLISECONDS = 180000;
-template <typename Condition>
-bool WaitFor(Condition condition, int32 timeoutMilliseconds)
-{
-    QElapsedTimer timer;
-    timer.start();
-    while (condition() == false && timer.elapsed() < timeoutMilliseconds)
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    rhi::Shutdown();
+    struct Guard final
     {
-        QTest::qWait(POLL_MILLISECONDS);
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    SECTION("Authored lighting scene")
+    {
+        RenderScene scene;
+        tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene);
+        CheckDebugViews(scene, QString());
     }
-    return condition();
+    SECTION("Unlit authored World")
+    {
+        RenderScene scene;
+        tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasLamps = false });
+        CheckDebugViews(scene, QStringLiteral("-unlit"));
+    }
+#else
+    SKIP("Offscreen Vulkan presentation is Linux-only");
+#endif
 }
-} // namespace
 
-TEST_CASE("Lit bake skips collapsed triangles and still completes with a notice",
-          "[editor][viewport][offscreen][gpu][lighting]")
+TEST_CASE("GPU frame timing reaches the statistics overlay without stalling", "[editor][viewport][offscreen][gpu]")
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
     rhi::Shutdown();
@@ -241,51 +376,54 @@ TEST_CASE("Lit bake skips collapsed triangles and still completes with a notice"
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
     RenderScene scene;
-    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasCollapsedTriangle = true });
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasLamps = false });
     RenderPreview preview;
-    QSignalSpy bakeChanges(&preview, &RenderPreview::BakeChanged);
     REQUIRE(preview.SetScene(scene) == true);
-    preview.SetShading(PreviewShading::Lit);
-    preview.Resize(96, 64);
+    preview.SetStatisticsVisible(true);
+    preview.Resize(DEBUG_FRAME_WIDTH, DEBUG_FRAME_HEIGHT);
     REQUIRE(preview.Start() == true);
     if (preview.AdmitOffscreenDevice() == false)
     {
         SKIP("No Vulkan device (install lavapipe for this smoke test)");
     }
-    // One collapsed triangle used to reject the whole bake; now it completes.
-    const bool isBaked = WaitFor(
-        [&preview]() { return preview.GetBakeState() == PreviewBakeState::Baked || preview.Running() == false; },
-        BAKE_TIMEOUT_MILLISECONDS);
-    INFO(preview.Status().toStdString());
-    REQUIRE(isBaked == true);
-    REQUIRE(preview.GetBakeState() == PreviewBakeState::Baked);
-    PreviewBakeNotice notice;
-    REQUIRE(preview.GetBakeNotice(notice) == true);
-    CHECK(notice.SkippedTriangleCount == CUBE_INSTANCE_COUNT);
-    CHECK(notice.AffectedObjectCount == CUBE_INSTANCE_COUNT);
-    CHECK(notice.AffectedObjects.contains(QStringLiteral("Caster (1)")) == true);
-    CHECK(bakeChanges.count() > 0);
-    REQUIRE(WaitFor([&preview]() { return preview.Status().contains(QStringLiteral("static diffuse baked")); },
-                    BAKE_TIMEOUT_MILLISECONDS) == true);
-    CHECK(preview.Status().contains(
-              QStringLiteral("skipped %1 zero-area triangles in %1 objects").arg(CUBE_INSTANCE_COUNT)) == true);
-    // Baked lighting has nothing left to cancel or restart.
-    preview.CancelBake();
-    CHECK(preview.GetBakeState() == PreviewBakeState::Baked);
-    CHECK(preview.RestartBake() == false);
+    QElapsedTimer timer;
+    timer.start();
+    while (preview.GetStatistics().GpuState == ViewportGpuTimeState::Waiting && preview.Running() == true &&
+           timer.elapsed() < LIT_TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    const ViewportStatistics& statistics = preview.GetStatistics();
+    // Either timestamps are measured or the device says they are unavailable; never stuck waiting.
+    REQUIRE(statistics.GpuState != ViewportGpuTimeState::Waiting);
+    const QString text = FormatViewportStatistics(statistics);
+    INFO(text.toStdString());
+    if (statistics.GpuState == ViewportGpuTimeState::Available)
+    {
+        CHECK(statistics.GpuMilliseconds.GetCount() > 0);
+        CHECK(text.startsWith(QStringLiteral("GPU: ")) == true);
+        CHECK(text.contains(QStringLiteral(" ms")) == true);
+    }
+    else
+    {
+        CHECK(text.startsWith(QStringLiteral("GPU: n/a")) == true);
+    }
+    // Hiding the overlay stops sampling and discards the window.
+    preview.SetStatisticsVisible(false);
+    CHECK(preview.GetStatistics().CpuMilliseconds.GetCount() == 0);
     preview.Stop();
 #else
     SKIP("Offscreen Vulkan presentation is Linux-only");
 #endif
 }
 
-TEST_CASE("The viewport warns about skipped triangles and lets the user cancel and restart the bake",
-          "[editor][viewport][offscreen][gpu][lighting]")
+TEST_CASE("Statistics overlay paints over the offscreen readback canvas",
+          "[editor][viewport][offscreen][gpu][statistics]")
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
-    rhi::Shutdown();
-    const QByteArray previousPresentation = qgetenv("LUDUS_EDITOR_VIEWPORT");
+    const QByteArray previous = qgetenv("LUDUS_EDITOR_VIEWPORT");
     qputenv("LUDUS_EDITOR_VIEWPORT", QByteArrayLiteral("offscreen"));
+    rhi::Shutdown();
     struct Guard final
     {
         QByteArray Previous;
@@ -301,61 +439,50 @@ TEST_CASE("The viewport warns about skipped triangles and lets the user cancel a
                 qputenv("LUDUS_EDITOR_VIEWPORT", Previous);
             }
         }
-    } guard{previousPresentation};
+    } guard{previous};
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
     RenderScene scene;
-    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(),
-                        scene,
-                        { .HasCollapsedTriangle = true, .ExtraPatchCells = LONG_BAKE_PATCH_CELLS });
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, { .HasLamps = false });
     RenderPreview preview;
     PreviewViewport viewport(&preview);
-    viewport.resize(320, 240);
+    viewport.resize(DEBUG_FRAME_WIDTH * 2, DEBUG_FRAME_HEIGHT * 2);
     viewport.show();
     REQUIRE(preview.SetScene(scene) == true);
-    preview.SetShading(PreviewShading::Lit);
     REQUIRE(preview.Start() == true);
-    if (preview.HasDevice() == false && WaitFor([&preview]() { return preview.HasDevice(); }, 5000) == false)
+    QElapsedTimer timer;
+    timer.start();
+    while (viewport.PresentedFrames() < 2 && preview.Running() == true && timer.elapsed() < LIT_TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    if (preview.HasDevice() == false)
     {
         SKIP("No Vulkan device (install lavapipe for this smoke test)");
     }
-    QLabel* notice = viewport.findChild<QLabel*>(QStringLiteral("viewportBakeNotice"));
-    QPushButton* action = viewport.findChild<QPushButton*>(QStringLiteral("viewportBakeAction"));
-    REQUIRE(notice != nullptr);
-    REQUIRE(action != nullptr);
-    // The warning and Cancel appear with preparation, while the bake still runs.
-    const bool isWarned = WaitFor(
-        [&preview, notice]() {
-            return (preview.GetBakeState() == PreviewBakeState::Running && notice->isVisible() == true) ||
-                   preview.Running() == false;
-        },
-        BAKE_TIMEOUT_MILLISECONDS);
-    INFO(preview.Status().toStdString());
-    REQUIRE(isWarned == true);
-    REQUIRE(preview.GetBakeState() == PreviewBakeState::Running);
-    CHECK(notice->text().contains(QString::number(CUBE_INSTANCE_COUNT)) == true);
-    CHECK(notice->toolTip().contains(QStringLiteral("Caster (1)")) == true);
-    REQUIRE(action->isVisible() == true);
-    CHECK(action->text() == QStringLiteral("Cancel bake"));
-    QTest::mouseClick(action, Qt::LeftButton);
-    REQUIRE(preview.GetBakeState() == PreviewBakeState::Cancelled);
-    CHECK(action->text() == QStringLiteral("Bake again"));
-    // Direct lighting keeps presenting; the status says the bake was cancelled.
-    REQUIRE(WaitFor([&preview]() { return preview.Status().contains(QStringLiteral("bake cancelled")); },
-                    BAKE_TIMEOUT_MILLISECONDS) == true);
-    CHECK(preview.Running() == true);
-    // Restarting runs the bake again and reports its notice anew.
-    QTest::mouseClick(action, Qt::LeftButton);
-    const bool isRestarted = WaitFor(
-        [&preview, action]() {
-            return (preview.GetBakeState() == PreviewBakeState::Running &&
-                    action->text() == QStringLiteral("Cancel bake")) ||
-                   preview.Running() == false;
-        },
-        BAKE_TIMEOUT_MILLISECONDS);
-    REQUIRE(isRestarted == true);
-    REQUIRE(preview.GetBakeState() == PreviewBakeState::Running);
-    REQUIRE(WaitFor([notice]() { return notice->isVisible(); }, BAKE_TIMEOUT_MILLISECONDS) == true);
+    QWidget* canvas = viewport.findChild<QWidget*>(QStringLiteral("LudusOffscreenViewport"));
+    REQUIRE(canvas != nullptr);
+    const QImage hidden = canvas->grab().toImage();
+    QToolButton* statistics = viewport.findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    REQUIRE(statistics != nullptr);
+    statistics->click();
+    REQUIRE(
+        QTest::qWaitFor([&viewport]() { return viewport.GetStatisticsText().contains(QStringLiteral("…")) == false; },
+                        LIT_TIMEOUT_MILLISECONDS) == true);
+    INFO(viewport.GetStatisticsText().toStdString());
+    const QImage shown = canvas->grab().toImage();
+    const QString shotDirectory = qEnvironmentVariable(DEBUG_SHOT_DIRECTORY_VARIABLE);
+    if (shotDirectory.isEmpty() == false)
+    {
+        REQUIRE(QDir().mkpath(shotDirectory) == true);
+        CHECK(shown.save(shotDirectory + QStringLiteral("/stats-overlay-offscreen.png")) == true);
+    }
+    REQUIRE(hidden.size() == shown.size());
+    // The panel sits in the top-left corner; the rest of the frame is unchanged by the overlay.
+    const QRect corner(0, 0, shown.width() / 4, shown.height() / 4);
+    CHECK(shown.copy(corner) != hidden.copy(corner));
+    statistics->click();
+    CHECK(viewport.GetStatisticsText().isEmpty() == true);
     preview.Stop();
 #else
     SKIP("Offscreen Vulkan presentation is Linux-only");

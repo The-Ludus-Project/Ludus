@@ -2245,3 +2245,33 @@ legacy decoded scene's black untextured semantics. The override array is consume
 at Initialize, while the source texture bytes remain borrowed through destruction.
 Use a bake revision key for physical geometry/material/light/environment changes;
 camera movement and exposure do not change these view-independent irradiance charts.
+
+### Material debug views
+
+`LitMaterialDescription::DebugView` (`MaterialDebugView`) replaces a lit
+material's shaded output with one inspection quantity per pixel: world-space
+normal as RGB (`n * 0.5 + 0.5`), linear depth, perceptual roughness, metallic,
+UV0 as red/green, or the number of lights whose shadowed contribution is nonzero
+as a blue-to-red heat ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`.
+Only the debug recipes honour it: `renderer_lit_debug` and
+`renderer_clustered_authored_debug`, with matching shadow recipes. They compile
+the production sources with `LUDUS_DEBUG_VIEW`, keep the production binding and
+parameter layout, and read the mode from the reserved `Options.w`; the
+production recipes are unchanged and ignore it (it stays zero). Creation rejects
+values above `MaterialDebugView::LightCount`.
+
+`ViewDescription::DebugDepthRange` supplies the linear-depth `{near, far}` in
+world units: radial distance from the camera for perspective views and distance
+along `CameraForward` for orthographic ones. It must be finite with
+`0 <= near < far <= 1e7`, or `{0, 0}` when no view uses depth; anything else
+fails `PrepareView` with `InvalidDescription`. The range rides in the unused
+per-instance `Color.zw` of lit items.
+
+Debug colours are display values. Each debug shader inverts the viewport output
+pass (Reinhard, then sRGB encoding at exposure 1) so the encoded pixel equals the
+intended colour. Inversion is capped just below 1, so pure white encodes at about
+99.5%. Render debug views into an HDR (`PreferHdr`) target: an RGBA8 target
+clips inverted values above about 0.73. Overdraw is not a debug view.
+Translucent painter layers draw in a separate overlay pass with their own
+transform, and the world pass has no additive, depth-off state to accumulate
+fragment counts.

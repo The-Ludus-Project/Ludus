@@ -1,12 +1,9 @@
 #include "internal/render_preview.h"
-#include "internal/preview_bake.h"
 #include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
-#include "internal/static_lighting_job.h"
 
 #include <ludus/foundation/base/core.h>
-#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
@@ -16,13 +13,13 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
+#include <ludus/graphics/rhi/measurement.h>
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/graphics/rhi/rhi.h>
 
 #include <new>
 
 #include <QElapsedTimer>
-#include <QStringList>
 
 namespace ludus::editor
 {
@@ -32,6 +29,10 @@ using namespace foundation;
 namespace rhi = graphics::rhi;
 namespace rr = graphics::renderer;
 constexpr int32 NAVIGATION_STATE_VERSION = 2;
+/// Minimum interval between statistics overlay refreshes, so the text stays readable.
+constexpr int64 STATISTICS_REFRESH_MILLISECONDS = 250;
+/// Nanoseconds per millisecond, for GPU timestamp durations.
+constexpr float64 NANOSECONDS_PER_MILLISECOND = 1000000.0;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
 bool Accepted(rhi::RasterStatus s) noexcept
 {
@@ -43,7 +44,7 @@ rhi::DeviceDescription MakeViewportDeviceDescription() noexcept
 {
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
-    // Two retained GPU generations, 80 caster views, and direct/baked material versions.
+    // Two retained GPU generations, 80 caster views, and direct-lighting material versions.
     // These are explicit admission budgets, not allocations or inferred native limits.
     description.Storage.ResourcesPerKind = 4096;
     description.Storage.BindingDescriptors = 32768;
@@ -55,6 +56,9 @@ rhi::DeviceDescription MakeViewportDeviceDescription() noexcept
     description.RequiredProfile.Raster.MinUniformRange = 16384;
     description.RequiredProfile.Raster.MinVertexAttributes = 16;
     description.RequiredProfile.Raster.MinTextureDimension2D = preview_lighting::SHADOW_ATLAS_PIXELS;
+    // Optional frame timestamps for the viewport statistics overlay; backends without
+    // timestamp queries report Unavailable and the overlay shows "GPU: n/a".
+    description.EnableGpuTiming = true;
     return description;
 }
 #endif
@@ -260,12 +264,6 @@ bool RenderPreview::beginResourceRestart() noexcept
         fail(QStringLiteral("GPU preview staging allocation failed. Previous view retained."));
         return false;
     }
-    // Cancel and drain the obsolete bake now: the preview's JobSystem runs one bake
-    // at a time, and a retired generation can outlive this call.
-    if (mResources.Get() != nullptr)
-    {
-        mResources->BakeWorker.Reset();
-    }
     if (mHasPendingFrame == true)
     {
         static_cast<void>(mResources->Viewport.Release(mPendingFrame));
@@ -348,6 +346,7 @@ bool RenderPreview::AdmitDevice(const rhi::NativeDeviceDescription& native)
     mIsStarting = false;
     OwnsDevice_ = true;
     ++mDeviceSerial;
+    resetStatistics();
     Width_ = Height_ = 0;
     Frames_ = 0;
     restartResources();
@@ -384,6 +383,7 @@ bool RenderPreview::AdmitOffscreenDevice()
     mIsStarting = false;
     OwnsDevice_ = true;
     ++mDeviceSerial;
+    resetStatistics();
     Width_ = Height_ = 0;
     Frames_ = 0;
     restartResources();
@@ -427,6 +427,7 @@ bool RenderPreview::AdmitBrowserDevice(const char* canvasSelector)
     mIsStarting = false;
     OwnsDevice_ = true;
     ++mDeviceSerial;
+    resetStatistics();
     Width_ = 0;
     Height_ = 0;
     Frames_ = 0;
@@ -462,10 +463,82 @@ void RenderPreview::Stop() noexcept
         Q_EMIT Stopped();
     }
 }
+void RenderPreview::SetStatisticsVisible(bool isVisible)
+{
+    if (isVisible == mIsStatisticsVisible)
+    {
+        return;
+    }
+    mIsStatisticsVisible = isVisible;
+    resetStatistics();
+    Q_EMIT NavigationChanged();
+    Q_EMIT StatisticsChanged();
+}
+void RenderPreview::resetStatistics() noexcept
+{
+    mStatistics.GpuMilliseconds.Reset();
+    mStatistics.CpuMilliseconds.Reset();
+    mStatistics.GpuState = ViewportGpuTimeState::Waiting;
+    mStatisticsRefresh.invalidate();
+}
+void RenderPreview::serviceGpuTiming() noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (mIsStatisticsVisible == false || mStatistics.GpuState == ViewportGpuTimeState::Unavailable)
+    {
+        return;
+    }
+    rhi::GpuTiming timing;
+    if (rhi::GetGpuTiming(Device_, timing) != rhi::RasterStatus::Ready)
+    {
+        return;
+    }
+    switch (timing.State)
+    {
+        case rhi::GpuTimingState::Armed:
+        case rhi::GpuTimingState::Pending:
+            // Read back with latency: the previous frame's query is still in flight.
+            return;
+        case rhi::GpuTimingState::Available:
+            mStatistics.GpuMilliseconds.Add(timing.DurationNanoseconds / NANOSECONDS_PER_MILLISECOND);
+            mStatistics.GpuState = ViewportGpuTimeState::Available;
+            break;
+        case rhi::GpuTimingState::Unavailable:
+            mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+            return;
+        case rhi::GpuTimingState::Empty:
+        case rhi::GpuTimingState::Disjoint:
+        case rhi::GpuTimingState::Failed:
+            break;
+    }
+    if (rhi::ArmGpuTiming(Device_) == rhi::RasterStatus::Unsupported)
+    {
+        mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+    }
+#else
+    // CPU-only previews have no device timestamps.
+    mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+#endif
+}
+void RenderPreview::recordFrameStatistics(const QElapsedTimer& frameTimer)
+{
+    if (mIsStatisticsVisible == false)
+    {
+        return;
+    }
+    mStatistics.CpuMilliseconds.Add(static_cast<float64>(frameTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND);
+    mStatistics.Width = Width_;
+    mStatistics.Height = Height_;
+    mStatistics.Draws = Report_.Draws;
+    if (mStatisticsRefresh.isValid() == false || mStatisticsRefresh.elapsed() >= STATISTICS_REFRESH_MILLISECONDS)
+    {
+        mStatisticsRefresh.start();
+        Q_EMIT StatisticsChanged();
+    }
+}
 void RenderPreview::SetShading(PreviewShading shading)
 {
-    if ((shading != PreviewShading::Solid && shading != PreviewShading::Albedo && shading != PreviewShading::Lit) ||
-        shading == mShading)
+    if (static_cast<usize>(shading) >= PREVIEW_SHADING_COUNT || shading == mShading)
     {
         return;
     }
@@ -702,10 +775,8 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("zoom"), Zoom_},
             {QStringLiteral("camera"), CameraId_},
             {QStringLiteral("reference"), Reference_},
-            {QStringLiteral("shading"),
-             mShading == PreviewShading::Lit
-                 ? QStringLiteral("lit")
-                 : (mShading == PreviewShading::Albedo ? QStringLiteral("albedo") : QStringLiteral("solid"))},
+            {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
+            {QStringLiteral("statistics"), mIsStatisticsVisible},
             {QStringLiteral("x"), OrbitCenter_.X},
             {QStringLiteral("y"), OrbitCenter_.Y},
             {QStringLiteral("z"), OrbitCenter_.Z},
@@ -727,7 +798,7 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("far"), mCameraController.GetSample().Lens.FarPlane}};
 }
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — width then height matches ViewDescription.
-bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescription& outView, QString& outError) const
+PreviewViewOptions RenderPreview::makeViewOptions(uint32 width, uint32 height) const noexcept
 {
     PreviewViewOptions options;
     options.Camera = Camera_;
@@ -739,6 +810,19 @@ bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescriptio
     options.OrbitCenter = &OrbitCenter_;
     options.OrbitRadius = OrbitRadius_;
     options.EditorCameraOrNull = &mCameraController.GetSample();
+    return options;
+}
+bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescription& outView, QString& outError) const
+{
+    return Scene_.View(makeViewOptions(width, height), outView, outError);
+}
+bool RenderPreview::DescribeConventionalView(uint32 width,
+                                             uint32 height,
+                                             rr::ViewDescription& outView,
+                                             QString& outError) const
+{
+    PreviewViewOptions options = makeViewOptions(width, height);
+    options.ShouldUseConventionalDepth = true;
     return Scene_.View(options, outView, outError);
 }
 void RenderPreview::RestoreNavigation(const QJsonObject& state)
@@ -798,11 +882,10 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     Camera_ = -1;
     CameraId_ = state.value(QStringLiteral("camera")).toString().left(256);
     Reference_ = state.value(QStringLiteral("reference")).toBool();
-    SetShading(state.value(QStringLiteral("shading")).toString() == QStringLiteral("lit")
-                   ? PreviewShading::Lit
-                   : (state.value(QStringLiteral("shading")).toString() == QStringLiteral("albedo")
-                          ? PreviewShading::Albedo
-                          : PreviewShading::Solid));
+    PreviewShading shading = PreviewShading::Solid;
+    static_cast<void>(TryParsePreviewShading(state.value(QStringLiteral("shading")).toString(), shading));
+    SetShading(shading);
+    SetStatisticsVisible(state.value(QStringLiteral("statistics")).toBool(false));
     navigationChanged();
 }
 void RenderPreview::resetFrames() noexcept
@@ -895,7 +978,7 @@ bool RenderPreview::prepare()
     {
         return true;
     }
-    const rhi::RasterStatus viewportStatus = pollViewport();
+    const rhi::RasterStatus viewportStatus = mResources->Viewport.Poll();
     if (viewportStatus == rhi::RasterStatus::Pending)
     {
         return true;
@@ -922,6 +1005,18 @@ bool RenderPreview::prepare()
         {
             return false;
         }
+        if (mShading == PreviewShading::Depth)
+        {
+            const gameplay::camera::CameraLens& lens = Camera_ >= 0 && Camera_ < Scene_.Cameras.size()
+                                                           ? Scene_.Cameras[Camera_].Sample.Lens
+                                                           : mCameraController.GetSample().Lens;
+            math::Aabb3 boundsWorld;
+            const bool hasBounds = Scene_.TryGetBounds({}, boundsWorld);
+            description.DebugDepthRange = ComputeDebugDepthRange(description,
+                                                                 lens.NearPlane,
+                                                                 lens.FarPlane,
+                                                                 hasBounds == true ? &boundsWorld : nullptr);
+        }
         Description_ = description;
         if (Accepted(mResources->Viewport.Update(mResources->GetSnapshot(), description, Report_)) == false)
         {
@@ -931,319 +1026,11 @@ bool RenderPreview::prepare()
         FreshReport_ = true;
         mHasPreparedView = true;
     }
-    return Accepted(pollViewport());
+    return Accepted(mResources->Viewport.Poll());
 #else
     return false;
 #endif
 }
-void RenderPreview::serviceStaticLighting()
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    PreviewGpuGeneration& resources = *mResources;
-    if (resources.HasBakeFailed == true || resources.IsBakePublished == true || Frames_ == 0 ||
-        (resources.IsBakeCancelled == true && resources.BakeWorker.Get() == nullptr))
-    {
-        return;
-    }
-    const usize count = resources.Source.Definition->Objects.GetSize();
-    if (resources.HasBakeStarted == false)
-    {
-        rr::StaticLightingBakeDescription description;
-        description.SceneRevision = resources.Lighting.SceneRevision;
-        description.DependencyRevision = resources.Lighting.DependencyRevision;
-        description.Surfaces = {resources.Lighting.Surfaces.GetData(), count};
-        if (mHasBakeJobs == false)
-        {
-            mHasBakeJobs = mBakeJobs.Initialize({ .WorkerCount = STATIC_LIGHTING_WORKER_COUNT }) ==
-                           foundation::threading::JobStatus::Ok;
-        }
-        resources.BakeWorker.Reset(new (std::nothrow) StaticLightingJob(resources.Source, description));
-        resources.HasBakeStarted = true;
-        if (mHasBakeJobs == false || resources.BakeWorker.Get() == nullptr ||
-            resources.BakeWorker->Start(mBakeJobs) != rhi::RasterStatus::Pending)
-        {
-            resources.BakeWorker.Reset();
-            resources.HasBakeFailed = true;
-        }
-        markBakeChanged();
-        return;
-    }
-    if (resources.BakeWorker.Get() != nullptr)
-    {
-        updateBakeNotice();
-        const rhi::RasterStatus status = resources.BakeWorker->Poll();
-        if (status == rhi::RasterStatus::Pending)
-        {
-            return;
-        }
-        if (resources.IsBakeCancelled == true)
-        {
-            // A cancelled bake is discarded even if its last range finished first.
-            resources.BakeWorker.Reset();
-            markBakeChanged();
-            return;
-        }
-        if (status != rhi::RasterStatus::Ready)
-        {
-            resources.HasBakeFailed = true;
-            markBakeChanged();
-            return;
-        }
-        resources.Bake = resources.BakeWorker->TakeBake();
-        resources.BakeWorker.Reset();
-    }
-    const auto failBake = [this, &resources]() {
-        resources.HasBakeFailed = true;
-        markBakeChanged();
-    };
-    while (resources.BakeUploadCursor < count)
-    {
-        rr::StaticLightingChart chart;
-        const usize index = resources.BakeUploadCursor;
-        const resources::SceneObject& object = resources.Source.Definition->Objects[index];
-        if (resources.Bake->GetChart(index, chart) != rhi::RasterStatus::Ready || chart.SourceId != object.SourceId ||
-            chart.SceneRevision != resources.Lighting.SceneRevision ||
-            chart.DependencyRevision != resources.Lighting.DependencyRevision || chart.Transform != object.Transform)
-        {
-            failBake();
-            return;
-        }
-        rhi::TextureDescription description;
-        description.Width = chart.Width;
-        description.Height = chart.Height;
-        description.Format = rhi::RasterFormat::Rgba8Unorm;
-        const rhi::RasterStatus status =
-            rhi::CreateTexture(Device_,
-                               description,
-                               {{chart.Pixels.GetDataOrNull(), chart.Pixels.GetSize()}, usize{chart.Width} * 4},
-                               resources.BakeTextures[index]);
-        if (Accepted(status) == false)
-        {
-            failBake();
-            return;
-        }
-        ++resources.BakeUploadCursor;
-    }
-    for (usize i = 0; i < count; ++i)
-    {
-        const rhi::RasterStatus status = rhi::GetStatus(Device_, resources.BakeTextures[i]);
-        if (status == rhi::RasterStatus::Pending)
-        {
-            return;
-        }
-        if (status != rhi::RasterStatus::Ready)
-        {
-            failBake();
-            return;
-        }
-    }
-    while (resources.BakeMaterialCursor < count)
-    {
-        const usize index = resources.BakeMaterialCursor;
-        rr::StaticLightingChart chart;
-        if (resources.Bake->GetChart(index, chart) != rhi::RasterStatus::Ready)
-        {
-            failBake();
-            return;
-        }
-        rr::BakedLighting bake;
-        bake.Texture = resources.BakeTextures[index];
-        bake.Scale = chart.Scale;
-        bake.UvTransform = chart.UvTransform;
-        bake.SourceId = chart.SourceId;
-        bake.SceneRevision = chart.SceneRevision;
-        bake.DependencyRevision = chart.DependencyRevision;
-        bake.Transform = chart.Transform;
-        bake.AreTriangleChartsEnabled = true;
-        bake.HasStaticAreaDirect = true;
-        const rhi::RasterStatus status =
-            resources.CreateLightingMaterial(index, &bake, true, resources.BakedMaterials[index]);
-        if (Accepted(status) == false)
-        {
-            failBake();
-            return;
-        }
-        ++resources.BakeMaterialCursor;
-    }
-    for (usize i = 0; i < count; ++i)
-    {
-        const rhi::RasterStatus status = resources.Renderer.GetStatus(resources.BakedMaterials[i]);
-        if (status == rhi::RasterStatus::Pending)
-        {
-            return;
-        }
-        if (status != rhi::RasterStatus::Ready)
-        {
-            failBake();
-            return;
-        }
-    }
-    if (resources.HasBakeSnapshot == false)
-    {
-        StaticArray<rr::SceneItem, content::scene_format::MAX_OBJECTS> items{};
-        for (usize i = 0; i < count; ++i)
-        {
-            const resources::SceneObject& source = resources.Source.Definition->Objects[i];
-            items[i].Geometry = resources.GetMesh(source.Mesh);
-            items[i].Transform = source.Transform;
-            items[i].SourceId = source.SourceId;
-            items[i].Surface = resources.BakedMaterials[i];
-            items[i].Material.Color = {1, 1, 1, 1};
-            items[i].BakeSceneRevision = resources.Lighting.SceneRevision;
-            items[i].BakeDependencyRevision = resources.Lighting.DependencyRevision;
-        }
-        if (Accepted(resources.Renderer.CreateSnapshot(items.GetData(), count, resources.BakedSnapshot)) == false)
-        {
-            failBake();
-            return;
-        }
-        resources.HasBakeSnapshot = true;
-    }
-    const rhi::RasterStatus updated = resources.Viewport.Update(resources.BakedSnapshot, Description_, Report_);
-    if (updated == rhi::RasterStatus::NotReady || updated == rhi::RasterStatus::Pending)
-    {
-        return;
-    }
-    if (updated != rhi::RasterStatus::Ready)
-    {
-        failBake();
-        return;
-    }
-    resources.PublishBakedSnapshot();
-    markBakeChanged();
-#endif
-}
-
-void RenderPreview::updateBakeNotice()
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    PreviewGpuGeneration& resources = *mResources;
-    if (resources.HasBakeNotice == true || resources.BakeWorker.Get() == nullptr)
-    {
-        return;
-    }
-    rr::StaticLightingBakeDiagnostics diagnostics;
-    if (resources.BakeWorker->GetDiagnostics(diagnostics) != rhi::RasterStatus::Ready)
-    {
-        return;
-    }
-    PreviewBakeNotice notice;
-    notice.SkippedTriangleCount = diagnostics.SkippedTriangleCount;
-    notice.AffectedObjectCount = diagnostics.AffectedObjectCount;
-    QStringList names;
-    for (int32 i = 0; i < resources.Source.Objects.size(); ++i)
-    {
-        uint32 skipped = 0;
-        if (resources.BakeWorker->GetSkippedTriangleCount(static_cast<usize>(i), skipped) == rhi::RasterStatus::Ready &&
-            skipped != 0)
-        {
-            const PreviewObject& object = resources.Source.Objects[i];
-            names.append(QStringLiteral("%1 (%2)").arg(object.Name.isEmpty() ? object.Id : object.Name).arg(skipped));
-        }
-    }
-    notice.AffectedObjects = names.join(QStringLiteral(", "));
-    resources.BakeNotice = foundation::Move(notice);
-    resources.HasBakeNotice = true;
-    markBakeChanged();
-#endif
-}
-void RenderPreview::markBakeChanged()
-{
-    FreshReport_ = true;
-    Q_EMIT BakeChanged();
-}
-PreviewBakeState RenderPreview::GetBakeState() const noexcept
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mResources.Get() == nullptr || Scene_.Lit == false || mShading != PreviewShading::Lit)
-    {
-        return PreviewBakeState::Idle;
-    }
-    const PreviewGpuGeneration& resources = *mResources;
-    if (resources.IsBakePublished == true)
-    {
-        return PreviewBakeState::Baked;
-    }
-    if (resources.IsBakeCancelled == true)
-    {
-        return PreviewBakeState::Cancelled;
-    }
-    if (resources.HasBakeFailed == true)
-    {
-        return PreviewBakeState::Failed;
-    }
-    return resources.BakeWorker.Get() != nullptr ? PreviewBakeState::Running : PreviewBakeState::Idle;
-#else
-    return PreviewBakeState::Idle;
-#endif
-}
-bool RenderPreview::GetBakeNotice(PreviewBakeNotice& outNotice) const
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mResources.Get() == nullptr || mResources->HasBakeNotice == false ||
-        mResources->BakeNotice.SkippedTriangleCount == 0)
-    {
-        return false;
-    }
-    outNotice = mResources->BakeNotice;
-    return true;
-#else
-    static_cast<void>(outNotice);
-    return false;
-#endif
-}
-void RenderPreview::CancelBake() noexcept
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (GetBakeState() != PreviewBakeState::Running)
-    {
-        return;
-    }
-    // Ranges stop at their next sample boundary; Tick discards the result when Poll resolves.
-    mResources->BakeWorker->RequestInterruption();
-    mResources->IsBakeCancelled = true;
-    markBakeChanged();
-#endif
-}
-bool RenderPreview::RestartBake() noexcept
-{
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (GetBakeState() != PreviewBakeState::Cancelled || mResources->BakeWorker.Get() != nullptr)
-    {
-        return false;
-    }
-    // Cancellation happens before any chart upload, so only the CPU bake restarts.
-    PreviewGpuGeneration& resources = *mResources;
-    resources.IsBakeCancelled = false;
-    resources.HasBakeStarted = false;
-    resources.HasBakeNotice = false;
-    resources.BakeNotice = {};
-    markBakeChanged();
-    if (Running() == true)
-    {
-        Timer_.start();
-    }
-    return true;
-#else
-    return false;
-#endif
-}
-rhi::RasterStatus RenderPreview::pollViewport()
-{
-    const rhi::RasterStatus status = mResources->Viewport.Poll();
-    if (status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending ||
-        status == rhi::RasterStatus::DeviceLost || mResources->HasBakeSnapshot == false ||
-        mResources->IsBakePublished == true || mResources->HasBakeFailed == true)
-    {
-        return status;
-    }
-    // A delayed candidate failure must not replace the existing direct view.
-    // RasterViewport has discarded the rejected pending view before returning.
-    mResources->HasBakeFailed = true;
-    FreshReport_ = true;
-    return mResources->Viewport.Update(mResources->GetSnapshot(), Description_, Report_);
-}
-
 void RenderPreview::Tick()
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
@@ -1251,6 +1038,8 @@ void RenderPreview::Tick()
     {
         return;
     }
+    QElapsedTimer frameTimer;
+    frameTimer.start();
     rhi::DeviceInfo device;
     const rhi::DeviceStatus ready = rhi::GetDeviceInfo(Device_, device);
     if (ready == rhi::DeviceStatus::Pending)
@@ -1372,10 +1161,6 @@ void RenderPreview::Tick()
         mHasViewport = true;
         ViewDirty_ = true;
     }
-    if (mHasPreparedView == true && Scene_.Lit == true && mShading == PreviewShading::Lit)
-    {
-        serviceStaticLighting();
-    }
     if (prepare() == false)
     {
         // Keep a stage's specific reason; the generic text covers unexplained failures.
@@ -1389,7 +1174,7 @@ void RenderPreview::Tick()
     {
         return;
     }
-    const rhi::RasterStatus configured = pollViewport();
+    const rhi::RasterStatus configured = mResources->Viewport.Poll();
     if (configured == rhi::RasterStatus::Pending)
     {
         return;
@@ -1403,6 +1188,8 @@ void RenderPreview::Tick()
     {
         return;
     }
+    // Arm immediately before the viewport frame so the probe encloses it, not a shadow submission.
+    serviceGpuTiming();
     mProducer = {};
     const rhi::RasterStatus rendered = mResources->Viewport.Render(Surface_, mProducer);
     if (rendered == rhi::RasterStatus::NotReady || rendered == rhi::RasterStatus::Pending)
@@ -1416,6 +1203,7 @@ void RenderPreview::Tick()
         return;
     }
     mIsAwaitingProducer = true;
+    recordFrameStatistics(frameTimer);
     if (FreshReport_ == true || Frames_ % 60 == 0)
     {
         FreshReport_ = false;
@@ -1425,42 +1213,23 @@ void RenderPreview::Tick()
                 .arg(Height_)
                 .arg(Report_.Visible)
                 .arg(Report_.Draws)
-                .arg(Scene_.Lit == true
+                .arg(IsPreviewDebugShading(mShading) == true ? GetPreviewShadingStatus(mShading)
+                     : Scene_.Lit == true
                          ? (mShading == PreviewShading::Lit
                                 ? QStringLiteral(" · Lit: %1 lights / %2 planar area proxies / %3 shadow faces · %4")
                                       .arg(mResources->Lighting.Lights.Count)
                                       .arg(mResources->Lighting.AreaCount)
                                       .arg(mResources->Lighting.ShadowCount)
-                                      .arg((mResources->IsBakePublished == true
-                                                ? QStringLiteral("static diffuse baked")
-                                                : (mResources->IsBakeCancelled == true
-                                                       ? QStringLiteral("bake cancelled; direct lighting retained")
-                                                       : (mResources->HasBakeFailed == true
-                                                              ? QStringLiteral("bake failed; direct lighting retained")
-                                                              : QStringLiteral("direct lighting; bake %1%")
-                                                                    .arg(mResources->BakeWorker.Get() != nullptr
-                                                                             ? mResources->BakeWorker
-                                                                                   ->GetProgressPercent()
-                                                                             : 0)))) +
-                                           (mResources->HasBakeNotice == true &&
-                                                    mResources->BakeNotice.SkippedTriangleCount != 0
-                                                ? QStringLiteral(" · skipped %1 zero-area triangles in %2 %3")
-                                                      .arg(mResources->BakeNotice.SkippedTriangleCount)
-                                                      .arg(mResources->BakeNotice.AffectedObjectCount)
-                                                      .arg(mResources->BakeNotice.AffectedObjectCount == 1
-                                                               ? QStringLiteral("object")
-                                                               : QStringLiteral("objects"))
-                                                : QString()))
-                                : (mShading == PreviewShading::Solid
-                                       ? QStringLiteral(" · Solid: neutral preview shading")
-                                       : QStringLiteral(" · Albedo: unlit surface colors")))
-                         : (mShading == PreviewShading::Solid ? QStringLiteral(" · Solid: neutral preview shading")
-                                                              : QStringLiteral(" · Albedo: unlit surface colors")));
+                                      .arg(QStringLiteral("direct lighting"))
+                                : (mShading == PreviewShading::Solid ? GetPreviewShadingStatus(PreviewShading::Solid)
+                                                                     : GetPreviewShadingStatus(PreviewShading::Albedo)))
+                         : (mShading == PreviewShading::Solid ? GetPreviewShadingStatus(PreviewShading::Solid)
+                                                              : GetPreviewShadingStatus(PreviewShading::Albedo)));
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
         if (Scene_.Lit == true && mShading == PreviewShading::Lit)
         {
             Status_ = QStringLiteral("WebGPU raster viewport · %1×%2 · visible %3 · draws %4 · direct lighting; "
-                                     "shadows and static bake unavailable in browser")
+                                     "shadows unavailable in browser")
                           .arg(Width_)
                           .arg(Height_)
                           .arg(Report_.Visible)

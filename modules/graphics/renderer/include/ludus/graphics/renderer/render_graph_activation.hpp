@@ -47,8 +47,13 @@ public:
     /// The composite descriptions are copied by value; their artifact storage must outlive use.
     /// A role the generation carries no stage for (for example DepthOnly in a color-only graph)
     /// stays a default description, exactly as the matching compiled header leaves it.
+    /// @param compositeVertex Built-in composite vertex recipe, borrowed until GPU setup copies it.
+    /// @param compositeFragment Built-in composite fragment recipe, with the same source lifetime.
+    /// @param shouldPrepareAsynchronously Queue native driver preparation for these stages
+    /// and the composite pair. Activation selects true; one-shot consumers may keep false.
     [[nodiscard]] RenderGraphPrograms GetPrograms(const rhi::RasterShaderDescription& compositeVertex,
-                                                  const rhi::RasterShaderDescription& compositeFragment) const noexcept;
+                                                  const rhi::RasterShaderDescription& compositeFragment,
+                                                  bool shouldPrepareAsynchronously = false) const noexcept;
     /// SHA-256 of the CPU-visible vertex/instance interface; empty when not loaded.
     [[nodiscard]] foundation::BorrowedView<const foundation::uint8> GetInterfaceIdentity() const noexcept;
     /// Immutable RG1 generation identity this runtime package was cooked from; empty when not loaded.
@@ -121,6 +126,8 @@ public:
                const rhi::RasterShaderDescription& compositeFragment,
                RenderGraphAllocation allocation = RenderGraphAllocation::ExactPool) noexcept;
     /// Take ownership of a decoded package and begin preparing it as the candidate.
+    /// Native shader/driver pipeline work is queued; owner-thread calls never wait
+    /// for it. Queue admission/allocation may fail, preserving the active graph.
     /// An earlier unactivated candidate is discarded. A CPU interface mismatch
     /// returns Unsupported with RestartRequired; setup failure returns its status
     /// with Failed. Neither changes the active generation. Pending/Ready is accepted.

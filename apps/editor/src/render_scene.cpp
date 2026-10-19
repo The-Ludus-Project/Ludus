@@ -6,6 +6,7 @@
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/precision.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
@@ -43,6 +44,81 @@ bool Fail(QString& error, const QString& text)
 {
     error = text;
     return false;
+}
+/// Distinct codes of one 8-bit texture channel.
+constexpr usize CHANNEL_CODES = 256;
+/// Largest 8-bit channel code, which encodes 1.
+constexpr float32 MAX_CHANNEL_CODE = 255.0F;
+/// Color channels averaged by ComputeLinearMeanRgb; alpha is the fourth texel byte.
+constexpr usize COLOR_CHANNELS = 3;
+/// Flat base color of a decoded cooked texture for consumers that sample no textures: the
+/// unweighted mean of its mip-zero RGB in linear space. Each sRGB byte is decoded before
+/// averaging, never averaged as a code. Alpha is ignored, because the cooked viewport transport
+/// draws LUSCN materials Opaque and samples no alpha. Counting codes per channel makes the result
+/// independent of texel order. Decoding already bounded the texture by the SceneFormat texel and
+/// byte caps, so the work is linear in at most MAX_TOTAL_TEXTURE_BYTES per scene.
+math::Vector3 ComputeLinearMeanRgb(const resources::SceneTexture& texture) noexcept
+{
+    const usize texelCount = texture.Pixels.GetSize() / format::TEXEL_BYTES;
+    if (texelCount == 0)
+    {
+        return {};
+    }
+    StaticArray<uint64, CHANNEL_CODES * COLOR_CHANNELS> counts{};
+    const uint8* bytes = texture.Pixels.GetData();
+    for (usize texel = 0; texel < texelCount; ++texel)
+    {
+        for (usize channel = 0; channel < COLOR_CHANNELS; ++channel)
+        {
+            ++counts[channel * CHANNEL_CODES + bytes[texel * format::TEXEL_BYTES + channel]];
+        }
+    }
+    StaticArray<float64, COLOR_CHANNELS> sums{};
+    for (usize code = 0; code < CHANNEL_CODES; ++code)
+    {
+        const float64 linear = static_cast<float64>(math::DecodeSrgb(static_cast<float32>(code) / MAX_CHANNEL_CODE));
+        for (usize channel = 0; channel < COLOR_CHANNELS; ++channel)
+        {
+            sums[channel] += linear * static_cast<float64>(counts[channel * CHANNEL_CODES + code]);
+        }
+    }
+    const float64 count = static_cast<float64>(texelCount);
+    return {static_cast<float32>(sums[0] / count),
+            static_cast<float32>(sums[1] / count),
+            static_cast<float32>(sums[2] / count)};
+}
+/// Corners of an axis-aligned box.
+constexpr usize AABB_CORNER_COUNT = 8;
+/// Unitless scale on the farthest scene-bound corner distance, so geometry on the bound is not
+/// clipped by rounding at a finite far plane.
+constexpr float32 FINITE_FAR_MARGIN = 1.01F;
+/// Minimum far-to-near ratio of a finite preview projection; a scene entirely inside the near
+/// plane still yields a valid (empty) frustum.
+constexpr float32 MIN_FAR_TO_NEAR = 2.0F;
+/// Mesh-local positions of scene mesh meshIndex. A cooked scene (Definition set) keeps its
+/// geometry only in the decoded definition, whose mesh table parallels RenderScene::Meshes.
+/// @pre meshIndex indexes scene.Meshes and, when set, the definition's mesh table.
+BorrowedView<const math::Vector3> GetMeshPositions(const RenderScene& scene, int32 meshIndex) noexcept
+{
+    if (scene.Definition != nullptr)
+    {
+        const resources::SceneMesh& mesh = scene.Definition->Meshes[static_cast<usize>(meshIndex)];
+        return {mesh.Positions.GetData(), mesh.Positions.GetSize()};
+    }
+    const PreviewMesh& mesh = scene.Meshes[meshIndex];
+    return {mesh.Positions.constData(), static_cast<usize>(mesh.Positions.size())};
+}
+/// Rewrite a finite reverse-Z view (near 1, far 0, Greater) for the conventional convention
+/// (near 0, far 1, Less) by replacing clip z with w - z. Exact only for a finite projection: an
+/// infinite one would map its absent far plane to the degenerate depth 1 at infinity.
+void ConvertToConventionalDepth(rr::ViewDescription& inoutView) noexcept
+{
+    for (math::Vector4& column : inoutView.WorldToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    inoutView.Depth = rr::DepthConvention::Conventional;
+    inoutView.InfiniteFar = false;
 }
 uint64 ComputeSourceId(const QString& id)
 {
@@ -700,7 +776,8 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                                                        "identical surfaces are shared."));
                         }
                         object.Surface = static_cast<int32>(candidate.Surfaces.size());
-                        candidate.Surfaces.append({object.Texture, object.Tint});
+                        candidate.Surfaces.append(
+                            { .Texture = object.Texture, .Tint = object.Tint, .FlatTint = object.Tint });
                     }
                 }
                 for (const auto vertex : candidate.Meshes[object.Mesh].Positions)
@@ -817,6 +894,10 @@ bool RenderScene::TryGetBounds(const QString& id, math::Aabb3& outBoundsWorld) c
 {
     math::Aabb3 candidate = math::EmptyAabb3();
     bool hasPoint = false;
+    if (Definition != nullptr && Definition->Meshes.GetSize() != static_cast<usize>(Meshes.size()))
+    {
+        return false;
+    }
     for (const PreviewObject& object : Objects)
     {
         if (id.isEmpty() == false && object.Id != id)
@@ -827,8 +908,10 @@ bool RenderScene::TryGetBounds(const QString& id, math::Aabb3& outBoundsWorld) c
         {
             return false;
         }
-        for (const math::Vector3 positionMesh : Meshes[object.Mesh].Positions)
+        const BorrowedView<const math::Vector3> positions = GetMeshPositions(*this, object.Mesh);
+        for (usize i = 0; i < positions.GetSize(); ++i)
         {
+            const math::Vector3 positionMesh = positions[i];
             const math::Vector3 positionWorld = math::TransformPoint(object.Transform, positionMesh);
             if (math::IsFinite(positionWorld) == false)
             {
@@ -928,10 +1011,34 @@ bool RenderScene::View(const PreviewViewOptions& options, rr::ViewDescription& o
         position = pose.Translation;
         forward = math::Rotate(pose.Rotation, {0, 0, -1});
     }
+    if (options.ShouldUseConventionalDepth == true && projection.Kind == rr::ProjectionKind::PerspectiveInfinite)
+    {
+        // The conventional flip is exact only for a finite projection, so bound the far plane by
+        // the farthest corner of the World's geometry from this camera.
+        math::Aabb3 boundsWorld;
+        if (TryGetBounds({}, boundsWorld) == false)
+        {
+            return Fail(outError, QStringLiteral("The World has no finite geometry bounds for a finite projection."));
+        }
+        float32 farthest = 0;
+        for (usize corner = 0; corner < AABB_CORNER_COUNT; ++corner)
+        {
+            const math::Vector3 cornerWorld{(corner & 1U) != 0 ? boundsWorld.Max.X : boundsWorld.Min.X,
+                                            (corner & 2U) != 0 ? boundsWorld.Max.Y : boundsWorld.Min.Y,
+                                            (corner & 4U) != 0 ? boundsWorld.Max.Z : boundsWorld.Min.Z};
+            farthest = math::Max(farthest, math::Length(cornerWorld - position));
+        }
+        projection.Kind = rr::ProjectionKind::Perspective;
+        projection.Far = math::Max(farthest * FINITE_FAR_MARGIN, projection.Near * MIN_FAR_TO_NEAR);
+    }
     rr::ViewDescription view;
     if (rr::BuildViewDescription(projection, mapping, view) != graphics::rhi::RasterStatus::Ready)
     {
         return Fail(outError, QStringLiteral("Camera lens cannot be represented by the renderer."));
+    }
+    if (options.ShouldUseConventionalDepth == true)
+    {
+        ConvertToConventionalDepth(view);
     }
     view.CameraPosition = position;
     view.CameraForward = forward;
@@ -1196,8 +1303,11 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         (void)source; // Geometry stays in the immutable leased definition.
         candidate.Meshes.append(mesh);
     }
+    // One linear mean per texture, shared by every material that samples it.
+    QVector<math::Vector3> textureMeans;
     for (const auto& source : scene.Textures)
     {
+        textureMeans.append(ComputeLinearMeanRgb(source));
         PreviewTexture texture;
         texture.Pixels = QImage(source.Pixels.GetData(),
                                 static_cast<int32>(source.Width),
@@ -1214,6 +1324,16 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         PreviewSurface surface;
         surface.Texture = source.Texture == ~uint32{0} ? -1 : static_cast<int32>(source.Texture);
         surface.Tint = surface.Texture < 0 ? math::Vector4{0, 0, 0, 1} : math::Vector4{1, 1, 1, 1};
+        surface.FlatTint = surface.Tint;
+        if (surface.Texture >= 0)
+        {
+            if (surface.Texture >= textureMeans.size())
+            {
+                return Fail(error, QStringLiteral("Cooked material names a missing texture."));
+            }
+            const math::Vector3& mean = textureMeans[surface.Texture];
+            surface.FlatTint = {surface.Tint.X * mean.X, surface.Tint.Y * mean.Y, surface.Tint.Z * mean.Z, 1};
+        }
         surface.Repeat = source.Repeat;
         surface.Metallic = source.Metallic;
         surface.Roughness = source.Roughness;

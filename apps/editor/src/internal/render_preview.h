@@ -5,7 +5,6 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/math/vector.hpp>
-#include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -15,10 +14,11 @@
 #include <ludus/platform/native_window.h>
 
 #include "internal/editor_camera_controller.h"
-#include "internal/preview_bake.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/viewport_statistics.h"
 
+#include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
 #include <QTimer>
@@ -61,6 +61,19 @@ public:
     {
         return mShading;
     }
+    /// Show or hide the viewport statistics overlay. While visible, each submitted frame adds a
+    /// CPU sample and the GPU timestamp probe is re-armed only after its previous sample was read
+    /// (never waiting for the GPU). Showing restarts the rolling averages. Persisted by Navigation.
+    void SetStatisticsVisible(bool isVisible);
+    [[nodiscard]] LUDUS_INLINE bool IsStatisticsVisible() const noexcept
+    {
+        return mIsStatisticsVisible;
+    }
+    /// Smoothed measurements of the presented frames; meaningful while statistics are visible.
+    [[nodiscard]] LUDUS_INLINE const ViewportStatistics& GetStatistics() const noexcept
+    {
+        return mStatistics;
+    }
     void Resize(foundation::int32 width, foundation::int32 height);
     /// Suppress repeated GPU submissions for hidden browser surfaces; allow the first
     /// candidate frame so import validation can complete while its tab is hidden.
@@ -76,6 +89,14 @@ public:
                                     foundation::uint32 height,
                                     graphics::renderer::ViewDescription& outView,
                                     QString& outError) const;
+    /// DescribeView for consumers that admit only DepthConvention::Conventional (the render-graph
+    /// runtime profile): the same camera, with an infinite perspective lens replaced by a finite
+    /// one whose far plane encloses the scene's geometry, and clip z rewritten as w - z.
+    /// Needs no device. Failure (including a scene without geometry bounds) preserves outView.
+    [[nodiscard]] bool DescribeConventionalView(foundation::uint32 width,
+                                                foundation::uint32 height,
+                                                graphics::renderer::ViewDescription& outView,
+                                                QString& outError) const;
     void RestoreNavigation(const QJsonObject& state);
     void Tick();
     [[nodiscard]] LUDUS_INLINE bool Running() const noexcept
@@ -131,16 +152,6 @@ public:
         return mDeviceSerial;
     }
     [[nodiscard]] graphics::rhi::RasterStatus PinDevice(graphics::rhi::NativeDeviceLease& outLease) noexcept;
-    /// Current bake lifecycle; Idle outside Lit shading of a lit scene.
-    [[nodiscard]] PreviewBakeState GetBakeState() const noexcept;
-    /// Copies what the bake tolerated once its preparation completed.
-    /// @return True when the notice holds at least one skipped triangle.
-    [[nodiscard]] bool GetBakeNotice(PreviewBakeNotice& outNotice) const;
-    /// Stops a Running bake cooperatively; direct lighting and the camera stay as they are.
-    void CancelBake() noexcept;
-    /// Starts the bake again after CancelBake.
-    /// @return False unless the bake is Cancelled.
-    [[nodiscard]] bool RestartBake() noexcept;
     [[nodiscard]] LUDUS_INLINE bool HasPendingFrame() const noexcept
     {
         return mHasPendingFrame;
@@ -155,27 +166,29 @@ Q_SIGNALS:
     void DeviceStopping();
     void Stopped();
     void Failed(const QString& error);
-    /// Emitted when GetBakeState or GetBakeNotice changes.
-    void BakeChanged();
+    /// Rate-limited notification that GetStatistics changed while the overlay is visible.
+    void StatisticsChanged();
 
 private:
+    [[nodiscard]] PreviewViewOptions makeViewOptions(foundation::uint32 width,
+                                                     foundation::uint32 height) const noexcept;
     [[nodiscard]] bool beginNavigation();
     void navigationChanged();
     EditorCameraController mCameraController;
     QString mSelectedId;
     [[nodiscard]] LUDUS_INLINE bool usesLitMaterials() const noexcept
     {
-        return Scene_.Lit == true && mShading != PreviewShading::Albedo;
+        return (Scene_.Lit == true && mShading != PreviewShading::Albedo) || IsPreviewDebugShading(mShading) == true;
     }
     PreviewShading mShading = PreviewShading::Solid;
-    // Explicit static-lighting budget, started on the first bake. Declared before
-    // the resources so it outlives every bake that references it.
-    foundation::threading::JobSystem mBakeJobs;
-    bool mHasBakeJobs = false;
-    // Collects the bake's tolerated-input notice once preparation completes.
-    void updateBakeNotice();
-    // Refreshes the status line and tells observers the bake state or notice changed.
-    void markBakeChanged();
+    /// Read a completed GPU timing sample and re-arm the probe; call only between frames.
+    void serviceGpuTiming() noexcept;
+    /// Record the CPU time of a submitted frame and publish the overlay at its refresh rate.
+    void recordFrameStatistics(const QElapsedTimer& frameTimer);
+    void resetStatistics() noexcept;
+    bool mIsStatisticsVisible = false;
+    ViewportStatistics mStatistics;
+    QElapsedTimer mStatisticsRefresh;
     foundation::UniquePtr<PreviewGpuGeneration> mResources;
     foundation::UniquePtr<PreviewGpuGeneration> mRetiredResources;
     bool mNeedsResourceRestart = false;
@@ -193,8 +206,6 @@ private:
     bool mHasPreparedView = false;
     bool mIsAwaitingProducer = false;
     [[nodiscard]] bool prepare();
-    void serviceStaticLighting();
-    [[nodiscard]] graphics::rhi::RasterStatus pollViewport();
     void restartResources() noexcept;
     RenderScene Scene_;
     foundation::uint32 RequestedWidth_ = 640, RequestedHeight_ = 480;

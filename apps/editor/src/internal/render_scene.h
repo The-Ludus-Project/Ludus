@@ -38,6 +38,12 @@ struct PreviewSurface final
 {
     foundation::int32 Texture = 0;
     foundation::math::Vector4 Tint{1, 1, 1, 1};
+    /// Straight linear RGBA base color for consumers that sample no textures, such as the
+    /// render-graph RendererStatic preview. Authored surfaces use Tint. Cooked surfaces
+    /// compute it once at decode: Tint times the linear mean of the base-color texture's mip-zero
+    /// RGB, with alpha one because the cooked viewport transport draws LUSCN materials Opaque.
+    /// Untextured cooked surfaces keep their black Tint. The lit and textured paths ignore it.
+    foundation::math::Vector4 FlatTint{1, 1, 1, 1};
     bool Repeat = false;
     foundation::float32 Metallic = 0;
     foundation::float32 Roughness = .5F;
@@ -71,6 +77,10 @@ struct PreviewViewOptions final
     const foundation::math::Vector3* OrbitCenter = nullptr;
     foundation::float32 OrbitRadius = 0;
     const gameplay::camera::CameraSample* EditorCameraOrNull = nullptr;
+    /// Produce DepthConvention::Conventional (near 0, far 1, Less) instead of the viewport's
+    /// reverse-Z. An infinite perspective lens is replaced by a finite one whose far plane
+    /// encloses the World's geometry from the camera, so clip z can be rewritten as w - z exactly.
+    bool ShouldUseConventionalDepth = false;
 };
 struct RenderScene final
 {
@@ -110,6 +120,7 @@ struct RenderScene final
     /// Bounds of the extracted visible objects, or one selected stable ID; failure preserves output.
     [[nodiscard]] bool TryGetBounds(const QString& id, foundation::math::Aabb3& outBoundsWorld) const noexcept;
     // camera=-1 selects the independent editor orbit. All failures preserve output.
+    // Cooked scenes (Definition set) read their geometry from the definition for bounds.
     [[nodiscard]] bool
     View(const PreviewViewOptions& options, graphics::renderer::ViewDescription& outView, QString& outError) const;
 };

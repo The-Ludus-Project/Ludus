@@ -16,14 +16,11 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/materials.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
-#include <ludus/graphics/renderer/static_lighting.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 
-#include "internal/preview_bake.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
-#include "internal/static_lighting_job.h"
 
 #include <QByteArray>
 #include <QString>
@@ -72,7 +69,6 @@ public:
     }
     [[nodiscard]] graphics::rhi::RasterStatus
     CreateLightingMaterial(foundation::usize objectIndex,
-                           const graphics::renderer::BakedLighting* bakeOrNull,
                            bool hasShadows,
                            graphics::renderer::MaterialVersion& outMaterial) noexcept;
 
@@ -84,11 +80,7 @@ public:
     {
         return mSnapshot;
     }
-    /// Commit the prepared baked snapshot after the viewport has accepted it as Ready.
-    /// The old snapshot's accepted GPU uses retain their existing RHI lifetimes.
-    void PublishBakedSnapshot() noexcept;
-
-    // Generation-local handles used by the frame and static-lighting coordinators.
+    // Generation-local handles used by viewport and shadow preparation.
     const graphics::rhi::DeviceHandle Device;
     graphics::renderer::Renderer Renderer;
     graphics::renderer::RasterViewport Viewport;
@@ -103,24 +95,10 @@ public:
     graphics::renderer::ShadowAtlas Shadows;
     graphics::renderer::Snapshot Casters;
     foundation::StaticArray<graphics::renderer::MaterialVersion, content::scene_format::MAX_OBJECTS> CasterMaterials{};
-    foundation::StaticArray<graphics::renderer::MaterialVersion, content::scene_format::MAX_OBJECTS> BakedMaterials{};
-    foundation::StaticArray<graphics::rhi::TextureHandle, content::scene_format::MAX_OBJECTS> BakeTextures{};
-    foundation::UniquePtr<StaticLightingJob> BakeWorker;
-    foundation::UniquePtr<graphics::renderer::StaticLightingBake> Bake;
-    graphics::renderer::Snapshot BakedSnapshot;
     graphics::rhi::SubmissionToken ShadowProducer;
     PreviewLightingStage LightingStage = PreviewLightingStage::Inputs;
     foundation::usize MaterialCursor = 0;
-    foundation::usize BakeUploadCursor = 0;
-    foundation::usize BakeMaterialCursor = 0;
     bool IsShadowFrameOpen = false;
-    bool HasBakeStarted = false;
-    bool HasBakeFailed = false;
-    bool HasBakeSnapshot = false;
-    bool IsBakePublished = false;
-    bool IsBakeCancelled = false;
-    bool HasBakeNotice = false;
-    PreviewBakeNotice BakeNotice;
 
 private:
     enum class PreparationStage : foundation::uint8
@@ -136,6 +114,23 @@ private:
     {
         return Source.Lit == true && Shading != PreviewShading::Albedo;
     }
+    /// Cooked scenes take the authored-lighting path for Lit and every debug view, so debug
+    /// views read the same surface maps, clusters and lights as Lit.
+    [[nodiscard]] LUDUS_INLINE bool shouldUseAuthoredLighting() const noexcept
+    {
+        return Source.Lit == true && (Shading == PreviewShading::Lit || IsPreviewDebugShading(Shading) == true);
+    }
+    /// Unlit authored Worlds draw debug views with the L4 debug program and editor-derived normals.
+    [[nodiscard]] LUDUS_INLINE bool shouldUseUnlitDebugView() const noexcept
+    {
+        return Source.Lit == false && IsPreviewDebugShading(Shading) == true;
+    }
+    /// Material slot shared by untextured objects in unlit debug views, after the scene's surfaces.
+    [[nodiscard]] LUDUS_INLINE foundation::int32 getDefaultDebugMaterial() const noexcept
+    {
+        return static_cast<foundation::int32>(Source.Surfaces.size());
+    }
+    [[nodiscard]] bool createUnlitDebugMaterials() noexcept;
     [[nodiscard]] bool acceptStage(graphics::rhi::RasterStatus status, PreparationStage next) noexcept;
     [[nodiscard]] bool prepareRenderer() noexcept;
     [[nodiscard]] bool prepareViews() noexcept;

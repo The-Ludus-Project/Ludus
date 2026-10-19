@@ -3,6 +3,13 @@
 // MainWindow: renders controller state and emits actions. It owns no second
 // project settings model and starts no processes (design.md sections 3, 5).
 //
+// The shell follows Visual Studio's layout: a central DocumentWell holds document
+// views (World, render graph, scripts, project settings, audio, configuration) in
+// tab groups, and tool windows (Project Explorer, Properties, Error List, Output,
+// Content, Live Inspector, Timing) are dockable, tabbable QDockWidgets. Commands
+// are QActions shared by menus, toolbars and shortcuts; Save and Undo follow the
+// active document. See docs/development/editor-workspace.md#workspace-layout.
+//
 // Private editor header (not installed). Uses standard Qt layouts/controls only.
 // While synchronizing fields from state it blocks edit signals (QSignalBlocker)
 // so rendering never dispatches new edits. Field edits are accepted before Save
@@ -15,6 +22,7 @@
 #include <QMetaObject>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 
 QT_BEGIN_NAMESPACE
 class QComboBox;
@@ -26,8 +34,9 @@ class QMenu;
 class QPlainTextEdit;
 class QPushButton;
 class QAction;
+class QScrollArea;
+class QStackedWidget;
 class QTableWidget;
-class QTabWidget;
 class QToolBar;
 QT_END_NAMESPACE
 
@@ -37,6 +46,11 @@ namespace ludus::editor
 class AudioWorkspace;
 class ConfigurationWorkspace;
 class ContentWorkspace;
+class DocumentWell;
+class ErrorList;
+class ProjectExplorer;
+struct ErrorListEntry;
+enum class ProjectItemKind : foundation::uint8;
 class ScriptWorkspace;
 class RendererWorkspace;
 class TimingPanel;
@@ -50,8 +64,15 @@ public:
                         const QString& workspaceSettingsFile = {});
     ~MainWindow() override;
 
+    /// Central document well; documents open, close and regroup through it.
+    [[nodiscard]] DocumentWell& GetDocumentWell() noexcept
+    {
+        return *mDocuments;
+    }
+
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private Q_SLOTS:
     void OnStateChanged();
@@ -84,6 +105,18 @@ private:
     void BuildMenus();
     void InitializeWorkspace();
     void ResetWorkspaceLayout();
+    void arrangeDefaultDocks();
+    void applyDefaultDockSizes();
+    void showToolWindow(QDockWidget* dock);
+    void buildWindowMenu(QMenu* menu);
+    void renderWindowDocuments(QMenu* menu);
+    void openProjectItem(ProjectItemKind kind, const QString& path);
+    void activateErrorEntry(const ErrorListEntry& entry);
+    void renderActiveDocument();
+    void renderDocumentTitles();
+    void renderGraphCommands();
+    void renderGraphErrors();
+    void renderBuildErrors();
     void SaveWorkspaceLayout() const;
     [[nodiscard]] bool ConfirmProjectChange(const QString& action);
     void OpenProjectPath(const QString& path);
@@ -91,6 +124,8 @@ private:
     void RenderFields();
     void RenderCapabilities();
     void RenderDocumentActions();
+    /// Active document of the well, or null when no document is open.
+    [[nodiscard]] QWidget* getActiveWorkspaceOrNull() const;
     void CommitProjectFields();
     [[nodiscard]] bool SaveProjectSettings();
     void RenderStatus();
@@ -125,14 +160,37 @@ private:
     void SetProjectWorkspace(const QString& root, bool restore);
     void SaveProjectWorkspace() const;
     QByteArray DefaultLayout_;
-    QTabWidget* WorkTabs_ = nullptr;
     QDockWidget* InspectorDock_ = nullptr;
     QDockWidget* OutputDock_ = nullptr;
-    // Constructed in the MainWindow member-initializer list, so neither is ever
+    // Constructed in the MainWindow member-initializer list, so none is ever
     // null (no nullable OrNull state); BuildUi only configures and places them.
     QDockWidget* TimingDock_;
     TimingPanel* Timing_;
+    DocumentWell* mDocuments;
+    QScrollArea* mAudioDocument;
+    QDockWidget* mProjectExplorerDock;
+    ProjectExplorer* mProjectExplorer;
+    QDockWidget* mPropertiesDock;
+    QStackedWidget* mProperties;
+    QLabel* mNoProperties;
+    QDockWidget* mErrorListDock;
+    ErrorList* mErrorList;
+    QDockWidget* mContentDock;
+    QToolBar* mStandardToolbar;
+    QToolBar* mRenderGraphToolbar;
+    QAction* mValidateGraphAction;
+    QAction* mBuildGraphAction;
+    QAction* mBuildPreviewGraphAction;
+    QAction* mLivePreviewGraphAction;
+    QAction* mCookGraphAction;
+    QAction* mProjectSettingsAction;
+    QAction* mResetLayoutAction;
     QToolBar* GameToolbar_ = nullptr;
+    // Build output is parsed for the Error List after it stops changing briefly.
+    QTimer mBuildErrorsTimer;
+    QString mParsedBuildOutput;
+    // Set when no saved layout was restored, so the first show sizes the default docks.
+    bool mShouldSizeDefaultDocks = true;
 
     // Project lifecycle presentation; controller actions own all operations.
     QLabel* ProjectIdentity_ = nullptr;

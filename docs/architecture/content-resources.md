@@ -420,9 +420,8 @@ vertices are the 32-byte version 1/2 `VertexRecord` again and meshes stay
 indexed. Bake chart UVs are not stored. A consumer that needs charts expands
 each triangle corner and assigns `TryGetBakeChartUv(layout, triangle, corner)`,
 which yields the same per-triangle layout that version 3 stored. The decoder
-leaves `SceneMesh::BakeTexcoords` empty for version 4. The static lighting bake
-derives its tiles from the indices, and the native editor preview already expands
-corners before upload.
+leaves `SceneMesh::BakeTexcoords` empty for version 4, and the static lighting
+bake derives its tiles from the indices.
 
 `MAX_VERTICES` still bounds unique vertices across the bundle and `MAX_INDICES`
 each mesh. Because consumers expand corners, version 4 adds

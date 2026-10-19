@@ -1,11 +1,14 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/math/matrix.hpp>
 
 #include "internal/controller.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_creation.h"
+#include "internal/render_graph_defaults.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
 #include "internal/render_graph_live_build.h"
@@ -17,6 +20,7 @@
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
+class QAction;
 class QComboBox;
 class QCheckBox;
 class QFormLayout;
@@ -26,6 +30,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QStackedWidget;
 class QTabWidget;
 class QTableWidget;
 class QTreeWidget;
@@ -41,8 +46,11 @@ class RenderPreview;
 // Saved sources change only on Save. Diagnostics map to authored nodes and source
 // lines. RG3b adds a node canvas over the same document operations and an explicit
 // trusted preview of the cooked runtime generation on the World viewport device.
-// See docs/development/render-graph-authoring.md#edit-and-reload-graphs-rg3 and
-// docs/development/render-graph-authoring.md#node-canvas-and-preview-rg3b.
+// A project without graphs/Main/main.lurender.json shows the engine default read-only;
+// the first edit turns it into a project draft that Save creates under graphs/Main/.
+// See docs/development/render-graph-authoring.md#edit-and-reload-graphs-rg3,
+// docs/development/render-graph-authoring.md#node-canvas-and-preview-rg3b and
+// docs/development/render-graph-authoring.md#start-customizing-the-renderer.
 class RendererWorkspace final : public QWidget
 {
     Q_OBJECT
@@ -53,13 +61,29 @@ public:
     RendererWorkspace& operator=(const RendererWorkspace&) = delete;
 
     /// Bind a project root and epoch; a different root closes the document and cancels jobs.
+    /// The root is canonicalized, so a symlinked path binds the same project and its build
+    /// tree; an empty or missing root closes the project. A bound project then shows its
+    /// graphs/Main/main.lurender.json, or the engine default when it has none (or it cannot
+    /// be loaded; the status line says why). Binding writes nothing.
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
+    /// Create and open an offscreen Renderer graph in the selected project's
+    /// graphs/name directory. Completion is asynchronous through JobFinished.
+    /// Existing files and the current draft are retained if creation fails.
+    [[nodiscard]] bool CreateGraph(const QString& name);
     [[nodiscard]] bool ConfirmDiscard();
     [[nodiscard]] bool IsDirty() const;
     [[nodiscard]] bool CanSave() const;
+    /// Save the draft. An unedited engine default is not project content: nothing is written
+    /// and the result is true. An edited default creates its package under graphs/Main/.
     [[nodiscard]] bool Save();
+    /// True while the engine default is shown and Save has not created a project copy yet.
+    [[nodiscard]] bool IsBuiltIn() const;
+    /// Explicitly copy the shown engine default, with any draft edits, into graphs/Main/ in
+    /// the project and continue editing it there. False when the default is not shown or the
+    /// copy fails; an existing file at the destination is never replaced.
+    [[nodiscard]] bool CustomizeBuiltIn();
     [[nodiscard]] bool CanUndo() const;
     [[nodiscard]] bool CanRedo() const;
     void Undo();
@@ -69,7 +93,8 @@ public:
     [[nodiscard]] bool Validate();
     /// Build the draft snapshot's sibling .lushader.json into the project's render-graph build tree.
     [[nodiscard]] bool Build();
-    /// Recompile/cook the immutable draft and preview only a current successful result.
+    /// Recompile/cook the immutable draft and preview only a current successful result. An
+    /// unedited engine default previews the editor's prebuilt generation without a build.
     [[nodiscard]] bool BuildAndPreview();
     /// Use an existing shared native worker endpoint; empty retains the offline compiler path.
     void SetWorkerSocket(const QString& endpoint);
@@ -77,6 +102,7 @@ public:
     [[nodiscard]] bool CookRuntime();
     void CancelJob();
     [[nodiscard]] bool IsJobActive() const;
+    /// Explicitly opt into advanced shader path overrides; two empty paths restore project detection.
     void SetBuildTools(const QString& helper, const QString& compiler);
     /// Publish a finished job result. Results for another request, project epoch or a
     /// closed document are ignored, so stale jobs never replace current diagnostics.
@@ -98,7 +124,12 @@ public:
     [[nodiscard]] bool ActivateDiagnostic(foundation::int32 row);
     [[nodiscard]] QString GetSourceFile() const;
     [[nodiscard]] foundation::int32 GetSourceLine() const;
+    /// Canonical `<project>/out/render-graph/<package>/<graph>.lurgrt` path that Build and
+    /// Cook Runtime write. Empty when nothing is open or the package lies outside the project.
     [[nodiscard]] QString GetRuntimePackagePath() const;
+    /// Generation Preview Runtime loads: the editor's prebuilt engine default while the
+    /// unedited default is shown (when this build has one), otherwise GetRuntimePackagePath().
+    [[nodiscard]] QString GetPreviewPackagePath() const;
     [[nodiscard]] QString GetStatusText() const;
 
     /// Node canvas over the selected configuration (RG3b).
@@ -109,6 +140,11 @@ public:
     /// Borrow the World viewport whose device and extraction feed the preview; null detaches.
     /// The source must outlive this workspace or be cleared first.
     void SetPreviewSource(RenderPreview* sourceOrNull);
+    /// The borrowed World viewport renderer feeding the preview, or null.
+    [[nodiscard]] LUDUS_INLINE RenderPreview* GetPreviewSourceOrNull() const noexcept
+    {
+        return mPreviewSourceOrNull;
+    }
     /// Explicitly preview the last cooked runtime generation. False when the editor was built
     /// without the native GPU preview or the generation cannot be staged.
     [[nodiscard]] bool PreviewRuntime();
@@ -130,6 +166,11 @@ private:
                                 bool shouldCaptureSnapshot,
                                 bool shouldPreview = false);
     [[nodiscard]] bool startBuild(bool shouldPreview);
+    [[nodiscard]] bool isUneditedBuiltIn() const;
+    [[nodiscard]] bool writeDocument();
+    void openProjectGraph();
+    void showDocument(const RenderGraphDocument& document);
+    void showPreviewPage();
     [[nodiscard]] QByteArray getBuildIdentity() const;
     void scheduleLiveBuild();
     void renderTree();
@@ -137,9 +178,11 @@ private:
     void renderEdges();
     void renderSource();
     void renderStatus();
+    void updateActions();
     void documentEdited(RenderGraphDocumentStatus status);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
     void addNode();
+    void promptNewGraph();
     void openSourceLine(const QString& file, foundation::int32 line);
     [[nodiscard]] QJsonObject selectedConfiguration() const;
     [[nodiscard]] QJsonObject selectedNode() const;
@@ -159,11 +202,17 @@ private:
     bool mIsRendering = false;
     RenderGraphDocument mDocument;
     RenderGraphJob mJob;
+    RenderGraphCreation mCreation;
     RenderGraphJobResult mLastResult;
     QString mSelectedFile;
     QString mSelectedConfiguration;
     QString mSelectedNode;
     QLabel* mPath;
+    QPushButton* mNewGraph;
+    QPushButton* mOpenGraph;
+    QPushButton* mBuildPreview;
+    QStackedWidget* mContent;
+    QLabel* mEmptyMessage;
     QComboBox* mConfiguration;
     QPushButton* mValidate;
     QPushButton* mBuild;
@@ -188,11 +237,15 @@ private:
     QLineEdit* mValidator;
     QLineEdit* mSpirvCross;
     QLineEdit* mWorkerSocket;
+    QCheckBox* mOverrideBuildTools;
+    QAction* mCustomize;
+    QLabel* mBuildToolsStatus;
     QCheckBox* mLivePreview;
     RenderGraphLiveBuild mLiveBuild;
     QListWidget* mDiagnostics;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;
+    QWidget* mPreviewPage;
     QWidget* mPreviewImage;
     QLabel* mPreviewStatus;
     QPushButton* mPreviewButton;

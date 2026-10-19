@@ -2,8 +2,12 @@
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
+#include "internal/document_well.h"
+#include "internal/editor_commands.h"
 #include "internal/editor_files.h"
+#include "internal/error_list.h"
 #include "internal/project_creation_dialog.h"
+#include "internal/project_explorer.h"
 #include "internal/project_setup_dialog.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
@@ -11,12 +15,10 @@
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
 
-#include <QTabWidget>
-#include <QVBoxLayout>
-
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -40,23 +42,47 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QShowEvent>
 #include <QSignalBlocker>
+#include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
 #include <QWidget>
 
-#include <ludus/foundation/base/types.h>
+#include <ludus/foundation/base/core.h>
 
 #include <cstring>
 
 namespace ludus::editor
 {
+namespace
+{
+// Build output streams in many small chunks; parse it for the Error List once it pauses.
+constexpr foundation::int32 BUILD_ERRORS_DELAY_MILLISECONDS = 250;
+} // namespace
 
 MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QString& workspaceSettingsFile)
     : QMainWindow(parent), Controller_(controller), WorkspaceSettingsFile_(workspaceSettingsFile),
-      TimingDock_(new QDockWidget(QStringLiteral("Timing"), this)), Timing_(new TimingPanel(controller, TimingDock_))
+      TimingDock_(new QDockWidget(QStringLiteral("Timing"), this)), Timing_(new TimingPanel(controller, TimingDock_)),
+      mDocuments(new DocumentWell(this)), mAudioDocument(new QScrollArea(this)),
+      mProjectExplorerDock(new QDockWidget(QStringLiteral("Project Explorer"), this)),
+      mProjectExplorer(new ProjectExplorer(mProjectExplorerDock)),
+      mPropertiesDock(new QDockWidget(QStringLiteral("Properties"), this)),
+      mProperties(new QStackedWidget(mPropertiesDock)), mNoProperties(new QLabel(mProperties)),
+      mErrorListDock(new QDockWidget(QStringLiteral("Error List"), this)), mErrorList(new ErrorList(mErrorListDock)),
+      mContentDock(new QDockWidget(QStringLiteral("Content"), this)),
+      mStandardToolbar(new QToolBar(QStringLiteral("Standard"), this)),
+      mRenderGraphToolbar(new QToolBar(QStringLiteral("Render Graph"), this)),
+      mValidateGraphAction(CreateEditorCommand(RENDER_GRAPH_VALIDATE_COMMAND, this)),
+      mBuildGraphAction(CreateEditorCommand(RENDER_GRAPH_BUILD_COMMAND, this)),
+      mBuildPreviewGraphAction(CreateEditorCommand(RENDER_GRAPH_BUILD_PREVIEW_COMMAND, this)),
+      mLivePreviewGraphAction(CreateEditorCommand(RENDER_GRAPH_LIVE_PREVIEW_COMMAND, this)),
+      mCookGraphAction(CreateEditorCommand(RENDER_GRAPH_COOK_COMMAND, this)),
+      mProjectSettingsAction(CreateEditorCommand(PROJECT_SETTINGS_COMMAND, this)),
+      mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this))
 {
     setWindowTitle(QStringLiteral("Ludus Editor"));
     setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
@@ -64,25 +90,23 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     BuildUi();
     BuildMenus();
     InitializeWorkspace();
-    connect(WorkTabs_, &QTabWidget::currentChanged, this, &MainWindow::RenderDocumentActions);
+    connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
+    connect(mProjectExplorer, &ProjectExplorer::OpenRequested, this, &MainWindow::openProjectItem);
+    connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
+    mBuildErrorsTimer.setSingleShot(true);
+    mBuildErrorsTimer.setInterval(BUILD_ERRORS_DELAY_MILLISECONDS);
+    connect(&mBuildErrorsTimer, &QTimer::timeout, this, &MainWindow::renderBuildErrors);
     connect(Audio_, &AudioWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Content_, &ContentWorkspace::BusyChanged, this, &MainWindow::RenderCapabilities);
     connect(Content_, &ContentWorkspace::CatalogChanged, Audio_, &AudioWorkspace::RefreshCatalog);
     connect(Audio_, &AudioWorkspace::ImportRequested, this, [this]() {
-        WorkTabs_->setCurrentWidget(Content_);
+        showToolWindow(mContentDock);
         Content_->ChooseImport();
     });
     connect(Content_, &ContentWorkspace::OpenAudio, this, [this](const QString& id) {
         if (Audio_->OpenResource(id))
         {
-            for (int index = 0; index < WorkTabs_->count(); ++index)
-            {
-                if (WorkTabs_->widget(index)->isAncestorOf(Audio_))
-                {
-                    WorkTabs_->setCurrentIndex(index);
-                    break;
-                }
-            }
+            static_cast<void>(mDocuments->OpenDocument(mAudioDocument));
         }
     });
     connect(World_, &WorldWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
@@ -111,6 +135,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     });
     connect(Scripts_, &ScriptWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
+    connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::renderGraphCommands);
+    connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderGraphErrors);
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* before, QWidget* after) {
         LastEditedField_ = nullptr;
         disconnect(FocusUndoConnection_);
@@ -202,8 +228,14 @@ void MainWindow::BuildMenus()
     RedoAction_->setShortcuts(QKeySequence::keyBindings(QKeySequence::Redo));
     connect(UndoAction_, &QAction::triggered, this, &MainWindow::OnUndoRequested);
     connect(RedoAction_, &QAction::triggered, this, &MainWindow::OnRedoRequested);
+    // Visual Studio order: File, Edit, View, Project, Build, ..., Window, Help.
+    QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
 
     QMenu* projectMenu = menuBar()->addMenu(QStringLiteral("&Project"));
+    projectMenu->addAction(mProjectSettingsAction);
+    connect(mProjectSettingsAction, &QAction::triggered, this, [this]() {
+        static_cast<void>(mDocuments->OpenDocument(ProjectSettings_));
+    });
     NewProjectAction_ = new QAction(QStringLiteral("&New Project..."), this);
     fileMenu->insertAction(OpenAction_, NewProjectAction_);
     NewProjectAction_->setShortcut(QKeySequence::New);
@@ -247,9 +279,51 @@ void MainWindow::BuildMenus()
     connect(BuildDebugAction_, &QAction::triggered, this, [this]() { LaunchAfterPreview(LaunchAction::Debug); });
     connect(Controller_, &EditorController::DebuggerSetupRequested, this, &MainWindow::OnDebuggerSetupRequested);
     StopAction_ = buildMenu->addAction(QStringLiteral("&Stop"));
+    // Render-graph commands: one QAction each, shared with the Render Graph toolbar.
+    buildMenu->addSeparator();
+    for (QAction* action :
+         {mValidateGraphAction, mBuildGraphAction, mBuildPreviewGraphAction, mLivePreviewGraphAction, mCookGraphAction})
+    {
+        buildMenu->addAction(action);
+    }
+    connect(mValidateGraphAction, &QAction::triggered, this, [this]() {
+        static_cast<void>(Renderer_->Validate());
+        renderGraphCommands();
+    });
+    connect(mBuildGraphAction, &QAction::triggered, this, [this]() {
+        static_cast<void>(Renderer_->Build());
+        renderGraphCommands();
+    });
+    connect(mBuildPreviewGraphAction, &QAction::triggered, this, [this]() {
+        static_cast<void>(Renderer_->BuildAndPreview());
+        renderGraphCommands();
+    });
+    connect(mCookGraphAction, &QAction::triggered, this, [this]() {
+        static_cast<void>(Renderer_->CookRuntime());
+        renderGraphCommands();
+    });
+    // The Renderer document's own Live Preview toggle stays the single source of state.
+    QCheckBox* livePreview = Renderer_->findChild<QCheckBox*>(QStringLiteral("renderGraphLivePreview"));
+    LUDUS_REQUIRE(livePreview != nullptr);
+    connect(mLivePreviewGraphAction, &QAction::toggled, livePreview, &QCheckBox::setChecked);
+    connect(livePreview, &QCheckBox::toggled, mLivePreviewGraphAction, &QAction::setChecked);
+
+    // Toolbars use short text labels (QAction::iconText) so every command stays readable
+    // in a 1280-pixel window; menus and tooltips keep the full names.
+    mStandardToolbar->setObjectName(QStringLiteral("standardToolbar"));
+    mStandardToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    addToolBar(mStandardToolbar);
+    OpenAction_->setIconText(QStringLiteral("Open"));
+    SaveAction_->setIconText(QStringLiteral("Save"));
+    for (QAction* action : {OpenAction_, SaveAction_, UndoAction_, RedoAction_})
+    {
+        mStandardToolbar->addAction(action);
+    }
     GameToolbar_ = addToolBar(QStringLiteral("Game"));
     GameToolbar_->setObjectName(QStringLiteral("gameToolbar"));
     GameToolbar_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    BuildRunAction_->setIconText(QStringLiteral("Run"));
+    BuildDebugAction_->setIconText(QStringLiteral("Debug"));
     GameToolbar_->addAction(BuildAction_);
     GameToolbar_->addAction(BuildRunAction_);
     GameToolbar_->addAction(BuildDebugAction_);
@@ -267,6 +341,7 @@ void MainWindow::BuildMenus()
     QMenu* playMenu = menuBar()->addMenu(QStringLiteral("&Play"));
     PlayAction_ = playMenu->addAction(QStringLiteral("Build and Play"));
     PlayAction_->setObjectName(QStringLiteral("play.start"));
+    PlayAction_->setIconText(QStringLiteral("Play"));
 #if defined(Q_OS_WASM)
     PlayAction_->setText(QStringLiteral("Play Web Sample"));
     PlayAction_->setToolTip(
@@ -278,6 +353,7 @@ void MainWindow::BuildMenus()
 #endif
     BuildReloadAction_ = playMenu->addAction(QStringLiteral("Build and Reload Code"));
     BuildReloadAction_->setObjectName(QStringLiteral("play.reload"));
+    BuildReloadAction_->setIconText(QStringLiteral("Reload Code"));
     AutoReloadAction_ = playMenu->addAction(QStringLiteral("Automatically Reload Source Changes"));
     AutoReloadAction_->setCheckable(true);
     connect(AutoReloadAction_, &QAction::toggled, Controller_, &EditorController::SetAutoReload);
@@ -338,19 +414,48 @@ void MainWindow::BuildMenus()
     GameToolbar_->addAction(BuildReloadAction_);
     GameToolbar_->addAction(StopAction_);
 
-    QMenu* outputMenu = menuBar()->addMenu(QStringLiteral("&Output"));
-    ClearAction_ = outputMenu->addAction(QStringLiteral("&Clear Output"));
-    CopyAction_ = outputMenu->addAction(QStringLiteral("Copy &Job Details"));
+    mRenderGraphToolbar->setObjectName(QStringLiteral("renderGraphToolbar"));
+    mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    addToolBar(mRenderGraphToolbar);
+    for (QAction* action : {mValidateGraphAction, mBuildGraphAction, mBuildPreviewGraphAction, mLivePreviewGraphAction})
+    {
+        mRenderGraphToolbar->addAction(action);
+    }
 
-    QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
-    viewMenu->addAction(InspectorDock_->toggleViewAction());
-    viewMenu->addAction(TimingDock_->toggleViewAction());
-    viewMenu->addAction(OutputDock_->toggleViewAction());
-    viewMenu->addAction(GameToolbar_->toggleViewAction());
+    // Output commands live on the Output tool window's own toolbar.
+    ClearAction_ = new QAction(QStringLiteral("&Clear Output"), this);
+    ClearAction_->setObjectName(QStringLiteral("output.clear"));
+    ClearAction_->setIconText(QStringLiteral("Clear"));
+    CopyAction_ = new QAction(QStringLiteral("Copy &Job Details"), this);
+    CopyAction_->setObjectName(QStringLiteral("output.copyJobDetails"));
+    QToolBar* outputTools = OutputDock_->findChild<QToolBar*>(QStringLiteral("outputToolbar"));
+    LUDUS_REQUIRE(outputTools != nullptr);
+    outputTools->addAction(ClearAction_);
+    outputTools->addAction(CopyAction_);
+
+    // View shows and focuses one tool window (Visual Studio's View menu).
+    const auto addToolWindowCommand = [this, viewMenu](const EditorCommand& command, QDockWidget* dock) {
+        QAction* action = CreateEditorCommand(command, this);
+        connect(action, &QAction::triggered, this, [this, dock]() { showToolWindow(dock); });
+        viewMenu->addAction(action);
+    };
+    addToolWindowCommand(VIEW_PROJECT_EXPLORER_COMMAND, mProjectExplorerDock);
+    addToolWindowCommand(VIEW_PROPERTIES_COMMAND, mPropertiesDock);
+    addToolWindowCommand(VIEW_ERROR_LIST_COMMAND, mErrorListDock);
+    addToolWindowCommand(VIEW_OUTPUT_COMMAND, OutputDock_);
+    addToolWindowCommand(VIEW_CONTENT_COMMAND, mContentDock);
+    addToolWindowCommand(VIEW_LIVE_INSPECTOR_COMMAND, InspectorDock_);
+    addToolWindowCommand(VIEW_TIMING_COMMAND, TimingDock_);
     viewMenu->addSeparator();
-    auto* resetLayout = viewMenu->addAction(QStringLiteral("Reset Layout"));
-    resetLayout->setObjectName(QStringLiteral("resetWorkspaceLayout"));
-    connect(resetLayout, &QAction::triggered, this, &MainWindow::ResetWorkspaceLayout);
+    QMenu* toolbars = viewMenu->addMenu(QStringLiteral("&Toolbars"));
+    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar})
+    {
+        toolbars->addAction(toolbar->toggleViewAction());
+    }
+
+    QMenu* windowMenu = menuBar()->addMenu(QStringLiteral("&Window"));
+    windowMenu->setObjectName(QStringLiteral("windowMenu"));
+    buildWindowMenu(windowMenu);
 
     auto* helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
     auto* shortcuts = helpMenu->addAction(QStringLiteral("Keyboard Shortcuts..."));
@@ -531,28 +636,31 @@ void MainWindow::OpenProjectPath(const QString& path)
 
 void MainWindow::OnSaveRequested()
 {
-    auto* area = WorkTabs_->currentWidget();
-    if (area == World_)
+    QWidget* areaOrNull = getActiveWorkspaceOrNull();
+    if (areaOrNull == World_)
     {
         (void)World_->Save();
+        // A saved World may be new; keep Project Explorer's snapshot current.
+        mProjectExplorer->Refresh();
         return;
     }
-    if (area == Scripts_)
+    if (areaOrNull == Scripts_)
     {
         (void)Scripts_->Save();
         return;
     }
-    if (area == Renderer_)
+    if (areaOrNull == Renderer_)
     {
         static_cast<void>(Renderer_->Save());
+        mProjectExplorer->Refresh();
         return;
     }
-    if (area == Configuration_)
+    if (areaOrNull == Configuration_)
     {
         Configuration_->Save();
         return;
     }
-    if (area != nullptr && area->isAncestorOf(Audio_))
+    if (areaOrNull != nullptr && areaOrNull->isAncestorOf(Audio_))
     {
         if (Audio_->CanSave())
         {
@@ -560,7 +668,7 @@ void MainWindow::OnSaveRequested()
         }
         return;
     }
-    if (area == ProjectSettings_)
+    if (areaOrNull == ProjectSettings_)
     {
         (void)SaveProjectSettings();
     }
@@ -631,24 +739,32 @@ void MainWindow::OnStateChanged()
     RenderStatus();
     const auto& state = Controller_->State();
     const bool loaded = state.Document == DocumentState::ProjectLoaded;
-    const bool enteringWelcome = loaded == false && WorkTabs_->isTabVisible(WorkTabs_->indexOf(Welcome_)) == false;
-    const bool enteringProject = loaded && WorkTabs_->isTabVisible(WorkTabs_->indexOf(Welcome_));
-    WorkTabs_->setTabVisible(WorkTabs_->indexOf(Welcome_), loaded == false);
-    for (int index = 0; index < WorkTabs_->count(); ++index)
+    const bool isEnteringWelcome = loaded == false && mDocuments->IsDocumentAvailable(Welcome_) == false;
+    const bool isEnteringProject = loaded && mDocuments->IsDocumentAvailable(Welcome_);
+    if (isEnteringWelcome == true)
     {
-        if (WorkTabs_->widget(index) != Welcome_)
-        {
-            // Configuration is an independent offline document workspace.
-            WorkTabs_->setTabVisible(index, loaded || WorkTabs_->widget(index) == Configuration_);
-        }
+        // Capture the project's dock sizes and documents before Welcome replaces them.
+        SetProjectWorkspace({}, false);
     }
-    if (enteringWelcome)
+    // Project documents need a loaded project; Configuration is an independent offline document.
+    for (QWidget* document : mDocuments->GetDocuments())
     {
-        WorkTabs_->setCurrentWidget(Welcome_);
+        mDocuments->SetDocumentAvailable(document,
+                                         document == Welcome_ ? loaded == false
+                                                              : loaded == true || document == Configuration_);
     }
-    else if (enteringProject)
+    if (isEnteringWelcome)
     {
-        WorkTabs_->setCurrentWidget(ProjectSettings_);
+        static_cast<void>(mDocuments->OpenDocument(Welcome_));
+    }
+    else if (isEnteringProject)
+    {
+        // A project opens on its World, like a solution opening on its startup document, with
+        // Project Settings (setup status and build commands) as a background tab. A saved
+        // per-project arrangement may replace this below.
+        static_cast<void>(mDocuments->OpenDocument(ProjectSettings_));
+        static_cast<void>(mDocuments->OpenDocument(World_));
+        World_->setFocus();
     }
 #if defined(Q_OS_WASM)
     Audio_->setEnabled(false);
@@ -674,7 +790,13 @@ void MainWindow::OnStateChanged()
             SetProjectWorkspace(root, true);
         }
         Scripts_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), root, state.Saved.Preset);
-        Renderer_->SetProject(root, state.ProjectEpoch);
+        Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
+        if (restore == true)
+        {
+            // A new project identity retires the previous project's render-graph rows.
+            mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, {});
+            mProjectExplorer->SetProject(root, state.Saved.Name);
+        }
         Audio_->SetRoot(QDir(root).absoluteFilePath(QStringLiteral("content")));
         Content_->SetProject(QDir(root).absoluteFilePath(QStringLiteral("content")), state.ProjectEpoch);
     }
@@ -685,6 +807,11 @@ void MainWindow::OnStateChanged()
         World_->SetProject({}, state.ProjectEpoch);
         Scripts_->SetProject({}, {}, {});
         Renderer_->SetProject({}, state.ProjectEpoch);
+        mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, {});
+        if (isEnteringWelcome == true)
+        {
+            mProjectExplorer->SetProject({}, {});
+        }
         Audio_->SetRoot(QString());
         Content_->SetProject(QString(), state.ProjectEpoch);
     }
@@ -700,6 +827,8 @@ void MainWindow::OnStateChanged()
     // If a close was requested and the workspace is now closeable, finish.
     RenderProperties();
     Timing_->Render();
+    renderGraphCommands();
+    renderDocumentTitles();
     if (CloseConfirmed_ && Controller_->Caps().CanCloseImmediately)
     {
         close();
@@ -839,6 +968,7 @@ void MainWindow::RenderFields()
     if (Output_->toPlainText() != output)
     {
         Output_->setPlainText(output);
+        mBuildErrorsTimer.start();
     }
     Rendering_ = false;
 }
@@ -1220,26 +1350,38 @@ void MainWindow::ShowShortcuts()
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle(QStringLiteral("Keyboard Shortcuts"));
     auto* layout = new QFormLayout(dialog);
-    for (auto* action : {NewProjectAction_,
-                         OpenAction_,
-                         SaveAction_,
-                         UndoAction_,
-                         RedoAction_,
-                         CloseProjectAction_,
-                         BuildAction_,
-                         BuildRunAction_,
-                         BuildDebugAction_,
-                         PlayAction_,
-                         StopAction_})
+    QList<QAction*> actions{NewProjectAction_,
+                            OpenAction_,
+                            SaveAction_,
+                            UndoAction_,
+                            RedoAction_,
+                            CloseProjectAction_,
+                            BuildAction_,
+                            BuildRunAction_,
+                            BuildDebugAction_,
+                            PlayAction_,
+                            StopAction_};
+    // Catalogue commands (render graph, tool windows, window management) that have shortcuts.
+    for (QAction* action : findChildren<QAction*>(Qt::FindDirectChildrenOnly))
     {
-        auto label = action->text();
+        const QString id = action->objectName();
+        if (action->shortcut().isEmpty() == false && actions.contains(action) == false &&
+            (id.startsWith(QStringLiteral("renderGraph.")) == true || id.startsWith(QStringLiteral("view.")) == true ||
+             id.startsWith(QStringLiteral("window.")) == true))
+        {
+            actions.append(action);
+        }
+    }
+    for (QAction* action : actions)
+    {
+        QString label = action->text();
         label.remove(QLatin1Char('&'));
         layout->addRow(label, new QLabel(action->shortcut().toString(QKeySequence::NativeText), dialog));
     }
     auto* note = new QLabel(QStringLiteral("Shortcuts follow the same availability rules as menu actions. "
-                                           "Save follows the current work area. Undo edits focused text first; "
-                                           "Project Settings also has document history. Stop active work before "
-                                           "closing a project."),
+                                           "Save and Undo follow the active document tab. Undo edits focused text "
+                                           "first; Project Settings also has document history. Stop active work "
+                                           "before closing a project."),
                             dialog);
     note->setWordWrap(true);
     layout->addRow(note);

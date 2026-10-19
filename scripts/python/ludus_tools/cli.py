@@ -455,17 +455,30 @@ def cmd_render_graph(args) -> int:
         else:
             options = dict(helper=args.helper, compiler=args.compiler, validator=args.validator,
                            spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
+            toolchain = None
+            if args.project:
+                from .render_graph_project import resolve_build_tools
+                detected, toolchain = resolve_build_tools(args.project, args.tooling_root, args.manifest,
+                    helper=args.helper, compiler=args.compiler, validator=args.validator,
+                    spirv_cross=args.spirv_cross, store=_store(args))
+                options.update(detected)
+            elif not args.helper or not args.compiler:
+                raise ToolingError("RenderGraphTools", "Build requires a project SDK selection (--project), "
+                                   "or explicit --helper and --compiler overrides.")
             if args.runtime_package:
                 from . import render_graph_reload
                 payload = render_graph_reload.rebuild(args.manifest, args.output, args.runtime_package,
                             configuration=args.configuration, **options)
             else:
                 payload = {"build": render_graph_build.build_package(args.manifest, args.output, **options)}
+            if toolchain is not None:
+                payload["toolchain"] = toolchain
         human = _json.dumps(payload, indent=2)
     elif args.graph_action == "new":
-        path = render_graph.new_workspace(Path(args.destination), output=args.output)
-        payload = {"created": str(path), "stage": "RG0"}
-        human = f"Saved graph sources at {path}; RG0 validates contracts, not GPU execution."
+        path = render_graph.new_workspace(Path(args.destination), output=args.output,
+                    renderer_static=args.renderer_static, profiles=args.profiles)
+        payload = {"created": str(path), "stage": "RG1" if args.renderer_static else "RG0"}
+        human = f"Saved graph sources at {path}; build and cook before GPU execution."
     elif getattr(args, "library", False):
         if args.configuration is not None:
             raise ToolingError("RenderGraphConfiguration", "--library inspects all configurations; omit --configuration")
@@ -509,6 +522,9 @@ def build_parser() -> argparse.ArgumentParser:
     new_graph = graphs.add_parser("new", help="save RasterizeGraph and a root graph in a new directory")
     new_graph.add_argument("destination")
     new_graph.add_argument("--output", choices=("presentation", "offscreen", "depth"), default="presentation")
+    new_graph.add_argument("--renderer-static", action="store_true", help="also create Renderer-compatible shader sources")
+    new_graph.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl"),
+                           help="explicit shader targets for --renderer-static")
     new_graph.set_defaults(func=cmd_render_graph)
     for action in ("validate", "dump"):
         graph = graphs.add_parser(action)
@@ -529,8 +545,12 @@ def build_parser() -> argparse.ArgumentParser:
         build_graph.add_argument("manifest", help=".lushader.json manifest; sibling .lurender.json root")
         build_graph.add_argument("output", help="owned build tree, cache and immutable generations")
         build_graph.add_argument("--root", help="source package root (default: manifest directory)")
-        build_graph.add_argument("--helper", required=True, help="installed SDK lib/cmake/Ludus/shaders directory")
-        build_graph.add_argument("--compiler", required=True, help="pinned Slang executable")
+        build_graph.add_argument("--helper", required=action == "watch", help="installed SDK shader helper override")
+        build_graph.add_argument("--compiler", required=action == "watch", help="pinned Slang executable override")
+        if action == "build":
+            build_graph.add_argument("--project", help="resolve the SDK and shader tools selected by this project")
+            build_graph.add_argument("--tooling-root", help="trusted checkout with prepared shader tools")
+            build_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")
         build_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
         build_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
         build_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")

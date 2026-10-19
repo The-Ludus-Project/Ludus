@@ -154,6 +154,8 @@ RasterStatus CreateComputePipeline(DeviceHandle device,
         }
     }
     return Publish(RasterKind::ComputePipeline, output, [&](usize slot, Record& record) noexcept {
+        record.Compute.ShouldPrepareAsynchronously =
+            description.ShouldPrepareAsynchronously == true || shader->Shader.ShouldPrepareAsynchronously == true;
         record.Compute.Shader = RasterAccess::Slot(description.Shader);
         record.Compute.Layout = RasterAccess::Slot(description.Layout);
         for (usize i = 0; i < 3; ++i)

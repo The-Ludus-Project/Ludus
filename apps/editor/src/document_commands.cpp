@@ -3,6 +3,7 @@
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
+#include "internal/document_well.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
 #include "internal/world_workspace.h"
@@ -13,11 +14,17 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
-#include <QTabWidget>
 #include <QTextDocument>
 
 namespace ludus::editor
 {
+QWidget* MainWindow::getActiveWorkspaceOrNull() const
+{
+    // Save and Undo follow the active document tab. Focus in a tool window (for example
+    // the World's entity fields in Properties) keeps the document it belongs to active.
+    return mDocuments->GetActiveDocumentOrNull();
+}
+
 void MainWindow::CommitProjectFields()
 {
     if (Controller_->Caps().CanEdit == false)
@@ -41,37 +48,37 @@ void MainWindow::RenderDocumentActions()
     {
         return;
     }
-    auto* area = WorkTabs_->currentWidget();
-    const bool project = area == ProjectSettings_;
-    const bool audio = area != nullptr && area->isAncestorOf(Audio_);
-    const bool configuration = area == Configuration_;
-    const bool scripts = area == Scripts_;
-    const bool world = area == World_;
-    const bool isRenderer = area == Renderer_;
-    SaveAction_->setText(project         ? QStringLiteral("&Save Project Settings")
-                         : audio         ? QStringLiteral("&Save Audio")
-                         : world         ? QStringLiteral("&Save World")
-                         : scripts       ? QStringLiteral("&Save Script Asset")
-                         : isRenderer    ? QStringLiteral("&Save Render Graph")
-                         : configuration ? QStringLiteral("&Save Preferences")
-                                         : QStringLiteral("&Save"));
+    QWidget* areaOrNull = getActiveWorkspaceOrNull();
+    const bool isProject = areaOrNull == ProjectSettings_;
+    const bool isAudio = areaOrNull != nullptr && areaOrNull->isAncestorOf(Audio_);
+    const bool isConfiguration = areaOrNull == Configuration_;
+    const bool isScripts = areaOrNull == Scripts_;
+    const bool isWorld = areaOrNull == World_;
+    const bool isRenderer = areaOrNull == Renderer_;
+    SaveAction_->setText(isProject         ? QStringLiteral("&Save Project Settings")
+                         : isAudio         ? QStringLiteral("&Save Audio")
+                         : isWorld         ? QStringLiteral("&Save World")
+                         : isScripts       ? QStringLiteral("&Save Script Asset")
+                         : isRenderer      ? QStringLiteral("&Save Render Graph")
+                         : isConfiguration ? QStringLiteral("&Save Preferences")
+                                           : QStringLiteral("&Save"));
     // Clean project saves are available too: the focused argument delegate may
     // contain pending text that has not yet made the document dirty.
-    const bool rootBlocked = project && Content_->Importing() &&
-                             Controller_->State().Draft.SourceDir != Controller_->State().Saved.SourceDir;
-    SaveAction_->setToolTip(rootBlocked ? QStringLiteral("Finish or cancel content work before changing its root.")
-                                        : QString());
-    SaveAction_->setEnabled(project      ? Controller_->Caps().CanEdit && rootBlocked == false
-                            : audio      ? Audio_->CanSave()
-                            : world      ? World_->CanSave()
-                            : scripts    ? Scripts_->CanSave()
+    const bool isRootBlocked = isProject && Content_->Importing() &&
+                               Controller_->State().Draft.SourceDir != Controller_->State().Saved.SourceDir;
+    SaveAction_->setToolTip(isRootBlocked ? QStringLiteral("Finish or cancel content work before changing its root.")
+                                          : QString());
+    SaveAction_->setEnabled(isProject    ? Controller_->Caps().CanEdit && isRootBlocked == false
+                            : isAudio    ? Audio_->CanSave()
+                            : isWorld    ? World_->CanSave()
+                            : isScripts  ? Scripts_->CanSave()
                             : isRenderer ? Renderer_->CanSave()
-                                         : configuration && Configuration_->Preview() != nullptr);
+                                         : isConfiguration && Configuration_->Preview() != nullptr);
 #if defined(Q_OS_WASM)
-    if (project || configuration)
+    if (isProject || isConfiguration)
     {
-        SaveAction_->setText(project ? QStringLiteral("Save and &Download Project")
-                                     : QStringLiteral("Save and &Download Preferences"));
+        SaveAction_->setText(isProject ? QStringLiteral("Save and &Download Project")
+                                       : QStringLiteral("Save and &Download Preferences"));
     }
 #endif
     auto* focus = QApplication::focusWidget();
@@ -91,15 +98,15 @@ void MainWindow::RenderDocumentActions()
     }
     else
     {
-        const bool inProject = project && (focus == nullptr || ProjectSettings_->isAncestorOf(focus));
-        UndoAction_->setEnabled(world        ? World_->CanUndo()
-                                : scripts    ? Scripts_->CanUndo()
+        const bool isInProject = isProject && (focus == nullptr || ProjectSettings_->isAncestorOf(focus));
+        UndoAction_->setEnabled(isWorld      ? World_->CanUndo()
+                                : isScripts  ? Scripts_->CanUndo()
                                 : isRenderer ? Renderer_->CanUndo()
-                                             : inProject && Controller_->CanUndoProject());
-        RedoAction_->setEnabled(world        ? World_->CanRedo()
-                                : scripts    ? Scripts_->CanRedo()
+                                             : isInProject && Controller_->CanUndoProject());
+        RedoAction_->setEnabled(isWorld      ? World_->CanRedo()
+                                : isScripts  ? Scripts_->CanRedo()
                                 : isRenderer ? Renderer_->CanRedo()
-                                             : inProject && Controller_->CanRedoProject());
+                                             : isInProject && Controller_->CanRedoProject());
     }
 }
 
@@ -118,19 +125,19 @@ void MainWindow::OnUndoRequested()
     {
         plain->undo();
     }
-    else if (WorkTabs_->currentWidget() == World_)
+    else if (getActiveWorkspaceOrNull() == World_)
     {
         World_->Undo();
     }
-    else if (WorkTabs_->currentWidget() == Scripts_)
+    else if (getActiveWorkspaceOrNull() == Scripts_)
     {
         Scripts_->Undo();
     }
-    else if (WorkTabs_->currentWidget() == Renderer_)
+    else if (getActiveWorkspaceOrNull() == Renderer_)
     {
         Renderer_->Undo();
     }
-    else if (WorkTabs_->currentWidget() == ProjectSettings_ && UndoAction_->isEnabled())
+    else if (getActiveWorkspaceOrNull() == ProjectSettings_ && UndoAction_->isEnabled())
     {
         Controller_->UndoProjectEdit();
     }
@@ -152,19 +159,19 @@ void MainWindow::OnRedoRequested()
     {
         plain->redo();
     }
-    else if (WorkTabs_->currentWidget() == World_)
+    else if (getActiveWorkspaceOrNull() == World_)
     {
         World_->Redo();
     }
-    else if (WorkTabs_->currentWidget() == Scripts_)
+    else if (getActiveWorkspaceOrNull() == Scripts_)
     {
         Scripts_->Redo();
     }
-    else if (WorkTabs_->currentWidget() == Renderer_)
+    else if (getActiveWorkspaceOrNull() == Renderer_)
     {
         Renderer_->Redo();
     }
-    else if (WorkTabs_->currentWidget() == ProjectSettings_ && RedoAction_->isEnabled())
+    else if (getActiveWorkspaceOrNull() == ProjectSettings_ && RedoAction_->isEnabled())
     {
         Controller_->RedoProjectEdit();
     }

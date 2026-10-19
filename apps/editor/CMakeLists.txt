@@ -87,6 +87,24 @@ function(ludus_editor_compile_render_graph_host target)
     ludus_compile_render_graph(TARGET ${target} NAME editor_renderer_static
         MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
     set(editor_renderer_static_RUNTIME_PACKAGE "${editor_renderer_static_RUNTIME_PACKAGE}" PARENT_SCOPE)
+    # The engine-owned default graph the Renderer tab shows when a project has none. Its
+    # prebuilt generation previews with no project files or tools; its header's interface
+    # identity is checked against the host fixture at compile time.
+    get_property(default_graph GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR)
+    ludus_compile_render_graph(TARGET ${target} NAME editor_default_graph
+        MANIFEST "${default_graph}/main.lushader.json" RUNTIME_PACKAGE)
+    target_compile_definitions(${target} PRIVATE
+        "LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME=\"${editor_default_graph_RUNTIME_PACKAGE}\"")
+endfunction()
+
+# The default graph's authored sources, read-only inside the editor (also in builds
+# without the native preview), so the Renderer tab can show and copy them.
+function(ludus_editor_add_default_render_graph target)
+    get_property(default_graph GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR)
+    get_property(default_graph_files GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_FILES)
+    list(TRANSFORM default_graph_files PREPEND "${default_graph}/")
+    qt_add_resources(${target} ludus_default_render_graph
+        PREFIX "/render-graph/default" BASE "${default_graph}" FILES ${default_graph_files})
 endfunction()
 
 # --- Shared editor logic library ---------------------------------------------
@@ -138,8 +156,10 @@ qt_add_executable(ludus_editor
     src/render_preview.cpp
     src/preview_gpu_generation.cpp
     src/internal/preview_gpu_generation.h
-    src/internal/preview_bake.h
     src/internal/preview_shading.h
+    src/preview_shading.cpp
+    src/internal/viewport_statistics.h
+    src/viewport_statistics.cpp
     src/editor_camera_controller.cpp
     src/static_lighting_job.cpp
     src/internal/static_lighting_job.h
@@ -171,10 +191,14 @@ qt_add_executable(ludus_editor
     src/render_graph_document.cpp
     src/internal/render_graph_job.h
     src/render_graph_job.cpp
+    src/internal/render_graph_creation.h
+    src/render_graph_creation.cpp
     src/internal/render_graph_canvas.h
     src/render_graph_canvas.cpp
     src/internal/renderer_workspace.h
     src/renderer_workspace.cpp
+    src/internal/render_graph_defaults.h
+    src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
     src/render_graph_live_build.cpp
     src/configuration_workspace.cpp
@@ -187,6 +211,15 @@ qt_add_executable(ludus_editor
     src/main_window.cpp
     src/document_commands.cpp
     src/main_window_layout.cpp
+    src/main_window_tools.cpp
+    src/internal/document_well.h
+    src/document_well.cpp
+    src/internal/editor_commands.h
+    src/editor_commands.cpp
+    src/internal/error_list.h
+    src/error_list.cpp
+    src/internal/project_explorer.h
+    src/project_explorer.cpp
     src/internal/timing_panel.h
     src/timing_panel.cpp
     src/project_setup_dialog.cpp
@@ -213,6 +246,7 @@ set(world_demo_schema "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring/world.sch
 qt_add_resources(ludus_editor world_demo_schema PREFIX "/world-demo" BASE "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring" FILES ${world_demo_schema})
 qt_add_resources(ludus_editor ludus_samples
     PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
+ludus_editor_add_default_render_graph(ludus_editor)
 if(APPLE)
     target_sources(ludus_editor PRIVATE resources/ludus.icns)
     set_source_files_properties(resources/ludus.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
@@ -256,7 +290,9 @@ if(EMSCRIPTEN)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow)
+        renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow
+        renderer_lit_debug renderer_lit_debug_shadow
+        renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
@@ -265,7 +301,9 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
-        renderer_clustered_authored renderer_clustered_authored_shadow)
+        renderer_clustered_authored renderer_clustered_authored_shadow
+        renderer_lit_debug renderer_lit_debug_shadow
+        renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
     ludus_compile_shader(TARGET ludus_editor NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
     ludus_editor_compile_render_graph_host(ludus_editor)
 endif()
@@ -291,8 +329,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_preview.cpp
         src/preview_gpu_generation.cpp
         src/internal/preview_gpu_generation.h
-        src/internal/preview_bake.h
         src/internal/preview_shading.h
+    src/preview_shading.cpp
+    src/internal/viewport_statistics.h
+    src/viewport_statistics.cpp
         src/editor_camera_controller.cpp
         src/static_lighting_job.cpp
         src/internal/static_lighting_job.h
@@ -312,6 +352,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/world_workspace_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
+        tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/world_demo_workspace_tests.cpp
@@ -332,10 +373,14 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_document.cpp
         src/internal/render_graph_job.h
         src/render_graph_job.cpp
+        src/internal/render_graph_creation.h
+        src/render_graph_creation.cpp
         src/internal/render_graph_canvas.h
         src/render_graph_canvas.cpp
         src/internal/renderer_workspace.h
         src/renderer_workspace.cpp
+        src/internal/render_graph_defaults.h
+        src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
     src/render_graph_live_build.cpp
         src/configuration_workspace.cpp
@@ -363,10 +408,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/engine_pin_tests.cpp
         tests/project_lifecycle_tests.cpp
         tests/workspace_layout_tests.cpp
+        tests/editor_shell_tests.cpp
         tests/recent_projects_tests.cpp
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp
         tests/renderer_workspace_tests.cpp
+        tests/render_graph_default_tests.cpp
         tests/render_graph_canvas_tests.cpp
         tests/live_journey_tests.cpp
         tests/macos_journey_tests.cpp
@@ -381,10 +428,15 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     qt_add_resources(ludus_editor_tests world_demo_schema PREFIX "/world-demo" BASE "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring" FILES ${world_demo_schema})
     qt_add_resources(ludus_editor_tests ludus_samples
         PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
+    ludus_editor_add_default_render_graph(ludus_editor_tests)
     target_include_directories(ludus_editor_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/modules/audio/tests")
     target_compile_definitions(ludus_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         "LUDUS_EDITOR_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
-        "LUDUS_EDITOR_PROJECT_ROOT=\"${PROJECT_SOURCE_DIR}\"")
+        "LUDUS_EDITOR_PROJECT_ROOT=\"${PROJECT_SOURCE_DIR}\""
+        # The configured spirv-val (empty without one), for tests that build SPIR-V profiles.
+        "LUDUS_EDITOR_TEST_SPIRV_VALIDATOR=\"${LUDUS_SPIRV_VALIDATOR}\"")
+    target_compile_definitions(ludus_editor_tests PRIVATE
+        "LUDUS_EDITOR_SDK_MANIFEST=\"${PROJECT_BINARY_DIR}/cmake/LudusSdkManifest.json\"")
     # Controller/MainWindow sources are compiled directly into the test binary so
     # tests can drive the controller and (offscreen) widgets.
     target_sources(ludus_editor_tests PRIVATE
@@ -393,6 +445,15 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/main_window.cpp
         src/document_commands.cpp
         src/main_window_layout.cpp
+        src/main_window_tools.cpp
+        src/internal/document_well.h
+        src/document_well.cpp
+        src/internal/editor_commands.h
+        src/editor_commands.cpp
+        src/internal/error_list.h
+        src/error_list.cpp
+        src/internal/project_explorer.h
+        src/project_explorer.cpp
         src/internal/timing_panel.h
         src/timing_panel.cpp
         src/project_setup_dialog.cpp
@@ -433,7 +494,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_lit_shadow renderer_clustered renderer_clustered_shadow
-            renderer_clustered_authored renderer_clustered_authored_shadow)
+            renderer_clustered_authored renderer_clustered_authored_shadow
+            renderer_lit_debug renderer_lit_debug_shadow
+            renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
         ludus_compile_shader(TARGET ludus_editor_tests NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
         ludus_editor_compile_render_graph_host(ludus_editor_tests)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp)
