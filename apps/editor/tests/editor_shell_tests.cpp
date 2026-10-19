@@ -20,6 +20,7 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -31,6 +32,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSize>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextBlock>
@@ -56,6 +58,8 @@ QStringList GetToolWindows()
     };
 }
 constexpr QLatin1StringView PACKAGE_GRAPH{"renderer/main.lurender.json"};
+// Diagnostic rows the default Error List shows without scrolling.
+constexpr int32 MIN_VISIBLE_DIAGNOSTIC_ROWS = 2;
 
 QByteArray ReadBytes(const QString& path)
 {
@@ -262,7 +266,12 @@ TEST_CASE("Shell puts documents in the centre and tool windows around them", "[e
         CHECK(well.width() * 100 >= window.width() * 65);
         CHECK(well.height() * 100 >= window.height() * 55);
         CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->width() >= 260);
-        CHECK(Dock(window, QStringLiteral("errorListDock"))->height() >= 150);
+        // The bottom tool windows keep room for several diagnostic rows. Measured on the
+        // table, since the dock's own tab bar height differs between platform styles.
+        QTableWidget* diagnostics = window.findChild<QTableWidget*>(QStringLiteral("errorListTable"));
+        REQUIRE(diagnostics != nullptr);
+        CHECK(diagnostics->viewport()->height() >=
+              MIN_VISIBLE_DIAGNOSTIC_ROWS * diagnostics->verticalHeader()->defaultSectionSize());
         CheckToolbarsUnclipped(window);
         REQUIRE(well.OpenDocument(world) == true);
         Settle();

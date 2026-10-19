@@ -206,8 +206,12 @@ ErrorList::ErrorList(QWidget* parentOrNull)
 {
     setObjectName(QStringLiteral("errorList"));
     QVBoxLayout* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(2, 2, 2, 2);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    // Compact filter row, so the table keeps several rows in a short bottom dock.
     QHBoxLayout* filters = new QHBoxLayout;
+    filters->setContentsMargins(0, 0, 0, 0);
+    filters->setSpacing(0);
     const QStyle* style = QApplication::style();
     mErrors->setObjectName(QStringLiteral("errorListErrors"));
     mErrors->setIcon(style->standardIcon(QStyle::SP_MessageBoxCritical));

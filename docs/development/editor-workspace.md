@@ -353,7 +353,8 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   with a check mark to show or hide it.
 - **Window → Reset Window Layout** restores the default documents-first
   arrangement, all tool windows and toolbars, sized for the current window
-  (tool windows take roughly a fifth of the width and height). It never changes
+  (the right column takes about a fifth of the width and the bottom group about
+  a quarter of the height, enough for several Error List rows). It never changes
   drafts, saved files or a Play session.
 - **Save, Undo and Redo follow the active document tab.** Focus in a tool
   window does not change the active document: editing a World entity in

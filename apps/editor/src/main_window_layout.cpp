@@ -71,9 +71,10 @@ constexpr foundation::int32 MIN_WINDOW_HEIGHT_PIXELS = 760;
 constexpr foundation::int32 SIDE_DOCK_PERCENT = 22;
 constexpr foundation::int32 MIN_SIDE_DOCK_PIXELS = 260;
 constexpr foundation::int32 MAX_SIDE_DOCK_PIXELS = 420;
-constexpr foundation::int32 BOTTOM_DOCK_PERCENT = 22;
-constexpr foundation::int32 MIN_BOTTOM_DOCK_PIXELS = 150;
-constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 260;
+// The bottom group needs a tab bar, the Error List filters and header, and a few rows.
+constexpr foundation::int32 BOTTOM_DOCK_PERCENT = 27;
+constexpr foundation::int32 MIN_BOTTOM_DOCK_PIXELS = 160;
+constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 300;
 // Project Explorer's share of the right column; Properties gets the rest.
 constexpr foundation::int32 EXPLORER_SHARE_PERCENT = 40;
 constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = 8;
