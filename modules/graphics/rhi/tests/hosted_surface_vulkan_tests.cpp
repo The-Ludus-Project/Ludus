@@ -237,7 +237,12 @@ public:
         VkBufferImageCopy region{};
         region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         region.imageSubresource.layerCount = 1;
-        region.imageOffset = { .x = static_cast<int32>(frame.Width / 2), .y = static_cast<int32>(frame.Height / 2) };
+        region.imageOffset =
+        {
+            .x = static_cast<int32>(frame.Width / 2),
+            .y = static_cast<int32>(frame.Height / 2),
+            .z = 0,
+        };
         region.imageExtent = { .width = 1, .height = 1, .depth = 1 };
         vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
         REQUIRE(vkEndCommandBuffer(command) == VK_SUCCESS);
