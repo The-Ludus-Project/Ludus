@@ -263,6 +263,10 @@ void MainWindow::BuildUi()
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), mDocuments);
     // The render-graph preview borrows the device and extraction of whichever viewport the
     // World shows (its imported scene or its schema-bound panel) and follows it when it changes.
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    World_->UseProjectGraph(*Renderer_);
+    Renderer_->EnableWorldRendering();
+#endif
     Renderer_->SetPreviewSource(&World_->GetRenderPreview());
     connect(World_, &WorldWorkspace::RenderPreviewChanged, Renderer_, [this]() {
         Renderer_->SetPreviewSource(&World_->GetRenderPreview());

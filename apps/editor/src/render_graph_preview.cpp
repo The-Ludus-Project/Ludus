@@ -189,7 +189,10 @@ struct RenderGraphPreview::State final
     rhi::RasterShaderDescription CompositeVertex{};
     rhi::RasterShaderDescription CompositeFragment{};
     renderer::RenderGraphActivation Activation;
-    OffscreenFrameReader Reader;
+    RenderTargetReader Reader;
+    QString OutputName;
+    uint64 FailedOutputGeneration = 0;
+    uint64 FailedOutputRevision = 0;
     rhi::DeviceHandle Device{};
     rhi::SurfaceHandle Surface{};
     bool IsAttached = false;
@@ -237,7 +240,7 @@ RenderGraphPreview::RenderGraphPreview(BorrowedView<const uint8> interfaceIdenti
 RenderGraphPreview::~RenderGraphPreview()
 {
     // Same release order as Detach, without notifying observers during destruction.
-    mState->Reader.Cancel();
+    mState->Reader.Release();
     mState->Inspector.Release();
     mState->Activation.Reset();
 }
@@ -286,7 +289,7 @@ void RenderGraphPreview::Detach() noexcept
         return;
     }
     // Drop the export and inspection consumers before the generations that own their textures.
-    state.Reader.Cancel();
+    state.Reader.Release();
     state.Inspector.Release();
     state.Activation.Reset();
     state.Device = {};
@@ -405,6 +408,17 @@ RenderGraphPreviewLoad RenderGraphPreview::stage()
     return RenderGraphPreviewLoad::Staged;
 }
 
+void RenderGraphPreview::SetOutputTarget(const QString& name)
+{
+    if (mState->OutputName != name)
+    {
+        mState->OutputName = name;
+        mState->FailedOutputGeneration = 0;
+        mState->FailedOutputRevision = 0;
+        // Redraw the current extraction; keep the last complete image during the new read.
+        mPresentedSession = 0;
+    }
+}
 void RenderGraphPreview::SetExtraction(const RenderGraphExtraction& extraction)
 {
     mState->Extraction = extraction;
@@ -442,9 +456,28 @@ void RenderGraphPreview::Tick()
         renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
         rhi::TextureHandle texture;
         rhi::TextureAspect aspect = rhi::TextureAspect::Color;
+        uint32 resource = state.Active.Resource;
+        uint32 width = state.Active.Width;
+        uint32 height = state.Active.Height;
+        if (state.OutputName.isEmpty() == false)
+        {
+            const qsizetype index = state.Active.Catalogue.Find(state.OutputName);
+            if (index < 0)
+            {
+                state.IsAwaitingProducer = false;
+                state.FailedOutputGeneration = state.RenderedGeneration;
+                state.FailedOutputRevision = state.RenderedRevision;
+                setStatus(QStringLiteral("The selected graph target is unavailable; the shown frame is kept."));
+                return;
+            }
+            const RenderGraphTarget& target = state.Active.Catalogue.Targets[index];
+            resource = target.Resource;
+            width = target.Width;
+            height = target.Height;
+        }
         const rhi::RasterStatus exported = activeOrNull == nullptr
                                                ? rhi::RasterStatus::InvalidState
-                                               : activeOrNull->GetExport(state.Active.Resource, texture, aspect);
+                                               : activeOrNull->GetResourceAllocation(resource, texture, aspect);
         if (exported == rhi::RasterStatus::NotReady && ++state.ProducerTicks < MAX_PRODUCER_TICKS)
         {
             return;
@@ -456,9 +489,17 @@ void RenderGraphPreview::Tick()
                           .arg(DescribeRasterStatus(exported)));
             return;
         }
-        if (state.Reader.Begin(state.Device, texture, state.Active.Width, state.Active.Height) == false)
+        const RenderTargetReadStatus started =
+            state.Reader.Begin(state.Device, state.Surface, texture, aspect, width, height);
+        if (started != RenderTargetReadStatus::Pending && started != RenderTargetReadStatus::Complete)
         {
-            setStatus(QStringLiteral("The preview frame cannot be copied on this device; the shown frame is kept."));
+            state.FailedOutputGeneration = state.RenderedGeneration;
+            state.FailedOutputRevision = state.RenderedRevision;
+            setStatus(
+                started == RenderTargetReadStatus::Undefined
+                    ? QStringLiteral("The selected graph target was discarded or has undefined contents; "
+                                     "the shown frame is kept.")
+                    : QStringLiteral("The preview frame cannot be copied on this device; the shown frame is kept."));
             return;
         }
         finishCopy();
@@ -476,10 +517,17 @@ void RenderGraphPreview::Tick()
 void RenderGraphPreview::finishCopy()
 {
     State& state = *mState;
-    const OffscreenReadStatus status = state.Reader.Poll();
-    if (status == OffscreenReadStatus::Complete)
+    const RenderTargetReadStatus status = state.Reader.Poll();
+    if (status == RenderTargetReadStatus::Complete)
     {
-        mImage = state.Reader.TakeImage();
+        const InspectedTexture texture = state.Reader.TakeTexture();
+        TextureDisplaySettings settings;
+        if (texture.Encoding == TexelEncoding::Depth32Float)
+        {
+            settings.Range = TextureRangeMode::Automatic;
+        }
+        TextureValueRange range;
+        mImage = MakeDisplayImage(texture, settings, range);
         mPresentedGeneration = state.RenderedGeneration;
         mPresentedRevision = state.RenderedRevision;
         mPresentedSession = state.Session;
@@ -488,7 +536,7 @@ void RenderGraphPreview::finishCopy()
         state.IsInspectionRequested = state.InspectedName.isEmpty() == false;
         Q_EMIT FramePresented();
     }
-    else if (status == OffscreenReadStatus::Failed)
+    else if (status == RenderTargetReadStatus::Failed || status == RenderTargetReadStatus::Undefined)
     {
         state.Reader.Cancel();
         setStatus(QStringLiteral("The preview frame copy failed; the shown frame is kept."));
@@ -545,8 +593,10 @@ void RenderGraphPreview::advance()
         return;
     }
     const uint64 drawable = activeOrNull->GetDrawableSceneRevision();
-    if (drawable == 0 || (mPresentedSession == state.Session && report.ActiveGeneration == mPresentedGeneration &&
-                          drawable == mPresentedRevision))
+    if ((state.FailedOutputGeneration == report.ActiveGeneration && state.FailedOutputRevision == drawable) ||
+        drawable == 0 ||
+        (mPresentedSession == state.Session && report.ActiveGeneration == mPresentedGeneration &&
+         drawable == mPresentedRevision))
     {
         return;
     }
@@ -692,6 +742,32 @@ void RenderGraphPreview::setStatus(const QString& text)
         mStatus = text;
         Q_EMIT Changed();
     }
+}
+
+QString RenderGraphPreview::GetDisplayStatus() const
+{
+    if (mStatus.isEmpty() == false)
+    {
+        return mStatus;
+    }
+    if (mState->IsAttached == false)
+    {
+        return mImage.isNull() == true ? QStringLiteral("Open a World to render it here.")
+                                       : QStringLiteral("Viewport paused.");
+    }
+    switch (mState->Activation.GetReport().Candidate)
+    {
+        case renderer::RenderGraphCandidateState::Preparing:
+        case renderer::RenderGraphCandidateState::NeedsUpdate:
+            return QStringLiteral("Updating renderer…");
+        case renderer::RenderGraphCandidateState::Failed:
+            return QStringLiteral("Renderer update failed; the last good scene is kept.");
+        case renderer::RenderGraphCandidateState::RestartRequired:
+            return QStringLiteral("This graph's shader interface is not supported by this editor build.");
+        case renderer::RenderGraphCandidateState::None:
+            return mImage.isNull() == true ? QStringLiteral("Preparing renderer…") : QString();
+    }
+    return {};
 }
 
 QString RenderGraphPreview::GetStatus() const

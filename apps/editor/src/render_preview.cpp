@@ -336,7 +336,8 @@ bool RenderPreview::Start()
         return false;
     }
     mIsStarting = true;
-    Status_ = QStringLiteral("Preparing the shared Qt GPU device…");
+    Status_ = mIsProjectGraphEnabled == true ? QStringLiteral("Preparing the project renderer…")
+                                             : QStringLiteral("Preparing the shared Qt GPU device…");
     Q_EMIT DeviceRequested();
     Q_EMIT Changed();
     return mIsStarting == true || OwnsDevice_ == true;
@@ -401,7 +402,7 @@ bool RenderPreview::AdmitOffscreenDevice()
                                                         Surface_);
     if (started != rhi::DeviceStatus::Ready && started != rhi::DeviceStatus::Pending)
     {
-        Status_ = QStringLiteral("No Vulkan device meets the offscreen viewport's raster profile and budgets. "
+        Status_ = QStringLiteral("No GPU device meets the offscreen viewport's raster profile and budgets. "
                                  "Editing remains available.");
         Q_EMIT Changed();
         Q_EMIT Failed(Status_);
@@ -1058,11 +1059,35 @@ bool RenderPreview::prepare()
     return false;
 #endif
 }
+void RenderPreview::UseProjectGraph() noexcept
+{
+    mIsProjectGraphEnabled = true;
+}
+void RenderPreview::NotifyProjectFrame()
+{
+    if (mIsProjectGraphEnabled == true && OwnsDevice_ == true)
+    {
+        mHasFrame = true;
+        ++Frames_;
+        Status_ = QStringLiteral("World viewport updated.");
+        const uint64 presentedFrame = Frames_;
+        Q_EMIT FrameReady();
+        if (OwnsDevice_ == true && Frames_ == presentedFrame)
+        {
+            Q_EMIT Changed();
+        }
+    }
+}
 void RenderPreview::Tick()
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     if (OwnsDevice_ == false || mHasPreparationFailed == true)
     {
+        return;
+    }
+    if (mIsProjectGraphEnabled == true)
+    {
+        static_cast<void>(rhi::PollLifetime(Device_));
         return;
     }
     QElapsedTimer frameTimer;

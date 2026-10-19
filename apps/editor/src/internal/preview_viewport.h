@@ -17,6 +17,7 @@
 namespace ludus::editor
 {
 class PreviewShaderReload;
+class RendererWorkspace;
 /// How the viewport shows engine frames in this process.
 enum class ViewportPresentation : foundation::uint8
 {
@@ -47,6 +48,11 @@ public:
                     QWidget* parentOrNull = nullptr,
                     bool isAutomatic = true);
     ~PreviewViewport() override;
+    /// Present the project's graph output using this viewport's scene, camera and device.
+    /// Call on the GUI thread; workspace must outlive the binding. Native builds only.
+    void UseProjectGraph(RendererWorkspace& inoutWorkspace);
+    /// Retain the last shown frame while an import candidate awaits publication.
+    void HoldFrame();
     void ShowFrame();
     void ClearFrame(const QString& text);
     /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.

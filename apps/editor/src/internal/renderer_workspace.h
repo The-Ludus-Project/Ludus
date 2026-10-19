@@ -14,6 +14,7 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
 #include "internal/render_graph_live_build.h"
+#include "internal/render_graph_source_watch.h"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -40,6 +41,7 @@ QT_END_NAMESPACE
 namespace ludus::editor
 {
 class RenderGraphPreview;
+class RenderGraphWorker;
 class RenderPreview;
 class TextureViewer;
 // RG3 Renderer workspace: edits one render-graph package through the typed
@@ -122,6 +124,14 @@ public:
     /// Recompile/cook the immutable draft and preview only a current successful result. An
     /// unedited engine default previews the editor's prebuilt generation without a build.
     [[nodiscard]] bool BuildAndPreview();
+    /// Authored configurations of the active root graph.
+    [[nodiscard]] QStringList GetConfigurations() const;
+    /// Effective authored configuration, resolving the asset default.
+    [[nodiscard]] QString GetConfiguration() const;
+    /// Choose an authored root configuration; unknown names are ignored.
+    void SetConfiguration(const QString& configuration);
+    /// Keep the project graph live in the World viewport, including external shader saves.
+    void EnableWorldRendering();
     /// Use an existing shared native worker endpoint; empty retains the offline compiler path.
     void SetWorkerSocket(const QString& endpoint);
     /// Cook the last published build into a runtime generation for atomic activation.
@@ -245,6 +255,8 @@ private:
     void showDocument(const RenderGraphDocument& document);
     [[nodiscard]] QByteArray getBuildIdentity() const;
     void scheduleLiveBuild();
+    void refreshWatchedSources();
+    void applySourceEdit();
     void renderTree();
     void renderInspector();
     void renderEdges();
@@ -307,6 +319,12 @@ private:
     QString mResolvedSdk;
     QAction* mCustomize;
     RenderGraphLiveBuild mLiveBuild;
+    RenderGraphSourceWatch mSourceWatch;
+    RenderGraphWorker* mWorkerOrNull = nullptr;
+    bool mHasPendingWorkerBuild = false;
+    bool mShouldPreviewAfterWorker = false;
+    bool mIsWorldRenderingEnabled = false;
+    bool mHasPendingSourceChange = false;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;
     QWidget* mPreviewPage;
@@ -317,6 +335,9 @@ private:
     RenderGraphPreview* mPreviewOrNull = nullptr;
     /// Renderer tab texture viewer; null in builds without the native GPU preview.
     TextureViewer* mTextureViewerOrNull = nullptr;
+    QTimer mSourceEditDebounce;
+    QString mEditingSource;
+    QByteArray mEditingText;
     QTimer mPreviewTimer;
     foundation::uint64 mPreviewDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;

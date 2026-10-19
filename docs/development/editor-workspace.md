@@ -140,8 +140,9 @@ Homebrew `qtbase` on macOS and
 build the selected native Debug, Development or ASan/UBSan editor with 3D preview.
 Editor setup also acquires the checksum-verified pinned shader tools: Slang on
 macOS, plus SPIR-V Tools on Linux. Native editor builds with 3D preview automatically
-build the shader worker and connect to it when **Live shaders** is enabled; no
-separate compiler flag or socket configuration is needed. This requires macOS 15
+build the shader worker. Native World viewports use the project's render graph
+and start a private compiler worker for automatic shader rebuilds; no separate
+compiler flag or socket configuration is needed. This requires macOS 15
 or newer on macOS. In **Advanced setup**, clear **Include 3D
 preview and live shaders** for a lightweight document-only editor, or use
 `--no-editor-preview` with `--with-editor` in the CLI. That path skips shader-tool
@@ -409,10 +410,11 @@ inspector is the Properties tool window. Component actions stay below the
 scrollable inspector fields. The render surface receives the remaining height
 below its shading, framing and navigation controls, including after resize.
 
-**Lit** shading previews authored lights and emitting surfaces using direct lighting
-and supported real-time shadows. The interactive viewport does not start static
-lighting bakes or generate lightmaps. Static indirect lighting is not calculated
-for viewport navigation.
+Native World viewports now use the [project render graph](render-graph-authoring.md#start-customizing-the-renderer),
+falling back to the engine default only when the project has none. Shader edits update
+that viewport automatically. Its selectors expose authored graph configurations and
+attachments. The current static graph profile does not provide the former Lit material
+preview; its input and presentation limits are documented with that workflow.
 
 ## Closing and shortcuts
 
@@ -914,6 +916,14 @@ matte materials in this combined lit profile; their linear tints are baked into
 transient sRGB texture copies. Original assets are preserved. Worlds without
 imported scene data retain their existing unlit preview adapter.
 
+
+### Earlier built-in viewport profile
+
+The following records the built-in preview implementation and its platform qualification.
+Native World documents now delegate to the [project graph workflow](render-graph-authoring.md#start-customizing-the-renderer),
+which states its static input profile and asynchronous readback limits. They do not expose
+the separate engine shading and reload controls below. Browser preview and standalone
+renderer tests retain that built-in producer.
 
 Build the native Editor with
 [the rendered authoring option](#enable-the-rendered-authoring-surface).

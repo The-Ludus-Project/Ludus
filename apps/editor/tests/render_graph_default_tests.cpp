@@ -253,22 +253,17 @@ TEST_CASE("Customize copies the default once and never replaces project files", 
     CHECK(closed.CustomizeBuiltIn() == false);
 }
 
-TEST_CASE("An unreadable project graph falls back to the default without replacing it", "[editor][render-graph]")
+TEST_CASE("An unreadable project graph reports failure without substituting the default", "[editor][render-graph]")
 {
-    // A project graph above the bounded per-file size cannot be loaded as a document.
     QTemporaryDir project;
     const QString graph = QDir(GetPackage(project)).filePath(DEFAULT_RENDER_GRAPH_ROOT);
     const QByteArray oversized(RenderGraphDocument::MAX_FILE_BYTES + 1, ' ');
     WriteFile(graph, oversized);
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
-    REQUIRE(workspace.IsBuiltIn() == true);
-    // The reason is one parenthesized clause, followed by its own sentence.
-    const QString status = workspace.GetStatusText();
-    CHECK(status.startsWith(QStringLiteral("graphs/Main/main.lurender.json could not be opened (")) == true);
-    CHECK(status.contains(QStringLiteral(".). ")) == false);
-    CHECK(status.contains(QStringLiteral("). Showing the engine default;")) == true);
-    // Customizing never replaces the project's own file.
+    CHECK(workspace.IsBuiltIn() == false);
+    CHECK(workspace.GetDocument().IsLoaded() == false);
+    CHECK(workspace.GetStatusText().isEmpty() == false);
     CHECK(workspace.CustomizeBuiltIn() == false);
     CHECK(ReadFile(graph) == oversized);
 }
@@ -329,4 +324,23 @@ TEST_CASE("Build & Preview builds an edited default like any project graph", "[e
     // Building the draft wrote only build products; the sources still wait for Save.
     CHECK(ListProject(project) == QStringList{QStringLiteral("out")});
     CHECK(workspace.IsBuiltIn() == true);
+}
+
+TEST_CASE("Project graph resolution selects named packages and keeps libraries under their execution root",
+          "[editor][render-graph]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    const QDir graphs(QDir(project.path()).filePath(QStringLiteral("graphs")));
+    REQUIRE(QDir().rename(graphs.filePath(QStringLiteral("Main")), graphs.filePath(QStringLiteral("Other"))) == true);
+    RendererWorkspace reopened({});
+    reopened.SetProject(project.path(), 2);
+    REQUIRE(reopened.IsBuiltIn() == false);
+    CHECK(reopened.GetDocument().GetPackageRoot().endsWith(QStringLiteral("/graphs/Other")) == true);
+    REQUIRE(reopened.OpenGraph(
+                QDir(reopened.GetDocument().GetPackageRoot()).filePath(QStringLiteral("rasterize.lurender.json"))) ==
+            true);
+    CHECK(reopened.GetDocument().GetRootGraph() == DEFAULT_RENDER_GRAPH_ROOT);
 }

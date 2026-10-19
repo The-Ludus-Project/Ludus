@@ -97,6 +97,9 @@ public:
     [[nodiscard]] bool IsAttached() const noexcept;
     /// Explicitly preview one cooked runtime generation; the previous request is superseded.
     [[nodiscard]] RenderGraphPreviewLoad Load(const QString& runtimePackagePath);
+    /// Choose the World display attachment by expanded name; empty selects the exported output.
+    /// Missing targets retain the last image and report a diagnostic. Applies after producer completion.
+    void SetOutputTarget(const QString& name);
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
     void SetExtraction(const RenderGraphExtraction& extraction);
     /// Export extent of the generation the next frame will show (candidate first), or 0x0.
@@ -151,6 +154,8 @@ public:
     }
     /// Human-readable state, distinguishing the shown frame from a pending or failed candidate.
     [[nodiscard]] QString GetStatus() const;
+    /// World-facing progress or error text; empty after a successful frame.
+    [[nodiscard]] QString GetDisplayStatus() const;
 
 Q_SIGNALS:
     /// A new complete frame replaced GetImage.

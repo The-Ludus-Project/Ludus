@@ -7,6 +7,7 @@
 #include "editor_default_graph.h"
 #include "editor_renderer_static.h"
 #include "internal/offscreen_frame_reader.h"
+#include "internal/preview_viewport.h"
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_graph_targets.h"
@@ -16,6 +17,8 @@
 #include "internal/texture_inspection.h"
 #include "internal/texture_viewer.h"
 #include "internal/world_demo_adapter.h"
+#include "internal/world_graph_view.h"
+#include "internal/world_workspace.h"
 #include "renderer_composite.h"
 
 #include <ludus/foundation/base/types.h>
@@ -33,12 +36,23 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QApplication>
+#include <QComboBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QMouseEvent>
+#include <QPlainTextEdit>
+#include <QSaveFile>
+#include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QThread>
 
 using namespace ludus::editor;
@@ -909,4 +923,254 @@ TEST_CASE("Texture viewer follows Live Preview frames and rebuilt generations by
     CHECK(viewer.GetDisplaySettings().Maximum == 1.0F);
     CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0));
     preview.Detach();
+}
+
+TEST_CASE("World viewport follows project shaders and keeps drawable output after a failed edit",
+          "[editor][render-graph][world-graph]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    constexpr int32 GREEN_MINIMUM = 200;
+    constexpr int32 DARK_MAXIMUM = 10;
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    const QString python = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
+    if (QFileInfo(compiler).isExecutable() == false || QFileInfo(python).isExecutable() == false)
+    {
+        SKIP("pinned shader tools are required for the real project reload test");
+    }
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.resize(800, 600);
+    viewport.show();
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.IsBuiltIn() == true);
+    REQUIRE(source.SetScene(MakeScene({1, 1, 1, 1})) == true);
+    REQUIRE(source.Start() == true);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        INFO(workspace.GetStatusText().toStdString());
+        INFO(workspace.GetPreviewOrNull()->GetStatus().toStdString());
+        return isReady();
+    };
+    WorldGraphView* graphView = viewport.findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    CHECK(source.FrameAvailable() == true);
+    CHECK(source.Frames() != 0);
+    CHECK(QFileInfo::exists(QDir(project.path()).filePath(QStringLiteral("graphs"))) == false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    workspace.SetBuildTools(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
+                                .filePath(QStringLiteral("helper")),
+                            compiler);
+    const QString validator = QStringLiteral(LUDUS_EDITOR_TEST_SPIRV_VALIDATOR);
+    if (QFileInfo(validator).isExecutable() == true)
+    {
+        RenderGraphBuildSettings settings = workspace.GetBuildSettings();
+        settings.Tools.Validator = validator;
+        workspace.SetBuildSettings(settings);
+    }
+    const QString file =
+        QDir(workspace.GetDocument().GetPackageRoot()).filePath(QStringLiteral("main_shaders/color.slang"));
+    QFile original(file);
+    REQUIRE(original.open(QIODevice::ReadOnly) == true);
+    const QByteArray shader = original.readAll();
+    original.close();
+    const auto saveShader = [&](const QByteArray& text) {
+        QSaveFile output(file);
+        REQUIRE(output.open(QIODevice::WriteOnly) == true);
+        REQUIRE(output.write(text) == text.size());
+        REQUIRE(output.commit() == true);
+    };
+    QByteArray green = shader;
+    REQUIRE(green.replace("return value.Color;", "return float4(0, 1, 0, 1);") != shader);
+    saveShader(green);
+    REQUIRE(waitFor([&]() {
+                const QImage& image = graphView->GetImage();
+                const QColor pixel = image.pixelColor(image.width() / 2, image.height() / 2);
+                return workspace.GetDocument().GetDraft(QStringLiteral("main_shaders/color.slang")) == green &&
+                       pixel.green() > GREEN_MINIMUM && pixel.red() < DARK_MAXIMUM;
+            }) == true);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_GRAPH_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(viewport.grab().save(capture) == true);
+    }
+    const QImage lastGood = graphView->GetImage();
+    const uint64 generation = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    saveShader(QByteArrayLiteral("float4 PSMain(RasterVarying value) { return brokenIdentifier; }"));
+    REQUIRE(waitFor([&]() {
+                return workspace.IsJobActive() == false && workspace.GetLastResult().IsSuccessful == false &&
+                       workspace.GetLastResult().Request.Request != 0;
+            }) == true);
+    CHECK(graphView->GetImage() == lastGood);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == generation);
+    saveShader(shader);
+    REQUIRE(waitFor([&]() { return workspace.GetPreviewOrNull()->GetPresentedGeneration() > generation; }) == true);
+    QComboBox* sourceFiles = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    QPlainTextEdit* sourceText = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceFiles != nullptr);
+    REQUIRE(sourceText != nullptr);
+    sourceFiles->setCurrentText(QStringLiteral("main_shaders/color.slang"));
+    QByteArray blue = shader;
+    blue.replace("return value.Color;", "return float4(0, 0, 1, 1);");
+    sourceText->setPlainText(QString::fromUtf8(blue));
+    REQUIRE(waitFor([&]() {
+                const QImage& image = graphView->GetImage();
+                const QColor pixel = image.pixelColor(image.width() / 2, image.height() / 2);
+                return pixel.blue() > GREEN_MINIMUM && pixel.red() < DARK_MAXIMUM;
+            }) == true);
+    REQUIRE(original.open(QIODevice::ReadOnly) == true);
+    CHECK(original.readAll() == shader);
+    original.close();
+    const uint64 revision = workspace.GetPreviewOrNull()->GetPresentedRevision();
+    QTest::mousePress(&viewport, Qt::LeftButton, Qt::AltModifier, QPoint(100, 200));
+    QMouseEvent movement(QEvent::MouseMove,
+                         QPointF(140, 220),
+                         QPointF(viewport.mapToGlobal(QPoint(140, 220))),
+                         Qt::NoButton,
+                         Qt::LeftButton,
+                         Qt::AltModifier);
+    QCoreApplication::sendEvent(&viewport, &movement);
+    QTest::mouseRelease(&viewport, Qt::LeftButton, Qt::AltModifier, QPoint(140, 220));
+    REQUIRE(waitFor([&]() { return workspace.GetPreviewOrNull()->GetPresentedRevision() > revision; }) == true);
+    QComboBox* targets = viewport.findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    CHECK(targets->count() >= 3);
+    targets->setCurrentIndex(2);
+    REQUIRE(waitFor([&]() { return graphView->GetImage() != lastGood; }) == true);
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Selected project World edits reach the delegated graph viewport", "[editor][render-graph][world-graph]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const std::string_view level = ludus::world_demo::ExampleLevel();
+    const QString path = QFileInfo(WriteBytes(project,
+                                              QStringLiteral("room.world.json"),
+                                              QByteArray(level.data(), static_cast<qsizetype>(level.size()))))
+                             .canonicalFilePath();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    world.ResumePreview();
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    const QByteArray identity = world.GetRenderPreview().Scene().Identity;
+    const QImage initial = graphView->GetImage();
+    QListWidget* entities = world.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entities != nullptr);
+    const QString player = world.Document().FindEntityKey(QStringLiteral("player-start"));
+    for (int32 row = 0; row < entities->count(); ++row)
+    {
+        if (entities->item(row)->data(Qt::UserRole).toString() == player)
+        {
+            entities->setCurrentRow(row);
+        }
+    }
+    QLineEdit* position = world.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));
+    REQUIRE(position != nullptr);
+    position->setFocus();
+    position->selectAll();
+    QTest::keyClicks(position, QStringLiteral("-3"));
+    REQUIRE(world.Apply() == true);
+    REQUIRE(waitFor([&]() {
+                return world.GetRenderPreview().Scene().Identity != identity && graphView->GetImage() != initial;
+            }) == true);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_WORLD_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(world.grab().save(capture) == true);
+    }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("World graph frames wait for import publication without erasing the last view",
+          "[editor][render-graph][world-graph]")
+{
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source, static_cast<QWidget*>(nullptr), false);
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(source.SetScene(MakeScene({1, 0, 0, 1})) == true);
+    REQUIRE(source.Start() == true);
+    const auto waitForRevision = [&](uint64 previous) {
+        for (usize attempt = 0; attempt < ATTEMPTS; ++attempt)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+            if (workspace.GetPreviewOrNull()->GetPresentedRevision() > previous)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    REQUIRE(waitForRevision(0) == true);
+    WorldGraphView* graphView = viewport.findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    CHECK(graphView->GetImage().isNull() == true);
+    viewport.ShowFrame();
+    const QImage shown = graphView->GetImage();
+    REQUIRE(shown.isNull() == false);
+    const uint64 revision = workspace.GetPreviewOrNull()->GetPresentedRevision();
+    viewport.HoldFrame();
+    RenderScene replacement = MakeScene({0, 0, 1, 1});
+    replacement.Identity = QByteArrayLiteral("replacement-candidate");
+    REQUIRE(source.SetScene(replacement) == true);
+    REQUIRE(waitForRevision(revision) == true);
+    CHECK(graphView->GetImage() == shown);
+    CHECK(workspace.GetPreviewOrNull()->GetImage() != shown);
+    viewport.ShowFrame();
+    CHECK(graphView->GetImage() == workspace.GetPreviewOrNull()->GetImage());
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
 }
