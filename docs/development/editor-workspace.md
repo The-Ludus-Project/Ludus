@@ -138,8 +138,11 @@ skips editor setup; select **Build Ludus editor** in the setup window or use
 Homebrew `qtbase` on macOS and
 build the selected native Debug, Development or ASan/UBSan editor with 3D preview.
 Editor setup also acquires the checksum-verified pinned shader tools: Slang on
-macOS, plus SPIR-V Tools on Linux. In **Advanced setup**, clear **Include 3D
-preview and pinned shader tools** for a lightweight document-only editor, or use
+macOS, plus SPIR-V Tools on Linux. Native editor builds with 3D preview automatically
+build the shader worker and connect to it when **Live shaders** is enabled; no
+separate compiler flag or socket configuration is needed. This requires macOS 15
+or newer on macOS. In **Advanced setup**, clear **Include 3D
+preview and live shaders** for a lightweight document-only editor, or use
 `--no-editor-preview` with `--with-editor` in the CLI. That path skips shader-tool
 setup and explicitly disables rendering, including in an existing build cache.
 The preview choice is saved for the selected editor preset and applies to later
@@ -1001,8 +1004,9 @@ editor was built with. The toggle is not saved, so the editor never starts a
 worker unasked.
 
 The editor starts its own worker from the build tree, with a private socket that
-it removes on exit. Configure with `-DLUDUS_BUILD_SHADER_WORKER=ON` to build that
-worker; see
+it removes on exit. Native editor builds with 3D preview include this worker
+automatically, including direct CMake builds and reconfiguration of older build
+caches where `LUDUS_BUILD_SHADER_WORKER` was off; see
 [Native shader worker](render-graph-authoring.md#native-shader-worker-and-live-development-builds).
 On macOS this needs macOS 15. To use a worker you started yourself, set
 `LUDUS_SHADER_WORKER_SOCKET`, or set the Renderer tab's **Native shader worker**
