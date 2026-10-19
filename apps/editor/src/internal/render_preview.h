@@ -74,6 +74,14 @@ public:
                                     foundation::uint32 height,
                                     graphics::renderer::ViewDescription& outView,
                                     QString& outError) const;
+    /// DescribeView for consumers that admit only DepthConvention::Conventional (the render-graph
+    /// runtime profile): the same camera, with an infinite perspective lens replaced by a finite
+    /// one whose far plane encloses the scene's geometry, and clip z rewritten as w - z.
+    /// Needs no device. Failure (including a scene without geometry bounds) preserves outView.
+    [[nodiscard]] bool DescribeConventionalView(foundation::uint32 width,
+                                                foundation::uint32 height,
+                                                graphics::renderer::ViewDescription& outView,
+                                                QString& outError) const;
     void RestoreNavigation(const QJsonObject& state);
     void Tick();
     [[nodiscard]] LUDUS_INLINE bool Running() const noexcept
@@ -145,6 +153,8 @@ Q_SIGNALS:
     void Failed(const QString& error);
 
 private:
+    [[nodiscard]] PreviewViewOptions makeViewOptions(foundation::uint32 width,
+                                                     foundation::uint32 height) const noexcept;
     [[nodiscard]] bool beginNavigation();
     void navigationChanged();
     EditorCameraController mCameraController;

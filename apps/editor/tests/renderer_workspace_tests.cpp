@@ -13,6 +13,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
@@ -318,6 +319,57 @@ TEST_CASE("RG3 Renderer workspace maps CLI errors and matches CLI plans", "[edit
     CHECK(saved.Code == failure.Code);
     CHECK(saved.Location == failure.Location);
     CHECK(saved.Message == failure.Message);
+}
+
+TEST_CASE("RG3 a real compiler error opens the authored shader line", "[editor][render-graph]")
+{
+    const QString python = FindPython();
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    if (python.isEmpty() == true || QFileInfo(compiler).isExecutable() == false)
+    {
+        SKIP("python3 and the pinned slangc (./scripts/shader-probe bootstrap) are required");
+    }
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    // The helper directory has the installed SDK layout: shader drivers beside their locks.
+    const QDir helper(QDir(project.path()).filePath(QStringLiteral("sdk")));
+    for (const QString& file : {QStringLiteral("cmake/shaders/compile_shader.py"),
+                                QStringLiteral("cmake/shaders/compile_raster.py"),
+                                QStringLiteral("cmake/shaders/compile_graph_stage.py"),
+                                QStringLiteral("cmake/shaders/native_worker.py"),
+                                QStringLiteral("config/shader_toolchain.json"),
+                                QStringLiteral("config/spirv_cross_toolchain.json")})
+    {
+        WriteFile(helper.filePath(QFileInfo(file).fileName()),
+                  ReadFile(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/") + file));
+    }
+    // An undefined identifier on line 3 of the authored color function.
+    const QString color = QDir(package).filePath(QStringLiteral("main_shaders/color.slang"));
+    QByteArray broken = ReadFile(color);
+    REQUIRE(broken.split('\n').at(2).contains("value.Color") == true);
+    broken.replace("value.Color", "undefinedColor");
+    WriteFile(color, broken);
+
+    // The build tree is derived relative to the project root; use the canonical temporary path.
+    const QString root = QFileInfo(project.path()).canonicalFilePath();
+    RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(root, 3);
+    workspace.SetBuildTools(helper.path(), compiler);
+    REQUIRE(workspace.OpenGraph(QDir(root).filePath(QStringLiteral("graphs/") + ROOT_GRAPH)) == true);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.Build() == true);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    // The pinned compiler's report arrives through compile_shader.py's prefixed stderr line.
+    const RenderGraphJobResult failure = workspace.GetLastResult();
+    INFO(failure.Code.toStdString() + ": " + failure.Message.toStdString());
+    CHECK(failure.Code == QStringLiteral("RenderGraphBuildShader"));
+    CHECK(failure.Message.contains(QStringLiteral("Ludus shader build: main_shaders/color.slang(3)")) == true);
+    CHECK(failure.Location == QJsonObject{{QStringLiteral("source"), QStringLiteral("main_shaders/color.slang")},
+                                          {QStringLiteral("line"), 3}});
+    REQUIRE(workspace.GetDiagnosticCount() >= 1);
+    REQUIRE(workspace.ActivateDiagnostic(0) == true);
+    CHECK(workspace.GetSourceFile() == QStringLiteral("main_shaders/color.slang"));
+    CHECK(workspace.GetSourceLine() == 3);
 }
 
 TEST_CASE("RG3 Renderer tab joins the main window document actions", "[editor][render-graph]")

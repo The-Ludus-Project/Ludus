@@ -988,6 +988,16 @@ void WorldWorkspace::Render()
     Render_->setVisible(scene == false && demo == false);
     PreviewButton_->setVisible(demo);
     PlayButton_->setVisible(demo);
+    updateShownRenderPreview(scene);
+}
+void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)
+{
+    RenderPreview* shown = isSceneShown == true ? &Scene_->GetRenderPreview() : &Render_->Preview();
+    if (shown != mShownRenderPreviewOrNull)
+    {
+        mShownRenderPreviewOrNull = shown;
+        Q_EMIT RenderPreviewChanged();
+    }
 }
 void WorldWorkspace::RenderInspector()
 {
@@ -1752,7 +1762,7 @@ bool WorldWorkspace::ConfirmDiscard()
 }
 RenderPreview& WorldWorkspace::GetRenderPreview() noexcept
 {
-    return Render_->Preview();
+    return mShownRenderPreviewOrNull != nullptr ? *mShownRenderPreviewOrNull : Render_->Preview();
 }
 bool WorldWorkspace::StartPreview()
 {

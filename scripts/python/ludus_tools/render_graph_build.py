@@ -405,8 +405,12 @@ def tool_identity(helper, compiler, validator, cross):
         fail('Tools', 'toolchain', str(error))
 
 
+# compile_shader.py reports its failure on stderr as `Ludus shader build: <compiler
+# output>`, so the first compiler line carries that prefix; later lines do not.
+SHADER_HELPER_PREFIX = 'Ludus shader build: '
 SHADER_DIAGNOSTIC = re.compile(
-    r'^(?P<file>[^\s()+][^()\n]*?)\((?P<line>\d+)(?:,\s*(?P<column>\d+))?\):\s*'
+    r'^(?:' + re.escape(SHADER_HELPER_PREFIX) + r')?'
+    r'(?P<file>[^\s()+][^()\n]*?)\((?P<line>\d+)(?:,\s*(?P<column>\d+))?\):\s*'
     r'(?P<severity>error|warning)\b[^:\n]*:\s*(?P<message>[^\n]*)$', re.M)
 MAX_SHADER_DIAGNOSTICS = 32
 

@@ -467,6 +467,15 @@ class CompilerAcceptance(unittest.TestCase):
             self.assertEqual(first['generation'], second['generation'])
             warm = build.build_package(manifest, temp / 'one', **options)
             self.assertEqual(warm['cache_misses'], 0)
+            # A real compiler error maps through the helper's prefixed report to its source line.
+            color = root.parent / 'main_shaders/color.slang'
+            broken = color.read_text().replace('material.tint', 'undefinedTint')
+            color.write_text(broken)
+            with self.assertRaises(ToolingError) as caught:
+                build.build_package(manifest, temp / 'broken', **options)
+            line = next(i for i, text in enumerate(broken.splitlines(), 1) if 'undefinedTint' in text)
+            self.assertEqual({'source': 'main_shaders/color.slang', 'line': line}, caught.exception.location)
+            color.write_text(broken.replace('undefinedTint', 'material.tint'))
             package = build.verify_package(Path(first['package']))
             self.assertEqual(package['counts']['artifacts'], 3 * len(profiles))
             for program in package['programs']:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/math/matrix.hpp>
@@ -134,6 +135,11 @@ public:
     /// Borrow the World viewport whose device and extraction feed the preview; null detaches.
     /// The source must outlive this workspace or be cleared first.
     void SetPreviewSource(RenderPreview* sourceOrNull);
+    /// The borrowed World viewport renderer feeding the preview, or null.
+    [[nodiscard]] LUDUS_INLINE RenderPreview* GetPreviewSourceOrNull() const noexcept
+    {
+        return mPreviewSourceOrNull;
+    }
     /// Explicitly preview the last cooked runtime generation. False when the editor was built
     /// without the native GPU preview or the generation cannot be staged.
     [[nodiscard]] bool PreviewRuntime();
