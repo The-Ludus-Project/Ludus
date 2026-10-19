@@ -50,10 +50,6 @@ if(EMSCRIPTEN)
     set(editor_render_preview_default OFF)
 endif()
 option(LUDUS_EDITOR_RENDER_PREVIEW "Build the trusted native authoring surface (requires pinned shader tools)" ${editor_render_preview_default})
-set(editor_scene_preview_source src/scene_preview_unavailable.cpp)
-if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
-    set(editor_scene_preview_source src/scene_preview.cpp)
-endif()
 
 set(editor_viewport_sources
     src/preview_viewport.cpp
@@ -180,12 +176,9 @@ target_link_libraries(ludus_editor_core
 )
 ludus_apply_project_defaults(ludus_editor_core)
 
-# Private portable scene document and its tests (also built by Editor-OFF configures).
-include("${CMAKE_CURRENT_SOURCE_DIR}/scene_document.cmake")
 
 # --- Editor application ------------------------------------------------------
 qt_add_executable(ludus_editor
-    src/internal/scene_preview.h
     src/internal/render_load_job.h
     src/render_load_job.cpp
     src/internal/render_preview.h
@@ -216,7 +209,6 @@ qt_add_executable(ludus_editor
     src/world_document.cpp
     src/world_demo_adapter.cpp
     src/world_workspace.cpp
-    ${editor_scene_preview_source}
     src/internal/controller.h
     src/internal/configuration_workspace.h
     src/internal/main_window.h
@@ -305,7 +297,8 @@ target_compile_definitions(ludus_editor PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_A
 target_link_libraries(ludus_editor
     PRIVATE
         ludus_editor_core
-        ludus_editor_scene
+        ludus_world_demo_model
+        ludus_world_render_items
         Qt6::Core
         Qt6::Gui
         Qt6::Widgets
@@ -348,7 +341,6 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         renderer_clustered_authored renderer_clustered_authored_shadow
         renderer_lit_debug renderer_lit_debug_shadow
         renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
-    ludus_compile_shader(TARGET ludus_editor NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
     ludus_editor_compile_render_graph_host(ludus_editor)
     ludus_editor_enable_shader_reload(ludus_editor)
 endif()
@@ -363,8 +355,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
     add_executable(ludus_editor_tests
-        src/internal/scene_preview.h
-        src/internal/render_load_job.h
+            src/internal/render_load_job.h
         src/render_load_job.cpp
         src/internal/render_preview.h
         src/internal/render_panel.h
@@ -395,8 +386,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/world_document.cpp
         src/world_demo_adapter.cpp
         src/world_workspace.cpp
-        ${editor_scene_preview_source}
-        tests/world_workspace_tests.cpp
+            tests/world_workspace_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
         tests/viewport_debug_tests.cpp
@@ -512,7 +502,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor_tests
         PRIVATE
             ludus_editor_core
-            ludus_editor_scene
+            ludus_world_demo_model
+            ludus_world_render_items
             Qt6::Core
             Qt6::Gui
             Qt6::Widgets
@@ -547,7 +538,6 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             renderer_clustered_authored renderer_clustered_authored_shadow
             renderer_lit_debug renderer_lit_debug_shadow
             renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
-        ludus_compile_shader(TARGET ludus_editor_tests NAME editor_scene SOURCE "${PROJECT_SOURCE_DIR}/apps/world_demo/shaders/world_scene.slang" VERTEX VertexMain FRAGMENT FragmentMain)
         ludus_editor_compile_render_graph_host(ludus_editor_tests)
         ludus_editor_enable_shader_reload(ludus_editor_tests)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
@@ -559,8 +549,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)
     endif()
     if(APPLE AND LUDUS_EDITOR_RENDER_PREVIEW)
-        target_sources(ludus_editor_tests PRIVATE tests/scene_native_tests.mm tests/render_native_tests.mm
-            tests/viewport_native_navigation.mm)
+        target_sources(ludus_editor_tests PRIVATE tests/render_native_tests.mm tests/viewport_native_navigation.mm)
         # Test-only GPU pixel oracle; no RHI private header enters editor production or the SDK.
         target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/src")
         target_link_libraries(ludus_editor_tests PRIVATE "-framework Cocoa")

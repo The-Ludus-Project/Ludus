@@ -3,6 +3,7 @@
 // (docs/architecture/object-handles-uuid.md#stage-3-uuid-authoring-records).
 #include "entropy_fixture.h"
 #include "internal/editor_identity.h"
+#include "internal/render_scene.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_document.h"
 #include "internal/world_workspace.h"
@@ -419,7 +420,6 @@ TEST_CASE("World demo opens, edits and saves the committed manifest's version-2 
 
     const QString player = FirstRoomUuid(QStringLiteral("player-start"));
     Select(view, player);
-    CHECK(view.WorldDemoPreview().Selected().View() == "player-start");
     CHECK(view.Document().FindEntityKey(QStringLiteral("player-start")) == player);
     CHECK(view.Document().FindEntityKey(QStringLiteral("missing")).isEmpty());
     QLineEdit* x = view.findChild<QLineEdit*>(QStringLiteral("worldField:transform/x"));
@@ -429,18 +429,20 @@ TEST_CASE("World demo opens, edits and saves the committed manifest's version-2 
     QTest::keyClicks(x, QStringLiteral("0.5"));
     REQUIRE(view.Apply());
 
-    // Preview gestures commit to the entity whose label names the recipe.
-    WorldDocument gesture = view.Document();
-    SceneSnapshot projection = view.WorldDemoProjection().Draft();
-    for (ludus::world_demo::Recipe& recipe : projection.Level.Entities)
+    // The World viewport's objects carry the UUID key of the entity whose label names the recipe.
+    RenderScene scene;
+    REQUIRE(RenderScene::Load(directory.path(), view.Document(), scene, error));
+    bool hasPlayer = false;
+    for (const PreviewObject& object : scene.Objects)
     {
-        if (recipe.Id.View() == "player-start")
+        if (object.Name == QStringLiteral("player-start"))
         {
-            recipe.Position.Y += .25F;
+            hasPlayer = true;
+            CHECK(object.Id == player);
+            CHECK(object.Transform.Translation.X == .5F);
         }
     }
-    REQUIRE(CommitWorldDemoGesture(gesture, projection, error));
-    CHECK(gesture.CanUndo());
+    CHECK(hasPlayer);
 
     const QString guard = FirstRoomUuid(QStringLiteral("guard-a"));
     Select(view, guard);

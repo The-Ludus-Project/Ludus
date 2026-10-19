@@ -18,12 +18,12 @@ native scrolling and browser authoring still need acceptance. Later stages are
 acceptance contracts, not claims about existing features.
 
 The initial [S4 scene adapter](../development/editor-workspace.md#s4-scene-authoring)
-adds a private Qt-free typed document, bounded transactions/history, explicit
-recovery and a trusted separate render surface. It shares the world-demo codec,
-with 32 objects rather than a general project schema. Native rendering is opted
-in with pinned shaders; Cocoa/Metal has a native acceptance journey. Embedded
-pointer gizmos, multiple surfaces, large-scene and browser/native-platform
-qualification remain open. This does not complete the broader M1–M4 GUI gates.
+first added a private typed document and a separate render surface for the
+world-demo codec. World-demo Worlds now render in the shared World viewport from
+the game's own extraction through the engine Renderer, and edit through the World
+inspector like every other World. Native rendering is opted in with pinned shaders;
+Cocoa/Metal has a native acceptance case. Embedded pointer gizmos, multiple
+surfaces, large-scene and browser/native-platform qualification remain open. This does not complete the broader M1–M4 GUI gates.
 
 ## Product and engineering goals
 
@@ -130,11 +130,10 @@ layout state. App and exact Qt versions are checked before restoring it.
 World supplies the single hierarchy, component/transform inspector, Save,
 Undo/Redo and recovery owner for 2D and 3D authoring. Game-owned adapters project
 World snapshots into trusted preview and runtime formats; they do not own a second
-authoring tab or durable history. Imported 3D geometry renders in World; the
-world-demo 2D adapter still uses its trusted native rendering window. The proposed
+authoring tab or durable history. Imported 3D geometry and the world-demo 2D
+adapter both render in the World viewport through the engine Renderer. The
 [Play in the editor viewport](editor-gui-systems.md#play-in-the-editor-viewport) design
-moves World-demo into the shared viewport and engine Renderer, and makes that viewport
-the game's window during Play. The viewport uses an explicit render-surface adapter to RHI;
+makes that viewport the game's window during Play. The viewport uses an explicit render-surface adapter to RHI;
 use trusted in-process authoring rendering from document snapshots, separately
 from out-of-process gameplay. Native embedding and browser canvas composition
 require prototypes; host-frame transport is optional later work. Current RHI

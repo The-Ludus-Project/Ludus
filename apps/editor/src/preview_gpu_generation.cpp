@@ -3,6 +3,7 @@
 #include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/render_scene_limits.h"
 #include "internal/static_lighting_job.h"
 
 #include <ludus/foundation/containers/array.hpp>
@@ -478,7 +479,7 @@ bool PreviewGpuGeneration::prepareSnapshot(rhi::SurfaceHandle surface, QString& 
     {
         return prepareLighting(surface, outError);
     }
-    StaticArray<renderer::SceneItem, content::scene_format::MAX_OBJECTS> items{};
+    StaticArray<renderer::SceneItem, MAX_PREVIEW_OBJECTS> items{};
     for (int32 i = 0; i < Source.Objects.size(); ++i)
     {
         const PreviewObject& object = Source.Objects[i];

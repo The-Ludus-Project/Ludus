@@ -1,6 +1,7 @@
 #include "internal/render_scene.h"
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
+#include "internal/world_demo_adapter.h"
 
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
@@ -499,9 +500,29 @@ int32 Find(const QVector<T>& values, const QString& id)
     return -1;
 }
 } // namespace
+RenderSceneSource RenderScene::GetSource(const QString& root, const WorldDocument& world)
+{
+    if (world.Loaded() == false)
+    {
+        return RenderSceneSource::None;
+    }
+    if (IsWorldDemo(world) == true)
+    {
+        return RenderSceneSource::WorldDemo;
+    }
+    const bool hasBindings =
+        root.isEmpty() == false &&
+        QFileInfo(QDir(root).filePath(QStringLiteral("authoring/render.preview.json"))).isFile() == true;
+    return hasBindings == true ? RenderSceneSource::ProjectBindings : RenderSceneSource::None;
+}
 bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderScene& output, QString& error)
 {
     error.clear();
+    if (GetSource(root, world) == RenderSceneSource::WorldDemo)
+    {
+        // The game's own extraction, so the World viewport draws exactly what the player draws.
+        return LoadWorldDemoScene(world, output, error);
+    }
     const auto canonical = QFileInfo(root).canonicalFilePath();
     QByteArray bytes;
     QJsonObject descriptor;
