@@ -21,6 +21,8 @@ constexpr logging::LogCategory LOG_RHI_HOSTED{"RHI"};
 /// Generations imported at once: the newest plus older ones whose frames are still held.
 /// The producer keeps at most three alive, so four leaves room for a late release.
 constexpr usize MAX_IMPORTED_GENERATIONS = 4;
+/// Releases waiting for their queue marker: at most every image of every imported generation.
+constexpr usize MAX_QUEUED_RELEASES = MAX_IMPORTED_GENERATIONS * platform::HOSTED_SURFACE_IMAGE_COUNT;
 
 struct GenerationRecord final
 {
@@ -30,6 +32,15 @@ struct GenerationRecord final
     uint32 Height = 0;
     internal::HostedImport Import;
     StaticArray<bool, platform::HOSTED_SURFACE_IMAGE_COUNT> IsHeld{};
+};
+
+/// A held frame returned after the consumer's queue finishes the sampling submitted before it.
+struct QueuedRelease final
+{
+    bool IsValid = false;
+    uint32 Generation = 0;
+    uint32 Image = 0;
+    internal::HostedQueueMarker Marker;
 };
 
 struct PendingFrame final
@@ -66,10 +77,21 @@ struct HostedSurfaceConsumer::State final
     StaticArray<GenerationRecord, MAX_IMPORTED_GENERATIONS> Generations{};
     uint32 Latest = 0;
     PendingFrame Pending;
+    StaticArray<QueuedRelease, MAX_QUEUED_RELEASES> QueuedReleases{};
     HostedConsumerRefusal Refusal = HostedConsumerRefusal::None;
 
     ~State() noexcept
     {
+        // The imports may still be sampled by work ahead of a queued marker; wait for it first.
+        for (QueuedRelease& queued : QueuedReleases)
+        {
+            if (queued.IsValid == true)
+            {
+                internal::WaitHostedQueueMarker(queued.Marker);
+                internal::DestroyHostedQueueMarker(queued.Marker);
+                queued = {};
+            }
+        }
         for (GenerationRecord& record : Generations)
         {
             if (record.IsLive == true)
@@ -95,6 +117,38 @@ struct HostedSurfaceConsumer::State final
     {
         // A window that is gone needs no release; the frame is simply forgotten.
         static_cast<void>(EndpointOrNull->SendRelease(generation, image));
+    }
+
+    [[nodiscard]] bool IsQueued(uint32 generation, uint32 image) const noexcept
+    {
+        for (const QueuedRelease& queued : QueuedReleases)
+        {
+            if (queued.IsValid == true && queued.Generation == generation && queued.Image == image)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Return every queued frame whose marker has completed.
+    void CompleteQueuedReleases() noexcept
+    {
+        for (QueuedRelease& queued : QueuedReleases)
+        {
+            if (queued.IsValid == false || internal::IsHostedQueueMarkerComplete(queued.Marker) == false)
+            {
+                continue;
+            }
+            GenerationRecord* recordOrNull = FindOrNull(queued.Generation);
+            if (recordOrNull != nullptr)
+            {
+                recordOrNull->IsHeld[queued.Image] = false;
+                Release(queued.Generation, queued.Image);
+            }
+            internal::DestroyHostedQueueMarker(queued.Marker);
+            queued = {};
+        }
     }
 
     /// Destroy older generations of which nothing is held or pending.
@@ -241,6 +295,7 @@ HostedConsumerStatus HostedSurfaceConsumer::Pump() noexcept
         return HostedConsumerStatus::InvalidState;
     }
     State& state = *mState;
+    state.CompleteQueuedReleases();
     platform::HostedSurfaceEvent event;
     while (state.EndpointOrNull->TryTakeSurfaceEvent(event) == true)
     {
@@ -328,7 +383,8 @@ HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrame(const HostedFrame& fram
     }
     State& state = *mState;
     GenerationRecord* recordOrNull = state.FindOrNull(frame.Generation);
-    if (recordOrNull == nullptr || recordOrNull->IsHeld[frame.Image] == false)
+    if (recordOrNull == nullptr || recordOrNull->IsHeld[frame.Image] == false ||
+        state.IsQueued(frame.Generation, frame.Image) == true)
     {
         return HostedConsumerStatus::InvalidState;
     }
@@ -336,6 +392,60 @@ HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrame(const HostedFrame& fram
     state.Release(frame.Generation, frame.Image);
     state.RetireIdle();
     return HostedConsumerStatus::Ok;
+}
+
+HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrameAfterQueue(const HostedFrame& frame) noexcept
+{
+    if (mState.Get() == nullptr || frame.Image >= platform::HOSTED_SURFACE_IMAGE_COUNT)
+    {
+        return HostedConsumerStatus::InvalidState;
+    }
+    State& state = *mState;
+    const GenerationRecord* recordOrNull = state.FindOrNull(frame.Generation);
+    if (recordOrNull == nullptr || recordOrNull->IsHeld[frame.Image] == false ||
+        state.IsQueued(frame.Generation, frame.Image) == true)
+    {
+        return HostedConsumerStatus::InvalidState;
+    }
+    QueuedRelease* freeOrNull = nullptr;
+    for (QueuedRelease& queued : state.QueuedReleases)
+    {
+        if (queued.IsValid == false)
+        {
+            freeOrNull = &queued;
+            break;
+        }
+    }
+    // Every held image fits: the table covers all images of all imported generations.
+    LUDUS_REQUIRE(freeOrNull != nullptr);
+    internal::HostedQueueMarker marker;
+    if (internal::EnqueueHostedQueueMarker(state.Device, marker) == false)
+    {
+        return HostedConsumerStatus::Unavailable;
+    }
+    const QueuedRelease queued
+    {
+        .IsValid = true,
+        .Generation = frame.Generation,
+        .Image = frame.Image,
+        .Marker = marker,
+    };
+    *freeOrNull = queued;
+    return HostedConsumerStatus::Ok;
+}
+
+usize HostedSurfaceConsumer::GetQueuedReleaseCount() const noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return 0;
+    }
+    usize count = 0;
+    for (const QueuedRelease& queued : mState->QueuedReleases)
+    {
+        count += queued.IsValid == true ? 1 : 0;
+    }
+    return count;
 }
 
 HostedConsumerRefusal HostedSurfaceConsumer::GetRefusal() const noexcept

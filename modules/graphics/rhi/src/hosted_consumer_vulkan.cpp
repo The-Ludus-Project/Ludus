@@ -254,4 +254,24 @@ void DestroyHostedImport(const NativeDeviceIdentity& device, HostedImport& inout
         DestroyImported(native, functions, inoutImport);
     }
 }
+
+// The Vulkan viewport does not yet release after Qt's queue (it needs a fence on Qt's queue and the
+// external queue-family acquire), so Play in the viewport is not offered on Linux yet.
+bool EnqueueHostedQueueMarker([[maybe_unused]] const NativeDeviceIdentity& device,
+                              [[maybe_unused]] HostedQueueMarker& outMarker) noexcept
+{
+    return false;
+}
+
+bool IsHostedQueueMarkerComplete([[maybe_unused]] const HostedQueueMarker& marker) noexcept
+{
+    return true;
+}
+
+void WaitHostedQueueMarker([[maybe_unused]] const HostedQueueMarker& marker) noexcept {}
+
+void DestroyHostedQueueMarker(HostedQueueMarker& inoutMarker) noexcept
+{
+    inoutMarker = {};
+}
 } // namespace ludus::graphics::rhi::internal

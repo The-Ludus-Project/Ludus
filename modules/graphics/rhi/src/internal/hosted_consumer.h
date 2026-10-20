@@ -40,4 +40,20 @@ struct HostedImport final
 
 /// Destroy the native objects of one generation; leaves `inoutImport` empty.
 void DestroyHostedImport(const NativeDeviceIdentity& device, HostedImport& inoutImport) noexcept;
+
+/// A completion marker committed on the consumer's command queue after work already submitted there.
+struct HostedQueueMarker final
+{
+    /// Metal: retained `id<MTLCommandBuffer>` (CFBridgingRetain), released by DestroyHostedQueueMarker().
+    void* MetalCommandBufferOrNull = nullptr;
+};
+/// @brief Commit an empty marker behind everything already submitted to `device.CommandQueue`.
+/// @return False when this backend has no queue marker (the caller cannot release after the queue).
+[[nodiscard]] bool EnqueueHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMarker& outMarker) noexcept;
+/// True once the marker, and with it all earlier work on the queue, has finished (or the queue failed).
+[[nodiscard]] bool IsHostedQueueMarkerComplete(const HostedQueueMarker& marker) noexcept;
+/// Block until the marker completes; teardown only, never while presenting.
+void WaitHostedQueueMarker(const HostedQueueMarker& marker) noexcept;
+/// Release the marker's native object; leaves `inoutMarker` empty.
+void DestroyHostedQueueMarker(HostedQueueMarker& inoutMarker) noexcept;
 } // namespace ludus::graphics::rhi::internal

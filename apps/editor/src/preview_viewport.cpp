@@ -960,7 +960,6 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     connect(preview, &RenderPreview::DeviceRequested, this, [this]() { mState->createWindow(); });
-    connect(mFrameSource, &ViewportFrameSource::ResettingFrames, this, [this]() { mState->clearFrames(); });
     // A stopped preview uncovers the message label; replace the workspace's
     // placeholder with the failure so the viewport says why it is empty.
     connect(preview, &RenderPreview::Failed, this, [this](const QString& error) { mState->Message->setText(error); });
@@ -993,10 +992,50 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         }
     });
 #endif
-    if (isAutomatic == true)
+    mIsAutomatic = isAutomatic;
+    connectFrameSource();
+}
+void PreviewViewport::connectFrameSource()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mResettingFramesConnection =
+        connect(mFrameSource, &ViewportFrameSource::ResettingFrames, this, [this]() { mState->clearFrames(); });
+#endif
+    if (mIsAutomatic == true)
     {
-        connect(mFrameSource, &ViewportFrameSource::FrameReady, this, &PreviewViewport::ShowFrame);
+        mFrameReadyConnection =
+            connect(mFrameSource, &ViewportFrameSource::FrameReady, this, &PreviewViewport::ShowFrame);
     }
+}
+void PreviewViewport::SetFrameSource(ViewportFrameSource* frameSourceOrNull)
+{
+    ViewportFrameSource* next = frameSourceOrNull == nullptr ? Preview_ : frameSourceOrNull;
+    if (next == mFrameSource)
+    {
+        return;
+    }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // The current source's reads end through that source before it is replaced.
+    mState->clearFrames();
+#endif
+    // Only the source's own connections: a RenderPreview keeps its device and navigation signals.
+    disconnect(mResettingFramesConnection);
+    disconnect(mFrameReadyConnection);
+    mFrameSource = next;
+    mState->Source = next;
+    connectFrameSource();
+    resizeSurface();
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // Present the next source's pending frame at once; a gated viewport stays gated.
+    if (mState->CanShowFrames == true)
+    {
+        mState->showFrame();
+    }
+#endif
+}
+ViewportFrameSource& PreviewViewport::GetFrameSource() const noexcept
+{
+    return *mFrameSource;
 }
 PreviewViewport::~PreviewViewport()
 {

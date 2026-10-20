@@ -213,6 +213,71 @@ TEST_CASE("Resizing a hosted game publishes new generations and retires the old 
     session.Close(statistics);
 }
 
+TEST_CASE("Frames released after the editor's queue return to the game once that queue finishes",
+          "[rhi][hosted][macos][gpu]")
+{
+    const ConsumerDevice consumer;
+    RequireMetalDevice(consumer);
+    hosted_test::HostedSession session;
+    session.Start(consumer.GetIdentity(), "render");
+    rhi::HostedSurfaceConsumer& hosted = session.GetConsumer();
+
+    rhi::HostedFrame frame;
+    REQUIRE(session.TryAcquireNext(frame));
+    // Sample the frame on the editor's queue without waiting, as Qt's frame does.
+    id<MTLTexture> texture = (__bridge id<MTLTexture>)frame.MetalTexture.GetObject();
+    const usize pitch = ((frame.Width * BYTES_PER_PIXEL) + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT * ROW_ALIGNMENT;
+    id<MTLBuffer> buffer = [consumer.Device newBufferWithLength:pitch * frame.Height
+                                                        options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> sampling = [consumer.Queue commandBuffer];
+    id<MTLBlitCommandEncoder> encoder = [sampling blitCommandEncoder];
+    [encoder copyFromTexture:texture
+                     sourceSlice:0
+                     sourceLevel:0
+                    sourceOrigin:MTLOrigin{0, 0, 0}
+                      sourceSize:MTLSize{frame.Width, frame.Height, 1}
+                        toBuffer:buffer
+               destinationOffset:0
+          destinationBytesPerRow:pitch
+        destinationBytesPerImage:pitch * frame.Height];
+    [encoder endEncoding];
+    [sampling commit];
+    REQUIRE(hosted.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::Ok);
+    CHECK(hosted.GetQueuedReleaseCount() == 1);
+    // A queued frame is still held, but it cannot be released or queued a second time.
+    CHECK(hosted.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::InvalidState);
+    CHECK(hosted.ReleaseFrame(frame) == rhi::HostedConsumerStatus::InvalidState);
+    REQUIRE(session.PumpUntil([&hosted]() { return hosted.GetQueuedReleaseCount() == 0; }));
+    // The marker completed after the sampling ahead of it on the same queue.
+    CHECK(sampling.status == MTLCommandBufferStatusCompleted);
+    const uint8* bytes = static_cast<const uint8*>(buffer.contents);
+    const usize offset = (frame.Height / 2 * pitch) + (frame.Width / 2 * BYTES_PER_PIXEL);
+    StaticArray<uint8, BYTES_PER_PIXEL> pixel{};
+    for (usize i = 0; i < BYTES_PER_PIXEL; ++i)
+    {
+        pixel[i] = bytes[offset + i];
+    }
+    CheckTestColor(pixel);
+
+    // Every returned image comes back: more frames than the ring holds keep arriving.
+    rhi::HostedFrame previous = frame;
+    for (usize i = 0; i < ludus::platform::HOSTED_SURFACE_IMAGE_COUNT * 2; ++i)
+    {
+        rhi::HostedFrame next;
+        REQUIRE(session.TryAcquireNext(next));
+        CHECK(next.Sequence > previous.Sequence);
+        REQUIRE(hosted.ReleaseFrameAfterQueue(next) == rhi::HostedConsumerStatus::Ok);
+        previous = next;
+    }
+    // Stopping with a queued release waits for its marker before destroying the imports.
+    rhi::HostedFrame last;
+    REQUIRE(session.TryAcquireNext(last));
+    REQUIRE(hosted.ReleaseFrameAfterQueue(last) == rhi::HostedConsumerStatus::Ok);
+    hosted_test::ProducerStatistics statistics;
+    session.Close(statistics);
+    CHECK(hosted.GetRefusal() == rhi::HostedConsumerRefusal::None);
+}
+
 TEST_CASE("The Metal consumer refuses images that are not IOSurface send rights", "[rhi][hosted][macos]")
 {
     const ConsumerDevice consumer;

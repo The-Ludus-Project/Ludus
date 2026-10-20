@@ -2,6 +2,8 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 #import <IOSurface/IOSurfaceRef.h>
+#import <Metal/MTLCommandBuffer.h>
+#import <Metal/MTLCommandQueue.h>
 #import <Metal/MTLDevice.h>
 #import <Metal/MTLTexture.h>
 
@@ -95,5 +97,57 @@ void DestroyHostedImport([[maybe_unused]] const NativeDeviceIdentity& device, Ho
             texture = nullptr;
         }
     }
+}
+
+// Metal runs a queue's command buffers in commit order, so an empty buffer committed
+// after the editor's sampling completes only once that sampling has finished. This is
+// the same queue-order guarantee RHI's native texture reads rely on.
+bool EnqueueHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMarker& outMarker) noexcept
+{
+    @autoreleasepool
+    {
+        if (device.Api != Backend::Metal || device.CommandQueue.IsNull() == true)
+        {
+            return false;
+        }
+        id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)device.CommandQueue.GetObject();
+        id<MTLCommandBuffer> marker = [queue commandBuffer];
+        if (marker == nil)
+        {
+            return false;
+        }
+        marker.label = @"Ludus hosted frame release";
+        [marker commit];
+        outMarker.MetalCommandBufferOrNull = (__bridge_retained void*)marker;
+        return true;
+    }
+}
+
+bool IsHostedQueueMarkerComplete(const HostedQueueMarker& marker) noexcept
+{
+    if (marker.MetalCommandBufferOrNull == nullptr)
+    {
+        return true;
+    }
+    id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)marker.MetalCommandBufferOrNull;
+    const MTLCommandBufferStatus status = buffer.status;
+    return status == MTLCommandBufferStatusCompleted || status == MTLCommandBufferStatusError;
+}
+
+void WaitHostedQueueMarker(const HostedQueueMarker& marker) noexcept
+{
+    if (marker.MetalCommandBufferOrNull != nullptr)
+    {
+        [(__bridge id<MTLCommandBuffer>)marker.MetalCommandBufferOrNull waitUntilCompleted];
+    }
+}
+
+void DestroyHostedQueueMarker(HostedQueueMarker& inoutMarker) noexcept
+{
+    if (inoutMarker.MetalCommandBufferOrNull != nullptr)
+    {
+        CFRelease(inoutMarker.MetalCommandBufferOrNull);
+    }
+    inoutMarker = {};
 }
 } // namespace ludus::graphics::rhi::internal

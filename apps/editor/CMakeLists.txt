@@ -67,6 +67,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         src/internal/render_graph_targets.h src/render_graph_targets.cpp
         src/internal/render_target_reader.h src/render_target_reader.cpp
         src/internal/texture_viewer.h src/texture_viewer.cpp)
+    # Play in the viewport: the game's hosted window and its imported frames as a frame source.
+    list(APPEND editor_viewport_sources src/internal/play_viewport_source.h src/play_viewport_source.cpp)
     if(APPLE)
         list(APPEND editor_viewport_sources src/qt_viewport_device_metal.mm)
     else()
@@ -570,6 +572,16 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)
+    endif()
+    if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
+        target_sources(ludus_editor_tests PRIVATE tests/play_viewport_source_tests.cpp)
+        if(TARGET ludus_rhi_hosted_producer)
+            # A real hosted game: the RHI test producer renders a known colour into its hosted window.
+            target_compile_definitions(ludus_editor_tests PRIVATE
+                LUDUS_HOSTED_PRODUCER="$<TARGET_FILE:ludus_rhi_hosted_producer>")
+            add_dependencies(ludus_editor_tests ludus_rhi_hosted_producer)
+            target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/tests")
+        endif()
     endif()
     if(APPLE AND LUDUS_EDITOR_RENDER_PREVIEW)
         target_sources(ludus_editor_tests PRIVATE tests/render_native_tests.mm tests/viewport_native_navigation.mm)

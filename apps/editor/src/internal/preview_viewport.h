@@ -48,6 +48,14 @@ public:
                     QWidget* parentOrNull = nullptr,
                     bool isAutomatic = true);
     ~PreviewViewport() override;
+    /// Present frames from another source from now on. Every read of the current source is
+    /// ended first, so its last image disappears when the next source's first frame is shown;
+    /// switch once that source has a pending frame. Null returns to preview's own frames.
+    /// The new source has the same contract as the constructor's. Native builds only; the
+    /// browser canvas always presents preview.
+    void SetFrameSource(ViewportFrameSource* frameSourceOrNull);
+    /// The source this viewport presents.
+    [[nodiscard]] ViewportFrameSource& GetFrameSource() const noexcept;
     /// Present the project's graph output using this viewport's scene, camera and device.
     /// Call on the GUI thread; workspace must outlive the binding. Native builds only.
     void UseProjectGraph(RendererWorkspace& inoutWorkspace);
@@ -91,6 +99,11 @@ private:
     void updateShaderStatus();
     RenderPreview* Preview_;
     ViewportFrameSource* mFrameSource;
+    /// The current source's connections, replaced by SetFrameSource.
+    QMetaObject::Connection mResettingFramesConnection;
+    QMetaObject::Connection mFrameReadyConnection;
+    bool mIsAutomatic = true;
+    void connectFrameSource();
     static constexpr foundation::usize MOVEMENT_KEY_COUNT = 7;
     foundation::StaticArray<bool, MOVEMENT_KEY_COUNT> mHeldKeys{};
     QPointF mLastPositionGlobal;
