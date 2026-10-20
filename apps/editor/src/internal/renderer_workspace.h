@@ -276,6 +276,8 @@ private:
     void setProblem(QString& inoutProblem, const QString& text);
     void renderTree();
     void renderInspector();
+    void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
+    void editNodeOnCanvas();
     void renderEdges();
     void renderSource();
     void renderStatus();

@@ -69,11 +69,13 @@ GetRenderGraphNodePorts(const RenderGraphDocument& document, const QJsonObject& 
 /// Pre-check a `node.port` -> `node.port` edge against the draft configuration before it is
 /// committed: direction, known ports, type, a single writer per input and within-frame cycles.
 /// The shared CLI validator still owns legality; this only gives the canvas immediate reasons.
+/// shouldReplaceExisting allows an occupied destination; all other checks still apply.
 [[nodiscard]] RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
                                                         const QString& file,
                                                         const QString& configuration,
                                                         const QString& from,
-                                                        const QString& to);
+                                                        const QString& to,
+                                                        bool shouldReplaceExisting = false);
 
 // RG3b visual node canvas over one configuration of a RenderGraphDocument draft. The canvas
 // owns no graph state: it renders the draft and emits typed edit requests that the Renderer
@@ -124,8 +126,9 @@ public:
     void BeginDrag(const QStringList& nodes);
     void UpdateDrag(QPointF delta);
     void EndDrag();
-    /// Request an edge from an output endpoint to an input endpoint; rejected links emit LinkRejected.
-    [[nodiscard]] bool RequestLink(const QString& from, const QString& to);
+    /// Request an edge from an output to an input; rejected links emit LinkRejected.
+    /// With shouldReplaceExisting, a legal drop replaces the input source in one undo step.
+    [[nodiscard]] bool RequestLink(const QString& from, const QString& to, bool shouldReplaceExisting = false);
     /// Activate a node as a double-click does: open a Subgraph or request a Raster's shader sources.
     [[nodiscard]] bool ActivateNode(const QString& node);
 
@@ -137,6 +140,7 @@ Q_SIGNALS:
     void ContextMenuRequested(const QString& node, const QPoint& globalPosition);
     void MoveRequested(const QVector<ludus::editor::RenderGraphNodePosition>& positions);
     void ConnectRequested(const QString& from, const QString& to);
+    void ReplaceConnectionRequested(const QString& from, const QString& to);
     void DisconnectRequested(const QString& from, const QString& to);
     void RemoveRequested(const QString& node);
     void ShaderSourcesRequested(const QString& node);

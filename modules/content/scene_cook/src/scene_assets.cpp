@@ -1,6 +1,7 @@
 #include <ludus/content/scene_cook/best_effort_import.h>
 #include <ludus/content/scene_cook/scene_assets.h>
 
+#include "file_digests.h"
 #include "native_files.h"
 #include "python_compat.h"
 #include "python_json.h"
@@ -225,16 +226,11 @@ void ComputeHexDigest(std::span<const uint8> data, HexDigest& outHex) noexcept
     FormatHexDigest(Hash(data), outHex);
 }
 
-/// Stream-hash a source input in bounded memory; source files may exceed MAX_ASSET_BYTES.
-[[nodiscard]] bool HashSourceInput(std::string_view path, HexDigest& outHex, Failure& inoutFailure) noexcept
+/// Report the HashFile failure @p status of source input @p path.
+bool FailSourceInputHash(Status status, std::string_view path, Failure& inoutFailure) noexcept
 {
-    Digest digest;
-    const Status status = HashFile(path, digest);
     switch (status)
     {
-        case Status::Ok:
-            FormatHexDigest(digest, outHex);
-            return true;
         case Status::NotFound:
             return inoutFailure.Fail(AssetErrorCode::AssetCorrupt, {"No such file or directory: '", path, "'"});
         case Status::Unsupported:
@@ -242,6 +238,19 @@ void ComputeHexDigest(std::span<const uint8> data, HexDigest& outHex) noexcept
         default:
             return inoutFailure.Fail(AssetErrorCode::AssetCorrupt, {"Cannot read '", path, "'"});
     }
+}
+
+/// Stream-hash a source input in bounded memory; source files may exceed MAX_ASSET_BYTES.
+[[nodiscard]] bool HashSourceInput(std::string_view path, HexDigest& outHex, Failure& inoutFailure) noexcept
+{
+    Digest digest;
+    const Status status = HashFile(path, digest);
+    if (status != Status::Ok)
+    {
+        return FailSourceInputHash(status, path, inoutFailure);
+    }
+    FormatHexDigest(digest, outHex);
+    return true;
 }
 
 struct Document final
@@ -2860,17 +2869,13 @@ ResolveSourceInput(std::string_view source, std::string_view name, String& outPa
     return true;
 }
 
-/// Recheck every manifest input digest against the source directory.
-[[nodiscard]] bool AreSourceInputsUnchanged(std::string_view source,
-                                            const JsonTree& tree,
-                                            JsonIndex inputs,
-                                            std::string_view message,
-                                            Failure& inoutFailure) noexcept
+/// AreSourceInputsUnchanged on the calling thread: resolve and hash each input in turn.
+[[nodiscard]] bool AreSourceInputsUnchangedSerially(std::string_view source,
+                                                    const JsonTree& tree,
+                                                    JsonIndex inputs,
+                                                    std::string_view message,
+                                                    Failure& inoutFailure) noexcept
 {
-    if (inputs == NO_JSON_NODE || tree.GetKind(inputs) != JsonKind::Object)
-    {
-        return inoutFailure.FailInvalid("Invalid manifest inputs");
-    }
     for (usize i = 0; i < tree.GetCount(inputs); ++i)
     {
         String path;
@@ -2884,6 +2889,68 @@ ResolveSourceInput(std::string_view source, std::string_view name, String& outPa
         {
             return inoutFailure.Fail(AssetErrorCode::Conflict, message);
         }
+    }
+    return true;
+}
+
+/// Recheck every manifest input digest against the source directory.
+///
+/// With workers in @p jobsOrNull the owner resolves the inputs, then HashFiles reads
+/// them on this thread and hashes them in jobs. The first failure in input order is
+/// reported (a resolution failure only after the inputs before it are checked), so the
+/// result and message are the serial path's for every worker count.
+[[nodiscard]] bool AreSourceInputsUnchanged(std::string_view source,
+                                            const JsonTree& tree,
+                                            JsonIndex inputs,
+                                            std::string_view message,
+                                            foundation::threading::JobSystem* jobsOrNull,
+                                            Failure& inoutFailure) noexcept
+{
+    if (inputs == NO_JSON_NODE || tree.GetKind(inputs) != JsonKind::Object)
+    {
+        return inoutFailure.FailInvalid("Invalid manifest inputs");
+    }
+    const usize count = tree.GetCount(inputs);
+    Array<String> paths;
+    Array<std::string_view> views;
+    Array<Digest> digests;
+    if (jobsOrNull == nullptr || jobsOrNull->GetWorkerCount() == 0 || paths.TryResize(count) == false ||
+        views.TryResize(count) == false || digests.TryResize(count) == false)
+    {
+        return AreSourceInputsUnchangedSerially(source, tree, inputs, message, inoutFailure);
+    }
+    // Resolve up to the first failure, which is held back until the inputs before it are checked.
+    AssetError resolveError;
+    Failure resolveFailure(resolveError);
+    usize resolved = 0;
+    while (resolved < count &&
+           ResolveSourceInput(source, tree.GetKey(inputs, resolved), paths[resolved], resolveFailure) == true)
+    {
+        views[resolved] = paths[resolved].GetView();
+        ++resolved;
+    }
+    usize hashed = 0;
+    const Status status = HashFiles(jobsOrNull,
+                                    std::span<const std::string_view>(views.GetData(), resolved),
+                                    FILE_HASH_BATCH_BYTES,
+                                    std::span<Digest>(digests.GetData(), resolved),
+                                    hashed);
+    for (usize i = 0; i < hashed; ++i)
+    {
+        HexDigest digest;
+        FormatHexDigest(digests[i], digest);
+        if (tree.IsString(tree.GetValue(inputs, i), digest.View()) == false)
+        {
+            return inoutFailure.Fail(AssetErrorCode::Conflict, message);
+        }
+    }
+    if (status != Status::Ok)
+    {
+        return FailSourceInputHash(status, views[hashed], inoutFailure);
+    }
+    if (resolved < count)
+    {
+        return inoutFailure.Fail(resolveError.Code, resolveError.Message.View());
     }
     return true;
 }
@@ -3650,6 +3717,7 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
                                  manifest.Tree,
                                  manifest.Tree.GetMember(manifest.Root, "inputs"),
                                  "Source changed during conversion",
+                                 options.JobsOrNull,
                                  inoutFailure) == false)
     {
         return false;
@@ -3739,6 +3807,7 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
                                  manifest.Tree,
                                  manifest.Tree.GetMember(manifest.Root, "inputs"),
                                  "Source changed before catalog publication",
+                                 options.JobsOrNull,
                                  inoutFailure) == false)
     {
         return false;
@@ -3806,6 +3875,7 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
                                                              manifest.Tree,
                                                              manifest.Tree.GetMember(manifest.Root, "inputs"),
                                                              "Source changed before catalog publication",
+                                                             options.JobsOrNull,
                                                              inoutFailure) == false)
         {
             return false;

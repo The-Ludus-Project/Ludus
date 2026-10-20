@@ -8,6 +8,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "python_json.h"
@@ -1752,4 +1753,223 @@ TEST_CASE("Scene catalog reads admit their byte ceiling and reject overflow with
     CHECK(ToText(catalog) == EMPTY_CATALOG);
     std::error_code ignored;
     std::filesystem::remove_all(work, ignored);
+}
+
+namespace
+{
+/// Source edits the synthetic cook makes after the reference cook read its copied
+/// source, so the import's recheck must see them. Inputs are checked in key order:
+/// LICENSE.txt first, then models/, scene-v4.pbrt, textures/Tiles.tga and last
+/// textures/wood5.tga.
+enum class SourceEdit : uint8
+{
+    None,
+    /// The first input changes and the last is removed: the change is reported.
+    ChangeFirstRemoveLast,
+    /// The first input is removed and the last changes: the missing file is reported.
+    RemoveFirstChangeLast,
+    /// A middle input becomes a symlink out of the source and the last changes: the escape is reported.
+    EscapeMiddleChangeLast,
+    /// The first input changes and a middle one escapes: the change is reported.
+    ChangeFirstEscapeMiddle,
+};
+
+constexpr std::string_view FIRST_INPUT = "LICENSE.txt";
+constexpr std::string_view MIDDLE_INPUT = "textures/Tiles.tga";
+constexpr std::string_view LAST_INPUT = "textures/wood5.tga";
+
+SourceEdit sourceEditAfterCook = SourceEdit::None;
+
+void ChangeSource(const std::filesystem::path& source, std::string_view name)
+{
+    std::ofstream(source / name, std::ios::binary | std::ios::app) << "edited";
+}
+
+void RemoveSource(const std::filesystem::path& source, std::string_view name)
+{
+    std::error_code ignored;
+    std::filesystem::remove(source / name, ignored);
+}
+
+/// Replace an input with a symlink to work/outside.tga, beside the source directory.
+void EscapeSource(const std::filesystem::path& source, std::string_view name)
+{
+    RemoveSource(source, name);
+    std::error_code ignored;
+    std::filesystem::create_symlink(source.parent_path() / "outside.tga", source / name, ignored);
+}
+
+bool CookThenEditSource(std::string_view source,
+                        CookResult& outResult,
+                        CookError& outError,
+                        const Cancellation* cancelOrNull) noexcept
+{
+    if (Cook(source, outResult, outError, cancelOrNull) == false)
+    {
+        return false;
+    }
+    // Test-only: a failed edit fails the cook rather than escaping the noexcept hook.
+    try
+    {
+        const std::filesystem::path root(source);
+        switch (sourceEditAfterCook)
+        {
+            case SourceEdit::None:
+                break;
+            case SourceEdit::ChangeFirstRemoveLast:
+                ChangeSource(root, FIRST_INPUT);
+                RemoveSource(root, LAST_INPUT);
+                break;
+            case SourceEdit::RemoveFirstChangeLast:
+                RemoveSource(root, FIRST_INPUT);
+                ChangeSource(root, LAST_INPUT);
+                break;
+            case SourceEdit::EscapeMiddleChangeLast:
+                EscapeSource(root, MIDDLE_INPUT);
+                ChangeSource(root, LAST_INPUT);
+                break;
+            case SourceEdit::ChangeFirstEscapeMiddle:
+                ChangeSource(root, FIRST_INPUT);
+                EscapeSource(root, MIDDLE_INPUT);
+                break;
+        }
+    }
+    catch (...)
+    {
+        return false;
+    }
+    return true;
+}
+
+/// What an import of an edited source copy produced, with the scratch path replaced by <work>.
+struct EditedImport final
+{
+    bool IsImported = false;
+    AssetErrorCode Code = AssetErrorCode::InvalidScene;
+    std::string Message;
+    std::string Level;
+    /// After an unedited import: the commit of a fresh candidate whose source then changed.
+    bool IsStaleCommitted = false;
+    AssetErrorCode StaleCode = AssetErrorCode::InvalidScene;
+    std::string StaleMessage;
+};
+
+std::string WithoutWorkPath(std::string_view message, const std::filesystem::path& work)
+{
+    std::string text(message);
+    const std::string prefix = std::filesystem::canonical(work).string();
+    const usize at = text.find(prefix);
+    if (at != std::string::npos)
+    {
+        text.replace(at, prefix.size(), "<work>");
+    }
+    return text;
+}
+
+/// Import a fresh copy of the golden source through CookThenEditSource.
+EditedImport ImportEditedSource(SourceEdit edit, ludus::foundation::threading::JobSystem* jobsOrNull)
+{
+    const std::filesystem::path work = MakeWorkDirectory();
+    const std::filesystem::path project = work / "project";
+    const std::filesystem::path source = work / "source";
+    std::filesystem::create_directories(project);
+    std::filesystem::copy(std::string(GOLDENS) + "/source", source, std::filesystem::copy_options::recursive);
+    std::ofstream(work / "outside.tga", std::ios::binary) << "outside";
+    SequentialUuids counter;
+    UuidSource uuids{&SequentialUuids::Generate, &counter};
+    AssetOptions options;
+    options.UuidsOrNull = &uuids;
+    options.SourceOrigin = VIRTUAL_ORIGIN;
+    options.CookOrNull = CookThenEditSource;
+    options.JobsOrNull = jobsOrNull;
+    AssetError error;
+    Array<uint8> empty;
+    REQUIRE(CreateLevel("Edited", options, empty, error));
+    EditedImport result;
+    Array<uint8> level;
+    sourceEditAfterCook = edit;
+    result.IsImported = ImportScene(project.string(), source.string(), ToSpan(empty), options, level, error);
+    sourceEditAfterCook = SourceEdit::None;
+    result.Code = error.Code;
+    result.Message = WithoutWorkPath(error.Message.View(), work);
+    result.Level = ToText(level);
+    if (result.IsImported == true)
+    {
+        // The commit rechecks the source the candidate was prepared from.
+        ImportCandidate candidate;
+        REQUIRE(PrepareImport(project.string(), source.string(), ToSpan(level), options, candidate, error));
+        ChangeSource(source, FIRST_INPUT);
+        AssetError stale;
+        const content::Digest* publishedOrNull =
+            candidate.HasPublishedCatalog == true ? &candidate.PublishedCatalog : nullptr;
+        result.IsStaleCommitted = CommitImport(project.string(),
+                                               ToSpan(candidate.Level),
+                                               ToSpan(candidate.Catalog),
+                                               publishedOrNull,
+                                               source.string(),
+                                               options,
+                                               stale);
+        result.StaleCode = stale.Code;
+        result.StaleMessage = WithoutWorkPath(stale.Message.View(), work);
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(work, ignored);
+    return result;
+}
+} // namespace
+
+TEST_CASE("Source input rechecks report the serial result for every worker count", "[scene_assets][jobs]")
+{
+    struct Expectation
+    {
+        SourceEdit Edit = SourceEdit::None;
+        AssetErrorCode Code = AssetErrorCode::InvalidScene;
+        std::string_view Message;
+    };
+    const Expectation expectations[] = {
+        {SourceEdit::None, AssetErrorCode::Conflict, "Source changed before catalog publication"},
+        {SourceEdit::ChangeFirstRemoveLast, AssetErrorCode::Conflict, "Source changed during conversion"},
+        {SourceEdit::RemoveFirstChangeLast,
+         AssetErrorCode::AssetCorrupt,
+         "No such file or directory: '<work>/source/LICENSE.txt'"},
+        {SourceEdit::EscapeMiddleChangeLast,
+         AssetErrorCode::UnsupportedScene,
+         "asset symlink escapes source directory"},
+        {SourceEdit::ChangeFirstEscapeMiddle, AssetErrorCode::Conflict, "Source changed during conversion"},
+    };
+    constexpr usize WORKER_BUDGET_COUNT = 3;
+    constexpr StaticArray<uint32, WORKER_BUDGET_COUNT> WORKER_BUDGETS{0, 1, 3};
+    for (const Expectation& expectation : expectations)
+    {
+        INFO("edit " << static_cast<int>(expectation.Edit));
+        const EditedImport serial = ImportEditedSource(expectation.Edit, nullptr);
+        INFO(serial.Message);
+        if (expectation.Edit == SourceEdit::None)
+        {
+            REQUIRE(serial.IsImported == true);
+            CHECK(serial.IsStaleCommitted == false);
+            CHECK(serial.StaleCode == expectation.Code);
+            CHECK(serial.StaleMessage == expectation.Message);
+        }
+        else
+        {
+            CHECK(serial.IsImported == false);
+            CHECK(serial.Code == expectation.Code);
+            CHECK(serial.Message == expectation.Message);
+        }
+        for (const uint32 workers : WORKER_BUDGETS)
+        {
+            INFO("workers " << workers);
+            ludus::foundation::threading::JobSystem system;
+            REQUIRE(system.Initialize({ .WorkerCount = workers }) == ludus::foundation::threading::JobStatus::Ok);
+            const EditedImport parallel = ImportEditedSource(expectation.Edit, &system);
+            CHECK(parallel.IsImported == serial.IsImported);
+            CHECK(parallel.Code == serial.Code);
+            CHECK(parallel.Message == serial.Message);
+            CHECK(parallel.Level == serial.Level);
+            CHECK(parallel.IsStaleCommitted == serial.IsStaleCommitted);
+            CHECK(parallel.StaleCode == serial.StaleCode);
+            CHECK(parallel.StaleMessage == serial.StaleMessage);
+        }
+    }
 }
