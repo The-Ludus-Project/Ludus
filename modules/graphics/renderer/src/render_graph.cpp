@@ -1121,7 +1121,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                            BorrowedView<const ViewDescription> cameras,
                            uint64 sceneRevision,
                            RenderGraphCoveragePolicy policy,
-                           RenderGraphReport& outReport) noexcept
+                           RenderGraphReport& outReport,
+                           const SceneShaderInputs* sceneInputsOrNull) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -1451,6 +1452,37 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             }
             candidate->Items[pass][candidate->Counts[pass]++] = drawing;
         }
+    }
+    const RenderGraphSceneDescription rayScene{
+        meshes,
+        items,
+        sceneInputsOrNull != nullptr && state.Programs.HasSceneShaderInterface == true ? *sceneInputsOrNull
+                                                                                       : SceneShaderInputs{},
+        state.Programs.HasSceneShaderInterface,
+        policy == RenderGraphCoveragePolicy::DiagnosticColor,
+        &state.Report.SceneDiagnostics,
+        sceneRevision};
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        if (state.Passes[pass].Program != format::Technique::RayTracing)
+        {
+            continue;
+        }
+        const format::Pass& operation = state.Passes[pass];
+        const Status created =
+            candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
+                                                  state.Device,
+                                                  {},
+                                                  cameras[operation.Camera],
+                                                  state.Resources[operation.Color].Width,
+                                                  state.Resources[operation.Color].Height,
+                                                  &rayScene);
+        if (IsAccepted(created) == false)
+        {
+            outReport = state.Report;
+            return created;
+        }
+        candidate->HasViews[pass] = true;
     }
     const Status prepared = state.PollScene(*candidate);
     if (IsAccepted(prepared) == false)

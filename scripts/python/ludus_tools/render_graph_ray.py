@@ -4,6 +4,7 @@ The renderer owns the packed BVH and its shader implementation. The graph owns
 stage assignment, launch extent and publication. No CPU transport is selected.
 """
 from copy import deepcopy
+import re
 
 TECHNIQUE = 'RendererTriangles.RayTracing'
 STAGES = ('ray_generation', 'miss', 'closest_hit')
@@ -13,7 +14,7 @@ IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
-           'lighting_layout.h', 'math.slang', 'raster_bindings.slang')
+           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h')
 
 
 def lower(node, where, graph):
@@ -39,9 +40,13 @@ def lower(node, where, graph):
 
 
 def validate_program(program, build):
-    build.require(program['input'] == {'ray_generation': 'RayLaunch', 'miss': 'Ray', 'closest_hit': 'RayHit'}[program['stage']]
-                  and program['output'] == ('Ray' if program['stage'] == 'ray_generation' else 'Color')
-                  and program['bindings'] == [], 'Schema', program['id'], 'ray function interface differs from triangle ray profile')
+    legacy = {'ray_generation': ('RayLaunch', 'Ray'), 'miss': ('Ray', 'Color'),
+              'closest_hit': ('RayHit', 'Color')}
+    scene = {'ray_generation': ('RayLaunch', 'Radiance'), 'miss': ('Ray', 'ScenePayload'),
+             'closest_hit': ('SurfaceHit', 'ScenePayload')}
+    signature = (program['input'], program['output'])
+    build.require(signature in (legacy[program['stage']], scene[program['stage']]) and program['bindings'] == [],
+                  'Schema', program['id'], 'ray function interface differs from declared profile')
 
 
 def expand_programs(programs, technique, snapshot, helper, build):
@@ -131,6 +136,8 @@ struct RayHit
         wrapper = wrapper.replace(token, selected[stage]['function'])
     wrapper = wrapper.replace('_ludus_ray/renderer_gpu_preview.slang', '_ludus_ray/' + compute_recipe['source'])
     wrapper = wrapper.replace('ComputeMain(positionPixel)', compute_recipe['compute'] + '(positionPixel)')
+    if technique.get('scene_interface') is not None:
+        wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe)
     result = {identity: deepcopy(program) for identity, program in programs.items() if program['stage'] not in STAGES}
     result[COMPUTE_ID] = {'id': COMPUTE_ID, 'stage': 'compute', 'source': selected['ray_generation']['source'],
                           'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper}
@@ -162,3 +169,101 @@ def check_interface(program, result, build):
                       'ShaderInterface', program['id'], 'ray image vertex interface differs from renderer ABI')
     else:
         build.require(entries == [] and interface['inputs'] == [], 'ShaderInterface', program['id'], 'ray image fragment resources are unexpected')
+
+
+def scene_wrapper(selected, interface, snapshot, build, recipe):
+    """Link ordinary callbacks; the user raygen is the only sample/integrator driver."""
+    expected = {'ray_generation': ('RayLaunch', 'Radiance'), 'miss': ('Ray', 'ScenePayload'),
+                'closest_hit': ('SurfaceHit', 'ScenePayload')}
+    for stage, program in selected.items():
+        build.require((program['input'], program['output']) == expected[stage],
+                      'ShaderInterface', program['id'], 'scene ray profile requires its complete callback interface')
+    snapshot.shader_closure(interface['payload'])
+    validate_payload(snapshot.files[interface['payload']], interface.get('local_payload_bytes', 1024), build)
+    wrapper = '''float3 EvaluateGraphRay(uint pixel);
+#define LUDUS_RENDER_GRAPH_RAY_PIPELINE 1
+#define LUDUS_SCENE_RAY_INTERFACE 1
+#include "_ludus_ray/renderer_gpu_preview.slang"
+#include "_ludus_ray/scene_shader.slang"
+'''
+    wrapper += '#include "' + interface['payload'] + '"\n'
+    wrapper += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
+    for source in sorted({program['source'] for program in selected.values()}):
+        wrapper += '#include "' + source + '"\n'
+    wrapper += '''uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload)
+{
+    SurfaceHit hit;
+    uint status = TraceClosest(scene, queries, ray, hit);
+    if (status == SCENE_QUERY_SURFACE)
+        RAY_CLOSEST_HIT(scene, hit, queries, payload);
+    else if (status == SCENE_QUERY_MISS)
+        RAY_MISS(scene, ray, queries, payload);
+    return queries.HasFailed ? SCENE_QUERY_FAILURE : status;
+}
+float3 EvaluateGraphRay(uint pixel)
+{
+    SceneContext scene;
+    scene.Version = SCENE_INTERFACE_VERSION;
+    scene.Generation = uint2(asuint(BoundsMinimumWorld.w), asuint(BoundsMaximumWorld.w));
+    RayQueryContext queries = (RayQueryContext)0;
+    queries.MaximumSurfaceQueries = MAX_SURFACE_QUERIES;
+    queries.MaximumVisibilityQueries = MAX_VISIBILITY_QUERIES;
+    RayLaunch launch;
+    launch.PositionPixel = uint2(pixel % Dimensions.x, pixel / Dimensions.x);
+    launch.ExtentPixel = Dimensions.xy;
+    launch.CameraClipToWorld = ClipToWorld;
+    launch.CameraPositionWorld = CameraPositionWorld.xyz;
+    launch.IsOrthographic = CameraPositionWorld.w != 0;
+    launch.SampleIndex = uint(accumulation[pixel * 2].w);
+    launch.Seed = Sampling.xy;
+    float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
+    float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
+    float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));
+    nearPositionWorld /= nearPositionWorld.w;
+    farPositionWorld /= farPositionWorld.w;
+    launch.CameraRay.OriginWorld = CameraPositionWorld.w != 0 ? nearPositionWorld.xyz : CameraPositionWorld.xyz;
+    launch.CameraRay.DirectionWorld = NormalizeOrZero(farPositionWorld.xyz - launch.CameraRay.OriginWorld);
+    launch.CameraRay.MinDistanceWorld = CameraPositionWorld.w != 0 ? 0 : dot(nearPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
+    launch.CameraRay.MaxDistanceWorld = dot(farPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
+    float3 radiance = RAY_GENERATION(scene, launch, queries);
+    return queries.HasFailed ? float3(-1) : radiance;
+}
+[numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)] void rgEntry(uint3 positionPixel : SV_DispatchThreadID)
+{
+    ComputeMain(positionPixel);
+}
+'''
+    wrapper = wrapper.replace('MAX_SURFACE_QUERIES', str(interface['surface_queries']))
+    wrapper = wrapper.replace('MAX_VISIBILITY_QUERIES', str(interface['visibility_queries']))
+    for token, stage in (('RAY_GENERATION', 'ray_generation'), ('RAY_MISS', 'miss'), ('RAY_CLOSEST_HIT', 'closest_hit')):
+        wrapper = wrapper.replace(token, selected[stage]['function'])
+    return wrapper.replace('_ludus_ray/renderer_gpu_preview.slang', '_ludus_ray/' + recipe['source'])
+
+
+def validate_payload(data, budget, build):
+    """Admit a flat plain-value payload with conservative 16-byte field alignment.
+
+    These are shader-local values, not a serialized native ray payload. Restricting
+    the source grammar prevents resources, pointers, hidden includes and unbounded arrays.
+    """
+    source = re.sub(r'/\*.*?\*/|//[^\n]*', '', data.decode('utf-8'), flags=re.S)
+    source = re.sub(r'^\s*#\s*pragma\s+once\s*$', '', source, flags=re.M).strip()
+    match = re.fullmatch(r'struct\s+ScenePayload\s*\{([^{}]*)\}\s*;', source, re.S)
+    build.require(match is not None, 'ShaderInterface', 'ScenePayload',
+                  'payload source must define only one flat struct ScenePayload with plain fields')
+    size = 0
+    fields = set()
+    sizes = {'Ray': 64, 'RayLaunch': 512, 'SurfaceHit': 512, 'MaterialSample': 128}
+    for declaration in match[1].split(';'):
+        if not declaration.strip():
+            continue
+        field = re.fullmatch(r'\s*(float(?:[234](?:x[234])?)?|uint[234]?|int[234]?|bool|Ray|RayLaunch|SurfaceHit|MaterialSample)'
+                             r'\s+([A-Za-z][A-Za-z0-9_]*)(?:\s*\[\s*([1-9][0-9]{0,2})\s*\])?\s*', declaration)
+        build.require(field is not None, 'ShaderInterface', 'ScenePayload', 'unsupported payload field or unbounded array')
+        kind, name, count = field.groups()
+        build.require(name not in fields, 'ShaderInterface', name, 'duplicate payload field')
+        fields.add(name)
+        field_size = sizes.get(kind, 16 * max(int(kind[-1]), int(kind[-3])) if 'x' in kind else 16)
+        size += field_size * (int(count) if count else 1)
+        build.require(size <= budget, 'Capacity', 'ScenePayload', 'conservative shader-local payload budget exceeded')
+    build.require(fields, 'ShaderInterface', 'ScenePayload', 'empty payload is not supported')

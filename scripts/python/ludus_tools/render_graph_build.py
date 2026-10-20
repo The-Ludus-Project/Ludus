@@ -240,12 +240,25 @@ def validate_manifest(value):
     bounded_list(value['techniques'], 8, 'techniques')
     for technique in value['techniques']:
         if technique.get('id') == ray.TECHNIQUE:
-            keys(technique, ('id', 'configuration', *ray.STAGES, 'recipes'), 'ray technique')
+            keys(technique, ('id', 'configuration', *ray.STAGES, 'recipes'), 'ray technique', ('scene_interface',))
+            scene_interface = technique.get('scene_interface')
+            if scene_interface is not None:
+                keys(scene_interface, ('version', 'payload', 'surface_queries', 'visibility_queries'), 'scene interface', ('local_payload_bytes',))
+                integer(scene_interface.get('local_payload_bytes', 1024), 16, 4096, 'shader-local payload budget')
+                integer(scene_interface['version'], 1, 1, 'scene interface version')
+                integer(scene_interface['surface_queries'], 1, 8, 'surface query budget')
+                integer(scene_interface['visibility_queries'], 0, 16, 'visibility query budget')
+                require(type(scene_interface['payload']) is str and scene_interface['payload'].endswith('.slang'),
+                        'Schema', 'payload', 'package-local Slang payload source required')
             require(technique['configuration'] == 'RayTracing' and technique['recipes'] == [{'id': 'Triangles', **ray.STATE}],
                     'Capability', ray.TECHNIQUE, 'expected the bounded triangle ray profile state')
             for stage in ray.STAGES:
                 require(technique[stage] in programs and programs[technique[stage]]['stage'] == stage,
                         'ShaderInterface', ray.TECHNIQUE, 'unknown or wrong ray stage program')
+            is_scene = scene_interface is not None
+            expected_outputs = ('Radiance', 'ScenePayload', 'ScenePayload') if is_scene else ('Ray', 'Color', 'Color')
+            require(tuple(programs[technique[stage]]['output'] for stage in ray.STAGES) == expected_outputs,
+                    'ShaderInterface', ray.TECHNIQUE, 'callback signatures must match the selected scene/legacy profile')
             require(ray.TECHNIQUE not in techniques and 'glsl' not in value['profiles'], 'Capability', ray.TECHNIQUE,
                     'duplicate ray technique or unsupported GLSL ES compute target')
             techniques[ray.TECHNIQUE] = technique
@@ -673,7 +686,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         original_programs = programs
         programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__])
         ray_closure = sorted(set(p for program in original_programs.values() if program['stage'] in ray.STAGES
-                                 for p in closures[program['id']]) | set(snapshot.external))
+                                 for p in closures[program['id']]) | set(snapshot.files))
         for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
             closures[program_identity] = ray_closure
     # Build plans for every declared closed root configuration and preserve graph
@@ -759,6 +772,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                         record = {'technique': tid, 'profile': target, 'state': technique['recipes'][0],
                             'compute': entries[(ray.COMPUTE_ID, target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
                             'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
+                        record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)

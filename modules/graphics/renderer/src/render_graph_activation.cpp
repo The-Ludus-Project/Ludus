@@ -252,16 +252,27 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             }
         }
     }
+    bool hasLegacyProfile = false;
+    bool hasSceneProfile = false;
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
-        const bool hasCompute = Stages[static_cast<usize>(format::StageRole::RayCompute)][target].IsPresent;
+        const bool hasLegacyCompute = Stages[static_cast<usize>(format::StageRole::RayCompute)][target].IsPresent;
+        const bool hasSceneCompute = Stages[static_cast<usize>(format::StageRole::SceneRayCompute)][target].IsPresent;
+        if (hasLegacyCompute == true && hasSceneCompute == true)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        hasLegacyProfile = hasLegacyProfile == true || hasLegacyCompute == true;
+        hasSceneProfile = hasSceneProfile == true || hasSceneCompute == true;
+        const bool hasCompute = hasLegacyCompute == true || hasSceneCompute == true;
         if (Stages[static_cast<usize>(format::StageRole::RayImageVertex)][target].IsPresent != hasCompute ||
             Stages[static_cast<usize>(format::StageRole::RayImageFragment)][target].IsPresent != hasCompute)
         {
             return RenderGraphPackageStatus::Malformed;
         }
     }
-    return RenderGraphPackageStatus::Ready;
+    return hasLegacyProfile == true && hasSceneProfile == true ? RenderGraphPackageStatus::Malformed
+                                                               : RenderGraphPackageStatus::Ready;
 }
 RenderGraphPackageStatus RenderGraphPackage::State::DecodeUniforms(ByteReader& inoutReader) noexcept
 {
@@ -548,7 +559,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                                                                                   &result.MaskedDepthFragment,
                                                                                   &result.RayCompute,
                                                                                   &result.RayImageVertex,
-                                                                                  &result.RayImageFragment}};
+                                                                                  &result.RayImageFragment,
+                                                                                  &result.RayCompute}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description = *members[role];
@@ -577,10 +589,13 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         }
         if (isRayRole == true)
         {
-            description.Artifact.Stage = role == static_cast<usize>(format::StageRole::RayCompute)
-                                             ? rhi::ShaderStage::Compute
-                                         : isVertex == true ? rhi::ShaderStage::Vertex
-                                                            : rhi::ShaderStage::Fragment;
+            const bool isSceneCompute = role == static_cast<usize>(format::StageRole::SceneRayCompute);
+            result.HasSceneShaderInterface = result.HasSceneShaderInterface == true || isSceneCompute == true;
+            description.Artifact.Stage =
+                (role == static_cast<usize>(format::StageRole::RayCompute) || isSceneCompute == true)
+                    ? rhi::ShaderStage::Compute
+                : isVertex == true ? rhi::ShaderStage::Vertex
+                                   : rhi::ShaderStage::Fragment;
             SetRenderGraphRayInterface(description, description.Artifact.Stage);
         }
         if (state.BindingCounts[role] != 0)
@@ -826,7 +841,8 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
                                      BorrowedView<const ViewDescription> cameras,
                                      uint64 sceneRevision,
                                      RenderGraphCoveragePolicy policy,
-                                     RenderGraphReport& outReport) noexcept
+                                     RenderGraphReport& outReport,
+                                     const SceneShaderInputs* sceneInputsOrNull) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -837,7 +853,8 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     bool isActiveAccepting = false;
     if (state.Active.Get() != nullptr)
     {
-        activeStatus = state.Active->Graph.Update(meshes, items, cameras, sceneRevision, policy, outReport);
+        activeStatus =
+            state.Active->Graph.Update(meshes, items, cameras, sceneRevision, policy, outReport, sceneInputsOrNull);
         isActiveAccepting = IsAccepted(activeStatus);
         if (isActiveAccepting == true)
         {
@@ -851,7 +868,7 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     Generation& candidate = *state.Candidate;
     RenderGraphReport candidateReport;
     const Status candidateStatus =
-        candidate.Graph.Update(meshes, items, cameras, sceneRevision, policy, candidateReport);
+        candidate.Graph.Update(meshes, items, cameras, sceneRevision, policy, candidateReport, sceneInputsOrNull);
     if (IsAccepted(candidateStatus) == true)
     {
         candidate.SceneRevision = sceneRevision;

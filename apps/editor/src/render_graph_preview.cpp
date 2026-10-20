@@ -141,9 +141,63 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
             record.Geometry.Indices = mesh.Indices.constData();
             record.Geometry.IndexCount = static_cast<usize>(mesh.Indices.size());
         }
+        if (definitionOrNull != nullptr)
+        {
+            const resources::SceneMesh& mesh = definitionOrNull->Meshes[static_cast<usize>(i)];
+            record.Geometry.Normals = mesh.Normals.GetData();
+            record.Geometry.Texcoords = mesh.Texcoords.GetData();
+            record.Geometry.Tangents = {mesh.Tangents.GetData(), mesh.Tangents.GetSize()};
+        }
+        else
+        {
+            const PreviewMesh& mesh = extraction.Scene.Meshes.at(i);
+            record.Geometry.Normals = mesh.Normals.isEmpty() ? nullptr : mesh.Normals.constData();
+            record.Geometry.Texcoords = mesh.Uvs.isEmpty() ? nullptr : mesh.Uvs.constData();
+        }
         record.Layout = renderer::RenderGraphLayout::Static;
         extraction.Meshes.append(record);
     }
+    extraction.MaterialImages.reserve(extraction.Scene.Textures.size());
+    for (const PreviewTexture& texture : extraction.Scene.Textures)
+    {
+        extraction.MaterialImages.append(texture.Pixels.convertToFormat(QImage::Format_RGBA8888));
+    }
+    const auto getTexture = [&extraction](int32 index) -> rhi::TextureCpuContent {
+        if (index < 0 || index >= extraction.MaterialImages.size())
+        {
+            return {};
+        }
+        const QImage& image = extraction.MaterialImages.at(index);
+        return {image.constBits(),
+                static_cast<usize>(image.sizeInBytes()),
+                static_cast<usize>(image.bytesPerLine()),
+                static_cast<uint32>(image.width()),
+                static_cast<uint32>(image.height()),
+                extraction.Scene.Textures.at(index).IsLinear ? rhi::RasterFormat::Rgba8Unorm
+                                                             : rhi::RasterFormat::Rgba8Srgb};
+    };
+    for (qsizetype surfaceIndex = 0; surfaceIndex < extraction.Scene.Surfaces.size(); ++surfaceIndex)
+    {
+        const PreviewSurface& source = extraction.Scene.Surfaces.at(surfaceIndex);
+        renderer::SceneShaderMaterial material;
+        material.BaseColor = {source.Tint.X, source.Tint.Y, source.Tint.Z};
+        material.Metallic = source.Metallic;
+        material.Roughness = source.Roughness;
+        material.Emission = source.Emission;
+        material.IsEmissionTwoSided = source.IsEmissionTwoSided;
+        material.NormalScale = source.NormalScale;
+        material.Sampler.U = source.Repeat ? rhi::RasterAddress::Repeat : rhi::RasterAddress::Clamp;
+        material.Sampler.V = material.Sampler.U;
+        material.ColorTexture = getTexture(source.Texture);
+        material.SurfaceTexture = getTexture(source.SurfaceTexture);
+        material.EmissionTexture = getTexture(source.EmissionTexture);
+        material.HasError = source.IsAlphaMasked || source.Tint.W != 1 ||
+                            source.Texture >= extraction.Scene.Textures.size() ||
+                            source.SurfaceTexture >= extraction.Scene.Textures.size() ||
+                            source.EmissionTexture >= extraction.Scene.Textures.size();
+        extraction.Materials.append(material);
+    }
+    extraction.MaterialOverrides.reserve(extraction.Scene.Objects.size());
     for (qsizetype i = 0; i < extraction.Scene.Objects.size(); ++i)
     {
         const PreviewObject& object = extraction.Scene.Objects.at(i);
@@ -166,7 +220,67 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         item.Material.Color = color;
         item.Coverage =
             color.W < OPAQUE_ALPHA ? renderer::RenderGraphMaterial::Transparent : renderer::RenderGraphMaterial::Opaque;
+        item.SurfaceTint = object.Tint;
+        uint32 resolvedMaterial =
+            object.Surface < 0 ? renderer::DEFAULT_SCENE_MATERIAL : static_cast<uint32>(object.Surface);
+        if (object.Surface >= 0 && object.Surface < extraction.Scene.Surfaces.size() &&
+            extraction.Scene.Surfaces[object.Surface].HasEmissionPower == true)
+        {
+            const PreviewSurface& source = extraction.Scene.Surfaces[object.Surface];
+            renderer::SceneShaderMaterial resolved = extraction.Materials[object.Surface];
+            const renderer::MeshDescription& geometry = extraction.Meshes[object.Mesh].Geometry;
+            float64 areaWorld = 0;
+            constexpr usize CORNERS = 3;
+            for (usize primitive = 0; primitive < geometry.IndexCount / CORNERS; ++primitive)
+            {
+                const math::Vector3 a =
+                    math::TransformPoint(object.Transform, geometry.Positions[geometry.Indices[primitive * CORNERS]]);
+                const math::Vector3 b =
+                    math::TransformPoint(object.Transform,
+                                         geometry.Positions[geometry.Indices[primitive * CORNERS + 1]]);
+                const math::Vector3 c =
+                    math::TransformPoint(object.Transform,
+                                         geometry.Positions[geometry.Indices[primitive * CORNERS + 2]]);
+                areaWorld += static_cast<float64>(math::Length(math::Cross(b - a, c - a))) * 0.5;
+            }
+            if (areaWorld > 0)
+            {
+                resolved.HasError = resolved.HasError == true ||
+                                    renderer::ResolveMeshEmissionPower(source.Emission,
+                                                                       source.EmissionPower,
+                                                                       areaWorld,
+                                                                       source.IsEmissionTwoSided,
+                                                                       resolved.Emission) != rhi::RasterStatus::Ready;
+            }
+            else
+            {
+                resolved.Emission = {};
+            }
+            resolvedMaterial = static_cast<uint32>(extraction.Materials.size());
+            extraction.Materials.append(resolved);
+        }
+        extraction.MaterialOverrides.append(resolvedMaterial);
         extraction.Items.append(item);
+    }
+    // Complete all Qt mutations before publishing views into their shared storage.
+    for (qsizetype i = 0; i < extraction.Items.size(); ++i)
+    {
+        extraction.Items[i].MaterialOverrides = {extraction.MaterialOverrides.constData() + i, 1};
+    }
+    extraction.ShaderInputs.Materials = {extraction.Materials.constData(),
+                                         static_cast<usize>(extraction.Materials.size())};
+    for (uint32 i = 0; i < extraction.Scene.AuthoredLights.Count; ++i)
+    {
+        extraction.Lights.append(extraction.Scene.AuthoredLights.Lights[i]);
+    }
+    extraction.ShaderInputs.Lights = {extraction.Lights.constData(), static_cast<usize>(extraction.Lights.size())};
+    if (definitionOrNull != nullptr)
+    {
+        extraction.ShaderInputs.Environment = definitionOrNull->Environment.Rgb;
+        extraction.ShaderInputs.EnvironmentWidth = definitionOrNull->Environment.Width;
+        extraction.ShaderInputs.EnvironmentHeight = definitionOrNull->Environment.Height;
+        extraction.ShaderInputs.EnvironmentPixels = {definitionOrNull->Environment.Pixels.GetData(),
+                                                     definitionOrNull->Environment.Pixels.GetSize()};
     }
     // Moving keeps the shared geometry storage the borrowed pointers name.
     outExtraction = Move(extraction);
@@ -210,6 +324,8 @@ struct RenderGraphPreview::State final
     RenderGraphExtraction Extraction;
     bool HasExtraction = false;
     uint64 UpdatedRevision = 0;
+    uint64 MaterialStatusRevision = 0;
+    QString MaterialStatus;
     bool IsAwaitingProducer = false;
     uint32 ProducerTicks = 0;
     uint64 RenderedGeneration = 0;
@@ -547,7 +663,7 @@ void RenderGraphPreview::finishCopy()
         mPresentedGeneration = state.RenderedGeneration;
         mPresentedRevision = state.RenderedRevision;
         mPresentedSession = state.Session;
-        setStatus({});
+        setStatus(mPresentedRevision == state.MaterialStatusRevision ? state.MaterialStatus : QString{});
         // Live refresh: the viewed texture follows every presented frame.
         state.IsInspectionRequested = state.InspectedName.isEmpty() == false;
         Q_EMIT FramePresented();
@@ -584,13 +700,29 @@ void RenderGraphPreview::advance()
         const uint32 cameraCount = report.ActiveGeneration != 0 ? state.Active.Cameras : state.Candidate.Cameras;
         QVector<renderer::ViewDescription> cameras(static_cast<qsizetype>(cameraCount), state.Extraction.View);
         renderer::RenderGraphReport graphReport;
+        renderer::SceneShaderInputs shaderInputs = state.Extraction.ShaderInputs;
+        shaderInputs.Lights = {state.Extraction.Scene.AuthoredLights.Lights,
+                               state.Extraction.Scene.AuthoredLights.Count};
         const rhi::RasterStatus updated = state.Activation.Update(
             {state.Extraction.Meshes.constData(), static_cast<usize>(state.Extraction.Meshes.size())},
             {state.Extraction.Items.constData(), static_cast<usize>(state.Extraction.Items.size())},
             {cameras.constData(), static_cast<usize>(cameras.size())},
             state.Extraction.Revision,
             renderer::RenderGraphCoveragePolicy::DiagnosticColor,
-            graphReport);
+            graphReport,
+            &shaderInputs);
+        if (IsAccepted(updated) == true)
+        {
+            state.MaterialStatusRevision = state.Extraction.Revision;
+            state.MaterialStatus =
+                graphReport.SceneDiagnostics.ErrorBindings == 0
+                    ? QString{}
+                    : QStringLiteral(
+                          "%1 material bindings use the non-emissive error material; first source %2, material %3.")
+                          .arg(graphReport.SceneDiagnostics.ErrorBindings)
+                          .arg(graphReport.SceneDiagnostics.ErrorSourceId)
+                          .arg(graphReport.SceneDiagnostics.ErrorMaterial);
+        }
         // NotReady means no generation could accept it yet (first candidate still preparing): retry.
         if (updated != rhi::RasterStatus::NotReady)
         {

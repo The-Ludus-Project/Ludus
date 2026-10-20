@@ -244,15 +244,15 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
         }
         if (material.HasEmissionPower == true)
         {
-            const float32 luminance = math::Dot(surface.Emission, math::Vector3{.2126F, .7152F, .0722F});
-            if (luminance <= 0)
+            const rhi::RasterStatus resolved = rr::ResolveMeshEmissionPower(surface.Emission,
+                                                                            material.EmissionPower,
+                                                                            area,
+                                                                            material.IsEmissionTwoSided,
+                                                                            overrideSurface.Emission);
+            if (resolved != rhi::RasterStatus::Ready)
             {
-                return rhi::RasterStatus::InvalidDescription;
+                return resolved;
             }
-            overrideSurface.Emission =
-                surface.Emission * static_cast<float32>(static_cast<float64>(material.EmissionPower) /
-                                                        (static_cast<float64>(luminance) * math::kPi * area *
-                                                         (material.IsEmissionTwoSided == true ? 2.0 : 1.0)));
         }
         // A texture-modulated emitter emits its map's mean on average; the proxy uses that.
         const math::Vector3 proxyEmission{overrideSurface.Emission.X * surface.EmissionMapMean.X,

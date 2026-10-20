@@ -50,7 +50,7 @@ Status PackGpuScene(const ReferenceJob& job,
     const uint64 nodesWide = uint64(scene.Triangles.GetSize()) * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
     const uint64 orderWide = nodesWide + uint64(scene.Nodes.GetSize()) * 3;
     const uint64 emittersWide = orderWide + scene.Order.GetSize();
-    const uint64 surfacesWide = emittersWide + scene.Emitters.GetSize();
+    const uint64 surfacesWide = emittersWide + scene.Emitters.GetSize() + job.ShaderEmitters.GetSize();
     const uint64 lightsWide = surfacesWide + uint64(scene.InstanceCount) * LUDUS_GPU_PREVIEW_SURFACE_WORDS;
     const uint64 environmentWide = lightsWide + uint64(job.Description.LightCount) * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
     const uint64 sizeWide =
@@ -130,8 +130,14 @@ Status PackGpuScene(const ReferenceJob& job,
         }
         out[6] = {t.Uvs[0].X, t.Uvs[0].Y, t.Uvs[1].X, t.Uvs[1].Y};
         out[7] = {t.Uvs[2].X, t.Uvs[2].Y, 0, 0};
-        out[8] = GpuVector(t.GeometricNormal);
-        out[9] = GpuVector(t.Error);
+        out[LUDUS_GPU_PREVIEW_GEOMETRIC_NORMAL_WORD] = GpuVector(t.GeometricNormal, GpuBits(t.ShaderSlot));
+        out[LUDUS_GRAPH_EMITTER_WORD] = GpuVector(t.Error, GpuBits(t.ShaderEmitter));
+        out[LUDUS_GRAPH_INSTANCE_WORD].W = GpuBits(t.ShaderInstance);
+        out[LUDUS_GRAPH_MATERIAL_WORD].W = GpuBits(t.ShaderMaterial);
+        out[LUDUS_GRAPH_MATERIAL_KIND_WORD].W = GpuBits(t.ShaderMaterialKind);
+        out[LUDUS_GRAPH_SOURCE_WORD].Z = GpuBits(static_cast<uint32>(t.ShaderSourceId));
+        out[LUDUS_GRAPH_SOURCE_WORD].W =
+            GpuBits(static_cast<uint32>(t.ShaderSourceId >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT));
         for (usize corner = 0; corner < 3; ++corner)
         {
             out[10 + corner] = t.Tangents[corner];
@@ -153,6 +159,10 @@ Status PackGpuScene(const ReferenceJob& job,
     for (usize i = 0; i < scene.Emitters.GetSize(); ++i)
     {
         data[emitters + i].X = GpuBits(scene.Emitters[i]);
+    }
+    for (usize i = 0; i < job.ShaderEmitters.GetSize(); ++i)
+    {
+        data[emitters + scene.Emitters.GetSize() + i] = job.ShaderEmitters[i];
     }
     for (usize i = 0; i < scene.InstanceCount; ++i)
     {
@@ -238,7 +248,11 @@ Status PackGpuScene(const ReferenceJob& job,
         outLight[0] = GpuVector(light.Color * light.Intensity, static_cast<float32>(light.Kind));
         outLight[1] = GpuVector(light.Position, light.Range);
         outLight[2] = GpuVector(light.Direction, light.OuterCos);
-        outLight[3] = {light.InnerCos, 0, 0, 0};
+        outLight[LUDUS_GRAPH_LIGHT_SOURCE_WORD] = {
+            light.InnerCos,
+            GpuBits(static_cast<uint32>(light.SourceId)),
+            GpuBits(static_cast<uint32>(light.SourceId >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)),
+            0};
     }
     uniform.ClipToWorld = job.ClipToWorld;
     uniform.CameraPositionWorld =
@@ -276,13 +290,17 @@ Status PackGpuScene(const ReferenceJob& job,
     uniform.Sampling[2] = (job.Description.ReverseZ ? 1U : 0U) | (job.Description.InfiniteFar ? 2U : 0U) |
                           (job.Description.CenterRays ? 4U : 0U);
     uniform.Sampling[3] = job.Description.TargetSamples;
-    uniform.Environment = GpuVector(job.Description.Environment);
+    uniform.Environment =
+        GpuVector(job.Description.Environment, GpuBits(static_cast<uint32>(job.ShaderEmitters.GetSize())));
+    uniform.Options.Z = GpuBits(static_cast<uint32>(scene.InstanceCount));
     uniform.SurfaceLayout[0] = LUDUS_GPU_PREVIEW_SURFACE_WORDS;
     uniform.SurfaceLayout[1] = static_cast<uint32>(lightsWide);
     uniform.SurfaceLayout[2] = LUDUS_GPU_PREVIEW_KERNEL_VERSION;
     uniform.Options.X = job.Description.SecondaryDistance;
-    uniform.BoundsMinimumWorld = GpuVector(scene.Bounds.Min);
-    uniform.BoundsMaximumWorld = GpuVector(scene.Bounds.Max);
+    uniform.BoundsMinimumWorld = GpuVector(scene.Bounds.Min, GpuBits(static_cast<uint32>(job.SourceGeneration)));
+    uniform.BoundsMaximumWorld =
+        GpuVector(scene.Bounds.Max,
+                  GpuBits(static_cast<uint32>(job.SourceGeneration >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)));
     return Status::Ready;
 }
 Status PollGpuJob(rhi::DeviceHandle device, const GpuPreviewState& state, GpuPreviewRecord& job) noexcept
@@ -682,7 +700,8 @@ Status Renderer::PollGpuPreview() noexcept
 }
 Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                  const ReferenceCaptureDescription& description,
-                                 renderer::GpuPreview& output) noexcept
+                                 renderer::GpuPreview& outOutput,
+                                 const RenderGraphSceneDescription* graphSceneOrNull) noexcept
 {
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
@@ -693,14 +712,18 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         return status;
     }
-    if (Access::Owner(output) != 0)
+    if (Access::Owner(outOutput) != 0)
     {
         return Status::InvalidState;
     }
     State::SnapshotRecord* source = Resolve(mState->SnapshotRecords, mState->Owner, snapshot);
-    if (source == nullptr)
+    if (source == nullptr && graphSceneOrNull == nullptr)
     {
         return Status::InvalidHandle;
+    }
+    if (graphSceneOrNull != nullptr && mState->GpuPreview->IsGraphRayScene == false)
+    {
+        return Status::InvalidState;
     }
     if (description.MaxDepth > LUDUS_GPU_PREVIEW_MAX_DEPTH || description.TargetSamples > 4096 ||
         uint64(description.Width) * description.Height > (uint64{1} << 24))
@@ -714,7 +737,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         return status;
     }
-    for (usize i = 0; i < source->Count; ++i)
+    for (usize i = 0; source != nullptr && i < source->Count; ++i)
     {
         if (source->Items[i].Input.Pass == Layer::Overlay)
         {
@@ -728,14 +751,29 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         }
     }
     core::UniquePtr<ReferenceJob> scene;
-    if (state.IsGraphRayScene == true)
+    if (graphSceneOrNull != nullptr)
+    {
+        status =
+            internal::BuildMaterialGraphRayScene(*graphSceneOrNull,
+                                                 description,
+                                                 mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes,
+                                                 scene);
+        if (status == Status::Ready &&
+            ReferenceFingerprint(*scene,
+                                 mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes -
+                                     scene->Info.CpuBytes) == false)
+        {
+            return Status::OutOfMemory;
+        }
+    }
+    else if (state.IsGraphRayScene == true)
     {
         Array<internal::GraphRaySceneInput> inputs;
         if (inputs.TryEnsureCapacity(source->Count) == false)
         {
             return Status::OutOfMemory;
         }
-        for (usize i = 0; i < source->Count; ++i)
+        for (usize i = 0; source != nullptr && i < source->Count; ++i)
         {
             const State::Item& item = source->Items[i];
             if (item.Input.Pass != Layer::Opaque || item.MaterialSlot != NO_MATERIAL ||
@@ -900,7 +938,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         mState->DropGpuPreview(slot);
         return status;
     }
-    output = Access::Make<renderer::GpuPreview>({mState->Owner, job.Generation, slot});
+    outOutput = Access::Make<renderer::GpuPreview>({mState->Owner, job.Generation, slot});
     return status;
 }
 namespace

@@ -20,6 +20,7 @@
 
 namespace ludus::graphics::renderer
 {
+struct RenderGraphSceneDescription;
 namespace internal
 {
 /// Private access to renderer logical identities.
@@ -388,7 +389,13 @@ public:
     /// Ready/Pending publish ownership into a null output; rejection preserves it. All caller
     /// owners may detach after success. Changing camera/content/exposure creates a
     /// new job and restarts accumulation. Setup can allocate/upload; never shades.
-    [[nodiscard]] rhi::RasterStatus BeginGpuPreview(Snapshot, const ReferenceCaptureDescription&, GpuPreview&) noexcept;
+    /// @param graphSceneOrNull Optional graph scene, consumed synchronously instead of Snapshot.
+    /// Requires EnableTriangleRayPipeline. Material defaults/errors follow its declared policy.
+    [[nodiscard]] rhi::RasterStatus
+    BeginGpuPreview(Snapshot,
+                    const ReferenceCaptureDescription&,
+                    GpuPreview&,
+                    const RenderGraphSceneDescription* graphSceneOrNull = nullptr) noexcept;
     /// Dispatch one full-image GPU sample, shade/accumulate/tone-map on GPU, and
     /// rasterize GPU-produced colors into an available output texture. Ordered GDI
     /// dependencies include compute-to-vertex and output export. Never reads rays,

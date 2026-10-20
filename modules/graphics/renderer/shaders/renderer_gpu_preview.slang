@@ -701,7 +701,7 @@ float3 Integrate(uint pixel, uint sample)
         accumulation[pixel * 2 + 1] = compensation;
     }
     float3 mean = sum.w > 0 ? sum.xyz / sum.w : float3(0);
-#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE) && !defined(LUDUS_SCENE_RAY_INTERFACE)
     colors[pixel] = float4(compensation.w != 0 ? float3(1, 0, 1) : saturate(mean), float(pixel));
 #else
     float3 linear = mean * Options.y;

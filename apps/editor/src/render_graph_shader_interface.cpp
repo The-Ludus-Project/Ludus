@@ -63,17 +63,22 @@ QString DescribeShaderInterface(const QByteArray& manifest, const QString& sourc
         }
         const QString stage = program.value(QStringLiteral("stage")).toString();
         const QString output = program.value(QStringLiteral("output")).toString();
-        const bool isRayStage = stage == QStringLiteral("ray_generation") || stage == QStringLiteral("miss") ||
-                                stage == QStringLiteral("closest_hit");
-        if (isRayStage == true)
+        if (stage == QStringLiteral("ray_generation") || stage == QStringLiteral("closest_hit") ||
+            stage == QStringLiteral("miss"))
         {
-            descriptions.append(QStringLiteral("%1 — %2 (%3)\nInput: %4\nOutput: %5\n"
-                                               "The renderer supplies the triangle ray interface types.")
-                                    .arg(program.value(QStringLiteral("id")).toString(),
-                                         program.value(QStringLiteral("function")).toString(),
-                                         stage,
-                                         program.value(QStringLiteral("input")).toString(),
-                                         output));
+            descriptions.append(
+                QStringLiteral(
+                    "%1 — %2 (%3)\nInput: %4\nOutput: %5\n"
+                    "Scene callbacks receive SceneContext and inout RayQueryContext. Raygen drives TraceAndShade; "
+                    "closest-hit/miss share your ScenePayload. Read materials with EvaluateMaterial and sources with "
+                    "GetLightInfo. SelectLight/SampleIncidentLight and TestVisibility provide proposals and queries; "
+                    "your shaders own NEE, MIS and bounce policy. Legacy Ray/Color programs retain their original "
+                    "signatures.")
+                    .arg(program.value(QStringLiteral("id")).toString(),
+                         program.value(QStringLiteral("function")).toString(),
+                         stage,
+                         program.value(QStringLiteral("input")).toString(),
+                         output));
             continue;
         }
         if (stage != QStringLiteral("vertex") && stage != QStringLiteral("fragment"))

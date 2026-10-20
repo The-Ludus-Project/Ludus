@@ -301,8 +301,10 @@ def _runtime_contents(path, configuration):
         artifacts[key] = {'ordinal': ordinal, 'descriptor': descriptor, 'bytes': artifact, 'entry': entry, 'blocks': names}
     # CPU-visible interface: the logical vertex/instance schema, fixed static inputs,
     # and the per-draw uniform schemas with every target layout that packs them.
-    interface = {'version': 1, 'vertex_schema': vertex_schemas[0], 'inputs': STATIC_INPUTS, 'uniform_schemas': uniform_interface}
-    return {'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1', 'vertex_schema': vertex_schemas[0], 'inputs': STATIC_INPUTS, 'uniform_schemas': uniform_interface}
+    scene_versions = {r.get('scene_interface_version', 0) for r in package['recipes'] if r['technique'] == ray.TECHNIQUE}
+    build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
+    return {'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'uniform_interface': uniform_interface,
@@ -395,6 +397,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
     identity = bytes.fromhex(contents['interface_identity'])
     lines += ['/// SHA-256 of the CPU-visible vertex/instance and uniform interface this host was compiled against (RG3).',
               '/// Runtime generations with another identity are rejected with RestartRequired.',
+              'static_assert(renderer::SCENE_SHADER_INTERFACE_VERSION == 1);',
               'inline constexpr foundation::StaticArray<foundation::uint8, format::IDENTITY_BYTES> INTERFACE_IDENTITY', '{', '    {',
               '        ' + ', '.join(hex(b) for b in identity[:16]) + ',',
               '        ' + ', '.join(hex(b) for b in identity[16:]) + ',', '    },', '};']
@@ -415,11 +418,21 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
             text = artifact.decode('utf-8')
             delimiter = 'RG' + str(ordinal)
             build.require(')' + delimiter + '"' not in text, 'Package', label, 'raw-string delimiter collision')
-            lines.append('inline constexpr char ' + label + '[] = R"' + delimiter + '(' + text + ')' + delimiter + '";')
+            if len(text.encode('utf-8')) > 65535:
+                # Large linked ray programs exceed the portable C++ string-literal limit.
+                # Character initializers preserve exact UTF-8 bytes without warning suppression.
+                characters = ["'\\x%02x'" % byte for byte in text.encode('utf-8')] + ["'\\0'"]
+                lines.append('inline constexpr char ' + label + '[] = {\n' +
+                             '\n'.join(','.join(characters[start:start + 32]) + ','
+                                       for start in range(0, len(characters), 32)) + '\n};')
+            else:
+                lines.append('inline constexpr char ' + label + '[] = R"' + delimiter + '(' + text + ')' + delimiter + '";')
     lines += ['/// Return cooked stage descriptions backed by immutable static storage.',
               '[[nodiscard]] LUDUS_INLINE renderer::RenderGraphPrograms MakePrograms(',
               '    const rhi::RasterShaderDescription& compositeVertex,',
               '    const rhi::RasterShaderDescription& compositeFragment) noexcept', '{', '    renderer::RenderGraphPrograms result;']
+    if contents.get('scene_interface', False):
+        lines.append('    result.HasSceneShaderInterface = true;')
     for program_name in PROGRAMS.values():
         for stage in (('compute', 'vertex', 'fragment') if program_name == 'RayTracing' else ('vertex', 'fragment')):
             member = 'RayCompute' if stage == 'compute' else PROGRAM_MEMBERS[program_name] + stage.title()
@@ -497,7 +510,8 @@ def encode_runtime_package(contents):
         inputs = ([{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}]
                   if program_name == 'RayTracing' and stage == 'vertex' else STATIC_INPUTS if stage == 'vertex' else [])
         entry = item['entry'].encode()
-        data += u32(role(program_name, stage), TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
+        stage_role = 11 if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)
+        data += u32(stage_role, TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
                     len(item['blocks']))
         for value in inputs:
             data += u32(value['location'], FORMAT_CODES[value['format']])

@@ -47,6 +47,19 @@ class ExecutionTests(unittest.TestCase):
     def package(self):
         return build.verify_package(Path(self.run_build()['package']))
 
+    def test_large_linked_shader_uses_character_initializers_without_losing_bytes(self):
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        artifact = next(item for key, item in contents['artifacts'].items() if key[2] == 'metal')
+        artifact['bytes'] = ('// ' + 'x' * 70000 + '\n').encode()
+        from unittest.mock import patch
+        destination = self.root / 'large.h'
+        with patch.object(execution, '_runtime_contents', return_value=contents):
+            execution.emit_runtime(self.output, destination, name='LargeGraph')
+        text = destination.read_text()
+        self.assertIn("'\\x78'", text)
+        self.assertNotIn('x' * 70000, text)
+
     def test_numeric_plan_and_static_artifacts_do_not_synthesize_programs(self):
         report = self.run_build()
         destination = self.root / 'graph.h'

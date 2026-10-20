@@ -1,0 +1,126 @@
+{
+  "configurations": [
+    {
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "trace.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "trace.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "trace.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "trace.color",
+          "to": "output.texture"
+        }
+      ],
+      "id": "Default",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "trace",
+          "kind": "RayTracingPipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "stage": "ray_generation",
+              "program": "Generate"
+            },
+            {
+              "id": "miss",
+              "stage": "miss",
+              "program": "Miss"
+            },
+            {
+              "id": "closest_hit",
+              "stage": "closest_hit",
+              "program": "Closest"
+            }
+          ],
+          "state": {
+            "max_recursion": 1,
+            "payload_bytes": 0,
+            "attribute_bytes": 8
+          },
+          "invocation": {
+            "dimensions": [
+              96,
+              64,
+              1
+            ]
+          }
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "default": "Default",
+  "id": "Main",
+  "version": 2
+}

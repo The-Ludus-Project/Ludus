@@ -144,7 +144,8 @@ public:
                                            foundation::BorrowedView<const ViewDescription> cameras,
                                            foundation::uint64 sceneRevision,
                                            RenderGraphCoveragePolicy policy,
-                                           RenderGraphReport& outReport) noexcept;
+                                           RenderGraphReport& outReport,
+                                           const SceneShaderInputs* sceneInputsOrNull = nullptr) noexcept;
     /// Borrow the drawing generation's graph for Render/Encode/exports; null when none is active.
     /// The pointer changes when ActiveGeneration changes; never retain it across Poll.
     [[nodiscard]] RenderGraph* GetActiveOrNull() noexcept;

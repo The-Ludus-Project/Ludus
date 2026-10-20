@@ -42,8 +42,11 @@ inline constexpr foundation::usize MAX_PACKAGE_BYTES = foundation::usize{16} * 1
 inline constexpr foundation::usize MAX_ARTIFACT_BYTES = foundation::usize{2} * 1024 * 1024;
 /// Largest stage entry-point or GLSL ES uniform block name.
 inline constexpr foundation::usize MAX_ENTRY_BYTES = 63;
-/// Raster stage pairs plus the linked ray compute and two image stages.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = RASTER_TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT + 3;
+/// Legacy and scene callback compute roles plus shared image stages.
+inline constexpr foundation::usize RAY_STAGE_ROLE_COUNT = 4;
+/// Raster stage pairs plus admitted ray-stage roles.
+inline constexpr foundation::usize STAGE_ROLE_COUNT =
+    RASTER_TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT + RAY_STAGE_ROLE_COUNT;
 /// Largest stage table: one artifact per role and target.
 inline constexpr foundation::usize MAX_STAGES = STAGE_ROLE_COUNT * SHADER_TARGET_COUNT;
 /// Renderer static vertex/instance interface: position plus four transform rows and color.
@@ -83,6 +86,7 @@ enum class StageRole : foundation::uint32
     RayCompute,          ///< Linked authored ray functions and renderer-owned GPU BVH traversal.
     RayImageVertex,      ///< Renderer-owned GPU color/index presentation vertex entry.
     RayImageFragment,    ///< Renderer-owned color presentation fragment entry.
+    SceneRayCompute,     ///< Scene/material/light callback compute profile; mutually exclusive with RayCompute.
 };
 /// Float vertex input width of one stage input record.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.

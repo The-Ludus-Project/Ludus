@@ -76,6 +76,29 @@ class RayPipelineTests(unittest.TestCase):
         with self.assertRaises(ToolingError):
             self.compile()
 
+    def test_scene_callbacks_require_matching_program_interfaces_and_bounded_queries(self):
+        fixture = ROOT / 'tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in'
+        value = json.loads(fixture.read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+        _, programs, techniques, _ = build.validate_manifest(value)
+        self.assertEqual('Radiance', programs['Generate']['output'])
+        self.assertEqual(2, techniques[ray.TECHNIQUE]['scene_interface']['surface_queries'])
+        value['programs'][-1]['output'] = 'Color'
+        with self.assertRaises(ToolingError):
+            build.validate_manifest(value)
+        value['programs'][-1]['output'] = 'ScenePayload'
+        techniques[ray.TECHNIQUE]['scene_interface']['surface_queries'] = 0
+        with self.assertRaises(ToolingError):
+            build.validate_manifest(value)
+
+    def test_shader_local_payload_bounds_reject_resources_and_large_matrices(self):
+        ray.validate_payload(b'struct ScenePayload { float3 Radiance; };', 16, build)
+        with self.assertRaises(ToolingError):
+            ray.validate_payload(b'struct ScenePayload { float4x3 Transform; };', 48, build)
+        with self.assertRaises(ToolingError):
+            ray.validate_payload(b'struct ScenePayload { Texture2D<float4> Texture; };', 1024, build)
+        with self.assertRaises(ToolingError):
+            ray.validate_payload(b'struct ScenePayload { float Values[9999999999999999]; };', 1024, build)
+
 
 if __name__ == '__main__':
     unittest.main()

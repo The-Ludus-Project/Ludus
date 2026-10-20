@@ -9,6 +9,7 @@
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
+#include <ludus/graphics/renderer/scene_shader.hpp>
 
 #include "../../shaders/renderer_gpu_preview_layout.h"
 #include "environment_data.h"
@@ -59,6 +60,12 @@ struct ReferenceTriangle final
     math::Vector3 GeometricNormal{}, Error{};
     float32 Area = 0;
     uint32 Instance = 0, Primitive = 0;
+    uint32 ShaderInstance = 0;
+    uint32 ShaderMaterial = DEFAULT_SCENE_MATERIAL;
+    uint32 ShaderSlot = 0;
+    uint32 ShaderMaterialKind = 0;
+    uint32 ShaderEmitter = DEFAULT_SCENE_MATERIAL;
+    uint64 ShaderSourceId = 0;
 };
 struct ReferenceInstance final
 {
@@ -134,6 +141,9 @@ struct ReferenceJob final
     math::RandomKey Key;
     ReferenceSceneData Scene;
     Array<ReferenceSurfaceData> FlatSurfaces;
+    uint64 SourceGeneration = 0;
+    Array<math::Vector4> ShaderEmitters;
+    Array<uint8> ShaderTextureBytes;
     Array<ReferenceAccumulator> Pixels;
     Array<ReferencePath> Paths;
     Array<rhi::RayInput> Rays;

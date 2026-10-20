@@ -28,6 +28,11 @@ struct RenderGraphExtraction final
     RenderScene Scene;
     QVector<graphics::renderer::RenderGraphMesh> Meshes;
     QVector<graphics::renderer::RenderGraphItem> Items;
+    QVector<graphics::renderer::SceneShaderMaterial> Materials;
+    QVector<graphics::renderer::DirectLight> Lights;
+    QVector<QImage> MaterialImages;
+    QVector<foundation::uint32> MaterialOverrides;
+    graphics::renderer::SceneShaderInputs ShaderInputs;
     graphics::renderer::ViewDescription View{};
     /// Nonzero caller revision; a changed revision makes the preview prepare again.
     foundation::uint64 Revision = 0;

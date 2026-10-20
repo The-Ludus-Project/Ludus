@@ -48,7 +48,7 @@ struct PreviewTexture final
 };
 struct PreviewSurface final
 {
-    foundation::int32 Texture = 0;
+    foundation::int32 Texture = -1;
     foundation::math::Vector4 Tint{1, 1, 1, 1};
     /// Straight linear RGBA base color for consumers that sample no textures, such as the
     /// render-graph RendererStatic preview. Authored surfaces use Tint. Cooked surfaces
@@ -60,6 +60,9 @@ struct PreviewSurface final
     foundation::float32 Metallic = 0;
     foundation::float32 Roughness = .5F;
     foundation::math::Vector3 Emission{};
+    bool IsEmissionTwoSided = false;
+    bool HasEmissionPower = false;
+    foundation::float32 EmissionPower = 0;
     /// Discard where the base texture's alpha is below AlphaCutoff (cooked LUSCN v5 masks);
     /// opaque surfaces ignore texture alpha.
     bool IsAlphaMasked = false;

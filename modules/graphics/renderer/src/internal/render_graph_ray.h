@@ -20,7 +20,8 @@ public:
                                                Snapshot snapshot,
                                                const ViewDescription& camera,
                                                foundation::uint32 width,
-                                               foundation::uint32 height) noexcept;
+                                               foundation::uint32 height,
+                                               const RenderGraphSceneDescription* sceneOrNull = nullptr) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus Prepare(rhi::TextureHandle target) noexcept;
     [[nodiscard]] rhi::RasterStatus Encode(rhi::SurfaceHandle surface) noexcept;

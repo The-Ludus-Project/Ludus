@@ -68,6 +68,15 @@ struct DirectLight final
     /// Spot outer half-angle cosine, distinct from InnerCos.
     ludus::foundation::float32 OuterCos = 0.8F;
 };
+/// Resolve RGB emission color and total lumens to nits for one placed emitter.
+/// Uses the Renderer Rec.709 photometric proxy and world area in square metres;
+/// two-sided emitters split total power across both sides. Finite nonnegative color,
+/// power and positive area are required. Invalid/out-of-profile values preserve outEmission.
+[[nodiscard]] rhi::RasterStatus ResolveMeshEmissionPower(foundation::math::Vector3 color,
+                                                         foundation::float32 lumens,
+                                                         foundation::float64 areaWorld,
+                                                         bool isTwoSided,
+                                                         foundation::math::Vector3& outEmission) noexcept;
 /// Number of corners in a triangle emitter.
 inline constexpr ludus::foundation::usize AREA_TRIANGLE_CORNERS = 3;
 /// Bounded deterministic quadrature, trading near-field accuracy for raster cost.

@@ -204,6 +204,177 @@ candidates preserve the last drawable scene; an exported color is valid only
 after its tracked producer completes. Shader changes continue through immutable
 packages and atomic graph activation.
 
+## Author scene-aware ray shaders
+
+The optional scene interface extends the portable triangle profile above with
+material bindings, geometric emitters, analytic lights, explicit queries and
+shader-local callbacks. The renderer performs no NEE, MIS or bounce integration
+for this interface: those algorithms belong to the author's raygen and
+closest-hit source. The existing Ray/Color function interfaces remain compatible.
+
+### Select the interface in the manifest
+
+Keep the graph node's existing Scene/View/ColorTexture ports and its bounded
+triangle recipe state. Add this record to the manifest's
+`RendererTriangles.RayTracing` technique:
+
+```json
+"scene_interface": {
+  "version": 1,
+  "payload": "main_shaders/payload.slang",
+  "surface_queries": 2,
+  "visibility_queries": 2,
+  "local_payload_bytes": 1024
+}
+```
+
+The assigned programs now use these manifest input/output names and signatures:
+
+| Stage | Input / output | Authored signature |
+| --- | --- | --- |
+| ray_generation | RayLaunch / Radiance | `float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)` |
+| closest_hit | SurfaceHit / ScenePayload | `void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)` |
+| miss | Ray / ScenePayload | `void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)` |
+
+Bindings remain empty: the linked wrapper supplies the scene resources, validates
+the compute interface and records their RHI uses. The payload file defines one
+flat `struct ScenePayload` and no other declarations except `#pragma once` and
+comments. Fields can be float scalars/vectors/matrices, uint/int scalars/vectors,
+bool, Ray, RayLaunch, SurfaceHit or MaterialSample, optionally in fixed literal
+length arrays. Resources, pointers, methods and unbounded arrays are unsupported.
+The compiler uses a conservative sixteen-byte field accounting plus bounded
+built-in record sizes; `local_payload_bytes` is optional (default 1024, admitted
+range 16..4096). This is ordinary shader-local storage, independent of the node's
+native `payload_bytes: 0`. Surface queries are bounded to 1..8, visibility queries
+to 0..16. Budget exhaustion latches failure and does not commit a partial sample.
+
+For example, the author can start with this payload:
+
+```slang
+#pragma once
+struct ScenePayload
+{
+    float3 Radiance;
+    float3 Throughput;
+    Ray NextRay;
+    bool HasContinuation;
+};
+```
+
+Raygen initializes it, calls
+`TraceAndShade(scene, queries, launch.CameraRay, payload)`, then decides whether
+to dispatch another ray based on fields written by closest-hit. TraceAndShade
+issues exactly one closest query and invokes the selected hit or miss function.
+Closest-hit can call TestVisibility and raw TraceClosest, but must not recursively
+call TraceAndShade. Shader compilation rejects recursive callback call graphs.
+The mutable query context must be forwarded unchanged; resetting/copying its
+counters is outside this interface contract. It is not a shader sandbox.
+
+### Bind materials and lights to the scene
+
+`RenderGraph::Update` and `RenderGraphActivation::Update` accept an optional
+`const SceneShaderInputs*` after the existing report parameter. It contains a
+SceneShaderMaterial table, directional/point/spot DirectLight records and a
+constant or equirectangular HDR environment. Update consumes all borrowed input
+and map bytes synchronously, retaining owned scene data and uploaded resources
+through asynchronous preparation and GPU completion. HDR pixels are north-to-south
+linear RGB; Environment multiplies the pixels when dimensions are nonzero.
+
+Each RenderGraphMesh declares an optional per-triangle MaterialSlots view and a
+MaterialBindings table mapping slot to global material index. Each instance's
+MaterialOverrides can replace selected slot assignments;
+INHERIT_SCENE_MATERIAL keeps the mesh assignment. SurfaceTint multiplies the
+resolved base reflectance. Empty triangle-slot views mean slot zero; nonempty
+ones must contain exactly IndexCount/3 entries. Malformed slot extents reject.
+
+DEFAULT_SCENE_MATERIAL or an unassigned slot produces a neutral 0.5 linear RGB,
+fully rough, dielectric, non-emissive material. An invalid material index,
+SceneShaderMaterial.HasError, unsupported map format or malformed material uses
+non-emissive magenta only under DiagnosticColor admission. RejectIncomplete
+rejects those errors and preserves the last drawable generation. Diagnostics
+report default/error binding counts, the first bad source/material and skipped
+zero-area triangles. Intentional format-defined defaults that an importer has
+already resolved remain ordinary assigned materials; this does not reinterpret
+glTF's default material or historical black PBRT surfaces.
+
+The editor supplies the selected World's full material parameters, retained
+texture pixels, UVs, normals, tangents, per-object assignments and authored lights
+through this same interface. Invalid optional texture references are errors;
+absent optional textures use neutral factors. Imported emission power is resolved per placed mesh using its transformed area.
+Imported emissive material slots remain actual geometry and do not become point-light proxies. Analytic sources
+need no mesh. Raster area quadrature records are not accepted as exact sources:
+provide their emitting geometry instead, avoiding duplicate illumination.
+
+The current graph limits still apply, including 32 meshes and 128 draw items.
+The initial material/slot table is bounded by MAX_ITEMS; scene CPU/GPU setup
+shares the existing 256 MiB budgets. Unsupported masked/transmissive/deformed
+geometry rejects or uses the graph's explicit diagnostic coverage policy; it
+does not acquire transparent transport by connecting Scene. Material evaluation
+uses the supplied fixed mip and UV0; derivative mip selection is not inferred.
+
+### Read surfaces, sample sources and trace visibility
+
+The public logical Slang helper is installed as `scene_shader.slang`; generated
+wrappers include it automatically. Authors do not read private packed buffers.
+
+| Operation | Meaning |
+| --- | --- |
+| GetSceneInfo | Snapshot revision (uint2), interface version and triangle/material/light/emitter counts |
+| GetMaterial / EvaluateMaterial | Bound constant factors / sampled base color, metallic, roughness, emission and mapped world normal |
+| EvaluateEmission | Emission at a hit or sampled surface, respecting geometric sidedness |
+| GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
+| GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
+| GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
+| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; no radiance estimate is added |
+| EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
+| EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
+| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
+| SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
+| SampleSceneRandom / MakeCameraRay | Addressed random dimension / chosen subpixel camera ray |
+| EvaluateStandardBsdf / SampleStandardBsdf | Optional existing reflection-model primitives; no integrator or MIS |
+
+SurfaceHit includes InstanceIndex, original mesh-local Primitive, source identity,
+MaterialIndex, SourceMaterialIndex, MaterialKind, MaterialSlot, EmitterIndex, barycentrics,
+UV, geometric/shading normals, tangent and position error. MaterialIndex addresses
+the resolved instance/slot table used by GetMaterial; SourceMaterialIndex is the
+original global assignment, or the default sentinel. MaterialKind is assigned=0,
+default=1, error=2. Checked data getters return IsValid=false for invalid indices;
+authors must not use invalid results. Query/ray failures latch HasFailed and
+produce diagnostic pixels. Miss/clear is SCENE_QUERY_MISS, hit/occluded is
+SCENE_QUERY_SURFACE, and failure is SCENE_QUERY_FAILURE.
+
+The default distribution is uniform over analytic sources, emitting instance/slot
+groups and the optional environment. Mesh triangles are selected by world area,
+then sampled uniformly on the triangle. Splitting a triangle does not multiply
+its source selection probability. Emission maps are sampled at the actual UV;
+black texels and back-side one-sided samples remain zero-contribution events.
+The initial environment proposal is uniform sphere, including HDR maps.
+
+LightSample exposes SelectionPmf and ConditionalPdf separately. Continuous
+sources use inverse-steradian density; delta sources set IsDiscrete and sampled
+conditional mass one. IncidentCoefficient excludes receiver BRDF/cosine,
+visibility, probability division and MIS. Point/spot coefficients already include
+the Renderer range/cone and inverse-square falloff. Continuous mesh emission does
+not include another inverse-square factor: its PDF includes the area-to-solid-angle
+conversion. TestVisibility offsets both finite mesh endpoints and permits other
+triangles of that emitter to occlude; it invokes no user shading callbacks.
+
+Your shader decides how to combine light samples with BSDF samples. In particular,
+the terminal surface's NEE contribution has weight one if you never sample a
+competing BSDF continuation there. The engine does not apply that weight for you.
+
+Scene callbacks return unclamped linear RGB. GPU history accumulates it before
+the preview's exposure-one Reinhard/sRGB display conversion. Each scene/camera or
+shader generation starts new history, advancing up to 4096 samples. Persistent
+history remains graph-owned and completion-tracked; no radiance is read back for
+rendering. Exposure is currently fixed by the graph preview profile. Selective
+history preservation when only a stop target changes remains a future extension.
+
+See the [installed-consumer scene ray fixture](../../tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in)
+and its [raygen source](../../tests/sdk_consumer/rg2/scene_ray/main_shaders/generate.slang).
+That acceptance shader exercises scene data and queries without implementing NEE
+or bounce transport, so it is also a minimal place to start authoring.
+
 ## Start customizing the renderer
 
 You don't need to create a render graph first. The engine ships a default one, and
