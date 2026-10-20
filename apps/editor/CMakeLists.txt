@@ -244,6 +244,8 @@ qt_add_executable(ludus_editor
     src/external_code_editor.cpp
     src/internal/renderer_workspace.h
     src/renderer_workspace.cpp
+    src/internal/render_graph_shader_interface.h
+    src/render_graph_shader_interface.cpp
     src/internal/render_graph_defaults.h
     src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
@@ -433,6 +435,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/external_code_editor.cpp
         src/internal/renderer_workspace.h
         src/renderer_workspace.cpp
+        src/internal/render_graph_shader_interface.h
+        src/render_graph_shader_interface.cpp
         src/internal/render_graph_defaults.h
         src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h

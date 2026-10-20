@@ -331,6 +331,7 @@ private:
     QLineEdit* mEdgeTo;
     QComboBox* mSourceFile;
     QPlainTextEdit* mSource;
+    QPlainTextEdit* mSourceInterface;
     QPlainTextEdit* mPlan;
     RenderGraphBuildSettings mBuildSettings;
     RenderGraphBuildTools mResolvedTools;

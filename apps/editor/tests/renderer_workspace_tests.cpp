@@ -6,6 +6,7 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
+#include "internal/render_graph_shader_interface.h"
 #include "internal/renderer_workspace.h"
 #include "internal/workspace_style.h"
 
@@ -729,7 +730,7 @@ TEST_CASE("Code editor handoff cancellation retains unapplied source text", "[ed
         workspace.resize(1500, 900);
         QTabWidget* tabsOrNull = workspace.findChild<QTabWidget*>();
         REQUIRE(tabsOrNull != nullptr);
-        tabsOrNull->setCurrentWidget(sourceOrNull->parentWidget());
+        tabsOrNull->setCurrentIndex(1);
         workspace.show();
         QApplication::processEvents();
         REQUIRE(workspace.grab().save(capture) == true);
@@ -1180,4 +1181,90 @@ TEST_CASE("Add Node explains rejected drafts without changing their content or h
     CHECK(workspace.GetStatusText() == message->text());
     CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == bytes);
     CHECK(workspace.GetDocument().GetRevision() == revision);
+}
+
+TEST_CASE("Shader source exposes draft input fields and named outputs", "[editor][render-graph][source-editor]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    QComboBox* selectorOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    QPlainTextEdit* interfaceOrNull =
+        workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSourceInterface"));
+    QPlainTextEdit* sourceOrNull = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(selectorOrNull != nullptr);
+    REQUIRE(interfaceOrNull != nullptr);
+    REQUIRE(sourceOrNull != nullptr);
+    selectorOrNull->setCurrentText(QStringLiteral("main_shaders/color.slang"));
+    CHECK(interfaceOrNull->isReadOnly() == true);
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("PSMain (fragment)")) == true);
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("PositionClip : Float4  [SV_Position, built-in]")) ==
+          true);
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("Color : Float4  [COLOR0, location 0]")) == true);
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("Color : float4 → SV_Target0")) == true);
+    CHECK(sourceOrNull->toPlainText().toUtf8() == workspace.GetDocument().GetDraft(selectorOrNull->currentText()));
+    CHECK(workspace.IsDirty() == false);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_SHADER_INTERFACE_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        ApplyWorkspaceStyle(&workspace);
+        workspace.resize(CREATION_WORKSPACE_WIDTH, CREATION_WORKSPACE_HEIGHT);
+        QTabWidget* tabsOrNull = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+        REQUIRE(tabsOrNull != nullptr);
+        tabsOrNull->setCurrentIndex(1);
+        workspace.show();
+        QApplication::processEvents();
+        REQUIRE(workspace.grab().save(capture) == true);
+    }
+
+    selectorOrNull->setCurrentText(QStringLiteral("main_shaders/geometry.slang"));
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("PositionMesh : Float3")) == true);
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("Outputs\nRasterVarying")) == true);
+    selectorOrNull->setCurrentText(QStringLiteral("main_shaders/depth.slang"));
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("fixed-function depth")) == true);
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("returns void")) == true);
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("SV_Target0")) == false);
+
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    selectorOrNull->setCurrentText(manifestFile);
+    CHECK(interfaceOrNull->parentWidget()->isHidden() == true);
+    sourceOrNull->setPlainText(QStringLiteral("{ broken manifest"));
+    QPushButton* applyOrNull = nullptr;
+    const QList<QPushButton*> buttons = workspace.findChildren<QPushButton*>();
+    for (QPushButton* button : buttons)
+    {
+        if (button->text() == QStringLiteral("Apply Text to Draft"))
+        {
+            applyOrNull = button;
+        }
+    }
+    REQUIRE(applyOrNull != nullptr);
+    applyOrNull->click();
+    selectorOrNull->setCurrentText(QStringLiteral("main_shaders/color.slang"));
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("missing or invalid")) == true);
+    workspace.Undo();
+    CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("Color : float4 → SV_Target0")) == true);
+}
+
+TEST_CASE("Shader interface lists shared-source programs and uniform fields", "[editor][render-graph][source-editor]")
+{
+    const QByteArray manifest = R"json({
+      "schemas":[{"id":"Varying","fields":[{"id":"Color","type":"Float4","semantic":"COLOR0","location":0}]},
+                 {"id":"Material","role":"Uniform","fields":[{"id":"Tint","type":"Float4"}]}],
+      "programs":[{"id":"Tinted","function":"Shade","stage":"fragment","source":"shaders/color.slang",
+                   "input":"Varying","output":"Color","bindings":[{"id":"material","schema":"Material","slot":2}]},
+                  {"id":"Coverage","function":"Coverage","stage":"fragment","source":"shaders/color.slang",
+                   "input":"Varying","output":"Depth","bindings":[]}]
+    })json";
+    const QString description = DescribeShaderInterface(manifest, QStringLiteral("shaders/./color.slang"));
+    CHECK(description.contains(QStringLiteral("Tinted — Shade (fragment)")) == true);
+    CHECK(description.contains(QStringLiteral("Coverage — Coverage (fragment)")) == true);
+    CHECK(description.contains(QStringLiteral("material — slot 2, set 0")) == true);
+    CHECK(description.contains(QStringLiteral("Tint : Float4")) == true);
+    CHECK(DescribeShaderInterface(manifest, QStringLiteral("other.slang"))
+              .contains(QStringLiteral("No shader program")) == true);
+    CHECK(DescribeShaderInterface(QByteArrayLiteral("[]"), QStringLiteral("color.slang"))
+              .contains(QStringLiteral("unavailable")) == true);
 }

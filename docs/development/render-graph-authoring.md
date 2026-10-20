@@ -1045,6 +1045,20 @@ the current draft is retained and the job does not start. Undo local edits or
 reopen the graph to resolve the conflict. Apply or revert unapplied text before
 reloading; source refresh never silently replaces that text.
 
+The Source view shows an **Inputs / Outputs** reference beside each Slang file.
+It reads the current draft build manifest and expands input and output schemas
+into field names, types, semantics and locations, with read-only uniform bindings
+and their slots. Every program sharing the source is listed by function and stage.
+Fragment color output is labeled `Color : float4 → SV_Target0`; depth-only
+functions return `void`, with depth supplied by rasterization and writes governed
+by the pipeline recipe. These shader interfaces differ from the canvas's pass
+resource ports (`scene`, `view`, `color`, `depth`). The reference describes authored
+metadata, not compiler reflection or validation of unapplied shader text. Edit
+schemas and program contracts in the manifest and apply the text to refresh it;
+undo and external source reload also refresh it. Missing or invalid manifests and
+unregistered sources show an unavailable message. The reference is separate from
+the editable source, preserving saved bytes and compiler diagnostic line numbers.
+
 ### Create a subgraph without leaving the editor
 
 Select the containing configuration in **Graph sources**, then choose **Create
