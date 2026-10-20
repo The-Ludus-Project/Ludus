@@ -1221,3 +1221,76 @@ TEST_CASE("Changing graph output during readback never publishes the superseded 
     CHECK(preview.GetImage() == color);
     preview.Detach();
 }
+
+TEST_CASE("World grid uses scene depth without writing it in the project graph", "[editor][grid][render-graph-preview]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    RenderScene scene = MakeScene({.9F, .2F, .8F, 1});
+    scene.Meshes[0].Positions = {{-.6F, -.6F, 1}, {.6F, -.6F, 1}, {.6F, .6F, 1}, {-.6F, .6F, 1}};
+    scene.Meshes[0].Indices = {0, 1, 2, 2, 3, 0};
+    renderer::ViewDescription view;
+    view.OrthographicCamera = true;
+    view.CameraPosition = {0, 0, 5};
+    // Conventional finite camera: Z=1 is in front of the grid's Z=0 plane.
+    view.WorldToClip.Columns[2].Z = -.1F;
+    view.WorldToClip.Columns[3].Z = .5F;
+    uint64 revision = 0;
+    const auto render = [&](bool isGridVisible) {
+        view.WorldGrid = { .IsVisible = isGridVisible, .FocusDistance = 5, .Width = WIDTH, .Height = HEIGHT };
+        RenderGraphExtraction extraction;
+        QString error;
+        REQUIRE(MakeRenderGraphExtraction(scene, view, ++revision, extraction, error) == true);
+        preview.SetExtraction(extraction);
+        REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == revision; }) == true);
+        return preview.GetImage().copy();
+    };
+    const QImage sceneOnly = render(false);
+    preview.SetInspectedTarget(QStringLiteral("Main/depth"));
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectedRevision() == revision; }) == true);
+    REQUIRE(preview.GetInspectedTexture().IsValid() == true);
+    const QByteArray depthWithoutGrid = preview.GetInspectedTexture().Bytes;
+    const QImage withGrid = render(true);
+    preview.SetInspectedTarget(QStringLiteral("Main/depth"));
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectedRevision() == revision; }) == true);
+    REQUIRE(preview.GetInspectedTexture().IsValid() == true);
+    CHECK(preview.GetInspectedTexture().Bytes == depthWithoutGrid);
+    usize changedOutside = 0;
+    for (int32 y = 0; y < HEIGHT; ++y)
+    {
+        for (int32 x = 0; x < WIDTH; ++x)
+        {
+            const bool isInterior = x > WIDTH / 4 && x < WIDTH * 3 / 4 && y > HEIGHT / 4 && y < HEIGHT * 3 / 4;
+            if (isInterior == true)
+            {
+                CHECK(withGrid.pixel(x, y) == sceneOnly.pixel(x, y));
+            }
+            else if (withGrid.pixel(x, y) != sceneOnly.pixel(x, y))
+            {
+                ++changedOutside;
+            }
+        }
+    }
+    CHECK(changedOutside > 20);
+    // Geometry behind the grid must remain visible between lines, while the axes cross it.
+    for (math::Vector3& positionWorld : scene.Meshes[0].Positions)
+    {
+        positionWorld.Z = -1;
+    }
+    const QImage behindOnly = render(false);
+    const QImage behindGrid = render(true);
+    CHECK(behindGrid.pixel(WIDTH / 2, HEIGHT / 2) != behindOnly.pixel(WIDTH / 2, HEIGHT / 2));
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_SCENE_GRID_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(withGrid.save(capture) == true);
+        REQUIRE(behindGrid.save(capture + QStringLiteral("-behind.png")) == true);
+    }
+    preview.Detach();
+}

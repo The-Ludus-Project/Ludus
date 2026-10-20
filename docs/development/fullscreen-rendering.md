@@ -1924,6 +1924,31 @@ and *Vulkan Guide*, [Descriptor Arrays](https://docs.vulkan.org/guide/latest/des
 for dynamic-offset ordering and independently enabled indexing/lifetime rules;
 and to the Slang and SPIRV-Cross teams for the target reflection/native lowering.
 
+## Raster world coordinate grid
+
+`ViewDescription::WorldGrid` opts a raster view into an adaptive world grid. Set
+`IsVisible`, the positive `FocusDistance` in world units, and the drawable `Width`
+and `Height` in pixels. Perspective views use the XZ ground plane. Orthographic
+views choose XY, XZ or YZ from the camera's dominant forward direction. The grid
+includes red X, green Y and blue Z axes. `BuildWorldGridLines` exposes the same
+bounded layout for a UI that has no GPU scene yet.
+
+`DrawView`, `RasterViewport` and conventional `Submit` draw one instanced guide
+batch after opaque geometry and before screen overlays. Conventional and reverse-Z
+depth tests use the scene's comparison direction with depth writes disabled.
+The guide does not consume scene mesh/item slots, change scene bounds or source-ID
+reports, enter shadow caster views, or appear in reference/path tracing captures.
+The draw count includes its batch. Grid buffers belong to the immutable prepared
+view and retire through ordinary RHI retention; pending or failed preparation
+preserves the caller's previous view. Grid scratch and per-view ownership records
+are charged to the renderer host budget, and GPU buffers/pipelines consume ordinary
+RHI storage budgets. No runtime shader compiler or new shader recipe is required.
+
+The editor enables this option on its camera publications, including project
+render graphs. Games keep the default disabled option. Custom render-graph shaders
+still control their own vertex/fragment behavior; attachment discard/load and
+multi-pass depth behavior remain the graph's authored contract.
+
 ## Native texture sharing
 
 `native_interop.h` provides a Qt-independent, same-device, same-queue color-read

@@ -16,6 +16,8 @@
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/raster.h>
 
+#include <ludus/graphics/renderer/world_grid.hpp>
+
 namespace ludus::graphics::renderer
 {
 namespace internal
@@ -206,6 +208,9 @@ struct ViewDescription final
     /// views measure distance along CameraForward. Finite, 0 <= near < far <= 1e7, or {0, 0}
     /// (the default) to leave depth unmapped (black). Ignored by ordinary lit programs.
     ludus::foundation::math::Vector2 DebugDepthRange{0, 0};
+    /// Optional depth-tested world coordinate guide. It does not alter scene bounds, item counts or shadows.
+    /// Ignored by reference/path tracing captures; raster drawing retains guide buffers with this view.
+    WorldGridDescription WorldGrid{};
 };
 /// Packet counts and a diagnostic prefix, copied to caller storage; IDs follow draw/instance order.
 struct ViewReport final

@@ -842,7 +842,14 @@ PreviewViewOptions RenderPreview::makeViewOptions(uint32 width, uint32 height) c
 }
 bool RenderPreview::DescribeView(uint32 width, uint32 height, rr::ViewDescription& outView, QString& outError) const
 {
-    return Scene_.View(makeViewOptions(width, height), outView, outError);
+    rr::ViewDescription view;
+    if (Scene_.View(makeViewOptions(width, height), view, outError) == false)
+    {
+        return false;
+    }
+    view.WorldGrid = { .IsVisible = true, .FocusDistance = GetFocusDistance(), .Width = width, .Height = height };
+    outView = view;
+    return true;
 }
 bool RenderPreview::DescribeConventionalView(uint32 width,
                                              uint32 height,
@@ -851,7 +858,14 @@ bool RenderPreview::DescribeConventionalView(uint32 width,
 {
     PreviewViewOptions options = makeViewOptions(width, height);
     options.ShouldUseConventionalDepth = true;
-    return Scene_.View(options, outView, outError);
+    rr::ViewDescription view;
+    if (Scene_.View(options, view, outError) == false)
+    {
+        return false;
+    }
+    view.WorldGrid = { .IsVisible = true, .FocusDistance = GetFocusDistance(), .Width = width, .Height = height };
+    outView = view;
+    return true;
 }
 void RenderPreview::RestoreNavigation(const QJsonObject& state)
 {
@@ -1019,17 +1033,7 @@ bool RenderPreview::prepare()
     if (ViewDirty_ == true)
     {
         rr::ViewDescription description;
-        PreviewViewOptions options;
-        options.Camera = Camera_;
-        options.OrbitDegrees = {Yaw_, Pitch_};
-        options.Distance = OrbitRadius_ * Zoom_;
-        options.Width = Width_;
-        options.Height = Height_;
-        options.Reference = Reference_;
-        options.OrbitCenter = &OrbitCenter_;
-        options.OrbitRadius = OrbitRadius_;
-        options.EditorCameraOrNull = &mCameraController.GetSample();
-        if (Scene_.View(options, description, mPreparationFailure) == false)
+        if (DescribeView(Width_, Height_, description, mPreparationFailure) == false)
         {
             return false;
         }

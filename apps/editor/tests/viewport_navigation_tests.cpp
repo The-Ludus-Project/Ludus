@@ -461,3 +461,24 @@ TEST_CASE("Empty orthographic views draw the facing Cartesian plane", "[editor][
         CHECK(preview.HasDevice() == false);
     }
 }
+
+TEST_CASE("Loaded editor cameras enable the world grid without adding scene objects", "[editor][viewport][grid]")
+{
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(MakeNavigationScene()) == true);
+    rr::ViewDescription view;
+    QString error;
+    REQUIRE(preview.DescribeView(400, 300, view, error) == true);
+    CHECK(view.WorldGrid.IsVisible == true);
+    CHECK(view.WorldGrid.Width == 400);
+    CHECK(view.WorldGrid.Height == 300);
+    CHECK(view.WorldGrid.FocusDistance == preview.GetFocusDistance());
+    REQUIRE(preview.DescribeConventionalView(640, 480, view, error) == true);
+    CHECK(view.WorldGrid.IsVisible == true);
+    CHECK(view.WorldGrid.Width == 640);
+    CHECK(view.WorldGrid.Height == 480);
+    CHECK(view.Depth == rr::DepthConvention::Conventional);
+    CHECK(preview.Scene().Objects.size() == 1);
+    CHECK(preview.Scene().Meshes.size() == 1);
+    CHECK(preview.HasDevice() == false);
+}

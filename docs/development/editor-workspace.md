@@ -751,7 +751,12 @@ objects. Perspective views show the XZ ground plane and red X, green Y and blue 
 axes. Orthographic views use the closest XY, XZ or YZ plane. Grid spacing adapts
 to navigation distance; the caption reports that spacing in world units. The
 empty view supports the same orbit, pan, look, fly and dolly gestures below.
-A rendered scene replaces the empty view when it is presented.
+The grid stays visible after a scene is loaded. It draws in the same raster pass,
+tests against scene depth, and leaves the depth buffer unchanged. Geometry in
+front hides grid lines; geometry behind remains visible between them. The guide
+is excluded from saved Worlds, scene bounds and shadow-caster geometry. The empty
+view and rendered view share one grid layout. Render-graph attachment views show
+the grid only where their raster pass draws it; offline reference captures omit it.
 
 The editor owns a separate camera controller and publishes a validated C0
 pose/lens sample to the renderer. Navigation never changes an authored camera,

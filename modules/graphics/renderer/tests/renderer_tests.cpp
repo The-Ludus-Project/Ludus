@@ -2352,3 +2352,74 @@ TEST_CASE("Triangle bake texture admission requires canonical dimensions and pre
     REQUIRE(report.Dropped == 99);
     REQUIRE(rhi::Destroy(session.Device, texture) == rhi::RasterStatus::Ready);
 }
+
+TEST_CASE("World grids use independent budgets and read-only conventional and reverse depth", "[renderer][grid]")
+{
+    rr::Limits limits;
+    limits.Meshes = 1;
+    limits.Objects = 1;
+    Session session(false, limits);
+    session.EnableViews();
+    const rr::SceneItem item = session.Item(1);
+    rr::Snapshot snapshot;
+    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+    for (const rr::DepthConvention depth : {rr::DepthConvention::Conventional, rr::DepthConvention::ReverseZ})
+    {
+        rr::ViewDescription description;
+        description.Depth = depth;
+        description.OrthographicCamera = true;
+        description.WorldGrid = { .IsVisible = true, .FocusDistance = 5, .Width = 64, .Height = 64 };
+        rr::PreparedView view;
+        rr::ViewReport report;
+        REQUIRE(session.Renderer.PrepareView(snapshot, description, view, report) == rhi::RasterStatus::Ready);
+        CHECK(report.Submitted == 1);
+        CHECK(report.Visible == 1);
+        CHECK(report.Draws == 2);
+        const usize retainedHostBytes = session.Renderer.GetHostBytes();
+        REQUIRE(rhi::BeginFrame(session.Device, session.Surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(session.Renderer.DrawView(view, {}) == rhi::RasterStatus::Ready);
+        const rhi::internal::RasterPipelineInfo& pipeline = rhi::reference::Pipelines[rhi::reference::Packet.Pipeline];
+        CHECK(pipeline.Depth == true);
+        CHECK(pipeline.DepthWrite == false);
+        CHECK(pipeline.DepthCompare == (depth == rr::DepthConvention::Conventional ? rhi::RasterDepthCompare::Less
+                                                                                   : rhi::RasterDepthCompare::Greater));
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(session.Device, completion) == rhi::RasterStatus::Ready);
+        REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
+        CHECK(session.Renderer.GetHostBytes() < retainedHostBytes);
+    }
+}
+
+TEST_CASE("Pending and failed grid preparation preserve the previous drawable view", "[renderer][grid]")
+{
+    Session session;
+    const rr::SceneItem item = session.Item(1);
+    rr::Snapshot snapshot;
+    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+    rr::PreparedView previous;
+    rr::ViewReport previousReport;
+    REQUIRE(session.Renderer.PrepareView(snapshot, {}, previous, previousReport) == rhi::RasterStatus::Ready);
+    rr::ViewDescription description;
+    description.WorldGrid = { .IsVisible = true, .FocusDistance = 5, .Width = 64, .Height = 64 };
+    rr::PreparedView candidate;
+    rr::ViewReport report;
+    report.Visible = 99;
+    rhi::reference::Next = rhi::RasterStatus::Failed;
+    CHECK(session.Renderer.PrepareView(snapshot, description, candidate, report) == rhi::RasterStatus::Failed);
+    CHECK(report.Visible == 99);
+    CHECK(session.Renderer.GetStatus(previous) == rhi::RasterStatus::Ready);
+    CHECK(session.Renderer.GetStatus(candidate) == rhi::RasterStatus::InvalidHandle);
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    REQUIRE(session.Renderer.PrepareView(snapshot, description, candidate, report) == rhi::RasterStatus::Pending);
+    CHECK(session.Renderer.GetStatus(previous) == rhi::RasterStatus::Ready);
+    CHECK(session.Renderer.GetStatus(candidate) == rhi::RasterStatus::Pending);
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    for (usize i = 0; i < rhi::reference::PendingCount; ++i)
+    {
+        rhi::internal::RasterComplete(rhi::reference::PendingRequests[i], rhi::RasterStatus::Ready);
+    }
+    CHECK(session.Renderer.GetStatus(candidate) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.Release(candidate) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(session.Renderer.Submit(previous, session.Surface, completion) == rhi::RasterStatus::Ready);
+}
