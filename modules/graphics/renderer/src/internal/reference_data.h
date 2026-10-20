@@ -133,6 +133,7 @@ struct ReferenceJob final
     math::Matrix4 ClipToWorld;
     math::RandomKey Key;
     ReferenceSceneData Scene;
+    Array<ReferenceSurfaceData> FlatSurfaces;
     Array<ReferenceAccumulator> Pixels;
     Array<ReferencePath> Paths;
     Array<rhi::RayInput> Rays;

@@ -23,7 +23,7 @@ using Status = rhi::RasterStatus;
 namespace
 {
 constexpr uint32 MAX_ASPECT = static_cast<uint32>(format::Aspect::Depth);
-constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::Technique::MaskedDepthOnly);
+constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::Technique::RayTracing);
 constexpr uint32 MAX_VISIBILITY = static_cast<uint32>(format::Visibility::Both);
 constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
 constexpr uint32 MAX_LOAD = static_cast<uint32>(format::Load::Discard);
@@ -169,8 +169,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::Malformed;
         }
-        const bool isVertex = role % format::TECHNIQUE_STAGE_COUNT == 0;
-        if (inputCount != (isVertex == true ? format::STATIC_INPUT_COUNT : 0))
+        const bool isRayRole = role >= static_cast<uint32>(format::StageRole::RayCompute);
+        const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
+                                                : role % format::TECHNIQUE_STAGE_COUNT == 0;
+        if (inputCount != (isVertex == true ? (isRayRole == true ? 2 : format::STATIC_INPUT_COUNT) : 0))
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -178,7 +180,9 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             const uint32 location = inoutReader.ReadWord();
             const uint32 inputFormat = inoutReader.ReadWord();
-            const format::InputFormat expected = input == 0 ? format::InputFormat::Float3 : format::InputFormat::Float4;
+            const format::InputFormat expected =
+                input == 0 ? (isRayRole == true ? format::InputFormat::Float2 : format::InputFormat::Float3)
+                           : format::InputFormat::Float4;
             if (location != input || inputFormat != static_cast<uint32>(expected))
             {
                 return RenderGraphPackageStatus::Malformed;
@@ -235,7 +239,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
     }
     // Each technique needs its vertex and fragment stage for exactly the same targets.
-    for (usize technique = 0; technique < format::TECHNIQUE_COUNT; ++technique)
+    for (usize technique = 0; technique < format::RASTER_TECHNIQUE_COUNT; ++technique)
     {
         for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
         {
@@ -244,6 +248,15 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             {
                 return RenderGraphPackageStatus::Malformed;
             }
+        }
+    }
+    for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+    {
+        const bool hasCompute = Stages[static_cast<usize>(format::StageRole::RayCompute)][target].IsPresent;
+        if (Stages[static_cast<usize>(format::StageRole::RayImageVertex)][target].IsPresent != hasCompute ||
+            Stages[static_cast<usize>(format::StageRole::RayImageFragment)][target].IsPresent != hasCompute)
+        {
+            return RenderGraphPackageStatus::Malformed;
         }
     }
     return RenderGraphPackageStatus::Ready;
@@ -258,7 +271,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeUniforms(ByteReader& i
         const uint32 stages = inoutReader.ReadWord();
         binding.ValueOffset = inoutReader.ReadWord();
         binding.ValueCount = inoutReader.ReadWord();
-        if (program > MAX_TECHNIQUE || stages == 0 || stages > MAX_VISIBILITY ||
+        if (program >= static_cast<uint32>(format::Technique::RayTracing) || stages == 0 || stages > MAX_VISIBILITY ||
             binding.Slot >= format::UNIFORM_SLOT_COUNT)
         {
             return RenderGraphPackageStatus::Malformed;
@@ -507,7 +520,10 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                                                                                   &result.MaskedColorVertex,
                                                                                   &result.MaskedColorFragment,
                                                                                   &result.MaskedDepthVertex,
-                                                                                  &result.MaskedDepthFragment}};
+                                                                                  &result.MaskedDepthFragment,
+                                                                                  &result.RayCompute,
+                                                                                  &result.RayImageVertex,
+                                                                                  &result.RayImageFragment}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description = *members[role];
@@ -523,11 +539,24 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         {
             continue;
         }
-        const bool isVertex = role % format::TECHNIQUE_STAGE_COUNT == 0;
+        const bool isRayRole = role >= static_cast<uint32>(format::StageRole::RayCompute);
+        const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
+                                                : role % format::TECHNIQUE_STAGE_COUNT == 0;
         description.Artifact.Stage = isVertex == true ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment;
         if (isVertex == true)
         {
-            description.Inputs = state.Inputs.AsSpan();
+            if (isRayRole == false)
+            {
+                description.Inputs = state.Inputs.AsSpan();
+            }
+        }
+        if (isRayRole == true)
+        {
+            description.Artifact.Stage = role == static_cast<usize>(format::StageRole::RayCompute)
+                                             ? rhi::ShaderStage::Compute
+                                         : isVertex == true ? rhi::ShaderStage::Vertex
+                                                            : rhi::ShaderStage::Fragment;
+            SetRenderGraphRayInterface(description, description.Artifact.Stage);
         }
         if (state.BindingCounts[role] != 0)
         {

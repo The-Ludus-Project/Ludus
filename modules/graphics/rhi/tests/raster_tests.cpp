@@ -3276,3 +3276,30 @@ TEST_CASE("R18c complete upload limit is independent of buffer and logical budge
     REQUIRE(GetStorageUsage(session.Device, after) == RasterStatus::Ready);
     CHECK(after.ResourceBytes == before.ResourceBytes);
 }
+
+TEST_CASE("Ordered graph encoding preserves the caller frame and retains submitted resources", "[rhi][graph][encode]")
+{
+    Session session;
+    OrderedGraph graph;
+    REQUIRE(CreateOrderedGraph(session.Device, graph) == RasterStatus::Ready);
+    GraphTexture texture(session.Device, graph);
+    texture.Add(session.Device, graph);
+    REQUIRE(AddGraphRoot(session.Device, graph, texture.Output, GraphRoot::Export) == RasterStatus::Ready);
+    GraphReport report;
+    REQUIRE(CompileOrderedGraph(session.Device, graph, report) == RasterStatus::Ready);
+    CHECK(EncodeOrderedGraph(session.Device, session.Surface, graph) == RasterStatus::InvalidState);
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    REQUIRE(EncodeOrderedGraph(session.Device, session.Surface, graph) == RasterStatus::Ready);
+    CHECK(reference::Submitted == 0);
+    FrameInfo information;
+    CHECK(GetFrameInfo(session.Device, session.Surface, information) == DeviceStatus::Ready);
+    SubmissionToken completion;
+    REQUIRE(EndFrame(session.Device, completion) == RasterStatus::Ready);
+    CHECK(GetStatus(session.Device, completion) == RasterStatus::Pending);
+    CHECK(DiscardOrderedGraph(session.Device, graph) == RasterStatus::InvalidHandle);
+    REQUIRE(Destroy(session.Device, texture.Texture) == RasterStatus::Ready);
+    CHECK(reference::Destroys[1] == 0);
+    reference::Completed = reference::Submitted;
+    REQUIRE(PollLifetime(session.Device) == RasterStatus::Ready);
+    CHECK(reference::Destroys[1] == 1);
+}

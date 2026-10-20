@@ -51,7 +51,12 @@ def metal_layouts(code, interface, document):
     """Independently derive emitted scalar/vector Metal uniform struct layouts."""
     for entry_value in interface['entries']:
         resource = next(p for p in document['parameters'] if p['name'] == entry_value['name'])
-        type_name = resource['type']['elementType']['name']
+        type_name = resource['type']['elementType'].get('name')
+        if type_name is None:
+            arguments = re.findall(r'\b(\w+)\s+constant\s*\*\s*\w+\s*\[\[buffer\(' + str(entry_value['binding']) + r'\)\]\]', code)
+            if len(arguments) != 1:
+                raise RuntimeError('RG1 emitted Metal cbuffer type is missing or ambiguous')
+            type_name = arguments[0]
         bodies = re.findall(r'struct\s+' + re.escape(type_name) + r'(?:_\d+)?\s*\{([^}]+)\}', code)
         if len(bodies) != 1:
             raise RuntimeError('RG1 emitted Metal uniform struct is missing or ambiguous')
@@ -112,26 +117,31 @@ def compile_graph_stage(args, lock):
     if len(points) != 1 or points[0].get('stage') != stage or points[0].get('name') != args.name:
         raise RuntimeError('RG1 requested entry/stage differs from target reflection')
     interface = raster_interface(document, stage, metal)
-    if any(x['kind'] != 'UniformBuffer' for x in interface['entries']):
+    if stage != 'compute' and any(x['kind'] != 'UniformBuffer' for x in interface['entries']):
         raise RuntimeError('RG1 initial schema profile permits uniform buffers only')
-    links = varying_interface(points[0], stage)
+    links = [] if stage == 'compute' else varying_interface(points[0], stage)
     if slang_target == 'spirv':
         run([args.validator, '--target-env', 'vulkan1.1', str(intermediate)])
     if target == 'spirv':
         emitted = entry(artifact)
     elif target == 'wgsl':
         code = wgsl_contract(artifact.read_text(), interface, stage)
-        names = re.findall(r'@' + stage + r'\s+fn\s+(\w+)', code)
+        names = re.findall(r'@' + stage + r'\s+(?:@workgroup_size\([^)]*\)\s+)?fn\s+(\w+)', code)
         if len(names) != 1:
             raise RuntimeError('RG1 requires exactly one emitted WGSL stage entry')
         artifact.write_text(code)
         emitted = names[0]
     elif metal:
-        names = re.findall(r'\[\[' + stage + r'\]\]\s+\w+\s+(\w+)\s*\(', artifact.read_text())
+        native_stage = 'kernel' if stage == 'compute' else stage
+        names = re.findall(r'\[\[' + native_stage + r'\]\]\s+\w+\s+(\w+)\s*\(', artifact.read_text())
         if len(names) != 1:
             raise RuntimeError('RG1 requires exactly one emitted Metal stage entry')
         code = artifact.read_text()
-        metal_layouts(code, interface, document)
+        if stage == 'compute':
+            from compile_raster import normalize_metal_storage
+            code = normalize_metal_storage(code, interface)
+        if stage != 'compute':
+            metal_layouts(code, interface, document)
         code = relative_line_directives(code, [Path(args.source).parent])
         artifact.write_text(code)
         emitted = names[0]

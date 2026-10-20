@@ -566,6 +566,22 @@ def verify_native_metal_arrays(code, interface):
                 raise RuntimeError('MSL scalar register differs from target reflection')
 
 
+def normalize_metal_storage(code, interface):
+    # Slang emits non-const device pointers for StructuredBuffer.
+    # Preserve the independently reflected read-only contract in MSL,
+    # including the compiler's context member and entry argument.
+    for binding in interface['entries']:
+        if binding['kind'] != 'StorageRead':
+            continue
+        scalar = {'float32': 'float', 'uint32': 'uint', 'int32': 'int'}[binding['scalar']]
+        element = scalar if binding['width'] == 1 else scalar + str(binding['width'])
+        pattern = r'(?<!const )\b' + element + r'\s+device\s*\*\s+' + re.escape(binding['name']) + r'(?:_\d+)?\b'
+        code, count = re.subn(pattern, lambda match: 'const ' + match[0], code)
+        if count < 1:
+            raise RuntimeError('Metal emitted read-only storage parameter is missing')
+    return code
+
+
 def compile_raster(args, lock):
     from compile_shader import entry, run
     output = Path(args.output)
@@ -634,18 +650,7 @@ def compile_raster(args, lock):
                     if re.search(r'\b' + variable + r'\s*\)?\s*\.\s*(?:sample|gather)\b', code):
                         raise RuntimeError('Depth/stencil views require unfiltered loads')
             if compute:
-                # Slang emits non-const device pointers for StructuredBuffer.
-                # Preserve the independently reflected read-only contract in MSL,
-                # including the compiler's context member and entry argument.
-                for binding in interfaces[(target, stage)]['entries']:
-                    if binding['kind'] != 'StorageRead':
-                        continue
-                    scalar = {'float32': 'float', 'uint32': 'uint', 'int32': 'int'}[binding['scalar']]
-                    element = scalar if binding['width'] == 1 else scalar + str(binding['width'])
-                    pattern = r'(?<!const )\b' + element + r'\s+device\s*\*\s+' + re.escape(binding['name']) + r'(?:_\d+)?\b'
-                    code, count = re.subn(pattern, lambda match: 'const ' + match[0], code)
-                    if count < 1:
-                        raise RuntimeError('Metal emitted read-only storage parameter is missing')
+                code = normalize_metal_storage(code, interfaces[(target, stage)])
             artifact.write_text(code)
             names = re.findall(r'\[\[' + ('kernel' if compute else stage) + r'\]\]\s+\w+\s+(\w+)\s*\(', code)
             if len(names) != 1:
