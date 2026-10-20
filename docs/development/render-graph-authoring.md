@@ -1108,7 +1108,7 @@ external shaders automatically; a result for older source content never replaces
 current request. By default the viewport shows the configuration's first exported
 `ColorTexture`, using the World's current camera or orbit. Its output selector can
 instead show any attachment after producer completion. Each World object becomes one static
-opaque item with its flat tint (object tint times the surface's flat tint); a
+item with its flat tint (object tint times the surface's flat tint); a
 straight tint with alpha below one is declared `Transparent`, and the editor's
 `DiagnosticColor` coverage policy draws unsupported items in magenta instead of
 hiding them. Textures, lights and other materials are outside the current static
@@ -1640,8 +1640,10 @@ owns it. Clients never silently switch to an offline compiler after worker failu
 
 ### Editor and game clients
 
-In **Tools → Options... → Render Graph**, set **Native shader worker** to the shared
-endpoint. **Build & Preview** builds/cooks an immutable draft and previews a
+The editor starts and connects its bundled native shader worker automatically.
+For an advanced shared-worker setup, optionally set **Native shader worker** in
+**Tools → Options... → Render Graph** to its endpoint. **Build & Preview**
+builds/cooks an immutable draft and previews a
 successful result only if its project/request and semantic source/configuration
 identity still match. Native World rendering enables **Live Preview** automatically for
 debounced background builds;
