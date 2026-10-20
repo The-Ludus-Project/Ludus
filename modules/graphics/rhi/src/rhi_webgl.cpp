@@ -224,6 +224,10 @@ bool EndFrame() noexcept
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
+    if (target.ShouldPresentToSurface == false)
+    {
+        return FrameStatus::Unsupported;
+    }
     if (ClampDimension(target.Width) == false || ClampDimension(target.Height) == false ||
         ValidColor(target.Red) == false || ValidColor(target.Green) == false || ValidColor(target.Blue) == false ||
         ValidColor(target.Alpha) == false)

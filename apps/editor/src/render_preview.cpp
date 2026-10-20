@@ -1453,6 +1453,15 @@ void RenderPreview::Tick()
     {
         return;
     }
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    // Shadow preparation may have recorded an offscreen-only frame in this tick.
+    if (rhi::SetFrameTarget(Device_, Surface_, { .Width = RequestedWidth_, .Height = RequestedHeight_ }) !=
+        rhi::DeviceStatus::Ready)
+    {
+        fail(QStringLiteral("WebGPU viewport target restoration failed. World edits are preserved."));
+        return;
+    }
+#    endif
     // Arm immediately before the viewport frame so the probe encloses it, not a shadow submission.
     PrepareGpuProfileFrame();
     mProducer = {};
@@ -1492,17 +1501,6 @@ void RenderPreview::Tick()
                                                                      : GetPreviewShadingStatus(PreviewShading::Albedo)))
                          : (mShading == PreviewShading::Solid ? GetPreviewShadingStatus(PreviewShading::Solid)
                                                               : GetPreviewShadingStatus(PreviewShading::Albedo)));
-#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-        if (Scene_.Lit == true && mShading == PreviewShading::Lit)
-        {
-            Status_ = QStringLiteral("WebGPU raster viewport · %1×%2 · visible %3 · draws %4 · direct lighting; "
-                                     "shadows unavailable in browser")
-                          .arg(Width_)
-                          .arg(Height_)
-                          .arg(Report_.Visible)
-                          .arg(Report_.Draws);
-        }
-#    endif
         Q_EMIT Changed();
     }
 #endif

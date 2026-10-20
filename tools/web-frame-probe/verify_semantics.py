@@ -4,7 +4,7 @@ import subprocess
 import sys
 node, executable = sys.argv[1:]
 for scenario in ("success", "surface-failure", "shader-failure", "acquisition-failure",
-                 "cancel-pipeline", "resize-hidden", "device-loss", "validation"):
+                 "cancel-pipeline", "offscreen", "resize-hidden", "device-loss", "validation"):
     result = subprocess.run([node, executable, scenario], cwd=Path(executable).parent,
                             capture_output=True, text=True, timeout=10)
     output = result.stdout + result.stderr

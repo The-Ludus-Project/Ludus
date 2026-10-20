@@ -615,15 +615,8 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
     const usize count = resources.Source.Definition->Objects.GetSize();
     if (resources.LightingStage == PreviewLightingStage::Inputs)
     {
-        const rhi::RasterStatus status = preview_lighting::BuildInputs(resources.Source,
-                                                                       resources.LightingKey,
-                                                                       resources.Lighting,
-#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-                                                                       false
-#    else
-                                                                       true
-#    endif
-        );
+        const rhi::RasterStatus status =
+            preview_lighting::BuildInputs(resources.Source, resources.LightingKey, resources.Lighting);
         if (status != rhi::RasterStatus::Ready)
         {
             outError = QStringLiteral("Authored lighting admission failed (%1); no lights were dropped.")
@@ -658,13 +651,7 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             }
             resources.HasEnvironment = true;
         }
-#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-        // No shadow submission may clear the browser surface during candidate preparation.
-        resources.Lighting.ShadowCount = 0;
-        resources.LightingStage = PreviewLightingStage::Materials;
-#    else
         resources.LightingStage = PreviewLightingStage::Casters;
-#    endif
     }
     if (resources.HasEnvironment == true)
     {
@@ -739,6 +726,20 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
         {
             return ready == rhi::RasterStatus::Pending;
         }
+#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+        constexpr uint32 SHADOW_FRAME_EXTENT = 1;
+        if (rhi::SetFrameTarget(Device,
+                                surface,
+                                {
+                                    .Width = SHADOW_FRAME_EXTENT,
+                                    .Height = SHADOW_FRAME_EXTENT,
+                                    .ShouldPresentToSurface = false,
+                                }) != rhi::DeviceStatus::Ready)
+        {
+            outError = QStringLiteral("The selected GPU backend cannot prepare shadows without presenting.");
+            return false;
+        }
+#    endif
         if (rhi::BeginFrame(Device, surface) != rhi::DeviceStatus::Ready)
         {
             return false;

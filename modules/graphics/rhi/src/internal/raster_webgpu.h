@@ -858,13 +858,22 @@ void RasterEndPass() noexcept
         gPass = nullptr;
     }
 }
-RasterStatus RasterPreparePass(const internal::RasterPassInfo&) noexcept
+RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
 {
+    if (gTarget.ShouldPresentToSurface == false && info.Texture == internal::RASTER_INVALID && info.ColorCount == 0)
+    {
+        return RasterStatus::InvalidState;
+    }
     return RasterStatus::Ready;
 }
 void RasterTextureBarrier(usize, RasterTextureUse) noexcept {}
 RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
 {
+    const RasterStatus admitted = RasterPreparePass(info);
+    if (admitted != RasterStatus::Ready)
+    {
+        return admitted;
+    }
     const auto& state = info.Description;
     const bool surface = info.Texture == internal::RASTER_INVALID;
     WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;

@@ -1307,6 +1307,10 @@ bool ValidColor(float64 value) noexcept
 } // namespace
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
+    if (target.ShouldPresentToSurface == false)
+    {
+        return FrameStatus::Unsupported;
+    }
     if (target.Width > gMaxDimension || target.Height > gMaxDimension || ValidColor(target.Red) == false ||
         ValidColor(target.Green) == false || ValidColor(target.Blue) == false || ValidColor(target.Alpha) == false)
     {

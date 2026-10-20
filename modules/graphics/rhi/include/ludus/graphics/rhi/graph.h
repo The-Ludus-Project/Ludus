@@ -136,7 +136,8 @@ struct RasterTextureState final
 };
 /// Query an owned texture on the owner thread; failure preserves output.
 [[nodiscard]] RasterStatus GetTextureState(DeviceHandle, TextureHandle, RasterTextureState&) noexcept;
-/// Switch passes inside an acquired frame. Validates load/feedback/state before
+/// Switch passes inside an open frame. Offscreen-only frames require owned texture attachments.
+/// Validates load/feedback/state before
 /// native calls; ends the previous pass and starts this one. Direct draws must
 /// match its attachment format. Rejected calls preserve the current pass.
 [[nodiscard]] RasterStatus BeginRasterPass(DeviceHandle, const RasterPassDescription&) noexcept;

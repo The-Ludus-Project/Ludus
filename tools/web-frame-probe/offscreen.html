@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Ludus offscreen frame qualification</title>
+<style>body{background:#15212b;color:#eee;font:18px system-ui;margin:32px}canvas{width:256px;height:256px;display:block;border:1px solid #b7c8d3}p{max-width:900px}</style>
+<h1>Offscreen frame qualification</h1>
+<p id="status" data-state="loading">Preparing the visible frame and offscreen texture…</p>
+<canvas id="canvas" width="64" height="64"></canvas>
+<p>The canvas must remain red while three offscreen frames clear a separate texture green.</p>
+<script>
+"use strict";
+globalThis.surfaceAcquisitions = 0;
+const getContext = HTMLCanvasElement.prototype.getContext;
+HTMLCanvasElement.prototype.getContext = function(...args) {
+  const context = getContext.apply(this, args);
+  if (args[0] === 'webgpu' && context && !context.ludusInstrumented) {
+    const acquire = context.getCurrentTexture.bind(context);
+    context.getCurrentTexture = function() { ++globalThis.surfaceAcquisitions; return acquire(); };
+    context.ludusInstrumented = true;
+  }
+  return context;
+};
+var Module = {canvas: document.getElementById('canvas'), onAbort: function(reason) {
+  const status = document.getElementById('status');
+  status.dataset.state = 'failed'; status.textContent = 'FAIL: ' + reason;
+}};
+</script>
+<script src="offscreen.js"></script></html>

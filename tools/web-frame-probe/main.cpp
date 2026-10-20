@@ -2,6 +2,7 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/browser/window.h>
@@ -176,6 +177,20 @@ void Frame() noexcept
            gDemoFailed ? 1 : 0);
 }
 } // namespace
+// The Node provider invokes this between visible frames and verifies that no
+// canvas configuration or acquisition occurs for the accepted submission.
+extern "C" EMSCRIPTEN_KEEPALIVE int32 CheckOffscreenFrame() noexcept
+{
+    if (rhi::SetFrameTarget({ .Width = 1, .Height = 1, .ShouldPresentToSurface = false }) != rhi::FrameStatus::Ready ||
+        rhi::BeginFrameStatus() != rhi::FrameStatus::Ready)
+    {
+        return 0;
+    }
+    const rhi::FrameInfo info = rhi::GetFrameInfo();
+    const bool isOffscreen = info.Width == 1 && info.Height == 1 && rhi::backend::ProbePass() == nullptr;
+    const rhi::FrameStatus ended = rhi::EndFrameStatus();
+    return isOffscreen == true && ended == rhi::FrameStatus::Ready ? 1 : 0;
+}
 extern "C" EMSCRIPTEN_KEEPALIVE void Stop() noexcept
 {
     ReleaseDemo();

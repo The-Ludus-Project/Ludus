@@ -69,6 +69,13 @@ TEST_CASE("Explicit device path preserves facade fullscreen pixels and dependenc
         if (explicitOwner)
         {
             REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = 96, .Height = 64 }) == rhi::DeviceStatus::Ready);
+            REQUIRE(rhi::SetFrameTarget(device,
+                                        surface,
+                                        {
+                                            .Width = 1,
+                                            .Height = 1,
+                                            .ShouldPresentToSurface = false,
+                                        }) == rhi::DeviceStatus::Unsupported);
             REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
             REQUIRE(rhi::DrawFullscreen(device, pipeline) == rhi::ResourceStatus::Ready);
             REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
@@ -77,6 +84,8 @@ TEST_CASE("Explicit device path preserves facade fullscreen pixels and dependenc
         else
         {
             REQUIRE(rhi::SetFrameTarget({ .Width = 96, .Height = 64 }) == rhi::FrameStatus::Ready);
+            REQUIRE(rhi::SetFrameTarget({ .Width = 1, .Height = 1, .ShouldPresentToSurface = false }) ==
+                    rhi::FrameStatus::Unsupported);
             REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
             REQUIRE(rhi::DrawFullscreen(pipeline) == rhi::ResourceStatus::Ready);
             REQUIRE(rhi::EndFrameStatus() == rhi::FrameStatus::Ready);

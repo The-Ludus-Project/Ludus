@@ -200,7 +200,8 @@ SetFrameTarget(DeviceHandle device, SurfaceHandle surface, const FrameTarget& ta
 [[nodiscard]] DeviceStatus BeginFrame(DeviceHandle device, SurfaceHandle surface) noexcept;
 /// Submit/end this owner's open frame once; fails explicitly after device loss.
 [[nodiscard]] DeviceStatus EndFrame(DeviceHandle device) noexcept;
-/// Query actual acquired dimensions/encoding. Invalid owner, pending startup or closed frame
+/// Query acquired dimensions/encoding; offscreen-only frames report their logical target extent.
+/// Invalid owner, pending startup or closed frame
 /// preserves info. This is not a presentation-completion query.
 [[nodiscard]] DeviceStatus GetFrameInfo(DeviceHandle device, SurfaceHandle surface, FrameInfo& info) noexcept;
 

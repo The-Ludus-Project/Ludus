@@ -183,6 +183,16 @@ pending startup or a closed frame. Resource overloads preserve the existing
 fullscreen ownership, failed-resource inspection and InUse rules; this slice
 does not introduce deferred destruction or a second resource registry.
 
+WebGPU also accepts `FrameTarget::ShouldPresentToSurface = false` for an
+offscreen-only frame. Use nonzero logical dimensions, then record texture
+attachment passes or compute work through the normal frame/submission APIs.
+This mode does not configure, acquire, clear or present the canvas. Surface
+attachment passes and compatibility fullscreen draws return `InvalidState`;
+`GetFrameInfo` reports the logical target extent. Other backends return
+`Unsupported` from `SetFrameTarget` and preserve the previous target. The default
+remains a surface frame. This lets browser shadow preparation retain the last
+presented image while its candidate resources are pending.
+
 Device owners never wrap/reappear across restart; callback attempt tokens remain
 separate so fallback retries keep the same device owner. Stale/foreign devices
 and surfaces return InvalidHandle without changing another session. Device loss

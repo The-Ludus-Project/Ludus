@@ -478,6 +478,22 @@ FrameStatus Begin() noexcept
     {
         return FrameStatus::Skipped;
     }
+    if (gTarget.ShouldPresentToSurface == false)
+    {
+        // Thanks to W3C, WebGPU, "Canvas Contexts" and "GPUQueue.submit":
+        // https://www.w3.org/TR/webgpu/#canvas-context
+        // An offscreen submission needs an encoder, not a canvas texture. Avoid
+        // getCurrentTexture/configure so candidate preparation cannot publish a
+        // cleared canvas in place of the last presented image.
+        gEncoder = wgpuDeviceCreateCommandEncoder(gDevice, nullptr);
+        if (gEncoder == nullptr)
+        {
+            return FrameFailure();
+        }
+        RasterFrameExtent();
+        TimingBegin();
+        return FrameStatus::Ready;
+    }
     if (gConfigured == false || gConfiguration.width != gTarget.Width || gConfiguration.height != gTarget.Height)
     {
         gConfiguration.width = gTarget.Width;
@@ -751,8 +767,8 @@ FrameInfo GetFrameInfo() noexcept
 {
     return
     {
-        .Width = gConfiguration.width,
-        .Height = gConfiguration.height,
+        .Width = gTarget.ShouldPresentToSurface == true ? gConfiguration.width : gTarget.Width,
+        .Height = gTarget.ShouldPresentToSurface == true ? gConfiguration.height : gTarget.Height,
         .Encoding = gConfiguration.format == WGPUTextureFormat_BGRA8UnormSrgb ||
                             gConfiguration.format == WGPUTextureFormat_RGBA8UnormSrgb
                         ? SurfaceEncoding::Srgb
@@ -761,6 +777,10 @@ FrameInfo GetFrameInfo() noexcept
 }
 ResourceStatus Draw(usize slot) noexcept
 {
+    if (gTarget.ShouldPresentToSurface == false)
+    {
+        return ResourceStatus::InvalidState;
+    }
     const auto& pipeline = gPipelines[slot];
     const auto& uniform = gUniforms[pipeline.UniformSlot];
     // Queue order: write N precedes submission N, which precedes write N+1.
