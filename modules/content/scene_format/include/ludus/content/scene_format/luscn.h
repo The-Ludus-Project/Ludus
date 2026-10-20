@@ -26,7 +26,10 @@
 /// and its optional float32 RGB environment payload. Version 4 keeps every
 /// version 3 record except the vertices, which are VertexRecord again: bake
 /// chart coordinates are implicit (see TryGetBakeChartUv), so meshes stay
-/// indexed instead of storing one vertex per triangle corner.
+/// indexed instead of storing one vertex per triangle corner. Version 5 keeps
+/// every version 4 record except the materials, which are MaterialRecordV5 with
+/// an alpha mode and cutoff, and admits the larger import profile (IMPORT_LIMITS)
+/// instead of the resident reference profile (see GetBundleLimits).
 ///
 /// The record structs document the exact wire layout and are checked with
 /// static_asserts; serialise them field by field in little-endian order rather
@@ -49,6 +52,9 @@ inline constexpr uint32 VERSION_3 = 3;
 /// Version 4: version 3 records with indexed VertexRecord meshes. Bake chart
 /// coordinates are not stored; consumers derive them per triangle corner.
 inline constexpr uint32 VERSION_4 = 4;
+/// Version 5: version 4 records with alpha-masked materials (MaterialRecordV5) and
+/// the import profile's admission limits.
+inline constexpr uint32 VERSION_5 = 5;
 /// Linear Rec.709 RGB photometric proxy; not a spectral PBRT representation.
 inline constexpr uint32 LIGHTING_PROFILE_REC709_PHOTOMETRIC = 1;
 /// Largest analytic light list; selection must never silently discard sources.
@@ -82,6 +88,10 @@ inline constexpr uint32 NO_TEXTURE = ~uint32{0};
 inline constexpr uint32 ADDRESS_CLAMP = 0;
 /// MaterialRecordV2::AddressMode: repeat texture coordinates.
 inline constexpr uint32 ADDRESS_REPEAT = 1;
+/// MaterialRecordV5::AlphaMode: ignore texture alpha; the surface is fully covered.
+inline constexpr uint32 ALPHA_OPAQUE = 0;
+/// MaterialRecordV5::AlphaMode: discard where base texture alpha is below AlphaCutoff.
+inline constexpr uint32 ALPHA_MASKED = 1;
 /// Smallest admitted material roughness.
 inline constexpr float32 MIN_ROUGHNESS = .045F;
 /// Largest admitted emission per channel.
@@ -91,11 +101,11 @@ inline constexpr float32 MAX_EMISSION = 10000.0F;
 struct Header final
 {
     char Magic[8];        ///< MAGIC.
-    uint32 Version;       ///< VERSION_1 through VERSION_4.
-    uint32 MeshCount;     ///< 1..MAX_MESHES.
-    uint32 MaterialCount; ///< 1..MAX_MATERIALS.
-    uint32 TextureCount;  ///< 0..MAX_TEXTURES.
-    uint32 ObjectCount;   ///< 1..MAX_OBJECTS.
+    uint32 Version;       ///< VERSION_1 through VERSION_5.
+    uint32 MeshCount;     ///< 1..BundleLimits::Meshes of the version.
+    uint32 MaterialCount; ///< 1..BundleLimits::Materials of the version.
+    uint32 TextureCount;  ///< 0..BundleLimits::Textures of the version.
+    uint32 ObjectCount;   ///< 1..BundleLimits::Objects of the version.
     float32 Eye[3];       ///< Camera position in world units.
     float32 Target[3];    ///< Camera look-at target.
     float32 Up[3];        ///< Camera up direction.
@@ -140,6 +150,26 @@ struct MaterialRecordV3 final
     float32 EmissionPower; ///< Lumens after authoring scale; zero without HAS_POWER.
     uint32 Reserved;       ///< Must be zero.
 };
+/// Linear RGB channels of an emission value.
+inline constexpr usize RGB_CHANNELS = 3;
+/// Version 5 material: version 3 terms plus alpha coverage. A masked surface
+/// discards fragments whose base texture alpha (straight, unaffected by sRGB
+/// decoding) is below AlphaCutoff; an untextured masked surface is fully covered.
+/// Coverage applies to both rasterized views and transport rays alike.
+struct MaterialRecordV5 final
+{
+    uint32 Texture;                 ///< Texture index or NO_TEXTURE.
+    uint32 AddressMode;             ///< ADDRESS_CLAMP or ADDRESS_REPEAT.
+    float32 Metallic;               ///< [0, 1].
+    float32 Roughness;              ///< [MIN_ROUGHNESS, 1].
+    float32 Emission[RGB_CHANNELS]; ///< Nonnegative linear Rec.709 RGB, at most MAX_EMISSION.
+    uint32 EmissionFlags;           ///< EMISSION_TWO_SIDED and/or EMISSION_HAS_POWER.
+    uint64 AreaSourceId;            ///< Nonzero for emissive surfaces; zero for nonemitters.
+    float32 EmissionPower;          ///< Lumens after authoring scale; zero without HAS_POWER.
+    uint32 AlphaMode;               ///< ALPHA_OPAQUE or ALPHA_MASKED.
+    float32 AlphaCutoff;            ///< Masked threshold in [0, 1]; zero for ALPHA_OPAQUE.
+    uint32 Reserved;                ///< Must be zero.
+};
 /// Indices per triangle in a mesh's triangle list; MeshRecord::IndexCount is a multiple.
 inline constexpr uint32 TRIANGLE_CORNERS = 3;
 /// Per-mesh header, followed by its vertices and uint32 triangle-list indices.
@@ -148,7 +178,7 @@ struct MeshRecord final
     uint32 VertexCount; ///< 1..MAX_VERTICES.
     uint32 IndexCount;  ///< 1..MAX_INDICES, a multiple of three.
 };
-/// Interleaved mesh vertex (versions 1, 2 and 4).
+/// Interleaved mesh vertex (versions 1, 2, 4 and 5).
 struct VertexRecord final
 {
     float32 Position[3]; ///< Mesh-local position.
@@ -174,7 +204,7 @@ struct ObjectRecord final
     float32 Linear[9];      ///< Column-major 3x3 linear part (X, Y, Z columns).
     float32 Translation[3]; ///< World translation.
 };
-/// Version 3 and 4 placed instance, adding a stable nonzero scene-local identity.
+/// Version 3 to 5 placed instance, adding a stable nonzero scene-local identity.
 struct ObjectRecordV3 final
 {
     uint32 Mesh;            ///< Mesh index.
@@ -183,7 +213,7 @@ struct ObjectRecordV3 final
     float32 Translation[3]; ///< World translation.
     uint64 SourceId;        ///< Unique among placed objects; stable across recooking.
 };
-/// Version 3 and 4 trailer followed by LightCount LightRecords, then optional HDR RGB.
+/// Version 3 to 5 trailer followed by LightCount LightRecords, then optional HDR RGB.
 /// Environment pixels are equirectangular, rows north to south, with linear RGB
 /// radiance in nits multiplied by EnvironmentRgb. Zero dimensions select the
 /// constant EnvironmentRgb radiance; zero RGB means no authored environment.
@@ -195,7 +225,7 @@ struct LightingRecord final
     uint32 EnvironmentHeight;  ///< Same dimension contract as EnvironmentWidth.
     float32 EnvironmentRgb[3]; ///< Nonnegative finite RGB scale or constant nits.
 };
-/// Version 3 and 4 analytic light. Scene world distances are metres.
+/// Version 3 to 5 analytic light. Scene world distances are metres.
 /// RGB values are a fixed Rec.709 luminance-normalized proxy, rather than PBRT
 /// spectral power. Spot inner cosine is strictly greater than outer cosine.
 struct LightRecord final
@@ -296,6 +326,13 @@ static_assert(sizeof(ObjectRecord) == 56 && offsetof(ObjectRecord, Translation) 
               sizeof(ObjectRecord) == 2 * sizeof(uint32) + OBJECT_TRANSFORM_COMPONENTS * sizeof(float32));
 static_assert(sizeof(MaterialRecordV3) == 48 && offsetof(MaterialRecordV3, EmissionFlags) == 28 &&
               offsetof(MaterialRecordV3, AreaSourceId) == 32 && offsetof(MaterialRecordV3, EmissionPower) == 40);
+// Version 5 keeps the version 3 material and stores AlphaMode in its reserved word,
+// followed by AlphaCutoff and a new reserved word.
+static_assert(offsetof(MaterialRecordV5, AreaSourceId) == offsetof(MaterialRecordV3, AreaSourceId) &&
+              offsetof(MaterialRecordV5, AlphaMode) == offsetof(MaterialRecordV3, Reserved) &&
+              offsetof(MaterialRecordV5, AlphaCutoff) == offsetof(MaterialRecordV5, AlphaMode) + sizeof(uint32) &&
+              offsetof(MaterialRecordV5, Reserved) == offsetof(MaterialRecordV5, AlphaCutoff) + sizeof(float32) &&
+              sizeof(MaterialRecordV5) == sizeof(MaterialRecordV3) + sizeof(float32) + sizeof(uint32));
 static_assert(sizeof(VertexRecordV3) == 40 && offsetof(VertexRecordV3, BakeUv) == 32);
 static_assert(sizeof(ObjectRecordV3) == 64 && offsetof(ObjectRecordV3, SourceId) == 56);
 static_assert(sizeof(LightingRecord) == 28 && offsetof(LightingRecord, EnvironmentRgb) == 16);
@@ -307,10 +344,10 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 /// True for a version this header describes.
 [[nodiscard]] constexpr bool IsSupportedVersion(uint32 version) noexcept
 {
-    return version >= VERSION_1 && version <= VERSION_4;
+    return version >= VERSION_1 && version <= VERSION_5;
 }
-/// True when the version carries version 3 materials, object source IDs and the
-/// lighting trailer (versions 3 and 4).
+/// True when the version carries version 3 material emission terms, object source
+/// IDs and the lighting trailer (versions 3 to 5).
 [[nodiscard]] constexpr bool HasLightingRecords(uint32 version) noexcept
 {
     return version >= VERSION_3;
@@ -319,6 +356,24 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 [[nodiscard]] constexpr bool HasStoredBakeCoordinates(uint32 version) noexcept
 {
     return version == VERSION_3;
+}
+/// True when each material carries an alpha mode and cutoff (MaterialRecordV5).
+[[nodiscard]] constexpr bool HasMaterialAlpha(uint32 version) noexcept
+{
+    return version >= VERSION_5;
+}
+/// True when the combined index count of all meshes is bounded by
+/// BundleLimits::TotalIndices: consumers expand implicit bake chart corners
+/// (versions 4 and 5), rather than reading stored ones bounded by the vertex limit.
+[[nodiscard]] constexpr bool HasImplicitBakeCoordinates(uint32 version) noexcept
+{
+    return version >= VERSION_4;
+}
+/// Admission ceilings for a supported version: the import profile for version 5,
+/// otherwise the resident reference profile.
+[[nodiscard]] constexpr const BundleLimits& GetBundleLimits(uint32 version) noexcept
+{
+    return version >= VERSION_5 ? IMPORT_LIMITS : RESIDENT_REFERENCE_LIMITS;
 }
 /// Bytes of one serialized vertex for a supported version.
 [[nodiscard]] constexpr usize GetVertexRecordBytes(uint32 version) noexcept

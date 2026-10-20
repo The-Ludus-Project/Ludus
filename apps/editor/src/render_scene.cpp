@@ -54,10 +54,10 @@ constexpr float32 MAX_CHANNEL_CODE = 255.0F;
 constexpr usize COLOR_CHANNELS = 3;
 /// Flat base color of a decoded cooked texture for consumers that sample no textures: the
 /// unweighted mean of its mip-zero RGB in linear space. Each sRGB byte is decoded before
-/// averaging, never averaged as a code. Alpha is ignored, because the cooked viewport transport
-/// draws LUSCN materials Opaque and samples no alpha. Counting codes per channel makes the result
+/// averaging, never averaged as a code. Alpha is ignored: a consumer that samples no texture
+/// cannot evaluate a LUSCN v5 alpha mask, so it draws the surface covered. Counting codes per channel makes the result
 /// independent of texel order. Decoding already bounded the texture by the SceneFormat texel and
-/// byte caps, so the work is linear in at most MAX_TOTAL_TEXTURE_BYTES per scene.
+/// byte caps, so the work is linear in at most BundleLimits::TotalTextureBytes per scene.
 math::Vector3 ComputeLinearMeanRgb(const resources::SceneTexture& texture) noexcept
 {
     const usize texelCount = texture.Pixels.GetSize() / format::TEXEL_BYTES;
@@ -131,7 +131,7 @@ uint64 ComputeSourceId(const QString& id)
     }
     return value == 0 ? 1 : value;
 }
-// LUSCN v4 mesh: indexed VertexRecords; consumers derive the per-triangle bake charts.
+// LUSCN v5 mesh: indexed VertexRecords; consumers derive the per-triangle bake charts.
 // Meshes without normals are expanded per corner so each triangle keeps its face normal.
 bool WriteSceneMesh(QDataStream& inoutStream,
                     foundation::BorrowedView<const math::Vector3> positions,
@@ -149,8 +149,8 @@ bool WriteSceneMesh(QDataStream& inoutStream,
         indices.IsValid() == false || positions.IsEmpty() == true || indices.IsEmpty() == true ||
         indices.GetSize() % format::TRIANGLE_CORNERS != 0 || texcoords.GetSize() != positions.GetSize() ||
         (isExpanded == false && normals.GetSize() != positions.GetSize()) ||
-        vertexCount > format::MAX_VERTICES - inoutVertexCount || indices.GetSize() > format::MAX_INDICES ||
-        indices.GetSize() > format::MAX_TOTAL_INDICES - inoutIndexCount ||
+        vertexCount > format::IMPORT_LIMITS.Vertices - inoutVertexCount ||
+        indices.GetSize() > format::IMPORT_LIMITS.TotalIndices - inoutIndexCount ||
         format::TryMakeBakeChartLayout(static_cast<uint32>(indices.GetSize() / 3), layout) == false)
     {
         return Fail(outError, QStringLiteral("World geometry exceeds the scene vertex or index capacity."));
@@ -1099,19 +1099,21 @@ bool RenderScene::Merge(const RenderScene& authored,
     const usize materialCount = imported.Materials.GetSize() + static_cast<usize>(authored.Objects.size());
     const usize textureCount = imported.Textures.GetSize() + static_cast<usize>(authored.Objects.size());
     const usize objectCount = imported.Objects.GetSize() + static_cast<usize>(authored.Objects.size());
-    if (meshCount > format::MAX_MESHES || materialCount > format::MAX_MATERIALS ||
-        textureCount > format::MAX_TEXTURES || objectCount > format::MAX_OBJECTS)
+    // The composed World is a version 5 bundle: the import profile's limits apply.
+    const format::BundleLimits& limits = format::IMPORT_LIMITS;
+    if (meshCount > limits.Meshes || materialCount > limits.Materials || textureCount > limits.Textures ||
+        objectCount > limits.Objects)
     {
-        return Fail(
-            error,
-            QStringLiteral("Combined World exceeds six meshes, eight materials/textures or 128 visible instances."));
+        return Fail(error,
+                    QStringLiteral("Combined World exceeds 256 meshes, materials or textures or 1024 visible "
+                                   "instances."));
     }
     QByteArray bytes;
     QDataStream stream(&bytes, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::LittleEndian);
     stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
     stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
-    stream << format::VERSION_4 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
+    stream << format::VERSION_5 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
            << static_cast<uint32>(textureCount) << static_cast<uint32>(objectCount);
     const auto camera = level.value(QStringLiteral("camera")).toObject();
     for (const auto& key : {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up")})
@@ -1172,14 +1174,16 @@ bool RenderScene::Merge(const RenderScene& authored,
                              (material.HasEmissionPower == true ? format::EMISSION_HAS_POWER : 0U);
         stream << flags;
         WriteLittleEndianUint64(stream, material.AreaSourceId);
-        stream << material.EmissionPower << uint32{0};
+        stream << material.EmissionPower
+               << (material.IsAlphaMasked == true ? format::ALPHA_MASKED : format::ALPHA_OPAQUE)
+               << (material.IsAlphaMasked == true ? material.AlphaCutoff : float32{0}) << uint32{0};
     }
     for (int32 i = 0; i < authored.Objects.size(); ++i)
     {
         stream << static_cast<uint32>(imported.Textures.GetSize() + static_cast<usize>(i)) << uint32{0} << float32{0}
                << float32{.5F} << float32{0} << float32{0} << float32{0} << uint32{0};
         WriteLittleEndianUint64(stream, 0);
-        stream << float32{0} << uint32{0};
+        stream << float32{0} << format::ALPHA_OPAQUE << float32{0} << uint32{0};
     }
     usize vertexCount = 0;
     usize indexCount = 0;
@@ -1273,7 +1277,7 @@ bool RenderScene::Merge(const RenderScene& authored,
         stream << pixel.X << pixel.Y << pixel.Z;
     }
     mergedLevel.insert(QStringLiteral("objects"), objects);
-    if (stream.status() != QDataStream::Ok || bytes.size() > static_cast<qsizetype>(format::MAX_BUNDLE_BYTES))
+    if (stream.status() != QDataStream::Ok || bytes.size() > static_cast<qsizetype>(limits.BundleBytes))
     {
         return Fail(error, QStringLiteral("Combined World exceeds its cooked byte budget."));
     }
@@ -1359,6 +1363,8 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         surface.Metallic = source.Metallic;
         surface.Roughness = source.Roughness;
         surface.Emission = source.Emission;
+        surface.IsAlphaMasked = source.IsAlphaMasked;
+        surface.AlphaCutoff = source.AlphaCutoff;
         candidate.Surfaces.append(surface);
     }
     const auto objects = level.value(QStringLiteral("objects")).toArray();

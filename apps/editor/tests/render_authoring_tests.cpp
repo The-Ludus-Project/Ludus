@@ -8,6 +8,7 @@
 #include "internal/render_panel.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
+#include "internal/render_scene_limits.h"
 #include "internal/static_lighting_job.h"
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
@@ -653,7 +654,8 @@ TEST_CASE("Renderer snapshot admission protects fixed handle arrays even for an 
     CHECK_FALSE(preview.SetScene(invalid));
     CHECK(preview.Scene().Identity == f.Scene.Identity);
     invalid = f.Scene;
-    for (int32 i = 0; i < 6; ++i)
+    // One mesh more than the fixed mesh handle array holds.
+    while (static_cast<usize>(invalid.Meshes.size()) <= MAX_PREVIEW_MESHES)
     {
         invalid.Meshes.append(f.Scene.Meshes[0]);
     }

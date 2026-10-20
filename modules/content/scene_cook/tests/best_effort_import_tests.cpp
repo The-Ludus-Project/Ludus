@@ -444,7 +444,7 @@ TEST_CASE("best-effort import cooks a decodable, deterministic bundle and report
     const ImportSummary& summary = first.Summary;
     CHECK(summary.Errors == 0);
     CHECK(summary.CookedMaterials == decoded.Materials.GetSize());
-    CHECK(summary.CookedMaterials <= ludus::content::scene_format::MAX_MESHES);
+    CHECK(summary.CookedMaterials <= ludus::content::scene_format::IMPORT_LIMITS.Meshes);
     CHECK(summary.SourcePlacements == 11);
     CHECK(summary.DroppedPlacements == 0);
     CHECK(first.License.GetSize() != 0);
@@ -486,7 +486,7 @@ TEST_CASE("dry run plans without decoding images or packing a bundle", "[scene_c
     CHECK(WriteBestEffortImport((scratch.Path / "out").string(), result, error) == false);
 }
 
-TEST_CASE("budget planner merges materials and reserves the emissive slot", "[scene_cook][pbrt]")
+TEST_CASE("budget planner keeps one slot per material within the import profile", "[scene_cook][pbrt]")
 {
     ScratchDirectory scratch;
     const fs::path entry = WriteFixture(scratch.Path, 20);
@@ -494,8 +494,9 @@ TEST_CASE("budget planner merges materials and reserves the emissive slot", "[sc
     CookError error;
     REQUIRE(ImportPbrtBestEffort(entry.string(), {}, result, error) == true);
     CHECK(result.Summary.SourceMaterials == 26);
-    CHECK(result.Summary.CookedMaterials == ludus::content::scene_format::MAX_MESHES);
-    CHECK(ReportHasCode(result, codes::MATERIALS_MERGED) == true);
+    // Every source material keeps its slot, plus one slot for the emitter group.
+    CHECK(result.Summary.CookedMaterials == result.Summary.SourceMaterials + 1);
+    CHECK(ReportHasCode(result, codes::MATERIALS_MERGED) == false);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(DecodesAtRuntime(result, decoded) == true);
     CHECK(decoded.Materials.GetLast().Emission.X > 0.0F); // Emissive slot kept last.
@@ -504,7 +505,9 @@ TEST_CASE("budget planner merges materials and reserves the emissive slot", "[sc
 TEST_CASE("budget planner drops the smallest placements beyond the vertex budget", "[scene_cook][pbrt]")
 {
     SceneIr scene;
-    constexpr usize VERTICES = 200000;
+    // Three placements exceed the vertex budget, two fit (a multiple of three for whole triangles).
+    constexpr usize VERTICES = ludus::content::scene_format::IMPORT_LIMITS.Vertices / 3 + 3;
+    static_assert(VERTICES % 3 == 0);
     for (usize m = 0; m < 3; ++m)
     {
         IrMesh mesh;
@@ -569,12 +572,12 @@ TEST_CASE("budget planner counts shared vertices once and bounds the combined in
         REQUIRE(inoutScene.Shapes.TryAdd(shape) == true);
         REQUIRE(inoutScene.WorldShapes.TryAdd(index) == true);
     };
-    SECTION("more triangle corners than MAX_VERTICES fit when vertices are shared")
+    SECTION("more triangle corners than the vertex budget fit when vertices are shared")
     {
         SceneIr scene;
         constexpr usize VERTICES = 100002;
-        constexpr usize INDICES = 900000;
-        static_assert(INDICES > ludus::content::scene_format::MAX_VERTICES);
+        constexpr usize INDICES = 2400000;
+        static_assert(INDICES > ludus::content::scene_format::IMPORT_LIMITS.Vertices);
         addMesh(scene, { .VertexCount = VERTICES, .IndexCount = INDICES });
         DiagnosticLog log;
         CookPlan plan;
@@ -585,9 +588,9 @@ TEST_CASE("budget planner counts shared vertices once and bounds the combined in
     SECTION("the smallest placement leaves when the combined index count would overflow")
     {
         SceneIr scene;
-        constexpr usize INDICES = 600000;
-        static_assert(3 * INDICES > ludus::content::scene_format::MAX_TOTAL_INDICES);
-        static_assert(2 * INDICES <= ludus::content::scene_format::MAX_TOTAL_INDICES);
+        constexpr usize INDICES = 2100000;
+        static_assert(3 * INDICES > ludus::content::scene_format::IMPORT_LIMITS.TotalIndices);
+        static_assert(2 * INDICES <= ludus::content::scene_format::IMPORT_LIMITS.TotalIndices);
         for (usize m = 0; m < 3; ++m)
         {
             addMesh(scene, { .VertexCount = 3, .IndexCount = INDICES, .Scale = static_cast<float32>(m + 1) });
@@ -781,14 +784,12 @@ TEST_CASE("Emitter groups retain unequal power-normalized radiance and source si
 TEST_CASE("Emitter capacity rejects unequal radiance instead of keeping only the brightest light",
           "[scene-cook][lighting]")
 {
-    const std::string_view text = "WorldBegin\n"
-                                  "AreaLightSource \"diffuse\" \"float scale\" 1\nShape \"disk\"\n"
-                                  "AreaLightSource \"diffuse\" \"float scale\" 2\nShape \"disk\"\n"
-                                  "AreaLightSource \"diffuse\" \"float scale\" 3\nShape \"disk\"\n"
-                                  "AreaLightSource \"diffuse\" \"float scale\" 4\nShape \"disk\"\n"
-                                  "AreaLightSource \"diffuse\" \"float scale\" 5\nShape \"disk\"\n"
-                                  "AreaLightSource \"diffuse\" \"float scale\" 6\nShape \"disk\"\n"
-                                  "AreaLightSource \"diffuse\" \"float scale\" 7\nShape \"disk\"\n";
+    // One more required (pbrt) emitter group than the import profile has material slots.
+    std::string text = "WorldBegin\n";
+    for (usize i = 1; i <= ludus::content::scene_format::IMPORT_LIMITS.Materials + 1; ++i)
+    {
+        text += "AreaLightSource \"diffuse\" \"float scale\" " + std::to_string(i) + "\nShape \"disk\"\n";
+    }
     SceneIr scene;
     DiagnosticLog log;
     REQUIRE(pbrt::ReadSceneFromMemory({AsBytes(text), {}, "too-many-emitters.pbrt"}, scene, log) ==
@@ -883,7 +884,7 @@ TEST_CASE("Cooked v3 lighting preserves photometric lights, HDR environment and 
     const std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
     CHECK(report.find("not cooked") == std::string_view::npos);
     CHECK(report.find("\"analytic_lights\": 2") != std::string_view::npos);
-    CHECK(report.find("\"scene_format_version\": 4") != std::string_view::npos);
+    CHECK(report.find("\"scene_format_version\": 5") != std::string_view::npos);
     BestEffortResult repeat;
     REQUIRE(ImportPbrtBestEffort((scratch.Path / "lighting.pbrt").string(), {}, repeat, error) == true);
     REQUIRE(result.Bundle.GetSize() == repeat.Bundle.GetSize());

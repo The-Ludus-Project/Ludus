@@ -13,6 +13,7 @@
 #include <ludus/foundation/strings/string.hpp>
 
 #include <bit>
+#include <cstddef>
 #include <cstring>
 #include <initializer_list>
 #include <numbers>
@@ -41,21 +42,35 @@ constexpr std::string_view LOCK_PATH = "assets/.scene-writer.lock";
 constexpr std::string_view OBJECTS_PATH = "assets/objects/";
 
 constexpr usize MAX_CATALOG_RESOURCES = 4096;
-constexpr usize MAX_LEVEL_OBJECTS = 128;
+// A level places at most the version 5 import profile's objects.
+constexpr usize MAX_LEVEL_OBJECTS = format::IMPORT_LIMITS.Objects;
 constexpr usize MAX_LEVEL_IMPORTS = 128;
 constexpr usize MAX_NAME_CODE_POINTS = 128;
 constexpr usize MAX_DEPENDENCY_DEPTH = 8;
-constexpr usize MAX_ARTIFACT_DEPENDENCIES = 32;
-constexpr usize MAX_CLOSURE_RESOURCES = 64;
+// A scene manifest depends on every texture, material and mesh part of its version 5
+// bundle and on its lighting part.
+constexpr usize MAX_ARTIFACT_DEPENDENCIES =
+    usize{format::IMPORT_LIMITS.Meshes} + format::IMPORT_LIMITS.Materials + format::IMPORT_LIMITS.Textures + 1;
+// Every mesh, material and texture an assembled version 5 bundle admits, plus a scene
+// manifest and lighting part per level import and the level itself.
+constexpr usize MAX_CLOSURE_RESOURCES = usize{format::IMPORT_LIMITS.Meshes} + format::IMPORT_LIMITS.Materials +
+                                        format::IMPORT_LIMITS.Textures + 2 * MAX_LEVEL_IMPORTS + 1;
+static_assert(MAX_ASSET_BYTES >= format::IMPORT_LIMITS.BundleBytes, "an artifact holds any admitted bundle");
 constexpr usize MAX_LOCK_IDENTITY_BYTES = 4096;
 constexpr usize HEX_DIGEST_BYTES = 64;
 constexpr usize MATERIAL_RECORD_BYTES = 24;
 constexpr usize MATERIAL_RECORD_V2_BYTES = 28;
 constexpr usize MATERIAL_RECORD_V3_BYTES = sizeof(format::MaterialRecordV3);
+constexpr usize MATERIAL_RECORD_V5_BYTES = sizeof(format::MaterialRecordV5);
+/// Offset of the version 3 reserved word (the version 5 alpha mode) after the version 2 fields.
+constexpr usize MATERIAL_V3_RESERVED_OFFSET = offsetof(format::MaterialRecordV3, Reserved) - MATERIAL_RECORD_V2_BYTES;
 constexpr std::string_view LIGHTING_BUILD_TARGET = "portable-rgba8-f32-le-v3";
 /// Parts split from a LUSCN version 4 bundle: version 3 lighting records with
 /// indexed VertexRecord meshes whose bake charts are implicit.
 constexpr std::string_view INDEXED_LIGHTING_BUILD_TARGET = "portable-rgba8-f32-le-v4";
+/// Parts split from a LUSCN version 5 bundle: version 4 records with alpha-masked
+/// materials, within the import profile's limits.
+constexpr std::string_view IMPORT_PROFILE_BUILD_TARGET = "portable-rgba8-f32-le-v5";
 constexpr float64 MAX_AUTHORED_MAGNITUDE = 1e12;
 constexpr float64 MAX_WORLD_MAGNITUDE = 3e38;
 constexpr float64 MIN_DIRECTION_SQUARED = 1e-12;
@@ -958,12 +973,12 @@ public:
         }
         if (mSelectedIds.GetSize() > MAX_CLOSURE_RESOURCES)
         {
-            return mFailure.FailInvalid("Resident reference closure exceeds 64 resources");
+            return mFailure.FailInvalid("Scene closure exceeds its resource limit");
         }
         return true;
     }
 
-    /// dict(sorted(selected.items())) after the 64 MiB resident check.
+    /// dict(sorted(selected.items())) after the MAX_ASSET_BYTES resident check.
     [[nodiscard]] bool Finish(Document& outClosure) noexcept
     {
         PythonSum total;
@@ -978,7 +993,7 @@ public:
         }
         if (IsLessPython(MakeNumber(static_cast<int64>(MAX_ASSET_BYTES)), total.GetResult()) == true)
         {
-            return mFailure.FailInvalid("Resident closure exceeds 64 MiB");
+            return mFailure.FailInvalid("Resident closure exceeds 384 MiB");
         }
         Array<usize> order;
         if (order.TryResize(mSelectedIds.GetSize()) == false)
@@ -1367,7 +1382,8 @@ struct BundleParts final
         if (width == 0 || width > format::MAX_TEXTURE_DIMENSION || height == 0 ||
             height > format::MAX_TEXTURE_DIMENSION ||
             uint64{count} != uint64{width} * uint64{height} * format::TEXEL_BYTES ||
-            count > format::MAX_TEXTURE_BYTES || textureBytes > format::MAX_TOTAL_TEXTURE_BYTES)
+            count > format::MAX_TEXTURE_BYTES ||
+            textureBytes > format::GetBundleLimits(outParts.Version).TotalTextureBytes)
         {
             return inoutFailure.FailInvalid("Cooked texture budget");
         }
@@ -1436,12 +1452,32 @@ struct BundleParts final
             const uint64 sourceId =
                 uint64{DecodeUint32(extra.data() + 4)} | (uint64{DecodeUint32(extra.data() + 8)} << 32);
             const float64 power = DecodeFloat(extra.data() + 12);
-            if ((flags & ~format::EMISSION_FLAGS) != 0 || DecodeUint32(extra.data() + 16) != 0 ||
+            // Version 5 stores the alpha mode in the version 3 reserved word, then the
+            // cutoff and a new reserved word.
+            std::span<const uint8> alpha;
+            if (format::HasMaterialAlpha(version) == true &&
+                inoutReader.Take(MATERIAL_RECORD_V5_BYTES - MATERIAL_RECORD_V3_BYTES, alpha, inoutFailure) == false)
+            {
+                return false;
+            }
+            const uint8* reserved =
+                alpha.empty() == true ? extra.data() + MATERIAL_V3_RESERVED_OFFSET : alpha.data() + sizeof(float32);
+            if ((flags & ~format::EMISSION_FLAGS) != 0 || DecodeUint32(reserved) != 0 ||
                 math::IsFinite(power) == false || power < 0 ||
                 power > static_cast<float64>(format::MAX_LIGHT_INTENSITY) ||
                 ((flags & format::EMISSION_HAS_POWER) == 0 && power != 0) || (emissionMaximum > 0 && sourceId == 0))
             {
                 return inoutFailure.FailInvalid("Invalid authored emitter flags, identity or power");
+            }
+            if (alpha.empty() == false)
+            {
+                const uint32 mode = DecodeUint32(extra.data() + MATERIAL_V3_RESERVED_OFFSET);
+                const float64 cutoff = DecodeFloat(alpha.data());
+                if (mode > format::ALPHA_MASKED || math::IsFinite(cutoff) == false || cutoff < 0 || cutoff > 1 ||
+                    (mode == format::ALPHA_OPAQUE && cutoff != 0))
+                {
+                    return inoutFailure.FailInvalid("Invalid cooked material alpha");
+                }
             }
         }
         BundleMaterial material;
@@ -1462,6 +1498,7 @@ struct BundleParts final
                               Failure& inoutFailure) noexcept
 {
     const uint32 version = outParts.Version;
+    const format::BundleLimits& limits = format::GetBundleLimits(version);
     const usize vertexBytes = format::GetVertexRecordBytes(version);
     usize vertices = 0;
     usize indices = 0;
@@ -1477,9 +1514,10 @@ struct BundleParts final
         const uint32 indexCount = counts[1];
         vertices += vertexCount;
         indices += indexCount;
-        if (vertexCount == 0 || vertexCount > format::MAX_VERTICES || vertices > format::MAX_VERTICES ||
-            indexCount == 0 || indexCount > format::MAX_INDICES || indexCount % format::TRIANGLE_CORNERS != 0 ||
-            (version == format::VERSION_4 && indices > format::MAX_TOTAL_INDICES))
+        if (vertexCount == 0 || vertexCount > limits.Vertices || vertices > limits.Vertices || indexCount == 0 ||
+            indexCount > limits.TotalIndices || indexCount % format::TRIANGLE_CORNERS != 0 ||
+            (format::HasImplicitBakeCoordinates(version) == true && indices > limits.TotalIndices) ||
+            (format::HasImplicitBakeCoordinates(version) == false && indexCount > format::MAX_INDICES))
         {
             return inoutFailure.FailInvalid("Cooked geometry budget");
         }
@@ -1537,7 +1575,7 @@ struct BundleParts final
 /// split_bundle(data): validate the complete binary profile before any publication.
 [[nodiscard]] bool SplitBundle(std::span<const uint8> data, BundleParts& outParts, Failure& inoutFailure) noexcept
 {
-    if (data.size() > format::MAX_BUNDLE_BYTES)
+    if (data.size() > format::IMPORT_LIMITS.BundleBytes)
     {
         return inoutFailure.FailInvalid("Cooked scene byte limit");
     }
@@ -1562,11 +1600,18 @@ struct BundleParts final
     const uint32 materialCount = header[2];
     const uint32 textureCount = header[3];
     const uint32 objectCount = header[4];
-    if (format::IsSupportedVersion(version) == false || meshCount < 1 || meshCount > format::MAX_MESHES ||
-        materialCount < 1 || materialCount > format::MAX_MATERIALS || textureCount > format::MAX_TEXTURES ||
-        objectCount < 1 || objectCount > format::MAX_OBJECTS)
+    if (format::IsSupportedVersion(version) == false)
     {
-        return inoutFailure.FailInvalid("Cooked scene exceeds resident reference profile");
+        return inoutFailure.FailInvalid("Unsupported cooked scene version");
+    }
+    const format::BundleLimits& limits = format::GetBundleLimits(version);
+    if (data.size() > limits.BundleBytes || meshCount < 1 || meshCount > limits.Meshes || materialCount < 1 ||
+        materialCount > limits.Materials || textureCount > limits.Textures || objectCount < 1 ||
+        objectCount > limits.Objects)
+    {
+        return inoutFailure.FailInvalid(version == format::VERSION_5
+                                            ? "Cooked scene exceeds the import profile"
+                                            : "Cooked scene exceeds resident reference profile");
     }
     const float64 fov = outParts.Camera[CAMERA_FLOATS - 1];
     if ((0 < fov && fov < std::numbers::pi) == false)
@@ -1753,10 +1798,37 @@ void ComposeWorld(const JsonTree& tree, JsonIndex objects, JsonIndex item, Trans
                                                          "emission_flags",
                                                          "area_source_id",
                                                          "emission_power"};
+    static constexpr std::string_view ALPHA_KEYS[] = {"texture",
+                                                      "metallic",
+                                                      "roughness",
+                                                      "emission",
+                                                      "address",
+                                                      "emission_flags",
+                                                      "area_source_id",
+                                                      "emission_power",
+                                                      "alpha_mode",
+                                                      "alpha_cutoff"};
     const bool hasLighting = tree.GetMember(root, "emission_flags") != NO_JSON_NODE;
-    if ((hasLighting == true ? tree.HasExactKeys(root, LIGHTING_KEYS) : tree.HasExactKeys(root, KEYS)) == false)
+    const bool hasAlpha = tree.GetMember(root, "alpha_mode") != NO_JSON_NODE;
+    const bool hasExactKeys = hasAlpha == true      ? tree.HasExactKeys(root, ALPHA_KEYS)
+                              : hasLighting == true ? tree.HasExactKeys(root, LIGHTING_KEYS)
+                                                    : tree.HasExactKeys(root, KEYS);
+    if (hasExactKeys == false)
     {
         return inoutFailure.FailInvalid("Invalid cooked material fields");
+    }
+    if (hasAlpha == true)
+    {
+        const JsonIndex mode = tree.GetMember(root, "alpha_mode");
+        const bool isMasked = tree.IsString(mode, "masked");
+        PythonNumber cutoff;
+        if ((isMasked == false && tree.IsString(mode, "opaque") == false) ||
+            IsAuthoredNumber(tree, tree.GetMember(root, "alpha_cutoff"), cutoff) == false ||
+            IsLessPython(cutoff, MakeNumber(int64{0})) == true || IsLessPython(MakeNumber(int64{1}), cutoff) == true ||
+            (isMasked == false && cutoff.ToFloat() != 0))
+        {
+            return inoutFailure.FailInvalid("Invalid cooked material alpha");
+        }
     }
     if (hasLighting == true)
     {
@@ -1859,7 +1931,7 @@ enum class PartLayout : uint8
     Legacy,
     /// Version 3 records: VertexRecordV3 meshes with stored bake coordinates.
     StoredBakeCoordinates,
-    /// Version 4 records: indexed VertexRecord meshes with implicit bake charts.
+    /// Version 4 and 5 records: indexed VertexRecord meshes with implicit bake charts.
     Indexed,
 };
 
@@ -1876,11 +1948,22 @@ enum class PartLayout : uint8
     {
         return PartLayout::StoredBakeCoordinates;
     }
-    return closure.Tree.IsString(target, INDEXED_LIGHTING_BUILD_TARGET) == true ? PartLayout::Indexed
-                                                                                : PartLayout::Legacy;
+    return closure.Tree.IsString(target, INDEXED_LIGHTING_BUILD_TARGET) == true ||
+                   closure.Tree.IsString(target, IMPORT_PROFILE_BUILD_TARGET) == true
+               ? PartLayout::Indexed
+               : PartLayout::Legacy;
 }
 
-/// True for parts that carry version 3 lighting fields (versions 3 and 4).
+/// True for parts split from a version 5 bundle, which assemble within the import profile.
+[[nodiscard]] bool IsImportProfileBuild(const Document& closure, std::string_view identity) noexcept
+{
+    const JsonIndex record = closure.Tree.GetMember(closure.Root, identity);
+    const JsonIndex build = closure.Tree.GetMember(record, "build");
+    return build != NO_JSON_NODE &&
+           closure.Tree.IsString(closure.Tree.GetMember(build, "target"), IMPORT_PROFILE_BUILD_TARGET) == true;
+}
+
+/// True for parts that carry version 3 lighting fields (versions 3 to 5).
 [[nodiscard]] bool IsLightingBuild(const Document& closure, std::string_view identity) noexcept
 {
     return GetPartLayout(closure, identity) != PartLayout::Legacy;
@@ -2121,21 +2204,38 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             return inoutFailure.FailOutOfMemory();
         }
     }
-    if (meshes.GetSize() > format::MAX_MESHES || materials.GetSize() > format::MAX_MATERIALS ||
-        textures.GetSize() > format::MAX_TEXTURES)
+    // Version 5 assembles parts split from a version 5 bundle, alpha-masked materials,
+    // or more meshes, materials, textures or objects than the resident reference
+    // profile admits. It implies the version 4 indexed meshes and lighting records.
+    bool isVersion5 = meshes.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Meshes ||
+                      materials.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Materials ||
+                      textures.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Textures ||
+                      objectCount > format::RESIDENT_REFERENCE_LIMITS.Objects;
+    for (const std::string_view identity : meshes)
+    {
+        isVersion5 = isVersion5 == true || IsImportProfileBuild(closure, identity) == true;
+    }
+    for (const Document& description : descriptions)
+    {
+        isVersion5 = isVersion5 == true || description.Tree.GetMember(description.Root, "alpha_mode") != NO_JSON_NODE;
+    }
+    const format::BundleLimits& limits =
+        format::GetBundleLimits(isVersion5 == true ? format::VERSION_5 : format::VERSION_4);
+    if (meshes.GetSize() > limits.Meshes || materials.GetSize() > limits.Materials ||
+        textures.GetSize() > limits.Textures || objectCount > limits.Objects)
     {
         return inoutFailure.FailInvalid(
-            "Scene exceeds six meshes/eight materials/eight textures; no partial viewport publication");
+            "Scene exceeds 256 meshes/materials/textures or 1024 objects; no partial viewport publication");
     }
     Array<uint8> lighting;
     if (AssembleLighting(root, closure, lighting, inoutFailure) == false)
     {
         return false;
     }
-    bool isVersion3 = lighting.IsEmpty() == false;
+    bool isVersion3 = isVersion5 == true || lighting.IsEmpty() == false;
     // Any indexed (version 4) mesh selects version 4: version 3 meshes then drop
     // their stored bake coordinates, which version 4 consumers derive instead.
-    bool isVersion4 = false;
+    bool isVersion4 = isVersion5;
     for (const std::string_view identity : meshes)
     {
         isVersion3 = isVersion3 == true || IsLightingBuild(closure, identity) == true;
@@ -2148,8 +2248,9 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     uint64 bundleBytes =
         sizeof(format::Header) +
-        materials.GetSize() *
-            (isVersion3 == true ? sizeof(format::MaterialRecordV3) : sizeof(format::MaterialRecordV2)) +
+        materials.GetSize() * (isVersion5 == true   ? sizeof(format::MaterialRecordV5)
+                               : isVersion3 == true ? sizeof(format::MaterialRecordV3)
+                                                    : sizeof(format::MaterialRecordV2)) +
         objectCount * (isVersion3 == true ? sizeof(format::ObjectRecordV3) : sizeof(format::ObjectRecord)) +
         lighting.GetSize();
     if (isVersion3 == true && lighting.IsEmpty() == true)
@@ -2179,7 +2280,7 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             const bool hasHeader = data.GetSize() >= sizeof(format::MeshRecord);
             const uint32 vertices = hasHeader == true ? DecodeUint32(data.GetData()) : 0;
             const uint32 indices = hasHeader == true ? DecodeUint32(data.GetData() + sizeof(uint32)) : 0;
-            if (vertices == 0 || vertices > format::MAX_VERTICES)
+            if (vertices == 0 || vertices > limits.Vertices)
             {
                 return inoutFailure.FailInvalid("Invalid mesh conversion vertex count");
             }
@@ -2195,17 +2296,18 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             indexTotal += indices;
         }
     }
-    if (isVersion4 == true && indexTotal > format::MAX_TOTAL_INDICES)
+    if (isVersion4 == true && indexTotal > limits.TotalIndices)
     {
         return inoutFailure.FailInvalid("Assembled scene index capacity exceeded");
     }
-    if (bundleBytes > format::MAX_BUNDLE_BYTES)
+    if (bundleBytes > limits.BundleBytes)
     {
         return inoutFailure.FailInvalid("Assembled scene byte capacity exceeded");
     }
     ByteWriter writer(outBundle);
     writer.Append(format::MAGIC);
-    const uint32 version = isVersion4 == true   ? format::VERSION_4
+    const uint32 version = isVersion5 == true   ? format::VERSION_5
+                           : isVersion4 == true ? format::VERSION_4
                            : isVersion3 == true ? format::VERSION_3
                                                 : format::VERSION_2;
     writer.AppendUint32(version);
@@ -2278,6 +2380,14 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             writer.AppendUint32(flags);
             AppendSourceId(writer, sourceId);
             writer.AppendFloat32(power);
+            if (isVersion5 == true)
+            {
+                const JsonIndex mode = tree.GetMember(description.Root, "alpha_mode");
+                const bool isMasked = tree.IsString(mode, "masked");
+                writer.AppendUint32(isMasked == true ? format::ALPHA_MASKED : format::ALPHA_OPAQUE);
+                writer.AppendFloat32(
+                    isMasked == true ? GetNumberMember(tree, description.Root, "alpha_cutoff").ToFloat() : 0.0);
+            }
             writer.AppendUint32(0);
         }
     }
@@ -2289,14 +2399,14 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             return false;
         }
         const PartLayout layout = GetPartLayout(closure, identity);
-        if (version == format::VERSION_4 && layout == PartLayout::StoredBakeCoordinates)
+        if (format::HasImplicitBakeCoordinates(version) == true && layout == PartLayout::StoredBakeCoordinates)
         {
             const uint32 vertexCount = data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData()) : 0;
             const uint32 indexCount =
                 data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData() + sizeof(uint32)) : 0;
             const usize expected = sizeof(format::MeshRecord) + usize{vertexCount} * sizeof(format::VertexRecordV3) +
                                    usize{indexCount} * sizeof(uint32);
-            if (data.GetSize() != expected || vertexCount > format::MAX_VERTICES)
+            if (data.GetSize() != expected || vertexCount > limits.Vertices)
             {
                 return inoutFailure.FailInvalid("Invalid version 3 mesh conversion length");
             }
@@ -2318,7 +2428,7 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
                 data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData() + sizeof(uint32)) : 0;
             const usize expected = sizeof(format::MeshRecord) + usize{vertexCount} * sizeof(format::VertexRecord) +
                                    usize{indexCount} * sizeof(uint32);
-            if (data.GetSize() != expected || vertexCount > format::MAX_VERTICES)
+            if (data.GetSize() != expected || vertexCount > limits.Vertices)
             {
                 return inoutFailure.FailInvalid("Invalid legacy mesh conversion length");
             }
@@ -2339,7 +2449,11 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             writer.AppendBytes(GetSpan(data));
         }
     }
-    foundation::StaticArray<uint64, format::MAX_OBJECTS> objectIds{};
+    Array<uint64> objectIds;
+    if (objectIds.TryResize(objectCount) == false)
+    {
+        return inoutFailure.FailOutOfMemory();
+    }
     for (usize i = 0; i < objectCount; ++i)
     {
         const JsonIndex item = levelTree.GetItem(objects, i);
@@ -2780,7 +2894,8 @@ struct PreparedImport final
 {
     // Version 1 records (24 bytes) imply the sampler address; version 2 records
     // (pbrt-best-effort-v1) carry it explicitly after the texture index.
-    const bool isVersion3 = material.Bytes.size() == MATERIAL_RECORD_V3_BYTES;
+    const bool isVersion5 = material.Bytes.size() == MATERIAL_RECORD_V5_BYTES;
+    const bool isVersion3 = material.Bytes.size() == MATERIAL_RECORD_V3_BYTES || isVersion5 == true;
     const bool isVersion2 = material.Bytes.size() == MATERIAL_RECORD_V2_BYTES || isVersion3 == true;
     if (material.Bytes.size() != MATERIAL_RECORD_BYTES && isVersion2 == false)
     {
@@ -2811,6 +2926,14 @@ struct PreparedImport final
                                 (uint64{DecodeUint32(extra + SOURCE_ID_WORDS * sizeof(uint32))} << 32);
         tree.SetMember(root, "area_source_id", AddSourceId(tree, sourceId));
         tree.SetMember(root, "emission_power", tree.AddFloat(DecodeFloat(extra + sizeof(uint32) + sizeof(uint64))));
+    }
+    if (isVersion5 == true)
+    {
+        const uint8* alpha = material.Bytes.data() + offsetof(format::MaterialRecordV5, AlphaMode);
+        tree.SetMember(root,
+                       "alpha_mode",
+                       tree.AddString(DecodeUint32(alpha) == format::ALPHA_MASKED ? "masked" : "opaque"));
+        tree.SetMember(root, "alpha_cutoff", tree.AddFloat(DecodeFloat(alpha + sizeof(uint32))));
     }
     return WriteCanonical(tree, root, outBytes, inoutFailure);
 }
@@ -3306,7 +3429,8 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
     buildTree.SetMember(build.Root, "schema", buildTree.AddInteger(1));
     buildTree.SetMember(build.Root,
                         "target",
-                        buildTree.AddString(parts.Version == format::VERSION_4   ? INDEXED_LIGHTING_BUILD_TARGET
+                        buildTree.AddString(parts.Version == format::VERSION_5   ? IMPORT_PROFILE_BUILD_TARGET
+                                            : parts.Version == format::VERSION_4 ? INDEXED_LIGHTING_BUILD_TARGET
                                             : parts.Version == format::VERSION_3 ? LIGHTING_BUILD_TARGET
                                                                                  : BUILD_TARGET));
     if (buildTree.IsOk() == false)

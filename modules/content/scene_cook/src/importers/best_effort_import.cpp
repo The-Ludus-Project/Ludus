@@ -1,5 +1,5 @@
 // Best-effort scene import: a front-end (pbrt-v4, glTF 2.0/GLB or Wavefront
-// OBJ/MTL) builds SceneIR -> budget plan -> LUSCN v4 bundle and a deterministic
+// OBJ/MTL) builds SceneIR -> budget plan -> LUSCN v5 bundle and a deterministic
 // import report. See docs/development/best-effort-scene-import.md.
 
 #include <ludus/content/scene_cook/best_effort_import.h>
@@ -36,8 +36,8 @@ namespace math = foundation::math;
 constexpr usize MAX_IMAGE_FILE_BYTES = MAX_SOURCE_IMAGE_BYTES;
 /// Side of the solid-colour swatch cooked for untextured slots.
 constexpr uint32 SWATCH_SIZE = 4;
-/// Bytes reserved for headers and records when budgeting texture bytes.
-constexpr usize RECORD_RESERVE_BYTES = 4096;
+/// Texel channel holding coverage (straight alpha) in decoded RGBA8 images.
+constexpr usize ALPHA_CHANNEL = 3;
 
 bool FailWith(CookError& outError, Status status, std::string_view message) noexcept
 {
@@ -222,13 +222,13 @@ struct CookedMesh final
     return read;
 }
 
-/// Mean of one channel of a data texture in [0, 1] (alpha for channel 3).
-[[nodiscard]] Status AverageTextureChannel(const SceneIr& scene,
-                                           std::string_view root,
-                                           const IrTexture& texture,
-                                           uint8 channel,
-                                           float64& outMean,
-                                           std::string_view& outMessage) noexcept
+/// Read and decode the image of a data texture (no colour conversion).
+/// @return Ok, Invalid with outMessage set, or OutOfMemory.
+[[nodiscard]] Status DecodeDataTexture(const SceneIr& scene,
+                                       std::string_view root,
+                                       const IrTexture& texture,
+                                       DecodedImage& outImage,
+                                       std::string_view& outMessage) noexcept
 {
     Array<uint8> storage;
     std::span<const uint8> bytes;
@@ -240,11 +240,27 @@ struct CookedMesh final
         outMessage = "cannot read the image file";
         return loaded == Status::OutOfMemory ? loaded : Status::Invalid;
     }
-    DecodedImage image;
-    const ImageResult decoded = DecodeImage(decoderName, bytes, image, outMessage);
+    const ImageResult decoded = DecodeImage(decoderName, bytes, outImage, outMessage);
     if (decoded != ImageResult::Ok)
     {
         return decoded == ImageResult::OutOfMemory ? Status::OutOfMemory : Status::Invalid;
+    }
+    return Status::Ok;
+}
+
+/// Mean of one channel of a data texture in [0, 1] (alpha for channel 3).
+[[nodiscard]] Status AverageTextureChannel(const SceneIr& scene,
+                                           std::string_view root,
+                                           const IrTexture& texture,
+                                           uint8 channel,
+                                           float64& outMean,
+                                           std::string_view& outMessage) noexcept
+{
+    DecodedImage image;
+    const Status decoded = DecodeDataTexture(scene, root, texture, image, outMessage);
+    if (decoded != Status::Ok)
+    {
+        return decoded;
     }
     const usize component = channel < DECODED_IMAGE_CHANNEL_COUNT ? channel : 0;
     uint64 sum = 0;
@@ -259,7 +275,7 @@ struct CookedMesh final
 }
 
 /// Fold metallic/roughness data textures of each slot's representative material into
-/// its scalar terms (LUSCN v4 materials carry scalars only).
+/// its scalar terms (LUSCN v5 materials carry scalars only).
 [[nodiscard]] Status
 ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inoutPlan, DiagnosticLog& inoutLog) noexcept
 {
@@ -310,6 +326,118 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
                                0,
                                "metallic/roughness texture averaged into the scalar material term");
         }
+    }
+    return Status::Ok;
+}
+
+/// True when the image has a texel whose channel is below its maximum.
+[[nodiscard]] bool HasPartialChannel(const DecodedImage& image, usize channel) noexcept
+{
+    for (usize i = channel; i < image.Texels.GetSize(); i += DECODED_IMAGE_CHANNEL_COUNT)
+    {
+        if (static_cast<float64>(image.Texels[i]) < DECODED_IMAGE_CHANNEL_MAXIMUM)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Replace a swatch by a solid image of the given size and the swatch's first texel.
+[[nodiscard]] bool ResizeSwatch(uint32 width, uint32 height, DecodedImage& inoutImage) noexcept
+{
+    foundation::StaticArray<uint8, DECODED_IMAGE_CHANNEL_COUNT> texel{};
+    for (usize k = 0; k < DECODED_IMAGE_CHANNEL_COUNT; ++k)
+    {
+        texel[k] = inoutImage.Texels[k];
+    }
+    Array<uint8> texels;
+    if (texels.TryResize(usize{width} * height * DECODED_IMAGE_CHANNEL_COUNT) == false)
+    {
+        return false;
+    }
+    for (usize i = 0; i < texels.GetSize(); ++i)
+    {
+        texels[i] = texel[i % DECODED_IMAGE_CHANNEL_COUNT];
+    }
+    inoutImage.Texels = static_cast<Array<uint8>&&>(texels);
+    inoutImage.Width = width;
+    inoutImage.Height = height;
+    return true;
+}
+
+/// Write a masked slot's coverage into its cooked texture's alpha channel (LUSCN v5
+/// ALPHA_MASKED): the base texture's own alpha (glTF) or the opacity map's channel
+/// (MTL map_d, sampled nearest at the base resolution), times the constant opacity.
+/// A mask that keeps every texel at its cutoff is cooked opaque; an unreadable
+/// opacity map leaves the slot opaque with a warning.
+[[nodiscard]] Status ApplyAlphaMask(const SceneIr& scene,
+                                    std::string_view root,
+                                    PlannedMaterial& inoutPlanned,
+                                    CookedTexture& inoutTexture,
+                                    DiagnosticLog& inoutLog) noexcept
+{
+    if (inoutPlanned.IsAlphaMasked == false || inoutPlanned.Representative == IR_NONE)
+    {
+        return Status::Ok;
+    }
+    const IrMaterial& material = scene.Materials[inoutPlanned.Representative];
+    DecodedImage& image = inoutTexture.Image;
+    if (material.OpacityTexture != IR_NONE && HasImage(scene.Textures[material.OpacityTexture]) == true)
+    {
+        const IrTexture& texture = scene.Textures[material.OpacityTexture];
+        DecodedImage opacity;
+        std::string_view message;
+        const Status decoded = DecodeDataTexture(scene, root, texture, opacity, message);
+        if (decoded == Status::OutOfMemory)
+        {
+            return decoded;
+        }
+        if (decoded != Status::Ok)
+        {
+            (void)inoutLog.Add(DiagnosticSeverity::Warning,
+                               codes::TEXTURE_UNREADABLE,
+                               GetImageName(scene, texture),
+                               0,
+                               message);
+            inoutPlanned.IsAlphaMasked = false;
+            inoutPlanned.AlphaCutoff = 0.0;
+            return Status::Ok;
+        }
+        usize channel = material.OpacityChannel;
+        if (channel == IR_DETECT_OPACITY_CHANNEL)
+        {
+            channel = HasPartialChannel(opacity, ALPHA_CHANNEL) == true ? ALPHA_CHANNEL : 0;
+        }
+        channel = math::Min(channel, ALPHA_CHANNEL);
+        // An untextured slot takes the opacity map's resolution so the mask survives.
+        if (inoutTexture.Source == IR_NONE && ResizeSwatch(opacity.Width, opacity.Height, image) == false)
+        {
+            return Status::OutOfMemory;
+        }
+        for (uint32 y = 0; y < image.Height; ++y)
+        {
+            const usize sourceY = usize{y} * opacity.Height / image.Height;
+            for (uint32 x = 0; x < image.Width; ++x)
+            {
+                const usize sourceX = usize{x} * opacity.Width / image.Width;
+                image.Texels[(usize{y} * image.Width + x) * DECODED_IMAGE_CHANNEL_COUNT + ALPHA_CHANNEL] =
+                    opacity.Texels[(sourceY * opacity.Width + sourceX) * DECODED_IMAGE_CHANNEL_COUNT + channel];
+            }
+        }
+    }
+    bool isClipped = false;
+    for (usize i = ALPHA_CHANNEL; i < image.Texels.GetSize(); i += DECODED_IMAGE_CHANNEL_COUNT)
+    {
+        const float64 alpha = static_cast<float64>(image.Texels[i]) * math::Clamp(material.Opacity, 0.0, 1.0);
+        image.Texels[i] = static_cast<uint8>(math::Floor(alpha + .5));
+        isClipped = isClipped == true ||
+                    static_cast<float64>(image.Texels[i]) < inoutPlanned.AlphaCutoff * DECODED_IMAGE_CHANNEL_MAXIMUM;
+    }
+    if (isClipped == false)
+    {
+        inoutPlanned.IsAlphaMasked = false;
+        inoutPlanned.AlphaCutoff = 0.0;
     }
     return Status::Ok;
 }
@@ -396,6 +524,11 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
                 return Status::OutOfMemory;
             }
             planned.IsTextureRepeated = false;
+        }
+        const Status masked = ApplyAlphaMask(scene, root, planned, *cooked, inoutLog);
+        if (masked != Status::Ok)
+        {
+            return masked;
         }
         cooked->SourceWidth = cooked->Image.Width;
         cooked->SourceHeight = cooked->Image.Height;
@@ -620,7 +753,7 @@ void PackBundle(const IrCamera& camera,
                 detail::ByteWriter& inoutBlob) noexcept
 {
     inoutBlob.Append(format::MAGIC);
-    inoutBlob.AppendUint32(format::VERSION_4);
+    inoutBlob.AppendUint32(format::VERSION_5);
     const uint32 count = static_cast<uint32>(plan.Materials.GetSize());
     inoutBlob.AppendUint32(count); // Meshes.
     inoutBlob.AppendUint32(count); // Materials.
@@ -656,6 +789,8 @@ void PackBundle(const IrCamera& camera,
         inoutBlob.AppendUint32(flags);
         inoutBlob.AppendUint64(planned.IsEmissive == true ? static_cast<uint64>(slot) + 1 : 0);
         inoutBlob.AppendFloat32(planned.EmissionPowerLumens);
+        inoutBlob.AppendUint32(planned.IsAlphaMasked == true ? format::ALPHA_MASKED : format::ALPHA_OPAQUE);
+        inoutBlob.AppendFloat32(planned.IsAlphaMasked == true ? planned.AlphaCutoff : 0.0);
         inoutBlob.AppendUint32(0);
     }
     for (const CookedMesh& mesh : meshes)
@@ -809,7 +944,7 @@ void WriteReport(const SceneIr& scene,
     writeCount("objects", summary.CookedObjects);
     writeCount("vertices", summary.CookedVertices);
     writeCount("bundle_bytes", summary.BundleBytes);
-    writeCount("scene_format_version", format::VERSION_4);
+    writeCount("scene_format_version", format::VERSION_5);
     writeCount("analytic_lights", facts.LightingOrNull != nullptr ? facts.LightingOrNull->Lights.GetSize() : 0);
     writeCount("dropped_placements", plan.DroppedPlacements);
     writeCount("dropped_vertices", plan.DroppedVertices);
@@ -1177,7 +1312,7 @@ void ResetResult(BestEffortResult& outResult) noexcept
     Array<CookedMesh> meshes;
     if (status == Status::Ok)
     {
-        // Version 4 keeps meshes indexed: consumers derive the per-triangle bake
+        // Versions 4 and 5 keep meshes indexed: consumers derive the per-triangle bake
         // charts (format::TryGetBakeChartUv) instead of reading stored corners.
         status = BakeMeshes(scene, plan, meshes, cancelOrNull);
     }
@@ -1195,8 +1330,13 @@ void ResetResult(BestEffortResult& outResult) noexcept
     const float64 lightRange = math::Min(extent * 100.0, 1000000.0);
     const usize lightingRecords =
         sizeof(format::LightingRecord) + scene.AnalyticLights.GetSize() * sizeof(format::LightRecord);
-    const usize fixedBytes = geometryBytes + RECORD_RESERVE_BYTES + lightingRecords;
-    const usize lightingBudget = format::MAX_BUNDLE_BYTES > fixedBytes ? format::MAX_BUNDLE_BYTES - fixedBytes : 0;
+    // Header plus one texture, material and object record per slot; mesh records are in geometryBytes.
+    const usize recordBytes = sizeof(format::Header) + plan.Materials.GetSize() * (sizeof(format::TextureRecord) +
+                                                                                   sizeof(format::MaterialRecordV5) +
+                                                                                   sizeof(format::ObjectRecordV3));
+    const usize bundleLimit = format::IMPORT_LIMITS.BundleBytes;
+    const usize fixedBytes = geometryBytes + recordBytes + lightingRecords;
+    const usize lightingBudget = bundleLimit > fixedBytes ? bundleLimit - fixedBytes : 0;
     if (status == Status::Ok)
     {
         status = CookAuthoredLighting(scene,
@@ -1220,9 +1360,9 @@ void ResetResult(BestEffortResult& outResult) noexcept
     const usize lightingBytes = lightingRecords + lighting.Environment.Rgb.GetSize() * sizeof(float32);
     if (status == Status::Ok && options.IsDryRun == false)
     {
-        const usize reserved = geometryBytes + RECORD_RESERVE_BYTES + lightingBytes;
-        const usize remaining = format::MAX_BUNDLE_BYTES > reserved ? format::MAX_BUNDLE_BYTES - reserved : 0;
-        const usize budget = math::Min(remaining, format::MAX_TOTAL_TEXTURE_BYTES);
+        const usize reserved = geometryBytes + recordBytes + lightingBytes;
+        const usize remaining = bundleLimit > reserved ? bundleLimit - reserved : 0;
+        const usize budget = math::Min(remaining, format::IMPORT_LIMITS.TotalTextureBytes);
         status = ApplyScalarTextures(scene, root.GetView(), plan, log);
         if (status == Status::Ok)
         {
@@ -1242,10 +1382,10 @@ void ResetResult(BestEffortResult& outResult) noexcept
     }
     if (status == Status::Ok && options.IsDryRun == false)
     {
-        usize expected = sizeof(format::Header) + geometryBytes + RECORD_RESERVE_BYTES + lightingBytes;
+        usize expected = geometryBytes + recordBytes + lightingBytes;
         for (const CookedTexture& texture : textures)
         {
-            expected += sizeof(format::TextureRecord) + texture.Image.Texels.GetSize();
+            expected += texture.Image.Texels.GetSize();
         }
         // ByteWriter grows by exact amounts; reserving keeps packing linear.
         if (outResult.Bundle.TryEnsureCapacity(expected) == false)
@@ -1259,10 +1399,10 @@ void ResetResult(BestEffortResult& outResult) noexcept
             status = blob.HasOverflowed() == true ? Status::Invalid : Status::OutOfMemory;
             (void)log.Add(DiagnosticSeverity::Error, codes::LIMIT_EXCEEDED, {}, 0, "a value exceeds the float32 range");
         }
-        else if (outResult.Bundle.GetSize() > format::MAX_BUNDLE_BYTES)
+        else if (outResult.Bundle.GetSize() > bundleLimit)
         {
             status = Status::Invalid;
-            (void)log.Add(DiagnosticSeverity::Error, codes::LIMIT_EXCEEDED, {}, 0, "bundle exceeds 64 MiB");
+            (void)log.Add(DiagnosticSeverity::Error, codes::LIMIT_EXCEEDED, {}, 0, "bundle exceeds 384 MiB");
         }
         summary.BundleBytes = outResult.Bundle.GetSize();
     }

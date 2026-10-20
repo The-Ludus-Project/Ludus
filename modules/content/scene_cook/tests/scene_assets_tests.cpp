@@ -765,11 +765,13 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
         std::string_view Directory;
         std::string_view Entry;
         std::string_view Profile;
+        usize MaskedMaterials = 0;
     };
     const Fixture fixtures[] = {
         {"gltf/instanced", "scene.gltf", "gltf-best-effort-v1"},
         {"gltf/embedded", "scene.glb", "gltf-best-effort-v1"},
         {"obj/room", "room.obj", "obj-best-effort-v1"},
+        {"obj/cutout", "cutout.obj", "obj-best-effort-v1", 2},
     };
     for (const Fixture& fixture : fixtures)
     {
@@ -821,11 +823,24 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
         EditorSceneResult assembled;
         REQUIRE(OperateEditorScene(request, options, assembled, error));
         REQUIRE(assembled.Scene.IsEmpty() == false);
-        // Best-effort imports are LUSCN v4: indexed meshes with implicit bake charts.
+        // Best-effort imports are LUSCN v5: indexed meshes with implicit bake charts, and
+        // material alpha masks that survive the catalog's material descriptions.
+        uint32 version = 0;
+        REQUIRE(assembled.Scene.GetSize() > ludus::content::scene_format::MAGIC.size() + sizeof(uint32));
+        REQUIRE(core::TryReadLittleEndian<uint32>(
+                    {assembled.Scene.GetData() + ludus::content::scene_format::MAGIC.size(), sizeof(uint32)},
+                    version) == true);
+        CHECK(version == ludus::content::scene_format::VERSION_5);
         ludus::resources::SceneDefinition decoded;
         REQUIRE(ludus::resources::SceneDefinition::Decode(assembled.Scene.GetData(),
                                                           assembled.Scene.GetSize(),
                                                           decoded) == ludus::resources::Status::Ok);
+        usize maskedCount = 0;
+        for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+        {
+            maskedCount += material.IsAlphaMasked == true ? 1 : 0;
+        }
+        CHECK(maskedCount == fixture.MaskedMaterials);
         bool hasSharedVertices = false;
         for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
         {
@@ -906,8 +921,9 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
 TEST_CASE("Catalogs larger than the 1 MiB metadata limit still import", "[scene_assets]")
 {
     // Every catalog record carries its import's full source_inputs map, so the catalog grows with
-    // resources x source files. Many included parts with distinct materials exceed 1 MiB.
-    constexpr int PART_COUNT = 640;
+    // resources x source files. Included parts with distinct materials each keep their own
+    // texture, material and mesh (LUSCN version 5), so a hundred parts exceed 1 MiB.
+    constexpr int PART_COUNT = 112;
     const std::filesystem::path work = MakeWorkDirectory();
     const std::filesystem::path project = work / "project";
     const std::filesystem::path source = work / "source";

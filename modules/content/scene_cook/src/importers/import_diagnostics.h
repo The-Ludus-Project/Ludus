@@ -79,15 +79,15 @@ inline constexpr std::string_view ATTRIBUTE_IGNORED = "ATTRIBUTE_IGNORED";
 inline constexpr std::string_view PRIMITIVE_SKIPPED = "PRIMITIVE_SKIPPED";
 /// Skins, animation or morph targets were ignored; the rest pose is imported.
 inline constexpr std::string_view ANIMATION_IGNORED = "ANIMATION_IGNORED";
-/// A secondary material texture or term that LUSCN v4 cannot store.
+/// A secondary material texture or term that LUSCN v5 cannot store.
 inline constexpr std::string_view TEXTURE_DROPPED = "TEXTURE_DROPPED";
-/// Per-material sidedness was ignored (LUSCN v4 has no double-sided flag).
+/// Per-material sidedness was ignored (LUSCN v5 has no double-sided flag).
 inline constexpr std::string_view SIDEDNESS_IGNORED = "SIDEDNESS_IGNORED";
 /// Optional decorative emission was cooked as a non-emitter.
 inline constexpr std::string_view EMISSION_DROPPED = "EMISSION_DROPPED";
 /// Emission units or textures were approximated.
 inline constexpr std::string_view EMISSION_APPROXIMATED = "EMISSION_APPROXIMATED";
-/// Tangents were generated in the IR (not yet stored by LUSCN v4).
+/// Tangents were generated in the IR (not yet stored by LUSCN v5).
 inline constexpr std::string_view TANGENTS_GENERATED = "TANGENTS_GENERATED";
 /// A light term was approximated or ignored.
 inline constexpr std::string_view LIGHT_APPROXIMATED = "LIGHT_APPROXIMATED";

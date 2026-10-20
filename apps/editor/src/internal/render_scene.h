@@ -51,13 +51,17 @@ struct PreviewSurface final
     /// Straight linear RGBA base color for consumers that sample no textures, such as the
     /// render-graph RendererStatic preview. Authored surfaces use Tint. Cooked surfaces
     /// compute it once at decode: Tint times the linear mean of the base-color texture's mip-zero
-    /// RGB, with alpha one because the cooked viewport transport draws LUSCN materials Opaque.
+    /// RGB, with alpha one because a consumer that samples no texture cannot evaluate an alpha mask.
     /// Untextured cooked surfaces keep their black Tint. The lit and textured paths ignore it.
     foundation::math::Vector4 FlatTint{1, 1, 1, 1};
     bool Repeat = false;
     foundation::float32 Metallic = 0;
     foundation::float32 Roughness = .5F;
     foundation::math::Vector3 Emission{};
+    /// Discard where the base texture's alpha is below AlphaCutoff (cooked LUSCN v5 masks);
+    /// opaque surfaces ignore texture alpha.
+    bool IsAlphaMasked = false;
+    foundation::float32 AlphaCutoff = 0;
 };
 struct PreviewObject final
 {

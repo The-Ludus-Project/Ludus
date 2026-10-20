@@ -27,8 +27,8 @@ namespace math = foundation::math;
 namespace rr = graphics::renderer;
 namespace rhi = graphics::rhi;
 namespace format = content::scene_format;
-constexpr usize MAX_INSTANCES = format::MAX_OBJECTS;
-constexpr usize MAX_EMITTER_TRIANGLES = format::MAX_VERTICES / rr::AREA_TRIANGLE_CORNERS;
+constexpr usize MAX_INSTANCES = format::IMPORT_LIMITS.Objects;
+constexpr usize MAX_EMITTER_TRIANGLES = format::IMPORT_LIMITS.Vertices / rr::AREA_TRIANGLE_CORNERS;
 constexpr uint32 SHADOW_ATLAS_PIXELS = 2048;
 constexpr uint32 SHADOW_COLUMNS = 9;
 constexpr uint32 SHADOW_CELL_PIXELS = SHADOW_ATLAS_PIXELS / SHADOW_COLUMNS;
@@ -69,6 +69,7 @@ inline QByteArray MakeKey(const RenderScene& scene)
         stream << surface.Texture << surface.Repeat << surface.Metallic << surface.Roughness;
         stream << surface.Tint.X << surface.Tint.Y << surface.Tint.Z << surface.Tint.W;
         stream << surface.Emission.X << surface.Emission.Y << surface.Emission.Z;
+        stream << surface.IsAlphaMasked << surface.AlphaCutoff;
     }
     if (scene.Definition != nullptr)
     {
@@ -145,7 +146,8 @@ struct Inputs final
 {
     rr::LightSelection Lights;
     rr::LightClusterDescription Clusters;
-    StaticArray<rr::StaticLightingSurfaceDescription, MAX_INSTANCES> Surfaces{};
+    /// One per placed object (at most MAX_INSTANCES), heap-owned so preparation stays off the stack.
+    Array<rr::StaticLightingSurfaceDescription> Surfaces;
     StaticArray<rr::ShadowRegion, rr::SHADOW_REGION_CAPACITY> Shadows{};
     uint32 ShadowCount = 0;
     uint32 AreaCount = 0;
@@ -163,6 +165,10 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
         return rhi::RasterStatus::InvalidDescription;
     }
     Inputs result;
+    if (result.Surfaces.TryResize(scene.Definition->Objects.GetSize()) == false)
+    {
+        return rhi::RasterStatus::OutOfMemory;
+    }
     result.SceneRevision = ReadRevision(key, 0);
     result.DependencyRevision = ReadRevision(key, static_cast<int32>(sizeof(uint64)));
     const float32 radius = math::Max(scene.Radius, .1F);
@@ -207,6 +213,11 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
         overrideSurface.Emission = surface.Emission;
         overrideSurface.IsEmissionTwoSided = material.IsEmissionTwoSided;
         overrideSurface.ShouldRepeatTexture = surface.Repeat;
+        if (surface.IsAlphaMasked == true)
+        {
+            overrideSurface.Alpha = rr::MaterialAlpha::Masked;
+            overrideSurface.AlphaCutoff = surface.AlphaCutoff;
+        }
         if (surface.Emission.X == 0 && surface.Emission.Y == 0 && surface.Emission.Z == 0)
         {
             continue;
@@ -267,7 +278,7 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
     result.Lights = normalized;
     if (shouldBuildShadows == false)
     {
-        outInputs = result;
+        outInputs = Move(result);
         return rhi::RasterStatus::Ready;
     }
     for (usize i = 0; i < result.Lights.Count; ++i)
@@ -337,7 +348,7 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
             ++result.ShadowCount;
         }
     }
-    outInputs = result;
+    outInputs = Move(result);
     return rhi::RasterStatus::Ready;
 }
 } // namespace ludus::editor::preview_lighting

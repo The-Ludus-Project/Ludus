@@ -6,7 +6,7 @@ namespace ludus::content::scene_cook
 {
 using foundation::usize;
 
-/// Largest source file admitted by the cooker (bundles are bounded by scene_format::MAX_BUNDLE_BYTES).
+/// Largest source file admitted by the cooker (bundles are bounded by scene_format::BundleLimits).
 /// Also bounds each best-effort text source: pbrt includes, MTL libraries and glTF JSON.
 inline constexpr usize MAX_SOURCE_BYTES = usize{64} * 1024 * 1024;
 /// Largest binary scene data source read by the best-effort importers: a PLY mesh, an
@@ -20,8 +20,9 @@ inline constexpr usize MAX_SOURCE_IMAGE_BYTES = usize{256} * 1024 * 1024;
 inline constexpr usize MAX_REFERENCE_DOCUMENT_BYTES = usize{1024} * 1024;
 /// Inclusive source byte ceiling for the strict reference profile's license text.
 inline constexpr usize MAX_LICENSE_BYTES = usize{1024} * 1024;
-/// Largest artifact, bundle or resident closure in bytes.
-inline constexpr usize MAX_ASSET_BYTES = usize{64} * 1024 * 1024;
+/// Largest artifact, bundle or resident closure in bytes: the largest cooked scene
+/// bundle (scene_format::IMPORT_LIMITS.BundleBytes, LUSCN version 5).
+inline constexpr usize MAX_ASSET_BYTES = usize{384} * 1024 * 1024;
 /// Largest level or metadata document in bytes.
 inline constexpr usize MAX_METADATA_BYTES = usize{1024} * 1024;
 /// Largest project catalog (assets/catalog.json) in bytes. Every artifact's build

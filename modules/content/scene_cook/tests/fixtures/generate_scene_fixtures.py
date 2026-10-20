@@ -152,6 +152,163 @@ def write_obj():
 
 
 # ---------------------------------------------------------------------------
+# Cut-outs (LUSCN v5 alpha masks): an OBJ leaf with a separate map_d mask at a
+# different resolution, an all-opaque mask (cooked opaque) and an untextured
+# halo whose mask is the alpha (-imfchan m) of an RGBA image; a glTF quad with
+# alphaMode MASK, a texture alpha ramp and baseColorFactor alpha, beside BLEND.
+
+CUTOUT_OBJ = """# Synthetic cut-out OBJ/MTL fixture for the Ludus best-effort importer (CC0).
+mtllib cutout.mtl
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+usemtl Leaf
+v 0 0 0
+v 2 0 0
+v 2 2 0
+v 0 2 0
+f -4/1 -3/2 -2/3 -1/4
+usemtl Halo
+v 3 0 0
+v 5 0 0
+v 5 1 0
+v 3 1 0
+f -4/1 -3/2 -2/3 -1/4
+usemtl Solid
+v 6 0 0
+v 7 0 0
+v 7 1 0
+v 6 1 0
+f -4/1 -3/2 -2/3 -1/4
+"""
+
+CUTOUT_MTL = """# Materials for cutout.obj (CC0).
+newmtl Leaf
+Kd 1 1 1
+map_Kd textures/leaf.png
+map_d textures/leaf_mask.png
+
+newmtl Halo
+Kd 1 0 0
+map_d -imfchan m textures/halo_mask.png
+
+newmtl Solid
+Kd 0.5 0.5 0.5
+map_d textures/solid_mask.png
+"""
+
+
+def write_cutouts():
+    root = HERE / "obj" / "cutout"
+    write(root / "cutout.obj", CUTOUT_OBJ)
+    write(root / "cutout.mtl", CUTOUT_MTL)
+    write(root / "LICENSE.txt", LICENSE)
+    write(root / "textures" / "leaf.png", png_bytes(8, 8, checker))
+    # Left half transparent, right half opaque, as grey (red) values.
+    write(
+        root / "textures" / "leaf_mask.png",
+        png_bytes(4, 4, lambda x, y: (0, 0, 0, 255) if x < 2 else (255, 255, 255, 255)),
+    )
+    # Opacity in alpha only: the top row is transparent.
+    write(
+        root / "textures" / "halo_mask.png",
+        png_bytes(2, 2, lambda x, y: (255, 255, 255, 0 if y == 0 else 255)),
+    )
+    write(
+        root / "textures" / "solid_mask.png",
+        png_bytes(2, 2, lambda x, y: (255, 255, 255, 255)),
+    )
+
+    # Alpha ramp 0, 64, 128, 255 (row-major) times baseColorFactor alpha 0.5.
+    ramp = [0, 64, 128, 255]
+    ramp_png = png_bytes(2, 2, lambda x, y: (200, 200, 200, ramp[y * 2 + x]))
+    payload = floats([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]) + floats(
+        [0, 1, 1, 1, 1, 0, 0, 0]
+    )
+    payload += struct.pack("<6H", 0, 1, 2, 0, 2, 3)
+    document = {
+        "asset": {"version": "2.0"},
+        "scenes": [{"nodes": [0, 1]}],
+        "nodes": [{"mesh": 0}, {"mesh": 1, "translation": [2, 0, 0]}],
+        "meshes": [
+            {
+                "primitives": [
+                    {
+                        "attributes": {"POSITION": 0, "TEXCOORD_0": 1},
+                        "indices": 2,
+                        "material": 0,
+                    }
+                ]
+            },
+            {
+                "primitives": [
+                    {
+                        "attributes": {"POSITION": 0, "TEXCOORD_0": 1},
+                        "indices": 2,
+                        "material": 1,
+                    }
+                ]
+            },
+        ],
+        "materials": [
+            {
+                "name": "Cutout",
+                "alphaMode": "MASK",
+                "alphaCutoff": 0.25,
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [1, 1, 1, 0.5],
+                    "baseColorTexture": {"index": 0},
+                    "metallicFactor": 0,
+                },
+            },
+            {
+                "name": "Glass",
+                "alphaMode": "BLEND",
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [0.2, 0.4, 0.8, 0.3],
+                    "metallicFactor": 0,
+                },
+            },
+        ],
+        "textures": [{"source": 0}],
+        "images": [
+            {
+                "uri": "data:image/png;base64,"
+                + base64.b64encode(ramp_png).decode("ascii")
+            }
+        ],
+        "buffers": [
+            {
+                "byteLength": len(payload),
+                "uri": "data:application/octet-stream;base64,"
+                + base64.b64encode(payload).decode("ascii"),
+            }
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 48},
+            {"buffer": 0, "byteOffset": 48, "byteLength": 32},
+            {"buffer": 0, "byteOffset": 80, "byteLength": 12},
+        ],
+        "accessors": [
+            {
+                "bufferView": 0,
+                "componentType": FLOAT,
+                "count": 4,
+                "type": "VEC3",
+                "min": [0, 0, 0],
+                "max": [1, 1, 0],
+            },
+            {"bufferView": 1, "componentType": FLOAT, "count": 4, "type": "VEC2"},
+            {"bufferView": 2, "componentType": USHORT, "count": 6, "type": "SCALAR"},
+        ],
+    }
+    root = HERE / "gltf" / "cutout"
+    write(root / "scene.gltf", json.dumps(document, indent=1) + "\n")
+    write(root / "LICENSE.txt", LICENSE)
+
+
+# ---------------------------------------------------------------------------
 # glTF: hierarchy (matrix + TRS), an instanced cube (one placement mirrored),
 # interleaved attributes, uint8/uint16/no indices, a triangle strip, external
 # buffer and image, data-URI image, camera, KHR_lights_punctual, emissive
@@ -506,6 +663,7 @@ def write_gltf():
 if __name__ == "__main__":
     write_obj()
     write_gltf()
+    write_cutouts()
     for path in sorted(HERE.rglob("*")):
         if path.is_file() and path.suffix not in (".py",):
             print(path.relative_to(HERE), path.stat().st_size)

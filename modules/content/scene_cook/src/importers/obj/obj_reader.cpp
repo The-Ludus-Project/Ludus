@@ -34,6 +34,9 @@ constexpr uint64 MAX_INDEX_MAGNITUDE = uint64{1} << 62;
 constexpr usize MAX_MAP_VECTOR_ARGUMENTS = 3;
 /// `-imfchan m` selects the matte channel, stored after red, green and blue.
 constexpr uint8 MATTE_CHANNEL = 3;
+/// Mask threshold for MTL map_d cut-outs; MTL defines no cutoff, and half opacity
+/// matches the glTF alphaCutoff default.
+constexpr float64 OPACITY_MAP_CUTOFF = .5;
 /// Prefix of the MTL texture-map statements (map_Kd, map_Ns, ...).
 constexpr std::string_view MAP_KEYWORD_PREFIX = "map_";
 /// Largest Phong exponent considered; higher values are already a perfect mirror.
@@ -921,6 +924,7 @@ Status WavefrontReader::readMap(WordCursor& inoutWords,
     else if (AreNamesEqual(keyword, "map_d") == true)
     {
         material.OpacityTexture = texture;
+        material.OpacityChannel = options.HasChannel == true ? options.Channel : IR_DETECT_OPACITY_CHANNEL;
     }
     else if (AreNamesEqual(keyword, "map_Ke") == true)
     {
@@ -993,10 +997,17 @@ Status WavefrontReader::finishMaterial(const MtlTerms& terms, uint32 line) noexc
     }
     const float64 opacity = terms.HasDissolve == true ? terms.Dissolve : 1.0;
     material.Opacity = math::Clamp(opacity, 0.0, 1.0);
-    if (material.Opacity < 1.0 || material.OpacityTexture != IR_NONE)
+    if (material.OpacityTexture != IR_NONE)
+    {
+        // An opacity map is a cut-out (foliage, chains); dissolve scales it.
+        material.AlphaMode = IrAlphaMode::Mask;
+        material.AlphaCutoff = OPACITY_MAP_CUTOFF;
+        inform(codes::ALPHA_APPROXIMATED, line, "MTL map_d cooked as an alpha mask at 0.5 opacity");
+    }
+    else if (material.Opacity < 1.0)
     {
         material.AlphaMode = IrAlphaMode::Blend;
-        warn(codes::ALPHA_APPROXIMATED, line, "MTL dissolve/opacity cooked as opaque");
+        warn(codes::ALPHA_APPROXIMATED, line, "MTL dissolve cooked as opaque");
     }
     if (terms.Illumination == ILLUMINATION_GLASS_RAY_TRACED || terms.Illumination == ILLUMINATION_REFRACTION ||
         terms.Illumination == ILLUMINATION_REFRACTION_FRESNEL || terms.Illumination == ILLUMINATION_GLASS)
@@ -1005,7 +1016,7 @@ Status WavefrontReader::finishMaterial(const MtlTerms& terms, uint32 line) noexc
     }
     if (material.NormalTexture != IR_NONE)
     {
-        warn(codes::NORMALMAP_DROPPED, line, "MTL bump/normal map not stored by LUSCN v4");
+        warn(codes::NORMALMAP_DROPPED, line, "MTL bump/normal map not stored by LUSCN v5");
     }
     if (material.SpecularTexture != IR_NONE || material.SpecularExponentTexture != IR_NONE)
     {

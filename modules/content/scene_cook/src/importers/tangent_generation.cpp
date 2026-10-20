@@ -325,7 +325,7 @@ Status GenerateMissingTangents(SceneIr& inoutScene, DiagnosticLog& inoutLog, con
         MessageBuilder message;
         (void)message.Append("MikkTSpace tangents generated for ")
             .AppendUnsigned(generated)
-            .Append(" normal-mapped meshes; LUSCN v4 does not store tangents yet");
+            .Append(" normal-mapped meshes; LUSCN v5 does not store tangents yet");
         (void)inoutLog.Add(DiagnosticSeverity::Info, codes::TANGENTS_GENERATED, {}, 0, message.GetView());
     }
     return Status::Ok;

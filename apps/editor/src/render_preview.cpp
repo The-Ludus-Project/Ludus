@@ -138,27 +138,27 @@ platform::NativeWindowInfo RenderPreview::WindowInfo() const noexcept
 }
 bool RenderPreview::SetScene(const RenderScene& scene)
 {
-    bool valid = scene.Identity.isEmpty()
-                     ? (scene.Meshes.isEmpty() && scene.Textures.isEmpty() && scene.Surfaces.isEmpty() &&
-                        scene.Objects.isEmpty() && scene.Cameras.isEmpty())
-                     : (scene.Meshes.isEmpty() == false &&
-                        static_cast<usize>(scene.Meshes.size()) <= content::scene_format::MAX_MESHES &&
-                        static_cast<usize>(scene.Textures.size()) <= content::scene_format::MAX_TEXTURES &&
-                        static_cast<usize>(scene.Surfaces.size()) <= content::scene_format::MAX_MATERIALS &&
-                        static_cast<usize>(scene.Objects.size()) <= MAX_PREVIEW_OBJECTS &&
-                        static_cast<usize>(scene.Cameras.size()) <= MAX_PREVIEW_CAMERAS);
+    bool isValid =
+        scene.Identity.isEmpty()
+            ? (scene.Meshes.isEmpty() && scene.Textures.isEmpty() && scene.Surfaces.isEmpty() &&
+               scene.Objects.isEmpty() && scene.Cameras.isEmpty())
+            : (scene.Meshes.isEmpty() == false && static_cast<usize>(scene.Meshes.size()) <= MAX_PREVIEW_MESHES &&
+               static_cast<usize>(scene.Textures.size()) <= MAX_PREVIEW_TEXTURES &&
+               static_cast<usize>(scene.Surfaces.size()) <= MAX_PREVIEW_SURFACES &&
+               static_cast<usize>(scene.Objects.size()) <= MAX_PREVIEW_OBJECTS &&
+               static_cast<usize>(scene.Cameras.size()) <= MAX_PREVIEW_CAMERAS);
     for (const auto& surface : scene.Surfaces)
     {
-        valid = valid && surface.Texture >= (scene.Lit ? -1 : 0) && surface.Texture < scene.Textures.size();
+        isValid = isValid && surface.Texture >= (scene.Lit ? -1 : 0) && surface.Texture < scene.Textures.size();
     }
     for (const auto& object : scene.Objects)
     {
-        valid = valid && object.Mesh >= 0 && object.Mesh < scene.Meshes.size() && object.Texture >= -1 &&
-                object.Texture < scene.Textures.size() &&
-                (scene.Lit || object.Texture >= 0 ? object.Surface >= 0 && object.Surface < scene.Surfaces.size()
-                                                  : object.Surface == -1);
+        isValid = isValid && object.Mesh >= 0 && object.Mesh < scene.Meshes.size() && object.Texture >= -1 &&
+                  object.Texture < scene.Textures.size() &&
+                  (scene.Lit || object.Texture >= 0 ? object.Surface >= 0 && object.Surface < scene.Surfaces.size()
+                                                    : object.Surface == -1);
     }
-    if (valid == false)
+    if (isValid == false)
     {
         Status_ = QStringLiteral(
             "Preview snapshot exceeds its validated asset/object/material bounds. Previous data retained.");

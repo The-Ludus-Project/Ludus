@@ -398,8 +398,10 @@ scale. Source scales sum within the v3 `[0,10000]` bound and normalized HDR texe
 remain in that range; overflow rejects the candidate. A single imported map retains
 its original texels and multiplier, including zero-energy channels. Different HDR
 map dimensions reject explicitly: this storage codec does not choose a resampling
-policy. The combined light list remains bounded at 128 and the artifact closure and
-assembled packet remain bounded at 64 MiB. No environment or light is silently dropped.
+policy. The combined light list remains bounded at 128 and the assembled packet
+remains bounded by its version's byte limit (64 MiB, or 384 MiB for version 5); the
+artifact closure shares the 384 MiB `MAX_ASSET_BYTES` ceiling. No environment or
+light is silently dropped.
 
 When legacy and v3 resources coexist, assembly expands legacy vertices with zero
 bake UVs and synthesizes stable legacy emitter identities while retaining their
@@ -426,9 +428,9 @@ bake derives its tiles from the indices.
 `MAX_VERTICES` still bounds unique vertices across the bundle and `MAX_INDICES`
 each mesh. Because consumers expand corners, version 4 adds
 `MAX_TOTAL_INDICES` (1,500,000) across all meshes: three times the corner count
-that version 3's vertex ceiling allowed. The best-effort
-importers and the Editor's World composition write version 4. The reference
-profile keeps its version 1/2/3 output and byte goldens.
+that version 3's vertex ceiling allowed. The best-effort importers and the
+Editor's World composition now write version 5 (below). The reference profile
+keeps its version 1/2/3 output and byte goldens.
 
 The scene asset pipeline splits a version 4 bundle into parts with build target
 `portable-rgba8-f32-le-v4`. Version 4 mesh parts have the legacy vertex layout.
@@ -436,3 +438,54 @@ Assembly selects version 4 whenever any mesh part is version 4. Version 3 mesh
 parts then drop their stored bake UVs, since consumers derive identical
 coordinates, and legacy mesh parts are copied unchanged. Without a version 4
 part, assembly produces exactly the version 2 or 3 bytes it produced before.
+
+### Import profile and alpha masks (LUSCN v5)
+
+Versions 1 to 4 share the *resident reference profile*: 6 meshes, 8 materials,
+8 textures, 128 objects, 32 MiB of textures and a 64 MiB bundle, sized for the
+first reference scene. Real scenes need one material per source material; the
+best-effort planner used to merge Khronos Sponza's 25 materials into six. Version 5
+keeps every version 4 record except the material, and admits the larger *import
+profile*. `content::scene_format::GetBundleLimits(version)` returns the limits of a
+version (`RESIDENT_REFERENCE_LIMITS` or `IMPORT_LIMITS` in `limits.h`); producers,
+the Resources decoder, the scene asset pipeline and the Editor read them there.
+
+| Limit | Versions 1-4 | Version 5 |
+| --- | --- | --- |
+| Meshes / materials / textures | 6 / 8 / 8 | 256 / 256 / 256 |
+| Placed objects | 128 | 1,024 |
+| Unique vertices (combined) | 500,000 | 2,000,000 |
+| Indices (combined; versions 4 and 5) | 1,500,000 | 6,000,000 |
+| Combined RGBA8 texture bytes | 32 MiB | 256 MiB |
+| Bundle bytes | 64 MiB | 384 MiB |
+
+Per-texture limits (4096 texels per side, 16 MiB) are unchanged.
+
+`MaterialRecordV5` (56 bytes) stores `AlphaMode` in the version 3 reserved word,
+then `AlphaCutoff` and a new reserved word. `ALPHA_OPAQUE` ignores texture alpha
+and requires a zero cutoff. `ALPHA_MASKED` discards surface points whose straight
+base-texture alpha is below `AlphaCutoff` in [0, 1] (equal alpha survives), in
+rasterized views and in transport alike; an untextured masked surface is fully
+covered. The decoder exposes them as `SceneMaterial::IsAlphaMasked` and
+`AlphaCutoff`, and rejects unknown modes, an opaque nonzero cutoff and thresholds
+outside [0, 1]. There is no blended transparency.
+
+The best-effort importers cook alpha masks into the base texture's alpha (see
+[best-effort scene import](../development/best-effort-scene-import.md#budget-planner)).
+The Editor draws masked materials with the renderer's `MaterialAlpha::Masked`, in
+the lit, debug and unlit paths; Solid shading samples no texture and draws them
+covered. The Editor's World composition writes version 5, so composed Worlds use
+the import profile.
+
+The scene asset pipeline splits a version 5 bundle into parts with build target
+`portable-rgba8-f32-le-v5`; mesh parts keep the version 4 layout. Material
+descriptions of version 5 parts add `alpha_mode` (`"opaque"` or `"masked"`) and
+`alpha_cutoff`. Assembly selects version 5 when any part is version 5, any
+material description carries an alpha mode, or the level exceeds the resident
+reference profile's mesh, material, texture or object counts; otherwise it
+produces the version 2 to 4 bytes it produced before. A level places at most
+1,024 objects, and a closure at most every part of one version 5 bundle plus a
+scene and lighting part per import. The catalog's records carry the full source
+digest map of their import, so the catalog grows with parts times source files;
+a scene with hundreds of materials and hundreds of source files approaches the
+64 MiB catalog limit.

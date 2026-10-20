@@ -935,9 +935,12 @@ recovered together, with one history.
 When `authoring/render.preview.json` is present, schema-bound visible meshes and
 imported geometry compose into the same embedded viewport. Scene instances use
 their cooked bindings; they are not rendered a second time through the schema
-adapter. The combined resident profile permits six meshes, eight materials,
-eight textures and 128 visible instances; overflow retains the previous viewport
-and reports the capacity. Schema meshes receive generated shading normals and
+adapter. The combined World is a LUSCN version 5 bundle, so the import profile
+permits 256 meshes, materials and textures and 1,024 visible instances (see
+[the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5));
+overflow retains the previous viewport and reports the capacity. Alpha-masked
+imported materials are cut out in Lit, Albedo and the debug views; Solid shading
+draws them covered. Schema meshes receive generated shading normals and
 matte materials in this combined lit profile; their linear tints are baked into
 transient sRGB texture copies. Original assets are preserved. Worlds without
 imported scene data retain their existing unlit preview adapter.

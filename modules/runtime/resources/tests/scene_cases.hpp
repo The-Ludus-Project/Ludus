@@ -165,15 +165,31 @@ constexpr usize V3_LIGHTING_OFFSET = V3_OBJECT_OFFSET + sizeof(sceneFormat::Obje
 constexpr usize V3_LIGHT_OFFSET = V3_LIGHTING_OFFSET + sizeof(sceneFormat::LightingRecord);
 constexpr usize V3_ENVIRONMENT_OFFSET = V3_LIGHT_OFFSET + V3_LIGHT_COUNT * sizeof(sceneFormat::LightRecord);
 constexpr usize V3_BUNDLE_BYTES = V3_ENVIRONMENT_OFFSET + V3_PIXEL_COUNT * sceneFormat::ENVIRONMENT_TEXEL_BYTES;
-/// Version 3 fixture, or the same scene as version 4 (VertexRecord without stored bake UVs).
-Array<uint8> MakeLightingFixture(uint32 version = sceneFormat::VERSION_3)
+/// Version 5 alpha terms written into every fixture material.
+struct FixtureAlpha final
+{
+    uint32 Mode = sceneFormat::ALPHA_OPAQUE;
+    float32 Cutoff = 0;
+};
+/// Version 3 fixture, or the same scene as version 4 (VertexRecord without stored bake UVs)
+/// or version 5 (MaterialRecordV5). Each of materialCount materials has one object.
+Array<uint8>
+MakeLightingFixture(uint32 version = sceneFormat::VERSION_3, uint32 materialCount = 1, FixtureAlpha alpha = {})
 {
     const bool hasBakeCoordinates = sceneFormat::HasStoredBakeCoordinates(version);
+    const bool hasAlpha = sceneFormat::HasMaterialAlpha(version);
+    const usize extraRecords =
+        (materialCount - 1) * (sizeof(sceneFormat::MaterialRecordV3) + sizeof(sceneFormat::ObjectRecordV3));
+    const usize alphaBytes =
+        hasAlpha == true
+            ? materialCount * (sizeof(sceneFormat::MaterialRecordV5) - sizeof(sceneFormat::MaterialRecordV3))
+            : 0;
+    const usize vertexBytes =
+        hasBakeCoordinates == true
+            ? 0
+            : V3_VERTEX_COUNT * (sizeof(sceneFormat::VertexRecordV3) - sizeof(sceneFormat::VertexRecord));
     Array<uint8> bytes;
-    REQUIRE(bytes.TryResize(V3_BUNDLE_BYTES - (hasBakeCoordinates == true
-                                                   ? 0
-                                                   : V3_VERTEX_COUNT * (sizeof(sceneFormat::VertexRecordV3) -
-                                                                        sizeof(sceneFormat::VertexRecord)))) == true);
+    REQUIRE(bytes.TryResize(V3_BUNDLE_BYTES + extraRecords + alphaBytes - vertexBytes) == true);
     usize offset = 0;
     auto writeInteger = [&](uint32 value) {
         REQUIRE(
@@ -194,7 +210,7 @@ Array<uint8> MakeLightingFixture(uint32 version = sceneFormat::VERSION_3)
     };
     std::memcpy(bytes.GetData(), sceneFormat::MAGIC.data(), sceneFormat::MAGIC.size());
     offset = sceneFormat::MAGIC.size();
-    for (uint32 value : {version, 1U, 1U, 0U, 1U})
+    for (uint32 value : {version, 1U, materialCount, 0U, materialCount})
     {
         writeInteger(value);
     }
@@ -202,16 +218,24 @@ Array<uint8> MakeLightingFixture(uint32 version = sceneFormat::VERSION_3)
     {
         writeNumber(value);
     }
-    writeInteger(sceneFormat::NO_TEXTURE);
-    writeInteger(sceneFormat::ADDRESS_REPEAT);
-    for (float32 value : {0.F, .5F, 1.F, 2.F, 3.F})
+    for (uint32 material = 0; material < materialCount; ++material)
     {
-        writeNumber(value);
+        writeInteger(sceneFormat::NO_TEXTURE);
+        writeInteger(sceneFormat::ADDRESS_REPEAT);
+        for (float32 value : {0.F, .5F, 1.F, 2.F, 3.F})
+        {
+            writeNumber(value);
+        }
+        writeInteger(sceneFormat::EMISSION_HAS_POWER);
+        writeIdentity(41);
+        writeNumber(1200);
+        if (hasAlpha == true)
+        {
+            writeInteger(alpha.Mode);
+            writeNumber(alpha.Cutoff);
+        }
+        writeInteger(0);
     }
-    writeInteger(sceneFormat::EMISSION_HAS_POWER);
-    writeIdentity(41);
-    writeNumber(1200);
-    writeInteger(0);
     writeInteger(V3_VERTEX_COUNT);
     writeInteger(V3_VERTEX_COUNT);
     for (ludus::foundation::math::Vector3 position : {ludus::foundation::math::Vector3{0, 0, 0},
@@ -232,13 +256,16 @@ Array<uint8> MakeLightingFixture(uint32 version = sceneFormat::VERSION_3)
     {
         writeInteger(index);
     }
-    writeInteger(0);
-    writeInteger(0);
-    for (float32 value : {1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F})
+    for (uint32 object = 0; object < materialCount; ++object)
     {
-        writeNumber(value);
+        writeInteger(0);
+        writeInteger(object);
+        for (float32 value : {1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F})
+        {
+            writeNumber(value);
+        }
+        writeIdentity(101 + uint64{object});
     }
-    writeIdentity(101);
     writeInteger(sceneFormat::LIGHTING_PROFILE_REC709_PHOTOMETRIC);
     writeInteger(V3_LIGHT_COUNT);
     writeInteger(V3_PIXEL_COUNT);
@@ -368,7 +395,7 @@ TEST_CASE("Cooked v4 keeps v3 lighting records with indexed meshes and implicit 
     Array<uint8> unknown;
     REQUIRE(unknown.TryResize(bytes.GetSize()) == true);
     std::memcpy(unknown.GetData(), bytes.GetData(), bytes.GetSize());
-    SetFixtureWord(unknown, sceneFormat::MAGIC.size(), sceneFormat::VERSION_4 + 1);
+    SetFixtureWord(unknown, sceneFormat::MAGIC.size(), sceneFormat::VERSION_5 + 1);
     REQUIRE(r::SceneDefinition::Decode(unknown.GetData(), unknown.GetSize(), scene) == r::Status::Failed);
 }
 TEST_CASE("Legacy cooked lighting retains two-sided emitters and deterministic scene identities", "[resources][scene]")
@@ -386,5 +413,49 @@ TEST_CASE("Legacy cooked lighting retains two-sided emitters and deterministic s
         REQUIRE(scene.Environment.Pixels.IsEmpty() == true);
         REQUIRE(scene.Environment.Rgb.X == 0);
         REQUIRE(scene.Meshes[0].BakeTexcoords.IsEmpty() == true);
+    }
+}
+TEST_CASE("Cooked v5 carries material alpha masks and admits the import profile's counts", "[resources][scene]")
+{
+    constexpr float32 CUTOFF = .25F;
+    // More materials and objects than the resident reference profile admits.
+    constexpr uint32 MATERIAL_COUNT = sceneFormat::MAX_MATERIALS + 1;
+    const Array<uint8> bytes = MakeLightingFixture(sceneFormat::VERSION_5,
+                                                   MATERIAL_COUNT,
+                                                   { .Mode = sceneFormat::ALPHA_MASKED, .Cutoff = CUTOFF });
+    r::SceneDefinition scene;
+    REQUIRE(r::SceneDefinition::Decode(bytes.GetData(), bytes.GetSize(), scene) == r::Status::Ok);
+    REQUIRE(scene.Materials.GetSize() == MATERIAL_COUNT);
+    REQUIRE(scene.Objects.GetSize() == MATERIAL_COUNT);
+    REQUIRE(scene.Materials[MATERIAL_COUNT - 1].IsAlphaMasked == true);
+    REQUIRE(scene.Materials[MATERIAL_COUNT - 1].AlphaCutoff == CUTOFF);
+    REQUIRE(scene.Objects[MATERIAL_COUNT - 1].Material == MATERIAL_COUNT - 1);
+    REQUIRE(scene.Materials[0].EmissionPower == 1200);
+    REQUIRE(scene.Meshes[0].BakeTexcoords.IsEmpty() == true);
+    for (usize count = 0; count < bytes.GetSize(); ++count)
+    {
+        REQUIRE(r::SceneDefinition::Decode(bytes.GetData(), count, scene) == r::Status::Failed);
+        REQUIRE(scene.Materials[0].AlphaCutoff == CUTOFF);
+    }
+
+    // The same counts exceed the resident reference profile of version 4.
+    const Array<uint8> resident = MakeLightingFixture(sceneFormat::VERSION_4, MATERIAL_COUNT);
+    r::SceneDefinition rejected;
+    REQUIRE(r::SceneDefinition::Decode(resident.GetData(), resident.GetSize(), rejected) == r::Status::Failed);
+
+    const Array<uint8> opaque = MakeLightingFixture(sceneFormat::VERSION_5);
+    REQUIRE(r::SceneDefinition::Decode(opaque.GetData(), opaque.GetSize(), scene) == r::Status::Ok);
+    REQUIRE(scene.Materials[0].IsAlphaMasked == false);
+    REQUIRE(scene.Materials[0].AlphaCutoff == 0);
+
+    // Unknown alpha modes, an opaque cutoff and out-of-range thresholds are rejected.
+    for (const FixtureAlpha invalid : {FixtureAlpha{ .Mode = sceneFormat::ALPHA_MASKED + 1, .Cutoff = 0 },
+                                       FixtureAlpha{ .Mode = sceneFormat::ALPHA_OPAQUE, .Cutoff = CUTOFF },
+                                       FixtureAlpha{ .Mode = sceneFormat::ALPHA_MASKED, .Cutoff = -CUTOFF },
+                                       FixtureAlpha{ .Mode = sceneFormat::ALPHA_MASKED, .Cutoff = 1 + CUTOFF }})
+    {
+        const Array<uint8> malformed = MakeLightingFixture(sceneFormat::VERSION_5, 1, invalid);
+        REQUIRE(r::SceneDefinition::Decode(malformed.GetData(), malformed.GetSize(), scene) == r::Status::Failed);
+        REQUIRE(scene.Materials[0].IsAlphaMasked == false);
     }
 }

@@ -22,14 +22,18 @@
 #include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/render_scene_limits.h"
 
 #include <QByteArray>
 #include <QString>
 
 namespace ludus::editor
 {
-inline constexpr foundation::usize PREVIEW_MESH_CAPACITY = 6;
-inline constexpr foundation::usize PREVIEW_TEXTURE_CAPACITY = 8;
+inline constexpr foundation::usize PREVIEW_MESH_CAPACITY = MAX_PREVIEW_MESHES;
+inline constexpr foundation::usize PREVIEW_TEXTURE_CAPACITY = MAX_PREVIEW_TEXTURES;
+/// Material versions: one per lit object, or per surface plus the unlit debug default.
+inline constexpr foundation::usize PREVIEW_MATERIAL_CAPACITY =
+    MAX_PREVIEW_OBJECTS > MAX_PREVIEW_SURFACES ? MAX_PREVIEW_OBJECTS : MAX_PREVIEW_SURFACES + 1;
 
 /// Outcome of one nonblocking preparation step; only Ready exposes a drawable snapshot.
 enum class PreviewPreparationStatus : foundation::uint8
@@ -101,7 +105,7 @@ public:
     bool HasEnvironment = false;
     graphics::renderer::ShadowAtlas Shadows;
     graphics::renderer::Snapshot Casters;
-    foundation::StaticArray<graphics::renderer::MaterialVersion, content::scene_format::MAX_OBJECTS> CasterMaterials{};
+    foundation::StaticArray<graphics::renderer::MaterialVersion, MAX_PREVIEW_OBJECTS> CasterMaterials{};
     graphics::rhi::SubmissionToken ShadowProducer;
     PreviewLightingStage LightingStage = PreviewLightingStage::Inputs;
     foundation::usize MaterialCursor = 0;
@@ -147,7 +151,7 @@ private:
     [[nodiscard]] bool prepareResources(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
     [[nodiscard]] bool prepareLighting(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
     foundation::StaticArray<graphics::renderer::Mesh, PREVIEW_MESH_CAPACITY> mMeshes{};
-    foundation::StaticArray<graphics::renderer::MaterialVersion, content::scene_format::MAX_OBJECTS> mMaterials{};
+    foundation::StaticArray<graphics::renderer::MaterialVersion, PREVIEW_MATERIAL_CAPACITY> mMaterials{};
     graphics::renderer::MaterialProgram mProgram{};
     graphics::renderer::Snapshot mSnapshot{};
 
