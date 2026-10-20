@@ -1094,21 +1094,22 @@ TEST_CASE("Add Node follows library configurations and avoids IDs belonging to o
     REQUIRE(workspace.SelectNode(LIBRARY, configuration, {}) == true);
     REQUIRE(workspace.GetDocument().AddNode(LIBRARY,
                                             configuration,
-                                            QJsonObject{{QStringLiteral("id"), QStringLiteral("raster")},
+                                            QJsonObject{{QStringLiteral("id"), QStringLiteral("graphicspipeline")},
                                                         {QStringLiteral("kind"), QStringLiteral("Scene")}}) ==
             RenderGraphDocumentStatus::Ok);
     QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
     REQUIRE(add != nullptr);
     QComboBox* kind = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
     REQUIRE(kind != nullptr);
-    kind->setCurrentText(QStringLiteral("Raster"));
+    kind->setCurrentText(QStringLiteral("GraphicsPipeline"));
     add->click();
-    CHECK(FindNode(workspace.GetDocument(), LIBRARY, configuration, QStringLiteral("raster2"))
-              .value(QStringLiteral("kind")) == QStringLiteral("Raster"));
-    CHECK(FindNode(workspace.GetDocument(), LIBRARY, QStringLiteral("ColorAndDepth"), QStringLiteral("raster2"))
-              .isEmpty() == true);
+    CHECK(FindNode(workspace.GetDocument(), LIBRARY, configuration, QStringLiteral("graphicspipeline2"))
+              .value(QStringLiteral("kind")) == QStringLiteral("GraphicsPipeline"));
+    CHECK(
+        FindNode(workspace.GetDocument(), LIBRARY, QStringLiteral("ColorAndDepth"), QStringLiteral("graphicspipeline2"))
+            .isEmpty() == true);
     CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == rootBefore);
-    CHECK(workspace.GetSelection() == LIBRARY + QStringLiteral("#DepthOnly/raster2"));
+    CHECK(workspace.GetSelection() == LIBRARY + QStringLiteral("#DepthOnly/graphicspipeline2"));
 }
 
 TEST_CASE("Add Node explains when no graph is open", "[editor][render-graph][node-creation]")

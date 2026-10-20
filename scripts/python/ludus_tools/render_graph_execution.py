@@ -88,7 +88,9 @@ def lower_plan(package, configuration):
     pass_records = []
     color_defined = {r: False for r in resources}
     for operation in rasters:
-        choices = [r for r in package['recipes'] if r['technique'] == operation['technique']]
+        choices = [r for r in package['recipes'] if r['technique'] == operation['technique'] and
+                   ('pipeline' not in operation or all(r['state'][key] == value
+                    for key, value in operation['pipeline']['state'].items()))]
         build.require(choices and all(r['state']['color'] == ('RGBA8Unorm' if operation['configuration'] == 'ColorAndDepth' else 'None') and
                       r['state']['depth'] == 'Depth32Float' and r['state']['samples'] == 1 and r['state']['topology'] == 'TriangleList' and r['state']['cull'] == 'None' and r['state']['front'] == 'CounterClockwise' and
                       r['state']['depth_compare'] == 'Less' and r['state']['depth_write'] and r['state']['blend'] == 'Opaque'

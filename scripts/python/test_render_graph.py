@@ -223,7 +223,7 @@ class RenderGraphTests(unittest.TestCase):
         self.assertEqual("RenderGraphSchema", failure.exception.code)
 
     def test_version_bool_identity_and_encoding_failures(self):
-        for version in (2, True):
+        for version in (3, True):
             value = self.read()
             value["version"] = version
             self.write(value)

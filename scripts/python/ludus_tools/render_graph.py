@@ -19,8 +19,10 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 
 from .errors import ToolingError
+from . import render_graph_pipeline as pipeline
 
 MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
@@ -98,7 +100,7 @@ def _endpoint(value, where):
     return node, port
 
 
-def _ports(values, where, outputs=False):
+def _ports(values, where, outputs=False, version=1):
     _list(values, 8, where)
     claimed = set()
     for port in values:
@@ -106,7 +108,8 @@ def _ports(values, where, outputs=False):
         _identifier(port["id"], where)
         _require(port["id"] not in claimed, "DuplicateIdentity", where, port["id"])
         claimed.add(port["id"])
-        _enum(port["type"], TEXTURES if outputs else TYPES, where)
+        _enum(port["type"], (pipeline.RESOURCE_TYPES if outputs else pipeline.INPUT_TYPES)
+              if version == 2 else (TEXTURES if outputs else TYPES), where)
         if outputs:
             _endpoint(port["source"], where)
             _boolean(port["required"], where)
@@ -115,6 +118,9 @@ def _ports(values, where, outputs=False):
 def _validate_node(node, where):
     _require(type(node) is dict, "Schema", where, "node object required")
     kind = node.get("kind")
+    if kind in pipeline.KINDS:
+        pipeline.validate(node, where, sys.modules[__name__])
+        return
     _enum(kind, ("Scene", "Camera", "Target", "Raster", "Subgraph", "Export", "Present"), where)
     fields = {"id", "kind"}
     if kind == "Camera":
@@ -170,8 +176,8 @@ def _validate_node(node, where):
 
 def _validate_document(value, where):
     _keys(value, ("version", "id", "default", "configurations"), where)
-    _require(type(value["version"]) is int and value["version"] == 1,
-             "Version", where, "only render graph document version 1 is supported")
+    _require(type(value["version"]) is int and value["version"] in (1, 2),
+             "Version", where, "render graph document version 1 or 2 required")
     _identifier(value["id"], where)
     _identifier(value["default"], where)
     _list(value["configurations"], MAX_CONFIGURATIONS, where)
@@ -182,13 +188,17 @@ def _validate_document(value, where):
         _require(config["id"] not in claimed, "DuplicateIdentity", where, config["id"])
         claimed.add(config["id"])
         location = where + "#" + config["id"]
-        _ports(config["inputs"], location)
-        _ports(config["outputs"], location, outputs=True)
+        _ports(config["inputs"], location, version=value["version"])
+        _ports(config["outputs"], location, outputs=True, version=value["version"])
         _list(config["nodes"], MAX_NODES, location)
         _list(config["edges"], MAX_EDGES, location)
         nodes = set()
         for node in config["nodes"]:
-            _validate_node(node, location)
+            _require(type(node) is dict, "Schema", location, "node object required")
+            _require(value["version"] == 2 or node.get("kind") not in pipeline.KINDS,
+                     "Version", location, "pipeline nodes require document version 2")
+            _validate_node(node, location + "/" + str(node.get("id", "node"))
+                           if node.get("kind") in pipeline.KINDS else location)
             _require(node["id"] not in nodes, "DuplicateIdentity", location, node["id"])
             nodes.add(node["id"])
         for edge in config["edges"]:
@@ -211,7 +221,7 @@ def _validate_document(value, where):
 
 
 def canonical_asset(value):
-    """Serialize a locally schema-checked v1 asset; imports need closure validation.
+    """Serialize a locally schema-checked versioned asset; imports need closure validation.
 
     Returns UTF-8 bytes without mutating the caller's document. Rejects oversized
     sources and unknown fields. Does not write files or resolve resource bindings.
@@ -370,6 +380,9 @@ class _Library:
 
     def node_ports(self, node):
         kind = node["kind"]
+        if kind in pipeline.KINDS:
+            return ({p["id"]: p["type"] for p in node["inputs"]},
+                    {p["id"]: p["type"] for p in node["outputs"]})
         if kind == "Scene":
             return {}, {"scene": "Scene"}
         if kind == "Camera":
@@ -422,7 +435,8 @@ class _Library:
                      f"output {output['id']} has the wrong source type")
             used.add(output["source"])
         for key, node in nodes.items():
-            required = set(ports[key][0])
+            required = ({p["id"] for p in node["inputs"] if p["required"]}
+                        if node["kind"] in pipeline.KINDS else set(ports[key][0]))
             if node["kind"] == "Camera" and not node["active"]:
                 required.clear()
             _require(required <= incoming[key].keys(), "UnboundInput", where + "/" + key,
@@ -504,6 +518,20 @@ class _Compiler:
             inputs = {key: values[endpoint] for key, endpoint in incoming[node["id"]].items()}
             outputs = {}
             kind = node["kind"]
+            authored_pipeline = None
+            output_mapping = None
+            if kind in pipeline.KINDS:
+                authored_pipeline = node
+                if kind != 'GraphicsPipeline':
+                    required_stage = 'compute' if kind == 'ComputePipeline' else 'ray_generation'
+                    _require(any(shader['stage'] == required_stage for shader in node['shaders']),
+                             'IncompletePipeline', where, f'{kind} requires an authored {required_stage} program')
+                    _fail('Capability', where, f'{kind} execution is not admitted by the current graph build profile')
+                node, input_mapping, output_mapping = pipeline.lower_graphics(node, where, sys.modules[__name__])
+                _require(set(input_mapping.values()) <= inputs.keys(), 'UnboundInput', where,
+                         'the selected graphics invocation requires all mapped inputs')
+                inputs = {name: inputs[port] for name, port in input_mapping.items()}
+                kind = 'Raster'
             if kind == "Scene":
                 outputs["scene"] = _Value("Scene", origin=where)
             elif kind == "Target":
@@ -540,6 +568,14 @@ class _Compiler:
                             "output_version": value.version, "defined": value.defined,
                             "load": node[aspect + "_load"], "store": node[aspect + "_store"]}
                             for aspect, value in outputs.items()}}
+                if authored_pipeline is not None:
+                    for port in authored_pipeline['outputs']:
+                        resource = self.resources[inputs[next(aspect for aspect, name in output_mapping.items() if name == port['id'])].resource]
+                        _require(resource['format'] == port['format'] and
+                                 resource['samples'] == authored_pipeline['state']['samples'],
+                                 'AttachmentMismatch', where, 'output format/samples differ from connected target')
+                    entry['pipeline'] = authored_pipeline
+                    outputs = {output_mapping[aspect]: value for aspect, value in outputs.items()}
                 self.add_pass(entry)
             elif kind == "Subgraph":
                 child_path = self.library.inside(node["asset"], where)

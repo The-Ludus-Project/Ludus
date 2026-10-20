@@ -91,7 +91,8 @@ public:
     [[nodiscard]] bool PromptCreateSubgraph();
     /// True when a configuration is selected and no unapplied text or source conflict exists.
     [[nodiscard]] bool CanCreateSubgraph() const;
-    /// Shader sources mapped by the root build manifest to the selected Raster's technique.
+    /// Shader sources mapped by the root manifest to the selected pipeline's program references
+    /// or a legacy Raster's technique.
     /// Empty for resource/scene nodes or missing mappings. Never guesses from filenames.
     [[nodiscard]] QStringList GetSelectedShaderSources() const;
     /// True when a project is bound and no job or creation is running, so New Graph and

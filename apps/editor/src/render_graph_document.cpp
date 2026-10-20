@@ -1,4 +1,5 @@
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_pipeline_node.h"
 
 #include <QDir>
 #include <QFile>
@@ -206,9 +207,60 @@ bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argumen
     QJsonArray nodes = inoutConfiguration.value(QStringLiteral("nodes")).toArray();
     const QJsonObject node = QJsonDocument::fromJson(arguments.at(0).toUtf8()).object();
     const qsizetype index = FindNode(nodes, node.value(QStringLiteral("id")).toString());
-    if (index < 0 || node.value(QStringLiteral("kind")) != nodes.at(index).toObject().value(QStringLiteral("kind")))
+    if (index < 0)
     {
         return false;
+    }
+    const QJsonObject previous = nodes.at(index).toObject();
+    const bool isRasterMigration = previous.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster") &&
+                                   node.value(QStringLiteral("kind")).toString() == QStringLiteral("GraphicsPipeline");
+    if (node.value(QStringLiteral("kind")) != previous.value(QStringLiteral("kind")) && isRasterMigration == false)
+    {
+        return false;
+    }
+    if (IsPipelineNode(previous.value(QStringLiteral("kind")).toString()) == true)
+    {
+        const auto getType = [](const QJsonObject& record, const QString& direction, const QString& port) -> QString {
+            const QJsonArray ports = record.value(direction).toArray();
+            for (const QJsonValueConstRef value : ports)
+            {
+                if (value.toObject().value(QStringLiteral("id")).toString() == port)
+                {
+                    return value.toObject().value(QStringLiteral("type")).toString();
+                }
+            }
+            return {};
+        };
+        const QString identity = node.value(QStringLiteral("id")).toString();
+        const auto isPreserved = [&node, &previous, &identity, &getType](const QString& endpoint,
+                                                                         const QString& direction) {
+            if (endpoint.section(QLatin1Char('.'), 0, 0) != identity)
+            {
+                return true;
+            }
+            const QString port = endpoint.section(QLatin1Char('.'), 1);
+            const QString type = getType(node, direction, port);
+            return type.isEmpty() == false && type == getType(previous, direction, port);
+        };
+        const QJsonArray edges = inoutConfiguration.value(QStringLiteral("edges")).toArray();
+        for (const QJsonValueConstRef edge : edges)
+        {
+            if (isPreserved(edge.toObject().value(QStringLiteral("from")).toString(), QStringLiteral("outputs")) ==
+                    false ||
+                isPreserved(edge.toObject().value(QStringLiteral("to")).toString(), QStringLiteral("inputs")) == false)
+            {
+                return false;
+            }
+        }
+        const QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+        for (const QJsonValueConstRef output : outputs)
+        {
+            if (isPreserved(output.toObject().value(QStringLiteral("source")).toString(), QStringLiteral("outputs")) ==
+                false)
+            {
+                return false;
+            }
+        }
     }
     nodes.replace(index, node);
     inoutConfiguration.insert(QStringLiteral("nodes"), nodes);
@@ -574,6 +626,15 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     }
     configurations.replace(index, record);
     graph.insert(QStringLiteral("configurations"), configurations);
+    const QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    for (const QJsonValueConstRef node : nodes)
+    {
+        if (IsPipelineNode(node.toObject().value(QStringLiteral("kind")).toString()) == true)
+        {
+            graph.insert(QStringLiteral("version"), 2);
+            break;
+        }
+    }
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
     return commit(candidate, shouldMerge);

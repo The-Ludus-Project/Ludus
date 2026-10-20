@@ -236,6 +236,10 @@ qt_add_executable(ludus_editor
     src/script_workspace.cpp
     src/internal/render_graph_document.h
     src/render_graph_document.cpp
+    src/internal/render_graph_pipeline.h
+    src/render_graph_pipeline.cpp
+    src/internal/render_graph_pipeline_node.h
+    src/render_graph_pipeline_node.cpp
     src/internal/render_graph_job.h
     src/render_graph_job.cpp
     src/internal/render_graph_creation.h
@@ -427,6 +431,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/script_workspace.cpp
         src/internal/render_graph_document.h
         src/render_graph_document.cpp
+        src/internal/render_graph_pipeline.h
+        src/render_graph_pipeline.cpp
+        src/internal/render_graph_pipeline_node.h
+        src/render_graph_pipeline_node.cpp
         src/internal/render_graph_job.h
         src/render_graph_job.cpp
         src/internal/render_graph_creation.h
@@ -621,8 +629,24 @@ if(EMSCRIPTEN)
 endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp
+        src/render_graph_document.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp)
+    set_target_properties(ludus_render_graph_pipeline_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_render_graph_pipeline_tests PRIVATE src)
+    target_compile_definitions(ludus_render_graph_pipeline_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
+        LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
+    target_link_libraries(ludus_render_graph_pipeline_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Test
+        Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_render_graph_pipeline_tests)
+    ludus_enable_test_exceptions(ludus_render_graph_pipeline_tests)
+    add_test(NAME ludus_render_graph_pipeline_tests COMMAND ludus_render_graph_pipeline_tests)
+    set_tests_properties(ludus_render_graph_pipeline_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp
-        src/render_graph_document.cpp src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
+        src/render_graph_document.cpp src/render_graph_pipeline_node.cpp
+        src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_live_build_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_live_build_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)

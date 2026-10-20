@@ -3,21 +3,26 @@
 // undo; GPU output is covered separately by render_graph_preview_tests.cpp.
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_pipeline.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QKeySequence>
 #include <QNativeGestureEvent>
 #include <QPointingDevice>
+#include <QPushButton>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QWheelEvent>
@@ -479,4 +484,39 @@ TEST_CASE("Canvas supports native Select All toggle additive and Escape selectio
     QTest::mouseClick(canvas.viewport(), Qt::LeftButton, Qt::ShiftModifier, scene);
     CHECK(canvas.GetSelectedNodes().size() == 2);
     CHECK(document.GetRevision() == 0);
+}
+
+TEST_CASE("pipeline inspector applies typed ports as one draft edit", "[editor][render-graph][pipeline]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    REQUIRE(kinds != nullptr);
+    CHECK(kinds->findText(QStringLiteral("Raster")) < 0);
+    kinds->setCurrentText(QStringLiteral("ComputePipeline"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(add != nullptr);
+    add->click();
+    CHECK(workspace.GetSelection().endsWith(QStringLiteral("/computepipeline")) == true);
+    RenderGraphPipelineEditor* editor = workspace.findChild<RenderGraphPipelineEditor*>();
+    REQUIRE(editor != nullptr);
+    QPushButton* addInput = editor->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_inputs"));
+    REQUIRE(addInput != nullptr);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    addInput->click();
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    QTableWidget* inputs = editor->findChild<QTableWidget*>(QStringLiteral("inputs"));
+    REQUIRE(inputs != nullptr);
+    REQUIRE(inputs->rowCount() == 1);
+    inputs->item(0, 0)->setText(QStringLiteral("history"));
+    QPushButton* apply = editor->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
+    REQUIRE(apply != nullptr);
+    apply->click();
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == false);
+    workspace.Undo();
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == true);
 }

@@ -21,6 +21,69 @@ Renderer/RHI integration. `DefaultOpaque`, `DefaultMasked` and `RendererStatic`
 identify the qualified static profile described below; arbitrary mesh/material
 compatibility is never inferred from those labels.
 
+## Author pipeline nodes
+
+The node type picker offers **GraphicsPipeline**, **ComputePipeline** and
+**RayTracingPipeline** for GPU work. Scene, Camera, Target, Subgraph, Export and
+Present remain supporting nodes. A new pipeline has no inputs, outputs or shader
+assignments. It is an editable draft, not a ready rendering pass.
+
+Select the node in Properties. Its **Inputs**, **Outputs**, **Shaders**,
+**Pipeline State** and **Invocation** tabs edit that node's record. Add/remove
+rows in the interface or shader tables, then choose **Apply Pipeline** to commit
+all controls as one undoable edit. Save publishes the draft; edits in these
+controls are unapplied until Apply Pipeline. Disconnect affected links before
+removing a connected port or changing its identity/type. Undo restores the
+complete record and document version. Double-click the pipeline to open a mapped
+shader source through its explicit program reference in the build manifest.
+
+Pipeline records use document `version: 2`; adding one upgrades the draft in the
+same undo step. Version-1 graphs remain readable and are never rewritten on load.
+Select a legacy Raster node and choose **Convert to Graphics Pipeline** to retain
+its ID, ports, load/store operations, shaders and selected recipe. Conversion
+requires exactly one explicit recipe for that technique; an ambiguous or missing
+mapping preserves the draft. Convert each legacy node explicitly, including
+nodes in referenced subgraphs. The CLI can print a converted document for review:
+
+```bash
+ludus render-graph migrate-pipelines graphs/Main/rasterize.lurender.json \
+  --manifest graphs/Main/main.lushader.json
+```
+
+The command writes only stdout (`--json` returns a `document` object). It does
+not replace files or convert imported assets automatically.
+
+The version-2 node fields are:
+
+| Field | Contract |
+| --- | --- |
+| `inputs` | Up to eight `{id, type, required}` records; stable port IDs and explicit connection requirements |
+| `outputs` | Up to eight `{id, type, target, format, load, store}` records; `target` names a same-type input carrying the previous resource version |
+| `shaders` | Up to sixteen `{id, stage, program}` records; `program` references an explicitly declared build-manifest program, not a guessed source filename |
+| `state` | Graphics topology/cull/front/depth comparison/depth writes/blending/samples; compute `group_size`; ray tracing recursion/payload/attribute bounds |
+| `invocation` | Graphics mode, vertex layout, material family and Scene/View input names; compute dispatch or ray launch `dimensions` |
+
+Input types include Scene, View, ColorTexture, DepthTexture, Buffer,
+AccelerationStructure, Float32, Float2, Float3, Float4 and UInt32. Outputs are
+resource versions (ColorTexture, DepthTexture or Buffer). Texture output formats
+are RGBA8Unorm/Depth32Float; Buffer uses Bytes. These declarations do not establish
+execution support or create a buffer/acceleration-structure provider. Outputs
+still need compatible resources connected through their target inputs.
+
+**Execution remains qualified by the current graph profile.** A complete graphics
+node supports custom Scene/View and attachment port names while lowering to the
+existing RendererStatic ColorAndDepth/DepthOnly implementation. The build checks
+its exact vertex/fragment assignments and complete state against the authored
+technique/recipe; settings are never silently ignored. Each admitted output's
+format/sample count must match its connected target. Additional resources,
+optional geometry/tessellation stages and unsupported state produce an explicit
+capability error. Compute and ray tracing settings can be authored and saved,
+but their execution is rejected by this graph build profile. Their presence in
+the picker does not establish GPU support. Missing required shader assignments
+produce IncompletePipeline; an invalid/pending candidate leaves the current
+viewport generation intact. Blending/rasterization remain fields inside the
+node; separate state blocks and stream output are deferred.
+
 ## Start customizing the renderer
 
 You don't need to create a render graph first. The engine ships a default one, and
