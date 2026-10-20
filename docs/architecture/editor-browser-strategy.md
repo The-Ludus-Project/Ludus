@@ -26,7 +26,7 @@ Browser parity is evaluated per operation, not by enabling every desktop button:
 | --- | --- | --- |
 | Project/configuration, World, script and render-graph documents | Shared authoring models and formats; explicit import/download | Frontend accessibility, large-model and narrow-window qualification remains separate |
 | Content catalogs and audio definitions | Browse, import/reimport WAV/FLAC, create/edit/save sound and music | Playback device and waveform-preview service are still missing browser implementations; editing itself needs no native audio device |
-| Ordinary raster viewport | Scene/camera/navigation and direct lighting | Browser shadow preparation still needs to preserve the last displayed image; do not treat raster shadows as a ray-tracing requirement |
+| Ordinary raster viewport | Scene/camera/navigation and direct lighting | [Offscreen shadow preparation follow-up](https://github.com/The-Ludus-Project/Ludus/pull/462) preserves the last displayed image; raster shadows require no ray-tracing feature |
 | GPU ray queries | Browser backend reports unavailable | Require the selected API/device capability; compute support alone does not admit rays. An API-level ray flag is not itself evidence of dedicated hardware acceleration |
 | Builds, debugger, native Play, external editors | Unavailable in the static browser host; shipped web sample players remain usable | Local processes require a separate authorized host transport or build service |
 | Durable project storage and recovery | Session memory plus explicit download | Quota-aware persistent storage, recovery and tested import/export round trips remain work; a download request cannot certify that a file was saved |
