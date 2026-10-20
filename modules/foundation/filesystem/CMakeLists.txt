@@ -1,7 +1,11 @@
 add_library(ludus_foundation_filesystem STATIC src/path.cpp src/namespace.cpp src/pack.cpp src/pack_codec.cpp src/async.cpp src/watch.cpp)
 add_library(Ludus::FoundationFilesystem ALIAS ludus_foundation_filesystem)
 set_target_properties(ludus_foundation_filesystem PROPERTIES EXPORT_NAME FoundationFilesystem)
-if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$" AND NOT EMSCRIPTEN)
+if(EMSCRIPTEN)
+    # Descriptor reads operate on the editor's session MEMFS. Durable publication,
+    # host watches and native async I/O remain separate, unavailable services.
+    target_sources(ludus_foundation_filesystem PRIVATE src/posix.cpp src/persistence_unsupported.cpp)
+elseif(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
     target_sources(ludus_foundation_filesystem PRIVATE src/posix.cpp src/persistence_posix.cpp)
     target_compile_definitions(ludus_foundation_filesystem PRIVATE _FILE_OFFSET_BITS=64)
 else()

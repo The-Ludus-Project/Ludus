@@ -332,6 +332,33 @@ TEST_CASE("Content completion runs on the GUI owner and shutdown acknowledges ca
     CHECK_FALSE(jobs.Start(request));
 }
 
+#if defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)
+TEST_CASE("Browser content cancellation before dispatch publishes no source or catalog", "[editor][content][browser]")
+{
+    QTemporaryDir root;
+    QTemporaryDir exported;
+    const QString file = Wav(exported, 500);
+    ContentJobs jobs;
+    ContentRequest request;
+    request.Root = root.path();
+    request.File = file;
+    request.Id = QStringLiteral("source/cancelled");
+    content::Status status = content::Status::Pending;
+    QObject::connect(&jobs, &ContentJobs::Completed, &jobs, [&](const ContentResult& result) {
+        status = result.Status;
+    });
+    REQUIRE(jobs.Start(request) == true);
+    REQUIRE(jobs.Cancel() == true);
+    while (jobs.Finished() == false)
+    {
+        QTest::qWait(10);
+    }
+    CHECK(status == content::Status::Cancelled);
+    CHECK(QFile::exists(root.filePath(QStringLiteral("catalog.json"))) == false);
+    CHECK(QDir(root.filePath(QStringLiteral("sources"))).exists() == false);
+}
+#endif
+
 TEST_CASE("Destroying active content owners retires copied work without late delivery",
           "[editor][content][concurrency]")
 {

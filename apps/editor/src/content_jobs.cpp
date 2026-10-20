@@ -2,7 +2,11 @@
 #include "internal/content_import.h"
 
 #include <QByteArray>
-#if !defined(Q_OS_WASM)
+
+#if defined(Q_OS_WASM)
+#    define LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS
+#endif
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)
 #    include <QThread>
 #endif
 
@@ -20,7 +24,6 @@ struct JobState final
     std::atomic<bool> Done{false};
     ContentResult Result;
 };
-#if !defined(Q_OS_WASM)
 void Run(JobState& state)
 {
     auto& result = state.Result;
@@ -82,6 +85,7 @@ void Run(JobState& state)
     }
     state.Done.store(true, std::memory_order_release);
 }
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)
 // Thanks to Qt Group, QThread, "Managing Threads": keep worker execution
 // separate from QObject affinity. This adapter owns the copied state in the
 // thread subclass rather than the previous create()/shared-deleter closure.
@@ -103,7 +107,7 @@ private:
 struct ContentJobs::Impl final
 {
     JobState* State = nullptr;
-#if !defined(Q_OS_WASM)
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)
     ContentWorker* Thread = nullptr;
 #endif
 };
@@ -115,7 +119,7 @@ ContentJobs::ContentJobs(QObject* parent) : QObject(parent), Impl_(new (std::not
 ContentJobs::~ContentJobs()
 {
     Shutdown();
-#if !defined(Q_OS_WASM)
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)
     if (Impl_ != nullptr && Impl_->Thread != nullptr)
     {
         if (Impl_->Thread->isFinished() == false)
@@ -141,7 +145,7 @@ bool ContentJobs::Start(const ContentRequest& request)
     {
         return false;
     }
-#if !defined(Q_OS_WASM)
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)
     auto* thread = new (std::nothrow) ContentWorker;
     if (thread == nullptr)
     {
@@ -171,9 +175,16 @@ bool ContentJobs::Start(const ContentRequest& request)
     }
     state->Result.Request = request;
     Impl_->State = state;
-    state->Result.Status = content::Status::Unsupported;
-    state->Result.Message = QStringLiteral("Content browsing and audio import require the desktop editor.");
-    state->Done.store(true, std::memory_order_release);
+    // Yield once so progress can paint and cancellation/project teardown can
+    // revoke admission. Run is synchronous and bounded by the existing catalog
+    // and encoded-source limits; it never re-enters the UI during publication.
+    QTimer::singleShot(0, this, [this, state]() {
+        if (Closing_ == true)
+        {
+            (void)state->Gate.Cancel();
+        }
+        Run(*state);
+    });
 #endif
     PollTimer_.start();
     Q_EMIT BusyChanged();
@@ -207,14 +218,14 @@ void ContentJobs::Poll()
     {
         return;
     }
-#if !defined(Q_OS_WASM)
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)
     if (Impl_->Thread != nullptr && Impl_->Thread->isFinished() == false)
     {
         return;
     }
 #endif
     const auto result = Impl_->State->Result;
-#if !defined(Q_OS_WASM)
+#if !defined(LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS)
     delete Impl_->Thread;
     Impl_->Thread = nullptr;
 #else

@@ -2,7 +2,7 @@
 
 The Pages application compiles `apps/editor` with Qt Widgets for WebAssembly.
 The UI, project/configuration models and serializers are shared with the desktop
-editor. Browser file import/download and explicitly unavailable process/audio
+editor. Browser file import/download and explicitly unavailable native-process/audio-playback
 adapters are private implementations selected by the editor target. The game
 viewport remains a separate graphics concern; this port does not replace Qt
 with the engine's unfinished UI toolkit.

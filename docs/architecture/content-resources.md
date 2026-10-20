@@ -251,8 +251,11 @@ the digest of the new bytes for the next edit. Pass `nullptr` instead of an
 expected digest to require that a new destination does not exist. Run these
 synchronous operations outside audio callbacks and render critical paths.
 
-The current `Content::SaveFile` adapter supports Linux and macOS. It keeps the
-same public signature and SHA-256 expected-digest policy. Other platforms return
+The current `Content::SaveFile` adapter supports Linux, macOS and Emscripten MEMFS.
+The browser path requires one filesystem owner and never yields between digest
+checks and rename. It skips the unsupported native writer lock and publishes only
+volatile session memory; download is still required to keep edits across reload.
+It keeps the same public signature and SHA-256 expected-digest policy. Other platforms return
 `Unsupported`; portable catalogs and JSON processing do not depend on this save
 backend. This adapter is separate from the proposed FoundationFilesystem F5
 persistence API and does not implement watchers or asynchronous acquisition.

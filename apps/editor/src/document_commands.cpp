@@ -4,6 +4,7 @@
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
+#include "internal/editor_files.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
 #include "internal/world_workspace.h"
@@ -11,6 +12,7 @@
 #include <QAbstractItemDelegate>
 #include <QAction>
 #include <QApplication>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
@@ -18,6 +20,31 @@
 
 namespace ludus::editor
 {
+#if defined(Q_OS_WASM)
+bool MainWindow::downloadBrowserProject()
+{
+    if (Content_->Importing() == true)
+    {
+        StatusLabel_->setText(QStringLiteral("Finish or cancel content import before downloading the project."));
+        return false;
+    }
+    if (Audio_->IsDirty() == true)
+    {
+        Audio_->Save();
+        if (Audio_->IsDirty() == true)
+        {
+            return false;
+        }
+    }
+    if ((World_->Dirty() == true && World_->Save() == false) ||
+        (Scripts_->Dirty() == true && Scripts_->Save() == false) ||
+        (Renderer_->IsDirty() == true && Renderer_->Save() == false))
+    {
+        return false;
+    }
+    return DownloadEditorProject(this, Controller_->State().DescriptorPath);
+}
+#endif
 QWidget* MainWindow::getActiveWorkspaceOrNull() const
 {
     // Save and Undo follow the active document tab. Focus in a tool window (for example
@@ -75,6 +102,11 @@ void MainWindow::RenderDocumentActions()
                             : isRenderer ? Renderer_->CanSave()
                                          : isConfiguration && Configuration_->Preview() != nullptr);
 #if defined(Q_OS_WASM)
+    if (Audio_->IsDirty() == true || World_->Dirty() == true || Scripts_->Dirty() == true ||
+        Renderer_->IsDirty() == true)
+    {
+        MarkBrowserEdited();
+    }
     if (isProject || isConfiguration)
     {
         SaveAction_->setText(isProject ? QStringLiteral("Save and &Download Project")

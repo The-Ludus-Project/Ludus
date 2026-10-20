@@ -7,7 +7,7 @@
 #include <span>
 #include <string_view>
 
-#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB
 #    include <cerrno>
 #    include <fcntl.h>
 #    include <sys/file.h>
@@ -17,6 +17,9 @@
 // Darwin declares descriptor-relative rename in this native header, without
 // bringing in C stdio or diagnostic APIs.
 #        include <sys/stdio.h>
+#    elif LUDUS_TARGET_OS == LUDUS_OS_WEB
+// Emscripten declares renameat here; no stdio diagnostics are used.
+#        include <stdio.h>
 #    else
 #        include <sys/syscall.h>
 #    endif
@@ -27,7 +30,7 @@
 
 namespace ludus::content
 {
-#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB
 namespace
 {
 // Thanks to Apple, Mac OS X Manual Pages, flock(2), rename(2) and fsync(2):
@@ -52,7 +55,7 @@ int Sync(int descriptor) noexcept
 }
 int Replace(int directory, const char* source, const char* destination) noexcept
 {
-#        if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+#        if LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB
     return ::renameat(directory, source, directory, destination);
 #        else
     return static_cast<int>(::syscall(SYS_renameat, directory, source, directory, destination));
@@ -265,7 +268,7 @@ SaveFile(std::string_view root, std::string_view path, std::span<const uint8> da
     {
         return Status::Invalid;
     }
-#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS
+#if LUDUS_TARGET_OS == LUDUS_OS_LINUX || LUDUS_TARGET_OS == LUDUS_OS_MACOS || LUDUS_TARGET_OS == LUDUS_OS_WEB
     if (data.size() > MAX_SAVE_BYTES)
     {
         return Status::Limit;
@@ -277,6 +280,7 @@ SaveFile(std::string_view root, std::string_view path, std::span<const uint8> da
     {
         return status;
     }
+#    if LUDUS_TARGET_OS != LUDUS_OS_WEB
     // One cooperative directory lock serializes Ludus writers. External edits
     // are checked again immediately before rename; arbitrary external writers
     // must participate in locking for a strict multi-process compare-and-swap.
@@ -289,6 +293,13 @@ SaveFile(std::string_view root, std::string_view path, std::span<const uint8> da
     {
         return errno == EWOULDBLOCK || errno == EAGAIN ? Status::Conflict : Status::IoError;
     }
+#    else
+    // Thanks to Emscripten contributors, "File System API", MEMFS:
+    // https://emscripten.org/docs/api_reference/Filesystem-API.html#memfs
+    // This session filesystem has one owner thread. No yield occurs between
+    // the checks and rename, so no flock is needed or supported. Publication
+    // remains volatile; this does not implement browser persistence.
+#    endif
     auto matches = [&]() noexcept {
         Bytes current;
         const Status readStatus = ReadAt(directory.Value, leaf.Data, MAX_SAVE_BYTES, current);

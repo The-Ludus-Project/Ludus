@@ -98,7 +98,9 @@ TEST_CASE("Audio editor saves drafts, reopens canonical data and preserves exter
     auto* gain = workspace.findChild<QDoubleSpinBox*>(QStringLiteral("audio-gain"));
     REQUIRE(gain != nullptr);
     gain->setValue(0.25);
+    REQUIRE(workspace.IsDirty() == true);
     ClickSave(workspace);
+    REQUIRE(workspace.IsDirty() == false);
     ludus::editor::AudioWorkspace reopened;
     reopened.SetRoot(directory.path());
     Activate(reopened);
@@ -115,6 +117,7 @@ TEST_CASE("Audio editor saves drafts, reopens canonical data and preserves exter
     gain->setValue(0.75);
     ClickSave(workspace);
     REQUIRE(gain->value() == 0.75);
+    REQUIRE(workspace.IsDirty() == true);
     content::Bytes current;
     REQUIRE(content::ReadFile(root.constData(), "hit.json", 100, current) == content::Status::Ok);
     REQUIRE(current.String() == "{}");

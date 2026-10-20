@@ -157,6 +157,16 @@ contracts; existing use is not precedent for new code.
 
 ### Process
 
+The Emscripten session-file adapter reuses FoundationFilesystem's descriptor
+read operations (`openat`, `fcntl` duplication, `fstat`/`fstatat`, `pread`,
+`close`) and Content's bounded create/check/rename implementation. On this
+single-owner MEMFS path, Content uses `write`, `fsync`, `close`, `unlinkat`, and
+`renameat` (declared by Emscripten's `<stdio.h>`); no stdio diagnostics or native
+writer lock are used. This permission is confined to these existing private
+file boundaries. It provides volatile session publication, not durable browser
+storage. The browser Content probe exercises publication, conflicts, retained
+readers, output preservation, empty files and child-symlink rejection.
+
 - Before adding an include or standard-library call, check the exact operation
   against this allowlist and inspect the equivalent Ludus module.
 - Allowed headers do not grant blanket permission for everything they expose.

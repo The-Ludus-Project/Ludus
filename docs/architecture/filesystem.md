@@ -32,8 +32,11 @@ relative operations that refuse symlinks at every component. A trusted root is
 selected by the host; this boundary is not a sandbox against hostile mutation
 of already-open directories, bind mounts, hard links or privileged processes.
 
-Linux and macOS provide synchronous regular-file reads through a shared POSIX
-backend. Other targets explicitly return Unsupported. Empty files are valid. Bound
+Linux, macOS and Emscripten MEMFS provide synchronous regular-file reads through
+a shared POSIX backend. Browser reads stay in the session filesystem; host files
+must first pass the editor's bounded import adapter. Browser durable publication,
+native watches and asynchronous host I/O remain unavailable. Other targets
+explicitly return Unsupported. Empty files are valid. Bound
 sizes and offsets before narrowing. ReadAt returns the actual progress, retries
 interrupted syscalls and handles short reads. EOF is successful zero progress.
 Atomic pathname replacement preserves an open file's old revision. Detect

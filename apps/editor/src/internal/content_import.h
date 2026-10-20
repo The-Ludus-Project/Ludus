@@ -22,7 +22,8 @@ struct ContentImportResult final
     QString CandidatePath;
 };
 
-// Cold synchronous adapter; invoke only on a worker. Hooks are borrowed for
+// Cold synchronous adapter; invoke on a native worker or the browser's sole
+// filesystem owner after yielding to paint progress. Hooks are borrowed for
 // this call and support deterministic cancellation/conflict tests. A failed
 // catalog switch retains the old version and reports any unreferenced candidate.
 struct ContentImportHooks final
