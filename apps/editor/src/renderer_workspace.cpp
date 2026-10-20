@@ -191,6 +191,57 @@ QStringList GetChoices(const QString& field)
     return {};
 }
 
+/// Choices for a Subgraph reference: every other draft graph for `asset`, and the
+/// referenced graph's configurations for `configuration`. An authored value that is not a
+/// current choice (a missing file or configuration) stays listed, so the inspector shows
+/// it unchanged; the shared validator still owns legality, including cycles.
+// File and field are distinct authored identities.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+QStringList GetSubgraphChoices(const RenderGraphDocument& document,
+                               const QString& file,
+                               const QJsonObject& node,
+                               const QString& field)
+{
+    if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("Subgraph"))
+    {
+        return {};
+    }
+    QStringList choices;
+    if (field == QStringLiteral("asset"))
+    {
+        for (const QString& candidate : document.GetFiles())
+        {
+            QJsonObject graph;
+            if (candidate != file && document.GetGraph(candidate, graph) == true)
+            {
+                choices.append(candidate);
+            }
+        }
+    }
+    else if (field == QStringLiteral("configuration"))
+    {
+        QJsonObject graph;
+        if (document.GetGraph(node.value(QStringLiteral("asset")).toString(), graph) == true)
+        {
+            const QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+            for (const QJsonValueConstRef configuration : configurations)
+            {
+                choices.append(configuration.toObject().value(QStringLiteral("id")).toString());
+            }
+        }
+    }
+    else
+    {
+        return {};
+    }
+    const QString current = node.value(field).toString();
+    if (choices.contains(current) == false)
+    {
+        choices.prepend(current);
+    }
+    return choices;
+}
+
 /// Default authored record for a new node; the shared validator still owns legality.
 QJsonObject MakeNode(const QString& kind, const QString& identity)
 {
@@ -1772,9 +1823,26 @@ void RendererWorkspace::renderTree()
 
 void RendererWorkspace::renderInspector()
 {
+    // A field's own commit (Return, focus loss, activation, Apply) re-renders the inspector
+    // from inside that widget's event handler. Deleting the widget there is a use-after-free,
+    // so detach and hide the old rows now and let the event loop delete them.
     while (mFields->rowCount() > 0)
     {
-        mFields->removeRow(0);
+        const QFormLayout::TakeRowResult row = mFields->takeRow(0);
+        for (QLayoutItem* itemOrNull : {row.labelItem, row.fieldItem})
+        {
+            if (itemOrNull == nullptr)
+            {
+                continue;
+            }
+            QWidget* widgetOrNull = itemOrNull->widget();
+            if (widgetOrNull != nullptr)
+            {
+                widgetOrNull->hide();
+                widgetOrNull->deleteLater();
+            }
+            delete itemOrNull;
+        }
     }
     const QJsonObject node = selectedNode();
     mLayoutX->setEnabled(node.isEmpty() == false);
@@ -1828,7 +1896,11 @@ void RendererWorkspace::renderInspector()
         {
             continue;
         }
-        const QStringList choices = GetChoices(name);
+        QStringList choices = GetChoices(name);
+        if (choices.isEmpty() == true)
+        {
+            choices = GetSubgraphChoices(mDocument, mSelectedFile, node, name);
+        }
         if (choices.isEmpty() == false)
         {
             QComboBox* combo = new QComboBox(mInspector);
@@ -2050,6 +2122,27 @@ void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonVa
         node.insert(QStringLiteral("format"),
                     value.toString() == QStringLiteral("DepthTexture") ? QStringLiteral("Depth32Float")
                                                                        : QStringLiteral("RGBA8Unorm"));
+    }
+    // A new Subgraph asset keeps its configuration only when that asset defines it;
+    // otherwise it follows the asset's authored default, or its first configuration.
+    QJsonObject graph;
+    if (field == QStringLiteral("asset") &&
+        node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph") &&
+        mDocument.GetGraph(value.toString(), graph) == true)
+    {
+        QStringList configurations;
+        const QJsonArray records = graph.value(QStringLiteral("configurations")).toArray();
+        for (const QJsonValueConstRef record : records)
+        {
+            configurations.append(record.toObject().value(QStringLiteral("id")).toString());
+        }
+        const QString authoredDefault = graph.value(QStringLiteral("default")).toString();
+        if (configurations.contains(node.value(QStringLiteral("configuration")).toString()) == false &&
+            configurations.isEmpty() == false)
+        {
+            node.insert(QStringLiteral("configuration"),
+                        configurations.contains(authoredDefault) == true ? authoredDefault : configurations.first());
+        }
     }
     documentEdited(mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, node));
 }

@@ -1155,6 +1155,14 @@ Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
   operation as Properties' **Add Node**. Creation is disabled while a job runs or
   Source text needs applying/reverting. **Subgraph Reference** adds a reference
   node; **Create Subgraph...** creates a new library source as well.
+- A selected Subgraph node's **asset** and **configuration** are dropdowns in
+  Properties. **asset** lists the package's other `.lurender.json` graphs (never the
+  graph that contains the node). **configuration** lists the selected asset's
+  configurations. Choosing an asset that lacks the current configuration
+  switches to that asset's `default`, or to its first configuration if it has no
+  default. A missing asset or configuration is still listed, so you can see it
+  and replace it. Validation still decides whether the reference is legal,
+  including whether it creates a cycle.
 - **Open Subgraph** opens the referenced configuration; a missing source disables
   this item. **Create Subgraph...** can supply a new source for that node.
 - **View Shaders** on other nodes lists the source files mapped by the root build
