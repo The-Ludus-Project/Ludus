@@ -160,6 +160,11 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
         Cameras_->setCurrentIndex(0);
     });
     connect(&Preview_, &RenderPreview::Changed, this, &RenderPanel::ShowStatus);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // The game's images are imported onto the viewport's device; a Vulkan import must be
+    // destroyed before that device, so Play ends before the device stops.
+    connect(&Preview_, &RenderPreview::DeviceStopping, this, [this]() { EndPlay(); });
+#endif
     connect(&Preview_, &RenderPreview::Stopped, this, [this]() {
         ++Generation_;
         Again_ = false;
@@ -209,6 +214,14 @@ bool RenderPanel::BeginPlay(QString& outAddress, QString& outReason)
     {
         outReason = QStringLiteral("Play in the viewport needs the on-screen GPU viewport; this editor shows the "
                                    "World through an offscreen copy.");
+        return false;
+    }
+    // Linux: Qt's Vulkan device imports the game's memory only with VK_KHR_external_memory_fd,
+    // and a viewport that fell back to the readback canvas has no Qt device to import onto.
+    if (Viewport_->CanImportHostedImages() == false)
+    {
+        outReason = QStringLiteral("Play in the viewport needs a GPU viewport whose device can import the game's "
+                                   "images (Vulkan VK_KHR_external_memory_fd); this one cannot.");
         return false;
     }
     // The game's frames are imported onto the edit preview's device, the one Qt samples with.

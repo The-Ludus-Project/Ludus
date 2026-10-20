@@ -1123,7 +1123,10 @@ container stacking rules; widgets cannot overlay it arbitrarily.
 Metal sharing requires Qt 6.4+ with Qt Quick and the Cocoa display plugin. On
 Linux (X11 or Wayland) the editor creates the Vulkan device itself, on Qt's
 `QVulkanInstance`, choosing a graphics queue that can present to the viewport
-window and enabling `VK_KHR_swapchain`. Qt Quick adopts that device through
+window and enabling `VK_KHR_swapchain`. Where the adapter supports
+`VK_KHR_external_memory_fd`, the editor enables it too (with
+`VK_KHR_external_memory` where still listed), so Play in the viewport can import
+the game's images onto this device. Qt Quick adopts that device through
 `QQuickGraphicsDevice::fromDeviceObjects`, available in every Qt 6 release, and
 the RHI admits the same device and queue. Qt before 6.6 cannot report the queue of
 a device it created itself; with this ownership it never has to, so Ubuntu 24.04's
@@ -1303,7 +1306,7 @@ For this adapter's **Play saved World**, configure Project settings to build
 directory, or absolute). Save Project settings. The action saves the World, then
 uses the existing supervised Build/Run workflow.
 
-**Play in the viewport (macOS).** The game opens in the World viewport, which
+**Play in the viewport (macOS and Linux).** The game opens in the World viewport, which
 becomes its window; the World stays as edited until the game's first frame
 arrives. Click the viewport to give the game the keyboard. Keys go to the game by
 physical key, and editor shortcuts do not take them. **Shift+F1** gives the
@@ -1312,7 +1315,9 @@ closes the game's window, as its own close button would; the game's process is
 stopped if it has not exited after three seconds. Resizing or hiding the
 viewport resizes or hides the game's window. When the game exits, crashes or is
 stopped, the viewport edits the World again. The game receives no mouse input
-yet, because Platform has none.
+yet, because Platform has none. On Linux the viewport needs an X11 or Wayland
+display and a Vulkan adapter with `VK_KHR_external_memory_fd`, and the game must
+render on the same adapter and driver as the editor.
 
 **Play mode.** The **Play mode** box next to **Play saved World** chooses **In
 viewport** (the default) or **In separate window**. The choice is an editor
@@ -1320,9 +1325,10 @@ preference, saved for later sessions and never written to the project, and it
 applies to the next Play; a running game does not move. In separate-window mode
 the game is launched without the hosted-window variable, so it opens its own
 native window, and the World viewport is labelled as playing in a separate
-window until the game exits. Where the viewport cannot host the game (with
-Vulkan on Linux, under offscreen Qt, while the viewport is paused, or without a
-GPU device), Play starts nothing: the World view states why and offers **Play in
+window until the game exits. Where the viewport cannot host the game (on a
+Vulkan adapter without `VK_KHR_external_memory_fd`, in the offscreen readback
+viewport, under offscreen Qt, while the viewport is paused, or without a GPU
+device), Play starts nothing: the World view states why and offers **Play in
 a separate window** for this one run, leaving the preference unchanged. Play
 never switches modes silently. See
 [Play in the editor viewport](../architecture/editor-gui-systems.md#play-in-the-editor-viewport).

@@ -1204,6 +1204,18 @@ jobs:
         run: |
           out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --no-tests=error
           out/host-tools/venv/bin/ctest --preset linux-clang-development --tests-regex '^ludus_target_detection$' --output-on-failure --no-tests=error
+      # Play in the viewport on Linux: Qt's own Vulkan device on an Xvfb display,
+      # with Mesa's lavapipe for both the editor and the game, imports the game's
+      # exported memory. The journey plays the World-demo game in the World viewport.
+      - name: Verify Play in the World viewport on Vulkan
+        run: |
+          apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
+          timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install -y -qq xvfb xauth
+          out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_BUILD_WORLD_DEMO=ON
+          out/host-tools/venv/bin/cmake --build --preset linux-clang-development \
+            --target ludus_editor_tests ludus_world_demo ludus_rhi_hosted_producer
+          xvfb-run -a -s '-screen 0 1600x1000x24' env QT_QPA_PLATFORM=xcb \
+            out/build/linux-clang-development/apps/editor/ludus_editor_tests '[play][gpu],[.play-native]'
       - name: Measure the content browser projection
         env:
           QT_QPA_PLATFORM: offscreen
