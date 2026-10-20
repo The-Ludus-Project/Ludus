@@ -2199,15 +2199,15 @@ void RasterExpect(uint32 request, RasterCallbacks callbacks) noexcept
         }
     }
 }
-bool IsRasterRequestCurrent(RasterKind kind, usize slot, uint32 request) noexcept
+bool IsRasterRequestCurrent(RasterRequestIdentity identity) noexcept
 {
-    const StorageTable<Record>& records = gRecords[static_cast<usize>(kind)];
-    if (slot >= records.GetSize())
+    const StorageTable<Record>& records = gRecords[static_cast<usize>(identity.Kind)];
+    if (identity.ResourceSlot >= records.GetSize())
     {
         return false;
     }
-    const Record& record = records[slot];
-    return record.Owner != 0 && record.Request == request && record.Callbacks != 0;
+    const Record& record = records[identity.ResourceSlot];
+    return record.Owner != 0 && record.Request == identity.Request && record.Callbacks != 0;
 }
 void RasterComplete(uint32 request, RasterStatus status) noexcept
 {

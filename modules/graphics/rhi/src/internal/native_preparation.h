@@ -59,7 +59,8 @@ void CompleteNativePreparation(void* contextOrNull) noexcept
 {
     LUDUS_REQUIRE(contextOrNull != nullptr);
     NativePreparationTask& task = *static_cast<NativePreparationTask*>(contextOrNull);
-    if (internal::IsRasterRequestCurrent(task.Kind, task.ResourceSlot, task.Request) == true)
+    if (internal::IsRasterRequestCurrent(
+            { .Kind = task.Kind, .ResourceSlot = task.ResourceSlot, .Request = task.Request }) == true)
     {
         static_cast<void>(task.Complete(isPreparationDraining));
     }

@@ -345,21 +345,36 @@ struct SampledImage final
     bool IsPresent = false;
 };
 
+/// Texture slot and channel selected from the same authored surface source.
+struct SurfaceSourceSelection final
+{
+    uint32 Texture = IR_NONE;
+    usize Channel = 0;
+};
+
+/// Output texel coordinates and the image extent in which they are measured.
+struct SurfaceSamplePixel final
+{
+    uint32 X = 0;
+    uint32 Y = 0;
+    uint32 Width = 0;
+    uint32 Height = 0;
+};
+
 /// Decode a slot material's data texture for repacking; an unreadable image is reported
 /// and left absent, so its multiplier stays one and the scalar term applies alone.
 [[nodiscard]] Status DecodeSurfaceSource(const SceneIr& scene,
                                          std::string_view root,
-                                         uint32 texture,
-                                         usize channel,
+                                         SurfaceSourceSelection selection,
                                          DiagnosticLog& inoutLog,
                                          SampledImage& outSource) noexcept
 {
-    if (texture == IR_NONE || HasImage(scene.Textures[texture]) == false)
+    if (selection.Texture == IR_NONE || HasImage(scene.Textures[selection.Texture]) == false)
     {
         return Status::Ok;
     }
     std::string_view message;
-    const Status decoded = DecodeDataTexture(scene, root, scene.Textures[texture], outSource.Image, message);
+    const Status decoded = DecodeDataTexture(scene, root, scene.Textures[selection.Texture], outSource.Image, message);
     if (decoded == Status::OutOfMemory)
     {
         return decoded;
@@ -368,32 +383,28 @@ struct SampledImage final
     {
         (void)inoutLog.Add(DiagnosticSeverity::Warning,
                            codes::TEXTURE_UNREADABLE,
-                           GetImageName(scene, scene.Textures[texture]),
+                           GetImageName(scene, scene.Textures[selection.Texture]),
                            0,
                            message);
         return Status::Ok;
     }
-    outSource.Channel = math::Min(channel, ALPHA_CHANNEL);
+    outSource.Channel = math::Min(selection.Channel, ALPHA_CHANNEL);
     outSource.IsPresent = true;
     return Status::Ok;
 }
 
 /// Channel of a source texel at an output texel, sampled nearest; absent sources read fallback.
-[[nodiscard]] uint8 SampleChannel(const SampledImage& source,
-                                  usize channel,
-                                  uint32 x,
-                                  uint32 y,
-                                  uint32 width,
-                                  uint32 height,
-                                  uint8 fallback) noexcept
+[[nodiscard]] uint8
+SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel positionPixel, uint8 fallback) noexcept
 {
     if (source.IsPresent == false)
     {
         return fallback;
     }
-    const usize sourceX = usize{x} * source.Image.Width / width;
-    const usize sourceY = usize{y} * source.Image.Height / height;
-    return source.Image.Texels[(sourceY * source.Image.Width + sourceX) * DECODED_IMAGE_CHANNEL_COUNT + channel];
+    const usize sourceXPixel = usize{positionPixel.X} * source.Image.Width / positionPixel.Width;
+    const usize sourceYPixel = usize{positionPixel.Y} * source.Image.Height / positionPixel.Height;
+    return source.Image
+        .Texels[(sourceYPixel * source.Image.Width + sourceXPixel) * DECODED_IMAGE_CHANNEL_COUNT + channel];
 }
 
 /// Repack a slot's tangent-space normal map (RG) and roughness (B) and metallic (A)
@@ -437,16 +448,22 @@ struct SampledImage final
     SampledImage normal;
     SampledImage roughness;
     SampledImage metallic;
-    Status status = DecodeSurfaceSource(scene, root, normalTexture, 0, inoutLog, normal);
+    Status status = DecodeSurfaceSource(scene, root, { .Texture = normalTexture, .Channel = 0 }, inoutLog, normal);
     if (status == Status::Ok)
     {
-        status =
-            DecodeSurfaceSource(scene, root, material.RoughnessTexture, material.RoughnessChannel, inoutLog, roughness);
+        status = DecodeSurfaceSource(scene,
+                                     root,
+                                     { .Texture = material.RoughnessTexture, .Channel = material.RoughnessChannel },
+                                     inoutLog,
+                                     roughness);
     }
     if (status == Status::Ok)
     {
-        status =
-            DecodeSurfaceSource(scene, root, material.MetallicTexture, material.MetallicChannel, inoutLog, metallic);
+        status = DecodeSurfaceSource(scene,
+                                     root,
+                                     { .Texture = material.MetallicTexture, .Channel = material.MetallicChannel },
+                                     inoutLog,
+                                     metallic);
     }
     if (status != Status::Ok ||
         (normal.IsPresent == false && roughness.IsPresent == false && metallic.IsPresent == false))
@@ -482,12 +499,11 @@ struct SampledImage final
         for (uint32 x = 0; x < image.Width; ++x)
         {
             uint8* texel = image.Texels.GetData() + (usize{y} * image.Width + x) * DECODED_IMAGE_CHANNEL_COUNT;
-            texel[0] = SampleChannel(normal, 0, x, y, image.Width, image.Height, FLAT_NORMAL_CODE);
-            texel[1] = SampleChannel(normal, 1, x, y, image.Width, image.Height, FLAT_NORMAL_CODE);
-            texel[ROUGHNESS_CHANNEL] =
-                SampleChannel(roughness, roughness.Channel, x, y, image.Width, image.Height, UNIT_MULTIPLIER_CODE);
-            texel[ALPHA_CHANNEL] =
-                SampleChannel(metallic, metallic.Channel, x, y, image.Width, image.Height, UNIT_MULTIPLIER_CODE);
+            const SurfaceSamplePixel positionPixel{ .X = x, .Y = y, .Width = image.Width, .Height = image.Height };
+            texel[0] = SampleChannel(normal, 0, positionPixel, FLAT_NORMAL_CODE);
+            texel[1] = SampleChannel(normal, 1, positionPixel, FLAT_NORMAL_CODE);
+            texel[ROUGHNESS_CHANNEL] = SampleChannel(roughness, roughness.Channel, positionPixel, UNIT_MULTIPLIER_CODE);
+            texel[ALPHA_CHANNEL] = SampleChannel(metallic, metallic.Channel, positionPixel, UNIT_MULTIPLIER_CODE);
         }
     }
     cookedOrNull->Source = normal.IsPresent == true      ? normalTexture

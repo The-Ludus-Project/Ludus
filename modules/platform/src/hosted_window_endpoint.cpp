@@ -340,9 +340,8 @@ HostedEndpointStatus HostedWindowEndpoint::Pump() noexcept
 {
     return HostedEndpointStatus::InvalidState;
 }
-HostedEndpointStatus HostedWindowEndpoint::SendResize([[maybe_unused]] foundation::uint32 width,
-                                                      [[maybe_unused]] foundation::uint32 height,
-                                                      [[maybe_unused]] foundation::float32 scale) noexcept
+HostedEndpointStatus
+HostedWindowEndpoint::SendResize(foundation::uint32, foundation::uint32, foundation::float32) noexcept
 {
     return HostedEndpointStatus::InvalidState;
 }
@@ -373,8 +372,7 @@ bool HostedWindowEndpoint::TryTakeSurfaceEvent([[maybe_unused]] HostedSurfaceEve
 {
     return false;
 }
-HostedEndpointStatus HostedWindowEndpoint::SendRelease([[maybe_unused]] foundation::uint32 generation,
-                                                       [[maybe_unused]] foundation::uint32 image) noexcept
+HostedEndpointStatus HostedWindowEndpoint::SendRelease(foundation::uint32, foundation::uint32) noexcept
 {
     return HostedEndpointStatus::InvalidState;
 }
