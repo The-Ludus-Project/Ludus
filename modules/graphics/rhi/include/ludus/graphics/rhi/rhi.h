@@ -165,6 +165,13 @@ struct FrameTarget final
     ludus::foundation::float64 Green = 0;
     ludus::foundation::float64 Blue = 0;
     ludus::foundation::float64 Alpha = 1;
+    /// False records an offscreen-only frame without acquiring, clearing or
+    /// presenting the surface. Currently supported by WebGPU; other backends
+    /// reject SetFrameTarget with Unsupported and preserve the previous target.
+    /// Dimensions still describe the logical frame extent and must be nonzero
+    /// to open a frame. Surface passes and compatibility fullscreen draws are
+    /// invalid in this mode; explicit texture passes and compute remain usable.
+    bool ShouldPresentToSurface = true;
 };
 [[nodiscard]] FrameStatus SetFrameTarget(const FrameTarget& target) noexcept;
 [[nodiscard]] FrameStatus BeginFrameStatus() noexcept;

@@ -91,8 +91,10 @@ current scene. Output is bounded to 1024 physical pixels on its longest side.
 
 **Solid** is the neutral navigation visualization; **Albedo** shows unlit surface
 colors; **Lit** uses admitted authored direct lights, emission and environment.
-The browser profile does not submit shadow maps or run the native worker-based
-static lighting bake. Emissive geometry does not imply real-time indirect lighting.
+Authored raster shadows use the shared shadow atlas path. Shadow preparation
+records offscreen WebGPU submissions without acquiring or clearing the visible
+canvas, so pending candidates retain the last presented view. The browser
+profile does not run the native worker-based static lighting bake. Emissive geometry does not imply real-time indirect lighting.
 Pending resource preparation retains the last presented view; rejected candidates
 report a failure without replacing it. A completed image is required before an
 import is published.

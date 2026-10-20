@@ -37,6 +37,7 @@ if (typeof window === 'undefined' && typeof process === 'object') {
   globalThis.GPUOutOfMemoryError = class extends Error {};
   globalThis.GPUInternalError = class extends Error {};
   let currentDevice;
+  let isOffscreen = false;
   function device() {
     let lose;
     let scopes = 0;
@@ -76,7 +77,7 @@ if (typeof window === 'undefined' && typeof process === 'object') {
               end() {ended = true;}
             };
           },
-          finish() {assert(ended, 'unfinished pass'); return {kind: 'frame commands', ended};}
+          finish() {assert(ended || isOffscreen, 'unfinished pass'); return {kind: 'frame commands', ended: ended || isOffscreen};}
         };
       },
       destroy() {if (!result.destroyed) {result.destroyed = true; ++stats.destroyed; lose({reason: 'destroyed', message: 'test destroy'});}},
@@ -111,6 +112,27 @@ if (typeof window === 'undefined' && typeof process === 'object') {
       return;
     }
     if (stats.submitted < 2) return;
+    if (scenario === 'offscreen' && phase === 0) {
+      const {configured, acquired, submitted} = stats;
+      // Only this explicit test call admits an empty encoder. Normal visible
+      // frames must still end their clear/draw pass before submission.
+      isOffscreen = true;
+      assert(Module._CheckOffscreenFrame() === 1, 'offscreen frame rejected');
+      isOffscreen = false;
+      assert(stats.configured === configured && stats.acquired === acquired &&
+             stats.submitted === submitted + 1 && noFrameHandles(), 'offscreen acquired canvas or leaked');
+      checkpoint = stats.submitted;
+      phase = 1;
+      return;
+    }
+    if (scenario === 'offscreen') {
+      assert(stats.submitted === stats.acquired + 1 && stats.drawn === stats.acquired, 'offscreen/visible accounting');
+      if (stats.submitted > checkpoint) {
+        Module._Stop();
+        finish(stats.destroyed === stats.devices && noFrameHandles(), 'offscreen preserves canvas and visible frames resume');
+      }
+      return;
+    }
     assert(noFrameHandles() && stats.submitted === stats.acquired && stats.drawn === stats.submitted, 'per-frame handle leak or incomplete submission');
     if (scenario === 'device-loss' || scenario === 'validation') {
       if (phase === 0) {

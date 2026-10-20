@@ -18,6 +18,7 @@ const source = Buffer.from(`LookAt 0 0 -4 0 0 0 0 1 0
 Camera "perspective" "float fov" [45]
 WorldBegin
 LightSource "infinite" "rgb L" [0.2 0.2 0.2]
+LightSource "distant" "point3 from" [0 2 -2] "point3 to" [0 0 0] "rgb L" [2 2 2]
 Material "diffuse" "rgb reflectance" [0.8 0.15 0.05]
 Shape "trianglemesh" "point3 P" [-1 -1 0 1 -1 0 0 1 0] "integer indices" [0 1 2]
 WorldEnd
@@ -153,7 +154,7 @@ try {
     await rendered(page, previous);
     assert.ok((await shot(page, mode)).warm > 50, 'Authored material color must reach the GPU image');
   }
-  report.cases.push('Albedo and authored Lit material replacement');
+  report.cases.push('Albedo and authored Lit material replacement with directional shadow preparation');
   const accepted = await shot(page, 'accepted-lit');
   const toolbar = await canvas(page).boundingBox();
   const previous = await frames(page);

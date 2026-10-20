@@ -376,6 +376,10 @@ void Shutdown() noexcept
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
+    if (target.ShouldPresentToSurface == false)
+    {
+        return FrameStatus::Unsupported;
+    }
     if (gEncoder != nil)
     {
         return FrameStatus::InvalidState;

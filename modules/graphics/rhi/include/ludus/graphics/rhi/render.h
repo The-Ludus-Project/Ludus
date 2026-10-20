@@ -114,7 +114,8 @@ struct FrameInfo final
     ludus::foundation::uint32 Height = 0;
     SurfaceEncoding Encoding = SurfaceEncoding::Unorm;
 };
-/// Actual acquired extent/attachment conversion, valid only in an open frame.
+/// Acquired extent/attachment conversion, valid only in an open frame.
+/// Offscreen-only frames report their logical target extent; encoding remains the surface format.
 [[nodiscard]] FrameInfo GetFrameInfo() noexcept;
 /// @brief Full replacement between frames or before the open frame's first draw.
 ///

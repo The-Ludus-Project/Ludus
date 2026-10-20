@@ -54,7 +54,8 @@ node editor_viewport.mjs ../../out/editor-pages ../../out/editor-viewport-qa
 ```
 
 This separate runner opens a World, imports a small PBRT scene through SceneCook
-and MEMFS, checks visible GPU pixels in Solid/Albedo/Lit, navigates with Qt mouse
+and MEMFS, checks visible GPU pixels in Solid/Albedo/Lit, exercises directional shadow
+preparation, navigates with Qt mouse
 input, resizes, hides/shows its tab, destroys the real GPU device and tests an
 unavailable WebGPU API. Explicitly synthetic pipeline delay/rejection also checks
 that pending and failed candidates retain prior pixels and can recover. It saves
@@ -66,3 +67,18 @@ The Qt controls are canvas-drawn, so this runner uses a fixed 1440×1000 layout
 and explicit input coordinates. Update its interaction steps when that layout
 changes. Frame counters are paired with composited screenshot checks; neither
 Qt widget pixels nor a completed shader build alone proves scene rendering.
+
+## Offscreen WebGPU frames
+
+A web configuration with `LUDUS_BUILD_WEB_PROBES=ON` builds
+`ludus_web_offscreen_probe` alongside the existing frame semantics probe. Serve
+`out/build/<configuration>/tools/web-frame-probe` over localhost and open
+`offscreen.html` in a WebGPU browser. It presents one red canvas frame, renders
+three green offscreen texture frames, and reads back the texture through the
+public RHI. Passing requires green readback pixels and exactly one canvas
+texture acquisition; visually confirm that the canvas remains red.
+
+The fixture exposes `data-state`, `data-stage`, `data-offscreen-frames` and
+`data-surface-acquisitions` on its status paragraph. This is a real-browser
+qualification fixture; it does not replace the Node provider semantics tests
+or establish that an imported World's shadow output is correct.
