@@ -169,8 +169,11 @@ QString DescribeDomain(RenderGraphDomain domain)
 
 QPainterPath MakeCurve(QPointF from, QPointF to)
 {
+    // Keep forward control points ordered across short gaps; backward links retain their routing.
+    const float64 horizontalGap = to.x() - from.x();
+    const float64 curveOffset = horizontalGap >= 0 ? math::Min(CURVE_OFFSET, horizontalGap * 0.5) : CURVE_OFFSET;
     QPainterPath path(from);
-    path.cubicTo(from + QPointF(CURVE_OFFSET, 0), to - QPointF(CURVE_OFFSET, 0), to);
+    path.cubicTo(from + QPointF(curveOffset, 0), to - QPointF(curveOffset, 0), to);
     return path;
 }
 
