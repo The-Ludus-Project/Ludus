@@ -569,11 +569,14 @@ TEST_CASE("Shutdown drains accepted work and supports repeated initialization", 
     }
     REQUIRE(graph.Seal() == JobStatus::Ok);
     JobSystem system;
+    REQUIRE(system.GetWorkerCount() == 0);
     for (uint32 repeat = 0; repeat < 10; ++repeat)
     {
         REQUIRE(system.Initialize({4}) == JobStatus::Ok);
+        REQUIRE(system.GetWorkerCount() == 4);
         REQUIRE(system.Submit(graph) == JobStatus::Ok);
         REQUIRE(system.Shutdown() == JobStatus::Ok);
+        REQUIRE(system.GetWorkerCount() == 0);
         for (const uint32 count : calls)
         {
             REQUIRE(count == repeat + 1);
@@ -590,7 +593,9 @@ TEST_CASE("Empty graphs and invalid system operations have explicit results", "[
     JobOutcome result{};
     REQUIRE(system.Wait(result) == JobStatus::NotInitialized);
     REQUIRE(system.Initialize({65}) == JobStatus::InvalidArgument);
+    REQUIRE(system.GetWorkerCount() == 0);
     REQUIRE(system.Initialize() == JobStatus::Ok);
+    REQUIRE(system.GetWorkerCount() == 0);
     REQUIRE(system.Initialize() == JobStatus::AlreadyInitialized);
     REQUIRE(system.Wait(result) == JobStatus::InvalidArgument);
     REQUIRE(system.Cancel() == JobStatus::InvalidArgument);

@@ -3496,6 +3496,7 @@ struct RoutedCook final
     }
     BestEffortOptions importOptions;
     importOptions.IsDryRun = isDryRun;
+    importOptions.JobsOrNull = options.JobsOrNull;
     BestEffortResult imported;
     CookError cookError;
     if (ImportSceneBestEffort(entryPath.GetView(), importOptions, imported, cookError, options.CancelOrNull) == false)

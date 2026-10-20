@@ -6,7 +6,7 @@ add_library(ludus_scene_cook STATIC
     src/importers/budget_planner.cpp src/importers/best_effort_import.cpp src/importers/authored_lighting.cpp
     src/importers/image/image_reader.cpp src/importers/image/exr_reader.cpp src/importers/source_resolver.cpp
     src/importers/front_end_support.cpp src/importers/obj/obj_reader.cpp src/importers/tangent_generation.cpp
-    src/importers/name_index.cpp src/importers/gltf/gltf_reader.cpp)
+    src/importers/name_index.cpp src/importers/gltf/gltf_reader.cpp src/importers/texture_decode_queue.cpp)
 add_library(Ludus::SceneCook ALIAS ludus_scene_cook)
 set_target_properties(ludus_scene_cook PROPERTIES EXPORT_NAME SceneCook)
 target_sources(ludus_scene_cook PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
@@ -14,7 +14,7 @@ target_sources(ludus_scene_cook PUBLIC FILE_SET public_headers TYPE HEADERS BASE
     include/ludus/content/scene_cook/best_effort_import.h include/ludus/content/scene_cook/limits.h)
 target_link_libraries(ludus_scene_cook
     PUBLIC Ludus::Content Ludus::FoundationContainers Ludus::FoundationIdentity Ludus::FoundationStrings
-    PRIVATE Ludus::SceneFormat Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationHash ludus_stb_image ludus_mikktspace)
+    PRIVATE Ludus::SceneFormat Ludus::FoundationMath Ludus::FoundationParsingJson Ludus::FoundationHash Ludus::FoundationThreading ludus_stb_image ludus_mikktspace)
 # Byte identity with the float64 reference requires unfused IEEE arithmetic.
 target_compile_options(ludus_scene_cook PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_scene_cook)
@@ -31,7 +31,7 @@ add_executable(ludus_cook tool/ludus_cook.cpp)
 set_target_properties(ludus_cook PROPERTIES OUTPUT_NAME ludus-cook)
 # The CLI supplies operating-system entropy for new UUIDs; the entropy target
 # avoids linking Platform's window backends into a command-line tool.
-target_link_libraries(ludus_cook PRIVATE Ludus::SceneCook Ludus::ContentIdentity Ludus::PlatformEntropy)
+target_link_libraries(ludus_cook PRIVATE Ludus::SceneCook Ludus::ContentIdentity Ludus::FoundationThreading Ludus::PlatformEntropy)
 ludus_apply_project_defaults(ludus_cook)
 
 if(LUDUS_BUILD_TESTS)
@@ -74,13 +74,14 @@ endif()
 
 if(LUDUS_BUILD_TESTS)
     add_executable(ludus_scene_import_tests
-        tests/image_decoder_tests.cpp tests/obj_import_tests.cpp tests/gltf_import_tests.cpp tests/tangent_tests.cpp)
+        tests/image_decoder_tests.cpp tests/obj_import_tests.cpp tests/gltf_import_tests.cpp tests/tangent_tests.cpp
+        tests/texture_decode_tests.cpp)
     target_include_directories(ludus_scene_import_tests PRIVATE src)
     target_compile_definitions(ludus_scene_import_tests PRIVATE
         LUDUS_SCENE_IMPORT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     target_link_libraries(ludus_scene_import_tests PRIVATE
         Ludus::SceneCook Ludus::SceneFormat Ludus::Resources Ludus::FoundationMath Ludus::FoundationStrings
-        Catch2::Catch2WithMain)
+        Ludus::FoundationThreading Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_scene_import_tests)
     ludus_enable_test_exceptions(ludus_scene_import_tests)
     add_test(NAME ludus_scene_import_tests COMMAND ludus_scene_import_tests)

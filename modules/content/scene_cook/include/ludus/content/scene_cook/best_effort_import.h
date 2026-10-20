@@ -22,6 +22,11 @@
 /// with a diagnostic instead. All front-ends share one format-neutral
 /// intermediate representation and budget planner. See
 /// docs/development/best-effort-scene-import.md.
+namespace ludus::foundation::threading
+{
+class JobSystem;
+} // namespace ludus::foundation::threading
+
 namespace ludus::content::scene_cook
 {
 /// Profile identifier of the pbrt-v4 importer, recorded in the import report and the catalog.
@@ -52,6 +57,17 @@ struct BestEffortOptions final
     /// Parse and plan only: no image decoding and no bundle. The report is complete
     /// except for texture sizes, and BestEffortResult::Bundle stays empty.
     bool IsDryRun = false;
+    /// Optional caller-owned job system on which texture images are decoded in parallel;
+    /// nullptr decodes them one at a time on the calling thread.
+    ///
+    /// The importer reads every image file on the calling thread, then decodes batches of
+    /// up to min(GetWorkerCount() + 1, 8) images in jobs while the caller helps in Wait,
+    /// so it holds at most that many extra decoded images. Bundles, reports and input
+    /// digests are byte-identical for every worker count, including zero and nullptr.
+    /// The system must be initialized, must have no graph in flight for the duration of
+    /// the import (a busy system makes the import decode serially), and is used from the
+    /// calling thread only. Browser builds pass a zero-worker system or nullptr. Not owned.
+    foundation::threading::JobSystem* JobsOrNull = nullptr;
 };
 
 /// @brief Headline numbers of one import, also present in the report.

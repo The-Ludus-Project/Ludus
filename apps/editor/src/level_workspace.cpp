@@ -35,9 +35,22 @@
 
 namespace ludus::editor
 {
+namespace
+{
+// Editor CPU budget for decoding scene import textures, excluding the operation thread,
+// which helps in Wait. The user waits on an import, but Qt, RHI submission and a preview
+// bake (STATIC_LIGHTING_WORKER_COUNT workers) keep running beside it.
+constexpr foundation::uint32 SCENE_IMPORT_WORKER_COUNT = 4;
+} // namespace
+
 LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent), Tooling_(tooling)
 {
     setObjectName(QStringLiteral("levelWorkspace"));
+#if !defined(Q_OS_WASM)
+    // Without workers (startup failure) imports decode their textures serially.
+    mHasImportJobs =
+        mImportJobs.Initialize({ .WorkerCount = SCENE_IMPORT_WORKER_COUNT }) == foundation::threading::JobStatus::Ok;
+#endif
     auto* layout = new QVBoxLayout(this);
     auto* actions = new QHBoxLayout;
     New_ = new QPushButton(QStringLiteral("New 3D scene"), this);
@@ -595,6 +608,7 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
         options.EntropyOrNull = &entropy;
         options.SourceEntry = ToView(entry);
         options.ExpectedSourceDigest = ToView(expectedSource);
+        options.JobsOrNull = mHasImportJobs == true ? &mImportJobs : nullptr;
         EditorSceneRequest request;
         request.Operation = kind;
         request.Root = ToView(root);

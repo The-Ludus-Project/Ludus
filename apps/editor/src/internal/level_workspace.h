@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/platform/entropy.h>
 
 #include "internal/controller.h"
@@ -198,6 +199,11 @@ private:
     /// Browser builds run scene operations on the GUI thread from a queued timer.
     bool mIsOperationQueued = false;
     foundation::identity::EntropySource mEntropy = platform::GetSystemEntropySource();
+    /// Texture decoding for scene imports (SCENE_IMPORT_WORKER_COUNT workers). Initialized
+    /// by the constructor on native builds; only the operation thread submits to it, one
+    /// operation at a time, and the destructor joins it after WaitForOperation().
+    foundation::threading::JobSystem mImportJobs;
+    bool mHasImportJobs = false;
     [[nodiscard]] bool isOperationActive() const noexcept
     {
         return Operate_ != nullptr || mIsOperationQueued == true;
