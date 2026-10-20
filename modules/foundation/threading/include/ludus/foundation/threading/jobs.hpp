@@ -375,6 +375,16 @@ public:
     /// @return Ok or NotInitialized.
     [[nodiscard]] JobStatus Snapshot(JobSnapshot& outSnapshot) const noexcept;
 
+    /// @brief Reports the worker budget accepted by Initialize, excluding a helping caller.
+    ///
+    /// Lets a consumer that receives a borrowed system size its graphs to the owner's
+    /// budget without a second, possibly disagreeing configuration value. Called by the
+    /// owner, or by a consumer the owner has lent the system to, never concurrently with
+    /// Initialize or Shutdown.
+    /// @return JobSystemConfig::WorkerCount of a successful Initialize; zero while
+    ///         uninitialized (including after Shutdown) and for the serial executor.
+    [[nodiscard]] uint32 GetWorkerCount() const noexcept;
+
     /// @brief Drains accepted work, stops and joins every worker, and frees scheduler state.
     /// @return Ok, including when not initialized; or InsideJob, leaving the system running.
     [[nodiscard]] JobStatus Shutdown() noexcept;
