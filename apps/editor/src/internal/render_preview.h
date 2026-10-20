@@ -111,6 +111,11 @@ public:
                                                 graphics::renderer::ViewDescription& outView,
                                                 QString& outError) const;
     void RestoreNavigation(const QJsonObject& state);
+    /// Delegate GPU frame production to the project graph; this owner keeps scene/navigation
+    /// and device lifetime, without preparing or drawing a second built-in scene.
+    void UseProjectGraph() noexcept;
+    /// Publish completion of the current World extraction from the delegated graph producer.
+    void NotifyProjectFrame();
     void Tick();
     [[nodiscard]] LUDUS_INLINE bool Running() const noexcept
     {
@@ -204,6 +209,7 @@ private:
     void resetStatistics() noexcept;
     bool mIsStatisticsVisible = false;
     ViewportStatistics mStatistics;
+    bool mIsProjectGraphEnabled = false;
     QElapsedTimer mStatisticsRefresh;
     foundation::UniquePtr<PreviewGpuGeneration> mResources;
     foundation::UniquePtr<PreviewGpuGeneration> mRetiredResources;

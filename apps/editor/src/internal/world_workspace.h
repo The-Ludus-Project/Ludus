@@ -28,6 +28,7 @@ namespace ludus::editor
 // Desktop, project-owned schema UI. No runtime pools or project code are loaded.
 class RenderPanel;
 class RenderPreview;
+class RendererWorkspace;
 class LevelWorkspace;
 struct ToolingPaths;
 class WorldWorkspace final : public QWidget
@@ -51,6 +52,8 @@ public:
     /// render panel, which draws schema-bound and World-demo Worlds alike. RenderPreviewChanged reports a change of
     /// choice. The result is owned by this workspace; it never starts a device on the caller's behalf.
     [[nodiscard]] RenderPreview& GetRenderPreview() noexcept;
+    /// Route both World extraction surfaces through the selected project renderer.
+    void UseProjectGraph(RendererWorkspace& inoutWorkspace);
     void SetProject(const QString& root, foundation::uint64 epoch);
     [[nodiscard]] bool Open(const QString& path);
     [[nodiscard]] bool Create(const QString& path);

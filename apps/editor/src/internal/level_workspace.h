@@ -138,6 +138,11 @@ public:
     {
         return Level_;
     }
+    /// Embedded viewport; borrowed for project render-graph binding.
+    [[nodiscard]] LUDUS_INLINE PreviewViewport& GetViewport() noexcept
+    {
+        return *Viewport_;
+    }
 Q_SIGNALS:
     void DocumentChanged();
     void PreviewStarting();

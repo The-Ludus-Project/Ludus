@@ -868,6 +868,10 @@ void LevelWorkspace::Publish()
     PreviousScene_ = Preview_.Scene();
     const bool existingFrame = Preview_.FrameAvailable() && PreviousScene_.PacketIdentity == Scene_.PacketIdentity &&
                                PreviousScene_.AssetsIdentity == Scene_.AssetsIdentity;
+    if (existingFrame == false)
+    {
+        Viewport_->HoldFrame();
+    }
     Q_EMIT PreviewStarting();
     if (Preview_.SetScene(Scene_) == false)
     {

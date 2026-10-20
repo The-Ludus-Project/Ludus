@@ -115,6 +115,8 @@ public:
     /// Domain colour category of a displayed node (for tests and accessibility text).
     [[nodiscard]] RenderGraphDomain GetNodeDomain(const QString& node) const;
     void SelectNode(const QString& node);
+    /// Scroll the node into view without changing the current zoom or selection.
+    void RevealNode(const QString& node);
     [[nodiscard]] QStringList GetSelectedNodes() const;
 
     /// Gesture entry points shared by mouse handling and tests. A gesture moves every
@@ -124,19 +126,23 @@ public:
     void EndDrag();
     /// Request an edge from an output endpoint to an input endpoint; rejected links emit LinkRejected.
     [[nodiscard]] bool RequestLink(const QString& from, const QString& to);
-    /// Activate a node as a double-click does; a Subgraph emits SubgraphActivated.
+    /// Activate a node as a double-click does: open a Subgraph or request a Raster's shader sources.
     [[nodiscard]] bool ActivateNode(const QString& node);
 
 Q_SIGNALS:
     void NodeSelected(const QString& node);
+    /// Context target is empty on the background or configuration interface.
+    void ContextMenuRequested(const QString& node, const QPoint& globalPosition);
     void MoveRequested(const QVector<ludus::editor::RenderGraphNodePosition>& positions);
     void ConnectRequested(const QString& from, const QString& to);
     void DisconnectRequested(const QString& from, const QString& to);
     void RemoveRequested(const QString& node);
+    void ShaderSourcesRequested(const QString& node);
     void SubgraphActivated(const QString& asset, const QString& configuration);
     void LinkRejected(const QString& reason);
 
 protected:
+    void contextMenuEvent(QContextMenuEvent* event) override;
     bool viewportEvent(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;

@@ -537,7 +537,7 @@ RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot&
         }
         total += bytes.size();
     }
-    if (total > MAX_TOTAL_BYTES)
+    if (total > MAX_TOTAL_BYTES || static_cast<usize>(candidate.Files.size()) > MAX_FILES)
     {
         return RenderGraphDocumentStatus::Capacity;
     }
@@ -599,6 +599,107 @@ RenderGraphDocument::AddNode(const QString& file, const QString& configuration, 
                              {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
                              &AddNodeEdit,
                              false);
+}
+
+// File, configuration, node and new asset name are distinct authored identities.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& file,
+                                                              const QString& configuration,
+                                                              const QString& node,
+                                                              const QString& name)
+{
+    constexpr qsizetype MAX_IDENTIFIER_LENGTH = 63;
+    const auto isIdentifier = [](const QString& value) {
+        if (value.isEmpty() == true || value.size() > MAX_IDENTIFIER_LENGTH)
+        {
+            return false;
+        }
+        for (qsizetype i = 0; i < value.size(); ++i)
+        {
+            const QChar character = value.at(i);
+            const bool isLetter = (character >= QLatin1Char('A') && character <= QLatin1Char('Z')) ||
+                                  (character >= QLatin1Char('a') && character <= QLatin1Char('z'));
+            const bool isDigit = character >= QLatin1Char('0') && character <= QLatin1Char('9');
+            if (isLetter == false &&
+                (i == 0 || (isDigit == false && character != QLatin1Char('_') && character != QLatin1Char('-'))))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (isIdentifier(name) == false || isIdentifier(node) == false || node == QStringLiteral("input"))
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    const QString asset = name + QStringLiteral(".lurender.json");
+    const QFileInfo destination(QDir(mPackageRoot).filePath(asset));
+    if (mDraft.Files.contains(asset) == true || mSaved.Files.contains(asset) == true || destination.exists() == true ||
+        destination.isSymLink() == true)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    for (const QString& source : GetFiles())
+    {
+        // Keep draft filenames portable to case-insensitive project filesystems too.
+        if (source.compare(asset, Qt::CaseInsensitive) == 0)
+        {
+            return RenderGraphDocumentStatus::Conflict;
+        }
+        QJsonObject existing;
+        if (GetGraph(source, existing) == true && existing.value(QStringLiteral("id")).toString() == name)
+        {
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+    }
+    QJsonObject graph;
+    if (GetGraph(file, graph) == false)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    const qsizetype configurationIndex = FindConfiguration(configurations, configuration);
+    if (configurationIndex < 0)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    QJsonObject parent = configurations.at(configurationIndex).toObject();
+    QJsonArray nodes = parent.value(QStringLiteral("nodes")).toArray();
+    const qsizetype nodeIndex = FindNode(nodes, node);
+    QJsonObject reference = nodeIndex < 0 ? QJsonObject{} : nodes.at(nodeIndex).toObject();
+    if (nodeIndex >= 0 && reference.value(QStringLiteral("kind")).toString() != QStringLiteral("Subgraph"))
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    reference.insert(QStringLiteral("id"), node);
+    reference.insert(QStringLiteral("kind"), QStringLiteral("Subgraph"));
+    reference.insert(QStringLiteral("asset"), asset);
+    reference.insert(QStringLiteral("configuration"), QStringLiteral("Default"));
+    if (nodeIndex < 0)
+    {
+        nodes.append(reference);
+    }
+    else
+    {
+        nodes.replace(nodeIndex, reference);
+    }
+    parent.insert(QStringLiteral("nodes"), nodes);
+    configurations.replace(configurationIndex, parent);
+    graph.insert(QStringLiteral("configurations"), configurations);
+    const QJsonObject emptyConfiguration{{QStringLiteral("id"), QStringLiteral("Default")},
+                                         {QStringLiteral("inputs"), QJsonArray{}},
+                                         {QStringLiteral("outputs"), QJsonArray{}},
+                                         {QStringLiteral("nodes"), QJsonArray{}},
+                                         {QStringLiteral("edges"), QJsonArray{}}};
+    const QJsonObject library{{QStringLiteral("version"), 1},
+                              {QStringLiteral("id"), name},
+                              {QStringLiteral("default"), QStringLiteral("Default")},
+                              {QStringLiteral("configurations"), QJsonArray{emptyConfiguration}}};
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    candidate.Files.insert(asset, EncodeCanonicalJson(library));
+    mLastMove.clear();
+    return commit(candidate, false);
 }
 
 RenderGraphDocumentStatus
@@ -748,6 +849,24 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
     {
         return RenderGraphDocumentStatus::Locked;
     }
+    if (QFileInfo(mPackageRoot).canonicalFilePath() != mPackageRoot)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    QStringList removed;
+    for (QMap<QString, QByteArray>::const_iterator file = mSaved.Files.constBegin(); file != mSaved.Files.constEnd();
+         ++file)
+    {
+        if (mDraft.Files.contains(file.key()) == false)
+        {
+            QByteArray disk;
+            if (ReadBounded(QDir(mPackageRoot).filePath(file.key()), disk) == false || disk != file.value())
+            {
+                return RenderGraphDocumentStatus::Conflict;
+            }
+            removed.append(file.key());
+        }
+    }
     QStringList dirty;
     for (QMap<QString, QByteArray>::const_iterator file = mDraft.Files.constBegin(); file != mDraft.Files.constEnd();
          ++file)
@@ -757,9 +876,16 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
             continue;
         }
         // Another writer changed the file since it was loaded or saved: write nothing.
+        const QString path = QDir(mPackageRoot).filePath(file.key());
         QByteArray disk;
-        if (ReadBounded(QDir(mPackageRoot).filePath(file.key()), disk) == false ||
-            disk != mSaved.Files.value(file.key()))
+        if (mSaved.Files.contains(file.key()) == true)
+        {
+            if (ReadBounded(path, disk) == false || disk != mSaved.Files.value(file.key()))
+            {
+                return RenderGraphDocumentStatus::Conflict;
+            }
+        }
+        else if (QFileInfo::exists(path) == true || QFileInfo(path).isSymLink() == true)
         {
             return RenderGraphDocumentStatus::Conflict;
         }
@@ -769,6 +895,22 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
     {
         const QString path = QDir(mPackageRoot).filePath(file);
         const QByteArray bytes = mDraft.Files.value(file);
+        if (mSaved.Files.contains(file) == false)
+        {
+            QFile output(path);
+            if (output.open(QIODevice::WriteOnly | QIODevice::NewOnly) == false)
+            {
+                return RenderGraphDocumentStatus::WriteFailed;
+            }
+            if (output.write(bytes) != bytes.size() || output.flush() == false)
+            {
+                static_cast<void>(output.remove());
+                return RenderGraphDocumentStatus::WriteFailed;
+            }
+            mSaved.Files.insert(file, bytes);
+            outSavedFiles.append(file);
+            continue;
+        }
         QSaveFile output(path);
         output.setDirectWriteFallback(false);
         if (QFileInfo(path).isSymLink() == true || output.open(QIODevice::WriteOnly) == false ||
@@ -777,6 +919,15 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
             return RenderGraphDocumentStatus::WriteFailed;
         }
         mSaved.Files.insert(file, bytes);
+        outSavedFiles.append(file);
+    }
+    for (const QString& file : removed)
+    {
+        if (QFile::remove(QDir(mPackageRoot).filePath(file)) == false)
+        {
+            return RenderGraphDocumentStatus::WriteFailed;
+        }
+        mSaved.Files.remove(file);
         outSavedFiles.append(file);
     }
     return RenderGraphDocumentStatus::Ok;
