@@ -64,6 +64,11 @@ public:
     void SetFrameSource(ViewportFrameSource* frameSourceOrNull);
     /// The source this viewport presents.
     [[nodiscard]] ViewportFrameSource& GetFrameSource() const noexcept;
+    /// @brief Whether a hosted game's images can be shown here.
+    ///
+    /// True while the viewport presents through its shared Qt device and that device can import
+    /// them (Metal, or Vulkan with `VK_KHR_external_memory_fd`); false for the readback canvas.
+    [[nodiscard]] bool CanImportHostedImages() const noexcept;
     /// @brief Make this viewport the window of a game playing in it, or return it to navigation.
     ///
     /// While set, the viewport acts as the game's window: keyboard focus becomes FocusEntered and

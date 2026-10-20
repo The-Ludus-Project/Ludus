@@ -1101,6 +1101,14 @@ ViewportFrameSource& PreviewViewport::GetFrameSource() const noexcept
 {
     return *mFrameSource;
 }
+bool PreviewViewport::CanImportHostedImages() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    return mState->Window != nullptr && mState->Device.Get() != nullptr && mState->Device->CanImportHostedImages();
+#else
+    return false;
+#endif
+}
 PreviewViewport::~PreviewViewport()
 {
     stopNavigation();

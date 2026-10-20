@@ -556,8 +556,9 @@ in a `PreviewViewport` on macOS Metal) and P6c (Play saved World runs the game i
 the World viewport, with input forwarding and Stop through the game's window) are
 implemented on macOS. P7 (the remembered In viewport / In separate window
 choice, and stated refusals that offer a separate window instead of switching
-silently) is implemented. Linux plays in a separate window until Vulkan hosting
-exists.
+silently) is implemented. P8 brings Play in the viewport to Linux Vulkan: the
+RHI consumer submits the queue family transfers and fences the release (P8a),
+and Qt's Vulkan device imports the game's memory (P8b).
 
 While a game plays, the World viewport is that game's window. The game owns
 rendering and input there and behaves as it would in its own OS window. A
@@ -779,14 +780,26 @@ presentation path: QQuickWindow, `ImageItem`, two frame slots, and release at
 `HostedSurfaceConsumer` and pumps both on a 4 ms timer, including before a
 viewport shows it, because the game waits in window creation for the endpoint.
 Each read it opens holds one game frame. Ending a read calls
-`HostedSurfaceConsumer::ReleaseFrameAfterQueue`, which commits an empty marker
-command buffer on Qt's Metal queue behind the sampling. The next pump returns
-the image to the game once that marker completes. This uses the same
-queue-order guarantee as RHI's native texture reads, with no CPU wait.
+`HostedSurfaceConsumer::ReleaseFrameAfterQueue`, which commits a marker on Qt's
+queue behind the sampling: an empty Metal command buffer, or a Vulkan fence
+submitted with no batches. The next pump returns the image to the game once
+that marker completes. This uses the same queue-order guarantee as RHI's native
+texture reads, with no CPU wait.
 `PreviewViewport::SetFrameSource` switches a viewport between `RenderPreview` and
 the play source: it ends every read of the old source, then presents the new
-source's pending frame, so the caller switches once the game has a frame. On
-Vulkan, `Start` refuses with a reason and the game opens its own window.
+source's pending frame, so the caller switches once the game has a frame.
+
+On Vulkan the viewport records nothing of its own. The play source's
+`TakeFrameRead` acquires the frame, and the consumer submits the queue family
+acquire to Qt's queue before Qt records the frame that samples it. Ending the
+read queues the consumer's release and fence behind that frame's submission.
+The editor creates Qt's Vulkan device and enables `VK_KHR_external_memory_fd`,
+with `VK_KHR_external_memory` where the adapter still lists it, whenever the
+adapter supports it. Without it the viewport still edits, and Play in the
+viewport states why it is unavailable. The readback canvas cannot host a game
+either, because it has no Qt device to import onto. Vulkan imports must be
+destroyed before Qt's device, so the World viewport ends Play when the edit
+preview announces `DeviceStopping`.
 
 Each source owns its leases and generations, and the native read Qt samples.
 `TakeFrameRead` opens a read of the pending image on the viewport's device and
@@ -889,8 +902,8 @@ does not use it until P6.
     (Vulkan UUIDs differ), `UnsupportedHandle`, `ImportFailed` or
     `ProtocolViolation`.
   - IOSurfaces work across GPUs, so Metal has no adapter check.
-  - Qt's Vulkan device must enable `VK_KHR_external_memory_fd`; P6 configures
-    that.
+  - Qt's Vulkan device must enable `VK_KHR_external_memory_fd`; the editor
+    enables it whenever the adapter supports it (P8b).
   - The game picks its adapter as usual. It has no adapter hint from the
     editor, so a multi-GPU Linux host may be refused.
 - **Evidence.**
@@ -1029,6 +1042,7 @@ AGENTS.md gates.
 | P7 | Separate-window preference and unavailable reasons | Preference persistence; launch without the variable; refusal-message tests |
 | P8 | Play in the viewport on Linux Vulkan, in two PRs | As below |
 | P8a | RHI consumer on Vulkan: the consumer submits the queue family acquire and release itself, with a fence as the queue-ordered release marker | Linux two-process tests sampling acquired frames; queued releases return only after the fence behind the sampling |
+| P8b | Qt's Vulkan device enables external memory; `PlayViewportSource` accepts Vulkan; Play ends before the viewport's device stops | Play source tests on both APIs; the `[.play-native]` journey on Xvfb with lavapipe in Linux CI (evdev keys, resize, Stop, crash) |
 
 P3's private `ViewportFrameSource` carries only frame
 production and leases: `HasPendingFrame`, `TakeFrame`, `ReleaseFrame`, `Resize`,
@@ -1038,10 +1052,10 @@ from `RenderPreview` directly.
 A source's images must live on the device that `RenderPreview` admitted. P6
 splits into three PRs. P6a moves the native read into the source, so the play
 source issues its own reads instead of the Renderer's `ViewportFrame` leases,
-which only `RasterViewport` can create. Play in the viewport ships on macOS Metal
-first. Linux states that it is not yet available until Qt's Vulkan device enables
-`VK_KHR_external_memory_fd` and the viewport records the external queue-family
-acquire.
+which only `RasterViewport` can create. Play in the viewport shipped on macOS
+Metal first; P8 adds Linux Vulkan once Qt's Vulkan device enables
+`VK_KHR_external_memory_fd` and the viewport records the external queue family
+transfers.
 
 P1, P3 and P4 are independent of each other. P2 needs P1, P5 needs P4, and P6
 needs P2, P3 and P5. P5 opens with its macOS Mach rendezvous and Linux

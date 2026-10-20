@@ -38,8 +38,11 @@ enum class PlaySourceState : foundation::uint8
 /// own device with a HostedSurfaceConsumer. The game process, launched with
 /// GetChannelAddress() in `LUDUS_HOSTED_WINDOW`, renders through its ordinary RHI into
 /// that surface. Each frame read the viewport opens is a held game frame; ending a read
-/// queues a marker on Qt's queue behind the sampling, and the image returns to the game once
-/// the marker completes. Frames are shown 1:1 at the size Resize() requests.
+/// queues a marker on Qt's queue behind the sampling (an empty Metal command buffer, or a
+/// Vulkan release with a fence), and the image returns to the game once the marker completes.
+/// On Vulkan the consumer also submits each frame's queue family acquire when the viewport opens
+/// its read, so Qt samples it with no barrier of its own. Frames are shown 1:1 at the size
+/// Resize() requests.
 ///
 /// The source pumps the endpoint and consumer on its own timer, also before a viewport
 /// presents it, because the game blocks in window creation until the endpoint answers. Input

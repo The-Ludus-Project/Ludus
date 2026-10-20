@@ -65,4 +65,9 @@ QSGTexture* QtViewportDevice::WrapTexture(QQuickWindow& inoutWindow, const graph
         &inoutWindow,
         QSize(static_cast<foundation::int32>(image.Width), static_cast<foundation::int32>(image.Height)));
 }
+// IOSurface textures need no queue family transfer, so the hosted import has no extension to enable.
+bool QtViewportDevice::CanImportHostedImages() const noexcept
+{
+    return true;
+}
 } // namespace ludus::editor

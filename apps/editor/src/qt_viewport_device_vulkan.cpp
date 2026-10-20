@@ -21,6 +21,8 @@ namespace
 constexpr foundation::uint32 MAX_PHYSICAL_DEVICES = 16;
 constexpr foundation::uint32 MAX_QUEUE_FAMILIES = 32;
 constexpr foundation::uint32 MAX_DEVICE_EXTENSIONS = 512;
+/// Swapchain, plus external memory and its file descriptors for a hosted game's images.
+constexpr foundation::usize MAX_ENABLED_EXTENSIONS = 3;
 /// The single queue both Qt Quick and the RHI submit to, serialized on the GUI thread.
 constexpr foundation::uint32 SHARED_QUEUE_INDEX = 0;
 struct Candidate final
@@ -46,23 +48,24 @@ struct Candidate final
             return 0;
     }
 }
-[[nodiscard]] bool HasSwapchainExtension(QVulkanFunctions& functions, VkPhysicalDevice physicalDevice) noexcept
+[[nodiscard]] bool
+HasDeviceExtension(QVulkanFunctions& inoutFunctions, VkPhysicalDevice physicalDevice, const char* name) noexcept
 {
     foundation::uint32 count = 0;
-    if (functions.vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS ||
+    if (inoutFunctions.vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS ||
         count > MAX_DEVICE_EXTENSIONS)
     {
         return false;
     }
     foundation::StaticArray<VkExtensionProperties, MAX_DEVICE_EXTENSIONS> extensions{};
-    if (functions.vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, extensions.GetData()) !=
+    if (inoutFunctions.vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, extensions.GetData()) !=
         VK_SUCCESS)
     {
         return false;
     }
     for (foundation::uint32 i = 0; i < count; ++i)
     {
-        if (std::strcmp(extensions[i].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0)
+        if (std::strcmp(extensions[i].extensionName, name) == 0)
         {
             return true;
         }
@@ -81,6 +84,8 @@ struct QtViewportDevice::State final
     VkDevice Device = VK_NULL_HANDLE;
     VkQueue Queue = VK_NULL_HANDLE;
     foundation::uint32 QueueFamily = 0;
+    /// `VK_KHR_external_memory_fd` is enabled, so hosted game images can be imported.
+    bool IsHostedImportEnabled = false;
     ~State()
     {
         if (Device != VK_NULL_HANDLE)
@@ -143,7 +148,7 @@ bool QtViewportDevice::PrepareWindow(QQuickWindow& inoutWindow)
         functions->vkGetPhysicalDeviceProperties(physicalDevice, &properties);
         const foundation::uint32 rank = RankDeviceType(properties.deviceType);
         if (properties.apiVersion < VK_API_VERSION_1_1 || rank <= best.Rank ||
-            HasSwapchainExtension(*functions, physicalDevice) == false)
+            HasDeviceExtension(*functions, physicalDevice, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == false)
         {
             continue;
         }
@@ -184,7 +189,23 @@ bool QtViewportDevice::PrepareWindow(QQuickWindow& inoutWindow)
         .queueCount = 1,
         .pQueuePriorities = &priority,
     };
-    const char* const extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    // Play in the viewport imports a hosted game's opaque-fd memory onto this device
+    // (HostedSurfaceConsumer). External memory itself is core in Vulkan 1.1; its
+    // extension is enabled too where the adapter still lists it. An adapter without
+    // the fd extension keeps the viewport, and Play there says why it is unavailable.
+    foundation::StaticArray<const char*, MAX_ENABLED_EXTENSIONS> extensions{};
+    foundation::uint32 extensionCount = 0;
+    extensions[extensionCount++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    const bool hasHostedImport =
+        HasDeviceExtension(*functions, best.PhysicalDevice, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+    if (hasHostedImport == true)
+    {
+        if (HasDeviceExtension(*functions, best.PhysicalDevice, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME) == true)
+        {
+            extensions[extensionCount++] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME;
+        }
+        extensions[extensionCount++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+    }
     const VkDeviceCreateInfo description
     {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -194,8 +215,8 @@ bool QtViewportDevice::PrepareWindow(QQuickWindow& inoutWindow)
         .pQueueCreateInfos = &queue,
         .enabledLayerCount = 0,
         .ppEnabledLayerNames = nullptr,
-        .enabledExtensionCount = 1,
-        .ppEnabledExtensionNames = extensions,
+        .enabledExtensionCount = extensionCount,
+        .ppEnabledExtensionNames = extensions.GetData(),
         .pEnabledFeatures = &features,
     };
     if (functions->vkCreateDevice(best.PhysicalDevice, &description, nullptr, &mState->Device) != VK_SUCCESS)
@@ -205,6 +226,7 @@ bool QtViewportDevice::PrepareWindow(QQuickWindow& inoutWindow)
     }
     mState->PhysicalDevice = best.PhysicalDevice;
     mState->QueueFamily = best.QueueFamily;
+    mState->IsHostedImportEnabled = hasHostedImport;
     mState->Instance.deviceFunctions(mState->Device)
         ->vkGetDeviceQueue(mState->Device, best.QueueFamily, SHARED_QUEUE_INDEX, &mState->Queue);
     inoutWindow.setGraphicsDevice(
@@ -281,5 +303,9 @@ QSGTexture* QtViewportDevice::WrapTexture(QQuickWindow& inoutWindow, const graph
         static_cast<VkImageLayout>(image.VulkanLayout),
         &inoutWindow,
         QSize(static_cast<foundation::int32>(image.Width), static_cast<foundation::int32>(image.Height)));
+}
+bool QtViewportDevice::CanImportHostedImages() const noexcept
+{
+    return mState.Get() != nullptr && mState->IsHostedImportEnabled == true;
 }
 } // namespace ludus::editor

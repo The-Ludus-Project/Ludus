@@ -20,6 +20,9 @@ public:
     [[nodiscard]] QSGTexture* WrapTexture(QQuickWindow& inoutWindow, const graphics::rhi::NativeTextureInfo& image);
     [[nodiscard]] bool IsCompatible(QQuickWindow& inoutWindow,
                                     const graphics::rhi::NativeDeviceIdentity& device) const noexcept;
+    /// Whether a hosted game's images can be imported onto this device: always on Metal; on
+    /// Vulkan when PrepareWindow() enabled `VK_KHR_external_memory_fd` on the adapter.
+    [[nodiscard]] bool CanImportHostedImages() const noexcept;
 
 private:
     struct State;
