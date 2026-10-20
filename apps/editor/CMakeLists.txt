@@ -52,6 +52,7 @@ set(editor_viewport_sources
     src/empty_world_view.cpp
     src/preview_viewport.cpp
     src/viewport_navigation.cpp
+    src/viewport_play_input.cpp
     src/internal/texture_inspection.h
     src/texture_inspection.cpp)
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
@@ -590,6 +591,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
                 LUDUS_HOSTED_PRODUCER="$<TARGET_FILE:ludus_rhi_hosted_producer>")
             add_dependencies(ludus_editor_tests ludus_rhi_hosted_producer)
             target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/tests")
+        endif()
+        if(TARGET ludus_world_demo)
+            # The World-demo player: the journey plays it in the World viewport.
+            target_compile_definitions(ludus_editor_tests PRIVATE
+                LUDUS_WORLD_DEMO_PLAYER="$<TARGET_FILE:ludus_world_demo>")
+            add_dependencies(ludus_editor_tests ludus_world_demo)
         endif()
     endif()
     if(APPLE AND LUDUS_EDITOR_RENDER_PREVIEW)

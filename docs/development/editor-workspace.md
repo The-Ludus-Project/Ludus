@@ -1300,8 +1300,23 @@ document. Pending text never enters Save or recovery.
 For this adapter's **Play saved World**, configure Project settings to build
 `ludus_world_demo` with `LUDUS_BUILD_WORLD_DEMO=ON`, and set run arguments to
 `--level` followed by the `.world.json` path (relative to the configured run working
-directory, or absolute). Save Project settings. The action saves the World,
-closes authoring rendering, then uses the existing supervised Build/Run workflow.
+directory, or absolute). Save Project settings. The action saves the World, then
+uses the existing supervised Build/Run workflow.
+
+**Play in the viewport (macOS).** The game opens in the World viewport, which
+becomes its window; the World stays as edited until the game's first frame
+arrives. Click the viewport to give the game the keyboard. Keys go to the game by
+physical key, and editor shortcuts do not take them. **Shift+F1** gives the
+keyboard back to the editor while the game keeps running. **Shift+F6** (Stop)
+closes the game's window, as its own close button would; the game's process is
+stopped if it has not exited after three seconds. Resizing or hiding the
+viewport resizes or hides the game's window. When the game exits, crashes or is
+stopped, the viewport edits the World again. The game receives no mouse input
+yet, because Platform has none. Where the viewport cannot host the game (on
+Linux, while the viewport is paused, or without a GPU device), the status bar
+says why and the game opens in its own window. See
+[Play in the editor viewport](../architecture/editor-gui-systems.md#play-in-the-editor-viewport).
+
 The child independently reads and validates that saved file before activation;
 simulation never writes authored transforms back to the Editor. The action does
 not rewrite project settings or execute a different target implicitly. On macOS
@@ -1318,6 +1333,14 @@ the shared viewport, then moves the player by an applied edit:
 
 ```bash
 QT_QPA_PLATFORM=cocoa out/build/macos-clang-development/apps/editor/ludus_editor_tests 'Native World-demo World*'
+```
+
+The opt-in Play journey plays the built `ludus_world_demo` in the World viewport.
+It moves the player with a native key, resizes, stops the game through its window
+and recovers from a killed game:
+
+```bash
+QT_QPA_PLATFORM=cocoa out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.play-native]'
 ```
 
 Linux compilation and portable/offscreen checks do not qualify native Wayland

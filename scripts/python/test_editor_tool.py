@@ -483,6 +483,41 @@ class RealProcessTests(unittest.TestCase):
         started = next(e for e in events if e.get("type") == "runtime_started")
         self.assertEqual(started["args"], args)
 
+    # --- Play in the editor viewport: hosted-window address ---------------- #
+    def test_build_run_gives_only_the_game_its_hosted_window(self) -> None:
+        observed = self.root / "hosted.json"
+        digest = self.write_project()
+        runtime = self.make_runtime(
+            "import json,os,sys\n"
+            f"open({str(observed)!r},'w').write(json.dumps(os.environ.get('LUDUS_HOSTED_WINDOW')))\n"
+            "sys.exit(0)\n"
+        )
+        address = "1:" + "ab" * 32 + ":/tmp/ludus-hosted-test/window"
+        client = self.client(self.context(runtime))
+        client.send({**self.request("build_run", digest), "hosted_window": address})
+        events = client.events()
+        self.assertEqual(events[-1]["outcome"], "success", msg=str(events))
+        self.assertEqual(json.loads(observed.read_text()), address)
+        # The address is a session secret: no event echoes it.
+        self.assertNotIn(address, json.dumps(events))
+
+    def test_build_run_never_inherits_a_stale_hosted_window(self) -> None:
+        observed = self.root / "stale.json"
+        digest = self.write_project()
+        runtime = self.make_runtime(
+            "import json,os,sys\n"
+            f"open({str(observed)!r},'w').write(json.dumps(os.environ.get('LUDUS_HOSTED_WINDOW')))\n"
+            "sys.exit(0)\n"
+        )
+        stale = "1:" + "cd" * 32 + ":/tmp/ludus-hosted-stale/window"
+        with patch.dict(os.environ, {"LUDUS_HOSTED_WINDOW": stale}):
+            client = self.client(self.context(runtime))
+            client.send(self.request("build_run", digest))
+            events = client.events()
+        self.assertEqual(events[-1]["outcome"], "success", msg=str(events))
+        # Without a request field the game opens its own window.
+        self.assertIsNone(json.loads(observed.read_text()))
+
     # --- failed build never launches an old binary ------------------------- #
     def test_failed_build_does_not_launch_runtime(self) -> None:
         launched = self.root / "launched.flag"
@@ -888,6 +923,32 @@ class RealProcessTests(unittest.TestCase):
                 return
             time.sleep(0.02)
         self.fail(f"process {pid} was not cleaned up within {timeout}s")
+
+
+class HostedWindowRequestTests(unittest.TestCase):
+    """Only build_run carries a well-formed hosted-window channel address."""
+
+    def base(self, operation: str = "build_run") -> dict:
+        return {"protocol": 1, "job": "0123456789abcdef", "operation": operation,
+                "project": "/tmp/project/ludus.project.json", "expected_sha256": "a" * 64}
+
+    def test_accepts_a_channel_address(self) -> None:
+        address = "1:" + "0f" * 32 + ":/tmp/ludus-hosted-x/window"
+        editor_tool._validate_request({**self.base(), "hosted_window": address})
+
+    def test_rejects_malformed_or_misplaced_addresses(self) -> None:
+        good = "1:" + "0f" * 32 + ":/tmp/ludus-hosted-x/window"
+        for message in (
+            {**self.base("build"), "hosted_window": good},
+            {**self.base(), "hosted_window": 7},
+            {**self.base(), "hosted_window": "2:" + "0f" * 32 + ":/tmp/w"},
+            {**self.base(), "hosted_window": "1:" + "0F" * 32 + ":/tmp/w"},
+            {**self.base(), "hosted_window": "1:" + "0f" * 32 + ":relative/window"},
+            {**self.base(), "hosted_window": "1:" + "0f" * 32 + ":/tmp/w\nX"},
+            {**self.base(), "hosted_window": "1:" + "0f" * 32 + ":/" + "a" * 300},
+        ):
+            with self.subTest(message=message), self.assertRaises(editor_tool.ProtocolError):
+                editor_tool._validate_request(message)
 
 
 class SetupDetailsProtocolTests(unittest.TestCase):

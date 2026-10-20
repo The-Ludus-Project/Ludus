@@ -215,6 +215,11 @@ jobs:
           QT_QPA_PLATFORM: cocoa
         run: out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.render-native],[.level-native]'
 
+      - name: Verify Play in the World viewport
+        env:
+          QT_QPA_PLATFORM: cocoa
+        run: out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.play-native]'
+
       - name: Analyze native Editor production and regression sources
         run: |
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' \

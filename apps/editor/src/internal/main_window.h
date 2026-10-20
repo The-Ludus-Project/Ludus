@@ -101,7 +101,12 @@ private:
         Play,
         Debug
     };
-    void LaunchAfterPreview(LaunchAction action, const QString& debugger = {}, bool setup = false);
+    void launchAfterPreview(LaunchAction action,
+                            const QString& debugger = {},
+                            bool shouldSetUpDebugger = false,
+                            const QString& hostedWindowAddress = {});
+    /// Stop: a game playing in the viewport first gets a window close, then the supervisor's stop.
+    void stopRun();
     void BuildUi();
     void BuildMenus();
     void InitializeWorkspace();
@@ -159,6 +164,8 @@ private:
     uint64 ProjectLayoutEpoch_ = ~uint64{0};
     uint64 ResumeViewportEpoch_ = 0;
     bool ResumeViewport_ = false;
+    /// A Build and Run launched into the World viewport is active (Play in the viewport).
+    bool mIsPlayRunInViewport = false;
     void SetProjectWorkspace(const QString& root, bool restore);
     void SaveProjectWorkspace() const;
     QByteArray DefaultLayout_;

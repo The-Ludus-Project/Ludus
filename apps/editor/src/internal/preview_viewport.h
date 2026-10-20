@@ -4,6 +4,7 @@
 #include "internal/viewport_frame_source.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/input/key.h>
 
 #include <QElapsedTimer>
 #include <QFocusEvent>
@@ -14,6 +15,10 @@
 #include <QWheelEvent>
 #include <QWidget>
 
+namespace ludus::platform
+{
+class HostedWindowEndpoint;
+}
 namespace ludus::editor
 {
 class PreviewShaderReload;
@@ -56,6 +61,15 @@ public:
     void SetFrameSource(ViewportFrameSource* frameSourceOrNull);
     /// The source this viewport presents.
     [[nodiscard]] ViewportFrameSource& GetFrameSource() const noexcept;
+    /// @brief Make this viewport the window of a game playing in it, or return it to navigation.
+    ///
+    /// While set, the viewport acts as the game's window: keyboard focus becomes FocusEntered and
+    /// FocusLost, keys go to the game by physical key (Platform's native key maps), editor
+    /// shortcuts do not take them, and showing or hiding reports Visible or Occluded. Two chords
+    /// stay with the editor: Shift+F6 (Stop) and Shift+F1, which gives the keyboard back. Mouse
+    /// input does not navigate. Platform has no pointer input yet, so the game receives none.
+    /// @param endpointOrNull The game's hosted window, borrowed until replaced; null ends forwarding.
+    void SetPlayInput(platform::HostedWindowEndpoint* endpointOrNull);
     /// Present the project's graph output using this viewport's scene, camera and device.
     /// Call on the GUI thread; workspace must outlive the binding. Native builds only.
     void UseProjectGraph(RendererWorkspace& inoutWorkspace);
@@ -87,7 +101,10 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
+    void focusInEvent(QFocusEvent* event) override;
     void hideEvent(QHideEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    bool event(QEvent* event) override;
 
 private:
     struct State;
@@ -104,6 +121,11 @@ private:
     QMetaObject::Connection mFrameReadyConnection;
     bool mIsAutomatic = true;
     void connectFrameSource();
+    platform::HostedWindowEndpoint* mPlayEndpointOrNull = nullptr;
+    /// Keys the game has seen pressed and not released, by input::KeyIndex.
+    foundation::StaticArray<bool, input::KEY_COUNT> mPlayHeldKeys{};
+    [[nodiscard]] bool handlePlayKey(QKeyEvent& inoutEvent, bool isPress);
+    void sendPlayFocus(bool isFocused);
     static constexpr foundation::usize MOVEMENT_KEY_COUNT = 7;
     foundation::StaticArray<bool, MOVEMENT_KEY_COUNT> mHeldKeys{};
     QPointF mLastPositionGlobal;

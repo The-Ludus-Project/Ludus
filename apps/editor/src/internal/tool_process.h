@@ -123,6 +123,9 @@ struct ToolLaunch
     QString ReleaseProfile;
     QString ReleaseVersion;
     QString ReleaseSdk;
+    /// BuildRun only: the game's hosted-window channel address (Play in the editor viewport).
+    /// Empty launches the game in its own window. Sent only to the adapter, never logged.
+    QString HostedWindowAddress;
     uint64 Job = 0; // 16-hex-encoded on the wire
 };
 

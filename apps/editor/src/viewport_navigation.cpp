@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/platform/hosted_window.h>
 
 #include <QApplication>
 #include <QCursor>
@@ -57,6 +58,12 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
 {
     mLastPositionGlobal = event->globalPosition();
     setFocus(Qt::MouseFocusReason);
+    if (mPlayEndpointOrNull != nullptr)
+    {
+        // A click gives the game the keyboard; there is no pointer input to forward yet.
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::RightButton)
     {
         mIsFlying = true;
@@ -78,6 +85,11 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
 }
 void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (mPlayEndpointOrNull != nullptr)
+    {
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::RightButton)
     {
         stopNavigation();
@@ -86,6 +98,11 @@ void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
 }
 void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
 {
+    if (mPlayEndpointOrNull != nullptr)
+    {
+        event->accept();
+        return;
+    }
     const QPointF delta = event->globalPosition() - mLastPositionGlobal;
     mLastPositionGlobal = event->globalPosition();
     const float32 deltaX = static_cast<float32>(delta.x());
@@ -116,6 +133,11 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
 }
 void PreviewViewport::wheelEvent(QWheelEvent* event)
 {
+    if (mPlayEndpointOrNull != nullptr)
+    {
+        event->accept();
+        return;
+    }
     // Qt supplies logical pixel deltas for high-resolution trackpads; retain fractional notches otherwise.
     const float32 steps = event->pixelDelta().isNull() == false ? static_cast<float32>(event->pixelDelta().y()) / 80
                                                                 : static_cast<float32>(event->angleDelta().y()) / 120;
@@ -135,6 +157,10 @@ void PreviewViewport::wheelEvent(QWheelEvent* event)
 }
 void PreviewViewport::keyPressEvent(QKeyEvent* event)
 {
+    if (handlePlayKey(*event, true) == true)
+    {
+        return;
+    }
     if (event->key() == Qt::Key_Escape)
     {
         stopNavigation();
@@ -167,6 +193,10 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
 }
 void PreviewViewport::keyReleaseEvent(QKeyEvent* event)
 {
+    if (handlePlayKey(*event, false) == true)
+    {
+        return;
+    }
     const int32 movementKey = GetMovementKey(event->key());
     if (movementKey >= 0 && event->isAutoRepeat() == false)
     {
@@ -225,11 +255,18 @@ void PreviewViewport::recenterPointer()
 }
 void PreviewViewport::focusOutEvent(QFocusEvent* event)
 {
+    // Window deactivation, modal dialogs and Shift+F1 all arrive here: the game loses focus.
+    sendPlayFocus(false);
     stopNavigation();
     QWidget::focusOutEvent(event);
 }
 void PreviewViewport::hideEvent(QHideEvent* event)
 {
+    if (mPlayEndpointOrNull != nullptr)
+    {
+        // A hidden tab or dock is an occluded window: the game drops to its hidden pacing.
+        static_cast<void>(mPlayEndpointOrNull->SendVisibility(platform::WindowVisibility::Occluded));
+    }
     stopNavigation();
     QWidget::hideEvent(event);
 }

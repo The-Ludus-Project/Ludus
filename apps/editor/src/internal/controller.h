@@ -152,7 +152,9 @@ public:
     void Reload();
     void Configure();
     void Build();
-    void BuildRun();
+    /// Build and run the configured target. hostedWindowAddress, when set, is the game's
+    /// hosted-window channel: the game then opens in the editor's viewport (Play in the viewport).
+    void BuildRun(const QString& hostedWindowAddress = {});
     void BuildDebug(const QString& debugger = {}, bool setup = false);
     void CheckProjectSetup();
     void SetupProject(const QString& sdk, const QString& webSdk, bool prepareEngine, bool disableWeb = false);

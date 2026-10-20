@@ -552,8 +552,10 @@ P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) and P3
 [hosted window channel](#hosted-window-channel), and P5, the RHI
 [hosted surface](#hosted-surface-channel), are implemented. P6a (source-owned
 frame reads) and P6b (`PlayViewportSource`, which presents a hosted game's frames
-in a `PreviewViewport` on macOS Metal) are implemented. No editor command starts
-Play in the viewport until P6c; P6c and P7 are pending. It replaces the separate World-demo
+in a `PreviewViewport` on macOS Metal) and P6c (Play saved World runs the game in
+the World viewport, with input forwarding and Stop through the game's window) are
+implemented on macOS. Linux opens the game in its own window. P7 is pending. It
+replaces the separate World-demo
 authoring window, the World-demo private shader and the separate-window default
 for Play.
 

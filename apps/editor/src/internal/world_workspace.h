@@ -76,6 +76,17 @@ public:
         return Pending_ == false && SceneBusy() == false && Document_.CanRedo();
     }
     void StopPreview() noexcept;
+    /// @brief Make the World viewport the window of the game about to be launched.
+    /// @param outAddress The game's `LUDUS_HOSTED_WINDOW` value, set on success.
+    /// @param outReason Why the game must open in its own window instead, set on failure.
+    /// @return True when the bound viewport hosts the game (Play in the viewport).
+    [[nodiscard]] bool BeginPlayInViewport(QString& outAddress, QString& outReason);
+    /// Return the viewport to editing and close the game's window, if a game plays in it.
+    void EndPlayInViewport() noexcept;
+    /// Ask the game playing in the viewport to close its window.
+    void RequestPlayClose() noexcept;
+    /// Whether a game is playing in the World viewport.
+    [[nodiscard]] bool IsPlayingInViewport() const noexcept;
     void ResumePreview();
     [[nodiscard]] bool PreviewRunning() const noexcept;
     [[nodiscard]] QJsonObject Session() const;

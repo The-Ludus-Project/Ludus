@@ -191,7 +191,8 @@ QString WriteFakeAdapter(QTemporaryDir& dir, const QString& body)
 }
 
 ludus::foundation::Array<ProtocolEvent> RunAdapter(const QString& adapterBody,
-                                                   ToolOperation op = ToolOperation::Configure)
+                                                   ToolOperation op = ToolOperation::Configure,
+                                                   const QString& hostedWindowAddress = {})
 {
     QTemporaryDir dir;
     const QString adapter = WriteFakeAdapter(dir, adapterBody);
@@ -207,6 +208,7 @@ ludus::foundation::Array<ProtocolEvent> RunAdapter(const QString& adapterBody,
     launch.ProjectPath = dir.filePath(QStringLiteral("ludus.project.json"));
     launch.ExpectedSha256 = QString(64, QLatin1Char('a'));
     launch.Operation = op;
+    launch.HostedWindowAddress = hostedWindowAddress;
     launch.Job = 1;
 
     REQUIRE(tool.Start(launch));
@@ -254,6 +256,35 @@ TEST_CASE("Ready then a well-formed result is dispatched in order", "[editor][to
         }
     }
     CHECK(sawResult);
+}
+
+TEST_CASE("Only Build and Run carries the game's hosted-window address", "[editor][tool][play]")
+{
+    // The fake adapter reports the request's hosted_window field (or null) as its result message.
+    const QString body = QStringLiteral(
+        "import sys, json\n"
+        "sys.stdout.write(json.dumps({'protocol':1,'type':'ready'})+'\\n'); sys.stdout.flush()\n"
+        "request = json.loads(sys.stdin.readline())\n"
+        "sys.stdout.write(json.dumps({'protocol':1,'job':request['job'],'type':'result','outcome':'success',"
+        "'stage':'running','code':'Ok','message':json.dumps(request.get('hosted_window')),"
+        "'cleanup_confirmed':True,'exit_code':0,'signal':None})+'\\n')\n"
+        "sys.stdout.flush()\n");
+    const QString address = QStringLiteral("1:") + QString(64, QLatin1Char('e')) + QStringLiteral(":/tmp/w");
+    const auto messageOf = [](const ludus::foundation::Array<ProtocolEvent>& events) {
+        for (const ProtocolEvent& event : events)
+        {
+            if (event.Kind == ProtocolEvent::Type::Result)
+            {
+                return event.Message;
+            }
+        }
+        return QString();
+    };
+    CHECK(messageOf(RunAdapter(body, ToolOperation::BuildRun, address)) ==
+          QLatin1Char('"') + address + QLatin1Char('"'));
+    // Without an address the game opens in its own window; other operations never carry one.
+    CHECK(messageOf(RunAdapter(body, ToolOperation::BuildRun)) == QStringLiteral("null"));
+    CHECK(messageOf(RunAdapter(body, ToolOperation::Build, address)) == QStringLiteral("null"));
 }
 
 TEST_CASE("A job mismatch is a protocol error", "[editor][tool]")

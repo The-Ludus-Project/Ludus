@@ -159,9 +159,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     PlayButton_->setObjectName(QStringLiteral("worldPlay"));
     files->addWidget(PlayButton_, 1, 2);
     connect(PlayButton_, &QPushButton::clicked, this, [this]() {
+        // The launcher decides whether the viewport stays alive as the game's window.
         if (Save() && Dirty() == false && SceneBusy() == false)
         {
-            StopPreview();
             Q_EMIT PlayRequested();
         }
     });
@@ -1842,6 +1842,33 @@ void WorldWorkspace::UseProjectGraph(RendererWorkspace& inoutWorkspace)
 RenderPreview& WorldWorkspace::GetRenderPreview() noexcept
 {
     return mShownRenderPreviewOrNull != nullptr ? *mShownRenderPreviewOrNull : Render_->Preview();
+}
+bool WorldWorkspace::BeginPlayInViewport(QString& outAddress, QString& outReason)
+{
+    // Only the bound viewport of a World without an imported scene hosts Play today.
+    if (Document_.Loaded() == false || Document_.SceneLevel().isEmpty() == false || Render_->isHidden() == true)
+    {
+        outReason = QStringLiteral("this World is not shown in the bound viewport");
+        return false;
+    }
+    if (Render_->Preview().Running() == false)
+    {
+        outReason = QStringLiteral("the World viewport is paused");
+        return false;
+    }
+    return Render_->BeginPlay(outAddress, outReason);
+}
+void WorldWorkspace::EndPlayInViewport() noexcept
+{
+    Render_->EndPlay();
+}
+void WorldWorkspace::RequestPlayClose() noexcept
+{
+    Render_->RequestPlayClose();
+}
+bool WorldWorkspace::IsPlayingInViewport() const noexcept
+{
+    return Render_->IsPlaying();
 }
 bool WorldWorkspace::PreviewRunning() const noexcept
 {
