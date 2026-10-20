@@ -165,6 +165,8 @@ public:
     [[nodiscard]] QString GetDisplayStatus() const;
 
 Q_SIGNALS:
+    void PreparingSubmission();
+    void SubmissionRecorded();
     /// A new complete frame replaced GetImage.
     void FramePresented();
     /// Activation or candidate state changed; the status text may differ.

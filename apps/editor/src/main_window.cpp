@@ -6,6 +6,7 @@
 #include "internal/editor_commands.h"
 #include "internal/editor_files.h"
 #include "internal/error_list.h"
+#include "internal/profiling_panel.h"
 #include "internal/project_creation_dialog.h"
 #include "internal/project_explorer.h"
 #include "internal/project_setup_dialog.h"
@@ -14,6 +15,7 @@
 #include "internal/timing_panel.h"
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
+#include <ludus/foundation/profiling/profiling.hpp>
 
 #include <QAbstractItemModel>
 #include <QAction>
@@ -46,6 +48,7 @@
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStandardItemModel>
+#include <QStatusBar>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -76,6 +79,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mErrorListDock(new QDockWidget(QStringLiteral("Error List"), this)), mErrorList(new ErrorList(mErrorListDock)),
       mContentDock(new QDockWidget(QStringLiteral("Content"), this)),
       mRenderPreviewDock(new QDockWidget(QStringLiteral("Render Preview"), this)),
+      mProfilingDock(new QDockWidget(QStringLiteral("Profiling"), this)),
+      mRecordProfileAction(CreateEditorCommand(PROFILING_RECORD_COMMAND, this)),
       mStandardToolbar(new QToolBar(QStringLiteral("Standard"), this)),
       mRenderGraphToolbar(new QToolBar(QStringLiteral("Render Graph"), this)),
       mNewGraphAction(CreateEditorCommand(RENDER_GRAPH_NEW_COMMAND, this)),
@@ -93,7 +98,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     setWindowTitle(QStringLiteral("Ludus Editor"));
     setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
     ApplyWorkspaceStyle(this);
+    mProfilingDock->setObjectName(QStringLiteral("profilingDock"));
     BuildUi();
+    setupProfiling();
     BuildMenus();
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
@@ -500,6 +507,7 @@ void MainWindow::BuildMenus()
     addToolWindowCommand(VIEW_RENDER_PREVIEW_COMMAND, mRenderPreviewDock);
     addToolWindowCommand(VIEW_LIVE_INSPECTOR_COMMAND, InspectorDock_);
     addToolWindowCommand(VIEW_TIMING_COMMAND, TimingDock_);
+    addToolWindowCommand(VIEW_PROFILING_COMMAND, mProfilingDock);
     viewMenu->addSeparator();
     QMenu* toolbars = viewMenu->addMenu(QStringLiteral("&Toolbars"));
     for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar})
@@ -509,6 +517,8 @@ void MainWindow::BuildMenus()
 
     // Visual Studio keeps editor-wide preferences in Tools > Options.
     QMenu* toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
+    toolsMenu->addAction(mRecordProfileAction);
+    toolsMenu->addAction(QStringLiteral("Profiling..."), this, [this]() { showToolWindow(mProfilingDock); });
     toolsMenu->setObjectName(QStringLiteral("toolsMenu"));
     toolsMenu->addAction(mOptionsAction);
     connect(mOptionsAction, &QAction::triggered, this, &MainWindow::showOptions);
@@ -830,6 +840,8 @@ void MainWindow::OnCopyJobDetails()
 
 void MainWindow::OnStateChanged()
 {
+    LUDUS_PROFILE_SCOPE(EditorStateChanged);
+    mProfilingPanel->SetProjectRoot(QFileInfo(Controller_->State().DescriptorPath).absolutePath());
     RenderFields();
     RenderRecentProjects();
     RenderCapabilities();
@@ -1600,6 +1612,18 @@ void MainWindow::OnPackageRelease()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    ProfilingController& profiling = mProfilingPanel->GetController();
+    if (profiling.GetState() == ProfilingState::Recording)
+    {
+        profiling.Stop();
+    }
+    if (profiling.GetState() == ProfilingState::Finalizing || profiling.HasUnsavedSnapshot() == true)
+    {
+        showToolWindow(mProfilingDock);
+        statusBar()->showMessage(QStringLiteral("Finish saving or discard the profiling recording, then close again."));
+        event->ignore();
+        return;
+    }
     if (AudioClosing_ == false)
     {
         if (ConfirmProjectChange(QStringLiteral("quitting")) == false)

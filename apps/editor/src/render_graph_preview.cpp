@@ -1,4 +1,5 @@
 #include "internal/render_graph_preview.h"
+#include <ludus/foundation/profiling/profiling.hpp>
 
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -559,6 +560,7 @@ QSize RenderGraphPreview::GetTargetSize() const noexcept
 
 void RenderGraphPreview::Tick()
 {
+    LUDUS_PROFILE_SCOPE(EditorRenderGraphTick);
     State& state = *mState;
     if (state.IsAttached == false)
     {
@@ -747,6 +749,7 @@ void RenderGraphPreview::advance()
         return;
     }
     rhi::SubmissionToken completion;
+    Q_EMIT PreparingSubmission();
     const rhi::RasterStatus rendered =
         activeOrNull->Render(state.Surface, state.Active.Width, state.Active.Height, completion);
     if (rendered == rhi::RasterStatus::NotReady)
@@ -759,6 +762,7 @@ void RenderGraphPreview::advance()
                       .arg(DescribeRasterStatus(rendered)));
         return;
     }
+    Q_EMIT SubmissionRecorded();
     state.RenderedGeneration = report.ActiveGeneration;
     state.RenderedRevision = drawable;
     state.IsAwaitingProducer = true;

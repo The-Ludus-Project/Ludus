@@ -74,12 +74,16 @@ capture, narrowing the reason to build engine code to *semantic context tools ca
 
 ## Basic GPU timing for Perfetto
 
-Delivery update, 2026-10-20: this is a proposed extension to the implemented CPU
-tracer. The RHI already provides `EnableGpuTiming`, `ArmGpuTiming` and
+For current controls, fixed capture limits, export retry and supported targets,
+see [the native editor recording guide](../development/editor-workspace.md#recording-cpu-and-gpu-profiling).
+
+Delivery update, 2026-10-20: native local-editor P0/P1 now extend the CPU
+tracer with recording controls and GPU duration-counter export. The RHI already
+provides `EnableGpuTiming`, `ArmGpuTiming` and
 `GetGpuTiming` in `measurement.h`, and editor viewport Stats already polls and
 re-arms its single frame probe. The probe reports elapsed device-clock duration
-without CPU/display clock correlation. CPU tracing, viewport Stats and benchmark
-timing do not yet establish a combined editor Perfetto recording.
+without CPU/display clock correlation. The native editor combines CPU traces
+and typed GPU samples in a single Perfetto recording; it does not claim calibrated GPU execution lanes.
 
 Start with coarse frame-duration samples in the existing Chrome/Perfetto JSON
 export, then add timed physical passes, then calibrated execution tracks. Reuse
@@ -238,7 +242,7 @@ reference comments beside future sampler/exporter changes.
 | D11 | Statistics as off-line derivation (§1, §11, §16) | **Refine (C6)** **[R→adopt]** | Add hard rule: every statistic names its window + denominator; smoothed UI is separate from exact hitch evidence; no decaying extrema masquerading as min/max. |
 | D12 | Clock = `steady_clock` ns now; `rdtscp` later behind an abstraction (§5) | **Keep, elevate to gate (C7)** **[FP+R]** | Review §3.4/§4.2 dismantles raw-tick+MHz calibration. Correctness (ordering, frequency contract, migration) is a *precondition* for any TSC backend, not an optimization detail. |
 | D13 | Same-thread scope pairing "enforced by RAII lexical scope" (§4) | **Replace (C5)** **[R→adopt]** | Factually wrong for coroutines/migration (review §7.2). Replace with an explicit contract + flow events for cross-context work. |
-| D14 | GPU trace design, build later (§9) | **Keep / Stage** **[FP+R]** | CPU scopes do not measure GPU execution. Existing RHI frame probes enable the proposed P1 Perfetto duration export; P2 pass queries and P3 calibrated execution lanes remain separate gates in the basic GPU timing contract above. |
+| D14 | GPU trace design, build later (§9) | **Keep / Stage** **[FP+R]** | CPU scopes do not measure GPU execution. Existing RHI frame probes supply P1 Perfetto duration export; P2 pass queries and P3 calibrated execution lanes remain separate gates in the basic GPU timing contract above. |
 | D15 | Memory profiling deferred, tiered, allocator-owned (§10) | **Refine (C4)** **[R→adopt]** | Keep deferral and tiers; **correct** the "feeds the same capture infrastructure" wording — memory needs provenance-at-free and its own loss/snapshot contract, not Trace's drop policy. |
 | D16 | `JobId` field reserved now, correlation logic later (§7) | **Keep** **[FP+R]** | Review §7.2 confirms cross-thread/task correlation "must be modeled separately"; a reserved field + flow events is the right seam. |
 | D17 | Dynamic-name runtime interner, opt-in, bounded (§14) | **Keep** **[FP]** | Uncontroversial; the references' dynamic naming needs are covered. |
@@ -246,7 +250,7 @@ reference comments beside future sampler/exporter changes.
 
 Nothing is classified **Remove** outright — the baseline contained no dead weight. The only
 **Replace** is the incorrect same-thread claim (D13). GPU delivery (D14) now has a
-coarse-to-correlated plan using existing RHI probes; memory tiers (D15) retain
+coarse-to-correlated delivery using existing RHI probes; memory tiers (D15) retain
 their own staged implementation and ownership.
 
 ---
@@ -603,7 +607,7 @@ struct TraceEvent            // POD, trivially copyable; target 16–24 B (gate 
 | **Perfetto/Chrome export** | ✅ (Phase 1) | | | | Universal; primary viewer path. **[FP+R]** |
 | **Tracy integration (live)** | | ✅ (Phase 3) | ✅ | | Best live UX; validate cost first (§5, [?meas]). **[FP+R]** |
 | **Flow events (job/async correlation)** | ✅ (primitive now) | ✅ (JobSystem dispatch flows, [threading T2](threading.md#task-identity-and-execution-traces)) | | | Cross-context truth is a DAG, not a spanning scope (C1, C5, D16). **[R→adopt]** |
-| **GPU profiling (timestamp queries)** | | ⏳ P1–P3 Perfetto integration; RHI frame probe exists | RenderDoc/PIX/Nsight for capture | | Duration counters first, then pass timings and calibrated lanes; tools retain per-draw/pixel inspection (D14). **[FP+R]** |
+| **GPU profiling (timestamp queries)** | | P1 duration counters implemented; P2/P3 remain planned | RenderDoc/PIX/Nsight for capture | | Duration counters first, then pass timings and calibrated lanes; tools retain per-draw/pixel inspection (D14). **[FP+R]** |
 | **PIX / vendor debug markers** | | ✅ planned independently of recording mode | ✅ | | Annotates captures with pass names; enabled/disabled overhead must be measured. **[FP]** |
 | **Memory tracking (tag totals)** | ⏳ (needs allocator; always-on tier) | | | | Cheap atomics; keep in all builds (C4, §7). **[FP+R]** |
 | **Memory provenance / live-vs-churn / activity** | | ⏳ (memory-profiler module) | heaptrack for broad heap | | Provenance-at-free is L's core insight; own tags/domains (C4). **[R→adopt]** |

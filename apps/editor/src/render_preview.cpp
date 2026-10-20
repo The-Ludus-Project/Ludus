@@ -3,6 +3,8 @@
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene_limits.h"
+#include <ludus/foundation/profiling/profiling.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/projection.hpp>
@@ -481,6 +483,8 @@ void RenderPreview::Stop() noexcept
     {
         // Borrowers such as the render-graph preview release their resources first.
         Q_EMIT DeviceStopping();
+        mHasTimingAssociation = false;
+        mIsTimingArmed = false;
         resetFrames();
         mResources.Reset();
         mRetiredResources.Reset();
@@ -514,11 +518,81 @@ void RenderPreview::resetStatistics() noexcept
     mStatistics.GpuState = ViewportGpuTimeState::Waiting;
     mStatisticsRefresh.invalidate();
 }
-void RenderPreview::serviceGpuTiming() noexcept
+bool RenderPreview::CanProfileGpu() const noexcept
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
-    if (mIsStatisticsVisible == false || mStatistics.GpuState == ViewportGpuTimeState::Unavailable)
+    return OwnsDevice_ == true && mStatistics.GpuState != ViewportGpuTimeState::Unavailable;
+#else
+    return false;
+#endif
+}
+bool RenderPreview::SetGpuProfilingEnabled(bool isEnabled) noexcept
+{
+    mIsGpuProfilingEnabled = isEnabled;
+    if (isEnabled == true)
     {
+        if (CanProfileGpu() == false)
+        {
+            mIsGpuProfilingEnabled = false;
+            return false;
+        }
+        serviceGpuTiming(true);
+        if (mStatistics.GpuState == ViewportGpuTimeState::Unavailable ||
+            (mIsTimingArmed == false && mHasTimingAssociation == false))
+        {
+            mIsGpuProfilingEnabled = false;
+            return false;
+        }
+    }
+    return true;
+}
+bool RenderPreview::HasGpuProfilingPending(uint64 throughTicks) const noexcept
+{
+    return mHasTimingAssociation == true && mTimingSubmissionTicks <= throughTicks;
+}
+void RenderPreview::PollGpuProfiling() noexcept
+{
+    serviceGpuTiming(false);
+}
+void RenderPreview::PrepareGpuProfileFrame() noexcept
+{
+    serviceGpuTiming(true);
+    mTimingCandidateTicks = mIsTimingArmed == true ? foundation::time::NowTicks() : 0;
+}
+void RenderPreview::NotifyGpuProfileSubmission() noexcept
+{
+    ++mSubmittedFrameSequence;
+    if (mIsGpuProfilingEnabled == true)
+    {
+        Q_EMIT GpuProfileSubmission();
+    }
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    rhi::GpuTiming timing;
+    if (mIsTimingArmed == true && rhi::GetGpuTiming(Device_, timing) == rhi::RasterStatus::Ready &&
+        timing.State != rhi::GpuTimingState::Armed && timing.State != rhi::GpuTimingState::Empty &&
+        timing.State != rhi::GpuTimingState::Unavailable)
+    {
+        mTimingFrameId = mSubmittedFrameSequence;
+        mTimingSubmissionTicks = mTimingCandidateTicks;
+        mTimingDeviceSession = mDeviceSerial;
+        mHasTimingAssociation = true;
+        mIsTimingArmed = false;
+        serviceGpuTiming(false);
+    }
+#endif
+}
+void RenderPreview::serviceGpuTiming(bool shouldArm) noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (mIsStatisticsVisible == false && mIsGpuProfilingEnabled == false && mHasTimingAssociation == false &&
+        mIsTimingArmed == false)
+    {
+        return;
+    }
+    if (OwnsDevice_ == false)
+    {
+        mHasTimingAssociation = false;
+        mIsTimingArmed = false;
         return;
     }
     rhi::GpuTiming timing;
@@ -526,30 +600,40 @@ void RenderPreview::serviceGpuTiming() noexcept
     {
         return;
     }
-    switch (timing.State)
+    if (timing.State == rhi::GpuTimingState::Pending || timing.State == rhi::GpuTimingState::Armed)
     {
-        case rhi::GpuTimingState::Armed:
-        case rhi::GpuTimingState::Pending:
-            // Read back with latency: the previous frame's query is still in flight.
-            return;
-        case rhi::GpuTimingState::Available:
+        return;
+    }
+    if (mHasTimingAssociation == true)
+    {
+        constexpr float64 MAX_DURATION_NANOSECONDS = 60'000'000'000;
+        const bool isValid = timing.State == rhi::GpuTimingState::Available && timing.DurationNanoseconds >= 0 &&
+                             timing.DurationNanoseconds < MAX_DURATION_NANOSECONDS;
+        if (isValid == true && mIsStatisticsVisible == true)
+        {
             mStatistics.GpuMilliseconds.Add(timing.DurationNanoseconds / NANOSECONDS_PER_MILLISECOND);
             mStatistics.GpuState = ViewportGpuTimeState::Available;
-            break;
-        case rhi::GpuTimingState::Unavailable:
-            mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
-            return;
-        case rhi::GpuTimingState::Empty:
-        case rhi::GpuTimingState::Disjoint:
-        case rhi::GpuTimingState::Failed:
-            break;
+        }
+        const uint64 duration = isValid == true ? static_cast<uint64>(timing.DurationNanoseconds + 0.5) : 0;
+        mHasTimingAssociation = false;
+        Q_EMIT GpuProfileSample(mTimingFrameId, mTimingDeviceSession, mTimingSubmissionTicks, duration, isValid);
     }
-    if (rhi::ArmGpuTiming(Device_) == rhi::RasterStatus::Unsupported)
+    if (timing.State == rhi::GpuTimingState::Unavailable)
     {
         mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+        return;
+    }
+    if (shouldArm == true && (mIsStatisticsVisible == true || mIsGpuProfilingEnabled == true))
+    {
+        const rhi::RasterStatus armed = rhi::ArmGpuTiming(Device_);
+        mIsTimingArmed = armed == rhi::RasterStatus::Ready;
+        if (armed == rhi::RasterStatus::Unsupported)
+        {
+            mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
+        }
     }
 #else
-    // CPU-only previews have no device timestamps.
+    static_cast<void>(shouldArm);
     mStatistics.GpuState = ViewportGpuTimeState::Unavailable;
 #endif
 }
@@ -1125,6 +1209,7 @@ void RenderPreview::NotifyProjectFrame()
 }
 void RenderPreview::Tick()
 {
+    LUDUS_PROFILE_SCOPE(EditorViewportTick);
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     if (OwnsDevice_ == false || mHasPreparationFailed == true)
     {
@@ -1174,6 +1259,7 @@ void RenderPreview::Tick()
             fail(QStringLiteral("GPU viewport submission failed. World edits are preserved."));
             return;
         }
+        NotifyGpuProfileSubmission();
         mIsAwaitingProducer = true;
         mFramePump.SetProducerPending(true);
         return;
@@ -1309,7 +1395,7 @@ void RenderPreview::Tick()
         return;
     }
     // Arm immediately before the viewport frame so the probe encloses it, not a shadow submission.
-    serviceGpuTiming();
+    PrepareGpuProfileFrame();
     mProducer = {};
     const rhi::RasterStatus rendered = mResources->Viewport.Render(Surface_, mProducer);
     if (rendered == rhi::RasterStatus::NotReady || rendered == rhi::RasterStatus::Pending)
@@ -1322,6 +1408,7 @@ void RenderPreview::Tick()
                  .arg(static_cast<uint32>(rendered)));
         return;
     }
+    NotifyGpuProfileSubmission();
     mIsAwaitingProducer = true;
     mFramePump.SetProducerPending(true);
     recordFrameStatistics(frameTimer);

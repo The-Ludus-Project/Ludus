@@ -81,6 +81,17 @@ QString DescribeShaderInterface(const QByteArray& manifest, const QString& sourc
                          output));
             continue;
         }
+        if (stage != QStringLiteral("vertex") && stage != QStringLiteral("fragment"))
+        {
+            descriptions.append(QStringLiteral("%1 — %2 (%3)\n"
+                                               "Edit the stage interface in Slang source.\n"
+                                               "This stage is an authoring draft; the current graph build profile "
+                                               "does not execute it.")
+                                    .arg(program.value(QStringLiteral("id")).toString(),
+                                         program.value(QStringLiteral("function")).toString(),
+                                         stage));
+            continue;
+        }
         QStringList lines{
             QStringLiteral("%1 — %2 (%3)")
                 .arg(program.value(QStringLiteral("id")).toString(),

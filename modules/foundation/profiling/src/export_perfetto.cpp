@@ -1,3 +1,7 @@
+#include <cstring>
+#include <ludus/foundation/profiling/integration.hpp>
+#include <ludus/foundation/profiling/perfetto_export.hpp>
+#include <ludus/foundation/profiling/profiling_config.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
 
 #include "internal/memory_gauge.hpp"
@@ -341,8 +345,28 @@ void AppendMemoryGaugeMetadata(std::string& inoutJson, const SeenDomains& seenDo
 
 } // namespace
 
-bool ExportPerfettoTrace(std::string_view path) noexcept
+bool HasUnexportedTrace() noexcept
 {
+    return TraceRecorder::Instance().HasPublishedChunks();
+}
+
+bool SerializePerfettoTrace(Array<uint8>& outBytes,
+                            BorrowedView<const GpuTraceSample> samples,
+                            const GpuTraceCoverage& coverage,
+                            bool shouldIncludeCpu) noexcept
+{
+    if (LUDUS_PROFILING_ENABLED == 0 || samples.IsValid() == false || IsCaptureActive() == true)
+    {
+        return false;
+    }
+    for (usize index = 0; index < samples.GetSize(); ++index)
+    {
+        const GpuTraceSample& sample = samples[index];
+        if (sample.FrameId == 0 || sample.DeviceSession == 0 || sample.CollectionTicks < sample.SubmissionTicks)
+        {
+            return false;
+        }
+    }
     TraceRecorder& recorder = TraceRecorder::Instance();
 
     // Drain every full chunk. Flatten to a single Vector we can stable-sort by
@@ -356,9 +380,11 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
     // events (an End and the next Begin on a fast clock) in recorded order
     // across a chunk boundary instead of emitting an End before its Begin.
     foundation::Array<TraceChunk*> drained;
-    for (TraceChunk* chunk = recorder.DrainFullChunks(); chunk != nullptr; chunk = chunk->PoolNextOrNull)
+    for (TraceChunk* chunkOrNull = shouldIncludeCpu == true ? recorder.DrainFullChunks() : nullptr;
+         chunkOrNull != nullptr;
+         chunkOrNull = chunkOrNull->PoolNextOrNull)
     {
-        drained.Add(chunk);
+        drained.Add(chunkOrNull);
     }
     foundation::Array<FlatEvent> events;
     for (usize chunkIndex = drained.GetSize(); chunkIndex > 0; --chunkIndex)
@@ -377,7 +403,7 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
         recorder.RecycleChunk(c);
     }
 
-    if (events.IsEmpty())
+    if (events.IsEmpty() == true && samples.IsEmpty() == true)
     {
         return false;
     }
@@ -405,7 +431,7 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
     out.reserve(events.size() * 96 + 256);
     out += "{\"traceEvents\":[\n";
     bool first = true;
-    for (usize threadIndex = 0; threadIndex < recorder.ThreadCount(); ++threadIndex)
+    for (usize threadIndex = 0; shouldIncludeCpu == true && threadIndex < recorder.ThreadCount(); ++threadIndex)
     {
         const uint32 threadId = recorder.ThreadIdAt(threadIndex);
         const std::string_view threadName = recorder.ThreadName(threadId);
@@ -422,12 +448,12 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
     // were never read. A single depth counter is equivalent and clearer (and
     // removes the std::string dependency entirely).
     usize openDepth = 0;
-    uint32 currentThread = events.GetFirst().ThreadId;
+    uint32 currentThread = events.IsEmpty() == true ? 0 : events.GetFirst().ThreadId;
     GaugeGroup gaugeGroup;
     SeenDomains seenDomains{};
     bool hasMemoryGauges = false;
 
-    uint64 lastTicks = events.GetFirst().Ticks;
+    uint64 lastTicks = events.IsEmpty() == true ? 0 : events.GetFirst().Ticks;
 
     auto flushOpen = [&](uint32 threadId) noexcept {
         // Close any scopes left open on this thread with a synthesized,
@@ -514,21 +540,82 @@ bool ExportPerfettoTrace(std::string_view path) noexcept
     flushOpen(currentThread);
     (void)lastTicks;
 
+    // Thanks to Perfetto contributors, "Visualizing external trace formats", Chrome JSON:
+    // https://perfetto.dev/docs/getting-started/other-formats
+    // Counters carry durations at a submission attribution marker, not GPU execution slices.
+    if (samples.IsEmpty() == false)
+    {
+        if (first == false)
+        {
+            out += ",\n";
+        }
+        out += "{\"pid\":2,\"tid\":1,\"ph\":\"M\",\"name\":\"thread_name\",\"args\":{\"name\":\"GPU viewport durations "
+               "(submission attribution)\"}}";
+        for (usize index = 0; index < samples.GetSize(); ++index)
+        {
+            const GpuTraceSample& sample = samples[index];
+            out += ",\n{\"pid\":2,\"tid\":1,\"ph\":\"C\",\"name\":\"GPU/FrameDurationNanoseconds\",\"ts\":";
+            AppendMicros(out, sample.SubmissionTicks);
+            out += ",\"args\":{\"value\":";
+            AppendUint(out, sample.DurationNanoseconds);
+            out += "}},\n{\"pid\":2,\"tid\":1,\"ph\":\"i\",\"s\":\"t\",\"name\":\"GPU sample identity\",\"ts\":";
+            AppendMicros(out, sample.SubmissionTicks);
+            out += ",\"args\":{\"frameId\":";
+            AppendUint(out, sample.FrameId);
+            out += ",\"deviceSession\":";
+            AppendUint(out, sample.DeviceSession);
+            out += ",\"collectionNanoseconds\":";
+            AppendUint(out, sample.CollectionTicks);
+            out += "}}";
+        }
+    }
     out += "\n]";
     if (hasMemoryGauges == true)
     {
         AppendMemoryGaugeMetadata(out, seenDomains);
     }
-    out += ",\"displayTimeUnit\":\"ns\"}\n";
+    out += ",\"ludusGpuTiming\":{\"clockRelationship\":\"duration-only; ts attributes CPU submission, not GPU "
+           "execution\",\"method\":\"device frame probe\",\"sampleCount\":";
+    AppendUint(out, samples.GetSize());
+    out += ",\"cpuScopesIncluded\":";
+    out += shouldIncludeCpu == true ? "true" : "false";
+    out += ",\"gpuRequested\":";
+    out += coverage.IsGpuRequested == true || samples.IsEmpty() == false ? "true" : "false";
+    out += ",\"eligibleFrames\":";
+    AppendUint(out, coverage.EligibleFrames);
+    out += ",\"invalidSamples\":";
+    AppendUint(out, coverage.InvalidSamples);
+    out += ",\"droppedSamples\":";
+    AppendUint(out, coverage.DroppedSamples);
+    out += ",\"unresolvedSamples\":";
+    AppendUint(out, coverage.UnresolvedSamples);
+    out += "},\"displayTimeUnit\":\"ns\"}\n";
 
-    std::FILE* file = std::fopen(std::string(path).c_str(), "wb");
-    if (file == nullptr)
+    Array<uint8> bytes;
+    if (bytes.TryResize(out.size()) == false)
     {
         return false;
     }
-    const usize written = std::fwrite(out.data(), 1, out.size(), file);
-    std::fclose(file);
-    return written == out.size();
+    std::memcpy(bytes.GetData(), out.data(), out.size());
+    outBytes = Move(bytes);
+    return true;
+}
+
+bool ExportPerfettoTrace(std::string_view path) noexcept
+{
+    Array<uint8> bytes;
+    if (SerializePerfettoTrace(bytes) == false)
+    {
+        return false;
+    }
+    std::FILE* fileOrNull = std::fopen(std::string(path).c_str(), "wb");
+    if (fileOrNull == nullptr)
+    {
+        return false;
+    }
+    const usize written = std::fwrite(bytes.GetData(), 1, bytes.GetSize(), fileOrNull);
+    const int closed = std::fclose(fileOrNull);
+    return written == bytes.GetSize() && closed == 0;
 }
 
 } // namespace ludus::foundation::profiling

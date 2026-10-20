@@ -556,6 +556,7 @@ void MainWindow::arrangeDefaultDocks()
         mErrorListDock,
         OutputDock_,
         TimingDock_,
+        mProfilingDock,
     };
     for (QDockWidget* dock : docks)
     {
@@ -570,6 +571,7 @@ void MainWindow::arrangeDefaultDocks()
     addDockWidget(Qt::BottomDockWidgetArea, mErrorListDock);
     tabifyDockWidget(mErrorListDock, OutputDock_);
     tabifyDockWidget(mErrorListDock, TimingDock_);
+    tabifyDockWidget(mErrorListDock, mProfilingDock);
     for (QDockWidget* dock : docks)
     {
         dock->show();
@@ -658,7 +660,8 @@ void MainWindow::buildWindowMenu(QMenu* menu)
                               mContentDock,
                               mRenderPreviewDock,
                               InspectorDock_,
-                              TimingDock_})
+                              TimingDock_,
+                              mProfilingDock})
     {
         menu->addAction(dock->toggleViewAction());
     }

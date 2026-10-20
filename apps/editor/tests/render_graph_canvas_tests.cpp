@@ -10,13 +10,18 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAction>
+#include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeySequence>
+#include <QMenu>
 #include <QNativeGestureEvent>
 #include <QPointingDevice>
 #include <QPushButton>
@@ -25,6 +30,7 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include <limits>
@@ -517,4 +523,94 @@ TEST_CASE("pipeline inspector commits typed ports directly to the undoable draft
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == false);
     workspace.Undo();
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == true);
+}
+
+TEST_CASE("shader rows create registered sources through Properties and canvas controls",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    REQUIRE(kinds != nullptr);
+    kinds->setCurrentText(QStringLiteral("RayTracingPipeline"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(add != nullptr);
+    add->click();
+    const auto exercise = [&workspace, &package](RenderGraphPipelineEditor* editor) {
+        REQUIRE(editor != nullptr);
+        QPushButton* addShader = editor->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
+        REQUIRE(addShader != nullptr);
+        QTableWidget* shaders = editor->findChild<QTableWidget*>(QStringLiteral("shaders"));
+        REQUIRE(shaders != nullptr);
+        addShader->click();
+        REQUIRE(workspace.GetSelectedShaderSources().size() == 1);
+        CHECK(shaders->item(0, 2)->text() != QStringLiteral("Program"));
+        shaders->item(0, 0)->setText(QStringLiteral("raygen"));
+        const QStringList firstSources = workspace.GetSelectedShaderSources();
+        addShader->click();
+        shaders->item(1, 0)->setText(QStringLiteral("closestHit"));
+        QComboBox* stage = qobject_cast<QComboBox*>(shaders->cellWidget(1, 1));
+        REQUIRE(stage != nullptr);
+        const QStringList beforeStageChange = workspace.GetDocument().GetFiles();
+        stage->setCurrentText(QStringLiteral("closest_hit"));
+        const QStringList sources = workspace.GetSelectedShaderSources();
+        REQUIRE(sources.size() == 2);
+        CHECK(sources.first() == firstSources.first());
+        QComboBox* selector = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+        REQUIRE(selector != nullptr);
+        for (const QString& source : sources)
+        {
+            CHECK(selector->findText(source) >= 0);
+            CHECK(workspace.GetDocument().GetDraft(source).contains("ShaderMain") == true);
+        }
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayHit") == true);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
+        CHECK(selector->findText(sources.last()) < 0);
+        workspace.Redo();
+        CHECK(workspace.GetSelectedShaderSources() == sources);
+        REQUIRE(workspace.Save() == true);
+        for (const QString& source : sources)
+        {
+            CHECK(QFileInfo::exists(QDir(package).filePath(source)) == true);
+        }
+    };
+    SECTION("Properties")
+    {
+        exercise(workspace.findChild<RenderGraphPipelineEditor*>());
+    }
+    SECTION("canvas with Properties hidden")
+    {
+        workspace.resize(1200, 800);
+        workspace.show();
+        QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+        REQUIRE(properties != nullptr);
+        properties->hide();
+        QCoreApplication::processEvents();
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        canvas.Rebuild();
+        QTimer::singleShot(0, &canvas, [&canvas, &exercise, properties]() {
+            QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menu != nullptr);
+            QAction* edit = menu->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+            REQUIRE(edit != nullptr);
+            QTimer::singleShot(0, &canvas, [&exercise, properties]() {
+                QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                REQUIRE(dialog != nullptr);
+                CHECK(properties->isVisible() == false);
+                exercise(dialog->findChild<RenderGraphPipelineEditor*>());
+                dialog->reject();
+            });
+            menu->close();
+            edit->trigger();
+        });
+        const QPoint point =
+            canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("raytracingpipeline")) + QPointF(20, 10));
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+    }
 }

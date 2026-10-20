@@ -55,6 +55,7 @@ enum class ProjectItemKind : foundation::uint8;
 class ScriptWorkspace;
 class RendererWorkspace;
 class TimingPanel;
+class ProfilingPanel;
 class WorldWorkspace;
 class MainWindow : public QMainWindow
 {
@@ -123,6 +124,7 @@ private:
     void renderGraphCommands();
     void showOptions();
     void renderGraphErrors();
+    void setupProfiling();
     void renderBuildErrors();
     void SaveWorkspaceLayout() const;
     [[nodiscard]] bool ConfirmProjectChange(const QString& action);
@@ -188,6 +190,9 @@ private:
     ErrorList* mErrorList;
     QDockWidget* mContentDock;
     QDockWidget* mRenderPreviewDock;
+    QDockWidget* mProfilingDock;
+    ProfilingPanel* mProfilingPanel;
+    QAction* mRecordProfileAction;
     QToolBar* mStandardToolbar;
     QToolBar* mRenderGraphToolbar;
     QAction* mNewGraphAction;

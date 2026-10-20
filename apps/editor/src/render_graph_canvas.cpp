@@ -7,6 +7,7 @@
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
+#include <QFocusEvent>
 #include <QFont>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
@@ -21,6 +22,8 @@
 #include <QNativeGestureEvent>
 #include <QPainterPath>
 #include <QPen>
+#include <QRubberBand>
+#include <QScrollBar>
 #include <QSet>
 #include <QShowEvent>
 #include <QTimer>
@@ -446,16 +449,19 @@ struct RenderGraphCanvas::EdgeView final
 };
 
 RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidget* parentOrNull)
-    : QGraphicsView(parentOrNull), mDocument(document), mScene(new QGraphicsScene(this))
+    : QGraphicsView(parentOrNull), mDocument(document), mScene(new QGraphicsScene(this)),
+      mSelectionBox(new QRubberBand(QRubberBand::Rectangle, viewport()))
 {
     setObjectName(QStringLiteral("renderGraphCanvas"));
     setAccessibleName(QStringLiteral("Render graph canvas"));
     setScene(mScene);
     setRenderHint(QPainter::Antialiasing);
-    setDragMode(QGraphicsView::ScrollHandDrag);
+    setDragMode(QGraphicsView::NoDrag);
     setTransformationAnchor(QGraphicsView::NoAnchor);
     setBackgroundBrush(QColor(28, 31, 36));
-    setToolTip(QStringLiteral("Drag nodes to arrange them (one undo step per drag) · drag from an output port to an "
+    setToolTip(QStringLiteral("Left-drag empty space to box-select · Shift adds to selection · middle-drag or "
+                              "Space+left-drag pans · Copy/Paste reuses node groups · drag nodes to arrange them (one "
+                              "undo step per drag) · drag from an output port to an "
                               "input port to connect or replace · right-click nodes, wires or ports to edit · "
                               "Delete removes the selected node or link · double-click a "
                               "Subgraph to open its source · pinch or scroll to zoom around the pointer"));
@@ -520,6 +526,8 @@ void RenderGraphCanvas::Rebuild()
     const QStringList selected = GetSelectedNodes();
     cancelLink();
     mIsDragging = false;
+    mIsBoxSelecting = false;
+    mSelectionBox->hide();
     mDragNodes.clear();
     qDeleteAll(mNodes);
     mNodes.clear();
@@ -807,11 +815,30 @@ RenderGraphDomain RenderGraphCanvas::GetNodeDomain(const QString& node) const
 
 void RenderGraphCanvas::SelectNode(const QString& node)
 {
+    SelectNodes(node.isEmpty() == true ? QStringList{} : QStringList{node});
+}
+
+void RenderGraphCanvas::SelectNodes(const QStringList& nodes)
+{
     for (NodeView* view : std::as_const(mNodes))
     {
-        view->Frame->setSelected(view->Id == node);
+        view->Frame->setSelected(view->IsMovable == true && nodes.contains(view->Id) == true);
     }
     updateSelection();
+}
+
+void RenderGraphCanvas::notifySelection()
+{
+    for (EdgeView* edge : std::as_const(mEdges))
+    {
+        edge->Path->setSelected(false);
+        edge->Path->setData(0, false);
+        if (edge->IsEditable == true)
+        {
+            edge->Path->setPen(QPen(QColor::fromRgba(EDITABLE_EDGE_COLOR), 2));
+        }
+    }
+    Q_EMIT NodesSelected(GetSelectedNodes());
 }
 
 void RenderGraphCanvas::RevealNode(const QString& node)
@@ -841,7 +868,7 @@ QStringList RenderGraphCanvas::GetSelectedNodes() const
     QStringList selected;
     for (const NodeView* view : std::as_const(mNodes))
     {
-        if (view->Frame->isSelected() == true)
+        if (view->IsMovable == true && view->Frame->isSelected() == true)
         {
             selected.append(view->Id);
         }
@@ -1078,12 +1105,31 @@ void RenderGraphCanvas::contextMenuEvent(QContextMenuEvent* event)
         return;
     }
     const bool isAuthoredNode = FindNode(configuration(), node).isEmpty() == false;
+    if (isAuthoredNode == true && GetSelectedNodes().contains(node) == false)
+    {
+        SelectNode(node);
+        notifySelection();
+    }
     Q_EMIT ContextMenuRequested(isAuthoredNode == true ? node : QString(), event->globalPos());
     event->accept();
 }
 
 void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
 {
+    setFocus(Qt::MouseFocusReason);
+    if (event->button() == Qt::MiddleButton || (event->button() == Qt::LeftButton && mIsSpacePressed == true))
+    {
+        mIsPanning = true;
+        mPanPosition = event->position().toPoint();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::RightButton)
+    {
+        event->accept();
+        return;
+    }
     if (event->button() != Qt::LeftButton)
     {
         QGraphicsView::mousePressEvent(event);
@@ -1119,7 +1165,11 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         {
             SelectNode(node);
         }
-        Q_EMIT NodeSelected(node);
+        notifySelection();
+        if (GetSelectedNodes().contains(node) == true)
+        {
+            Q_EMIT NodeSelected(node);
+        }
         BeginDrag(GetSelectedNodes());
         event->accept();
         return;
@@ -1140,13 +1190,49 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
     }
     if (from.isEmpty() == true)
     {
-        SelectNode({});
-        QGraphicsView::mousePressEvent(event);
+        mSelectionBeforeBox = event->modifiers().testFlag(Qt::ShiftModifier) == true ||
+                                      event->modifiers().testFlag(Qt::ControlModifier) == true
+                                  ? GetSelectedNodes()
+                                  : QStringList{};
+        mSelectionStart = event->position().toPoint();
+        mIsBoxSelecting = true;
+        SelectNodes(mSelectionBeforeBox);
+        mSelectionBox->setGeometry(QRect(mSelectionStart, QSize()));
+        mSelectionBox->show();
+        notifySelection();
     }
+    event->accept();
 }
 
 void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
 {
+    if (mIsPanning == true)
+    {
+        const QPoint delta = event->position().toPoint() - mPanPosition;
+        mPanPosition = event->position().toPoint();
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+        verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+        event->accept();
+        return;
+    }
+    if (mIsBoxSelecting == true)
+    {
+        const QRect rectangle = QRect(mSelectionStart, event->position().toPoint()).normalized();
+        mSelectionBox->setGeometry(rectangle);
+        const QRectF sceneRectangle = mapToScene(rectangle).boundingRect();
+        QStringList selected = mSelectionBeforeBox;
+        for (const NodeView* view : std::as_const(mNodes))
+        {
+            if (view->IsMovable == true && sceneRectangle.intersects(view->Frame->sceneBoundingRect()) == true &&
+                selected.contains(view->Id) == false)
+            {
+                selected.append(view->Id);
+            }
+        }
+        SelectNodes(selected);
+        event->accept();
+        return;
+    }
     const QPointF position = mapToScene(event->position().toPoint());
     if (mLinkPreviewOrNull != nullptr)
     {
@@ -1165,6 +1251,22 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
 
 void RenderGraphCanvas::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (mIsPanning == true && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton))
+    {
+        mIsPanning = false;
+        setCursor(mIsSpacePressed == true ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+    if (mIsBoxSelecting == true && event->button() == Qt::LeftButton)
+    {
+        mouseMoveEvent(event);
+        mIsBoxSelecting = false;
+        mSelectionBox->hide();
+        notifySelection();
+        event->accept();
+        return;
+    }
     if (mLinkPreviewOrNull != nullptr)
     {
         const QString from = mLinkFrom;
@@ -1205,19 +1307,42 @@ void RenderGraphCanvas::mouseDoubleClickEvent(QMouseEvent* event)
 
 void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
 {
+    if (event->key() == Qt::Key_Space)
+    {
+        mIsSpacePressed = true;
+        setCursor(Qt::OpenHandCursor);
+        event->accept();
+        return;
+    }
+    if (event->matches(QKeySequence::Copy) == true || event->matches(QKeySequence::Paste) == true)
+    {
+        if (event->matches(QKeySequence::Copy) == true)
+        {
+            Q_EMIT CopyRequested();
+        }
+        else
+        {
+            Q_EMIT PasteRequested();
+        }
+        event->accept();
+        return;
+    }
     if (event->matches(QKeySequence::SelectAll) == true)
     {
         for (NodeView* view : std::as_const(mNodes))
         {
-            view->Frame->setSelected(true);
+            view->Frame->setSelected(view->IsMovable);
         }
         updateSelection();
+        notifySelection();
         event->accept();
         return;
     }
     if (event->key() == Qt::Key_Escape)
     {
         cancelLink();
+        mIsBoxSelecting = false;
+        mSelectionBox->hide();
         UpdateDrag({});
         mIsDragging = false;
         mDragNodes.clear();
@@ -1232,6 +1357,7 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
             }
         }
         updateSelection();
+        notifySelection();
         event->accept();
         return;
     }
@@ -1249,14 +1375,41 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
             return;
         }
     }
-    for (const QString& node : GetSelectedNodes())
+    const QStringList selected = GetSelectedNodes();
+    if (selected.size() == 1)
     {
-        if (mNodes.value(node)->IsMovable == true)
-        {
-            Q_EMIT RemoveRequested(node);
-        }
+        Q_EMIT RemoveRequested(selected.first());
+    }
+    else if (selected.isEmpty() == false)
+    {
+        Q_EMIT RemoveNodesRequested(selected);
     }
     event->accept();
+}
+
+void RenderGraphCanvas::keyReleaseEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Space && event->isAutoRepeat() == false)
+    {
+        mIsSpacePressed = false;
+        if (mIsPanning == false)
+        {
+            unsetCursor();
+        }
+        event->accept();
+        return;
+    }
+    QGraphicsView::keyReleaseEvent(event);
+}
+
+void RenderGraphCanvas::focusOutEvent(QFocusEvent* event)
+{
+    mIsSpacePressed = false;
+    mIsPanning = false;
+    mIsBoxSelecting = false;
+    mSelectionBox->hide();
+    unsetCursor();
+    QGraphicsView::focusOutEvent(event);
 }
 
 void RenderGraphCanvas::wheelEvent(QWheelEvent* event)

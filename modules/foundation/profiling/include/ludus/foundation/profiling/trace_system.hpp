@@ -57,6 +57,11 @@ bool BeginCapture(usize maxChunks = 64) noexcept;
 /// @note Waits only for an in-progress event write; a producer thread suspended in the middle of one delays the return.
 void EndCapture() noexcept;
 
+/// Whether a stopped CPU recording still has published events awaiting serialization/export.
+/// Does not drain or discard data. Serialize this control query with Begin/End/Export;
+/// active producers may still hold unpublished events, so this is not an active-capture test.
+[[nodiscard]] bool HasUnexportedTrace() noexcept;
+
 /// @brief Serialise the most recent capture to a Chrome/Perfetto trace-event JSON file (final design §16 primary
 /// viewer path).
 ///

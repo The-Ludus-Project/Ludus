@@ -72,6 +72,19 @@ ludus render-graph migrate-pipelines graphs/Main/rasterize.lurender.json \
 The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
+In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
+and set its shader ID. Completed edits automatically create a `.slang` template and registers a program in the root
+`.lushader.json` for each new program name. The initial `Program` value
+receives a unique name from the node and shader IDs. To share a shader, enter an existing
+program name with a matching stage. New sources appear immediately in **Source**;
+**Save** writes them beside the manifest. Creation, manifest registration and node
+assignments form one undo step. Name/file conflicts or incompatible references
+preserve the draft. Templates are starting points: vertex/fragment interfaces use
+the manifest schemas; ray-generation, miss and closest-hit functions use the
+renderer’s triangle ray interfaces. Other stages remain authoring drafts subject
+to the execution limits below. Changing stage creates a new matching program and
+retains the previous source for reuse. Removing a shader row retains its program and source for reuse.
+
 The version-2 node fields are:
 
 | Field | Contract |
@@ -1495,7 +1508,8 @@ undoable edit; **Save** writes it to the project.
 | Double-click a Raster node | Opens its first mapped shader source; choose other stages with View Shaders or the Source selector |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
 | Wheel or vertical two-finger scroll | Zoom around the pointer, including smooth pixel scrolling |
-| Drag empty space | Pan the view only |
+| Left-drag empty space | Box-select nodes; Shift adds to the selection |
+| Middle-drag or Space+left-drag | Pan the view only |
 
 Header colours show the connection domain: blue scene/view (Scene, Camera),
 orange execution (Raster, Present), green resource (Target, Export), purple
@@ -1504,6 +1518,42 @@ show the value type. Nodes without a `layout` position are arranged by
 dependency order for display only; nothing is written until you move them.
 Configuration output links can be selected and deleted, just like pass connections.
 They edit the configuration output's source rather than adding an ordinary edge.
+
+### Add configurations and reuse node groups
+
+Right-click a graph file, configuration, or empty canvas and choose **Add
+Configuration...** to create a named configuration in the selected `.lurender.json`.
+Names must be unique within that file, begin with an ASCII letter, and contain at
+most 63 ASCII letters, digits, underscores or hyphens. A file supports up to eight
+configurations. The new empty configuration opens immediately; its ports can be
+added through **Edit Inputs / Outputs...**. The existing asset default stays the
+same. Creation is one undo step, and Save publishes it.
+
+Left-drag empty canvas space to box-select nodes. Shift-drag adds to the selection;
+Shift-click adds a node and Ctrl-click toggles one. **Select All** and **Escape**
+select or clear the group. Pan with middle-drag or hold Space while left-dragging;
+pinch and wheel zoom keep their existing behavior. Dragging a selected node moves
+the whole group in one undo step.
+
+Use the platform **Copy** and **Paste** shortcuts (Command+C/Command+V on macOS,
+Ctrl+C/Ctrl+V elsewhere), or **Copy Selected Nodes** and **Paste Nodes** in the
+right-click menu. Paste targets the displayed configuration, at the viewport
+center for keyboard paste or the canvas context-menu position. Copied node fields,
+relative positions and connections within the group are retained; conflicting
+node IDs receive unique suffixes and internal endpoints are remapped. Links to
+unselected nodes and the configuration’s input/output declarations are excluded. Reconnect
+those boundaries in the destination. Paste and group removal each have one undo
+step. Save writes the edited graph file.
+
+The Graph sources tree supports the same copy/paste operations for node rows in
+one configuration. Right-clicking a selected row keeps the selected group; a
+right-click on an unselected row selects that row. Mixed file/configuration
+selections stay visible but do not form a copyable node group. Paste can target a
+different configuration or graph file. Shader programs and Subgraph assets remain
+shared references: copying does not duplicate their sources. Across packages,
+referenced graph files, shader sources and the root shader manifest must match
+in the destination. Missing or mismatched dependencies reject the paste with a
+message, preserving the destination draft and history.
 
 ### Edit configuration inputs and outputs
 

@@ -149,6 +149,7 @@ public:
     // done, returns each chunk via RecycleChunk so the pool can be reused.
     // Callable during capture as well as after EndCapture().
     [[nodiscard]] TraceChunk* DrainFullChunks() noexcept;
+    [[nodiscard]] bool HasPublishedChunks() const noexcept;
     void RecycleChunk(TraceChunk* chunk) noexcept;
 
     [[nodiscard]] TraceHealth Health() const noexcept;

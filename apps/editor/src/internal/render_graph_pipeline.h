@@ -4,6 +4,7 @@
 
 #include "internal/render_graph_pipeline_node.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
@@ -26,6 +27,9 @@ class RenderGraphPipelineEditor final : public QWidget
     Q_OBJECT
 public:
     explicit RenderGraphPipelineEditor(const QJsonObject& node, QWidget* parentOrNull = nullptr);
+
+    /// Adopt document-assigned program names without emitting another edit or replacing controls.
+    void SetShaderAssignments(const QJsonArray& shaders);
 
 Q_SIGNALS:
     /// A completed edit proposes the complete node; the document may reject unsafe port changes.
