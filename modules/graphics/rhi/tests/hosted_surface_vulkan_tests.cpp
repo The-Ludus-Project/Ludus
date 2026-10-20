@@ -38,8 +38,6 @@ constexpr usize BYTES_PER_PIXEL = 4;
 constexpr usize RESIZE_ROUNDS = 5;
 constexpr uint32 MAX_PHYSICAL_DEVICES = 16;
 constexpr uint32 MAX_QUEUE_FAMILIES = 32;
-/// Command buffers one test may submit through SubmitTransfers() before FreeTransfers().
-constexpr usize MAX_SUBMITTED_TRANSFERS = 16;
 
 /// The editor's own Vulkan device with VK_KHR_external_memory_fd, as Qt would own it.
 class ConsumerDevice final
@@ -176,13 +174,12 @@ public:
         VkCommandBuffer Command = VK_NULL_HANDLE;
     };
 
-    /// @brief Sample a frame as the editor does, without waiting: record the consumer's acquire,
-    /// copy the centre pixel, record the consumer's release, then submit to the queue.
-    [[nodiscard]] PixelCopy SubmitCenterPixelCopy(rhi::HostedSurfaceConsumer& inoutConsumer,
-                                                  const rhi::HostedFrame& frame) const
+    /// @brief Sample a frame as the editor does, without waiting: copy its centre pixel on the
+    /// consumer's queue. AcquireFrame() already submitted the queue family acquire ahead of it,
+    /// so the copy needs only its own layout transitions, back to the presented layout after.
+    [[nodiscard]] PixelCopy SubmitCenterPixelCopy(const rhi::HostedFrame& frame) const
     {
         REQUIRE(frame.VulkanLayout == rhi::HOSTED_VULKAN_SHADER_READ_LAYOUT);
-        REQUIRE(frame.VulkanSourceQueueFamily == rhi::HOSTED_VULKAN_QUEUE_FAMILY_EXTERNAL);
         const VkImage image = reinterpret_cast<VkImage>(frame.VulkanImage.GetBits());
         PixelCopy copy;
         VkBufferCreateInfo bufferInfo{};
@@ -205,11 +202,9 @@ public:
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         REQUIRE(vkBeginCommandBuffer(copy.Command, &begin) == VK_SUCCESS);
-        const rhi::NativeVulkanCommandBuffer command(static_cast<void*>(copy.Command));
-        REQUIRE(inoutConsumer.RecordFrameAcquire(frame, command) == rhi::HostedConsumerStatus::Ok);
         VkImageMemoryBarrier toTransfer{};
         toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        toTransfer.srcAccessMask = 0;
         toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         toTransfer.oldLayout = static_cast<VkImageLayout>(frame.VulkanLayout);
         toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -220,7 +215,7 @@ public:
         toTransfer.subresourceRange.levelCount = 1;
         toTransfer.subresourceRange.layerCount = 1;
         vkCmdPipelineBarrier(copy.Command,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0,
                              0,
@@ -240,7 +235,7 @@ public:
         };
         region.imageExtent = { .width = 1, .height = 1, .depth = 1 };
         vkCmdCopyImageToBuffer(copy.Command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, copy.Buffer, 1, &region);
-        // Back to the presented layout, as the consumer's release expects it.
+        // Back to the presented layout, which the consumer's release expects.
         VkImageMemoryBarrier toPresented = toTransfer;
         toPresented.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         toPresented.dstAccessMask = 0;
@@ -248,7 +243,7 @@ public:
         toPresented.newLayout = static_cast<VkImageLayout>(frame.VulkanLayout);
         vkCmdPipelineBarrier(copy.Command,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              0,
                              0,
                              nullptr,
@@ -256,7 +251,6 @@ public:
                              nullptr,
                              1,
                              &toPresented);
-        REQUIRE(inoutConsumer.RecordFrameRelease(frame, command) == rhi::HostedConsumerStatus::Ok);
         REQUIRE(vkEndCommandBuffer(copy.Command) == VK_SUCCESS);
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -282,49 +276,12 @@ public:
     }
 
     /// Sample a frame and wait for the queue, so the frame may be released at once.
-    [[nodiscard]] StaticArray<uint8, BYTES_PER_PIXEL> ReadCenterPixel(rhi::HostedSurfaceConsumer& inoutConsumer,
-                                                                      const rhi::HostedFrame& frame) const
+    [[nodiscard]] StaticArray<uint8, BYTES_PER_PIXEL> ReadCenterPixel(const rhi::HostedFrame& frame) const
     {
-        PixelCopy copy = SubmitCenterPixelCopy(inoutConsumer, frame);
+        PixelCopy copy = SubmitCenterPixelCopy(frame);
         // The frame may be released only after this sampling has completed.
         REQUIRE(vkQueueWaitIdle(mQueue) == VK_SUCCESS);
         return FinishPixelCopy(copy);
-    }
-
-    /// Record an acquire and a release of `frame` and submit them, without waiting.
-    void SubmitTransfers(rhi::HostedSurfaceConsumer& inoutConsumer, const rhi::HostedFrame& frame) const
-    {
-        VkCommandBufferAllocateInfo allocate{};
-        allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocate.commandPool = mCommands;
-        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocate.commandBufferCount = 1;
-        VkCommandBuffer native = VK_NULL_HANDLE;
-        REQUIRE(vkAllocateCommandBuffers(mDevice, &allocate, &native) == VK_SUCCESS);
-        VkCommandBufferBeginInfo begin{};
-        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        REQUIRE(vkBeginCommandBuffer(native, &begin) == VK_SUCCESS);
-        const rhi::NativeVulkanCommandBuffer command(static_cast<void*>(native));
-        REQUIRE(inoutConsumer.RecordFrameAcquire(frame, command) == rhi::HostedConsumerStatus::Ok);
-        REQUIRE(inoutConsumer.RecordFrameRelease(frame, command) == rhi::HostedConsumerStatus::Ok);
-        REQUIRE(vkEndCommandBuffer(native) == VK_SUCCESS);
-        VkSubmitInfo submit{};
-        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &native;
-        REQUIRE(vkQueueSubmit(mQueue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
-        mSubmitted[mSubmittedCount % mSubmitted.GetSize()] = native;
-        ++mSubmittedCount;
-    }
-
-    /// Free command buffers of SubmitTransfers() once the queue is idle.
-    void FreeTransfers() const
-    {
-        REQUIRE(vkQueueWaitIdle(mQueue) == VK_SUCCESS);
-        const usize count = mSubmittedCount < mSubmitted.GetSize() ? mSubmittedCount : mSubmitted.GetSize();
-        vkFreeCommandBuffers(mDevice, mCommands, static_cast<uint32>(count), mSubmitted.GetData());
-        mSubmittedCount = 0;
     }
 
 private:
@@ -381,9 +338,6 @@ private:
     VkQueue mQueue = VK_NULL_HANDLE;
     VkCommandPool mCommands = VK_NULL_HANDLE;
     uint32 mFamily = 0;
-    /// Command buffers of SubmitTransfers(), freed by FreeTransfers().
-    mutable StaticArray<VkCommandBuffer, MAX_SUBMITTED_TRANSFERS> mSubmitted{};
-    mutable usize mSubmittedCount = 0;
 };
 
 void RequireConsumerDevice(const ConsumerDevice& device)
@@ -460,7 +414,7 @@ TEST_CASE("A hosted Vulkan game's frame arrives in the editor with its known col
     CHECK(frame.Width == hosted_test::INITIAL_WIDTH);
     CHECK(frame.Height == hosted_test::INITIAL_HEIGHT);
     CHECK(frame.VulkanImage.IsNull() == false);
-    CheckTestColor(device.ReadCenterPixel(session.GetConsumer(), frame));
+    CheckTestColor(device.ReadCenterPixel(frame));
     CHECK(session.GetConsumer().ReleaseFrame(frame) == rhi::HostedConsumerStatus::Ok);
     rhi::HostedFrame next;
     REQUIRE(session.TryAcquireNext(next));
@@ -492,7 +446,7 @@ TEST_CASE("A hosted Vulkan game skips frames while the editor holds every image"
     rhi::HostedFrame resumed;
     REQUIRE(session.TryAcquireNext(resumed));
     CHECK(resumed.Image == held[1].Image);
-    CheckTestColor(device.ReadCenterPixel(session.GetConsumer(), resumed));
+    CheckTestColor(device.ReadCenterPixel(resumed));
     CHECK(session.GetConsumer().ReleaseFrame(resumed) == rhi::HostedConsumerStatus::Ok);
     CHECK(session.GetConsumer().ReleaseFrame(held[0]) == rhi::HostedConsumerStatus::Ok);
     CHECK(session.GetConsumer().ReleaseFrame(held[2]) == rhi::HostedConsumerStatus::Ok);
@@ -523,7 +477,7 @@ TEST_CASE("Resizing a hosted Vulkan game retires the old generations", "[rhi][ho
             REQUIRE(session.TryAcquireNext(next));
         }
         CHECK(next.Height == height);
-        CheckTestColor(device.ReadCenterPixel(session.GetConsumer(), next));
+        CheckTestColor(device.ReadCenterPixel(next));
         REQUIRE(session.GetConsumer().ReleaseFrame(shown) == rhi::HostedConsumerStatus::Ok);
         CHECK(session.GetConsumer().GetImportedGenerationCount() == 1);
         shown = next;
@@ -560,62 +514,52 @@ TEST_CASE("Vulkan frames released after the editor's queue return to the game on
     rhi::HostedFrame frame;
     REQUIRE(session.TryAcquireNext(frame));
     // Sample the frame on the editor's queue without waiting, as Qt's frame does.
-    ConsumerDevice::PixelCopy copy = device.SubmitCenterPixelCopy(hosted, frame);
+    ConsumerDevice::PixelCopy copy = device.SubmitCenterPixelCopy(frame);
     REQUIRE(hosted.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::Ok);
     CHECK(hosted.GetQueuedReleaseCount() == 1);
-    // A queued frame is still held, but it cannot be released, queued or transferred a second time.
+    // A queued frame is still held, but it cannot be released or queued a second time.
     CHECK(hosted.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::InvalidState);
     CHECK(hosted.ReleaseFrame(frame) == rhi::HostedConsumerStatus::InvalidState);
-    CHECK(hosted.RecordFrameRelease(frame, rhi::NativeVulkanCommandBuffer(static_cast<void*>(copy.Command))) ==
-          rhi::HostedConsumerStatus::InvalidState);
     REQUIRE(session.PumpUntil([&hosted]() { return hosted.GetQueuedReleaseCount() == 0; }));
-    // The fence signalled after the sampling submitted ahead of it on the same queue.
+    // The release's fence signalled after the sampling submitted ahead of it on the same queue.
     CheckTestColor(device.FinishPixelCopy(copy));
 
-    // Every returned image comes back: more frames than the ring holds keep arriving.
+    // Every returned image comes back: more frames than the ring holds keep arriving, and each
+    // image's acquire and release are submitted again for every presentation.
     rhi::HostedFrame previous = frame;
     for (usize i = 0; i < ludus::platform::HOSTED_SURFACE_IMAGE_COUNT * 2; ++i)
     {
         rhi::HostedFrame next;
         REQUIRE(session.TryAcquireNext(next));
         CHECK(next.Sequence > previous.Sequence);
-        device.SubmitTransfers(hosted, next);
         REQUIRE(hosted.ReleaseFrameAfterQueue(next) == rhi::HostedConsumerStatus::Ok);
         previous = next;
     }
+    rhi::HostedFrame sampled;
+    REQUIRE(session.TryAcquireNext(sampled));
+    CheckTestColor(device.ReadCenterPixel(sampled));
     // Stopping with a queued release waits for its fence before destroying the imports.
-    rhi::HostedFrame last;
-    REQUIRE(session.TryAcquireNext(last));
-    device.SubmitTransfers(hosted, last);
-    REQUIRE(hosted.ReleaseFrameAfterQueue(last) == rhi::HostedConsumerStatus::Ok);
+    REQUIRE(hosted.ReleaseFrameAfterQueue(sampled) == rhi::HostedConsumerStatus::Ok);
     hosted_test::ProducerStatistics statistics;
     session.Close(statistics);
     CHECK(hosted.GetRefusal() == rhi::HostedConsumerRefusal::None);
-    device.FreeTransfers();
 }
 
-TEST_CASE("The Vulkan consumer validates ownership transfers", "[rhi][hosted][linux][gpu]")
+TEST_CASE("The Vulkan consumer needs the queue it submits its transfers to", "[rhi][hosted][linux][gpu]")
 {
     const ConsumerDevice device;
     RequireConsumerDevice(device);
-    hosted_test::HostedSession session;
-    session.Start(device.GetIdentity(), "render");
-    rhi::HostedSurfaceConsumer& hosted = session.GetConsumer();
+    ludus::platform::HostedWindowEndpoint endpoint;
+    rhi::HostedSurfaceConsumer consumer;
+    rhi::NativeDeviceIdentity identity = device.GetIdentity();
+    identity.CommandQueue = rhi::NativeCommandQueue();
+    CHECK(consumer.Start(endpoint, identity) == rhi::HostedConsumerStatus::InvalidArgument);
+    identity = device.GetIdentity();
+    identity.Instance = rhi::NativeInstance();
+    CHECK(consumer.Start(endpoint, identity) == rhi::HostedConsumerStatus::InvalidArgument);
+    REQUIRE(consumer.Start(endpoint, device.GetIdentity()) == rhi::HostedConsumerStatus::Ok);
     rhi::HostedFrame frame;
-    REQUIRE(session.TryAcquireNext(frame));
-    // A transfer needs a recording command buffer of the consumer's device.
-    CHECK(hosted.RecordFrameAcquire(frame, rhi::NativeVulkanCommandBuffer()) ==
-          rhi::HostedConsumerStatus::InvalidArgument);
-    CHECK(hosted.RecordFrameRelease(frame, rhi::NativeVulkanCommandBuffer()) ==
-          rhi::HostedConsumerStatus::InvalidArgument);
-    CheckTestColor(device.ReadCenterPixel(hosted, frame));
-    REQUIRE(hosted.ReleaseFrame(frame) == rhi::HostedConsumerStatus::Ok);
-    // A frame no longer held records nothing.
-    CHECK(hosted.RecordFrameAcquire(frame, rhi::NativeVulkanCommandBuffer()) ==
-          rhi::HostedConsumerStatus::InvalidState);
-    rhi::HostedSurfaceConsumer stopped;
-    CHECK(stopped.RecordFrameAcquire(frame, rhi::NativeVulkanCommandBuffer()) ==
-          rhi::HostedConsumerStatus::InvalidState);
-    hosted_test::ProducerStatistics statistics;
-    session.Close(statistics);
+    CHECK(consumer.AcquireFrame(frame) == rhi::HostedConsumerStatus::Empty);
+    CHECK(consumer.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::InvalidState);
+    consumer.Stop();
 }

@@ -1,80 +1,84 @@
 #pragma once
 
-// Native import of hosted surface images for HostedSurfaceConsumer. The
-// generation and frame bookkeeping is portable (hosted_consumer.cpp); each
-// backend provides these hooks: Metal wraps IOSurfaces received as Mach send
-// rights, Vulkan imports opaque memory file descriptors. Builds without a hosted
-// surface provide hooks that refuse every import.
+// Native side of HostedSurfaceConsumer. The portable bookkeeping
+// (hosted_consumer.cpp) owns generations, frames and releases, and names native
+// objects only by generation slot and image index. Each backend keeps its native
+// objects behind HostedConsumerBackend: Metal wraps IOSurfaces received as Mach
+// send rights; Vulkan imports opaque memory file descriptors and transfers queue
+// family ownership on the consumer's queue. Builds without a hosted surface refuse
+// every import.
 
 #include <ludus/foundation/base/core.h>
 
-#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/base/pointer.hpp>
 #include <ludus/graphics/rhi/hosted_surface.h>
 #include <ludus/graphics/rhi/native_interop.h>
 #include <ludus/platform/hosted_surface.h>
 
 namespace ludus::graphics::rhi::internal
 {
-/// Native objects imported for one generation; only the consumer API's fields are set.
-struct HostedImport final
+/// Generation slots of one consumer: the newest plus older ones whose frames are still held.
+/// The producer keeps at most three alive, so four leave room for a late release.
+inline constexpr foundation::usize HOSTED_GENERATION_SLOTS = 4;
+
+/// Native state of one consumer, defined by its backend.
+struct HostedConsumerBackend;
+/// Destroys a backend made by CreateHostedConsumerBackend(); defined by each backend.
+struct HostedConsumerBackendDeleter final
 {
-    /// Metal: retained `id<MTLTexture>` objects (CFBridgingRetain), released by DestroyHostedImport().
-    foundation::StaticArray<void*, platform::HOSTED_SURFACE_IMAGE_COUNT> MetalTextures{};
-    /// Vulkan: `VkImage` bits.
-    foundation::StaticArray<foundation::uint64, platform::HOSTED_SURFACE_IMAGE_COUNT> VulkanImages{};
-    /// Vulkan: `VkDeviceMemory` bits that own the imported payloads.
-    foundation::StaticArray<foundation::uint64, platform::HOSTED_SURFACE_IMAGE_COUNT> VulkanMemories{};
+    void operator()(HostedConsumerBackend* backendOrNull) const noexcept;
 };
+/// Owner of a consumer's native state.
+using HostedConsumerBackendOwner = foundation::UniquePtr<HostedConsumerBackend, HostedConsumerBackendDeleter>;
 
 /// True when this build can import hosted images onto a device of `api`.
 [[nodiscard]] bool IsHostedImportAvailable(Backend api) noexcept;
 
-/// @brief Import one generation onto the consumer's device.
+/// @brief Create the native state for `device`, whose API IsHostedImportAvailable() accepts.
+/// @return Ok; InvalidArgument when the identity lacks what the backend needs; Unavailable when
+/// its entry points cannot be loaded or allocation failed. `outBackend` is unchanged unless Ok.
+[[nodiscard]] HostedConsumerStatus CreateHostedConsumerBackend(const NativeDeviceIdentity& device,
+                                                               HostedConsumerBackendOwner& outBackend) noexcept;
+
+/// @brief Import one generation into an empty slot.
 ///
-/// Takes the handles out of `inoutImages` whatever the outcome; a failed import
-/// releases everything it created.
+/// Takes the handles out of `inoutImages` whatever the outcome; a failed import releases
+/// everything it created.
 /// @return None on success, or why the images cannot be used.
-[[nodiscard]] HostedConsumerRefusal ImportHostedGeneration(const NativeDeviceIdentity& device,
-                                                           platform::HostedSurfaceImages& inoutImages,
-                                                           HostedImport& outImport) noexcept;
+[[nodiscard]] HostedConsumerRefusal ImportHostedGeneration(HostedConsumerBackend& inoutBackend,
+                                                           foundation::usize slot,
+                                                           platform::HostedSurfaceImages& inoutImages) noexcept;
 
-/// Destroy the native objects of one generation; leaves `inoutImport` empty.
-void DestroyHostedImport(const NativeDeviceIdentity& device, HostedImport& inoutImport) noexcept;
+/// @brief Destroy the native objects of a slot, leaving it empty.
+/// @pre No image of the slot has a queued release, and work that sampled its images has completed.
+void DestroyHostedGeneration(HostedConsumerBackend& inoutBackend, foundation::usize slot) noexcept;
 
-/// A completion marker committed on the consumer's command queue after work already submitted there.
-struct HostedQueueMarker final
-{
-    /// Metal: retained `id<MTLCommandBuffer>` (CFBridgingRetain), released by DestroyHostedQueueMarker().
-    void* MetalCommandBufferOrNull = nullptr;
-    /// Vulkan: `VkFence` bits, submitted alone to the queue and destroyed by DestroyHostedQueueMarker().
-    foundation::uint64 VulkanFence = 0;
-};
-/// @brief Commit a marker behind everything already submitted to `device.CommandQueue`.
+/// @brief Make an image ready for the consumer's sampling and describe it in `inoutFrame`.
 ///
-/// Call on the thread that submits to that queue.
-/// @return False when the marker could not be committed (the caller cannot release after the queue).
-[[nodiscard]] bool EnqueueHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMarker& outMarker) noexcept;
-/// True once the marker, and with it all earlier work on the queue, has finished (or the device was lost).
-[[nodiscard]] bool IsHostedQueueMarkerComplete(const NativeDeviceIdentity& device,
-                                               const HostedQueueMarker& marker) noexcept;
-/// Block until the marker completes; teardown only, never while presenting.
-void WaitHostedQueueMarker(const NativeDeviceIdentity& device, const HostedQueueMarker& marker) noexcept;
-/// Release the marker's native object; leaves `inoutMarker` empty.
-void DestroyHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMarker& inoutMarker) noexcept;
+/// Vulkan submits the acquire half of the game's queue family transfer to the consumer's
+/// queue; call on the thread that submits to it. Metal has nothing to submit.
+/// @return False when the image cannot be made ready; `inoutFrame` is unchanged.
+[[nodiscard]] bool AcquireHostedImage(HostedConsumerBackend& inoutBackend,
+                                      foundation::usize slot,
+                                      foundation::uint32 image,
+                                      HostedFrame& inoutFrame) noexcept;
 
-/// Direction of a hosted image's queue family ownership transfer on the consumer's queue.
-enum class HostedOwnershipTransfer : foundation::uint8
-{
-    /// From the external queue family (the game) to the consumer's, before sampling.
-    Acquire,
-    /// From the consumer's queue family back to the external one, after sampling.
-    Release,
-};
-/// @brief Record one ownership transfer of `image` into `commandBuffer`.
-/// @return Ok; InvalidArgument for a null command buffer where one is needed; Unavailable when
-/// the backend cannot record it. Metal has no transfer and returns Ok.
-[[nodiscard]] HostedConsumerStatus RecordHostedOwnershipTransfer(const NativeDeviceIdentity& device,
-                                                                 foundation::uint64 image,
-                                                                 NativeVulkanCommandBuffer commandBuffer,
-                                                                 HostedOwnershipTransfer transfer) noexcept;
+/// @brief Commit an image's return behind everything already submitted to the consumer's queue.
+///
+/// Vulkan submits the image's release to the external queue family with a fence; Metal commits
+/// an empty command buffer. Call on the thread that submits to the queue.
+/// @return False when nothing could be committed (the caller cannot release after the queue).
+[[nodiscard]] bool
+EnqueueHostedRelease(HostedConsumerBackend& inoutBackend, foundation::usize slot, foundation::uint32 image) noexcept;
+
+/// @brief Finish a queued release once the queue has completed it (or the device was lost).
+/// @return True when the release is finished, or none is queued; false while it is pending.
+[[nodiscard]] bool TryCompleteHostedRelease(HostedConsumerBackend& inoutBackend,
+                                            foundation::usize slot,
+                                            foundation::uint32 image) noexcept;
+
+/// Block until a queued release completes, then finish it; teardown only, never while presenting.
+void CompleteHostedRelease(HostedConsumerBackend& inoutBackend,
+                           foundation::usize slot,
+                           foundation::uint32 image) noexcept;
 } // namespace ludus::graphics::rhi::internal

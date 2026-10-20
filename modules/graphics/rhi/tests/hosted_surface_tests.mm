@@ -224,8 +224,6 @@ TEST_CASE("Frames released after the editor's queue return to the game once that
 
     rhi::HostedFrame frame;
     REQUIRE(session.TryAcquireNext(frame));
-    // Metal has no queue families, so the ownership transfers record nothing and need no command buffer.
-    CHECK(hosted.RecordFrameAcquire(frame, rhi::NativeVulkanCommandBuffer()) == rhi::HostedConsumerStatus::Ok);
     // Sample the frame on the editor's queue without waiting, as Qt's frame does.
     id<MTLTexture> texture = (__bridge id<MTLTexture>)frame.MetalTexture.GetObject();
     const usize pitch = ((frame.Width * BYTES_PER_PIXEL) + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT * ROW_ALIGNMENT;
@@ -244,7 +242,6 @@ TEST_CASE("Frames released after the editor's queue return to the game once that
         destinationBytesPerImage:pitch * frame.Height];
     [encoder endEncoding];
     [sampling commit];
-    CHECK(hosted.RecordFrameRelease(frame, rhi::NativeVulkanCommandBuffer()) == rhi::HostedConsumerStatus::Ok);
     REQUIRE(hosted.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::Ok);
     CHECK(hosted.GetQueuedReleaseCount() == 1);
     // A queued frame is still held, but it cannot be released or queued a second time.
