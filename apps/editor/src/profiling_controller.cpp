@@ -1,6 +1,7 @@
 #include "internal/profiling_controller.h"
 #include "internal/render_preview.h"
 
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/profiling/integration.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
@@ -126,7 +127,7 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
         Q_EMIT Changed();
         return false;
     }
-#if defined(__EMSCRIPTEN__)
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB
     mStatus = QStringLiteral("Editor Perfetto recording currently requires a native editor build.");
     Q_EMIT Changed();
     return false;
