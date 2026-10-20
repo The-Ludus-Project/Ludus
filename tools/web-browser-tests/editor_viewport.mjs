@@ -50,7 +50,7 @@ async function open(page) {
   await page.goto(base, {waitUntil: 'domcontentloaded'});
   await page.waitForFunction(() => document.body.dataset.editorState === 'ready', null, {timeout: 60000});
   // Fixed desktop acceptance geometry. Qt controls are canvas-drawn, without DOM locators.
-  await click(page, 273, 191); // World tab.
+  await click(page, 210, 191); // World tab.
   await click(page, 78, 279); // New World.
   await click(page, 680, 666); // Save dialog filename.
   await page.keyboard.type('gpu.world.json');
@@ -63,7 +63,7 @@ async function importScene(page) {
   await click(page, 556, 334);
   await (await chooser).setFiles({name: 'scene.pbrt', mimeType: 'text/plain', buffer: source});
   await page.waitForTimeout(500);
-  await click(page, 1010, 317); // Import previewed scene: actual SceneCook + MEMFS publication.
+  await click(page, 1010, 355); // Import previewed scene: actual SceneCook + MEMFS publication.
 }
 async function rendered(page, previous = 0, isRecovering = false) {
   await page.waitForFunction(({count, isRecovering}) => {
@@ -191,7 +191,7 @@ try {
   const hidden = await frames(page);
   await page.waitForTimeout(250);
   assert.equal(await frames(page), hidden, 'Hidden viewports must stop repeated GPU submissions');
-  await click(page, 273, 191);
+  await click(page, 210, 191);
   await rendered(page, hidden);
   const beforeResize = await frames(page);
   await page.setViewportSize({width: 1200, height: 900});
