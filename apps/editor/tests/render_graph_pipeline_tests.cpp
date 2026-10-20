@@ -276,19 +276,16 @@ TEST_CASE("writable resources create paired ports and automatic target associati
     {
         RenderGraphPipelineEditor editor(MakePipelineNode(kind, QStringLiteral("work")));
         QJsonObject applied;
-        QObject::connect(&editor, &RenderGraphPipelineEditor::Applied, &editor, [&applied](const QJsonObject& node) {
+        QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& node) {
             applied = node;
         });
         QPushButton* add = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
-        QPushButton* apply = editor.findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
         QTableWidget* resources = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
         REQUIRE(add != nullptr);
-        REQUIRE(apply != nullptr);
         REQUIRE(resources != nullptr);
         CHECK(resources->property("fields").toStringList().contains(QStringLiteral("target")) == false);
         add->click();
         resources->item(0, 0)->setText(QStringLiteral("color"));
-        apply->click();
         REQUIRE(applied.isEmpty() == false);
         const QJsonObject input = applied.value(QStringLiteral("inputs")).toArray().at(0).toObject();
         const QJsonObject output = applied.value(QStringLiteral("outputs")).toArray().at(0).toObject();
@@ -312,7 +309,6 @@ TEST_CASE("writable resources create paired ports and automatic target associati
         QComboBox* type = qobject_cast<QComboBox*>(resources->cellWidget(0, 1));
         REQUIRE(type != nullptr);
         type->setCurrentText(QStringLiteral("DepthTexture"));
-        apply->click();
         CHECK(applied.value(QStringLiteral("outputs")).toArray().at(0).toObject().value(QStringLiteral("format")) ==
               QStringLiteral("Depth32Float"));
         CHECK(applied.value(QStringLiteral("inputs")).toArray().at(0).toObject().value(QStringLiteral("type")) ==
@@ -320,7 +316,6 @@ TEST_CASE("writable resources create paired ports and automatic target associati
         QPushButton* remove = editor.findChild<QPushButton*>(QStringLiteral("renderGraphRemove_outputs"));
         REQUIRE(remove != nullptr);
         remove->click();
-        apply->click();
         CHECK(applied.value(QStringLiteral("inputs")).toArray().isEmpty() == true);
         CHECK(applied.value(QStringLiteral("outputs")).toArray().isEmpty() == true);
     }
@@ -345,12 +340,16 @@ TEST_CASE("paired resources preserve legacy endpoint names and align on the canv
     node.insert(QStringLiteral("outputs"), outputs);
     RenderGraphPipelineEditor editor(node);
     QJsonObject applied;
-    QObject::connect(&editor, &RenderGraphPipelineEditor::Applied, &editor, [&applied](const QJsonObject& candidate) {
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
         applied = candidate;
     });
-    QPushButton* apply = editor.findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
-    REQUIRE(apply != nullptr);
-    apply->click();
+    QTableWidget* unchangedResources = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
+    REQUIRE(unchangedResources != nullptr);
+    QComboBox* load = qobject_cast<QComboBox*>(unchangedResources->cellWidget(0, 3));
+    REQUIRE(load != nullptr);
+    const QString originalLoad = load->currentText();
+    load->setCurrentText(originalLoad == QStringLiteral("Clear") ? QStringLiteral("Load") : QStringLiteral("Clear"));
+    load->setCurrentText(originalLoad);
     CHECK(applied == node);
     QTableWidget* resources = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
     REQUIRE(resources != nullptr);
@@ -370,38 +369,33 @@ TEST_CASE("paired resource validation identifies duplicate ports and preserves d
 {
     RenderGraphPipelineEditor editor(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work")));
     QJsonObject applied;
-    QObject::connect(&editor, &RenderGraphPipelineEditor::Applied, &editor, [&applied](const QJsonObject& node) {
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& node) {
         applied = node;
     });
     QPushButton* add = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
-    QPushButton* apply = editor.findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
     QTableWidget* resources = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
     QLabel* error = editor.findChild<QLabel*>(QStringLiteral("renderGraphPipelineError"));
     REQUIRE(add != nullptr);
-    REQUIRE(apply != nullptr);
     REQUIRE(resources != nullptr);
     REQUIRE(error != nullptr);
     add->click();
     add->click();
+    const QJsonObject lastValid = applied;
     resources->item(1, 0)->setText(QStringLiteral("resource"));
-    apply->click();
-    CHECK(applied.isEmpty() == true);
+    CHECK(applied == lastValid);
     CHECK(error->text().contains(QStringLiteral("resource")) == true);
     CHECK(error->text().contains(QStringLiteral("unique name")) == true);
     resources->item(1, 0)->setText(QStringLiteral("invalid name"));
-    apply->click();
-    CHECK(applied.isEmpty() == true);
+    CHECK(applied == lastValid);
     CHECK(error->text().contains(QStringLiteral("starting with a letter")) == true);
     resources->item(1, 0)->setText(QString());
-    apply->click();
-    CHECK(applied.isEmpty() == true);
+    CHECK(applied == lastValid);
     resources->item(1, 0)->setText(QStringLiteral("other"));
-    apply->click();
     CHECK(applied.isEmpty() == false);
     CHECK(error->text().isEmpty() == true);
 }
 
-TEST_CASE("same-name writable ports repair a stale target only when applied", "[editor][render-graph][pipeline]")
+TEST_CASE("same-name writable ports repair a stale target on a completed edit", "[editor][render-graph][pipeline]")
 {
     QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
     node.insert(QStringLiteral("inputs"),
@@ -418,14 +412,16 @@ TEST_CASE("same-name writable ports repair a stale target only when applied", "[
     const QJsonObject original = node;
     RenderGraphPipelineEditor editor(node);
     QJsonObject applied;
-    QObject::connect(&editor, &RenderGraphPipelineEditor::Applied, &editor, [&applied](const QJsonObject& candidate) {
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
         applied = candidate;
     });
     CHECK(node == original);
     CHECK(applied.isEmpty() == true);
-    QPushButton* apply = editor.findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
-    REQUIRE(apply != nullptr);
-    apply->click();
+    QTableWidget* resources = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
+    REQUIRE(resources != nullptr);
+    QComboBox* load = qobject_cast<QComboBox*>(resources->cellWidget(0, 3));
+    REQUIRE(load != nullptr);
+    load->setCurrentText(QStringLiteral("Load"));
     CHECK(applied.value(QStringLiteral("inputs")) == node.value(QStringLiteral("inputs")));
     CHECK(applied.value(QStringLiteral("outputs")).toArray().at(0).toObject().value(QStringLiteral("target")) ==
           QStringLiteral("color"));

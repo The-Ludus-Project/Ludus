@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/document_history.h"
+#include "internal/render_graph_source.h"
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -92,15 +93,18 @@ public:
     {
         return mRootGraph;
     }
-    [[nodiscard]] QStringList GetFiles() const;
+    /// Package-relative files in the requested source version.
+    [[nodiscard]] QStringList GetFiles(RenderGraphSource source = RenderGraphSource::Draft) const;
     [[nodiscard]] QByteArray GetDraft(const QString& file) const;
     [[nodiscard]] QByteArray GetSaved(const QString& file) const;
     [[nodiscard]] bool IsFileDirty(const QString& file) const;
     [[nodiscard]] bool IsDirty() const;
-    /// Monotonic draft revision; increments on every committed edit, undo and redo.
-    [[nodiscard]] foundation::uint64 GetRevision() const noexcept
+    /// Revision of the selected source version. Draft revisions increase with edits,
+    /// undo and redo; Saved advances only after a complete save or external refresh.
+    [[nodiscard]] LUDUS_INLINE foundation::uint64
+    GetRevision(RenderGraphSource source = RenderGraphSource::Draft) const noexcept
     {
-        return mHistory.Revision();
+        return source == RenderGraphSource::Saved ? mSavedRevision : mHistory.Revision();
     }
     /// Parse a draft graph document; returns false for missing or non-object JSON.
     [[nodiscard]] bool GetGraph(const QString& file, QJsonObject& outGraph) const;
@@ -168,8 +172,11 @@ public:
     [[nodiscard]] bool Undo();
     [[nodiscard]] bool Redo();
 
-    /// Write the complete draft package into an empty directory for a validation or build job.
-    [[nodiscard]] RenderGraphDocumentStatus WriteSnapshot(const QString& directory) const;
+    /// Write the selected source version into an empty directory for a validation or build job.
+    /// Saved snapshots never include unsaved edits. Failure may leave a partial snapshot;
+    /// callers own its directory and must discard it on failure. GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus WriteSnapshot(const QString& directory,
+                                                          RenderGraphSource source = RenderGraphSource::Draft) const;
     /// Replace existing dirty files atomically, create new files without replacement, and
     /// remove saved files absent from the draft (Undo), after checking saved disk bytes.
     /// Conflict or Locked writes nothing. A write failure keeps remaining
@@ -197,6 +204,7 @@ private:
     QString mPackageRoot;
     QString mRootGraph;
     RenderGraphSnapshot mSaved;
+    foundation::uint64 mSavedRevision = 0;
     RenderGraphSnapshot mDraft;
     QString mLastMove;
     bool mIsBuiltIn = false;

@@ -1,4 +1,5 @@
 #include "internal/render_graph_configuration_editor.h"
+#include "internal/render_graph_live_build.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/renderer_workspace.h"
 
@@ -12,13 +13,17 @@
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -193,6 +198,162 @@ TEST_CASE("configuration interface UI creates connectable ports with undo and sa
     edit->click();
     CHECK(document.GetRevision() == beforeInvalid);
     CHECK(document.GetDraft(library) == connected);
+}
+
+TEST_CASE("pipeline controls edit drafts without Apply and Save finishes the active cell",
+          "[editor][render-graph][save-preview]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    kinds->setCurrentText(QStringLiteral("ComputePipeline"));
+    workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    RenderGraphPipelineEditor* editor = workspace.findChild<RenderGraphPipelineEditor*>();
+    REQUIRE(editor != nullptr);
+    CHECK(editor->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline")) == nullptr);
+    QSignalSpy edits(editor, &RenderGraphPipelineEditor::Edited);
+    editor->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_inputs"))->click();
+    REQUIRE(edits.count() == 1);
+    QTableWidget* inputs = editor->findChild<QTableWidget*>(QStringLiteral("inputs"));
+    REQUIRE(inputs != nullptr);
+    inputs->item(0, 0)->setText(QStringLiteral("history"));
+    QComboBox* type = qobject_cast<QComboBox*>(inputs->cellWidget(0, 1));
+    REQUIRE(type != nullptr);
+    type->setCurrentText(QStringLiteral("Float32"));
+    inputs->item(0, 2)->setCheckState(Qt::Unchecked);
+    REQUIRE(edits.count() == 4);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == false);
+    workspace.Undo();
+    workspace.Redo();
+    REQUIRE(workspace.Save() == true);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    editor = workspace.findChild<RenderGraphPipelineEditor*>();
+    REQUIRE(editor != nullptr);
+    inputs = editor->findChild<QTableWidget*>(QStringLiteral("inputs"));
+    REQUIRE(inputs != nullptr);
+    workspace.TakeInspectorPanel(&workspace)->show();
+    workspace.show();
+    workspace.activateWindow();
+    editor->findChild<QTabWidget*>()->setCurrentIndex(0);
+    inputs->setCurrentCell(0, 0);
+    inputs->editItem(inputs->item(0, 0));
+    QLineEdit* field = inputs->findChild<QLineEdit*>();
+    REQUIRE(field != nullptr);
+    field->setFocus();
+    QCoreApplication::processEvents();
+    field->selectAll();
+    QTest::keyClicks(field, QStringLiteral("latest"));
+    CHECK(inputs->item(0, 0)->text() == QStringLiteral("history"));
+    CHECK(workspace.GetDocument().IsDirty() == false);
+    CHECK(workspace.CanSave() == true);
+    REQUIRE(workspace.Save() == true);
+    CHECK(workspace.GetDocument().IsDirty() == false);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.latest"), false).isNull() == false);
+    CHECK(workspace.GetDocument().GetSaved(ROOT_GRAPH).contains("latest") == true);
+    workspace.Undo();
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == false);
+}
+
+TEST_CASE("saved preview builds coalesce and never capture later unsaved edits", "[editor][render-graph][save-preview]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 10000;
+    constexpr int32 SETTLE_MILLISECONDS = 600;
+    QTemporaryDir project;
+    QTemporaryDir tooling;
+    const QString package = MakePackage(project);
+    const QString shader = QStringLiteral("color.slang");
+    const auto write = [](const QString& path, const QByteArray& bytes) {
+        REQUIRE(QDir().mkpath(QFileInfo(path).absolutePath()) == true);
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        REQUIRE(file.write(bytes) == bytes.size());
+    };
+    write(QDir(package).filePath(shader), QByteArrayLiteral("original"));
+    write(QDir(package).filePath(QStringLiteral("main.lushader.json")), QByteArrayLiteral("{}"));
+    const QString pythonPackage = QDir(tooling.path()).filePath(QStringLiteral("scripts/python/ludus_tools"));
+    write(QDir(pythonPackage).filePath(QStringLiteral("render_graph.py")), {});
+    write(QDir(pythonPackage).filePath(QStringLiteral("__main__.py")), QByteArrayLiteral(R"PY(
+import json
+from pathlib import Path
+import sys
+import time
+root = Path(sys.argv[sys.argv.index('--root') + 1])
+captured = (root / 'color.slang').read_text()
+release = Path(__file__).resolve().parents[3] / 'release'
+while not release.exists():
+    time.sleep(0.01)
+if captured == 'broken':
+    print(json.dumps({'schema': 1, 'error': {'code': 'CompileFailed', 'message': 'bad shader'}}))
+    sys.exit(1)
+print(json.dumps({'schema': 1, 'captured': captured}))
+)PY"));
+    RendererWorkspace workspace({QStandardPaths::findExecutable(QStringLiteral("python3")), {}, tooling.path()});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetBuildTools(QStringLiteral("helper"), QStringLiteral("compiler"));
+    workspace.SetLivePreview(true);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer clock;
+        clock.start();
+        while (isReady() == false && clock.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return workspace.IsJobActive(); }) == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(document.SetText(shader, QByteArrayLiteral("first save")) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(document.SetText(shader, QByteArrayLiteral("latest save")) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save() == true);
+    const uint64 savedRevision = document.GetRevision();
+    REQUIRE(document.SetText(shader, QByteArrayLiteral("unsaved")) == RenderGraphDocumentStatus::Ok);
+    QTest::qWait(SETTLE_MILLISECONDS);
+    CHECK(finished.count() == 0);
+    write(QDir(tooling.path()).filePath(QStringLiteral("release")), {});
+    REQUIRE(waitFor([&]() { return finished.count() == 2 && workspace.IsJobActive() == false; }) == true);
+    CHECK(workspace.GetLastResult().Payload.value(QStringLiteral("captured")).toString() ==
+          QStringLiteral("latest save"));
+    CHECK(workspace.GetLastResult().Request.Source == RenderGraphSource::Saved);
+    CHECK(workspace.GetLastResult().Request.Revision == savedRevision);
+    CHECK(document.GetDraft(shader) == QByteArrayLiteral("unsaved"));
+    CHECK(document.IsDirty() == true);
+    QTest::qWait(SETTLE_MILLISECONDS);
+    CHECK(finished.count() == 2);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    REQUIRE(waitFor([&]() { return finished.count() == 3; }) == true);
+    CHECK(workspace.GetLastResult().Payload.value(QStringLiteral("captured")).toString() == QStringLiteral("unsaved"));
+    CHECK(workspace.GetLastResult().Request.Source == RenderGraphSource::Draft);
+    REQUIRE(document.Undo() == true);
+    REQUIRE(document.IsDirty() == false);
+    REQUIRE(document.MoveNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("scene"), 10, 20) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save() == true);
+    QTest::qWait(SETTLE_MILLISECONDS);
+    CHECK(finished.count() == 3);
+    workspace.SetLivePreview(false);
+    REQUIRE(document.SetText(shader, QByteArrayLiteral("broken")) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save() == true);
+    QTest::qWait(SETTLE_MILLISECONDS);
+    CHECK(finished.count() == 3);
+    REQUIRE(QFile::remove(QDir(tooling.path()).filePath(QStringLiteral("release"))) == true);
+    workspace.SetLivePreview(true);
+    REQUIRE(waitFor([&]() { return workspace.IsJobActive(); }) == true);
+    REQUIRE(document.SetText(shader, QByteArrayLiteral("later unsaved edit")) == RenderGraphDocumentStatus::Ok);
+    write(QDir(tooling.path()).filePath(QStringLiteral("release")), {});
+    REQUIRE(waitFor([&]() { return finished.count() == 4; }) == true);
+    CHECK(workspace.GetLastResult().IsSuccessful == false);
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("bad shader")) == true);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Preview unchanged")) == true);
+    QTest::qWait(SETTLE_MILLISECONDS);
+    CHECK(finished.count() == 4);
 }
 
 TEST_CASE("canvas replaces an occupied input atomically and preserves rejected connections",
@@ -401,6 +562,71 @@ TEST_CASE("canvas configuration outputs replace and disconnect with their declar
     CHECK(document.GetDraft(ROOT_GRAPH) == original);
 }
 
+TEST_CASE("canvas pipeline edits keep active controls and Save commits the active cell",
+          "[editor][render-graph][canvas-editing][save-preview]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(MakePackage(project)).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    workspace.resize(1200, 800);
+    workspace.show();
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    REQUIRE(kinds != nullptr);
+    kinds->setCurrentText(QStringLiteral("ComputePipeline"));
+    workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
+    REQUIRE(workspace.Save() == true);
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    QTimer::singleShot(0, &canvas, [&canvas, &workspace]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* edit = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+        REQUIRE(edit != nullptr);
+        QTimer::singleShot(0, &canvas, [&workspace]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            RenderGraphPipelineEditor* editor = dialogOrNull->findChild<RenderGraphPipelineEditor*>();
+            REQUIRE(editor != nullptr);
+            CHECK(editor->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline")) == nullptr);
+            editor->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_inputs"))->click();
+            CHECK(dialogOrNull->findChild<RenderGraphPipelineEditor*>() == editor);
+            QTableWidget* inputs = editor->findChild<QTableWidget*>(QStringLiteral("inputs"));
+            REQUIRE(inputs != nullptr);
+            inputs->item(0, 0)->setText(QStringLiteral("history"));
+            QComboBox* type = qobject_cast<QComboBox*>(inputs->cellWidget(0, 1));
+            REQUIRE(type != nullptr);
+            type->setCurrentText(QStringLiteral("Float32"));
+            CHECK(dialogOrNull->findChild<RenderGraphPipelineEditor*>() == editor);
+            CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("history") == true);
+            CHECK(workspace.GetDocument().GetSaved(ROOT_GRAPH).contains("history") == false);
+            inputs->editItem(inputs->item(0, 0));
+            QLineEdit* field = inputs->findChild<QLineEdit*>();
+            REQUIRE(field != nullptr);
+            field->setFocus();
+            QCoreApplication::processEvents();
+            REQUIRE(field->hasFocus() == true);
+            field->selectAll();
+            QTest::keyClicks(field, QStringLiteral("latest"));
+            REQUIRE(workspace.Save() == true);
+            CHECK(workspace.GetDocument().GetSaved(ROOT_GRAPH).contains("latest") == true);
+            CHECK(workspace.GetDocument().IsDirty() == false);
+            dialogOrNull->reject();
+        });
+        menuOrNull->close();
+        edit->trigger();
+    });
+    const QPoint point =
+        canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("computepipeline")) + QPointF(20, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    CHECK(workspace.GetDocument().IsDirty() == false);
+    CHECK(canvas.GetPortPosition(QStringLiteral("computepipeline.latest"), false).isNull() == false);
+    workspace.Undo();
+    CHECK(canvas.GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == false);
+}
+
 TEST_CASE("canvas pipeline editing pairs resources and reports connected port errors with Properties hidden",
           "[editor][render-graph][canvas-editing][pipeline]")
 {
@@ -435,26 +661,21 @@ TEST_CASE("canvas pipeline editing pairs resources and reports connected port er
             CHECK(properties->isVisible() == false);
             QPushButton* add = dialogOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
             QTableWidget* resources = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("outputs"));
-            QPushButton* apply = dialogOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
             REQUIRE(add != nullptr);
             REQUIRE(resources != nullptr);
-            REQUIRE(apply != nullptr);
             add->click();
             resources->item(0, 0)->setText(QStringLiteral("color"));
-            apply->click();
             CHECK(canvas.GetPortPosition(QStringLiteral("work.color"), false).y() ==
                   canvas.GetPortPosition(QStringLiteral("work.color"), true).y());
             REQUIRE(canvas.RequestLink(QStringLiteral("color.texture"), QStringLiteral("work.color")) == true);
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
             const uint64 revision = document.GetRevision();
             const QByteArray beforeRejectedEdit = document.GetDraft(ROOT_GRAPH);
             resources = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("outputs"));
-            apply = dialogOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
             REQUIRE(resources != nullptr);
-            REQUIRE(apply != nullptr);
             QComboBox* type = qobject_cast<QComboBox*>(resources->cellWidget(0, 1));
             REQUIRE(type != nullptr);
             type->setCurrentText(QStringLiteral("DepthTexture"));
-            apply->click();
             CHECK(workspace.GetStatusText().contains(QStringLiteral("work.color")) == true);
             CHECK(workspace.GetStatusText().contains(QStringLiteral("Disconnect")) == true);
             CHECK(document.GetRevision() == revision);
@@ -467,6 +688,7 @@ TEST_CASE("canvas pipeline editing pairs resources and reports connected port er
     const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("work")) + QPointF(20, 10));
     QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
     QApplication::sendEvent(canvas.viewport(), &context);
+    workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     CHECK(document.GetDraft(ROOT_GRAPH) == original);

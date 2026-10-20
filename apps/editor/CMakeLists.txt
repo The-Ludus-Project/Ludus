@@ -241,6 +241,7 @@ qt_add_executable(ludus_editor
     src/internal/script_workspace.h
     src/script_workspace.cpp
     src/internal/render_graph_document.h
+    src/internal/render_graph_source.h
     src/render_graph_document.cpp
     src/internal/render_graph_pipeline.h
     src/render_graph_pipeline.cpp
@@ -441,6 +442,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/script_workspace.h
         src/script_workspace.cpp
         src/internal/render_graph_document.h
+        src/internal/render_graph_source.h
         src/render_graph_document.cpp
         src/internal/render_graph_pipeline.h
         src/render_graph_pipeline.cpp

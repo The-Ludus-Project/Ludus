@@ -90,7 +90,7 @@ inline constexpr EditorCommand RENDER_GRAPH_LIVE_PREVIEW_COMMAND
     .Text = "&Live Render Graph Preview",
     .ToolbarText = "Live Preview",
     .Shortcut = "Ctrl+Shift+F7",
-    .Help = "Rebuild changed render-graph drafts in the background and preview matching successful results.",
+    .Help = "Update the preview after graph or shader saves; keep the last working preview on failure.",
     .IsCheckable = true,
 };
 inline constexpr EditorCommand RENDER_GRAPH_COOK_COMMAND

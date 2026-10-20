@@ -620,6 +620,7 @@ void RenderGraphDocument::adopt(const QString& packageRoot,
     mPackageRoot = packageRoot;
     mRootGraph = rootGraph;
     mSaved = snapshot;
+    mSavedRevision = 0;
     mDraft = snapshot;
     mIsBuiltIn = isBuiltIn;
     mLastMove.clear();
@@ -633,14 +634,15 @@ void RenderGraphDocument::Reset()
     mPackageRoot.clear();
     mRootGraph.clear();
     mSaved = {};
+    mSavedRevision = 0;
     mDraft = {};
     mLastMove.clear();
     mHistory.Reset();
 }
 
-QStringList RenderGraphDocument::GetFiles() const
+QStringList RenderGraphDocument::GetFiles(RenderGraphSource source) const
 {
-    return mDraft.Files.keys();
+    return (source == RenderGraphSource::Saved ? mSaved : mDraft).Files.keys();
 }
 
 QByteArray RenderGraphDocument::GetDraft(const QString& file) const
@@ -977,7 +979,7 @@ bool RenderGraphDocument::Redo()
     return mHistory.Redo(mDraft);
 }
 
-RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& directory) const
+RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& directory, RenderGraphSource source) const
 {
     QDir target(directory);
     if (IsLoaded() == false || target.exists() == false ||
@@ -985,7 +987,9 @@ RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& dire
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
-    for (QMap<QString, QByteArray>::const_iterator file = mDraft.Files.constBegin(); file != mDraft.Files.constEnd();
+    const RenderGraphSnapshot& snapshot = source == RenderGraphSource::Saved ? mSaved : mDraft;
+    for (QMap<QString, QByteArray>::const_iterator file = snapshot.Files.constBegin();
+         file != snapshot.Files.constEnd();
          ++file)
     {
         const QString path = target.filePath(file.key());
@@ -1028,6 +1032,7 @@ RenderGraphDocumentStatus RenderGraphDocument::RefreshFromDisk(bool& outHasChang
     if (committed == RenderGraphDocumentStatus::Ok)
     {
         mSaved = candidate;
+        mSavedRevision = mHistory.Revision();
         mLastMove.clear();
         outHasChanged = true;
     }
@@ -1131,6 +1136,7 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
         mSaved.Files.remove(file);
         outSavedFiles.append(file);
     }
+    mSavedRevision = mHistory.Revision();
     return RenderGraphDocumentStatus::Ok;
 }
 
@@ -1190,6 +1196,7 @@ RenderGraphDocumentStatus RenderGraphDocument::createPackage(QStringList& outSav
     }
     // The package root keeps the destination's spelling, so project-relative paths are unchanged.
     mSaved = mDraft;
+    mSavedRevision = mHistory.Revision();
     mIsBuiltIn = false;
     outSavedFiles = created;
     return RenderGraphDocumentStatus::Ok;

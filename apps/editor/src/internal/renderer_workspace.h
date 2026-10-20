@@ -14,6 +14,7 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
 #include "internal/render_graph_live_build.h"
+#include "internal/render_graph_source.h"
 #include "internal/render_graph_source_watch.h"
 
 #include <QByteArray>
@@ -109,6 +110,8 @@ public:
     [[nodiscard]] bool CanSave() const;
     /// Save the draft. An unedited engine default is not project content: nothing is written
     /// and the result is true. An edited default creates its package under graphs/Main/.
+    /// Finishes the active inspector edit. Successful saves schedule a saved-source preview
+    /// when Live Preview is enabled; validation/build failures preserve the working view.
     [[nodiscard]] bool Save();
     /// Open the selected saved project source in the chosen native code editor.
     /// Pending edits require an explicit save; cancellation preserves all source text.
@@ -151,9 +154,10 @@ public:
     /// Cancel the running job or graph creation, and turn Live Preview off.
     void CancelJob();
     [[nodiscard]] bool IsJobActive() const;
-    /// Turn background rebuilds of changed drafts on or off. Turning it on schedules a build
-    /// of the current draft; later edits rebuild after a short delay and preview only
-    /// matching successful results. CancelJob and a project change turn it off. Emits
+    /// Turn background rebuilds of saved sources on or off. Turning it on schedules the
+    /// saved version; successful saves and external refreshes coalesce into the newest
+    /// saved build. Unsaved edits never trigger a build. Failures keep the working view.
+    /// CancelJob and a project change turn it off. Emits
     /// LivePreviewChanged when the state changes.
     void SetLivePreview(bool isEnabled);
     [[nodiscard]] bool IsLivePreviewEnabled() const;
@@ -233,8 +237,9 @@ public:
         return mPreviewSourceOrNull;
     }
     /// Explicitly preview the last cooked runtime generation. False when the editor was built
-    /// without the native GPU preview or the generation cannot be staged.
-    [[nodiscard]] bool PreviewRuntime();
+    /// without the native GPU preview or the generation cannot be staged. Saved source
+    /// requests keep using the built-in generation while its draft has unsaved edits.
+    [[nodiscard]] bool PreviewRuntime(RenderGraphSource source = RenderGraphSource::Draft);
     /// Trusted preview, or null in builds without the native GPU preview.
     [[nodiscard]] RenderGraphPreview* GetPreviewOrNull() noexcept
     {
@@ -250,6 +255,9 @@ public:
 
 Q_SIGNALS:
     void DocumentChanged();
+    /// Node fields changed; the originating surface may retain its active controls.
+    /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.
+    void NodeFieldsChanged(QWidget* editOriginOrNull);
     void JobFinished();
     /// What CanBuild, CanCreateGraph, IsJobActive or IsDirty report may have changed.
     void CommandsChanged();
@@ -262,19 +270,21 @@ private:
     [[nodiscard]] bool startJob(const QString& action,
                                 const QStringList& arguments,
                                 bool shouldCaptureSnapshot,
-                                bool shouldPreview = false);
-    [[nodiscard]] bool startBuild(bool shouldPreview);
+                                bool shouldPreview = false,
+                                RenderGraphSource source = RenderGraphSource::Draft);
+    [[nodiscard]] bool startBuild(bool shouldPreview, RenderGraphSource source = RenderGraphSource::Draft);
+    [[nodiscard]] bool buildAndPreview(RenderGraphSource source);
     [[nodiscard]] bool isUneditedBuiltIn() const;
     [[nodiscard]] bool writeDocument();
     [[nodiscard]] bool hasPendingSourceText() const;
     void openProjectGraph();
     void showDocument(const RenderGraphDocument& document);
-    [[nodiscard]] QByteArray getBuildIdentity() const;
+    [[nodiscard]] QByteArray getBuildIdentity(RenderGraphSource source = RenderGraphSource::Draft) const;
     void scheduleLiveBuild();
     void refreshWatchedSources();
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);
-    void renderTree();
+    void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
     void editNodeOnCanvas();
@@ -282,7 +292,9 @@ private:
     void renderSource();
     void renderStatus();
     void updateActions();
-    void documentEdited(RenderGraphDocumentStatus status);
+    void documentEdited(RenderGraphDocumentStatus status,
+                        bool shouldRefreshInspector = true,
+                        QWidget* editOriginOrNull = nullptr);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
     void editConfigurationInterface();
     void addNode();
@@ -346,6 +358,7 @@ private:
     RenderGraphWorker* mWorkerOrNull = nullptr;
     bool mHasPendingWorkerBuild = false;
     bool mShouldPreviewAfterWorker = false;
+    RenderGraphSource mSourceAfterWorker = RenderGraphSource::Draft;
     bool mIsWorldRenderingEnabled = false;
     bool mHasPendingSourceChange = false;
     QString mBuildProblem;
@@ -370,6 +383,7 @@ private:
     QByteArray mPreviewSceneIdentity;
     /// Semantic graph inputs of the runtime request; older activation errors cannot fail a new draft.
     QByteArray mPreviewInputIdentity;
+    RenderGraphSource mPreviewSourceVersion = RenderGraphSource::Draft;
     foundation::math::Matrix4 mPreviewWorldToClip = foundation::math::Matrix4::Identity();
 };
 } // namespace ludus::editor

@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/controller.h"
+#include "internal/render_graph_source.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -23,8 +24,10 @@ struct RenderGraphJobRequest final
     foundation::uint64 ProjectEpoch = 0;
     foundation::uint64 Revision = 0;
     QString Action;
-    QByteArray InputIdentity;   ///< Semantic draft/configuration identity captured for live preview.
-    bool ShouldPreview = false; ///< Apply only a successful build matching the current semantic draft.
+    QByteArray InputIdentity;   ///< Semantic identity of the captured source version and configuration.
+    bool ShouldPreview = false; ///< Publish only success matching that source version's current identity.
+    RenderGraphSource Source =
+        RenderGraphSource::Draft; ///< Automatic previews capture Saved; explicit builds use Draft.
     QStringList Arguments;
     QString SnapshotDirectory;
 };

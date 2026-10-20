@@ -35,7 +35,7 @@ updated contents. Add one row instead of declaring those ports separately. New
 pairs start with the same name; renaming the output also renames its input while
 the names match. Existing graphs with different port names retain both names, shown in the
 resource name tooltip. A missing or incompatible old target association is rebuilt
-as a same-name pair when you apply; opening the inspector does not rewrite sources.
+as a same-name pair on the next completed edit; opening the inspector does not rewrite sources.
 The editor writes the serialized `target` association automatically; there is no
 editable target field. Connect a compatible resource to the pair's input, then
 connect its output to the next pass or configuration output. A writable input
@@ -44,8 +44,9 @@ line up horizontally on the canvas. Changing the resource type changes both
 port types and selects its corresponding format.
 
 **Shaders**, **Pipeline State** and **Invocation** edit the rest of the node.
-Choose **Apply Pipeline** to commit all controls as one undoable edit. Save
-publishes the draft; controls are unapplied until Apply Pipeline. Removing a
+Completed edits enter the undoable draft directly in Properties or the canvas node editor.
+There is no **Apply Pipeline** button. **Save** publishes the draft and updates Live Preview;
+unsaved edits do not build shaders. Removing a
 writable row removes both ports. Disconnect affected links before removing,
 renaming or changing the type of a connected port. A rejected edit preserves
 the draft and identifies the affected endpoint and repair. Duplicate or invalid
@@ -224,14 +225,20 @@ the editor uses it for any project that has no graph of its own.
    already holds any of the package's files, nothing is written; open that graph with
    **File → Open Render Graph...** instead. A linked `graphs` folder is refused, as for
    New Render Graph.
-4. **Iterate.** In the native editor, shader text edits are applied to the draft after a
-   short pause, and saved external shader edits are watched automatically, including editors
-   that replace files when saving. Graph edits and configuration changes rebuild the draft
-   in the background. **Save** still controls publication of draft sources to the project;
-   live builds use immutable snapshots. A compile error keeps the last complete World frame
-   and reports the failing source in the Error List. No worker socket or shader paths need
-   to be entered when the project's SDK is configured. **Build & Preview** remains available
-   for an explicit rebuild; **Live Preview** pauses/resumes automatic builds.
+4. **Iterate.** Pipeline inspector edits go directly into the undoable draft; there is no
+   **Apply Pipeline** step. Finish a field with Enter, Tab or focus loss; dropdowns,
+   checkboxes and row additions/removals update the draft immediately. **Save** (Ctrl+S or
+   Command-S) finishes the active inspector field, writes the draft, then schedules a
+   background preview update when **Live Preview** is enabled. Unsaved edits, Undo and Redo
+   do not compile shaders. Layout-only saves do not rebuild. Several saves during a build
+   coalesce into the newest saved version; later unsaved edits stay out of that snapshot.
+   Saved external shader edits are watched too, including editors that replace files on save.
+   Validation or compilation failure keeps the last working World preview and reports the
+   failing source in the Error List; invalid drafts can still be saved and corrected.
+   No worker socket or shader paths need to be entered when the project's SDK is configured.
+   **Build & Preview** explicitly builds the current draft without saving; **Live Preview**
+   pauses/resumes automatic builds of saved sources. Changing the preview configuration
+   selects that configuration of the saved sources.
 
 **File → New Render Graph...** creates an editable barebone graph and its shaders in
 `graphs/<name>/`, then makes it active in the World viewport. **Customize in Project**
@@ -1392,9 +1399,10 @@ CLI backend, which owns legality and reports the same codes as
    the last cooked file when needed.
 
 Each accepted build reads the cooked file and stages it in a `RenderGraphActivation`
-beside the generation already shown. Live Preview rebuilds changed drafts and saved
-external shaders automatically; a result for older source content never replaces the
-current request. By default the viewport shows the configuration's first exported
+beside the generation already shown. Live Preview rebuilds saved graph/shader sources
+only; unsaved changes remain in the draft. A result for an older saved version never
+replaces the current request. Validation, compilation and activation failures preserve
+the last drawable view; successful replacements publish only after readiness. By default the viewport shows the configuration's first exported
 `ColorTexture`, using the World's current camera or orbit. Its output selector can
 instead show any attachment after producer completion. Each World object becomes one static
 item with its flat tint (object tint times the surface's flat tint); a
@@ -1935,7 +1943,7 @@ For an advanced shared-worker setup, optionally set **Native shader worker** in
 builds/cooks an immutable draft and previews a
 successful result only if its project/request and semantic source/configuration
 identity still match. Native World rendering enables **Live Preview** automatically for
-debounced background builds;
+background builds after graph/shader saves;
 layout-only moves do not schedule a build. Saving is independent. **Cancel Render
 Graph Job** disables live building; failures retain the last drawable preview. The existing preview's
 static-material/profile restrictions still apply.
