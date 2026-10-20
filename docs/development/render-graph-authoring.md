@@ -72,6 +72,19 @@ ludus render-graph migrate-pipelines graphs/Main/rasterize.lurender.json \
 The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
+In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
+and set its shader ID. Completed edits automatically create a `.slang` template and registers a program in the root
+`.lushader.json` for each new program name. The initial `Program` value
+receives a unique name from the node and shader IDs. To share a shader, enter an existing
+program name with a matching stage. New sources appear immediately in **Source**;
+**Save** writes them beside the manifest. Creation, manifest registration and node
+assignments form one undo step. Name/file conflicts or incompatible references
+preserve the draft. Templates are starting points: vertex/fragment interfaces use
+the manifest schemas; ray-generation, miss and closest-hit functions use the
+renderer’s triangle ray interfaces. Other stages remain authoring drafts subject
+to the execution limits below. Changing stage creates a new matching program and
+retains the previous source for reuse. Removing a shader row retains its program and source for reuse.
+
 The version-2 node fields are:
 
 | Field | Contract |

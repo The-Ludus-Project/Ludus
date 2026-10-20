@@ -161,24 +161,7 @@ QStringList GetCellChoices(const QString& field, const QString& kind, const QStr
     }
     if (field == QStringLiteral("stage"))
     {
-        if (kind == QStringLiteral("GraphicsPipeline"))
-        {
-            return {QStringLiteral("vertex"),
-                    QStringLiteral("fragment"),
-                    QStringLiteral("geometry"),
-                    QStringLiteral("hull"),
-                    QStringLiteral("domain")};
-        }
-        if (kind == QStringLiteral("ComputePipeline"))
-        {
-            return {QStringLiteral("compute")};
-        }
-        return {QStringLiteral("ray_generation"),
-                QStringLiteral("miss"),
-                QStringLiteral("closest_hit"),
-                QStringLiteral("any_hit"),
-                QStringLiteral("intersection"),
-                QStringLiteral("callable")};
+        return GetPipelineShaderStages(kind);
     }
     return {};
 }
@@ -274,6 +257,11 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     mError->setObjectName(QStringLiteral("renderGraphPipelineError"));
     mError->setWordWrap(true);
     layout->addWidget(mError);
+    QLabel* hint = new QLabel(QStringLiteral("New program names create .slang sources automatically. "
+                                             "Program gets a unique name. Edit sources in Source; Save writes files."),
+                              this);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
 }
 
 QTableWidget*
@@ -490,6 +478,16 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
     }
 }
 
+void RenderGraphPipelineEditor::SetShaderAssignments(const QJsonArray& shaders)
+{
+    const QSignalBlocker blocker(mShaders);
+    mNode.insert(QStringLiteral("shaders"), shaders);
+    for (int32 row = 0; row < shaders.size() && row < mShaders->rowCount(); ++row)
+    {
+        mShaders->item(row, 2)->setText(shaders.at(row).toObject().value(QStringLiteral("program")).toString());
+    }
+}
+
 void RenderGraphPipelineEditor::connectChoices(QTableWidget& inoutTable, int32 row)
 {
     for (int32 column = 0; column < inoutTable.columnCount(); ++column)
@@ -497,7 +495,21 @@ void RenderGraphPipelineEditor::connectChoices(QTableWidget& inoutTable, int32 r
         QComboBox* controlOrNull = qobject_cast<QComboBox*>(inoutTable.cellWidget(row, column));
         if (controlOrNull != nullptr)
         {
-            connect(controlOrNull, &QComboBox::currentTextChanged, this, [this]() { publishEdit(); });
+            connect(controlOrNull, &QComboBox::currentTextChanged, this, [this, &inoutTable, controlOrNull, column]() {
+                if (&inoutTable == mShaders && column == 1)
+                {
+                    const QSignalBlocker blocker(mShaders);
+                    for (int32 shaderRow = 0; shaderRow < mShaders->rowCount(); ++shaderRow)
+                    {
+                        if (mShaders->cellWidget(shaderRow, 1) == controlOrNull)
+                        {
+                            mShaders->item(shaderRow, 2)->setText(QStringLiteral("Program"));
+                            break;
+                        }
+                    }
+                }
+                publishEdit();
+            });
         }
     }
 }

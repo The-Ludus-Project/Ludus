@@ -1,5 +1,6 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_shader_creation.h"
 
 #include <QDir>
 #include <QFile>
@@ -748,6 +749,10 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
                                                            const QJsonObject& node,
                                                            QString* outErrorOrNull)
 {
+    if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+    {
+        return ApplyPipeline(file, configuration, node, outErrorOrNull);
+    }
     if (outErrorOrNull != nullptr)
     {
         *outErrorOrNull =
@@ -782,6 +787,62 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
         outErrorOrNull->clear();
     }
     return status;
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file,
+                                                             const QString& configuration,
+                                                             const QJsonObject& node,
+                                                             QString* outErrorOrNull)
+{
+    if (outErrorOrNull != nullptr)
+    {
+        *outErrorOrNull = QStringLiteral("Cannot create shader sources: check program stages, names, file conflicts "
+                                         "and the manifest program budget. The draft was preserved.");
+    }
+    if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == false)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    QJsonObject graph;
+    if (GetGraph(file, graph) == false)
+    {
+        return RenderGraphDocumentStatus::Malformed;
+    }
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    const qsizetype index = FindConfiguration(configurations, configuration);
+    if (index < 0)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    RenderGraphSnapshot candidate = mDraft;
+    QJsonObject pipeline = node;
+    QString manifest = mRootGraph;
+    manifest.chop(QStringLiteral(".lurender.json").size());
+    manifest += QStringLiteral(".lushader.json");
+    const RenderGraphDocumentStatus status = PreparePipelineShaders(candidate, pipeline, manifest, mPackageRoot);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        return status;
+    }
+    QJsonObject record = configurations.at(index).toObject();
+    if (ReplaceNodeChecked(record, {QString::fromUtf8(EncodeCanonicalJson(pipeline))}, outErrorOrNull) == false)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    configurations.replace(index, record);
+    graph.insert(QStringLiteral("configurations"), configurations);
+    graph.insert(QStringLiteral("version"), 2);
+    candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    if (outErrorOrNull != nullptr)
+    {
+        outErrorOrNull->clear();
+    }
+    if (candidate == mDraft)
+    {
+        return RenderGraphDocumentStatus::Ok;
+    }
+    mLastMove.clear();
+    return commit(candidate, false);
 }
 
 RenderGraphDocumentStatus

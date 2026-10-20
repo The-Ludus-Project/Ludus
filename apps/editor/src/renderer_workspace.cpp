@@ -1989,6 +1989,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 Q_EMIT NodeFieldsChanged(nullptr);
                 return;
             }
+            editor->SetShaderAssignments(selectedNode().value(QStringLiteral("shaders")).toArray());
             // Refresh the other surface while retaining the controls that submitted this edit.
             documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
         });
