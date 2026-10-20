@@ -44,79 +44,117 @@ def new_node(kind, identity):
             'state': state, 'invocation': invocation}
 
 
+def _check_field(check, value, field, where, graph, *arguments):
+    """Retain diagnostic codes/node locations while identifying the exact editable field."""
+    try:
+        check(value, *arguments, where)
+    except graph.ToolingError as error:
+        detail = error.message.removeprefix(where + ': ')
+        graph._fail(error.code.removeprefix('RenderGraph'), where,
+                    f"{field} has invalid value {repr(value)[:160]}: {detail}. "
+                    f"Fix {field} in Properties or the source JSON.")
+
+
 def validate(node, where, graph):
     """Check bounded source shape, allowing incomplete saved drafts, without mutation."""
     graph._keys(node, ('id', 'kind', 'inputs', 'outputs', 'shaders', 'state', 'invocation'), where)
-    graph._identifier(node['id'], where)
+    _check_field(graph._identifier, node['id'], 'Node ID', where, graph)
     graph._require(node['id'] != 'input', 'Schema', where, 'input is reserved')
     graph._enum(node['kind'], KINDS, where)
     ports = {}
+    targets = {}
     for direction in ('inputs', 'outputs'):
-        graph._list(node[direction], MAX_PORTS, where)
+        _check_field(graph._list, node[direction], direction, where, graph, MAX_PORTS)
         identities = set()
         for port in node[direction]:
             fields = ('id', 'type', 'required') if direction == 'inputs' else (
                 'id', 'type', 'target', 'format', 'load', 'store')
-            graph._keys(port, fields, where)
-            graph._identifier(port['id'], where)
-            graph._require(port['id'] not in identities, 'DuplicateIdentity', where, port['id'])
+            _check_field(graph._keys, port, f'{direction} port record', where, graph, fields)
+            _check_field(graph._identifier, port['id'], f'{direction} port ID', where, graph)
+            graph._require(port['id'] not in identities, 'DuplicateIdentity', where,
+                           f"{direction} port '{port['id']}' is declared more than once. "
+                           'Rename or remove the duplicate port in Properties.')
             identities.add(port['id'])
-            graph._enum(port['type'], INPUT_TYPES if direction == 'inputs' else RESOURCE_TYPES, where)
+            _check_field(graph._enum, port['type'], f"{direction} port '{port['id']}' Type",
+                         where, graph, INPUT_TYPES if direction == 'inputs' else RESOURCE_TYPES)
             if direction == 'inputs':
-                graph._boolean(port['required'], where)
+                _check_field(graph._boolean, port['required'], f"Input '{port['id']}' Required", where, graph)
                 ports[port['id']] = port['type']
             else:
-                graph._identifier(port['target'], where)
-                graph._require(ports.get(port['target']) == port['type'], 'TypeMismatch', where,
-                               'output target must name a same-type input holding the previous resource version')
+                _check_field(graph._identifier, port['target'], f"Output '{port['id']}' paired input ID", where, graph)
+                target_type = ports.get(port['target'])
+                compatible = [identity for identity, kind in ports.items() if kind == port['type']]
+                if target_type != port['type']:
+                    problem = (f"input '{port['target']}' does not exist" if target_type is None else
+                               f"input '{port['target']}' has type {target_type}")
+                    suggestion = (f"Pair it with a {port['type']} input: {', '.join(compatible)}."
+                                  if compatible else
+                                  f"Add a writable {port['type']} resource in Properties and connect its input.")
+                    graph._fail('TypeMismatch', where,
+                                f"Output '{port['id']}' ({port['type']}) cannot update its resource: "
+                                f"{problem}. {suggestion} In JSON, set this output's target to the paired input ID.")
+                graph._require(port['target'] not in targets, 'MultipleWriters', where,
+                               f"Outputs '{targets.get(port['target'])}' and '{port['id']}' both update input '{port['target']}'. "
+                               'Give each writable resource a separate input, or remove the duplicate output. '
+                               'Use separate pipeline nodes for sequential writes.')
+                targets[port['target']] = port['id']
                 formats = {'ColorTexture': ('RGBA8Unorm',), 'DepthTexture': ('Depth32Float',), 'Buffer': ('Bytes',)}
-                graph._enum(port['format'], formats[port['type']], where)
-                graph._enum(port['load'], ('Clear', 'Load', 'Discard'), where)
-                graph._enum(port['store'], ('Store', 'Discard'), where)
-    graph._list(node['shaders'], MAX_SHADERS, where)
+                graph._require(port['format'] in formats[port['type']], 'Schema', where,
+                               f"Output '{port['id']}' ({port['type']}) has format '{port['format']}'. "
+                               f"Set Format to {', '.join(formats[port['type']])} in Writable Resources.")
+                graph._require(port['load'] in ('Clear', 'Load', 'Discard'), 'Schema', where,
+                               f"Output '{port['id']}' has unknown Load operation '{port['load']}'. "
+                               'Choose Clear, Load or Discard in Writable Resources.')
+                graph._require(port['store'] in ('Store', 'Discard'), 'Schema', where,
+                               f"Output '{port['id']}' has unknown Store operation '{port['store']}'. "
+                               'Choose Store or Discard in Writable Resources.')
+    _check_field(graph._list, node['shaders'], 'Shaders', where, graph, MAX_SHADERS)
     identities = set()
     stages = set()
     for shader in node['shaders']:
-        graph._keys(shader, ('id', 'stage', 'program'), where)
-        graph._identifier(shader['id'], where)
-        graph._identifier(shader['program'], where)
-        graph._enum(shader['stage'], STAGES[node['kind']], where)
-        graph._require(shader['id'] not in identities, 'DuplicateIdentity', where, shader['id'])
+        _check_field(graph._keys, shader, 'Shader record', where, graph, ('id', 'stage', 'program'))
+        _check_field(graph._identifier, shader['id'], 'Shader ID', where, graph)
+        _check_field(graph._identifier, shader['program'], f"Shader '{shader['id']}' Program ID", where, graph)
+        _check_field(graph._enum, shader['stage'], f"Shader '{shader['id']}' Stage", where, graph, STAGES[node['kind']])
+        graph._require(shader['id'] not in identities, 'DuplicateIdentity', where,
+                       f"Shader ID '{shader['id']}' is declared twice. Rename or remove the duplicate row in Shaders.")
         graph._require(node['kind'] == 'RayTracingPipeline' or shader['stage'] not in stages,
-                       'ShaderInterface', where, 'only one program per graphics/compute stage')
+                       'ShaderInterface', where,
+                       f"Shader stage '{shader['stage']}' is assigned more than once. Remove the duplicate stage row in Shaders.")
         identities.add(shader['id'])
         stages.add(shader['stage'])
     state, invocation = node['state'], node['invocation']
     if node['kind'] == 'GraphicsPipeline':
-        graph._keys(state, (*GRAPHICS_STATE, 'depth_write', 'samples'), where)
+        _check_field(graph._keys, state, 'Pipeline State', where, graph, (*GRAPHICS_STATE, 'depth_write', 'samples'))
         for field, choices in GRAPHICS_STATE.items():
-            graph._enum(state[field], choices, where)
-        graph._boolean(state['depth_write'], where)
-        graph._integer(state['samples'], 1, 64, where)
-        graph._keys(invocation, ('mode', 'vertex_layout', 'material', 'scene', 'view'), where)
-        graph._enum(invocation['mode'], graph.MODES, where)
+            _check_field(graph._enum, state[field], f'Pipeline State → {field}', where, graph, choices)
+        _check_field(graph._boolean, state['depth_write'], 'Pipeline State → depth_write', where, graph)
+        _check_field(graph._integer, state['samples'], 'Pipeline State → samples', where, graph, 1, 64)
+        _check_field(graph._keys, invocation, 'Invocation', where, graph, ('mode', 'vertex_layout', 'material', 'scene', 'view'))
+        _check_field(graph._enum, invocation['mode'], 'Invocation → mode', where, graph, graph.MODES)
         graph._identifier(invocation['vertex_layout'], where)
         graph._identifier(invocation['material'], where)
         for name in ('scene', 'view'):
-            graph._identifier(invocation[name], where)
+            _check_field(graph._identifier, invocation[name], f'Invocation → {name}', where, graph)
     elif node['kind'] == 'ComputePipeline':
-        graph._keys(state, ('group_size',), where)
-        _dimensions(state['group_size'], where, graph)
-        graph._keys(invocation, ('dimensions',), where)
-        _dimensions(invocation['dimensions'], where, graph)
+        _check_field(graph._keys, state, 'Pipeline State', where, graph, ('group_size',))
+        _dimensions(state['group_size'], where, graph, 'Pipeline State → group_size')
+        _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
+        _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
     else:
-        graph._keys(state, ('max_recursion', 'payload_bytes', 'attribute_bytes'), where)
-        graph._integer(state['max_recursion'], 1, 31, where)
+        _check_field(graph._keys, state, 'Pipeline State', where, graph, ('max_recursion', 'payload_bytes', 'attribute_bytes'))
+        _check_field(graph._integer, state['max_recursion'], 'Pipeline State → max_recursion', where, graph, 1, 31)
         for field in ('payload_bytes', 'attribute_bytes'):
-            graph._integer(state[field], 0, 4096, where)
-        graph._keys(invocation, ('dimensions',), where)
-        _dimensions(invocation['dimensions'], where, graph)
+            _check_field(graph._integer, state[field], f'Pipeline State → {field} (bytes)', where, graph, 0, 4096)
+        _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
+        _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
 
 
-def _dimensions(values, where, graph):
-    graph._require(type(values) is list and len(values) == 3, 'Schema', where, 'three dimensions required')
-    for value in values:
-        graph._integer(value, 1, MAX_DIMENSION, where)
+def _dimensions(values, where, graph, field):
+    graph._require(type(values) is list and len(values) == 3, 'Schema', where,
+                   f'{field} must contain exactly three dimensions [x, y, z]. Set all three values in Properties.')
+    for axis, value in zip(('x', 'y', 'z'), values):
+        _check_field(graph._integer, value, f'{field}.{axis}', where, graph, 1, MAX_DIMENSION)
 
 
 def migrate_raster(node, technique):
@@ -152,14 +190,16 @@ def lower_graphics(node, where, graph):
                    'Capability', where, 'graphics invocation is outside the RendererStatic profile')
     stages = {shader['stage'] for shader in node['shaders']}
     graph._require({'vertex', 'fragment'} <= stages, 'IncompletePipeline', where,
-                   'graphics requires authored vertex and fragment programs in the current profile')
+                   f"GraphicsPipeline is missing shader stages: {', '.join(sorted({'vertex', 'fragment'} - stages))}. "
+                   'Add these stages in Shaders and assign each a build-manifest program ID.')
     graph._require(stages <= {'vertex', 'fragment'}, 'Capability', where,
                    'optional graphics stages are not admitted by the current graph build profile')
     input_types = {port['id']: port['type'] for port in node['inputs']}
     mappings = {'scene': invocation['scene'], 'view': invocation['view']}
     for key, kind in (('scene', 'Scene'), ('view', 'View')):
         graph._require(input_types.get(mappings[key]) == kind, 'IncompletePipeline', where,
-                       f'{key} invocation must name a declared {kind} input')
+                       f"Invocation '{key}' names '{mappings[key]}', which is not a declared {kind} input. "
+                       f"Add a {kind} Read Input and select its ID in Invocation → {key}.")
     record = {'id': node['id'], 'kind': 'Raster', **{key: invocation[key] for key in ('mode', 'vertex_layout', 'material')}}
     outputs = {}
     for aspect in ('depth', 'color') if invocation['mode'] == 'ColorAndDepth' else ('depth',):

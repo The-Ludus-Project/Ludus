@@ -575,9 +575,23 @@ void RenderGraphCanvas::Rebuild()
                                 const QString& title,
                                 RenderGraphDomain domain,
                                 const RenderGraphNodePorts& ports,
-                                QPointF position) {
+                                QPointF position,
+                                const QJsonArray& writableResources) {
         // NOLINTEND(bugprone-easily-swappable-parameters)
-        const qsizetype rowCount = qMax(ports.Inputs.size(), ports.Outputs.size());
+        QHash<QString, qsizetype> outputRows;
+        qsizetype rowCount = qMax(ports.Inputs.size(), ports.Outputs.size());
+        for (const QJsonValueConstRef value : writableResources)
+        {
+            const QJsonObject resource = value.toObject();
+            for (qsizetype row = 0; row < ports.Inputs.size(); ++row)
+            {
+                if (ports.Inputs.at(row).Id == resource.value(QStringLiteral("target")).toString())
+                {
+                    outputRows.insert(resource.value(QStringLiteral("id")).toString(), row);
+                    rowCount = qMax(rowCount, row + 1);
+                }
+            }
+        }
         const float64 height = HEADER_HEIGHT + static_cast<float64>(rowCount) * PORT_SPACING + NODE_PADDING;
         NodeView* view = new NodeView(mScene->addRect(QRectF(0, 0, NODE_WIDTH, height),
                                                       QPen(QColor::fromRgba(NODE_BORDER_COLOR), NODE_BORDER_WIDTH),
@@ -626,7 +640,7 @@ void RenderGraphCanvas::Rebuild()
         }
         for (qsizetype i = 0; i < ports.Outputs.size(); ++i)
         {
-            addPort(ports.Outputs.at(i), i, true);
+            addPort(ports.Outputs.at(i), outputRows.value(ports.Outputs.at(i).Id, i), true);
         }
         mNodes.insert(identity, view);
         return view;
@@ -645,12 +659,14 @@ void RenderGraphCanvas::Rebuild()
         const QPointF position = authored.contains(identity) == true
                                      ? authored.value(identity)
                                      : QPointF(column * COLUMN_SPACING, row * ROW_SPACING);
-        NodeView* view = addNode(identity,
-                                 identity + QStringLiteral(" : ") + kind +
-                                     (hasPorts == true ? QString() : QStringLiteral(" (missing source)")),
-                                 GetRenderGraphDomain(kind),
-                                 ports,
-                                 position);
+        NodeView* view =
+            addNode(identity,
+                    identity + QStringLiteral(" : ") + kind +
+                        (hasPorts == true ? QString() : QStringLiteral(" (missing source)")),
+                    GetRenderGraphDomain(kind),
+                    ports,
+                    position,
+                    IsPipelineNode(kind) == true ? node.value(QStringLiteral("outputs")).toArray() : QJsonArray{});
         view->Kind = kind;
     }
     const QVector<RenderGraphPort> inputs = ReadInterface(record.value(QStringLiteral("inputs")).toArray());
@@ -660,7 +676,8 @@ void RenderGraphCanvas::Rebuild()
                                  QStringLiteral("input (configuration)"),
                                  RenderGraphDomain::Interface,
                                  {{}, inputs},
-                                 QPointF(-COLUMN_SPACING, 0));
+                                 QPointF(-COLUMN_SPACING, 0),
+                                 {});
         view->IsMovable = false;
     }
     QVector<CanvasLink> links;
@@ -671,7 +688,8 @@ void RenderGraphCanvas::Rebuild()
                                  QStringLiteral("outputs (configuration)"),
                                  RenderGraphDomain::Interface,
                                  {ReadInterface(outputs), {}},
-                                 QPointF((lastColumn + 1) * COLUMN_SPACING, 0));
+                                 QPointF((lastColumn + 1) * COLUMN_SPACING, 0),
+                                 {});
         view->IsMovable = false;
         for (const QJsonValueConstRef output : outputs)
         {

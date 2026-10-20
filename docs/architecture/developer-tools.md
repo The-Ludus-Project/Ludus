@@ -6,6 +6,11 @@ the remaining integration milestones are still pending.
 
 ## Goals and boundaries
 
+External GPU tooling has a separate
+[graphics debugging architecture and phased plan](graphics-debugging.md), starting
+with shared GPU names/scopes and Metal/RenderDoc capture. It reuses the process
+launch and local tool preference ownership described here.
+
 Use VS Code for source editing and the existing CMake/Conan scripts for builds.
 Offer RAD Debugger as the preferred external native debugger on Linux x64.
 Contributors retain their own debugger and keybindings: no onboarding command

@@ -202,7 +202,7 @@ qsizetype FindNode(const QJsonArray& nodes, const QString& identity)
     return -1;
 }
 
-bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& arguments, QString* outErrorOrNull)
 {
     QJsonArray nodes = inoutConfiguration.value(QStringLiteral("nodes")).toArray();
     const QJsonObject node = QJsonDocument::fromJson(arguments.at(0).toUtf8()).object();
@@ -232,15 +232,27 @@ bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argumen
             return {};
         };
         const QString identity = node.value(QStringLiteral("id")).toString();
-        const auto isPreserved = [&node, &previous, &identity, &getType](const QString& endpoint,
-                                                                         const QString& direction) {
+        const auto isPreserved = [&node, &previous, &identity, &getType, outErrorOrNull](const QString& endpoint,
+                                                                                         const QString& direction) {
             if (endpoint.section(QLatin1Char('.'), 0, 0) != identity)
             {
                 return true;
             }
             const QString port = endpoint.section(QLatin1Char('.'), 1);
             const QString type = getType(node, direction, port);
-            return type.isEmpty() == false && type == getType(previous, direction, port);
+            const QString previousType = getType(previous, direction, port);
+            const bool hasCompatibleType = type.isEmpty() == false && type == previousType;
+            if (hasCompatibleType == false && outErrorOrNull != nullptr)
+            {
+                *outErrorOrNull = QStringLiteral("Cannot apply: connected %1 port '%2' (%3) would be removed, renamed "
+                                                 "or changed to '%4'. Disconnect its wire or configuration output "
+                                                 "before editing this port; then reconnect after applying.")
+                                      .arg(direction,
+                                           endpoint,
+                                           previousType,
+                                           type.isEmpty() == true ? QStringLiteral("missing") : type);
+            }
+            return hasCompatibleType;
         };
         const QJsonArray edges = inoutConfiguration.value(QStringLiteral("edges")).toArray();
         for (const QJsonValueConstRef edge : edges)
@@ -265,6 +277,11 @@ bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argumen
     nodes.replace(index, node);
     inoutConfiguration.insert(QStringLiteral("nodes"), nodes);
     return true;
+}
+
+bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    return ReplaceNodeChecked(inoutConfiguration, arguments, nullptr);
 }
 
 bool AddNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
@@ -726,15 +743,45 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     return commit(candidate, shouldMerge);
 }
 
-RenderGraphDocumentStatus
-RenderGraphDocument::ReplaceNode(const QString& file, const QString& configuration, const QJsonObject& node)
+RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
+                                                           const QString& configuration,
+                                                           const QJsonObject& node,
+                                                           QString* outErrorOrNull)
 {
+    if (outErrorOrNull != nullptr)
+    {
+        *outErrorOrNull =
+            QStringLiteral("Cannot apply pipeline: the selected graph, configuration or node is no longer "
+                           "available, or its kind changed. Reselect the node and retry.");
+        QJsonObject graph;
+        if (GetGraph(file, graph) == true)
+        {
+            const QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+            const qsizetype index = FindConfiguration(configurations, configuration);
+            if (index >= 0)
+            {
+                QJsonObject candidate = configurations.at(index).toObject();
+                if (ReplaceNodeChecked(candidate,
+                                       {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
+                                       outErrorOrNull) == false)
+                {
+                    return RenderGraphDocumentStatus::InvalidEdit;
+                }
+            }
+        }
+    }
     mLastMove.clear();
-    return editConfiguration(file,
-                             configuration,
-                             {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
-                             &ReplaceNodeEdit,
-                             false);
+    const RenderGraphDocumentStatus status =
+        editConfiguration(file,
+                          configuration,
+                          {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
+                          &ReplaceNodeEdit,
+                          false);
+    if (status == RenderGraphDocumentStatus::Ok && outErrorOrNull != nullptr)
+    {
+        outErrorOrNull->clear();
+    }
+    return status;
 }
 
 RenderGraphDocumentStatus

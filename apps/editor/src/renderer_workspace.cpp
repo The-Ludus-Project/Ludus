@@ -1979,11 +1979,12 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     {
         RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, &inoutParent);
         connect(editor, &RenderGraphPipelineEditor::Edited, this, [this, editor](const QJsonObject& candidate) {
+            QString error;
             const RenderGraphDocumentStatus status =
-                mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate);
+                mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate, &error);
             if (status != RenderGraphDocumentStatus::Ok)
             {
-                mStatus->setText(QStringLiteral("Disconnect affected ports before removing or changing their type."));
+                mStatus->setText(error);
                 renderInspector();
                 Q_EMIT NodeFieldsChanged(nullptr);
                 return;
