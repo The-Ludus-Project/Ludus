@@ -4,8 +4,9 @@
 // This specification citation identifies the algorithm; it does not establish
 // the implementation's original code provenance or imply FIPS validation.
 #include <ludus/content/content.h>
+#include <ludus/foundation/base/config.h>
 
-#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
+#if defined(LUDUS_ARCH_ARM64) && defined(__ARM_FEATURE_SHA2)
 #    include <arm_neon.h>
 #endif
 
@@ -65,7 +66,7 @@ void Block(const uint8* input, uint32* state) noexcept
 }
 /// Bytes in one SHA-256 message block.
 constexpr usize BLOCK_BYTES = 64;
-#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
+#if defined(LUDUS_ARCH_ARM64) && defined(__ARM_FEATURE_SHA2)
 // Thanks to Arm, "Arm C Language Extensions" (ACLE), Cryptographic extensions
 // (SHA2 intrinsics): https://arm-software.github.io/acle/. Each SHA256H/SHA256H2
 // pair performs four rounds; SHA256SU0/SU1 extend the message schedule. The
