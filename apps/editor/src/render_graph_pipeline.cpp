@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -169,6 +170,11 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     {
         const QString name = table->objectName();
         tabs->addTab(table->parentWidget(), name.left(1).toUpper() + name.mid(1));
+        for (int32 row = 0; row < table->rowCount(); ++row)
+        {
+            connectChoices(*table, row);
+        }
+        connect(table, &QTableWidget::cellChanged, this, [this]() { publishEdit(); });
     }
     for (const QString& name : {QStringLiteral("state"), QStringLiteral("invocation")})
     {
@@ -179,10 +185,6 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
                      name == QStringLiteral("state") ? QStringLiteral("Pipeline State") : QStringLiteral("Invocation"));
     }
     layout->addWidget(tabs);
-    QPushButton* applyButton = new QPushButton(QStringLiteral("Apply Pipeline"), this);
-    applyButton->setObjectName(QStringLiteral("renderGraphApplyPipeline"));
-    connect(applyButton, &QPushButton::clicked, this, &RenderGraphPipelineEditor::apply);
-    layout->addWidget(applyButton);
 }
 
 QTableWidget*
@@ -220,12 +222,13 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     add->setObjectName(QStringLiteral("renderGraphAdd_") + name);
     remove->setObjectName(QStringLiteral("renderGraphRemove_") + name);
     const QString kind = mNode.value(QStringLiteral("kind")).toString();
-    connect(add, &QPushButton::clicked, this, [table, defaults, fields, name, kind]() {
+    connect(add, &QPushButton::clicked, this, [this, table, defaults, fields, name, kind]() {
         const int32 maximum = name == QStringLiteral("shaders") ? MAX_SHADERS : MAX_PORTS;
         if (table->rowCount() >= maximum)
         {
             return;
         }
+        const QSignalBlocker blocker(table);
         const int32 row = table->rowCount();
         table->insertRow(row);
         for (int32 column = 0; column < defaults.size(); ++column)
@@ -249,12 +252,16 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
             }
             AddCell(*table, row, column, fields.at(column), value, kind);
         }
+        connectChoices(*table, row);
         table->setCurrentCell(row, 0);
+        publishEdit();
     });
-    connect(remove, &QPushButton::clicked, this, [table]() {
+    connect(remove, &QPushButton::clicked, this, [this, table]() {
         if (table->currentRow() >= 0)
         {
+            const QSignalBlocker blocker(table);
             table->removeRow(table->currentRow());
+            publishEdit();
         }
     });
     buttons->addWidget(add);
@@ -274,6 +281,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             QJsonObject record = mNode.value(name).toObject();
             record.insert(key, field);
             mNode.insert(name, record);
+            publishEdit();
         };
         if (value.isBool() == true)
         {
@@ -305,6 +313,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                     dimensions.replace(dimension, number);
                     record.insert(key, dimensions);
                     mNode.insert(name, record);
+                    publishEdit();
                 });
                 layout->addWidget(control);
             }
@@ -313,19 +322,34 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         else
         {
             QLineEdit* control = new QLineEdit(value.toString(), this);
-            connect(control, &QLineEdit::textChanged, this, [setProperty](const QString& text) { setProperty(text); });
+            connect(control, &QLineEdit::editingFinished, this, [setProperty, control]() {
+                setProperty(control->text());
+            });
             outForm.addRow(key, control);
         }
     }
 }
 
-void RenderGraphPipelineEditor::apply()
+void RenderGraphPipelineEditor::connectChoices(QTableWidget& inoutTable, int32 row)
+{
+    for (int32 column = 0; column < inoutTable.columnCount(); ++column)
+    {
+        QComboBox* controlOrNull = qobject_cast<QComboBox*>(inoutTable.cellWidget(row, column));
+        if (controlOrNull != nullptr)
+        {
+            connect(controlOrNull, &QComboBox::currentTextChanged, this, [this]() { publishEdit(); });
+        }
+    }
+}
+
+void RenderGraphPipelineEditor::publishEdit()
 {
     QJsonObject candidate = mNode;
     for (const QTableWidget* table : {mInputs, mOutputs, mShaders})
     {
         candidate.insert(table->objectName(), ReadRows(*table, table->property("fields").toStringList()));
     }
-    Q_EMIT Applied(candidate);
+    mNode = candidate;
+    Q_EMIT Edited(candidate);
 }
 } // namespace ludus::editor

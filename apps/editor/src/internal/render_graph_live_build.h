@@ -1,5 +1,7 @@
 #pragma once
 
+#include "internal/render_graph_source.h"
+
 #include <QByteArray>
 #include <QObject>
 #include <QString>
@@ -10,8 +12,9 @@ namespace ludus::editor
 class RenderGraphDocument;
 /// Stable source/configuration digest; layout-only graph edits are excluded.
 [[nodiscard]] QByteArray ComputeRenderGraphBuildIdentity(const RenderGraphDocument& document,
-                                                         const QString& configuration);
-/// Debounce and supersession for live draft builds. Owns no documents, files,
+                                                         const QString& configuration,
+                                                         RenderGraphSource source = RenderGraphSource::Draft);
+/// Debounce and supersession for saved-source preview builds. Owns no documents, files,
 /// compiler or viewport. The workspace owns admission and result publication.
 class RenderGraphLiveBuild final : public QObject
 {

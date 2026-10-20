@@ -486,7 +486,7 @@ TEST_CASE("Canvas supports native Select All toggle additive and Escape selectio
     CHECK(document.GetRevision() == 0);
 }
 
-TEST_CASE("pipeline inspector applies typed ports as one draft edit", "[editor][render-graph][pipeline]")
+TEST_CASE("pipeline inspector commits typed ports directly to the undoable draft", "[editor][render-graph][pipeline]")
 {
     QTemporaryDir project;
     const QString package = MakePackage(project);
@@ -507,15 +507,13 @@ TEST_CASE("pipeline inspector applies typed ports as one draft edit", "[editor][
     REQUIRE(addInput != nullptr);
     const uint64 revision = workspace.GetDocument().GetRevision();
     addInput->click();
-    CHECK(workspace.GetDocument().GetRevision() == revision);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
     QTableWidget* inputs = editor->findChild<QTableWidget*>(QStringLiteral("inputs"));
     REQUIRE(inputs != nullptr);
     REQUIRE(inputs->rowCount() == 1);
     inputs->item(0, 0)->setText(QStringLiteral("history"));
-    QPushButton* apply = editor->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
-    REQUIRE(apply != nullptr);
-    apply->click();
-    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(editor->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline")) == nullptr);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 2);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == false);
     workspace.Undo();
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == true);

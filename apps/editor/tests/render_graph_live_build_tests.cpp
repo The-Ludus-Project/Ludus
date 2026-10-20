@@ -5,6 +5,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSignalSpy>
@@ -77,4 +78,43 @@ TEST_CASE("Live shader build reset discards work from the previous document", "[
     CHECK(requested.wait(600) == false);
     live.Schedule(QByteArrayLiteral("new document"));
     REQUIRE(requested.wait(1000) == true);
+}
+
+TEST_CASE("saved preview identity and snapshots exclude later draft edits", "[editor][shader][save-preview]")
+{
+    QTemporaryDir directory;
+    const QString shader = QStringLiteral("color.slang");
+    Write(
+        QDir(directory.path()).filePath(ROOT_GRAPH),
+        QByteArrayLiteral(
+            R"({"version":1,"id":"Main","default":"Default","configurations":[{"id":"Default","inputs":[],"outputs":[],"nodes":[],"edges":[]}]})"));
+    Write(QDir(directory.path()).filePath(shader), QByteArrayLiteral("original"));
+    RenderGraphDocument document;
+    REQUIRE(document.Load(directory.path(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = ComputeRenderGraphBuildIdentity(document, CONFIGURATION, RenderGraphSource::Saved);
+    REQUIRE(document.SetText(shader, QByteArrayLiteral("saved edit")) == RenderGraphDocumentStatus::Ok);
+    CHECK(ComputeRenderGraphBuildIdentity(document, CONFIGURATION, RenderGraphSource::Saved) == original);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    const QByteArray savedIdentity = ComputeRenderGraphBuildIdentity(document, CONFIGURATION, RenderGraphSource::Saved);
+    CHECK(savedIdentity != original);
+    const ludus::foundation::uint64 savedRevision = document.GetRevision();
+    REQUIRE(document.SetText(shader, QByteArrayLiteral("unsaved edit")) == RenderGraphDocumentStatus::Ok);
+    CHECK(ComputeRenderGraphBuildIdentity(document, CONFIGURATION, RenderGraphSource::Saved) == savedIdentity);
+    CHECK(ComputeRenderGraphBuildIdentity(document, CONFIGURATION) != savedIdentity);
+    CHECK(document.GetRevision(RenderGraphSource::Saved) == savedRevision);
+    REQUIRE(document.CreateSubgraph(ROOT_GRAPH, CONFIGURATION, QStringLiteral("new"), QStringLiteral("New")) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetFiles().contains(QStringLiteral("New.lurender.json")) == true);
+    CHECK(document.GetFiles(RenderGraphSource::Saved).contains(QStringLiteral("New.lurender.json")) == false);
+    QTemporaryDir snapshot;
+    REQUIRE(document.WriteSnapshot(snapshot.path(), RenderGraphSource::Saved) == RenderGraphDocumentStatus::Ok);
+    QFile captured(QDir(snapshot.path()).filePath(shader));
+    REQUIRE(captured.open(QIODevice::ReadOnly) == true);
+    CHECK(captured.readAll() == QByteArrayLiteral("saved edit"));
+    CHECK(QFileInfo::exists(QDir(snapshot.path()).filePath(QStringLiteral("New.lurender.json"))) == false);
+    REQUIRE(document.Undo() == true);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetRevision(RenderGraphSource::Saved) == savedRevision);
+    CHECK(document.GetDraft(shader) == document.GetSaved(shader));
 }

@@ -1041,14 +1041,46 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     QByteArray blue = shader;
     blue.replace("return value.Color;", "return float4(0, 0, 1, 1);");
     sourceText->setPlainText(QString::fromUtf8(blue));
+    const uint64 beforeSave = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    QTest::qWait(600);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == beforeSave);
+    REQUIRE(workspace.Save() == true);
     REQUIRE(waitFor([&]() {
                 const QImage& image = graphView->GetImage();
                 const QColor pixel = image.pixelColor(image.width() / 2, image.height() / 2);
                 return pixel.blue() > GREEN_MINIMUM && pixel.red() < DARK_MAXIMUM;
             }) == true);
     REQUIRE(original.open(QIODevice::ReadOnly) == true);
-    CHECK(original.readAll() == shader);
+    CHECK(original.readAll() == blue);
     original.close();
+    const QImage savedImage = graphView->GetImage();
+    const uint64 savedGeneration = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    const QByteArray savedGraph = workspace.GetDocument().GetSaved(workspace.GetDocument().GetRootGraph());
+    const uint64 beforeInvalidGraph = workspace.GetLastResult().Request.Request;
+    REQUIRE(workspace.GetDocument().SetText(workspace.GetDocument().GetRootGraph(), QByteArrayLiteral("{}")) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(waitFor([&]() {
+                return workspace.IsJobActive() == false && workspace.GetLastResult().IsSuccessful == false &&
+                       workspace.GetLastResult().Request.Request > beforeInvalidGraph;
+            }) == true);
+    CHECK(graphView->GetImage() == savedImage);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == savedGeneration);
+    REQUIRE(workspace.GetDocument().SetText(workspace.GetDocument().GetRootGraph(), savedGraph) ==
+            RenderGraphDocumentStatus::Ok);
+    const uint64 beforeInvalidShader = workspace.GetLastResult().Request.Request;
+    sourceText->setPlainText(QStringLiteral("broken shader source"));
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(waitFor([&]() {
+                return workspace.IsJobActive() == false && workspace.GetLastResult().IsSuccessful == false &&
+                       workspace.GetLastResult().Request.Request > beforeInvalidShader;
+            }) == true);
+    CHECK(graphView->GetImage() == savedImage);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == savedGeneration);
+    sourceText->setPlainText(QString::fromUtf8(blue));
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(waitFor([&]() { return workspace.GetPreviewOrNull()->GetPresentedGeneration() > savedGeneration; }) ==
+            true);
     const uint64 revision = workspace.GetPreviewOrNull()->GetPresentedRevision();
     QTest::mousePress(&viewport, Qt::LeftButton, Qt::AltModifier, QPoint(100, 200));
     QMouseEvent movement(QEvent::MouseMove,

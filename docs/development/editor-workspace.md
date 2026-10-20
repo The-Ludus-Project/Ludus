@@ -1091,7 +1091,7 @@ On macOS this needs macOS 15. To use a worker you started yourself, set
 → Render Graph**. Without a worker the overlay explains how to get one. Live shaders
 are available in the native editor on macOS (Metal) and Linux (Vulkan). The
 browser editor has neither the worker nor a source tree, so it has no toggle.
-Project render-graph shaders reload through the Render Graph's **Live Preview**
+Saved project render-graph shaders reload through the Render Graph's **Live Preview**
 instead.
 
 Lit uses raster direct lighting and real-time shadows. HDR or constant authored
