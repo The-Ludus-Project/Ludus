@@ -483,9 +483,24 @@ track. Each counter is placed at its **CPU submission marker**, with frame and
 device-generation identity and collection time in a companion event. The value
 is an elapsed device interval, rounded to the nearest integer nanosecond; its
 encoded unit does not promise nanosecond accuracy. It is not a GPU execution
-slice aligned with CPU scopes, utilization, display latency or per-pass timing.
+slice aligned with CPU scopes, utilization, or display latency.
 
-Only completed samples count. The single probe may skip frames while a result
+GPU/Both also records named physical passes on supported Metal/Vulkan devices.
+Look for `GPU/Pass/<name> [identity:ordinal:kind]/DurationNanoseconds` counters.
+Authored graph labels and built-in `Viewport/Scene` and `Viewport/Composite`
+labels share the renderer's native debug scopes. Merged physical passes produce
+one duration with a logical member count. A scope containing multiple native
+operations retains each operation's ordinal. Separate ray-query batch work is
+not timed by these frame-command-buffer samples.
+
+The recorder holds at most 64 pass queries per acquired frame and shares its
+4,096 sample slots between frame and pass results. `frameSampleCount` and
+`passSampleCount` separate those totals; `queryDroppedPasses` and
+`unresolvedPassBatches` report query pressure and unfinished batches. The status
+reports when per-pass counters are unavailable; frame sampling can still work.
+No Xcode, RenderDoc, or PIX installation is needed to record these timings.
+
+Only completed samples count. The single frame probe and single pass batch may skip frames while a result
 is pending; coverage reports eligible frames, invalid samples, dropped samples
 and unresolved results. A legitimate quantized zero stays zero; missing data
 never becomes a fabricated zero. GPU recording continues when **Stats** is

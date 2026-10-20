@@ -134,6 +134,8 @@ struct RenderGraphPackage::State final
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Camera, format::MAX_CAMERAS> Cameras{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
+    StaticArray<BorrowedView<const char>, format::MAX_PASSES> PassNames{};
+    bool HasPassNames = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -420,7 +422,8 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     ByteReader reader{candidate->Bytes.AsSpan()};
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
-    if (magic != format::PACKAGE_MAGIC || version != format::PACKAGE_VERSION)
+    if (magic != format::PACKAGE_MAGIC ||
+        (version != format::PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -468,6 +471,25 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     {
         return status;
     }
+    if (version == format::PACKAGE_VERSION)
+    {
+        for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
+        {
+            const uint32 length = reader.ReadWord();
+            if (length == 0 || length > format::MAX_PASS_NAME_BYTES)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+            const std::span<const uint8> name = reader.ReadPadded(length);
+            rhi::GpuScopeDescription validated;
+            candidate->PassNames[index] = {reinterpret_cast<const char*>(name.data()), name.size()};
+            if (reader.IsOk() == false || rhi::MakeGpuScope(index + 1, candidate->PassNames[index], validated) == false)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+        }
+        candidate->HasPassNames = true;
+    }
     if (reader.IsComplete() == false)
     {
         return RenderGraphPackageStatus::Malformed;
@@ -497,7 +519,10 @@ RenderGraphPlan RenderGraphPackage::GetPlan() const noexcept
             {state.Passes.GetData(), state.Header.PassCount},
             {state.UniformBindings.GetData(), state.Header.UniformBindingCount},
             {state.UniformBlocks.GetData(), state.Header.UniformBlockCount},
-            {state.UniformFields.GetData(), state.Header.UniformFieldCount}};
+            {state.UniformFields.GetData(), state.Header.UniformFieldCount},
+            state.HasPassNames == true
+                ? BorrowedView<const BorrowedView<const char>>{state.PassNames.GetData(), state.Header.PassCount}
+                : BorrowedView<const BorrowedView<const char>>{}};
 }
 RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVertex,
                                                     const rhi::RasterShaderDescription& compositeFragment,

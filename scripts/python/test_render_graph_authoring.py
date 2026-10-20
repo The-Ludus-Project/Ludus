@@ -327,6 +327,15 @@ def parse_runtime(data):
         offset += artifact_bytes + (-artifact_bytes % 4)
         result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry,
                                  'artifact': artifact, 'blocks': names})
+    result['pass_names'] = []
+    if version == 3:
+        for _ in range(passes):
+            (name_bytes,) = take(1)
+            assert 0 < name_bytes <= 127
+            name = data[offset:offset + name_bytes].decode('utf-8')
+            assert '\0' not in name
+            result['pass_names'].append(name)
+            offset += name_bytes + (-name_bytes % 4)
     assert offset == len(data)
     return result
 
@@ -350,7 +359,8 @@ class RuntimePackageTests(BuildFixture):
         cooked = execution.cook_runtime(package, self.root / 'graph.lurgrt')
         data = (self.root / 'graph.lurgrt').read_bytes()
         parsed = parse_runtime(data)
-        self.assertEqual((execution.PACKAGE_MAGIC, 2), (parsed['magic'], parsed['version']))
+        self.assertEqual((execution.PACKAGE_MAGIC, 3), (parsed['magic'], parsed['version']))
+        self.assertEqual(['Main/raster/draw'], parsed['pass_names'])
         self.assertEqual(header['interface_identity'], parsed['interface'])
         self.assertEqual(cooked['generation'], parsed['generation'])
         self.assertEqual(package.name, parsed['generation'])

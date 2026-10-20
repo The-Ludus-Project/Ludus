@@ -1,8 +1,9 @@
 # Graphics debugging architecture and implementation plan
 
 Status: implementation contract, 2026-10-20. Native local-editor P0/P1 recording
-is implemented: CPU/GPU/Both controls, F9 and frame-duration counters. P2/P3,
-shared GPU names/scopes and native Metal/RenderDoc debugger capture remain planned.
+and local P2 pass-duration counters are implemented: CPU/GPU/Both controls, F9,
+frame timing and shared pass scopes. Hosted transport, resource naming, P3 and
+native Metal/RenderDoc debugger capture remain planned.
 Implementation availability is distinct from platform/hardware qualification.
 
 Shader and renderer developers should be able to run the selected project in
@@ -365,8 +366,8 @@ Perfetto workflow does not depend on the vendor capture adapter milestones.
 The delivered local-editor workflow and current limits are in
 [Recording CPU and GPU profiling](../development/editor-workspace.md#recording-cpu-and-gpu-profiling).
 The first delivery uses fixed storage/time limits and a new destination per
-recording. Source/process expansion, configurable limits, per-pass timing and
-calibrated lanes remain separate work.
+recording. Local physical-pass timing reuses those controls. Source/process
+expansion, configurable limits and calibrated lanes remain separate work.
 
 ## Mac developer setup
 
@@ -395,8 +396,9 @@ native Metal backend. PIX GPU capture requires Windows/D3D12.
 
 ## Phased implementation and acceptance
 
-P0/P1 are implemented for the native local editor; the remaining phases are
-pending. Implement changes in isolated reviewable branches targeting
+P0/P1 and local P2 physical-pass counters are implemented for the native editor.
+Shared pass scopes supply the annotation part of G0; resource naming, nested
+scopes, hosted recording transport and capture adapters remain pending. Implement changes in isolated reviewable branches targeting
 `develop`, following [CI qualification](../development/continuous-integration.md).
 Acceptance into `develop` is distinct from full batch/platform qualification.
 
@@ -407,12 +409,12 @@ adapters. It does not wait for G2/G3 or for a full pass-timing implementation.
 | --- | --- | --- |
 | P0 Editor CPU recording | Shared profiling controller, tool window, CPU mode, Record/Stop action and proposed F9 shortcut; reuse the current CPU tracer/exporter. | Menu/toolbar/shortcut share availability; bounded capture exports and opens in Perfetto; Busy, disabled build and export-retry behavior preserve data and editor responsiveness. |
 | P1 Coarse GPU Perfetto recording | GPU and Both modes; shared viewport probe ownership, typed frame-duration samples, coverage and single-trace export. Reuse existing RHI measurement support; no vendor debugger prerequisite. | Metal and Vulkan recordings show validated duration counters and CPU scope filtering; delayed/skipped/disjoint samples, Stats on/off, cancellation and finalization produce honest coverage without GPU waits. |
-| P2 Pass durations and hosted recording | Bounded native query slots/counters, physical pass names from G0 and producer-side recording transport. | Named pass counters survive pass merging, query pressure and restart; unsupported precision remains explicit; hosted traces identify their producer and preserve image leases. |
+| P2 Pass durations and hosted recording | Local Metal/Vulkan bounded native queries and shared physical-pass scopes implemented; producer-side hosted transport remains pending. | Named pass counters survive pass merging, query pressure and restart; unsupported precision remains explicit; hosted traces identify their producer and preserve image leases. |
 | P3 Correlated GPU execution lanes | Backend CPU/GPU clock mapping with uncertainty, queue tracks and submission correlation. | Actual GPU slices align within the stated measured error, nest legally in Perfetto, preserve overlap on separate queues and degrade to duration-only data if calibration fails. |
 
 | Phase | Deliverable and dependency | Exit gate |
 | --- | --- | --- |
-| G0 Shared GPU annotations | RHI names/scopes, authored graph identity, Vulkan/Metal mappings, explicit browser capability behavior. | Native captures show useful resource and logical/physical pass names; disabled/missing annotation paths preserve rendering. |
+| G0 Shared GPU annotations | Pass-scope subset implemented: owned RHI names, authored graph identity and Metal/optional Vulkan labels. Resource naming and nesting remain pending. | Native captures show useful resource and logical/physical pass names; disabled/missing annotation paths preserve rendering. |
 | G1 Capture contract | Session/request ownership, bounded state machine, capabilities, destinations and manifest publication. Depends on G0 identities. | Production-path tests cover admission, skipped frames, deadlines, cancellation, stale replies, shutdown and output preservation. |
 | G2 Metal capture | Programmatic `.gputrace`, startup enablement and standalone SDK fixture. Depends on G1; first local platform adapter. | A real Mac capture opens in Xcode, contains the intended frame and exposes named resources/passes and recorded shader-source capability. |
 | G3 RenderDoc capture | Linux/Vulkan launch attachment, version negotiation and explicit frame capture. Depends on G1; can follow the same contract independently of G2. | A real `.rdc` replays in the tested RenderDoc version with named resources/passes, correct offscreen boundaries and explicit feature limits. |

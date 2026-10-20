@@ -8,6 +8,7 @@
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/native_interop.h>
 #include <ludus/graphics/rhi/raster.h>
@@ -75,6 +76,11 @@ public:
     /// Poll without arming work; used to finalize recordings even when the viewport is hidden.
     void PollGpuProfiling() noexcept;
     /// Shared sampler boundaries for the built-in and delegated graph producers.
+    [[nodiscard]] bool CanProfileGpuPasses() const noexcept;
+    [[nodiscard]] bool HasGpuFrameProfilingPending(foundation::uint64 throughTicks = ~foundation::uint64{
+                                                       0}) const noexcept;
+    [[nodiscard]] bool HasGpuPassProfilingPending(foundation::uint64 throughTicks = ~foundation::uint64{
+                                                      0}) const noexcept;
     void PrepareGpuProfileFrame() noexcept;
     void NotifyGpuProfileSubmission() noexcept;
     [[nodiscard]] LUDUS_INLINE bool IsStatisticsVisible() const noexcept
@@ -210,6 +216,11 @@ Q_SIGNALS:
     /// Rate-limited notification that GetStatistics changed while the overlay is visible.
     void StatisticsChanged();
     void GpuProfileSubmission();
+    /// Direct GUI-thread notification; batch is borrowed only for the signal delivery.
+    void GpuPassProfileBatch(foundation::uint64 frameId,
+                             foundation::uint64 deviceSession,
+                             foundation::uint64 submissionTicks,
+                             const graphics::rhi::GpuPassTimings& batch);
     void GpuProfileSample(foundation::uint64 frameId,
                           foundation::uint64 deviceSession,
                           foundation::uint64 submissionTicks,
@@ -237,6 +248,14 @@ private:
     /// Read a completed GPU timing sample and re-arm the probe; call only between frames.
     void serviceGpuTiming(bool shouldArm) noexcept;
     bool mIsGpuProfilingEnabled = false;
+    void serviceGpuPassTimings(bool shouldArm) noexcept;
+    bool mIsPassTimingSupported = false;
+    bool mIsPassTimingArmed = false;
+    bool mHasPassTimingAssociation = false;
+    foundation::uint64 mPassTimingFrameId = 0;
+    foundation::uint64 mPassTimingSubmissionTicks = 0;
+    foundation::uint64 mPassTimingDeviceSession = 0;
+    foundation::uint64 mPassTimingCandidateTicks = 0;
     bool mIsTimingArmed = false;
     bool mHasTimingAssociation = false;
     foundation::uint64 mTimingFrameId = 0;

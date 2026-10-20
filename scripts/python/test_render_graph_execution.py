@@ -214,6 +214,13 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(names['version'], execution.RESOURCE_NAMES_VERSION)
         self.assertEqual(names['generation'], runtime['generation'])
         contents = execution._runtime_contents(self.output, 'Default')
+        pass_names = [p['id'] for p in contents['plan']['passes'] if p['kind'] in ('Raster', 'RayTracing')]
+        suffix = b''.join(struct.pack('<I', len(name.encode())) + name.encode() + bytes(-len(name.encode()) % 4)
+                          for name in pass_names)
+        self.assertTrue(destination.read_bytes().endswith(suffix))
+        header = self.root / 'named.hpp'
+        execution.emit_runtime(self.output, header)
+        self.assertIn('PASS_NAMES.GetData()', header.read_text())
         self.assertEqual(len(names['resources']), len(contents['resources']))
         self.assertEqual([entry['name'] for entry in names['resources']], sorted(contents['plan']['resources']))
         for entry, record in zip(names['resources'], contents['resources']):

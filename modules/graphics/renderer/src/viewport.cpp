@@ -1,4 +1,5 @@
 #include <ludus/graphics/renderer/viewport.hpp>
+#include <ludus/graphics/rhi/gpu_scope.h>
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -358,14 +359,29 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
     state.FrameOpen = true;
     state.Producing = index;
     state.ProducingSurface = surface;
-    state.RecordingStatus = state.SceneRenderer->DrawView(state.View, { .Color = state.SceneColor });
+    rhi::GpuScopeDescription sceneScope;
+    static_cast<void>(rhi::MakeGpuScope(1, {"Viewport/Scene", sizeof("Viewport/Scene") - 1}, sceneScope));
+    {
+        const rhi::GpuScope scope(state.Device, sceneScope);
+        state.RecordingStatus = state.SceneRenderer->DrawView(state.View, { .Color = state.SceneColor });
+    }
     if (state.RecordingStatus == Status::Ready)
     {
+        rhi::GpuScopeDescription compositeScope;
+        static_cast<void>(
+            rhi::MakeGpuScope(2, {"Viewport/Composite", sizeof("Viewport/Composite") - 1}, compositeScope));
+        const rhi::GpuScope scope(state.Device, compositeScope);
         state.RecordingStatus =
             state.SceneRenderer->DrawLightingPresentation(state.Display, { .Color = state.Images[index] });
     }
     if (state.RecordingStatus == Status::Ready && state.ShouldPresentToSurface == true)
     {
+        constexpr uint64 PRESENT_SCOPE_ID = 3;
+        rhi::GpuScopeDescription presentationScope;
+        static_cast<void>(rhi::MakeGpuScope(PRESENT_SCOPE_ID,
+                                            {"Viewport/Present", sizeof("Viewport/Present") - 1},
+                                            presentationScope));
+        const rhi::GpuScope scope(state.Device, presentationScope);
         state.RecordingStatus = state.SceneRenderer->DrawPresentation(state.SurfaceDisplays[index]);
     }
     return state.Finish(completion);

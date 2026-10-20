@@ -277,8 +277,15 @@ TEST_CASE("real viewport GPU timing exports GPU-only and combined traces with St
         const QJsonObject trace = ReadTrace(path);
         const QJsonObject coverage = trace.value(QStringLiteral("ludusGpuTiming")).toObject();
         CHECK(coverage.value(QStringLiteral("sampleCount")).toInt() > 0);
+        if (preview.CanProfileGpuPasses() == true)
+        {
+            CHECK(coverage.value(QStringLiteral("passTimingSupported")).toBool() == true);
+            CHECK(coverage.value(QStringLiteral("passSampleCount")).toInt() > 0);
+            CHECK(QJsonDocument(trace).toJson().contains("GPU/Pass/Viewport/Scene") == true);
+            CHECK(QJsonDocument(trace).toJson().contains("GPU/Pass/Viewport/Composite") == true);
+        }
         CHECK(coverage.value(QStringLiteral("eligibleFrames")).toInt() >=
-              coverage.value(QStringLiteral("sampleCount")).toInt());
+              coverage.value(QStringLiteral("frameSampleCount")).toInt());
         CHECK(QJsonDocument(trace).toJson().contains("GpuModeCpuEvidence") == (mode == ProfilingMode::Both));
     }
     preview.Stop();
@@ -313,6 +320,18 @@ TEST_CASE("delegated project graph GPU recording uses the shared viewport sample
     const QJsonObject trace = ReadTrace(path);
     CHECK(trace.value(QStringLiteral("ludusGpuTiming")).toObject().value(QStringLiteral("sampleCount")).toInt() > 0);
     CHECK(QJsonDocument(trace).toJson().contains("EditorRenderGraphTick") == true);
+    const QString evidence = qEnvironmentVariable("LUDUS_EDITOR_PROFILING_CAPTURE");
+    if (evidence.isEmpty() == false)
+    {
+        REQUIRE(QFile::copy(path, evidence + QStringLiteral("-graph.json")) == true);
+    }
+    if (preview.CanProfileGpuPasses() == true)
+    {
+        CHECK(
+            trace.value(QStringLiteral("ludusGpuTiming")).toObject().value(QStringLiteral("passSampleCount")).toInt() >
+            0);
+        CHECK(QJsonDocument(trace).toJson().contains("GPU/Pass/Main/raster/draw") == true);
+    }
     REQUIRE(workspace.GetPreviewOrNull() != nullptr);
     CHECK(workspace.GetPreviewOrNull()->GetImage().isNull() == false);
     preview.Stop();

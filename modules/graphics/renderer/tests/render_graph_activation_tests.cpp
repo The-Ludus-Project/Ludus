@@ -81,8 +81,9 @@ struct PackageOptions final
 {
     uint8 Interface = HOST_INTERFACE;
     uint8 Generation = 1;
-    uint32 Version = format::PACKAGE_VERSION;
+    uint32 Version = format::LEGACY_PACKAGE_VERSION;
     uint32 Backing = 0;
+    std::string_view PassName = "Scene/Opaque";
     bool HasDepthStages = true;
     /// Bind one Material {Float3 tint; Float32 gain} block to the color fragment at slot 0.
     bool HasUniforms = false;
@@ -207,6 +208,11 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
     {
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
+    }
+    if (options.Version == format::PACKAGE_VERSION)
+    {
+        writer.WriteWord(static_cast<uint32>(options.PassName.size()));
+        writer.WritePadded(options.PassName);
     }
     return Move(writer.Bytes);
 }
@@ -885,4 +891,29 @@ TEST_CASE("RG4 serial-control activation creates every generation's attachments"
     const renderer::RenderGraphPoolReport report = fixture.Activation.GetPoolReport();
     CHECK(report.CreatedAllocations == 0);
     CHECK(report.IdleAllocations == 0);
+}
+
+TEST_CASE("runtime generation owns validated authored GPU pass names", "[renderer][render-graph][package]")
+{
+    PackageOptions options;
+    options.Version = format::PACKAGE_VERSION;
+    options.PassName = "Scene/\"Opaque\"";
+    const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(plan.PassNames.GetSize() == 1);
+    CHECK(std::string_view(plan.PassNames[0].GetDataOrNull(), plan.PassNames[0].GetSize()) == options.PassName);
+    for (const std::string_view invalid :
+         {std::string_view{}, std::string_view{"a\0b", 3}, std::string_view{"\xC0\xAF", 2}})
+    {
+        options.PassName = invalid;
+        const Array<uint8> bytes = MakePackageBytes(options);
+        renderer::RenderGraphPackage rejected;
+        CHECK(rejected.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
+        CHECK(rejected.IsLoaded() == false);
+    }
+    options.PassName = "Scene";
+    Array<uint8> truncated = MakePackageBytes(options);
+    renderer::RenderGraphPackage rejected;
+    CHECK(rejected.Decode({truncated.GetData(), truncated.GetSize() - 1}) ==
+          renderer::RenderGraphPackageStatus::Malformed);
 }

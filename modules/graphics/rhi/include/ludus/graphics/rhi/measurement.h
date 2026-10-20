@@ -6,7 +6,7 @@
 
 namespace ludus::graphics::rhi
 {
-/// State of the optional single frame probe; sampling never waits for the GPU.
+/// State of an optional GPU measurement; sampling never waits for the GPU.
 enum class GpuTimingState : foundation::uint8
 {
     /// No requested sample in this session.
@@ -29,7 +29,8 @@ struct GpuTiming final
 {
     /// Explicit lifecycle/availability; DurationNanoseconds is meaningful only when Available.
     GpuTimingState State = GpuTimingState::Empty;
-    /// Device-clock elapsed interval enclosing the acquired frame, including graph/compute
+    /// Device-clock elapsed interval: the acquired frame for ArmGpuTiming, or the backend
+    /// stage interval for a GpuPassTiming operation. Frame probes include graph/compute
     /// commands, clear and GPU stalls. WebGL may include idle gaps while the CPU feeds commands.
     /// Excludes readback/display latency; this is not a CPU timer or a sum of GPU busy cycles.
     foundation::float64 DurationNanoseconds = 0;
