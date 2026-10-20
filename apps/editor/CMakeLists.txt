@@ -44,6 +44,8 @@ endif()
 # AUTOMOC is enabled per target below, not globally.
 
 set(editor_viewport_sources
+    src/internal/viewport_frame_pump.h
+    src/viewport_frame_pump.cpp
     src/internal/viewport_frame_source.h
     src/viewport_frame_source.cpp
     src/internal/render_graph_source_watch.h
@@ -422,6 +424,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
         tests/world_identity_tests.cpp

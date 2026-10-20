@@ -372,6 +372,8 @@ struct PreviewViewport::State final
     /// The window was shown before its parent had a surface; recreate it once the parent is visible.
     bool IsSurfaceRecreationPending = false;
     QTimer Service;
+    /// Retry only while a submitted Qt sampling read is awaiting its GPU completion marker.
+    QTimer RetirementRetry;
     static bool Retain(void* context) noexcept
     {
         State& state = *static_cast<State*>(context);
@@ -686,20 +688,44 @@ private:
     void releaseRetired()
     {
         LUDUS_REQUIRE(QThread::currentThread() == Widget->thread());
+        if (IsRecording == true)
+        {
+            // A nested event loop must not seal reads ahead of Qt's current submission.
+            // afterFrameEnd retries them once that submission is actually queued.
+            return;
+        }
+        bool hasPendingReads = false;
         for (Frame& frame : Frames)
         {
             if (frame.HasLease == false || frame.IsRetiring == false)
             {
                 continue;
             }
-            if (Source->EndFrameRead(frame.Read) == rhi::RasterStatus::Ready)
+            const rhi::RasterStatus retired = Source->EndFrameRead(frame.Read);
+            if (retired == rhi::RasterStatus::Ready)
             {
                 frame = {};
             }
+            else if (retired == rhi::RasterStatus::Pending)
+            {
+                hasPendingReads = true;
+            }
+        }
+        if (hasPendingReads == true)
+        {
+            if (RetirementRetry.isActive() == false)
+            {
+                RetirementRetry.start();
+            }
+        }
+        else
+        {
+            RetirementRetry.stop();
         }
     }
     void clearFrames()
     {
+        RetirementRetry.stop();
         CanShowFrames = IsAutomatic;
         if (GraphViewOrNull != nullptr)
         {
@@ -742,6 +768,7 @@ private:
     }
     void destroyWindow()
     {
+        RetirementRetry.stop();
         Service.stop();
         IsDestroyingWindow = true;
         // Source pins must already have been released by RHI shutdown. The
@@ -1024,6 +1051,10 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
             mState->showFrame();
         }
     });
+    mState->RetirementRetry.setInterval(ViewportFramePump::COMPLETION_POLL_MILLISECONDS);
+    mState->RetirementRetry.setTimerType(Qt::PreciseTimer);
+    mState->RetirementRetry.setSingleShot(true);
+    connect(&mState->RetirementRetry, &QTimer::timeout, this, [this]() { mState->releaseRetired(); });
 #endif
     mIsAutomatic = isAutomatic;
     connectFrameSource();

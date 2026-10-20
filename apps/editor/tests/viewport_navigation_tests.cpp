@@ -28,6 +28,7 @@
 #include <QPixmap>
 #include <QPoint>
 #include <QPointF>
+#include <QScreen>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -41,6 +42,12 @@ using namespace ludus::editor;
 namespace math = ludus::foundation::math;
 namespace camera = ludus::gameplay::camera;
 namespace rr = ludus::graphics::renderer;
+#if defined(Q_OS_MACOS) && defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+namespace ludus::editor::tests
+{
+void ActivateViewportForPacing(PreviewViewport& inoutViewport);
+}
+#endif
 namespace
 {
 RenderScene MakeNavigationScene()
@@ -365,6 +372,10 @@ TEST_CASE("Continuous camera input does not postpone viewport frames",
     PreviewViewport viewport(&preview);
     viewport.resize(800, 600);
     viewport.show();
+#if defined(Q_OS_MACOS) && defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    tests::ActivateViewportForPacing(viewport);
+    REQUIRE(QTest::qWaitFor([]() { return QGuiApplication::applicationState() == Qt::ApplicationActive; }) == true);
+#endif
     REQUIRE(preview.SetScene(scene) == true);
     preview.SetStatisticsVisible(true);
     REQUIRE(preview.Start() == true);
@@ -393,6 +404,18 @@ TEST_CASE("Continuous camera input does not postpone viewport frames",
     CAPTURE(idleFrames, inputFrames, inputCount, viewport.GetStatisticsText().toStdString());
     CHECK(inputCount > 20);
     CHECK(inputFrames > 2);
+#if defined(Q_OS_MACOS)
+    QScreen* screenOrNull = viewport.screen();
+    REQUIRE(screenOrNull != nullptr);
+    constexpr float64 MINIMUM_REFRESH_FRACTION = 0.75;
+    constexpr float64 MILLISECONDS_PER_SECOND = 1000;
+    const float64 refreshRate = screenOrNull->refreshRate();
+    const uint64 minimumFrames =
+        static_cast<uint64>(refreshRate * SAMPLE_MILLISECONDS / MILLISECONDS_PER_SECOND * MINIMUM_REFRESH_FRACTION);
+    CAPTURE(refreshRate, minimumFrames);
+    CHECK(idleFrames >= minimumFrames);
+    CHECK(inputFrames >= minimumFrames);
+#endif
     preview.Stop();
 }
 
