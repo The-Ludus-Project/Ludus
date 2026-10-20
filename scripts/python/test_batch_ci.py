@@ -220,6 +220,37 @@ class GitPromotionTests(unittest.TestCase):
 
 
 class GitHubTests(unittest.TestCase):
+    def test_ancestry_avoids_large_first_page_without_relaxing_response_limit(self):
+        client = batch_ci.GitHub("example/engine", "test-token")
+        comparison = {"status": "ahead", "merge_base_commit": {"sha": BASE}, "commits": []}
+        first_page = {**comparison, "files": [{"patch": "x" * (2 * 1024 * 1024)}]}
+
+        def open_response(request, timeout):
+            response = mock.MagicMock()
+            payload = comparison if request.full_url.endswith("?per_page=1&page=2") else first_page
+            response.__enter__.return_value.read.side_effect = lambda size: json.dumps(payload).encode()[:size]
+            return response
+
+        with mock.patch("urllib.request.urlopen", side_effect=open_response):
+            self.assertTrue(client.is_ancestor(BASE, CANDIDATE))
+            with self.assertRaises(batch_ci.BatchError):
+                client.request(f"compare/{BASE}...{CANDIDATE}")
+
+    def test_ancestry_requires_whole_comparison_status_and_matching_merge_base(self):
+        client = batch_ci.GitHub("example/engine", "test-token")
+        for status, merge_base, expected in (("ahead", BASE, True), ("ahead", LATER, False),
+                                              ("behind", BASE, False), ("diverged", BASE, False),
+                                              ("identical", BASE, False), (None, None, False)):
+            with self.subTest(status=status, merge_base=merge_base):
+                with mock.patch.object(client, "request", return_value={
+                    "status": status, "merge_base_commit": {"sha": merge_base}, "commits": [],
+                }) as request:
+                    self.assertEqual(client.is_ancestor(BASE, CANDIDATE), expected)
+                    request.assert_called_once_with(f"compare/{BASE}...{CANDIDATE}?per_page=1&page=2")
+        with mock.patch.object(client, "request") as request:
+            self.assertTrue(client.is_ancestor(BASE, BASE))
+            request.assert_not_called()
+
     def test_only_marker_404_is_treated_as_absent(self):
         client = batch_ci.GitHub("example/engine", "test-token")
         for status in (401, 403, 404, 429, 500):
