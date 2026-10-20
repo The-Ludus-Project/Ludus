@@ -16,14 +16,25 @@ TEST_CASE("Viewport frame servicing survives continuous requests to start", "[ed
     ViewportFramePump pump;
     QSignalSpy work(&pump, &ViewportFramePump::WorkRequested);
     QTimer input;
-    QObject::connect(&input, &QTimer::timeout, &pump, &ViewportFramePump::Start);
+    int32 starts = 0;
+    QEventLoop loop;
+    QObject::connect(&input, &QTimer::timeout, &pump, [&pump, &starts]() {
+        ++starts;
+        pump.Start();
+    });
+    QObject::connect(&pump, &ViewportFramePump::WorkRequested, &loop, [&loop, &work, &starts]() {
+        if (starts > 20 && work.count() > 1)
+        {
+            loop.quit();
+        }
+    });
     pump.Start();
     input.start(2);
-    QEventLoop loop;
-    QTimer::singleShot(100, &loop, &QEventLoop::quit);
+    QTimer::singleShot(5000, &loop, &QEventLoop::quit);
     loop.exec();
     input.stop();
     pump.Stop();
+    CHECK(starts > 20);
     CHECK(work.count() > 1);
 }
 
