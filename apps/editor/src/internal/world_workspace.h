@@ -31,6 +31,24 @@ class RenderPreview;
 class RendererWorkspace;
 class LevelWorkspace;
 struct ToolingPaths;
+/// Where Play opens the game: a local editor preference, not project data.
+enum class PlayMode : foundation::uint8
+{
+    /// The World viewport becomes the game's window (the default).
+    InViewport,
+    /// The game opens its own native window; the World viewport keeps the edit view.
+    SeparateWindow,
+};
+/// How WorldWorkspace::PreparePlay resolved a Play request.
+enum class PlayWindow : foundation::uint8
+{
+    /// Launch with the returned hosted-window address: the game plays in the World viewport.
+    InViewport,
+    /// Launch without a hosted window: the game opens its own window.
+    SeparateWindow,
+    /// Do not launch. The viewport cannot host the game; the workspace states why and offers a separate window.
+    Unavailable,
+};
 class WorldWorkspace final : public QWidget
 {
     Q_OBJECT
@@ -81,6 +99,27 @@ public:
     /// @param outReason Why the game must open in its own window instead, set on failure.
     /// @return True when the bound viewport hosts the game (Play in the viewport).
     [[nodiscard]] bool BeginPlayInViewport(QString& outAddress, QString& outReason);
+    /// The Play mode chosen next to Play saved World. Read from the editor's preferences at
+    /// construction; InViewport when none was saved.
+    [[nodiscard]] PlayMode GetPlayMode() const noexcept;
+    /// Choose where the next Play opens the game and save the choice in the editor's preferences
+    /// (QSettings). A game already running does not move.
+    void SetPlayMode(PlayMode mode);
+    /// @brief Resolve a Play request before launching the game.
+    ///
+    /// SeparateWindow never touches the viewport, and the game is launched without a hosted
+    /// window. InViewport calls BeginPlayInViewport; when the viewport cannot host the game,
+    /// nothing is launched and the workspace shows the reason with a "Play in a separate
+    /// window" offer, which emits PlayRequested(PlayMode::SeparateWindow). Play never switches
+    /// modes silently.
+    /// @param mode Where to open the game; normally GetPlayMode().
+    /// @param outAddress The game's `LUDUS_HOSTED_WINDOW` value; set only for PlayWindow::InViewport.
+    /// @return How to launch, or Unavailable to launch nothing.
+    [[nodiscard]] PlayWindow PreparePlay(PlayMode mode, QString& outAddress);
+    /// Why Play in the viewport is unavailable, as the workspace shows it; empty while no refusal is shown.
+    [[nodiscard]] QString GetPlayUnavailableText() const;
+    /// Label the World viewport while a game runs in its own window, or remove the label.
+    void SetPlayingElsewhere(bool isPlayingElsewhere);
     /// Return the viewport to editing and close the game's window, if a game plays in it.
     void EndPlayInViewport() noexcept;
     /// Ask the game playing in the viewport to close its window.
@@ -112,7 +151,9 @@ public:
 Q_SIGNALS:
     void DocumentChanged();
     void PreviewStarting();
-    void PlayRequested();
+    /// Play saved World was chosen, or the separate-window offer after a refusal.
+    /// @param mode Where the game should open.
+    void PlayRequested(ludus::editor::PlayMode mode);
     /// GetRenderPreview now returns a different viewport renderer (the shown view changed).
     void RenderPreviewChanged();
 
@@ -140,6 +181,11 @@ private:
     WorldDocument Document_;
     foundation::identity::EntropySource mEntropy = platform::GetSystemEntropySource();
     QPushButton* PlayButton_ = nullptr;
+    void showPlayUnavailable(const QString& reason);
+    void hidePlayUnavailable();
+    QComboBox* mPlayModeBox;
+    QLabel* mPlayUnavailableLabel;
+    QPushButton* mPlayElsewhereButton;
     RenderPanel* Render_ = nullptr;
     LevelWorkspace* Scene_ = nullptr;
     QWidget* Viewport_ = nullptr;

@@ -554,10 +554,10 @@ P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) and P3
 frame reads) and P6b (`PlayViewportSource`, which presents a hosted game's frames
 in a `PreviewViewport` on macOS Metal) and P6c (Play saved World runs the game in
 the World viewport, with input forwarding and Stop through the game's window) are
-implemented on macOS. Linux opens the game in its own window. P7 is pending. It
-replaces the separate World-demo
-authoring window, the World-demo private shader and the separate-window default
-for Play.
+implemented on macOS. P7 (the remembered In viewport / In separate window
+choice, and stated refusals that offer a separate window instead of switching
+silently) is implemented. Linux plays in a separate window until Vulkan hosting
+exists.
 
 While a game plays, the World viewport is that game's window. The game owns
 rendering and input there and behaves as it would in its own OS window. A

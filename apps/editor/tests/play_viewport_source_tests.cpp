@@ -90,7 +90,7 @@ TEST_CASE("Play in the viewport says why it is unavailable with Vulkan", "[edito
     PlayViewportSource source;
     CHECK_FALSE(source.Start(SOCKET_PARENT, MakeUntouchedIdentity(rhi::Backend::Vulkan), 64, 48, 1));
     CHECK(source.GetState() == PlaySourceState::Unavailable);
-    CHECK(source.GetUnavailableReason().contains(QStringLiteral("own window")));
+    CHECK(source.GetUnavailableReason() == QStringLiteral("Play in the viewport is not yet available with Vulkan."));
     CHECK(source.GetChannelAddress().isEmpty());
     // Game frames are not RHI images, so readback presentation is never offered.
     ludus::graphics::renderer::ViewportFrame frame;
@@ -290,9 +290,10 @@ TEST_CASE("Play runs the World-demo game in the World viewport, with keys, resiz
     REQUIRE(viewport != nullptr);
     const auto startGame = [&](QProcess& inoutGame) {
         QString address;
-        QString reason;
-        REQUIRE(workspace.BeginPlayInViewport(address, reason));
-        INFO(reason.toStdString());
+        const PlayWindow window = workspace.PreparePlay(PlayMode::InViewport, address);
+        INFO(workspace.GetPlayUnavailableText().toStdString());
+        REQUIRE(window == PlayWindow::InViewport);
+        REQUIRE(address.isEmpty() == false);
         QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
         environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE), address);
         inoutGame.setProcessEnvironment(environment);

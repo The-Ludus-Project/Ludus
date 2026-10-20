@@ -69,8 +69,7 @@ bool PlayViewportSource::Start(const QString& parentDirectory,
     {
         // Vulkan needs VK_KHR_external_memory_fd on Qt's device, the external queue-family
         // acquire and a fence on Qt's queue; until then Play opens in its own window.
-        makeUnavailable(QStringLiteral("Play in the viewport is not yet available with Vulkan; run the game in "
-                                       "its own window."));
+        makeUnavailable(QStringLiteral("Play in the viewport is not yet available with Vulkan."));
         return false;
     }
     const QByteArray parent = parentDirectory.toUtf8();

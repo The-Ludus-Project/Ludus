@@ -1312,9 +1312,19 @@ closes the game's window, as its own close button would; the game's process is
 stopped if it has not exited after three seconds. Resizing or hiding the
 viewport resizes or hides the game's window. When the game exits, crashes or is
 stopped, the viewport edits the World again. The game receives no mouse input
-yet, because Platform has none. Where the viewport cannot host the game (on
-Linux, while the viewport is paused, or without a GPU device), the status bar
-says why and the game opens in its own window. See
+yet, because Platform has none.
+
+**Play mode.** The **Play mode** box next to **Play saved World** chooses **In
+viewport** (the default) or **In separate window**. The choice is an editor
+preference, saved for later sessions and never written to the project, and it
+applies to the next Play; a running game does not move. In separate-window mode
+the game is launched without the hosted-window variable, so it opens its own
+native window, and the World viewport is labelled as playing in a separate
+window until the game exits. Where the viewport cannot host the game (with
+Vulkan on Linux, under offscreen Qt, while the viewport is paused, or without a
+GPU device), Play starts nothing: the World view states why and offers **Play in
+a separate window** for this one run, leaving the preference unchanged. Play
+never switches modes silently. See
 [Play in the editor viewport](../architecture/editor-gui-systems.md#play-in-the-editor-viewport).
 
 The child independently reads and validates that saved file before activation;
