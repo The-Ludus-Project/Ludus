@@ -112,6 +112,25 @@ inline constexpr EditorCommand RENDER_GRAPH_CANCEL_COMMAND
     .IsCheckable = false,
 };
 
+inline constexpr EditorCommand PROFILING_RECORD_COMMAND
+{
+    .Id = "profiling.record",
+    .Text = "Record &Profiling",
+    .ToolbarText = "Record Profiling",
+    .Shortcut = "F9",
+    .Help = "Record or stop editor CPU scopes, viewport GPU durations, or both in a Perfetto trace.",
+    .IsCheckable = true,
+};
+inline constexpr EditorCommand VIEW_PROFILING_COMMAND
+{
+    .Id = "view.profiling",
+    .Text = "&Profiling",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Choose CPU, GPU or Both and manage Perfetto recordings.",
+    .IsCheckable = false,
+};
+
 // Tool-window commands show and focus one tool window, like Visual Studio's View menu.
 inline constexpr EditorCommand VIEW_PROJECT_EXPLORER_COMMAND
 {

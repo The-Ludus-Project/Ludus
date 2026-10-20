@@ -68,6 +68,15 @@ public:
     /// CPU sample and the GPU timestamp probe is re-armed only after its previous sample was read
     /// (never waiting for the GPU). Showing restarts the rolling averages. Persisted by Navigation.
     void SetStatisticsVisible(bool isVisible);
+    /// Recording demand is independent of Stats visibility; owner-thread, no GPU waits.
+    [[nodiscard]] bool SetGpuProfilingEnabled(bool isEnabled) noexcept;
+    [[nodiscard]] bool CanProfileGpu() const noexcept;
+    [[nodiscard]] bool HasGpuProfilingPending(foundation::uint64 throughTicks = ~foundation::uint64{0}) const noexcept;
+    /// Poll without arming work; used to finalize recordings even when the viewport is hidden.
+    void PollGpuProfiling() noexcept;
+    /// Shared sampler boundaries for the built-in and delegated graph producers.
+    void PrepareGpuProfileFrame() noexcept;
+    void NotifyGpuProfileSubmission() noexcept;
     [[nodiscard]] LUDUS_INLINE bool IsStatisticsVisible() const noexcept
     {
         return mIsStatisticsVisible;
@@ -200,6 +209,12 @@ Q_SIGNALS:
     void Failed(const QString& error);
     /// Rate-limited notification that GetStatistics changed while the overlay is visible.
     void StatisticsChanged();
+    void GpuProfileSubmission();
+    void GpuProfileSample(foundation::uint64 frameId,
+                          foundation::uint64 deviceSession,
+                          foundation::uint64 submissionTicks,
+                          foundation::uint64 durationNanoseconds,
+                          bool isValid);
     /// A frame drawn with the shader set of this revision was presented for the first time.
     void ShadersApplied(foundation::uint64 revision);
     /// The shader set of this revision could not prepare GPU pipelines; the last presented set is
@@ -220,7 +235,15 @@ private:
     }
     PreviewShading mShading = PreviewShading::Solid;
     /// Read a completed GPU timing sample and re-arm the probe; call only between frames.
-    void serviceGpuTiming() noexcept;
+    void serviceGpuTiming(bool shouldArm) noexcept;
+    bool mIsGpuProfilingEnabled = false;
+    bool mIsTimingArmed = false;
+    bool mHasTimingAssociation = false;
+    foundation::uint64 mTimingFrameId = 0;
+    foundation::uint64 mTimingSubmissionTicks = 0;
+    foundation::uint64 mTimingDeviceSession = 0;
+    foundation::uint64 mTimingCandidateTicks = 0;
+    foundation::uint64 mSubmittedFrameSequence = 0;
     /// Record the CPU time of a submitted frame and publish the overlay at its refresh rate.
     void recordFrameStatistics(const QElapsedTimer& frameTimer);
     void resetStatistics() noexcept;

@@ -1,9 +1,9 @@
 # Graphics debugging architecture and implementation plan
 
-Status: proposed implementation contract, 2026-10-20. The phases below are not
-implemented or qualified by this document. The first deliveries are shared GPU
-names/scopes, basic Perfetto GPU timing with editor recording controls, and
-native Metal/RenderDoc capture control.
+Status: implementation contract, 2026-10-20. Native local-editor P0/P1 recording
+is implemented: CPU/GPU/Both controls, F9 and frame-duration counters. P2/P3,
+shared GPU names/scopes and native Metal/RenderDoc debugger capture remain planned.
+Implementation availability is distinct from platform/hardware qualification.
 
 Shader and renderer developers should be able to run the selected project in
 Ludus, capture the GPU work responsible for its image, and inspect that capture
@@ -41,8 +41,8 @@ request service and editor capture controls remain work in this plan. Finding an
 installed tool or a single existing Metal label does not establish support.
 The RHI already exposes an optional single-sample, nonblocking frame-duration
 probe, and viewport Stats already consumes it. Those durations are device-local;
-they are not yet exported as Perfetto GPU samples or controlled by an editor
-recording session. New recording must share the existing sampler owner.
+they are exported as Perfetto GPU samples by the native local-editor recording
+session. Recording and Stats share the existing sampler owner.
 
 ## Decisions and initial scope
 
@@ -310,10 +310,10 @@ capture state machine above and works without RenderDoc or Xcode running.
 | Summary | Available GPU sample count and clearly scoped frame-duration statistics; CPU trace health. Missing/pending timings are unavailable, never zero. |
 | Result | Save/reveal the trace, open in Perfetto explicitly, and retain the previous successful result if another recording fails. |
 
-Propose F9 for the shared Record/Stop action, subject to the existing shortcut
-catalogue and platform conflict checks at implementation. Show its native key
-label in the existing Keyboard Shortcuts UI; permit an override through the
-editor's shortcut policy. The shortcut uses the last configured mode and target
+F9 is the shared Record/Stop action in the native editor command catalogue. Its
+native key label appears in the existing Keyboard Shortcuts UI. Future shortcut
+overrides follow the editor's shortcut policy. The shortcut uses the last
+configured mode and target
 and never starts a second recording while Arming or Finalizing. Opening the tool
 window exposes configuration before the first recording. Menu access remains
 available on Macs whose function keys require Fn, and typing/IME/viewport input
@@ -362,6 +362,12 @@ with a clear Busy reason. Simultaneous operation is a later qualified option
 whose additional instrumentation is recorded in the manifest. The ordinary
 Perfetto workflow does not depend on the vendor capture adapter milestones.
 
+The delivered local-editor workflow and current limits are in
+[Recording CPU and GPU profiling](../development/editor-workspace.md#recording-cpu-and-gpu-profiling).
+The first delivery uses fixed storage/time limits and a new destination per
+recording. Source/process expansion, configurable limits, per-pass timing and
+calibrated lanes remain separate work.
+
 ## Mac developer setup
 
 Install a compatible full [Xcode distribution](https://developer.apple.com/xcode/)
@@ -389,7 +395,8 @@ native Metal backend. PIX GPU capture requires Windows/D3D12.
 
 ## Phased implementation and acceptance
 
-Every phase is pending. Implement in isolated reviewable changes targeting
+P0/P1 are implemented for the native local editor; the remaining phases are
+pending. Implement changes in isolated reviewable branches targeting
 `develop`, following [CI qualification](../development/continuous-integration.md).
 Acceptance into `develop` is distinct from full batch/platform qualification.
 
