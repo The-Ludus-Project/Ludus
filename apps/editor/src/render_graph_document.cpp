@@ -863,7 +863,6 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& fil
                                                               const QString& node,
                                                               const QString& name)
 {
-    constexpr qsizetype MAX_IDENTIFIER_LENGTH = 63;
     const auto isIdentifier = [](const QString& value) {
         if (value.isEmpty() == true || value.size() > MAX_IDENTIFIER_LENGTH)
         {
@@ -955,6 +954,31 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& fil
     candidate.Files.insert(asset, EncodeCanonicalJson(library));
     mLastMove.clear();
     return commit(candidate, false);
+}
+
+RenderGraphDocumentStatus
+RenderGraphDocument::RemoveNodes(const QString& file, const QString& configuration, const QStringList& nodes)
+{
+    mLastMove.clear();
+    return editConfiguration(
+        file,
+        configuration,
+        nodes,
+        [](QJsonObject& inoutConfiguration, const QStringList& identities) {
+            if (identities.isEmpty() == true)
+            {
+                return false;
+            }
+            for (const QString& identity : identities)
+            {
+                if (RemoveNodeEdit(inoutConfiguration, {identity}) == false)
+                {
+                    return false;
+                }
+            }
+            return true;
+        },
+        false);
 }
 
 RenderGraphDocumentStatus

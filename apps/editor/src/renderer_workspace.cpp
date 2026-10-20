@@ -60,11 +60,8 @@ namespace ludus::editor
 using namespace foundation;
 namespace
 {
-constexpr int FILE_ROLE = Qt::UserRole;
-constexpr int CONFIGURATION_ROLE = Qt::UserRole + 1;
-constexpr int NODE_ROLE = Qt::UserRole + 2;
 constexpr int32 MAX_EXTENT = 16384;
-constexpr int32 MAX_COORDINATE = 32768;
+constexpr int32 MAX_COORDINATE = RenderGraphDocument::MAX_COORDINATE;
 constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 constexpr int32 NODE_EDITOR_WIDTH = 720;
 constexpr int32 NODE_EDITOR_HEIGHT = 600;
@@ -633,11 +630,15 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         QTreeWidgetItem* itemOrNull = mTree->itemAt(position);
         if (itemOrNull != nullptr)
         {
-            mTree->setCurrentItem(itemOrNull);
+            mTree->setCurrentItem(itemOrNull,
+                                  0,
+                                  itemOrNull->isSelected() == true ? QItemSelectionModel::NoUpdate
+                                                                   : QItemSelectionModel::ClearAndSelect);
         }
         else
         {
             mSelectedNode.clear();
+            mSelectedNodes.clear();
         }
         showNodeContextMenu(mTree->viewport()->mapToGlobal(position));
     });
@@ -679,10 +680,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         mSelectedFile = current->data(0, FILE_ROLE).toString();
         mSelectedConfiguration = current->data(0, CONFIGURATION_ROLE).toString();
         mSelectedNode = current->data(0, NODE_ROLE).toString();
-        renderInspector();
-        renderEdges();
-        renderCanvas();
-        updateActions();
+        syncTreeSelection();
     });
     connect(mTree, &QTreeWidget::itemDoubleClicked, this, [this]() { activateSelectedNode(); });
     connect(mCanvas, &RenderGraphCanvas::InterfaceEditRequested, this, &RendererWorkspace::editConfigurationInterface);
@@ -694,7 +692,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         mSelectedFile = mCanvas->GetFile();
         mSelectedConfiguration = mCanvas->GetConfiguration();
         mSelectedNode = node;
-        renderTree();
+        renderInspector();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
         // A node that writes or publishes textures shows them in the texture viewer.
         QJsonObject graph;
@@ -727,6 +725,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         if (node == mSelectedNode)
         {
             mSelectedNode.clear();
+            mSelectedNodes.clear();
         }
         documentEdited(mDocument.RemoveNode(mCanvas->GetFile(), mCanvas->GetConfiguration(), node));
     });
@@ -740,10 +739,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             [this](const QString& node, const QPoint& globalPosition) {
                 mSelectedFile = mCanvas->GetFile();
                 mSelectedConfiguration = mCanvas->GetConfiguration();
-                mSelectedNode = node;
-                renderTree();
+                if (node.isEmpty() == false)
+                {
+                    mSelectedNode = node;
+                }
                 showNodeContextMenu(globalPosition);
             });
+    setupGraphSelection();
     connect(mPreviewButton, &QPushButton::clicked, this, [this]() { static_cast<void>(PreviewRuntime()); });
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mPreviewOrNull = new RenderGraphPreview(
@@ -768,14 +770,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         }
     });
     connect(mLayoutY, &QSpinBox::editingFinished, mLayoutX, &QSpinBox::editingFinished);
-    connect(remove, &QPushButton::clicked, this, [this]() {
-        if (mSelectedNode.isEmpty() == false)
-        {
-            const QString node = mSelectedNode;
-            mSelectedNode.clear();
-            documentEdited(mDocument.RemoveNode(mSelectedFile, mSelectedConfiguration, node));
-        }
-    });
+    connect(remove, &QPushButton::clicked, this, &RendererWorkspace::RemoveSelectedNodes);
     connect(add, &QPushButton::clicked, this, &RendererWorkspace::addNode);
     connect(connectButton, &QPushButton::clicked, this, [this]() {
         documentEdited(mDocument.Connect(mSelectedFile,
@@ -921,6 +916,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mSelectedFile.clear();
     mSelectedConfiguration.clear();
     mSelectedNode.clear();
+    mSelectedNodes.clear();
     mLastResult = {};
     mHasResult = false;
     mIsValidated = false;
@@ -1076,6 +1072,7 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     mSelectedFile = mDocument.GetRootGraph();
     mSelectedConfiguration.clear();
     mSelectedNode.clear();
+    mSelectedNodes.clear();
     mLastResult = {};
     mHasResult = false;
     mIsValidated = false;
@@ -1795,6 +1792,7 @@ void RendererWorkspace::documentEdited(RenderGraphDocumentStatus status,
         static_cast<void>(mDocument.GetGraph(mSelectedFile, graph));
         mSelectedConfiguration = graph.value(QStringLiteral("default")).toString();
         mSelectedNode.clear();
+        mSelectedNodes.clear();
     }
     renderTree(shouldRefreshInspector, editOriginOrNull);
     renderSource();
@@ -1835,6 +1833,17 @@ QJsonObject RendererWorkspace::selectedNode() const
 
 void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOriginOrNull)
 {
+    if (mSelectedFile != mCanvas->GetFile() || mSelectedConfiguration != mCanvas->GetConfiguration())
+    {
+        mSelectedNodes = mSelectedNode.isEmpty() == true ? QStringList{} : QStringList{mSelectedNode};
+    }
+    QJsonObject selectedGraph;
+    if (mDocument.GetGraph(mSelectedFile, selectedGraph) == true && selectedConfiguration().isEmpty() == true)
+    {
+        mSelectedConfiguration = selectedGraph.value(QStringLiteral("default")).toString();
+        mSelectedNode.clear();
+        mSelectedNodes.clear();
+    }
     mIsRendering = true;
     mTree->clear();
     QTreeWidgetItem* currentOrNull = nullptr;
@@ -1879,6 +1888,8 @@ void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOri
                 nodeItem->setData(0, FILE_ROLE, file);
                 nodeItem->setData(0, CONFIGURATION_ROLE, configurationId);
                 nodeItem->setData(0, NODE_ROLE, nodeId);
+                nodeItem->setSelected(file == mSelectedFile && configurationId == mSelectedConfiguration &&
+                                      mSelectedNodes.contains(nodeId) == true);
                 if (file == mSelectedFile && configurationId == mSelectedConfiguration && nodeId == mSelectedNode)
                 {
                     currentOrNull = nodeItem;
@@ -1891,11 +1902,16 @@ void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOri
     mConfiguration->setCurrentIndex(configurationIndex >= 0 ? configurationIndex : 0);
     if (currentOrNull != nullptr)
     {
-        mTree->setCurrentItem(currentOrNull);
+        mTree->setCurrentItem(currentOrNull, 0, QItemSelectionModel::NoUpdate);
+        if (mSelectedNodes.isEmpty() == true)
+        {
+            currentOrNull->setSelected(true);
+        }
     }
     else
     {
         mSelectedNode.clear();
+        mSelectedNodes.clear();
     }
     mIsRendering = false;
     const QString selectedSource = mSourceFile->currentText();
@@ -1939,12 +1955,20 @@ void RendererWorkspace::renderInspector()
             delete itemOrNull;
         }
     }
-    const QJsonObject node = selectedNode();
+    const QJsonObject node = mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
+    QPushButton* remove = mInspector->findChild<QPushButton*>(QStringLiteral("renderGraphRemoveNode"));
+    LUDUS_REQUIRE(remove != nullptr);
+    remove->setText(mSelectedNodes.size() > 1 ? QStringLiteral("Remove Selected Nodes")
+                                              : QStringLiteral("Remove Node"));
     mLayoutX->setEnabled(node.isEmpty() == false);
     mLayoutY->setEnabled(node.isEmpty() == false);
     if (node.isEmpty() == true)
     {
-        mFields->addRow(new QLabel(QStringLiteral("Select a node to inspect its authored fields."), mInspector));
+        mFields->addRow(new QLabel(
+            mSelectedNodes.size() > 1
+                ? QStringLiteral("%1 nodes selected. Drag, copy, or remove the group.").arg(mSelectedNodes.size())
+                : QStringLiteral("Select a node to inspect its authored fields."),
+            mInspector));
         return;
     }
     populateNodeFields(*mFields, *mInspector);
@@ -2367,6 +2391,7 @@ bool RendererWorkspace::CreateSubgraph(const QString& name)
     mSelectedFile = asset;
     mSelectedConfiguration = QStringLiteral("Default");
     mSelectedNode.clear();
+    mSelectedNodes.clear();
     documentEdited(status);
     mSourceFile->setCurrentText(asset);
     mViews->setCurrentIndex(CANVAS_VIEW);
@@ -2467,7 +2492,26 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
 {
     QMenu menu(this);
     menu.setObjectName(QStringLiteral("renderGraphNodeMenu"));
-    const QJsonObject node = selectedNode();
+    QAction* copy = menu.addAction(QStringLiteral("Copy Selected Nodes"));
+    copy->setObjectName(QStringLiteral("renderGraphCopyNodes"));
+    copy->setEnabled(mSelectedNodes.isEmpty() == false && hasPendingSourceText() == false);
+    connect(copy, &QAction::triggered, this, [this]() { static_cast<void>(CopySelectedNodes()); });
+    QAction* paste = menu.addAction(QStringLiteral("Paste Nodes"));
+    paste->setObjectName(QStringLiteral("renderGraphPasteNodes"));
+    paste->setEnabled(CanCreateSubgraph());
+    const QPoint localPosition = mCanvas->viewport()->mapFromGlobal(globalPosition);
+    const QPointF pastePosition = mCanvas->mapToScene(mCanvas->viewport()->rect().contains(localPosition) == true
+                                                          ? localPosition
+                                                          : mCanvas->viewport()->rect().center());
+    connect(paste, &QAction::triggered, this, [this, pastePosition]() {
+        static_cast<void>(PasteNodes(pastePosition));
+    });
+    QAction* createConfiguration = menu.addAction(QStringLiteral("Add Configuration..."));
+    createConfiguration->setObjectName(QStringLiteral("renderGraphAddConfiguration"));
+    createConfiguration->setEnabled(mDocument.IsLoaded() == true && hasPendingSourceText() == false);
+    connect(createConfiguration, &QAction::triggered, this, &RendererWorkspace::promptCreateConfiguration);
+    menu.addSeparator();
+    const QJsonObject node = mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
     {
         const QString asset = node.value(QStringLiteral("asset")).toString();
@@ -2523,22 +2567,14 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
     create->setObjectName(QStringLiteral("renderGraphCreateSubgraphAction"));
     create->setEnabled(CanCreateSubgraph());
     connect(create, &QAction::triggered, this, [this]() { static_cast<void>(PromptCreateSubgraph()); });
-    if (node.isEmpty() == false)
+    if (mSelectedNodes.isEmpty() == false)
     {
         menu.addSeparator();
-        QAction* remove = menu.addAction(QStringLiteral("Remove Node"));
+        QAction* remove = menu.addAction(mSelectedNodes.size() > 1 ? QStringLiteral("Remove Selected Nodes")
+                                                                   : QStringLiteral("Remove Node"));
         remove->setObjectName(QStringLiteral("renderGraphRemoveNodeAction"));
         remove->setEnabled(hasPendingSourceText() == false);
-        connect(remove, &QAction::triggered, this, [this]() {
-            const QString identity = mSelectedNode;
-            const RenderGraphDocumentStatus status =
-                mDocument.RemoveNode(mSelectedFile, mSelectedConfiguration, identity);
-            if (status == RenderGraphDocumentStatus::Ok)
-            {
-                mSelectedNode.clear();
-            }
-            documentEdited(status);
-        });
+        connect(remove, &QAction::triggered, this, &RendererWorkspace::RemoveSelectedNodes);
     }
     if (mCustomize->isVisible() == true)
     {
@@ -2672,6 +2708,7 @@ void RendererWorkspace::addNode()
     mSelectedFile = file;
     mSelectedConfiguration = configuration;
     mSelectedNode = identity;
+    mSelectedNodes = {identity};
     documentEdited(status);
     mViews->setCurrentIndex(CANVAS_VIEW);
     mCanvas->RevealNode(identity);
@@ -2683,6 +2720,7 @@ bool RendererWorkspace::SelectNode(const QString& file, const QString& configura
     mSelectedFile = file;
     mSelectedConfiguration = configuration;
     mSelectedNode = node;
+    mSelectedNodes = node.isEmpty() == true ? QStringList{} : QStringList{node};
     renderTree();
     return mSelectedNode == node && selectedConfiguration().isEmpty() == false;
 }
@@ -2839,7 +2877,8 @@ void RendererWorkspace::renderCanvas()
         configuration = graph.value(QStringLiteral("default")).toString();
     }
     mCanvas->ShowConfiguration(mDocument.IsLoaded() == true ? mSelectedFile : QString(), configuration);
-    mCanvas->SelectNode(mSelectedNode);
+    mCanvas->SelectNodes(mSelectedNodes);
+    mSelectedNodes = mCanvas->GetSelectedNodes();
 }
 
 QWidget* RendererWorkspace::TakeInspectorPanel(QWidget* newParent)
@@ -2875,6 +2914,7 @@ void RendererWorkspace::openSubgraph(const QString& asset, const QString& config
     mSelectedFile = asset;
     mSelectedConfiguration = configuration;
     mSelectedNode.clear();
+    mSelectedNodes.clear();
     mSourceFile->setCurrentText(asset);
     renderTree();
     renderSource();

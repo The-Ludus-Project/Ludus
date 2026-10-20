@@ -62,6 +62,12 @@ public:
     static constexpr qsizetype MAX_FILE_BYTES = qsizetype{128} * 1024;
     static constexpr qsizetype MAX_TOTAL_BYTES = qsizetype{4} * 1024 * 1024;
     static constexpr foundation::usize HISTORY_CAPACITY = 64;
+    /// Authoring limits mirrored from the shared render_graph.py format validator.
+    static constexpr foundation::int32 MAX_CONFIGURATIONS = 8;
+    static constexpr foundation::int32 MAX_NODES = 128;
+    static constexpr foundation::int32 MAX_EDGES = 512;
+    static constexpr foundation::int32 MAX_IDENTIFIER_LENGTH = 63;
+    static constexpr foundation::int32 MAX_COORDINATE = 32768;
 
     /// Read every authored source below packageRoot (bounded, no symlinks, no
     /// hidden or `out` directories). rootGraph is package-relative. Failure keeps
@@ -125,6 +131,32 @@ public:
                                                           QString* outErrorOrNull = nullptr);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// Add an empty named configuration to an existing file without changing its default.
+    /// Unique ASCII identifiers are required. One undo step; failure preserves the draft.
+    [[nodiscard]] RenderGraphDocumentStatus AddConfiguration(const QString& file, const QString& name);
+    /// Copy authored nodes, their internal edges and displayed layout into a bounded payload.
+    /// External connections and configuration interfaces are excluded. outPayload survives failure;
+    /// outError describes a failure. GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus CopyNodes(const QString& file,
+                                                      const QString& configuration,
+                                                      const QStringList& nodes,
+                                                      const QVector<RenderGraphNodePosition>& positions,
+                                                      QJsonObject& outPayload,
+                                                      QString& outError) const;
+    /// Paste nodes with unique IDs and remapped internal edges at a canvas position.
+    /// References reuse destination assets; cross-package dependencies must match.
+    /// One undo step, no disk writes. Failure preserves the draft and outNodes.
+    [[nodiscard]] RenderGraphDocumentStatus PasteNodes(const QString& file,
+                                                       const QString& configuration,
+                                                       const QJsonObject& payload,
+                                                       foundation::int32 x,
+                                                       foundation::int32 y,
+                                                       QStringList& outNodes,
+                                                       QString& outError);
+    /// Remove a group and its incident edges/output sources as one undo step.
+    /// All IDs must exist; failure preserves the complete draft.
+    [[nodiscard]] RenderGraphDocumentStatus
+    RemoveNodes(const QString& file, const QString& configuration, const QStringList& nodes);
     /// Create name.lurender.json with an empty Default configuration and bind the named
     /// Subgraph node (or add it when absent). One undoable draft edit; Save publishes it.
     /// Names must be ASCII graph identifiers. Existing assets/files are never replaced.
