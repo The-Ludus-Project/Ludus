@@ -72,7 +72,13 @@ class GitHub:
     def is_ancestor(self, base: str, head: str) -> bool:
         if base == head:
             return True
-        comparison = self.request(f"compare/{validate_sha(base)}...{validate_sha(head)}")
+        # Thanks to GitHub, "REST API endpoints for commits", "Compare two
+        # commits": changed files (including patches) appear only on page one.
+        # Request page two with one commit to keep ancestry metadata small even
+        # for a large batch. Status and merge base describe the whole comparison,
+        # including when this page has no commits. Recovery uses the Git diff.
+        # https://docs.github.com/en/rest/commits/commits#compare-two-commits
+        comparison = self.request(f"compare/{validate_sha(base)}...{validate_sha(head)}?per_page=1&page=2")
         return comparison.get("status") == "ahead" and comparison.get("merge_base_commit", {}).get("sha") == base
 
 
