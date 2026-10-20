@@ -37,10 +37,12 @@ namespace ludus::editor
 {
 namespace
 {
+#if !defined(Q_OS_WASM)
 // Editor CPU budget for decoding scene import textures, excluding the operation thread,
 // which helps in Wait. The user waits on an import, but Qt, RHI submission and a preview
 // bake (STATIC_LIGHTING_WORKER_COUNT workers) keep running beside it.
 constexpr foundation::uint32 SCENE_IMPORT_WORKER_COUNT = 4;
+#endif
 } // namespace
 
 LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent), Tooling_(tooling)
