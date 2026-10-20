@@ -58,6 +58,14 @@ struct Property final
     bool IsVertexIndices = false;
 };
 
+/// Decoded row slots, indexed by VertexSlot.
+constexpr usize VERTEX_SLOT_COUNT = static_cast<usize>(VertexSlot::V) + 1;
+/// Components of a stored position or normal.
+constexpr usize VECTOR_COMPONENTS = 3;
+/// Indices emitted per fan triangle.
+constexpr usize TRIANGLE_CORNERS = 3;
+/// Bits per byte in binary scalar assembly.
+constexpr uint32 BYTE_BITS = 8;
 constexpr usize MAX_PROPERTIES = 32;
 constexpr usize MAX_ELEMENTS = 8;
 constexpr uint32 MAX_POLYGON_VERTICES = 64;
@@ -368,13 +376,13 @@ void Summarise(const Header& header, PlyHeaderSummary& outSummary) noexcept
     {
         for (usize i = size; i != 0; --i)
         {
-            raw = (raw << 8) | bytes[i - 1];
+            raw = (raw << BYTE_BITS) | bytes[i - 1];
         }
         return raw;
     }
     for (usize i = 0; i < size; ++i)
     {
-        raw = (raw << 8) | bytes[i];
+        raw = (raw << BYTE_BITS) | bytes[i];
     }
     return raw;
 }
@@ -490,20 +498,22 @@ private:
 }
 
 /// Store one decoded vertex row (slots indexed by VertexSlot) into the mesh.
-void StoreVertex(const float64 (&slots)[9], usize vertex, IrMesh& inoutMesh) noexcept
+void StoreVertex(const float64 (&slots)[VERTEX_SLOT_COUNT], usize vertex, IrMesh& inoutMesh) noexcept
 {
-    for (usize k = 0; k < 3; ++k)
+    const usize position = static_cast<usize>(VertexSlot::X);
+    const usize normal = static_cast<usize>(VertexSlot::NormalX);
+    for (usize k = 0; k < VECTOR_COMPONENTS; ++k)
     {
-        inoutMesh.Positions[vertex * 3 + k] = static_cast<float32>(slots[1 + k]);
+        inoutMesh.Positions[vertex * VECTOR_COMPONENTS + k] = static_cast<float32>(slots[position + k]);
         if (inoutMesh.Normals.IsEmpty() == false)
         {
-            inoutMesh.Normals[vertex * 3 + k] = static_cast<float32>(slots[4 + k]);
+            inoutMesh.Normals[vertex * VECTOR_COMPONENTS + k] = static_cast<float32>(slots[normal + k]);
         }
     }
     if (inoutMesh.Uvs.IsEmpty() == false)
     {
-        inoutMesh.Uvs[vertex * 2] = static_cast<float32>(slots[7]);
-        inoutMesh.Uvs[vertex * 2 + 1] = static_cast<float32>(1.0 - slots[8]);
+        inoutMesh.Uvs[vertex * 2] = static_cast<float32>(slots[static_cast<usize>(VertexSlot::U)]);
+        inoutMesh.Uvs[vertex * 2 + 1] = static_cast<float32>(1.0 - slots[static_cast<usize>(VertexSlot::V)]);
     }
 }
 
@@ -545,7 +555,7 @@ void StoreVertex(const float64 (&slots)[9], usize vertex, IrMesh& inoutMesh) noe
         {
             continue;
         }
-        float64 slots[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        float64 slots[VERTEX_SLOT_COUNT] = {};
         for (usize p = 0; p < element.PropertyCount; ++p)
         {
             const Property& property = element.Properties[p];
@@ -578,9 +588,10 @@ void StoreVertex(const float64 (&slots)[9], usize vertex, IrMesh& inoutMesh) noe
     const usize indexBytes = GetScalarBytes(property.Type);
     const bool isLittleEndian = inoutReader.IsLittleEndian();
     // Triangles are the common case; a failed reservation only loses the hint.
-    const uint64 boundedFaces = inoutReader.GetRemainingBytes() / (countBytes + 3 * indexBytes);
+    const uint64 boundedFaces = inoutReader.GetRemainingBytes() / (countBytes + TRIANGLE_CORNERS * indexBytes);
     const uint64 expectedFaces = element.Count < boundedFaces ? element.Count : boundedFaces;
-    (void)inoutMesh.Indices.TryEnsureCapacity(inoutMesh.Indices.GetSize() + static_cast<usize>(expectedFaces) * 3);
+    (void)inoutMesh.Indices.TryEnsureCapacity(inoutMesh.Indices.GetSize() +
+                                              static_cast<usize>(expectedFaces) * TRIANGLE_CORNERS);
     for (uint64 row = 0; row < element.Count; ++row)
     {
         const uint8* countData = inoutReader.TakeOrNull(countBytes);
@@ -710,7 +721,7 @@ bool ReadPly(std::span<const uint8> data,
         }
         for (uint64 row = 0; row < element.Count; ++row)
         {
-            float64 slots[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            float64 slots[VERTEX_SLOT_COUNT] = {};
             for (usize p = 0; p < element.PropertyCount; ++p)
             {
                 const Property& property = element.Properties[p];
