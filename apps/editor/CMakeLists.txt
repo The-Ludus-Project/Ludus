@@ -350,7 +350,7 @@ ludus_apply_project_defaults(ludus_editor)
 target_link_libraries(ludus_editor PRIVATE Ludus::Platform)
 # Scene import, save and assembly run in process (no Python scene backend),
 # including the browser Editor's MEMFS copies.
-target_link_libraries(ludus_editor PRIVATE Ludus::SceneCook ludus_stb_image)
+target_link_libraries(ludus_editor PRIVATE Ludus::SceneCook Ludus::FoundationThreading ludus_stb_image)
 # World documents share the version-2 record constants with their owner (object handles stage 3).
 target_link_libraries(ludus_editor PRIVATE Ludus::ContentIdentity)
 if(EMSCRIPTEN)
@@ -570,7 +570,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Catch2::Catch2)
     ludus_apply_project_defaults(ludus_editor_tests)
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::Platform)
-    target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook ludus_stb_image)
+    target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook Ludus::FoundationThreading ludus_stb_image)
     # The tests also replay committed migration manifests to produce version-2 World fixtures.
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity)
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
