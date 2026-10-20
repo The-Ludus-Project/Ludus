@@ -249,7 +249,7 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
          previous.startsWith(MakeGeneratedName(inoutNode, previousIdentity) + QLatin1Char('_')) == true))
     {
         name = MakeGeneratedName(inoutNode, identity);
-        if (FindProgram(inoutPrograms, name) >= 0)
+        if (name != previous && FindProgram(inoutPrograms, name) >= 0)
         {
             return RenderGraphDocumentStatus::Conflict;
         }
