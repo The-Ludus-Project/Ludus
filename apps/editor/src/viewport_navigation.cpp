@@ -75,9 +75,13 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
             platformName != QStringLiteral("minimal") && platformName != QStringLiteral("wasm"))
         {
             mCaptureStartGlobal = event->globalPosition().toPoint();
-            mCanWarpPointer = platformName.startsWith(QStringLiteral("wayland")) == false;
+            mCanWarpPointer =
+                platformName.startsWith(QStringLiteral("wayland")) == false && platformName != QStringLiteral("cocoa");
             grabMouse(Qt::BlankCursor);
             mHasMouseCapture = true;
+#if defined(Q_OS_MACOS)
+            static_cast<void>(mRelativeMouse.TryBegin());
+#endif
             recenterPointer();
         }
     }
@@ -103,14 +107,34 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+#if defined(Q_OS_MACOS)
+    if (mRelativeMouse.IsActive() == true)
+    {
+        // Native relative motion already navigated; Qt's absolute position is constant.
+        event->accept();
+        return;
+    }
+#endif
     const QPointF delta = event->globalPosition() - mLastPositionGlobal;
     mLastPositionGlobal = event->globalPosition();
     const float32 deltaX = static_cast<float32>(delta.x());
     const float32 deltaY = static_cast<float32>(delta.y());
-    const bool isPrimaryDrag = event->buttons().testFlag(Qt::LeftButton);
-    const bool isOrbitModifier = event->modifiers().testFlag(Qt::AltModifier);
-    const bool isPanModifier = event->modifiers().testFlag(Qt::ShiftModifier);
-    if (event->buttons().testFlag(Qt::MiddleButton) == true ||
+    if (navigateMouse(deltaX, deltaY, event->buttons(), event->modifiers()) == false)
+    {
+        event->ignore();
+        return;
+    }
+    event->accept();
+}
+bool PreviewViewport::navigateMouse(float32 deltaX,
+                                    float32 deltaY,
+                                    Qt::MouseButtons buttons,
+                                    Qt::KeyboardModifiers modifiers)
+{
+    const bool isPrimaryDrag = buttons.testFlag(Qt::LeftButton);
+    const bool isOrbitModifier = modifiers.testFlag(Qt::AltModifier);
+    const bool isPanModifier = modifiers.testFlag(Qt::ShiftModifier);
+    if (buttons.testFlag(Qt::MiddleButton) == true ||
         (isPrimaryDrag == true && isOrbitModifier == true && isPanModifier == true))
     {
         Preview_->Pan(deltaX, deltaY, getDrawableHeight());
@@ -119,17 +143,16 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
     {
         Preview_->Orbit(deltaX, deltaY);
     }
-    else if (mIsFlying == true && event->buttons().testFlag(Qt::RightButton) == true)
+    else if (mIsFlying == true && buttons.testFlag(Qt::RightButton) == true)
     {
         Preview_->Look(deltaX, deltaY);
         recenterPointer();
     }
     else
     {
-        event->ignore();
-        return;
+        return false;
     }
-    event->accept();
+    return true;
 }
 void PreviewViewport::wheelEvent(QWheelEvent* event)
 {
@@ -208,6 +231,9 @@ void PreviewViewport::keyReleaseEvent(QKeyEvent* event)
 }
 void PreviewViewport::stopNavigation()
 {
+#if defined(Q_OS_MACOS)
+    mRelativeMouse.Stop();
+#endif
     mIsFlying = false;
     mNavigationTimer.stop();
     for (bool& isHeld : mHeldKeys)
@@ -216,8 +242,8 @@ void PreviewViewport::stopNavigation()
     }
     if (mHasMouseCapture == true)
     {
-        releaseMouse();
         mHasMouseCapture = false;
+        releaseMouse();
         if (mCanWarpPointer == true)
         {
             QCursor::setPos(mCaptureStartGlobal);

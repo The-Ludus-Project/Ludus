@@ -55,6 +55,9 @@ set(editor_viewport_sources
     src/viewport_play_input.cpp
     src/internal/texture_inspection.h
     src/texture_inspection.cpp)
+if(APPLE)
+    list(APPEND editor_viewport_sources src/internal/viewport_relative_mouse.h src/viewport_relative_mouse_macos.mm)
+endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Quick)
     # The readback fallback is selected only on Linux, but the shared viewport code references it.
@@ -310,6 +313,7 @@ qt_add_resources(ludus_editor ludus_samples
     PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
 ludus_editor_add_default_render_graph(ludus_editor)
 if(APPLE)
+    target_link_libraries(ludus_editor PRIVATE "-framework AppKit" "-framework CoreGraphics")
     target_sources(ludus_editor PRIVATE resources/ludus.icns)
     set_source_files_properties(resources/ludus.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     set_target_properties(ludus_editor PROPERTIES
@@ -610,6 +614,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         # Test-only GPU pixel oracle; no RHI private header enters editor production or the SDK.
         target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/src")
         target_link_libraries(ludus_editor_tests PRIVATE "-framework Cocoa")
+    endif()
+    if(APPLE)
+        target_sources(ludus_editor_tests PRIVATE tests/viewport_relative_mouse_tests.mm)
+        target_link_libraries(ludus_editor_tests PRIVATE "-framework AppKit" "-framework CoreGraphics")
     endif()
     # Catch2 reports assertion failures by throwing; test targets (only) re-enable
     # exceptions. Engine/app targets above stay exception-free (-fno-exceptions).

@@ -758,6 +758,15 @@ is excluded from saved Worlds, scene bounds and shadow-caster geometry. The empt
 view and rendered view share one grid layout. Render-graph attachment views show
 the grid only where their raster pass draws it; offline reference captures omit it.
 
+The viewport toolbar’s **Look** multiplier controls mouse sensitivity for right-drag
+look and Alt/Option orbit, from **0.1×** to **4×** (default **1×**). Lower it for
+finer aiming. It is saved with viewport navigation; changing it preserves the
+current camera pose and does not change pan, dolly or keyboard movement speed.
+On macOS, right-drag uses relative mouse/trackpad motion without repeatedly
+recentering the cursor. Releasing the button, pressing Escape, losing focus or
+hiding the viewport releases capture. If native capture is unavailable, dragging
+continues within the pointer's available screen area.
+
 The editor owns a separate camera controller and publishes a validated C0
 pose/lens sample to the renderer. Navigation never changes an authored camera,
 World Save/Undo history, or simulation state. Starting navigation from an
@@ -767,7 +776,7 @@ that preview. Zero-motion input leaves the selected camera unchanged.
 
 | Input, with the viewport focused | Action |
 | --- | --- |
-| Right-drag | Look around from the current eye |
+| Right-drag | Look around from the current eye: horizontal motion yaws about world up; vertical motion pitches about camera right |
 | Hold right mouse + WASD | Fly forward/backward and sideways |
 | Q / E while flying | Move down/up along world Y |
 | Shift while flying | Four-times movement speed |

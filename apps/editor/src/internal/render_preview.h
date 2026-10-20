@@ -91,6 +91,18 @@ public:
     /// Suppress repeated GPU submissions for hidden browser surfaces; allow the first
     /// candidate frame so import validation can complete while its tab is hidden.
     void SetPresentationVisible(bool isVisible) noexcept;
+    /// Lowest admitted mouse rotation multiplier, relative to the default angular speed.
+    static constexpr foundation::float32 MINIMUM_LOOK_SENSITIVITY = 0.1F;
+    /// Highest admitted mouse rotation multiplier.
+    static constexpr foundation::float32 MAXIMUM_LOOK_SENSITIVITY = 4;
+    /// Set the multiplier for right-drag look and Alt/Option orbit. Invalid values preserve it.
+    /// GUI thread only; changing sensitivity preserves the camera pose and selected camera.
+    void SetLookSensitivity(foundation::float32 sensitivity);
+    /// Current mouse rotation multiplier; independent of keyboard fly speed.
+    [[nodiscard]] LUDUS_INLINE foundation::float32 GetLookSensitivity() const noexcept
+    {
+        return mLookSensitivity;
+    }
     void Orbit(foundation::float32 deltaX, foundation::float32 deltaY);
     void Pan(foundation::float32 deltaX, foundation::float32 deltaY, foundation::float32 heightLogical = 480);
     void Zoom(foundation::float32 steps);
@@ -196,6 +208,7 @@ private:
     [[nodiscard]] bool beginNavigation();
     void navigationChanged();
     EditorCameraController mCameraController;
+    foundation::float32 mLookSensitivity = 1;
     QString mSelectedId;
     [[nodiscard]] LUDUS_INLINE bool usesLitMaterials() const noexcept
     {

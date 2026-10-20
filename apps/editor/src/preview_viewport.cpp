@@ -9,6 +9,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QGuiApplication>
@@ -825,6 +826,10 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                                  QWidget* parentOrNull,
                                  bool isAutomatic)
     : QWidget(parentOrNull), Preview_(preview), mFrameSource(frameSource)
+#if defined(Q_OS_MACOS)
+      ,
+      mRelativeMouse(*this)
+#endif
 {
     LUDUS_REQUIRE(preview != nullptr);
     LUDUS_REQUIRE(frameSource != nullptr);
@@ -835,6 +840,14 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     mNavigationTimer.setInterval(16);
     connect(&mNavigationTimer, &QTimer::timeout, this, [this]() { advanceNavigation(); });
     connect(preview, &RenderPreview::Stopped, this, [this]() { stopNavigation(); });
+#if defined(Q_OS_MACOS)
+    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+        if (state != Qt::ApplicationActive)
+        {
+            stopNavigation();
+        }
+    });
+#endif
     setToolTip(
         QStringLiteral("Right-drag to look · hold right mouse + WASD/QE to fly · Alt/Option-left-drag to orbit · "
                        "Shift-Alt/Option-left-drag or middle-drag to pan · "
@@ -867,6 +880,26 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     QHBoxLayout* controls = new QHBoxLayout;
     mState->ControlsOrNull = controls;
     controls->addWidget(shading, 1);
+    QDoubleSpinBox* lookSensitivity = new QDoubleSpinBox(this);
+    lookSensitivity->setObjectName(QStringLiteral("viewportLookSensitivity"));
+    lookSensitivity->setAccessibleName(QStringLiteral("Mouse look sensitivity"));
+    lookSensitivity->setPrefix(QStringLiteral("Look "));
+    lookSensitivity->setSuffix(QStringLiteral("×"));
+    lookSensitivity->setRange(static_cast<float64>(RenderPreview::MINIMUM_LOOK_SENSITIVITY),
+                              static_cast<float64>(RenderPreview::MAXIMUM_LOOK_SENSITIVITY));
+    lookSensitivity->setSingleStep(static_cast<float64>(RenderPreview::MINIMUM_LOOK_SENSITIVITY));
+    lookSensitivity->setDecimals(1);
+    lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
+    lookSensitivity->setToolTip(QStringLiteral("Mouse sensitivity for right-drag look and Alt/Option orbit. "
+                                               "Lower values rotate more slowly; 1× is the default."));
+    controls->addWidget(lookSensitivity);
+    connect(lookSensitivity, &QDoubleSpinBox::valueChanged, preview, [preview](float64 sensitivity) {
+        preview->SetLookSensitivity(static_cast<float32>(sensitivity));
+    });
+    connect(preview, &RenderPreview::NavigationChanged, lookSensitivity, [preview, lookSensitivity]() {
+        const QSignalBlocker blocker(lookSensitivity);
+        lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
+    });
     QToolButton* frameAll = new QToolButton(this);
     frameAll->setObjectName(QStringLiteral("viewportFrameAll"));
     frameAll->setText(QStringLiteral("Frame all"));
