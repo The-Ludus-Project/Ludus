@@ -71,6 +71,39 @@ public:
         ++mResizeRequests;
         mProducer.Resize(width, height);
     }
+    [[nodiscard]] rhi::RasterStatus TakeFrameRead(rhi::NativeDeviceLease device,
+                                                  const rhi::NativeDeviceIdentity& consumer,
+                                                  ViewportFrameRead& outRead) noexcept override
+    {
+        const rhi::RasterStatus status = ViewportFrameSource::TakeFrameRead(device, consumer, outRead);
+        mOpenedReads += status == rhi::RasterStatus::Ready ? 1 : 0;
+        return status;
+    }
+    [[nodiscard]] rhi::RasterStatus EndFrameRead(ViewportFrameRead& inoutRead) noexcept override
+    {
+        // A source whose consumer queue has not finished sampling answers Pending; the viewport
+        // must keep the slot and ask again rather than reuse or drop the image.
+        if (mEndsToDefer != 0)
+        {
+            --mEndsToDefer;
+            ++mDeferredEnds;
+            return rhi::RasterStatus::Pending;
+        }
+        return ViewportFrameSource::EndFrameRead(inoutRead);
+    }
+    /// Answer Pending to the next count EndFrameRead calls.
+    void DeferEnds(uint64 count) noexcept
+    {
+        mEndsToDefer = count;
+    }
+    [[nodiscard]] uint64 GetOpenedReads() const noexcept
+    {
+        return mOpenedReads;
+    }
+    [[nodiscard]] uint64 GetDeferredEnds() const noexcept
+    {
+        return mDeferredEnds;
+    }
     /// Ask every consumer to return its leases, as a source does before replacing its images.
     void ReclaimLeases()
     {
@@ -94,6 +127,9 @@ private:
     uint64 mTakenFrames = 0;
     uint64 mReleasedFrames = 0;
     uint64 mResizeRequests = 0;
+    uint64 mOpenedReads = 0;
+    uint64 mEndsToDefer = 0;
+    uint64 mDeferredEnds = 0;
 };
 
 RenderScene MakeTriangleScene()
@@ -193,6 +229,57 @@ TEST_CASE("Viewport takes and releases every frame through its frame source", "[
     preview.Stop();
     CHECK(source.GetOutstandingFrames() == 0);
     CHECK(source.GetTakenFrames() >= viewport.PresentedFrames());
+#else
+    SKIP("Frame-source presentation requires the native GPU preview");
+#endif
+}
+
+TEST_CASE("Viewport keeps a source-owned read until its source ends it", "[editor][viewport][frame-source][gpu]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const ViewportEnvironmentGuard guard;
+#    if defined(Q_OS_MACOS)
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa"))
+    {
+        SKIP("macOS presents only through the Metal-shared device (run with QT_QPA_PLATFORM=cocoa)");
+    }
+#    else
+    if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+    {
+        SKIP("Source-owned reads belong to the shared-device path; offscreen Qt reads back instead");
+    }
+#    endif
+    rhi::Shutdown();
+    RenderPreview preview;
+    ForwardingFrameSource source(preview);
+    PreviewViewport viewport(&preview, &source);
+    viewport.resize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    viewport.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&viewport) == true);
+    REQUIRE(preview.SetScene(MakeTriangleScene()) == true);
+    const bool hasStarted = preview.Start();
+    if (hasStarted == false || preview.Running() == false)
+    {
+        SKIP("No shared GPU device for the viewport: " << preview.Status().toStdString());
+    }
+    INFO(preview.Status().toStdString());
+    REQUIRE(AwaitPresentedFrames(viewport, preview, PRESENTED_FRAMES) == true);
+    // Every presented image went through the source's own read, not a viewport-side read.
+    CHECK(source.GetOpenedReads() >= viewport.PresentedFrames());
+
+    // The viewport asks again while the source answers Pending, and never holds more than its
+    // two slots; once the source ends the reads, presentation continues.
+    constexpr uint64 DEFERRED_ENDS = 6;
+    source.DeferEnds(DEFERRED_ENDS);
+    REQUIRE(AwaitPresentedFrames(viewport, preview, viewport.PresentedFrames() + PRESENTED_FRAMES) == true);
+    CHECK(source.GetDeferredEnds() == DEFERRED_ENDS);
+    CHECK(source.GetOutstandingFrames() <= 2);
+
+    // Teardown drains reads through the source, so no lease outlives the device.
+    source.ReclaimLeases();
+    CHECK(source.GetOutstandingFrames() == 0);
+    preview.Stop();
+    CHECK(source.GetOutstandingFrames() == 0);
 #else
     SKIP("Frame-source presentation requires the native GPU preview");
 #endif

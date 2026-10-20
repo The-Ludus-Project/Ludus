@@ -285,9 +285,8 @@ struct PreviewViewport::State final
     // https://doc.qt.io/qt-6/qnativeinterface-qsgvulkantexture.html
     struct Frame final
     {
-        renderer::ViewportFrame Lease{};
-        rhi::NativeTextureRead Read{};
-        rhi::NativeTextureInfo Image{};
+        /// The source's read of this slot's image; the source decides how it is opened and closed.
+        ViewportFrameRead Read{};
         QSGTexture* Wrapper = nullptr;
         bool HasLease = false;
         bool IsRetiring = false;
@@ -308,7 +307,7 @@ struct PreviewViewport::State final
             if (mState.Pending >= 0)
             {
                 Frame& next = mState.Frames[mState.Pending];
-                next.Wrapper = mState.Device->WrapTexture(*window(), next.Image);
+                next.Wrapper = mState.Device->WrapTexture(*window(), next.Read.Image);
                 if (next.Wrapper == nullptr)
                 {
                     mState.Message->setText(
@@ -692,10 +691,8 @@ private:
             {
                 continue;
             }
-            const rhi::RasterStatus released = rhi::ReleaseNativeTextureRead(frame.Read);
-            if (released == rhi::RasterStatus::Ready)
+            if (Source->EndFrameRead(frame.Read) == rhi::RasterStatus::Ready)
             {
-                Source->ReleaseFrame(frame.Lease);
                 frame = {};
             }
         }
@@ -733,9 +730,7 @@ private:
             frame.Wrapper = nullptr;
             if (frame.HasLease == true)
             {
-                const rhi::RasterStatus released = rhi::DrainNativeTextureRead(frame.Read);
-                LUDUS_REQUIRE(released == rhi::RasterStatus::Ready);
-                Source->ReleaseFrame(frame.Lease);
+                Source->DrainFrameRead(frame.Read);
                 frame = {};
             }
         }
@@ -802,20 +797,13 @@ private:
             {
                 continue;
             }
-            renderer::ViewportImage image;
-            if (Source->TakeFrame(frame.Lease, image) == false)
+            const rhi::RasterStatus acquired = Source->TakeFrameRead(DeviceLease, DeviceInfo.Identity, frame.Read);
+            if (acquired == rhi::RasterStatus::NotReady)
             {
                 return;
             }
-            const rhi::RasterStatus acquired = rhi::AcquireNativeTextureRead(DeviceLease,
-                                                                             DeviceInfo.Identity,
-                                                                             image.Texture,
-                                                                             image.Producer,
-                                                                             frame.Read,
-                                                                             frame.Image);
             if (acquired != rhi::RasterStatus::Ready)
             {
-                Source->ReleaseFrame(frame.Lease);
                 Message->setText(QStringLiteral("GPU texture sharing failed. Editing remains available."));
                 return;
             }
