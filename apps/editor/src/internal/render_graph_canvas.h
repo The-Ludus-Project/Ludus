@@ -16,6 +16,8 @@ QT_BEGIN_NAMESPACE
 class QGraphicsPathItem;
 class QGraphicsScene;
 class QShowEvent;
+class QRubberBand;
+class QFocusEvent;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -88,7 +90,7 @@ class RenderGraphCanvas final : public QGraphicsView
 {
     Q_OBJECT
 public:
-    static constexpr foundation::int32 MAX_COORDINATE = 32768;
+    static constexpr foundation::int32 MAX_COORDINATE = RenderGraphDocument::MAX_COORDINATE;
 
     explicit RenderGraphCanvas(const RenderGraphDocument& document, QWidget* parentOrNull = nullptr);
     ~RenderGraphCanvas() override;
@@ -117,6 +119,8 @@ public:
     /// Domain colour category of a displayed node (for tests and accessibility text).
     [[nodiscard]] RenderGraphDomain GetNodeDomain(const QString& node) const;
     void SelectNode(const QString& node);
+    /// Select authored nodes without emitting a user-selection event; unknown IDs are ignored.
+    void SelectNodes(const QStringList& nodes);
     /// Scroll the node into view without changing the current zoom or selection.
     void RevealNode(const QString& node);
     [[nodiscard]] QStringList GetSelectedNodes() const;
@@ -136,6 +140,11 @@ Q_SIGNALS:
     /// Open the displayed configuration interface editor (double-click an interface box).
     void InterfaceEditRequested();
     void NodeSelected(const QString& node);
+    /// Complete authored-node selection after a mouse or keyboard gesture.
+    void NodesSelected(const QStringList& nodes);
+    void CopyRequested();
+    void PasteRequested();
+    void RemoveNodesRequested(const QStringList& nodes);
     /// Context target is empty on the background or configuration interface.
     void ContextMenuRequested(const QString& node, const QPoint& globalPosition);
     void MoveRequested(const QVector<ludus::editor::RenderGraphNodePosition>& positions);
@@ -156,6 +165,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
 
 private:
@@ -164,6 +175,7 @@ private:
     [[nodiscard]] QJsonObject configuration() const;
     void updateEdges();
     void updateSelection();
+    void notifySelection();
     [[nodiscard]] QString nodeAt(QPointF position) const;
     [[nodiscard]] QString portAt(QPointF position, bool& outIsOutput) const;
     [[nodiscard]] QString edgeAt(QPointF position, QString& outTo) const;
@@ -183,6 +195,13 @@ private:
     QPointF mPressPosition;
     QString mLinkFrom;
     QGraphicsPathItem* mLinkPreviewOrNull = nullptr;
+    QRubberBand* mSelectionBox;
+    QPoint mSelectionStart;
+    QPoint mPanPosition;
+    QStringList mSelectionBeforeBox;
+    bool mIsBoxSelecting = false;
+    bool mIsPanning = false;
+    bool mIsSpacePressed = false;
     bool mIsDragging = false;
     bool mShouldFitOnShow = false;
 };

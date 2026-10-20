@@ -92,6 +92,17 @@ public:
     [[nodiscard]] bool PromptCreateSubgraph();
     /// True when a configuration is selected and no unapplied text or source conflict exists.
     [[nodiscard]] bool CanCreateSubgraph() const;
+    /// Create/select an empty configuration in the selected graph file. One undo step;
+    /// Save publishes it. Invalid/duplicate names or pending source edits preserve the draft.
+    [[nodiscard]] bool CreateConfiguration(const QString& name);
+    /// Copy the selected authored-node group to the system clipboard; writes no project files.
+    /// Requires one configuration and no pending source conflict. Failure retains clipboard data.
+    [[nodiscard]] bool CopySelectedNodes();
+    /// Paste the clipboard group into the displayed configuration at a scene position.
+    /// Unique IDs, internal connections and layout are one undo step. Failure preserves the draft.
+    [[nodiscard]] bool PasteNodes(QPointF position);
+    /// Remove selected authored nodes and their incident connections in one undo step.
+    void RemoveSelectedNodes();
     /// Shader sources mapped by the root manifest to the selected pipeline's program references
     /// or a legacy Raster's technique.
     /// Empty for resource/scene nodes or missing mappings. Never guesses from filenames.
@@ -299,6 +310,10 @@ private:
     void editConfigurationInterface();
     void addNode();
     void showNodeContextMenu(const QPoint& globalPosition);
+    void setupGraphSelection();
+    void syncTreeSelection();
+    void syncCanvasSelection(const QStringList& nodes);
+    void promptCreateConfiguration();
     void activateSelectedNode();
     void openSourceLine(const QString& file, foundation::int32 line);
     [[nodiscard]] QJsonObject getDiagnosticLocation(foundation::int32 row) const;
@@ -310,6 +325,9 @@ private:
     void renderPreview();
     void openSubgraph(const QString& asset, const QString& configuration);
 
+    static constexpr foundation::int32 FILE_ROLE = Qt::UserRole;
+    static constexpr foundation::int32 CONFIGURATION_ROLE = Qt::UserRole + 1;
+    static constexpr foundation::int32 NODE_ROLE = Qt::UserRole + 2;
     ToolingPaths mTooling;
     QString mProjectRoot;
     foundation::uint64 mEpoch = 0;
@@ -328,6 +346,7 @@ private:
     QString mSelectedFile;
     QString mSelectedConfiguration;
     QString mSelectedNode;
+    QStringList mSelectedNodes;
     QLabel* mPath;
     QStackedWidget* mContent;
     QLabel* mEmptyMessage;

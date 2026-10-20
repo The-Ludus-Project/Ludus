@@ -242,7 +242,7 @@ qt_add_executable(ludus_editor
     src/script_workspace.cpp
     src/internal/render_graph_document.h
     src/internal/render_graph_source.h
-    src/render_graph_document.cpp
+    src/render_graph_document.cpp src/render_graph_node_transfer.cpp
     src/internal/render_graph_shader_creation.h
     src/render_graph_shader_creation.cpp
     src/internal/render_graph_pipeline.h
@@ -261,7 +261,7 @@ qt_add_executable(ludus_editor
     src/internal/external_code_editor.h
     src/external_code_editor.cpp
     src/internal/renderer_workspace.h
-    src/renderer_workspace.cpp
+    src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
     src/internal/render_graph_shader_interface.h
     src/render_graph_shader_interface.cpp
     src/internal/render_graph_defaults.h
@@ -445,7 +445,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/script_workspace.cpp
         src/internal/render_graph_document.h
         src/internal/render_graph_source.h
-        src/render_graph_document.cpp
+        src/render_graph_document.cpp src/render_graph_node_transfer.cpp
         src/internal/render_graph_shader_creation.h
         src/render_graph_shader_creation.cpp
         src/internal/render_graph_pipeline.h
@@ -464,7 +464,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/external_code_editor.h
         src/external_code_editor.cpp
         src/internal/renderer_workspace.h
-        src/renderer_workspace.cpp
+        src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/internal/render_graph_shader_interface.h
         src/render_graph_shader_interface.cpp
         src/internal/render_graph_defaults.h
@@ -661,7 +661,7 @@ endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
-        src/render_graph_document.cpp src/render_graph_shader_creation.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
+        src/render_graph_document.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_creation.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp)
@@ -679,9 +679,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
-        tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_canvas_tests.cpp
-        src/internal/renderer_workspace.h src/renderer_workspace.cpp
-        src/render_graph_document.cpp src/render_graph_shader_creation.cpp src/render_graph_pipeline_node.cpp
+        tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp
+        src/internal/renderer_workspace.h src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
+        src/render_graph_document.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_creation.cpp src/render_graph_pipeline_node.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp
@@ -712,7 +712,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp
-        src/render_graph_document.cpp
+        src/render_graph_document.cpp src/render_graph_node_transfer.cpp
         src/internal/render_graph_shader_creation.h
         src/render_graph_shader_creation.cpp src/render_graph_pipeline_node.cpp
         src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
