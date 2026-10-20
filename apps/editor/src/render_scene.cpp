@@ -1374,6 +1374,9 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         surface.Metallic = source.Metallic;
         surface.Roughness = source.Roughness;
         surface.Emission = source.Emission;
+        surface.IsEmissionTwoSided = source.IsEmissionTwoSided;
+        surface.HasEmissionPower = source.HasEmissionPower;
+        surface.EmissionPower = source.EmissionPower;
         surface.IsAlphaMasked = source.IsAlphaMasked;
         surface.AlphaCutoff = source.AlphaCutoff;
         // The decoder validated both map indices against the texture list.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "reference_data.h"
+#include <ludus/graphics/renderer/render_graph.hpp>
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
@@ -21,4 +22,9 @@ struct GraphRaySceneInput final
                                                    const ReferenceCaptureDescription& description,
                                                    usize byteBudget,
                                                    core::UniquePtr<ReferenceJob>& outJob) noexcept;
+/// Freeze material-bound graph geometry, maps and lights, preserving output on failure.
+[[nodiscard]] rhi::RasterStatus BuildMaterialGraphRayScene(const RenderGraphSceneDescription& scene,
+                                                           const ReferenceCaptureDescription& description,
+                                                           usize byteBudget,
+                                                           core::UniquePtr<ReferenceJob>& outJob) noexcept;
 } // namespace ludus::graphics::renderer::internal

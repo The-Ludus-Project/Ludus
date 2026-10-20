@@ -70,7 +70,8 @@ rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
                                                  Snapshot snapshot,
                                                  const ViewDescription& camera,
                                                  foundation::uint32 width,
-                                                 foundation::uint32 height) noexcept
+                                                 foundation::uint32 height,
+                                                 const RenderGraphSceneDescription* sceneOrNull) noexcept
 {
     if (mContextOrNull != nullptr)
     {
@@ -86,10 +87,11 @@ rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
     description.OrthographicCamera = camera.OrthographicCamera;
     description.Width = width;
     description.Height = height;
+    description.TargetSamples = LUDUS_GRAPH_SAMPLE_TARGET;
     description.MaxDepth = 1;
     description.RouletteDepth = 1;
     description.CenterRays = true;
-    const rhi::RasterStatus status = inoutContext.BeginGpuPreview(snapshot, description, mJob);
+    const rhi::RasterStatus status = inoutContext.BeginGpuPreview(snapshot, description, mJob, sceneOrNull);
     if (status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending)
     {
         mContextOrNull = &inoutContext;

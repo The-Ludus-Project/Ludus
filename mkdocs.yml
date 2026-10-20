@@ -101,6 +101,7 @@ nav:
       - Graphics debugging architecture and plan: architecture/graphics-debugging.md
       - Save, validate and build render graphs: development/render-graph-authoring.md
       - Render graph authoring proposal: architecture/render-graph-authoring.md
+      - Shared scene shader contract proposal: architecture/shared-scene-shader-contract.md
       - Benchmark scenes and suites: development/benchmark-scenes.md
       - Runtime profiling: development/runtime-profiling.md
       - Best-effort scene import: development/best-effort-scene-import.md

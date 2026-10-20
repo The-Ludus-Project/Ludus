@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
+#include <ludus/graphics/renderer/scene_shader.hpp>
 #include <ludus/graphics/rhi/graph.h>
 
 namespace ludus::graphics::renderer
@@ -49,6 +50,7 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription RayCompute{};          ///< Linked authored triangle ray functions and BVH traversal.
     rhi::RasterShaderDescription RayImageVertex{};      ///< Renderer-owned GPU-produced pixel presentation.
     rhi::RasterShaderDescription RayImageFragment{};    ///< Renderer-owned color copy; no host pixel transfer.
+    bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
 };
 /// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.
 /// Does not compile, allocate or change artifact bytes. Used by generated headers and
@@ -77,6 +79,10 @@ struct RenderGraphMesh final
     RenderGraphLayout Layout = RenderGraphLayout::Static; ///< Declared interface, validated independently of intention.
     foundation::math::Aabb3 BoundsMesh{}; ///< Explicit finite bounds for an unknown-position diagnostic proxy.
     bool HasDiagnosticBounds = false;     ///< Whether BoundsMesh is authoritative and may be rendered as a proxy.
+    /// Triangle-to-material-slot map; empty means slot zero. Must have IndexCount/3 entries.
+    foundation::BorrowedView<const foundation::uint32> MaterialSlots{};
+    /// Slot-to-global-material mapping; unassigned slots use DEFAULT_SCENE_MATERIAL.
+    foundation::BorrowedView<const foundation::uint32> MaterialBindings{};
 };
 /// One intended draw item/submesh/material slot extracted by the World adapter.
 struct RenderGraphItem final
@@ -95,6 +101,21 @@ struct RenderGraphItem final
     // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const foundation::float32> Uniforms{};
+    /// Per-instance slot overrides; INHERIT_SCENE_MATERIAL retains the mesh binding.
+    foundation::BorrowedView<const foundation::uint32> MaterialOverrides{};
+    foundation::math::Vector4 SurfaceTint{1, 1, 1, 1}; ///< Instance multiplier for the scene material profile.
+};
+/// Borrowed complete ray-scene inputs consumed during BeginGpuPreview. Not retained.
+struct RenderGraphSceneDescription final
+{
+    foundation::BorrowedView<const RenderGraphMesh> Meshes{}; ///< Geometry and slot bindings.
+    foundation::BorrowedView<const RenderGraphItem> Items{};  ///< Instances and overrides.
+    SceneShaderInputs Inputs{};                               ///< Materials, analytic sources and constant environment.
+    bool HasMaterialInterface = false;                        ///< False preserves legacy flat-color submissions.
+    bool AreErrorsAllowed = false;                            ///< Preview uses an explicit non-emissive error material.
+    SceneShaderDiagnostics* DiagnosticsOrNull = nullptr; ///< Optional candidate diagnostic output, including rejection.
+    foundation::uint64 SourceGeneration =
+        0; ///< Caller scene revision, zero only for standalone diagnostic preparation.
 };
 /// Scene compatibility for a rendering role, independent of runtime culling.
 enum class RenderGraphCoverage : foundation::uint8
@@ -131,13 +152,14 @@ enum class RenderGraphCoveragePolicy : foundation::uint8
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final
 {
-    foundation::uint64 SceneRevision = 0; ///< Caller extraction revision, not a GPU completion number.
-    foundation::uint32 Covered = 0;       ///< Compatible item/role/view tuples.
-    foundation::uint32 Unsupported = 0;   ///< Missing required compatibility.
-    foundation::uint32 Conflicting = 0;   ///< Ambiguous/duplicate role tuples.
-    foundation::uint32 Excluded = 0;      ///< Explicit omissions.
-    bool IsAccepted = false;              ///< Candidate was accepted for asynchronous preparation.
-    bool IsReady = false;                 ///< Accepted scene is drawable; producer completion is separate.
+    SceneShaderDiagnostics SceneDiagnostics{}; ///< Material defaults/errors and discarded collapsed faces.
+    foundation::uint64 SceneRevision = 0;      ///< Caller extraction revision, not a GPU completion number.
+    foundation::uint32 Covered = 0;            ///< Compatible item/role/view tuples.
+    foundation::uint32 Unsupported = 0;        ///< Missing required compatibility.
+    foundation::uint32 Conflicting = 0;        ///< Ambiguous/duplicate role tuples.
+    foundation::uint32 Excluded = 0;           ///< Explicit omissions.
+    bool IsAccepted = false;                   ///< Candidate was accepted for asynchronous preparation.
+    bool IsReady = false;                      ///< Accepted scene is drawable; producer completion is separate.
 };
 namespace internal
 {
@@ -256,7 +278,8 @@ public:
                                            foundation::BorrowedView<const ViewDescription> cameras,
                                            foundation::uint64 sceneRevision,
                                            RenderGraphCoveragePolicy policy,
-                                           RenderGraphReport& outReport) noexcept;
+                                           RenderGraphReport& outReport,
+                                           const SceneShaderInputs* sceneInputsOrNull = nullptr) noexcept;
     /// Borrow latest candidate coverage records until the next Update/Reset; no allocation.
     [[nodiscard]] foundation::BorrowedView<const RenderGraphCoverageRecord> GetCoverage() const noexcept;
     /// Copy the latest candidate report, independent of the drawable extraction.

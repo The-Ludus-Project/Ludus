@@ -1,5 +1,6 @@
 #include "renderer_composite.h"
 #include "rg2_raytracing.h"
+#include "rg2_scene_ray.h"
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -237,4 +238,166 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
     read();
     CHECK(fixture.Pixels[center] == 0);
     CHECK(fixture.Pixels[center + 2] == 255);
+}
+
+TEST_CASE("Scene callbacks preserve material and scene generation through native GPU rendering",
+          "[render-graph][gpu][scene-shader]")
+{
+    GraphGpuFixture fixture;
+    const renderer::RenderGraphPrograms programs =
+        packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                              shaders::renderer_composite::Fragment());
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    CHECK(programs.HasSceneShaderInterface == true);
+    CHECK(decoded.HasSceneShaderInterface == true);
+    REQUIRE(package->GetPlan().Passes[0].Program == format::Technique::RayTracing);
+    CheckSameStage(decoded.RayCompute, programs.RayCompute);
+    CheckSameStage(decoded.RayImageVertex, programs.RayImageVertex);
+    CheckSameStage(decoded.RayImageFragment, programs.RayImageFragment);
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, package->GetPlan(), decoded);
+    const uint64 started = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    fixture.Cameras[0].OrthographicCamera = true;
+    StaticArray<renderer::SceneShaderMaterial, 2> materials{};
+    renderer::SceneShaderMaterial& material = materials[0];
+    materials[1].Emission = {2, 1, 0};
+    materials[1].IsEmissionTwoSided = true;
+    StaticArray<renderer::RenderGraphMesh, 2> meshes{};
+    StaticArray<renderer::RenderGraphItem, 2> items{};
+    uint32 emitterBinding = 1;
+    meshes[1] = fixture.Meshes[0];
+    meshes[1].MaterialBindings = {&emitterBinding, 1};
+    items[1].SourceId = 2;
+    items[1].MeshIndex = 1;
+    items[1].MeshToWorld.Translation.X = 5;
+    StaticArray<renderer::DirectLight, 3> lights{};
+    lights[0].SourceId = 1;
+    lights[0].Kind = renderer::LightKind::Point;
+    lights[0].Position = {0, 0, 1};
+    lights[1].SourceId = 2;
+    lights[1].Kind = renderer::LightKind::Directional;
+    lights[2].SourceId = 3;
+    lights[2].Kind = renderer::LightKind::Spot;
+    lights[2].Position = {0, 0, 1};
+    uint32 binding = 0;
+    fixture.Meshes[0].MaterialBindings = {&binding, 1};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    inputs.Lights = {lights.GetData(), lights.GetSize()};
+    inputs.Environment = {0, 0, 1};
+    const auto update = [&fixture, &inputs, &material, &meshes, &items](uint64 revision,
+                                                                        bool hasItems = true,
+                                                                        bool shouldUseDiagnosticColor = false) {
+        renderer::RenderGraphReport report;
+        meshes[0] = fixture.Meshes[0];
+        items[0] = fixture.Items[0];
+        material.BaseColor = {fixture.Items[0].Material.Color.X,
+                              fixture.Items[0].Material.Color.Y,
+                              fixture.Items[0].Material.Color.Z};
+        rhi::RasterStatus result = fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                                        {items.GetData(), hasItems == true ? items.GetSize() : 0},
+                                                        {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                                        revision,
+                                                        shouldUseDiagnosticColor == true
+                                                            ? renderer::RenderGraphCoveragePolicy::DiagnosticColor
+                                                            : renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report,
+                                                        &inputs);
+        const uint64 beginning = time::NowTicks();
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = fixture.Graph.Poll();
+        }
+        return result;
+    };
+    const auto read = [&fixture]() {
+        rhi::SubmissionToken completion;
+        REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+        const uint64 beginning = time::NowTicks();
+        rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = rhi::GetStatus(fixture.Device, completion);
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        rhi::TextureHandle texture;
+        rhi::TextureAspect aspect;
+        REQUIRE(fixture.Graph.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
+        rhi::ReadbackTicket ticket;
+        result = rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, WIDTH * 4, ticket);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = rhi::GetStatus(fixture.Device, ticket);
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CopyReadback(fixture.Device, ticket, fixture.Pixels.GetData(), fixture.Pixels.GetSize()) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+    };
+    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Covered == 2);
+    read();
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(fixture.Pixels[center] == 188);
+    CHECK(fixture.Pixels[center + 2] == 0);
+    CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == 188);
+    fixture.Items[0].MeshToWorld.Translation.X = 2;
+    REQUIRE(update(2) == rhi::RasterStatus::Ready);
+    read();
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 2] == 188);
+    fixture.Cameras[0].WorldToClip.Columns[3].X = -2;
+    REQUIRE(update(3) == rhi::RasterStatus::Ready);
+    read();
+    CHECK(fixture.Pixels[center] == 188);
+    fixture.Items[0].Material.Color = {0, 1, 0, 1};
+    REQUIRE(update(4) == rhi::RasterStatus::Ready);
+    read();
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 1] == 188);
+    fixture.Items[0].Coverage = renderer::RenderGraphMaterial::Transparent;
+    CHECK(update(5) == rhi::RasterStatus::Unsupported);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 4);
+    read();
+    CHECK(fixture.Pixels[center + 1] == 188);
+    CHECK(fixture.Graph.GetOutputSceneRevision() == 4);
+    REQUIRE(fixture.Graph.PrepareEncoding() == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+    const rhi::RasterStatus confirmed = fixture.Graph.ConfirmSubmission(completion);
+    REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
+    const uint64 beginning = time::NowTicks();
+    while (rhi::GetStatus(fixture.Device, completion) == rhi::RasterStatus::Pending &&
+           time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+    }
+    REQUIRE(update(6, false) == rhi::RasterStatus::Ready);
+    read();
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 2] == 188);
+    fixture.Items[0].Coverage = renderer::RenderGraphMaterial::Opaque;
+    binding = renderer::DEFAULT_SCENE_MATERIAL;
+    REQUIRE(update(7) == rhi::RasterStatus::Ready);
+    read();
+    CHECK(fixture.Graph.GetReport().SceneDiagnostics.DefaultBindings == 1);
+    CHECK(fixture.Pixels[center] == 156);
+    CHECK(fixture.Pixels[center + 1] == 156);
+    binding = 37;
+    CHECK(update(8) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 7);
+    REQUIRE(update(9, true, true) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().SceneDiagnostics.ErrorBindings == 1);
+    read();
+    CHECK(fixture.Pixels[center] == 188);
+    CHECK(fixture.Pixels[center + 1] == 0);
+    CHECK(fixture.Pixels[center + 2] == 188);
 }

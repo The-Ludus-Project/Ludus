@@ -325,6 +325,11 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
     // The lit tint is not the static profile's color; the flat approximation is.
     surface.Tint = {.25F, 1, 1, 1};
     surface.FlatTint = {.5F, 1, 1, 1};
+    surface.Emission = {2, 1, 0};
+    surface.Roughness = .3F;
+    scene.AuthoredLights.Count = 1;
+    scene.AuthoredLights.Lights[0].Kind = renderer::LightKind::Point;
+    scene.AuthoredLights.Lights[0].SourceId = 17;
     scene.Surfaces.append(surface);
     scene.Objects[0].Surface = 0;
     PreviewObject translucent = scene.Objects[0];
@@ -344,6 +349,17 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
     // Translucency is declared, never silently drawn as opaque.
     CHECK(extraction.Items[1].Coverage == renderer::RenderGraphMaterial::Transparent);
     CHECK(extraction.Revision == 9);
+    REQUIRE(extraction.ShaderInputs.Materials.GetSize() == 1);
+    CHECK(extraction.ShaderInputs.Materials[0].BaseColor.X == .25F);
+    CHECK(extraction.ShaderInputs.Materials[0].Emission.X == 2);
+    CHECK(extraction.ShaderInputs.Materials[0].Roughness == .3F);
+    REQUIRE(extraction.Items[0].MaterialOverrides.GetSize() == 1);
+    CHECK(extraction.Items[0].MaterialOverrides[0] == 0);
+    CHECK(extraction.Items[1].MaterialOverrides[0] == renderer::DEFAULT_SCENE_MATERIAL);
+    CHECK(extraction.Items[0].SurfaceTint.X == 1);
+    REQUIRE(extraction.ShaderInputs.Lights.GetSize() == 1);
+    CHECK(extraction.ShaderInputs.Lights[0].SourceId == 17);
+    CHECK(extraction.ShaderInputs.Lights[0].Kind == renderer::LightKind::Point);
 
     RenderGraphExtraction unchanged = extraction;
     CHECK(MakeRenderGraphExtraction(RenderScene{}, {}, 10, unchanged, error) == false);

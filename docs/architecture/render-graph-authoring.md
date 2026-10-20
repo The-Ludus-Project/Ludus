@@ -362,6 +362,12 @@ record the departures.
 
 ## Shared schemas and CPU/GPU layout
 
+The [shared scene, material and lighting shader contract](shared-scene-shader-contract.md)
+proposes typed scene/light access, geometric mesh-emitter sampling and bounded
+intersection/visibility queries for authored raygen and closest-hit shaders.
+It keeps NEE and bounce policy in user shader sources. This is a proposed new
+profile; the delivered flat triangle-ray interface retains its current limits.
+
 Define fields, stable IDs, units/defaults, resource kinds and packing policy once
 in an authoritative schema. The editor is a view/controller for that source; an
 equivalent text source is accepted under the same rules. Generate C++ value

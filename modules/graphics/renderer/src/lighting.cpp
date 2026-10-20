@@ -10,6 +10,33 @@ namespace ludus::graphics::renderer
 {
 using namespace foundation;
 namespace math = foundation::math;
+rhi::RasterStatus ResolveMeshEmissionPower(math::Vector3 color,
+                                           float32 lumens,
+                                           float64 areaWorld,
+                                           bool isTwoSided,
+                                           math::Vector3& outEmission) noexcept
+{
+    constexpr math::Vector3 LUMINANCE_WEIGHTS{.2126F, .7152F, .0722F};
+    constexpr float32 MAX_EMISSION = 10000;
+    if (math::IsFinite(color) == false || color.X < 0 || color.Y < 0 || color.Z < 0 ||
+        math::IsFinite(lumens) == false || lumens < 0 || math::IsFinite(areaWorld) == false || areaWorld <= 0)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    const float32 luminance = math::Dot(color, LUMINANCE_WEIGHTS);
+    if (luminance <= 0)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    const float64 divisor = static_cast<float64>(luminance) * math::kPi * areaWorld * (isTwoSided == true ? 2.0 : 1.0);
+    const math::Vector3 value = color * static_cast<float32>(static_cast<float64>(lumens) / divisor);
+    if (math::IsFinite(value) == false || value.X > MAX_EMISSION || value.Y > MAX_EMISSION || value.Z > MAX_EMISSION)
+    {
+        return rhi::RasterStatus::CapacityExceeded;
+    }
+    outEmission = value;
+    return rhi::RasterStatus::Ready;
+}
 rhi::RasterStatus DecodeSurfaceParameters(math::Vector4 texel,
                                           float32 metallic,
                                           float32 roughness,
