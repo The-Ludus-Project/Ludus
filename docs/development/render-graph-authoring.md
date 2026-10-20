@@ -1067,6 +1067,14 @@ node. It is another view of the same typed draft: every canvas edit is a
 `RenderGraphDocument` operation, so undo, explicit save, validation and Properties
 stay in step.
 
+Choose a node type in Properties and click **Add Node**. It uses the configuration
+currently shown on the canvas, including a selected file's default; selecting a
+configuration row or entering an ID is unnecessary. IDs are generated from the
+type (`scene`, `scene2`, `scene3`, and so on), avoiding existing IDs in that
+configuration. The new node is selected and scrolled into view. Any failure is
+explained beside **Add Node** and leaves the draft unchanged. Addition is one
+undoable edit; **Save** writes it to the project.
+
 | Gesture | Draft operation |
 | --- | --- |
 | Drag nodes (Ctrl-click adds to the selection) | One `MoveNodes` edit per gesture, applied on release: one undo step however far the drag went. A drag that returns to its start commits nothing. |

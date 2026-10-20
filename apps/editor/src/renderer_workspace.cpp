@@ -298,7 +298,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mConfiguration(new QComboBox(this)), mTree(new QTreeWidget(this)), mViews(new QTabWidget(this)),
       mInspectorPanel(new QScrollArea(this)), mInspector(new QWidget(mInspectorPanel)), mFields(new QFormLayout),
       mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)), mNewKind(new QComboBox(mInspector)),
-      mNewIdentity(new QLineEdit(mInspector)), mEdges(new QTableWidget(mInspector)),
+      mNodeCreationMessage(new QLabel(mInspector)), mEdges(new QTableWidget(mInspector)),
       mEdgeFrom(new QLineEdit(mInspector)), mEdgeTo(new QLineEdit(mInspector)), mSourceFile(new QComboBox(this)),
       mSource(new QPlainTextEdit(this)), mSourceInterface(new QPlainTextEdit(this)), mPlan(new QPlainTextEdit(this)),
       mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)), mStatus(new QLabel(this)),
@@ -361,15 +361,21 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("Subgraph"),
                         QStringLiteral("Export"),
                         QStringLiteral("Present")});
-    mNewIdentity->setObjectName(QStringLiteral("renderGraphNewIdentity"));
-    mNewIdentity->setPlaceholderText(QStringLiteral("new node ID"));
+    mNewKind->setAccessibleName(QStringLiteral("New node type"));
     QPushButton* add = new QPushButton(QStringLiteral("Add Node"), mInspector);
     add->setObjectName(QStringLiteral("renderGraphAddNode"));
     QHBoxLayout* addRow = new QHBoxLayout;
     addRow->addWidget(mNewKind);
-    addRow->addWidget(mNewIdentity, 1);
+    addRow->addStretch();
     addRow->addWidget(add);
     inspectorLayout->addLayout(addRow);
+    mNodeCreationMessage->setObjectName(QStringLiteral("renderGraphNodeCreationMessage"));
+    mNodeCreationMessage->setTextFormat(Qt::PlainText);
+    mNodeCreationMessage->setWordWrap(true);
+    mNodeCreationMessage->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    mNodeCreationMessage->hide();
+    inspectorLayout->addWidget(mNodeCreationMessage);
+    add->setToolTip(QStringLiteral("Add this type to the configuration shown on the canvas, with a unique ID."));
     mEdges->setObjectName(QStringLiteral("renderGraphEdges"));
     ConfigureItemSelection(*mEdges);
     mEdges->setColumnCount(2);
@@ -1986,20 +1992,75 @@ void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonVa
 
 void RendererWorkspace::addNode()
 {
-    const QString identity = mNewIdentity->text().trimmed();
-    if (mSelectedConfiguration.isEmpty() == true || identity.isEmpty() == true)
+    const auto report = [this](const QString& message) {
+        mNodeCreationMessage->setText(message);
+        mNodeCreationMessage->show();
+        mStatus->setText(message);
+    };
+    if (mDocument.IsLoaded() == false)
     {
-        mStatus->setText(QStringLiteral("Select a configuration and enter a new node ID."));
+        report(QStringLiteral("Cannot add a node: open or create a render graph first."));
         return;
     }
-    const RenderGraphDocumentStatus status =
-        mDocument.AddNode(mSelectedFile, mSelectedConfiguration, MakeNode(mNewKind->currentText(), identity));
-    if (status == RenderGraphDocumentStatus::Ok)
+    // The displayed canvas owns the authoring context, including a selected file's default.
+    const QString file = mCanvas->GetFile();
+    const QString configuration = mCanvas->GetConfiguration();
+    QJsonObject graph;
+    if (mDocument.GetGraph(file, graph) == false)
     {
-        mSelectedNode = identity;
-        mNewIdentity->clear();
+        report(QStringLiteral("Cannot add a node: %1 is not a valid graph JSON object. Fix it in Source.").arg(file));
+        return;
     }
+    QJsonObject record;
+    const QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    for (const QJsonValueConstRef value : configurations)
+    {
+        if (configuration.isEmpty() == false &&
+            value.toObject().value(QStringLiteral("id")).toString() == configuration)
+        {
+            record = value.toObject();
+            break;
+        }
+    }
+    if (record.isEmpty() == true)
+    {
+        report(QStringLiteral("Cannot add a node: %1 has no valid configuration to display. "
+                              "Fix its default or configurations in Source.")
+                   .arg(file));
+        return;
+    }
+    if (record.value(QStringLiteral("nodes")).isArray() == false)
+    {
+        report(QStringLiteral("Cannot add a node: %1#%2 must contain a nodes array. Fix it in Source.")
+                   .arg(file, configuration));
+        return;
+    }
+    QStringList identities;
+    const QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    for (const QJsonValueConstRef node : nodes)
+    {
+        identities.append(node.toObject().value(QStringLiteral("id")).toString());
+    }
+    const QString kind = mNewKind->currentText();
+    const QString stem = kind.toLower();
+    QString identity = stem;
+    for (qsizetype suffix = 2; identities.contains(identity) == true; ++suffix)
+    {
+        identity = stem + QString::number(suffix);
+    }
+    const RenderGraphDocumentStatus status = mDocument.AddNode(file, configuration, MakeNode(kind, identity));
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        report(QStringLiteral("Cannot add %1 to %2#%3: %4").arg(kind, file, configuration, DescribeStatus(status)));
+        return;
+    }
+    mSelectedFile = file;
+    mSelectedConfiguration = configuration;
+    mSelectedNode = identity;
     documentEdited(status);
+    mViews->setCurrentIndex(CANVAS_VIEW);
+    mCanvas->RevealNode(identity);
+    report(QStringLiteral("Added %1 to %2#%3.").arg(identity, file, configuration));
 }
 
 bool RendererWorkspace::SelectNode(const QString& file, const QString& configuration, const QString& node)
@@ -2153,6 +2214,8 @@ QString RendererWorkspace::GetStatusText() const
 
 void RendererWorkspace::renderCanvas()
 {
+    mNodeCreationMessage->clear();
+    mNodeCreationMessage->hide();
     QString configuration = mSelectedConfiguration;
     QJsonObject graph;
     if (configuration.isEmpty() == true && mDocument.GetGraph(mSelectedFile, graph) == true)

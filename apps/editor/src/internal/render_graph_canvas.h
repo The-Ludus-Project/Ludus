@@ -115,6 +115,8 @@ public:
     /// Domain colour category of a displayed node (for tests and accessibility text).
     [[nodiscard]] RenderGraphDomain GetNodeDomain(const QString& node) const;
     void SelectNode(const QString& node);
+    /// Scroll the node into view without changing the current zoom or selection.
+    void RevealNode(const QString& node);
     [[nodiscard]] QStringList GetSelectedNodes() const;
 
     /// Gesture entry points shared by mouse handling and tests. A gesture moves every
