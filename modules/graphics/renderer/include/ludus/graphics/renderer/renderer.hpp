@@ -366,6 +366,14 @@ public:
                                                      const rhi::RasterShaderDescription& vertex,
                                                      const rhi::RasterShaderDescription& fragment,
                                                      const GpuPreviewOptions&) noexcept;
+    /// Enable the graph triangle kernel with flat opaque snapshots, without lit-material programs.
+    /// Same GPU setup, budgets and lifetime as EnableGpuPreview; the compute stage must implement
+    /// the authored triangle-ray ABI. BeginGpuPreview then copies flat tint/geometry only, with no
+    /// lighting or CPU tracing. Ready/Pending owns setup; failure preserves the disabled state.
+    [[nodiscard]] rhi::RasterStatus EnableTriangleRayPipeline(const rhi::RasterShaderDescription& compute,
+                                                              const rhi::RasterShaderDescription& vertex,
+                                                              const rhi::RasterShaderDescription& fragment,
+                                                              const GpuPreviewOptions& options) noexcept;
     /// Poll asynchronous GPU preview setup and retire cancelled completed jobs on
     /// the owner thread between frames.
     /// No waiting; failure remains observable until Reset.
@@ -388,6 +396,17 @@ public:
     /// NotReady means an earlier producer is pending or both output images are leased.
     /// Success publishes producing completion; acquired images are never overwritten.
     [[nodiscard]] rhi::RasterStatus AdvanceGpuPreview(GpuPreview, rhi::SurfaceHandle, rhi::SubmissionToken&) noexcept;
+    /// Prepare a one-sample GPU job's compute and image commands for an external graph-owned target.
+    /// Owner thread, between frames. The target must be a ready offscreen RGBA8 attachment with the
+    /// job's exact extent. Copies/retains resource uses in a new compiled OrderedGraph; never shades.
+    /// The caller encodes it into a frame, tracks the actual EndFrame completion, and rebuilds it
+    /// only after that producer finishes. The GPU job/target outlive graph encoding; RHI retains
+    /// submitted resources through completion. Job progress/preview frame leases are unaffected.
+    /// @param job Ready GPU job; do not also AdvanceGpuPreview this job.
+    /// @param target Borrowed attachment, cleared/stored in color; private depth is discarded.
+    /// @param outGraph Null graph receives the commands. Failure preserves it and releases temporary leases.
+    [[nodiscard]] rhi::RasterStatus
+    PrepareGpuPreviewGraph(GpuPreview job, rhi::TextureHandle target, rhi::OrderedGraph& outGraph) noexcept;
     /// Poll GPU completion and copy progress; no waiting or GPU-buffer readback.
     /// Ready/Pending copy progress; rejection preserves output. Owner-thread,
     /// between frames. Pending means creation or producer work is outstanding.

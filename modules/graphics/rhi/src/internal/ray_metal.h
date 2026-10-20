@@ -102,7 +102,16 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
         }
         MTLCompileOptions* options = [MTLCompileOptions new];
         options.languageVersion = MTLLanguageVersion2_4;
-        options.fastMathEnabled = NO;
+        if (@available(macOS 15.0, *)) // ludus-style: magic-number Metal mathMode availability version
+        {
+            options.mathMode = MTLMathModeSafe;
+        }
+#if __MAC_OS_X_VERSION_MIN_REQUIRED < 150000
+        else
+        {
+            options.fastMathEnabled = NO;
+        }
+#endif
         NSError* error = nil;
         id<MTLLibrary> library = [gDevice newLibraryWithSource:source options:options error:&error];
         if (library == nil)

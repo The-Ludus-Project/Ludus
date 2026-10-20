@@ -47,7 +47,7 @@ class PipelineDocumentTests(unittest.TestCase):
         for kind, stage in (('ComputePipeline', 'compute'), ('RayTracingPipeline', 'ray_generation')):
             node = pipeline.new_node(kind, 'work')
             node['shaders'] = [{'id': 'entry', 'stage': stage, 'program': 'Entry'}]
-            self.fails(node, 'Capability')
+            self.fails(node, 'Capability' if kind == 'ComputePipeline' else 'IncompletePipeline')
 
     def test_stage_legality_duplicate_ids_dimensions_and_unknown_state(self):
         node = pipeline.new_node('ComputePipeline', 'work')

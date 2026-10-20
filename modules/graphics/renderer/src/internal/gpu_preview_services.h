@@ -3,6 +3,8 @@
 #include <ludus/foundation/base/byte_order.hpp>
 
 #include <cstring>
+
+#include "render_graph_ray_scene.h"
 // Included only by renderer.cpp. CPU work here only
 // freezes input, builds the static BVH, packs bytes, and observes submission state.
 // Transport, accumulation and display conversion are exclusively shader work.
@@ -13,6 +15,8 @@ namespace
 using internal::GpuPreviewRecord;
 using internal::GpuPreviewState;
 using internal::ReferenceJob;
+// Shared cold serializer is defined by reference_services.h in this translation unit.
+bool ReferenceFingerprint(ReferenceJob& inoutJob, usize byteBudget) noexcept;
 constexpr rhi::RasterBinding GPU_COMPUTE_BINDINGS[]{
     {0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Compute, sizeof(internal::GpuPreviewUniform)},
     {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, 16},
@@ -528,6 +532,18 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     return status;
 }
+Status Renderer::EnableTriangleRayPipeline(const rhi::RasterShaderDescription& compute,
+                                           const rhi::RasterShaderDescription& vertex,
+                                           const rhi::RasterShaderDescription& fragment,
+                                           const GpuPreviewOptions& options) noexcept
+{
+    const Status status = EnableGpuPreview(compute, vertex, fragment, options);
+    if (status == Status::Ready || status == Status::Pending)
+    {
+        mState->GpuPreview->IsGraphRayScene = true;
+    }
+    return status;
+}
 Status Renderer::PollGpuPreview() noexcept
 {
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
@@ -712,7 +728,50 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         }
     }
     core::UniquePtr<ReferenceJob> scene;
-    status = mState->BuildReferenceJob(Access::Slot(snapshot), description, scene, true);
+    if (state.IsGraphRayScene == true)
+    {
+        Array<internal::GraphRaySceneInput> inputs;
+        if (inputs.TryEnsureCapacity(source->Count) == false)
+        {
+            return Status::OutOfMemory;
+        }
+        for (usize i = 0; i < source->Count; ++i)
+        {
+            const State::Item& item = source->Items[i];
+            if (item.Input.Pass != Layer::Opaque || item.MaterialSlot != NO_MATERIAL ||
+                mState->MeshRecords[item.MeshSlot].Reference.Get() == nullptr)
+            {
+                return Status::Unsupported;
+            }
+            const math::Vector4 color = item.Input.Material.Color;
+            if (inputs.TryAdd({mState->MeshRecords[item.MeshSlot].Reference.Get(),
+                               item.Input.Transform,
+                               {color.X, color.Y, color.Z},
+                               item.Input.SourceId}) == false)
+            {
+                return Status::OutOfMemory;
+            }
+        }
+        const usize remaining = mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes;
+        const usize inputBytes = inputs.GetCapacity() * sizeof(internal::GraphRaySceneInput);
+        if (inputBytes > remaining)
+        {
+            return Status::CapacityExceeded;
+        }
+        status = internal::BuildGraphRayScene({inputs.GetData(), inputs.GetSize()},
+                                              description,
+                                              remaining - inputBytes,
+                                              scene);
+        if (status == Status::Ready &&
+            ReferenceFingerprint(*scene, remaining - inputBytes - scene->Info.CpuBytes) == false)
+        {
+            return Status::OutOfMemory;
+        }
+    }
+    else
+    {
+        status = mState->BuildReferenceJob(Access::Slot(snapshot), description, scene, true);
+    }
     if (status != Status::Ready)
     {
         return status;
@@ -850,9 +909,11 @@ Status BuildGpuGraph(rhi::DeviceHandle device,
                      const GpuPreviewState& state,
                      const GpuPreviewRecord& job,
                      uint32 image,
-                     rhi::OrderedGraph& graph) noexcept
+                     rhi::OrderedGraph& outGraph,
+                     const rhi::TextureHandle* targetOrNull = nullptr) noexcept
 {
-    Status status = rhi::CreateOrderedGraph(device, graph);
+    constexpr usize COLOR_BUFFER_INDEX = 3;
+    Status status = targetOrNull == nullptr ? rhi::CreateOrderedGraph(device, outGraph) : Status::Ready;
     if (status != Status::Ready)
     {
         return status;
@@ -868,36 +929,37 @@ Status BuildGpuGraph(rhi::DeviceHandle device,
     rhi::GraphVersion versions[8];
     for (usize i = 0; i < 8; ++i)
     {
-        status = rhi::ImportGraphBuffer(device, graph, buffers[i], versions[i]);
+        status = rhi::ImportGraphBuffer(device, outGraph, buffers[i], versions[i]);
         if (status != Status::Ready)
         {
             return status;
         }
     }
+    const rhi::TextureHandle target = targetOrNull != nullptr ? *targetOrNull : job.Frames[image].Texture;
     rhi::RasterTextureState textureState;
-    status = rhi::GetTextureState(device, job.Frames[image].Texture, textureState);
+    status = rhi::GetTextureState(device, target, textureState);
     if (status != Status::Ready)
     {
         return status;
     }
     rhi::GraphVersion texture, output, accumulation, colors;
     status = rhi::ImportGraphTexture(device,
-                                     graph,
-                                     job.Frames[image].Texture,
+                                     outGraph,
+                                     target,
                                      textureState,
                                      rhi::RasterTextureUse::SampledFragment,
                                      texture);
     if (status == Status::Ready)
     {
-        status = rhi::NextGraphVersion(device, graph, texture, output);
+        status = rhi::NextGraphVersion(device, outGraph, texture, output);
     }
     if (status == Status::Ready)
     {
-        status = rhi::NextGraphVersion(device, graph, versions[2], accumulation);
+        status = rhi::NextGraphVersion(device, outGraph, versions[2], accumulation);
     }
     if (status == Status::Ready)
     {
-        status = rhi::NextGraphVersion(device, graph, versions[3], colors);
+        status = rhi::NextGraphVersion(device, outGraph, versions[COLOR_BUFFER_INDEX], colors);
     }
     if (status != Status::Ready)
     {
@@ -922,7 +984,7 @@ Status BuildGpuGraph(rhi::DeviceHandle device,
     compute.Uses = computeUses;
     compute.UseCount = 5;
     compute.Dispatch = &dispatch;
-    status = rhi::AddGraphPass(device, graph, compute);
+    status = rhi::AddGraphPass(device, outGraph, compute);
     if (status != Status::Ready)
     {
         return status;
@@ -937,28 +999,83 @@ Status BuildGpuGraph(rhi::DeviceHandle device,
                                     {output, rhi::GraphAccessMode::ColorWrite}};
     rhi::GraphPassDescription present;
     present.Name = "GPU preview image";
-    present.Attachment.Color = job.Frames[image].Texture;
+    present.Attachment.Color = target;
+    if (targetOrNull != nullptr)
+    {
+        present.Attachment.DepthStore = rhi::RasterStore::Discard;
+    }
     present.Uses = imageUses;
     present.UseCount = 5;
     present.Draws = &draw;
     present.DrawCount = 1;
-    status = rhi::AddGraphPass(device, graph, present);
+    status = rhi::AddGraphPass(device, outGraph, present);
     if (status == Status::Ready)
     {
-        status = rhi::AddGraphRoot(device, graph, accumulation, rhi::GraphRoot::History);
+        status = rhi::AddGraphRoot(device, outGraph, accumulation, rhi::GraphRoot::History);
     }
     if (status == Status::Ready)
     {
-        status = rhi::AddGraphRoot(device, graph, output, rhi::GraphRoot::Export);
+        status = rhi::AddGraphRoot(device, outGraph, output, rhi::GraphRoot::Export);
     }
     rhi::GraphReport report;
     if (status == Status::Ready)
     {
-        status = rhi::CompileOrderedGraph(device, graph, report);
+        status = rhi::CompileOrderedGraph(device, outGraph, report);
     }
     return status;
 }
 } // namespace
+Status Renderer::PrepareGpuPreviewGraph(renderer::GpuPreview handle,
+                                        rhi::TextureHandle target,
+                                        rhi::OrderedGraph& outGraph) noexcept
+{
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    Status status = RendererAdmission(mState->Device);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    internal::GpuPreviewState& state = *mState->GpuPreview;
+    constexpr usize JOB_COUNT = 4;
+    internal::GpuPreviewRecord* jobOrNull = Resolve(state.Jobs, JOB_COUNT, mState->Owner, handle);
+    if (jobOrNull == nullptr)
+    {
+        return Status::InvalidHandle;
+    }
+    status = PollGpuJob(mState->Device, state, *jobOrNull);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    rhi::TextureDescription description;
+    status = rhi::GetTextureDescription(mState->Device, target, description);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    if (description.Width != jobOrNull->Width || description.Height != jobOrNull->Height ||
+        description.Attachment == false || description.Format != rhi::RasterFormat::Rgba8Unorm ||
+        description.SampleCount != 1)
+    {
+        return Status::InvalidDescription;
+    }
+    // Build directly into the caller's null graph: CreateOrderedGraph rejects occupied outputs.
+    // On later failure discard only the graph allocated by this invocation.
+    status = rhi::CreateOrderedGraph(mState->Device, outGraph);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    status = BuildGpuGraph(mState->Device, state, *jobOrNull, 0, outGraph, &target);
+    if (status != Status::Ready)
+    {
+        static_cast<void>(rhi::DiscardOrderedGraph(mState->Device, outGraph));
+    }
+    return status;
+}
 Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
                                    rhi::SurfaceHandle surface,
                                    rhi::SubmissionToken& completion) noexcept

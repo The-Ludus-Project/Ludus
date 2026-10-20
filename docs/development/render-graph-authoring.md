@@ -95,12 +95,100 @@ its exact vertex/fragment assignments and complete state against the authored
 technique/recipe; settings are never silently ignored. Each admitted output's
 format/sample count must match its connected target. Additional resources,
 optional geometry/tessellation stages and unsupported state produce an explicit
-capability error. Compute and ray tracing settings can be authored and saved,
-but their execution is rejected by this graph build profile. Their presence in
-the picker does not establish GPU support. Missing required shader assignments
+capability error. Compute settings can be authored and saved, but compute-node execution remains
+outside this graph profile. Triangle ray pipelines execute through the
+[authored ray profile](#execute-a-triangle-ray-pipeline) below. Device capabilities
+and the complete authored interface are checked before activation. Missing required shader assignments
 produce IncompletePipeline; an invalid/pending candidate leaves the current
 viewport generation intact. Blending/rasterization remain fields inside the
 node; separate state blocks and stream output are deferred.
+
+## Execute a triangle ray pipeline
+
+A `RayTracingPipeline` can run authored ray-generation, miss and closest-hit
+functions over the selected World's static opaque triangles. The renderer freezes
+an immutable World extraction, builds its BVH during scene preparation, and uploads
+geometry and camera inputs. GPU compute performs traversal and shading; a
+renderer-owned image pass transfers GPU-produced colors to the graph's attachment.
+There is no CPU tracing or pixel readback in this path. The editor's World/camera
+updates create replacement inputs, retaining the last drawable view until they
+are ready, just as raster graph updates do.
+
+This is a portable GPU triangle profile, including Metal on macOS. It does not
+request dedicated Vulkan/DXR ray stages or hardware acceleration structures, and
+makes no claim of hardware ray-traversal acceleration. WebGPU compute artifacts
+can be carried by the same package. WebGL2/GLSL ES is unsupported. An unavailable
+compute/storage capability rejects activation while preserving the prior view.
+
+Author three manifest programs with these built-in function interfaces:
+
+| Stage | Manifest input / output | Authored function |
+| --- | --- | --- |
+| `ray_generation` | `RayLaunch` / `Ray` | `Ray GenerateRay(RayLaunch launch)` |
+| `miss` | `Ray` / `Color` | `float3 ShadeMiss(Ray ray)` |
+| `closest_hit` | `RayHit` / `Color` | `float3 ShadeClosest(RayHit hit)` |
+
+Each program still declares `id`, `stage`, package-relative `source`, `function`,
+`input`, `output` and an empty `bindings` array. The builder supplies these input
+types. `Ray` contains `OriginWorld`, `MinDistanceWorld`, `DirectionWorld` and
+`MaxDistanceWorld`, in world meters; directions must be finite unit vectors and
+distances finite, nonnegative and ordered. `RayLaunch` supplies `PositionPixel`,
+`ExtentPixel` and `CameraRay`, a center ray clipped to the current camera's near/far
+planes. Return that ray or author another one. `RayHit` supplies `IncomingRay`,
+`PositionWorld`, `DistanceWorld`, geometric `NormalWorld`, packed world triangle
+`Primitive`, vertex-one/two `Barycentric` weights and `Color` (RGB material tint;
+its W component is reserved). Hit/miss functions return linear RGB, clamped into
+RGBA8 with opaque alpha. Invalid/nonfinite/negative colors or invalid rays show
+magenta error pixels. This profile performs exactly one trace per pixel; it adds
+no lights or automatic transport model.
+
+Declare the linked technique alongside the manifest's existing static opaque
+setup technique:
+
+```json
+{
+  "id": "RendererTriangles.RayTracing",
+  "configuration": "RayTracing",
+  "ray_generation": "Generate",
+  "miss": "Miss",
+  "closest_hit": "Closest",
+  "recipes": [
+    {"id": "Triangles", "max_recursion": 1, "payload_bytes": 0, "attribute_bytes": 8}
+  ]
+}
+```
+
+Select those exact program IDs in the node's Shaders table. Its state must match
+the recipe above: the eight attribute bytes represent triangle barycentrics.
+Declare exactly one input each of type Scene, View and ColorTexture, and one
+RGBA8Unorm color output naming that color input as its `target`, with `Clear` and
+`Store`. In the editor, add the color through **Writable Resources**; its paired
+input and target association are automatic. Port names are authored, not fixed. Set invocation `dimensions` to the
+color target's exact `[width, height, 1]`. Feed Scene and Camera into those inputs,
+the target into both Camera's designated target and the ray node, and the ray
+color output into Export. Use a single-sample offscreen target. Raster and ray
+versions of a renderer can be separate configurations; do not branch physical
+writes from the same attachment version.
+
+The profile admits one ray invocation per configuration and the existing graph
+mesh/item limits. It rejects payloads, recursive tracing, additional hit groups,
+any-hit/intersection/callable stages, extra resources, masked/transparent or
+deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
+aspect; no ray depth output is inferred. Ray preparation has renderer-owned
+256 MiB CPU and 256 MiB GPU limits across retained jobs; device storage limits can
+be tighter. The existing static opaque setup technique remains in the manifest
+for shared mesh/snapshot ownership and is never used to rasterize ray scene
+geometry. A complete source example is the
+[SDK ray fixture](../../tests/sdk_consumer/rg2/raytracing/main.lurender.json) and its
+[manifest](../../tests/sdk_consumer/rg2/raytracing/main.lushader.json.in).
+
+Build, cook and activate it through the same graph commands as a raster package.
+SDK callers using `RenderGraph::Render` need no separate ray job. Callers composing
+an acquired frame call `PrepareEncoding()` between frames before `Encode()`, then
+`ConfirmSubmission()` with their actual `EndFrame` token. Preparation and failed
+candidates preserve the last drawable scene; an exported color is valid only
+after its tracked producer completes. Shader changes continue through immutable
+packages and atomic graph activation.
 
 ## Start customizing the renderer
 

@@ -23,6 +23,7 @@ import sys
 
 from .errors import ToolingError
 from . import render_graph_pipeline as pipeline
+from . import render_graph_ray as ray
 
 MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
@@ -529,17 +530,18 @@ class _Compiler:
             output_mapping = None
             if kind in pipeline.KINDS:
                 authored_pipeline = node
-                if kind != 'GraphicsPipeline':
+                if kind == 'ComputePipeline':
                     required_stage = 'compute' if kind == 'ComputePipeline' else 'ray_generation'
                     _require(any(shader['stage'] == required_stage for shader in node['shaders']),
                              'IncompletePipeline', where, f'{kind} is missing its {required_stage} shader. Add that stage in Shaders and assign a build-manifest program ID.')
                     _fail('Capability', where, f'{kind} execution is not supported by the current graph build profile. '
                              'Keep it as a saved draft, or use a GraphicsPipeline with supported vertex/fragment programs for preview.')
-                node, input_mapping, output_mapping = pipeline.lower_graphics(node, where, sys.modules[__name__])
+                node, input_mapping, output_mapping = (ray.lower(node, where, sys.modules[__name__])
+                    if kind == 'RayTracingPipeline' else pipeline.lower_graphics(node, where, sys.modules[__name__]))
                 _require(set(input_mapping.values()) <= inputs.keys(), 'UnboundInput', where,
                          'the selected graphics invocation requires all mapped inputs')
                 inputs = {name: inputs[port] for name, port in input_mapping.items()}
-                kind = 'Raster'
+                kind = node['kind']
             if kind == "Scene":
                 outputs["scene"] = _Value("Scene", origin=where)
             elif kind == "Target":
@@ -556,6 +558,23 @@ class _Compiler:
                              "CameraTarget", where, "camera role does not match its designated target")
                 self.cameras.append(camera)
                 outputs["view"] = _Value("View", origin=where, cameras=(where,) if node["active"] else ())
+            elif kind == "RayTracing":
+                target = self.resources[inputs['color'].resource]
+                _require(inputs['view'].cameras, 'CameraTarget', where, 'ray pipeline requires an active camera')
+                _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
+                         'Capability', where, 'ray pipeline requires an offscreen single-sample RGBA8Unorm target')
+                _require(authored_pipeline['invocation']['dimensions'] == [*target['extent'], 1],
+                         'AttachmentMismatch', where, 'ray launch dimensions must match the output width, height and depth=1')
+                value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
+                self.techniques.add(ray.TECHNIQUE)
+                self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
+                    'technique': ray.TECHNIQUE, 'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
+                    'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
+                    'scene': inputs['scene'].origin, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
+                    'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
+                    'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
+                        'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
+                outputs = {output_mapping['color']: value}
             elif kind == "Raster":
                 _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera")
                 if node["mode"] == "ColorAndDepth":
