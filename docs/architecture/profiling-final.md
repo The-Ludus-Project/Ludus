@@ -168,7 +168,9 @@ Metal retains completion-only command-buffer timing for the frame probe. Pass
 sampling separately requires timestamp counter sets and stage-boundary support.
 Render pass attachments sample the vertex and fragment stage boundaries; the
 minimum start and maximum end define one elapsed envelope, since stages can
-overlap. Compute attachments sample encoder start/end. Samples are resolved only
+overlap. This is a vertex/fragment processing envelope, without a guarantee that
+all attachment bookkeeping lies inside it. Compute attachments sample encoder
+start/end. Samples are resolved only
 after command-buffer completion. This does not split encoders or command buffers.
 Unavailable counters leave the frame probe and rendering operational.
 

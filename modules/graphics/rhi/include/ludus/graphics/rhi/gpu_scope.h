@@ -30,11 +30,11 @@ struct GpuScopeDescription final
                                 foundation::BorrowedView<const char> name,
                                 GpuScopeDescription& outScope,
                                 foundation::uint32 logicalPassCount = 1) noexcept;
-/// Measured native operation. Raster includes the complete physical render encoder/pass;
-/// Compute includes the compute encoder/dispatch interval. Values are not shader busy time.
+/// Measured native operation. Raster uses the backend's physical-pass stage interval;
+/// Compute uses its encoder/dispatch interval. Values are elapsed time, not shader busy time.
 enum class GpuPassKind : foundation::uint8
 {
-    /// Physical render pass, including attachment loads/stores and GPU stalls.
+    /// Vertex/fragment stage envelope on Metal; TOP/BOTTOM render-pass interval on Vulkan.
     Raster,
     /// Physical compute operation, including GPU stalls.
     Compute,
@@ -68,15 +68,15 @@ struct GpuPassTimings final
 /// Ready replaces terminal data; InvalidState preserves armed/pending data. Unsupported
 /// leaves frame timing and rendering available. Allocation failure preserves terminal data.
 [[nodiscard]] RasterStatus ArmGpuPassTimings(DeviceHandle device) noexcept;
-/// Nonblocking copy of the current batch. InvalidHandle preserves outTimings; unavailable
+/// Nonblocking owner-thread copy of the current batch. InvalidHandle preserves outTimings; unavailable
 /// device states clear it. Duration-only data has no CPU/GPU clock alignment.
 [[nodiscard]] RasterStatus GetGpuPassTimings(DeviceHandle device, GpuPassTimings& outTimings) noexcept;
-/// Begin a named physical scope in an acquired frame, before encoding its operations.
+/// Begin a named physical scope on the owner thread in an acquired frame, before encoding its operations.
 /// Names are copied for timing and native annotations. Nested scopes are rejected; a merged
 /// physical pass uses one scope with its logical member count. Timing need not be armed.
 /// InvalidState/Unsupported annotation results must not be treated as rendering failures.
 [[nodiscard]] RasterStatus BeginGpuScope(DeviceHandle device, const GpuScopeDescription& scope) noexcept;
-/// End the current scope after its encoders/passes end. Rejects an unbalanced end.
+/// End the current owner-thread scope after its encoders/passes end. Rejects an unbalanced end.
 [[nodiscard]] RasterStatus EndGpuScope(DeviceHandle device) noexcept;
 /// Owner-thread lexical scope; failed annotation admission never prevents rendering.
 /// Destruction closes only a scope successfully begun by this instance.

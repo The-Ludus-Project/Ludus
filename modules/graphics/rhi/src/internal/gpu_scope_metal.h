@@ -4,7 +4,7 @@
 
 // Thanks to Apple, "Sampling GPU data into counter sample buffers", Metal:
 // https://developer.apple.com/documentation/metal/sampling-gpu-data-into-counter-sample-buffers
-// Stage-boundary attachments cover complete physical encoders. Overlapping render
+// Stage-boundary attachments measure physical encoder stages. Overlapping render
 // stages form one elapsed envelope, never a sum or a CPU-aligned execution slice.
 namespace ludus::graphics::rhi::backend
 {
