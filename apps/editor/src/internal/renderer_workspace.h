@@ -325,7 +325,7 @@ private:
     QSpinBox* mLayoutX;
     QSpinBox* mLayoutY;
     QComboBox* mNewKind;
-    QLineEdit* mNewIdentity;
+    QLabel* mNodeCreationMessage;
     QTableWidget* mEdges;
     QLineEdit* mEdgeFrom;
     QLineEdit* mEdgeTo;

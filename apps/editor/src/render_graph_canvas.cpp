@@ -751,6 +751,18 @@ void RenderGraphCanvas::SelectNode(const QString& node)
     updateSelection();
 }
 
+void RenderGraphCanvas::RevealNode(const QString& node)
+{
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->Id == node)
+        {
+            ensureVisible(view->Frame);
+            return;
+        }
+    }
+}
+
 void RenderGraphCanvas::updateSelection()
 {
     for (NodeView* view : std::as_const(mNodes))
