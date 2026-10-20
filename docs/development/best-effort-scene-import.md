@@ -29,6 +29,7 @@ ludus-cook gltf   path/to/scene.glb  out/scene-dir    # .gltf or .glb
 ludus-cook obj    path/to/scene.obj  out/scene-dir
 ludus-cook import path/to/any-entry  out/scene-dir    # importer chosen from the file's content
 ludus-cook import path/to/any-entry  --dry-run        # parses and plans; prints the report only
+ludus-cook gltf   path/to/scene.gltf out/scene-dir --workers 4  # decodes textures on 4 workers + the caller
 ```
 
 A dry run reads geometry (so counts and budgets are real) but decodes no
@@ -156,6 +157,32 @@ reports out-of-memory instead of exhausting the process. Radiance and OpenEXR
 environments keep linear energy and are box-halved (preserving mean radiance)
 until they fit 4096 texels and the bundle budget; values beyond the profile's
 radiance bound still reject the import as before.
+
+### Parallel texture decoding
+
+Decoding the texture images (for example inflating Main Sponza's 4K PNGs) is
+most of a textured import's time. `BestEffortOptions::JobsOrNull` (and
+`AssetOptions::JobsOrNull` for the scene asset operations) takes an optional,
+caller-owned `JobSystem`; there is no hidden pool
+([threading architecture](../architecture/threading.md#scene-import-texture-decoding)).
+Without one, images are decoded one at a time on the calling thread.
+
+The cook first lists its decodes in the order it consumes them, that is the
+base textures and opacity maps slot by slot, then the surface and emission maps.
+Each batch of up to `min(workers + 1, 8)` images is read on the calling thread,
+because job callbacks do no I/O. The batch is then decoded in jobs that each
+write only their own slot, with the caller helping in `Wait`. The cook consumes
+the results in the same order as before, so diagnostics, the base textures'
+recorded file digests and the cooked bytes are identical for every worker count,
+zero and none. A decode taken out of that order, for example after a failed map
+changes how many maps fit the texture count, is decoded inline. Cancellation is
+polled before each image is read. The batch bounds the extra memory to that
+many decoded images (64 MiB each at 4096 × 4096). A system that is busy with
+another graph makes the import decode serially.
+
+`ludus-cook ... --workers N` (0 to 64; the default 0 decodes serially) and the
+Editor, which keeps its own four-worker import system, use this option. Browser
+builds decode serially.
 
 ## Tangents
 
@@ -363,6 +390,11 @@ them document provenance; the build does not run them. Malformed, truncated,
 out-of-range, unsupported, escaping-path, cancellation and budget cases are
 generated in memory. `ludus_scene_assets_tests` imports the glTF, GLB and OBJ
 fixtures through the editor's preview, import, commit and assemble path.
+`texture_decode_tests.cpp` (part of `ludus_scene_import_tests`) treats a cook
+without a job system as the oracle. It requires byte-identical bundles, reports
+and input digests from systems with 0, 1, 3 and 7 workers. The scenes cover every
+map kind, unreadable and undecodable images, and failures at the texture-count
+limit. It also tests out-of-order takes, a busy system and cancellation.
 
 Configure with `-DLUDUS_BUILD_SCENE_COOK_FUZZERS=ON` (native Clang) to build
 `ludus_scene_cook_pbrt_fuzzer`, a libFuzzer target over the pbrt reader, PLY

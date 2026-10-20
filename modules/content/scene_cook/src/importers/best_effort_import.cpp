@@ -17,6 +17,7 @@
 #include "pbrt/pbrt_parser.h"
 #include "source_resolver.h"
 #include "tangent_generation.h"
+#include "texture_decode_queue.h"
 #include "transform_utilities.h"
 
 #include <ludus/foundation/math/scalar.hpp>
@@ -33,8 +34,6 @@ using namespace importers;
 namespace format = content::scene_format;
 namespace math = foundation::math;
 
-/// Largest image file read for a texture.
-constexpr usize MAX_IMAGE_FILE_BYTES = MAX_SOURCE_IMAGE_BYTES;
 /// Side of the solid-colour swatch cooked for untextured slots.
 constexpr uint32 SWATCH_SIZE = 4;
 /// Texel channel holding coverage (straight alpha) in decoded RGBA8 images.
@@ -197,76 +196,41 @@ struct CookedMesh final
                                             : texture.File.GetView();
 }
 
-/// Encoded bytes of an image texture: borrowed from the IR for embedded images,
-/// otherwise read from root into inoutStorage. outIsFileRead reports a file read.
-[[nodiscard]] Status LoadImageBytes(const SceneIr& scene,
-                                    std::string_view root,
-                                    const IrTexture& texture,
-                                    Array<uint8>& inoutStorage,
-                                    std::span<const uint8>& outBytes,
-                                    std::string_view& outDecoderName,
-                                    bool& outIsFileRead) noexcept
-{
-    outIsFileRead = false;
-    if (texture.EmbeddedImage != IR_NONE)
-    {
-        const IrEmbeddedImage& image = scene.EmbeddedImages[texture.EmbeddedImage];
-        outBytes = image.Bytes.AsSpan();
-        outDecoderName = image.DecoderName.GetView();
-        return Status::Ok;
-    }
-    String path;
-    const std::string_view parts[] = {root, std::string_view("/"), texture.File.GetView()};
-    if (path.TryAppendMany(parts) != StringStatus::Ok)
-    {
-        return Status::OutOfMemory;
-    }
-    const Status read = detail::ReadFileBounded(path.GetView(), MAX_IMAGE_FILE_BYTES, inoutStorage);
-    if (read == Status::Ok)
-    {
-        outIsFileRead = true;
-        outBytes = inoutStorage.AsSpan();
-        outDecoderName = texture.File.GetView();
-    }
-    return read;
-}
-
-/// Read and decode the image of a data texture (no colour conversion).
-/// @return Ok, Invalid with outMessage set, or OutOfMemory.
-[[nodiscard]] Status DecodeDataTexture(const SceneIr& scene,
-                                       std::string_view root,
-                                       const IrTexture& texture,
+/// Take the decoded image of a data texture (no colour conversion) from the queue.
+/// @return Ok; Invalid with outMessage set; OutOfMemory; or Cancelled.
+[[nodiscard]] Status DecodeDataTexture(TextureDecodeQueue& inoutDecodes,
+                                       uint32 texture,
                                        DecodedImage& outImage,
                                        std::string_view& outMessage) noexcept
 {
-    Array<uint8> storage;
-    std::span<const uint8> bytes;
-    std::string_view decoderName;
-    bool isFileRead = false;
-    const Status loaded = LoadImageBytes(scene, root, texture, storage, bytes, decoderName, isFileRead);
-    if (loaded != Status::Ok)
+    TextureDecode decode;
+    const Status taken = inoutDecodes.Take(texture, false, decode);
+    if (taken != Status::Ok)
     {
-        outMessage = "cannot read the image file";
-        return loaded == Status::OutOfMemory ? loaded : Status::Invalid;
+        return taken;
     }
-    const ImageResult decoded = DecodeImage(decoderName, bytes, outImage, outMessage);
-    if (decoded != ImageResult::Ok)
+    outImage = static_cast<DecodedImage&&>(decode.Image);
+    outMessage = decode.Message;
+    if (decode.Read != Status::Ok)
     {
-        return decoded == ImageResult::OutOfMemory ? Status::OutOfMemory : Status::Invalid;
+        return decode.Read == Status::OutOfMemory ? decode.Read : Status::Invalid;
+    }
+    if (decode.Decoded != ImageResult::Ok)
+    {
+        return decode.Decoded == ImageResult::OutOfMemory ? Status::OutOfMemory : Status::Invalid;
     }
     return Status::Ok;
 }
 
 /// Mean of one channel of a data texture in [0, 1] (alpha for channel 3).
-[[nodiscard]] Status AverageTextureChannel(const SceneIr& scene,
-                                           std::string_view root,
-                                           const IrTexture& texture,
+[[nodiscard]] Status AverageTextureChannel(TextureDecodeQueue& inoutDecodes,
+                                           uint32 texture,
                                            uint8 channel,
                                            float64& outMean,
                                            std::string_view& outMessage) noexcept
 {
     DecodedImage image;
-    const Status decoded = DecodeDataTexture(scene, root, texture, image, outMessage);
+    const Status decoded = DecodeDataTexture(inoutDecodes, texture, image, outMessage);
     if (decoded != Status::Ok)
     {
         return decoded;
@@ -286,7 +250,7 @@ struct CookedMesh final
 /// Fold the metallic/roughness data textures of a slot's representative material into
 /// its scalar terms, for a slot whose surface map exceeds the texture count.
 [[nodiscard]] Status AverageScalarTextures(const SceneIr& scene,
-                                           std::string_view root,
+                                           TextureDecodeQueue& inoutDecodes,
                                            PlannedMaterial& inoutPlanned,
                                            DiagnosticLog& inoutLog) noexcept
 {
@@ -306,9 +270,8 @@ struct CookedMesh final
             }
             float64 mean = 1.0;
             std::string_view message;
-            const Status averaged =
-                AverageTextureChannel(scene, root, scene.Textures[textures[term]], channels[term], mean, message);
-            if (averaged == Status::OutOfMemory)
+            const Status averaged = AverageTextureChannel(inoutDecodes, textures[term], channels[term], mean, message);
+            if (averaged != Status::Ok && averaged != Status::Invalid)
             {
                 return averaged;
             }
@@ -364,7 +327,7 @@ struct SurfaceSamplePixel final
 /// Decode a slot material's data texture for repacking; an unreadable image is reported
 /// and left absent, so its multiplier stays one and the scalar term applies alone.
 [[nodiscard]] Status DecodeSurfaceSource(const SceneIr& scene,
-                                         std::string_view root,
+                                         TextureDecodeQueue& inoutDecodes,
                                          SurfaceSourceSelection selection,
                                          DiagnosticLog& inoutLog,
                                          SampledImage& outSource) noexcept
@@ -374,8 +337,8 @@ struct SurfaceSamplePixel final
         return Status::Ok;
     }
     std::string_view message;
-    const Status decoded = DecodeDataTexture(scene, root, scene.Textures[selection.Texture], outSource.Image, message);
-    if (decoded == Status::OutOfMemory)
+    const Status decoded = DecodeDataTexture(inoutDecodes, selection.Texture, outSource.Image, message);
+    if (decoded != Status::Ok && decoded != Status::Invalid)
     {
         return decoded;
     }
@@ -413,7 +376,7 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
 /// metallic/roughness terms stay as the multipliers they are in glTF and MTL. Without a
 /// free texture slot the roughness/metallic textures are averaged into the scalars.
 [[nodiscard]] Status CookSurfaceMap(const SceneIr& scene,
-                                    std::string_view root,
+                                    TextureDecodeQueue& inoutDecodes,
                                     PlannedMaterial& inoutPlanned,
                                     DiagnosticLog& inoutLog,
                                     Array<CookedTexture>& inoutTextures) noexcept
@@ -443,16 +406,17 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
                                0,
                                "normal map dropped: the bundle's texture count is exhausted");
         }
-        return AverageScalarTextures(scene, root, inoutPlanned, inoutLog);
+        return AverageScalarTextures(scene, inoutDecodes, inoutPlanned, inoutLog);
     }
     SampledImage normal;
     SampledImage roughness;
     SampledImage metallic;
-    Status status = DecodeSurfaceSource(scene, root, { .Texture = normalTexture, .Channel = 0 }, inoutLog, normal);
+    Status status =
+        DecodeSurfaceSource(scene, inoutDecodes, { .Texture = normalTexture, .Channel = 0 }, inoutLog, normal);
     if (status == Status::Ok)
     {
         status = DecodeSurfaceSource(scene,
-                                     root,
+                                     inoutDecodes,
                                      { .Texture = material.RoughnessTexture, .Channel = material.RoughnessChannel },
                                      inoutLog,
                                      roughness);
@@ -460,7 +424,7 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
     if (status == Status::Ok)
     {
         status = DecodeSurfaceSource(scene,
-                                     root,
+                                     inoutDecodes,
                                      { .Texture = material.MetallicTexture, .Channel = material.MetallicChannel },
                                      inoutLog,
                                      metallic);
@@ -523,7 +487,7 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
 /// Cook an emissive slot's emission colour texture (glTF emissiveTexture, MTL map_Ke)
 /// as an sRGB LUSCN v6 emission map multiplying its emission.
 [[nodiscard]] Status CookEmissionMap(const SceneIr& scene,
-                                     std::string_view root,
+                                     TextureDecodeQueue& inoutDecodes,
                                      PlannedMaterial& inoutPlanned,
                                      DiagnosticLog& inoutLog,
                                      Array<CookedTexture>& inoutTextures) noexcept
@@ -549,8 +513,8 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
     }
     DecodedImage image;
     std::string_view message;
-    const Status decoded = DecodeDataTexture(scene, root, texture, image, message);
-    if (decoded == Status::OutOfMemory)
+    const Status decoded = DecodeDataTexture(inoutDecodes, source, image, message);
+    if (decoded != Status::Ok && decoded != Status::Invalid)
     {
         return decoded;
     }
@@ -619,7 +583,7 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
 /// A mask that keeps every texel at its cutoff is cooked opaque; an unreadable
 /// opacity map leaves the slot opaque with a warning.
 [[nodiscard]] Status ApplyAlphaMask(const SceneIr& scene,
-                                    std::string_view root,
+                                    TextureDecodeQueue& inoutDecodes,
                                     PlannedMaterial& inoutPlanned,
                                     CookedTexture& inoutTexture,
                                     DiagnosticLog& inoutLog) noexcept
@@ -635,8 +599,8 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
         const IrTexture& texture = scene.Textures[material.OpacityTexture];
         DecodedImage opacity;
         std::string_view message;
-        const Status decoded = DecodeDataTexture(scene, root, texture, opacity, message);
-        if (decoded == Status::OutOfMemory)
+        const Status decoded = DecodeDataTexture(inoutDecodes, material.OpacityTexture, opacity, message);
+        if (decoded != Status::Ok && decoded != Status::Invalid)
         {
             return decoded;
         }
@@ -689,15 +653,97 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
     return Status::Ok;
 }
 
+/// True when the texture names image bytes and is not IR_NONE.
+[[nodiscard]] bool HasImageTexture(const SceneIr& scene, uint32 texture) noexcept
+{
+    return texture != IR_NONE && HasImage(scene.Textures[texture]) == true;
+}
+
+/// Plan the image decodes of CookTextures in the order it takes them, assuming every
+/// decode succeeds when counting the surface and emission maps that still fit. A
+/// decode that the cook takes off this order (after a failure changed that count) is
+/// decoded inline instead, so the plan affects only how much decoding overlaps.
+[[nodiscard]] bool
+PlanTextureDecodes(const SceneIr& scene, const CookPlan& plan, TextureDecodeQueue& inoutDecodes) noexcept
+{
+    bool isPlanned = true;
+    for (const PlannedMaterial& planned : plan.Materials)
+    {
+        if (HasImageTexture(scene, planned.Texture) == true)
+        {
+            isPlanned = isPlanned == true && inoutDecodes.TryPlan(planned.Texture, true) == true;
+        }
+        if (planned.IsAlphaMasked == true && planned.Representative != IR_NONE)
+        {
+            const uint32 opacity = scene.Materials[planned.Representative].OpacityTexture;
+            if (HasImageTexture(scene, opacity) == true)
+            {
+                isPlanned = isPlanned == true && inoutDecodes.TryPlan(opacity, false) == true;
+            }
+        }
+    }
+    usize textureCount = plan.Materials.GetSize();
+    for (const PlannedMaterial& planned : plan.Materials)
+    {
+        if (planned.Representative == IR_NONE)
+        {
+            continue;
+        }
+        const IrMaterial& material = scene.Materials[planned.Representative];
+        const uint32 normal =
+            material.NormalTextureKind == IrNormalTextureKind::TangentSpace ? material.NormalTexture : IR_NONE;
+        const bool hasSurface = HasImageTexture(scene, normal) == true ||
+                                HasImageTexture(scene, material.RoughnessTexture) == true ||
+                                HasImageTexture(scene, material.MetallicTexture) == true;
+        if (hasSurface == true)
+        {
+            const bool doesFit = textureCount < format::IMPORT_LIMITS.Textures;
+            // CookSurfaceMap order, or AverageScalarTextures order without a free slot.
+            constexpr usize SURFACE_SOURCES = 3;
+            const foundation::StaticArray<uint32, SURFACE_SOURCES> sources =
+                doesFit == true ? foundation::StaticArray<uint32, SURFACE_SOURCES>{normal,
+                                                                                   material.RoughnessTexture,
+                                                                                   material.MetallicTexture}
+                                : foundation::StaticArray<uint32, SURFACE_SOURCES>{material.MetallicTexture,
+                                                                                   material.RoughnessTexture,
+                                                                                   IR_NONE};
+            for (const uint32 source : sources)
+            {
+                if (HasImageTexture(scene, source) == true)
+                {
+                    isPlanned = isPlanned == true && inoutDecodes.TryPlan(source, false) == true;
+                }
+            }
+            textureCount += doesFit == true ? 1 : 0;
+        }
+        if (planned.IsEmissive == true && HasImageTexture(scene, material.EmissionTexture) == true &&
+            textureCount < format::IMPORT_LIMITS.Textures)
+        {
+            isPlanned = isPlanned == true && inoutDecodes.TryPlan(material.EmissionTexture, false) == true;
+            ++textureCount;
+        }
+    }
+    return isPlanned;
+}
+
 /// Decode or synthesise the texture of every slot, then downscale to the byte budget.
+/// Images are decoded on jobsOrNull when set (see TextureDecodeQueue); every worker
+/// count, and none, gives the same textures and diagnostics.
 [[nodiscard]] Status CookTextures(const SceneIr& scene,
                                   std::string_view root,
+                                  foundation::threading::JobSystem* jobsOrNull,
+                                  const Cancellation* cancelOrNull,
                                   CookPlan& inoutPlan,
                                   usize textureBudget,
                                   DiagnosticLog& inoutLog,
                                   Array<CookedTexture>& outTextures) noexcept
 {
     outTextures.Clear();
+    TextureDecodeQueue decodes(scene, root, jobsOrNull, cancelOrNull);
+    if (PlanTextureDecodes(scene, inoutPlan, decodes) == false)
+    {
+        return Status::OutOfMemory;
+    }
     for (PlannedMaterial& planned : inoutPlan.Materials)
     {
         CookedTexture* cooked = outTextures.TryAddInPlace();
@@ -709,26 +755,28 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
         if (planned.Texture != IR_NONE && HasImage(scene.Textures[planned.Texture]) == true)
         {
             const IrTexture& texture = scene.Textures[planned.Texture];
-            Array<uint8> storage;
-            std::span<const uint8> bytes;
-            std::string_view decoderName;
-            bool isFileRead = false;
-            std::string_view message = "cannot read the image file";
-            const Status read = LoadImageBytes(scene, root, texture, storage, bytes, decoderName, isFileRead);
-            if (read == Status::OutOfMemory)
+            TextureDecode decode;
+            const Status taken = decodes.Take(planned.Texture, true, decode);
+            if (taken != Status::Ok)
             {
-                return read;
+                return taken;
+            }
+            if (decode.Read == Status::OutOfMemory)
+            {
+                return decode.Read;
             }
             ImageResult decoded = ImageResult::Invalid;
-            if (read == Status::Ok)
+            if (decode.Read == Status::Ok)
             {
-                if (isFileRead == true)
+                if (decode.IsFileRead == true)
                 {
                     cooked->ReadSource = planned.Texture;
-                    cooked->ReadDigest = Hash(bytes);
+                    cooked->ReadDigest = decode.ReadDigest;
                 }
-                decoded = DecodeImage(decoderName, bytes, cooked->Image, message);
+                decoded = decode.Decoded;
+                cooked->Image = static_cast<DecodedImage&&>(decode.Image);
             }
+            const std::string_view message = decode.Message;
             if (decoded == ImageResult::OutOfMemory)
             {
                 return Status::OutOfMemory;
@@ -772,7 +820,7 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
             }
             planned.IsTextureRepeated = false;
         }
-        const Status masked = ApplyAlphaMask(scene, root, planned, *cooked, inoutLog);
+        const Status masked = ApplyAlphaMask(scene, decodes, planned, *cooked, inoutLog);
         if (masked != Status::Ok)
         {
             return masked;
@@ -784,10 +832,10 @@ SampleChannel(const SampledImage& source, usize channel, SurfaceSamplePixel posi
     // bundle's texture count allows.
     for (PlannedMaterial& planned : inoutPlan.Materials)
     {
-        Status status = CookSurfaceMap(scene, root, planned, inoutLog, outTextures);
+        Status status = CookSurfaceMap(scene, decodes, planned, inoutLog, outTextures);
         if (status == Status::Ok)
         {
-            status = CookEmissionMap(scene, root, planned, inoutLog, outTextures);
+            status = CookEmissionMap(scene, decodes, planned, inoutLog, outTextures);
         }
         if (status != Status::Ok)
         {
@@ -1681,7 +1729,7 @@ void ResetResult(BestEffortResult& outResult) noexcept
         const usize reserved = geometryBytes + recordBytes + lightingBytes;
         const usize remaining = bundleLimit > reserved ? bundleLimit - reserved : 0;
         const usize budget = math::Min(remaining, format::IMPORT_LIMITS.TotalTextureBytes);
-        status = CookTextures(scene, root.GetView(), plan, budget, log, textures);
+        status = CookTextures(scene, root.GetView(), options.JobsOrNull, cancelOrNull, plan, budget, log, textures);
     }
     if (status == Status::Ok)
     {
