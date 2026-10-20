@@ -2,6 +2,9 @@
 
 #include "internal/render_preview.h"
 #include "internal/viewport_frame_source.h"
+#if defined(Q_OS_MACOS)
+#    include "internal/viewport_relative_mouse.h"
+#endif
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/input/key.h>
@@ -126,6 +129,10 @@ private:
     foundation::StaticArray<bool, input::KEY_COUNT> mPlayHeldKeys{};
     [[nodiscard]] bool handlePlayKey(QKeyEvent& inoutEvent, bool isPress);
     void sendPlayFocus(bool isFocused);
+#if defined(Q_OS_MACOS)
+    friend class ViewportRelativeMouse;
+    ViewportRelativeMouse mRelativeMouse;
+#endif
     static constexpr foundation::usize MOVEMENT_KEY_COUNT = 7;
     foundation::StaticArray<bool, MOVEMENT_KEY_COUNT> mHeldKeys{};
     QPointF mLastPositionGlobal;
@@ -139,6 +146,10 @@ private:
     void stopNavigation();
     void advanceNavigation();
     void recenterPointer();
+    [[nodiscard]] bool navigateMouse(foundation::float32 deltaX,
+                                     foundation::float32 deltaY,
+                                     Qt::MouseButtons buttons,
+                                     Qt::KeyboardModifiers modifiers);
     [[nodiscard]] foundation::float32 getDrawableHeight() const noexcept;
 };
 } // namespace ludus::editor

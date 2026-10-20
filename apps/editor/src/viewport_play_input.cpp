@@ -139,6 +139,10 @@ bool PreviewViewport::handlePlayKey(QKeyEvent& inoutEvent, bool isPress)
 
 bool PreviewViewport::event(QEvent* event)
 {
+    if (event->type() == QEvent::UngrabMouse || event->type() == QEvent::WindowDeactivate)
+    {
+        stopNavigation();
+    }
     if (mPlayEndpointOrNull != nullptr && event->type() == QEvent::ShortcutOverride)
     {
         // Menus and editor shortcuts do not take the game's keys; only Stop stays a shortcut.

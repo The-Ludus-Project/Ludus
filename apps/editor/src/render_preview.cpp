@@ -606,7 +606,11 @@ void RenderPreview::navigationChanged()
     Zoom_ = mCameraController.GetDistance() / math::Max(OrbitRadius_, 0.000001F);
     RestoredOrbit_ = true;
     ViewDirty_ = true;
-    if (Running() == true)
+    // Thanks to The Qt Company, "QTimer Class", start() documentation:
+    // https://doc.qt.io/qt-6/qtimer.html#start
+    // QTimer::start restarts an active timer. Preserve its deadline so continuous
+    // mouse/fly input cannot postpone every frame until navigation stops.
+    if (Running() == true && Timer_.isActive() == false)
     {
         Timer_.start();
     }
@@ -684,7 +688,7 @@ void RenderPreview::Resize(int32 width, int32 height)
     const float32 scale = math::Min(1.0F, 1024.0F / static_cast<float32>(math::Max(width, height)));
     RequestedWidth_ = math::Max(uint32{1}, static_cast<uint32>(static_cast<float32>(width) * scale));
     RequestedHeight_ = math::Max(uint32{1}, static_cast<uint32>(static_cast<float32>(height) * scale));
-    if (Running() == true)
+    if (Running() == true && Timer_.isActive() == false)
     {
         Timer_.start();
     }
@@ -717,13 +721,23 @@ float32 RenderPreview::GetFocusDistance() const noexcept
     }
     return mCameraController.GetDistance();
 }
+void RenderPreview::SetLookSensitivity(float32 sensitivity)
+{
+    if (math::IsFinite(sensitivity) == false || sensitivity < MINIMUM_LOOK_SENSITIVITY ||
+        sensitivity > MAXIMUM_LOOK_SENSITIVITY || sensitivity == mLookSensitivity)
+    {
+        return;
+    }
+    mLookSensitivity = sensitivity;
+    Q_EMIT NavigationChanged();
+}
 void RenderPreview::Orbit(float32 deltaX, float32 deltaY)
 {
     if ((deltaX == 0 && deltaY == 0) || beginNavigation() == false)
     {
         return;
     }
-    if (mCameraController.TryRotate(deltaX, deltaY, true) == true)
+    if (mCameraController.TryRotate(deltaX * mLookSensitivity, deltaY * mLookSensitivity, true) == true)
     {
         navigationChanged();
     }
@@ -734,7 +748,7 @@ void RenderPreview::Look(float32 deltaX, float32 deltaY)
     {
         return;
     }
-    if (mCameraController.TryRotate(deltaX, deltaY, false) == true)
+    if (mCameraController.TryRotate(deltaX * mLookSensitivity, deltaY * mLookSensitivity, false) == true)
     {
         navigationChanged();
     }
@@ -810,6 +824,7 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("z"), OrbitCenter_.Z},
             {QStringLiteral("radius"), OrbitRadius_},
             {QStringLiteral("navigationVersion"), NAVIGATION_STATE_VERSION},
+            {QStringLiteral("lookSensitivity"), mLookSensitivity},
             {QStringLiteral("distance"), mCameraController.GetDistance()},
             {QStringLiteral("eyeX"), mCameraController.GetSample().Pose.Position.X},
             {QStringLiteral("eyeY"), mCameraController.GetSample().Pose.Position.Y},
@@ -928,6 +943,7 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     static_cast<void>(TryParsePreviewShading(state.value(QStringLiteral("shading")).toString(), shading));
     SetShading(shading);
     SetStatisticsVisible(state.value(QStringLiteral("statistics")).toBool(false));
+    SetLookSensitivity(static_cast<float32>(number(QStringLiteral("lookSensitivity"), 1)));
     navigationChanged();
 }
 void RenderPreview::resetFrames() noexcept

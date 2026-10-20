@@ -9,6 +9,7 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <QAbstractEventDispatcher>
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -49,7 +50,11 @@ NSView* GetNativeView(QWindow& inoutWindow)
 
 // Enter through Cocoa's hit testing and first responder, not sendEvent on the
 // outer QWidget or QWindow: those shortcuts bypass the embedded NSView routing.
-void SendNativeMouse(QQuickWindow& inoutSurface, NSEventType type, QPoint position, NSEventModifierFlags modifiers = 0)
+void SendNativeMouse(QQuickWindow& inoutSurface,
+                     NSEventType type,
+                     QPoint position,
+                     NSEventModifierFlags modifiers = 0,
+                     QPoint motion = {})
 {
     NSView* view = GetNativeView(inoutSurface);
     NSWindow* window = view.window;
@@ -75,7 +80,24 @@ void SendNativeMouse(QQuickWindow& inoutSurface, NSEventType type, QPoint positi
         CFRelease(mouse);
         REQUIRE(event.buttonNumber == kCGMouseButtonCenter);
     }
-    [window sendEvent:event];
+    if (motion.isNull() == false)
+    {
+        CGEventRef mouse = CGEventCreateCopy(event.CGEvent);
+        REQUIRE(mouse != nullptr);
+        CGEventSetIntegerValueField(mouse, kCGMouseEventDeltaX, motion.x());
+        CGEventSetIntegerValueField(mouse, kCGMouseEventDeltaY, motion.y());
+        event = [NSEvent eventWithCGEvent:mouse];
+        CFRelease(mouse);
+    }
+    // NSWindow::sendEvent bypasses Qt's application native filter. Enter that
+    // production boundary first, then let Cocoa translate unconsumed events.
+    qintptr result = 0;
+    if (QAbstractEventDispatcher::instance()->filterNativeEvent(QByteArrayLiteral("mac_generic_NSEvent"),
+                                                                event,
+                                                                &result) == false)
+    {
+        [window sendEvent:event];
+    }
     QApplication::processEvents();
 }
 
@@ -97,10 +119,14 @@ void SendNativeKey(QQuickWindow& inoutSurface, uint16 key, NSString* characters,
     QApplication::processEvents();
 }
 
-void RequirePresentation(PreviewViewport& inoutViewport, uint64 previous)
+void RequirePresentation(PreviewViewport& inoutViewport, uint64 previous, const RenderPreview* previewOrNull = nullptr)
 {
-    REQUIRE(QTest::qWaitFor([&inoutViewport, previous]() { return inoutViewport.PresentedFrames() > previous; },
-                            10000) == true);
+    const bool hasPresented =
+        QTest::qWaitFor([&inoutViewport, previous]() { return inoutViewport.PresentedFrames() > previous; }, 10000);
+    const QString status = previewOrNull != nullptr ? previewOrNull->Status() : QString();
+    const uint64 produced = previewOrNull != nullptr ? previewOrNull->Frames() : 0;
+    CAPTURE(status.toStdString(), produced, previous, inoutViewport.PresentedFrames());
+    REQUIRE(hasPresented == true);
 }
 } // namespace
 
@@ -195,11 +221,11 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     SendNativeMouse(surface, NSEventTypeOtherMouseDragged, moved);
     SendNativeMouse(surface, NSEventTypeOtherMouseUp, moved);
     CHECK(preview.Navigation() != beforePan);
-    RequirePresentation(viewport, presented);
+    RequirePresentation(viewport, presented, &preview);
 
     SendNativeMouse(surface, NSEventTypeRightMouseDown, start);
     const QJsonObject beforeLook = preview.Navigation();
-    SendNativeMouse(surface, NSEventTypeRightMouseDragged, moved);
+    SendNativeMouse(surface, NSEventTypeRightMouseDragged, moved, 0, moved - start);
     CHECK(preview.Navigation() != beforeLook);
     const QJsonObject beforeFly = preview.Navigation();
     SendNativeKey(surface, 13, @"w", true);
@@ -310,7 +336,7 @@ TEST_CASE("Supplied imported World accepts native drag navigation with restored 
     CHECK(scene->Navigation().value(QStringLiteral("pitch")) == beforePan.value(QStringLiteral("pitch")));
     SendNativeMouse(surface, NSEventTypeRightMouseDown, start);
     const QJsonObject beforeLook = scene->Navigation();
-    SendNativeMouse(surface, NSEventTypeRightMouseDragged, moved);
+    SendNativeMouse(surface, NSEventTypeRightMouseDragged, moved, 0, moved - start);
     CHECK(scene->Navigation() != beforeLook);
     const QJsonObject beforeFly = scene->Navigation();
     SendNativeKey(surface, 13, @"w", true);
