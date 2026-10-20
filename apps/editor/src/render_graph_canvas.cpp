@@ -3,6 +3,7 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 
+#include <QAction>
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
@@ -15,6 +16,7 @@
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
 #include <QPainterPath>
@@ -276,7 +278,8 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
                                           const QString& file,
                                           const QString& configuration,
                                           const QString& from,
-                                          const QString& to)
+                                          const QString& to,
+                                          bool shouldReplaceExisting)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
     QJsonObject graph;
@@ -336,7 +339,7 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
         {
             const QJsonObject output = value.toObject();
             if (output.value(QStringLiteral("id")).toString() == GetEndpointPort(to) &&
-                output.value(QStringLiteral("source")).toString().isEmpty() == false)
+                output.value(QStringLiteral("source")).toString().isEmpty() == false && shouldReplaceExisting == false)
             {
                 return {QStringLiteral("MultipleWriters"),
                         QStringLiteral("Configuration output %1 is connected; disconnect it first.").arg(to)};
@@ -362,7 +365,7 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
     const QJsonArray edges = record.value(QStringLiteral("edges")).toArray();
     for (const QJsonValueConstRef edge : edges)
     {
-        if (edge.toObject().value(QStringLiteral("to")).toString() == to)
+        if (edge.toObject().value(QStringLiteral("to")).toString() == to && shouldReplaceExisting == false)
         {
             return {QStringLiteral("MultipleWriters"),
                     QStringLiteral("input %1 already has a connection from %2; disconnect it first")
@@ -450,7 +453,8 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     setTransformationAnchor(QGraphicsView::NoAnchor);
     setBackgroundBrush(QColor(28, 31, 36));
     setToolTip(QStringLiteral("Drag nodes to arrange them (one undo step per drag) · drag from an output port to an "
-                              "input port to connect · Delete removes the selected node or link · double-click a "
+                              "input port to connect or replace · right-click nodes, wires or ports to edit · "
+                              "Delete removes the selected node or link · double-click a "
                               "Subgraph to open its source · pinch or scroll to zoom around the pointer"));
 }
 
@@ -599,7 +603,10 @@ void RenderGraphCanvas::Rebuild()
                                          view->Frame);
             connector->setBrush(GetTypeColor(port.Type));
             connector->setPen(QPen(QColor(16, 18, 21), 1));
-            connector->setToolTip(QStringLiteral("%1.%2 : %3").arg(view->Id, port.Id, port.Type));
+            connector->setToolTip(
+                QStringLiteral(
+                    "%1.%2 : %3\nRight-click to connect or disconnect. Dropping a new wire replaces the input source.")
+                    .arg(view->Id, port.Id, port.Type));
             QGraphicsSimpleTextItem* name = new QGraphicsSimpleTextItem(port.Id, view->Frame);
             QFont small = name->font();
             small.setPointSize(LABEL_POINT_SIZE);
@@ -880,15 +887,23 @@ void RenderGraphCanvas::EndDrag()
     }
 }
 
-bool RenderGraphCanvas::RequestLink(const QString& from, const QString& to)
+bool RenderGraphCanvas::RequestLink(const QString& from, const QString& to, bool shouldReplaceExisting)
 {
-    const RenderGraphLinkCheck check = CheckRenderGraphLink(mDocument, mFile, mConfiguration, from, to);
+    const RenderGraphLinkCheck check =
+        CheckRenderGraphLink(mDocument, mFile, mConfiguration, from, to, shouldReplaceExisting);
     if (check.IsLegal() == false)
     {
         Q_EMIT LinkRejected(QStringLiteral("%1: %2").arg(check.Code, check.Reason));
         return false;
     }
-    Q_EMIT ConnectRequested(from, to);
+    if (shouldReplaceExisting == true)
+    {
+        Q_EMIT ReplaceConnectionRequested(from, to);
+    }
+    else
+    {
+        Q_EMIT ConnectRequested(from, to);
+    }
     return true;
 }
 
@@ -979,7 +994,68 @@ void RenderGraphCanvas::cancelLink()
 
 void RenderGraphCanvas::contextMenuEvent(QContextMenuEvent* event)
 {
-    const QString node = nodeAt(mapToScene(event->pos()));
+    const QPointF position = mapToScene(event->pos());
+    bool isOutput = false;
+    const QString port = portAt(position, isOutput);
+    const QString node = nodeAt(position);
+    QString to;
+    const QString from = node.isEmpty() == true ? edgeAt(position, to) : QString();
+    if (port.isEmpty() == false || from.isEmpty() == false)
+    {
+        QMenu menu(this);
+        menu.setObjectName(QStringLiteral("renderGraphConnectionMenu"));
+        // Copy endpoints before executing: an edit can rebuild and delete every EdgeView.
+        for (const EdgeView* edge : std::as_const(mEdges))
+        {
+            if (edge->IsEditable == true &&
+                ((port.isEmpty() == false && (isOutput == true ? edge->From == port : edge->To == port)) ||
+                 (from.isEmpty() == false && edge->From == from && edge->To == to)))
+            {
+                const QString source = edge->From;
+                const QString destination = edge->To;
+                QAction* disconnect = menu.addAction(QStringLiteral("Disconnect %1 → %2").arg(source, destination));
+                disconnect->setObjectName(QStringLiteral("renderGraphDisconnectAction"));
+                connect(disconnect, &QAction::triggered, this, [this, source, destination]() {
+                    Q_EMIT DisconnectRequested(source, destination);
+                });
+            }
+        }
+        if (port.isEmpty() == false)
+        {
+            QMenu* connections =
+                menu.addMenu(isOutput == true ? QStringLiteral("Connect to") : QStringLiteral("Connect from"));
+            connections->setObjectName(QStringLiteral("renderGraphConnectPortMenu"));
+            for (const NodeView* view : std::as_const(mNodes))
+            {
+                const QVector<RenderGraphPort>& candidates =
+                    isOutput == true ? view->Ports.Inputs : view->Ports.Outputs;
+                for (const RenderGraphPort& candidate : candidates)
+                {
+                    const QString endpoint = view->Id + QLatin1Char('.') + candidate.Id;
+                    const QString source = isOutput == true ? port : endpoint;
+                    const QString destination = isOutput == true ? endpoint : port;
+                    if (CheckRenderGraphLink(mDocument, mFile, mConfiguration, source, destination, true).IsLegal() ==
+                        true)
+                    {
+                        QAction* action = connections->addAction(endpoint);
+                        action->setData(endpoint);
+                        connect(action, &QAction::triggered, this, [this, source, destination]() {
+                            static_cast<void>(RequestLink(source, destination, true));
+                        });
+                    }
+                }
+            }
+            connections->setEnabled(connections->isEmpty() == false);
+        }
+        if (menu.isEmpty() == true)
+        {
+            QAction* empty = menu.addAction(QStringLiteral("No connections"));
+            empty->setEnabled(false);
+        }
+        menu.exec(event->globalPos());
+        event->accept();
+        return;
+    }
     const bool isAuthoredNode = FindNode(configuration(), node).isEmpty() == false;
     Q_EMIT ContextMenuRequested(isAuthoredNode == true ? node : QString(), event->globalPos());
     event->accept();
@@ -1076,7 +1152,7 @@ void RenderGraphCanvas::mouseReleaseEvent(QMouseEvent* event)
         const QString to = portAt(mapToScene(event->position().toPoint()), isOutput);
         if (to.isEmpty() == false)
         {
-            static_cast<void>(RequestLink(from, to));
+            static_cast<void>(RequestLink(from, to, true));
         }
         event->accept();
         return;

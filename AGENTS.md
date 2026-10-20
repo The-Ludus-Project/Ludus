@@ -285,6 +285,12 @@ rejects the explicit `== true`/`== false` style.
 
 ### Review feedback and viewport acceptance
 
+- Render-graph authoring must be available directly from the graph canvas.
+  Every Properties operation needs an equivalent canvas gesture or context-menu
+  action, including node fields and connection removal/replacement. Share the
+  document operations and field controls so both paths preserve the same
+  validation, undo and save behavior; test the canvas path with Properties hidden.
+
 - Read current human PR reviews and inline threads before claiming readiness,
   and again after the final implementation. Passing CI does not address a review.
   Reconcile each comment with code/evidence; preserve unresolved scope questions.

@@ -3,14 +3,20 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAction>
 #include <QApplication>
+#include <QCheckBox>
+#include <QContextMenuEvent>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QLabel>
+#include <QMenu>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -47,6 +53,20 @@ QJsonObject GetConfiguration(const RenderGraphDocument& document, const QString&
         }
     }
     return {};
+}
+QJsonArray GetInputConnections(const RenderGraphDocument& document, const QString& destination)
+{
+    QJsonArray result;
+    const QJsonArray edges =
+        GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("edges")).toArray();
+    for (const QJsonValueConstRef edge : edges)
+    {
+        if (edge.toObject().value(QStringLiteral("to")).toString() == destination)
+        {
+            result.append(edge);
+        }
+    }
+    return result;
 }
 } // namespace
 
@@ -171,4 +191,210 @@ TEST_CASE("configuration interface UI creates connectable ports with undo and sa
     edit->click();
     CHECK(document.GetRevision() == beforeInvalid);
     CHECK(document.GetDraft(library) == connected);
+}
+
+TEST_CASE("canvas replaces an occupied input atomically and preserves rejected connections",
+          "[editor][render-graph][canvas-editing]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(MakePackage(project)).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    workspace.resize(1200, 800);
+    workspace.show();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    RenderGraphDocument& document = workspace.GetDocument();
+    canvas.fitInView(canvas.sceneRect(), Qt::KeepAspectRatio);
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const uint64 revision = document.GetRevision();
+    const QPoint from = canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("color.texture"), true));
+    const QPoint to = canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("output.texture"), false));
+    QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, from);
+    QTest::mouseMove(canvas.viewport(), to);
+    QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, to);
+    CHECK(document.GetRevision() == revision + 1);
+    const QByteArray replacement = document.GetDraft(ROOT_GRAPH);
+    CHECK(replacement != original);
+    const QJsonArray connections = GetInputConnections(document, QStringLiteral("output.texture"));
+    REQUIRE(connections.size() == 1);
+    CHECK(connections.at(0).toObject().value(QStringLiteral("from")).toString() == QStringLiteral("color.texture"));
+    CHECK(canvas.GetEdgeCount() == 6);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    workspace.Redo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == replacement);
+    const uint64 beforeRejection = document.GetRevision();
+    CHECK(canvas.RequestLink(QStringLiteral("depth.texture"), QStringLiteral("output.texture"), true) == false);
+    CHECK(canvas.RequestLink(QStringLiteral("raster.color"), QStringLiteral("camera.target"), true) == false);
+    CHECK(document.GetRevision() == beforeRejection);
+    CHECK(document.GetDraft(ROOT_GRAPH) == replacement);
+}
+
+TEST_CASE("canvas wire and port menus disconnect and reconnect without the inspector",
+          "[editor][render-graph][canvas-editing]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(MakePackage(project)).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    workspace.resize(1200, 800);
+    workspace.show();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    RenderGraphDocument& document = workspace.GetDocument();
+    canvas.fitInView(canvas.sceneRect(), Qt::KeepAspectRatio);
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const QPointF source = canvas.GetPortPosition(QStringLiteral("raster.color"), true);
+    const QPointF destination = canvas.GetPortPosition(QStringLiteral("output.texture"), false);
+    for (const QPointF position : {source * 0.5 + destination * 0.5, destination})
+    {
+        QTimer::singleShot(0, &canvas, []() {
+            QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menuOrNull != nullptr);
+            QAction* disconnect = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphDisconnectAction"));
+            REQUIRE(disconnect != nullptr);
+            menuOrNull->close();
+            disconnect->trigger();
+        });
+        const QPoint point = canvas.mapFromScene(position);
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+        CHECK(canvas.GetEdgeCount() == 5);
+        CHECK(GetInputConnections(document, QStringLiteral("output.texture")).isEmpty() == true);
+        workspace.Undo();
+        CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    }
+    QTimer::singleShot(0, &canvas, []() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QMenu* connections = menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphConnectPortMenu"));
+        REQUIRE(connections != nullptr);
+        QAction* choiceOrNull = nullptr;
+        for (QAction* action : connections->actions())
+        {
+            CHECK(action->data().toString() != QStringLiteral("depth.texture"));
+            if (action->data().toString() == QStringLiteral("color.texture"))
+            {
+                choiceOrNull = action;
+            }
+        }
+        REQUIRE(choiceOrNull != nullptr);
+        menuOrNull->close();
+        choiceOrNull->trigger();
+    });
+    const QPoint point = canvas.mapFromScene(destination);
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    CHECK(document.GetDraft(ROOT_GRAPH) != original);
+    const QJsonArray connections = GetInputConnections(document, QStringLiteral("output.texture"));
+    REQUIRE(connections.size() == 1);
+    CHECK(connections.at(0).toObject().value(QStringLiteral("from")).toString() == QStringLiteral("color.texture"));
+    CHECK(canvas.GetEdgeCount() == 6);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+}
+
+TEST_CASE("canvas node menu edits authored fields with the inspector hidden", "[editor][render-graph][canvas-editing]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(MakePackage(project)).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    workspace.resize(1200, 800);
+    workspace.show();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const QByteArray original = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    QTimer::singleShot(0, &canvas, [&canvas]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* edit = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+        REQUIRE(edit != nullptr);
+        QTimer::singleShot(0, &canvas, []() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            CHECK(dialogOrNull->objectName() == QStringLiteral("renderGraphNodeEditor"));
+            QCheckBox* initialized =
+                dialogOrNull->findChild<QCheckBox*>(QStringLiteral("renderGraphField_initialized"));
+            REQUIRE(initialized != nullptr);
+            initialized->click();
+            QSpinBox* coordinate = dialogOrNull->findChild<QSpinBox*>(QStringLiteral("canvasLayoutX"));
+            REQUIRE(coordinate != nullptr);
+            coordinate->setValue(96);
+            REQUIRE(QMetaObject::invokeMethod(coordinate, "editingFinished") == true);
+            dialogOrNull->reject();
+        });
+        menuOrNull->close();
+        edit->trigger();
+    });
+    const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("color")) + QPointF(20, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) != original);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) != original);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
+}
+
+TEST_CASE("canvas configuration outputs replace and disconnect with their declarations preserved",
+          "[editor][render-graph][canvas-editing]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(MakePackage(project)).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QJsonObject output{
+        {QStringLiteral("id"), QStringLiteral("result")},
+        {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+        {QStringLiteral("source"), QStringLiteral("raster.color")},
+        {QStringLiteral("required"), false},
+    };
+    QString error;
+    REQUIRE(document.ReplaceConfigurationInterface(ROOT_GRAPH, DEFAULT_CONFIGURATION, {}, {output}, error) ==
+            RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.Rebuild();
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const uint64 revision = document.GetRevision();
+    REQUIRE(canvas.RequestLink(QStringLiteral("color.texture"), QStringLiteral("#outputs.result"), true) == true);
+    CHECK(document.GetRevision() == revision + 1);
+    CHECK(GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION)
+              .value(QStringLiteral("outputs"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("source"))
+              .toString() == QStringLiteral("color.texture"));
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    const uint64 beforeNoop = document.GetRevision();
+    REQUIRE(canvas.RequestLink(QStringLiteral("color.texture"), QStringLiteral("camera.target"), true) == true);
+    CHECK(document.GetRevision() == beforeNoop);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    CHECK(canvas.RequestLink(QStringLiteral("depth.texture"), QStringLiteral("#outputs.result"), true) == false);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    QTimer::singleShot(0, &canvas, []() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* disconnect = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphDisconnectAction"));
+        REQUIRE(disconnect != nullptr);
+        menuOrNull->close();
+        disconnect->trigger();
+    });
+    const QPoint point = canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("#outputs.result"), false));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    const QJsonArray outputs =
+        GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("outputs")).toArray();
+    REQUIRE(outputs.size() == 1);
+    CHECK(outputs.at(0).toObject().value(QStringLiteral("source")).toString().isEmpty() == true);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
 }
