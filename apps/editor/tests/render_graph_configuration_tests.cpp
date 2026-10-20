@@ -1,4 +1,5 @@
 #include "internal/render_graph_configuration_editor.h"
+#include "internal/render_graph_pipeline.h"
 #include "internal/renderer_workspace.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -6,6 +7,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QDialog>
@@ -395,6 +397,77 @@ TEST_CASE("canvas configuration outputs replace and disconnect with their declar
         GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("outputs")).toArray();
     REQUIRE(outputs.size() == 1);
     CHECK(outputs.at(0).toObject().value(QStringLiteral("source")).toString().isEmpty() == true);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+}
+
+TEST_CASE("canvas pipeline editing pairs resources and reports connected port errors with Properties hidden",
+          "[editor][render-graph][canvas-editing][pipeline]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(MakePackage(project)).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(document.AddNode(ROOT_GRAPH,
+                             DEFAULT_CONFIGURATION,
+                             MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work"))) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("work")) == true);
+    workspace.resize(1200, 800);
+    workspace.show();
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    properties->hide();
+    QCoreApplication::processEvents();
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.Rebuild();
+    QTimer::singleShot(0, &canvas, [&workspace, &canvas, &document, properties]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* edit = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+        REQUIRE(edit != nullptr);
+        QTimer::singleShot(0, &canvas, [&workspace, &canvas, &document, properties]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            CHECK(properties->isVisible() == false);
+            QPushButton* add = dialogOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
+            QTableWidget* resources = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("outputs"));
+            QPushButton* apply = dialogOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
+            REQUIRE(add != nullptr);
+            REQUIRE(resources != nullptr);
+            REQUIRE(apply != nullptr);
+            add->click();
+            resources->item(0, 0)->setText(QStringLiteral("color"));
+            apply->click();
+            CHECK(canvas.GetPortPosition(QStringLiteral("work.color"), false).y() ==
+                  canvas.GetPortPosition(QStringLiteral("work.color"), true).y());
+            REQUIRE(canvas.RequestLink(QStringLiteral("color.texture"), QStringLiteral("work.color")) == true);
+            const uint64 revision = document.GetRevision();
+            const QByteArray beforeRejectedEdit = document.GetDraft(ROOT_GRAPH);
+            resources = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("outputs"));
+            apply = dialogOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
+            REQUIRE(resources != nullptr);
+            REQUIRE(apply != nullptr);
+            QComboBox* type = qobject_cast<QComboBox*>(resources->cellWidget(0, 1));
+            REQUIRE(type != nullptr);
+            type->setCurrentText(QStringLiteral("DepthTexture"));
+            apply->click();
+            CHECK(workspace.GetStatusText().contains(QStringLiteral("work.color")) == true);
+            CHECK(workspace.GetStatusText().contains(QStringLiteral("Disconnect")) == true);
+            CHECK(document.GetRevision() == revision);
+            CHECK(document.GetDraft(ROOT_GRAPH) == beforeRejectedEdit);
+            dialogOrNull->reject();
+        });
+        menuOrNull->close();
+        edit->trigger();
+    });
+    const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("work")) + QPointF(20, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    workspace.Undo();
     workspace.Undo();
     CHECK(document.GetDraft(ROOT_GRAPH) == original);
 }

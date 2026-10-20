@@ -28,14 +28,32 @@ The node type picker offers **GraphicsPipeline**, **ComputePipeline** and
 Present remain supporting nodes. A new pipeline has no inputs, outputs or shader
 assignments. It is an editable draft, not a ready rendering pass.
 
-Select the node in Properties. Its **Inputs**, **Outputs**, **Shaders**,
-**Pipeline State** and **Invocation** tabs edit that node's record. Add/remove
-rows in the interface or shader tables, then choose **Apply Pipeline** to commit
-all controls as one undoable edit. Save publishes the draft; edits in these
-controls are unapplied until Apply Pipeline. Disconnect affected links before
-removing a connected port or changing its identity/type. Undo restores the
-complete record and document version. Double-click the pipeline to open a mapped
-shader source through its explicit program reference in the build manifest.
+Select the node in Properties. **Read Inputs** declares resources and values the
+pass consumes. **Writable Resources** declares paired input/output ports: each
+row owns the input receiving the texture or buffer and the output exposing its
+updated contents. Add one row instead of declaring those ports separately. New
+pairs start with the same name; renaming the output also renames its input while
+the names match. Existing graphs with different port names retain both names, shown in the
+resource name tooltip. A missing or incompatible old target association is rebuilt
+as a same-name pair when you apply; opening the inspector does not rewrite sources.
+The editor writes the serialized `target` association automatically; there is no
+editable target field. Connect a compatible resource to the pair's input, then
+connect its output to the next pass or configuration output. A writable input
+needs a connection even when its Load operation is Clear or Discard. Paired ports
+line up horizontally on the canvas. Changing the resource type changes both
+port types and selects its corresponding format.
+
+**Shaders**, **Pipeline State** and **Invocation** edit the rest of the node.
+Choose **Apply Pipeline** to commit all controls as one undoable edit. Save
+publishes the draft; controls are unapplied until Apply Pipeline. Removing a
+writable row removes both ports. Disconnect affected links before removing,
+renaming or changing the type of a connected port. A rejected edit preserves
+the draft and identifies the affected endpoint and repair. Duplicate or invalid
+port names are explained beside the controls; graph validation names missing
+connections and incompatible output/input pairs with concrete repair actions.
+Undo restores the complete record and document version. Double-click the pipeline
+to open a mapped shader source through its explicit program reference in the
+build manifest.
 
 Pipeline records use document `version: 2`; adding one upgrades the draft in the
 same undo step. Version-1 graphs remain readable and are never rewritten on load.
@@ -144,7 +162,8 @@ Select those exact program IDs in the node's Shaders table. Its state must match
 the recipe above: the eight attribute bytes represent triangle barycentrics.
 Declare exactly one input each of type Scene, View and ColorTexture, and one
 RGBA8Unorm color output naming that color input as its `target`, with `Clear` and
-`Store`. Port names are authored, not fixed. Set invocation `dimensions` to the
+`Store`. In the editor, add the color through **Writable Resources**; its paired
+input and target association are automatic. Port names are authored, not fixed. Set invocation `dimensions` to the
 color target's exact `[width, height, 1]`. Feed Scene and Camera into those inputs,
 the target into both Camera's designated target and the ray node, and the ray
 color output into Export. Use a single-sample offscreen target. Raster and ray

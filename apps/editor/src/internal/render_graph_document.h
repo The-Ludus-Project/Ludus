@@ -105,8 +105,12 @@ public:
     /// Parse a draft graph document; returns false for missing or non-object JSON.
     [[nodiscard]] bool GetGraph(const QString& file, QJsonObject& outGraph) const;
 
-    [[nodiscard]] RenderGraphDocumentStatus
-    ReplaceNode(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// Replace a node atomically, preserving connected port identities and types.
+    /// On failure the draft/history is preserved; optional error names the affected endpoint and repair.
+    [[nodiscard]] RenderGraphDocumentStatus ReplaceNode(const QString& file,
+                                                        const QString& configuration,
+                                                        const QJsonObject& node,
+                                                        QString* outErrorOrNull = nullptr);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
     /// Create name.lurender.json with an empty Default configuration and bind the named

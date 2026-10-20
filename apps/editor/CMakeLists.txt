@@ -654,6 +654,7 @@ endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp
+        src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/render_graph_document.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
