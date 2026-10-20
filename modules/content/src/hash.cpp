@@ -22,36 +22,90 @@ constexpr uint32 K[64] = {
     0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+uint32 Rotate(uint32 value, uint32 amount) noexcept
+{
+    return (value >> amount) | (value << (32 - amount));
+}
+void Block(const uint8* input, uint32* state) noexcept
+{
+    uint32 w[64]{};
+    for (usize i = 0; i < 16; ++i)
+    {
+        w[i] = (static_cast<uint32>(input[i * 4]) << 24) | (static_cast<uint32>(input[i * 4 + 1]) << 16) |
+               (static_cast<uint32>(input[i * 4 + 2]) << 8) | input[i * 4 + 3];
+    }
+    for (usize i = 16; i < 64; ++i)
+    {
+        const auto a = w[i - 15], b = w[i - 2];
+        w[i] = w[i - 16] + (Rotate(a, 7) ^ Rotate(a, 18) ^ (a >> 3)) + w[i - 7] +
+               (Rotate(b, 17) ^ Rotate(b, 19) ^ (b >> 10));
+    }
+    auto a = state[0], b = state[1], c = state[2], d = state[3], e = state[4], f = state[5], g = state[6], h = state[7];
+    for (usize i = 0; i < 64; ++i)
+    {
+        const auto t1 = h + (Rotate(e, 6) ^ Rotate(e, 11) ^ Rotate(e, 25)) + ((e & f) ^ ((~e) & g)) + K[i] + w[i];
+        const auto t2 = (Rotate(a, 2) ^ Rotate(a, 13) ^ Rotate(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+        h = g;
+        g = f;
+        f = e;
+        e = d + t1;
+        d = c;
+        c = b;
+        b = a;
+        a = t1 + t2;
+    }
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+    state[4] += e;
+    state[5] += f;
+    state[6] += g;
+    state[7] += h;
+}
+/// Bytes in one SHA-256 message block.
+constexpr usize BLOCK_BYTES = 64;
 #if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
 // Thanks to Arm, "Arm C Language Extensions" (ACLE), Cryptographic extensions
 // (SHA2 intrinsics): https://arm-software.github.io/acle/. Each SHA256H/SHA256H2
 // pair performs four rounds; SHA256SU0/SU1 extend the message schedule. The
 // four-round grouping follows Jeffrey Walton's public-domain SHA-Intrinsics
 // (https://github.com/noloader/SHA-Intrinsics); this is a separate implementation.
-// Selected at compile time only, so other targets use the portable rounds below.
+// Selected at compile time only; other targets use the portable Block above.
+/// 32-bit words per vector register and per four-round group.
+constexpr usize LANE_WORDS = 4;
+/// Bytes per vector register.
+constexpr usize LANE_BYTES = LANE_WORDS * sizeof(uint32);
+/// Message vectors per block: BLOCK_BYTES / LANE_BYTES.
+constexpr usize MESSAGE_VECTORS = BLOCK_BYTES / LANE_BYTES;
+/// Four-round groups per block (64 rounds).
+constexpr usize ROUND_GROUPS = sizeof(K) / sizeof(K[0]) / LANE_WORDS;
+/// Groups whose message vector must still be extended for a later group.
+constexpr usize EXTENDED_GROUPS = ROUND_GROUPS - MESSAGE_VECTORS;
 void CompressBlocks(const uint8* input, usize blockCount, uint32* state) noexcept
 {
     uint32x4_t abcd = vld1q_u32(state);
-    uint32x4_t efgh = vld1q_u32(state + 4);
+    uint32x4_t efgh = vld1q_u32(state + LANE_WORDS);
     for (usize block = 0; block < blockCount; ++block)
     {
-        const uint8* bytes = input + block * 64;
+        const uint8* bytes = input + block * BLOCK_BYTES;
         const uint32x4_t savedAbcd = abcd;
         const uint32x4_t savedEfgh = efgh;
-        uint32x4_t message[4] = {
-            vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(bytes))),
-            vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(bytes + 16))),
-            vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(bytes + 32))),
-            vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(bytes + 48))),
-        };
-        for (usize group = 0; group < 16; ++group)
+        uint32x4_t message[MESSAGE_VECTORS];
+        for (usize vector = 0; vector < MESSAGE_VECTORS; ++vector)
         {
-            const uint32x4_t scheduled = vaddq_u32(message[group % 4], vld1q_u32(K + group * 4));
-            if (group < 12)
+            message[vector] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(bytes + vector * LANE_BYTES)));
+        }
+        for (usize group = 0; group < ROUND_GROUPS; ++group)
+        {
+            const usize current = group % MESSAGE_VECTORS;
+            const uint32x4_t scheduled = vaddq_u32(message[current], vld1q_u32(K + group * LANE_WORDS));
+            if (group < EXTENDED_GROUPS)
             {
-                message[group % 4] = vsha256su1q_u32(vsha256su0q_u32(message[group % 4], message[(group + 1) % 4]),
-                                                     message[(group + 2) % 4],
-                                                     message[(group + 3) % 4]);
+                message[current] =
+                    vsha256su1q_u32(vsha256su0q_u32(message[current], message[(current + 1) % MESSAGE_VECTORS]),
+                                    message[(current + 2) % MESSAGE_VECTORS],
+                                    message[(current + MESSAGE_VECTORS - 1) % MESSAGE_VECTORS]);
             }
             const uint32x4_t previousAbcd = abcd;
             abcd = vsha256hq_u32(abcd, efgh, scheduled);
@@ -61,60 +115,14 @@ void CompressBlocks(const uint8* input, usize blockCount, uint32* state) noexcep
         efgh = vaddq_u32(efgh, savedEfgh);
     }
     vst1q_u32(state, abcd);
-    vst1q_u32(state + 4, efgh);
+    vst1q_u32(state + LANE_WORDS, efgh);
 }
 #else
-uint32 Rotate(uint32 value, uint32 amount) noexcept
-{
-    return (value >> amount) | (value << (32 - amount));
-}
 void CompressBlocks(const uint8* input, usize blockCount, uint32* state) noexcept
 {
     for (usize block = 0; block < blockCount; ++block)
     {
-        const uint8* bytes = input + block * 64;
-        uint32 w[64];
-        for (usize i = 0; i < 16; ++i)
-        {
-            w[i] = (static_cast<uint32>(bytes[i * 4]) << 24) | (static_cast<uint32>(bytes[i * 4 + 1]) << 16) |
-                   (static_cast<uint32>(bytes[i * 4 + 2]) << 8) | bytes[i * 4 + 3];
-        }
-        for (usize i = 16; i < 64; ++i)
-        {
-            const uint32 early = w[i - 15];
-            const uint32 late = w[i - 2];
-            w[i] = w[i - 16] + (Rotate(early, 7) ^ Rotate(early, 18) ^ (early >> 3)) + w[i - 7] +
-                   (Rotate(late, 17) ^ Rotate(late, 19) ^ (late >> 10));
-        }
-        uint32 a = state[0];
-        uint32 b = state[1];
-        uint32 c = state[2];
-        uint32 d = state[3];
-        uint32 e = state[4];
-        uint32 f = state[5];
-        uint32 g = state[6];
-        uint32 h = state[7];
-        for (usize i = 0; i < 64; ++i)
-        {
-            const uint32 t1 = h + (Rotate(e, 6) ^ Rotate(e, 11) ^ Rotate(e, 25)) + ((e & f) ^ ((~e) & g)) + K[i] + w[i];
-            const uint32 t2 = (Rotate(a, 2) ^ Rotate(a, 13) ^ Rotate(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
-            h = g;
-            g = f;
-            f = e;
-            e = d + t1;
-            d = c;
-            c = b;
-            b = a;
-            a = t1 + t2;
-        }
-        state[0] += a;
-        state[1] += b;
-        state[2] += c;
-        state[3] += d;
-        state[4] += e;
-        state[5] += f;
-        state[6] += g;
-        state[7] += h;
+        Block(input + block * BLOCK_BYTES, state);
     }
 }
 #endif
@@ -131,7 +139,8 @@ bool Hasher::Add(std::span<const uint8> data) noexcept
     // Complete a buffered partial block first, then compress whole blocks in place.
     if (mCount != 0)
     {
-        const usize take = remaining < 64 - mCount ? remaining : 64 - mCount;
+        const usize space = BLOCK_BYTES - mCount;
+        const usize take = remaining < space ? remaining : space;
         for (usize i = 0; i < take; ++i)
         {
             mTail[mCount + i] = input[i];
@@ -139,20 +148,17 @@ bool Hasher::Add(std::span<const uint8> data) noexcept
         mCount += take;
         input += take;
         remaining -= take;
-        if (mCount < 64)
+        if (mCount < BLOCK_BYTES)
         {
             return true;
         }
         CompressBlocks(mTail, 1, mState);
         mCount = 0;
     }
-    const usize blockCount = remaining / 64;
-    if (blockCount != 0)
-    {
-        CompressBlocks(input, blockCount, mState);
-        input += blockCount * 64;
-        remaining -= blockCount * 64;
-    }
+    const usize blockCount = remaining / BLOCK_BYTES;
+    CompressBlocks(input, blockCount, mState);
+    input += blockCount * BLOCK_BYTES;
+    remaining -= blockCount * BLOCK_BYTES;
     for (usize i = 0; i < remaining; ++i)
     {
         mTail[i] = input[i];
@@ -179,7 +185,11 @@ Digest Hasher::Finish() const noexcept
     {
         tail[bytes - 1 - i] = static_cast<uint8>(bits >> (i * 8));
     }
-    CompressBlocks(tail, bytes / 64, state);
+    Block(tail, state);
+    if (bytes == 128)
+    {
+        Block(tail + 64, state);
+    }
     Digest result;
     for (usize i = 0; i < 32; ++i)
     {
