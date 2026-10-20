@@ -61,6 +61,8 @@ namespace
 {
 // Build output streams in many small chunks; parse it for the Error List once it pauses.
 constexpr foundation::int32 BUILD_ERRORS_DELAY_MILLISECONDS = 250;
+/// How long a game playing in the viewport gets to close its window before Stop ends its process.
+constexpr foundation::int32 PLAY_CLOSE_GRACE_MILLISECONDS = 3000;
 } // namespace
 
 MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QString& workspaceSettingsFile)
@@ -135,7 +137,15 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
                                "arguments to --level and this World path, then save Project settings."));
             return;
         }
-        LaunchAfterPreview(LaunchAction::Run);
+        // Play in the viewport when the World viewport can host the game; otherwise its own window.
+        QString address;
+        QString reason;
+        if (World_->BeginPlayInViewport(address, reason) == false)
+        {
+            StatusLabel_->setText(QStringLiteral("Play in the viewport is unavailable: ") + reason +
+                                  QStringLiteral(". The game opens in its own window."));
+        }
+        launchAfterPreview(LaunchAction::Run, {}, false, address);
     });
     connect(Scripts_, &ScriptWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
@@ -298,7 +308,7 @@ void MainWindow::BuildMenus()
     BuildDebugAction_->setObjectName(QStringLiteral("buildDebugAction"));
     BuildDebugAction_->setToolTip(QStringLiteral("Debug native games in RAD. Optional setup is offered when missing."));
     BuildDebugAction_->setShortcut(QKeySequence(Qt::Key_F5));
-    connect(BuildDebugAction_, &QAction::triggered, this, [this]() { LaunchAfterPreview(LaunchAction::Debug); });
+    connect(BuildDebugAction_, &QAction::triggered, this, [this]() { launchAfterPreview(LaunchAction::Debug); });
     connect(Controller_, &EditorController::DebuggerSetupRequested, this, &MainWindow::OnDebuggerSetupRequested);
     StopAction_ = buildMenu->addAction(QStringLiteral("&Stop"));
     // Render-graph commands: one QAction each, shared with the Render Graph toolbar.
@@ -431,7 +441,7 @@ void MainWindow::BuildMenus()
 #if defined(Q_OS_WASM)
         Controller_->Play();
 #else
-        LaunchAfterPreview(LaunchAction::Play);
+        launchAfterPreview(LaunchAction::Play);
 #endif
     });
     connect(BuildReloadAction_, &QAction::triggered, this, [this]() {
@@ -531,22 +541,31 @@ void MainWindow::BuildMenus()
             Controller_->Build();
         }
     });
-    connect(BuildRunAction_, &QAction::triggered, this, [this]() { LaunchAfterPreview(LaunchAction::Run); });
-    connect(StopAction_, &QAction::triggered, Controller_, &EditorController::Stop);
+    connect(BuildRunAction_, &QAction::triggered, this, [this]() { launchAfterPreview(LaunchAction::Run); });
+    connect(StopAction_, &QAction::triggered, this, &MainWindow::stopRun);
     connect(ClearAction_, &QAction::triggered, Controller_, &EditorController::ClearOutput);
     connect(CopyAction_, &QAction::triggered, this, &MainWindow::OnCopyJobDetails);
 }
 
-void MainWindow::LaunchAfterPreview(LaunchAction action, const QString& debugger, bool setup)
+void MainWindow::launchAfterPreview(LaunchAction action,
+                                    const QString& debugger,
+                                    bool shouldSetUpDebugger,
+                                    const QString& hostedWindowAddress)
 {
     if (AudioLaunchPending_ || AudioClosing_ || Scripts_->ConfirmDiscard() == false ||
         World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false)
     {
+        World_->EndPlayInViewport();
         return;
     }
-    ResumeViewport_ = World_->PreviewRunning();
-    ResumeViewportEpoch_ = Controller_->State().ProjectEpoch;
-    World_->StopPreview();
+    mIsPlayRunInViewport = hostedWindowAddress.isEmpty() == false;
+    if (mIsPlayRunInViewport == false)
+    {
+        // A game in its own window must not share the World viewport's device admission.
+        ResumeViewport_ = World_->PreviewRunning();
+        ResumeViewportEpoch_ = Controller_->State().ProjectEpoch;
+        World_->StopPreview();
+    }
     AudioLaunchPending_ = true;
     Audio_->setEnabled(false);
     Audio_->ShutdownPreview();
@@ -555,39 +574,63 @@ void MainWindow::LaunchAfterPreview(LaunchAction action, const QString& debugger
     const auto digest = Controller_->State().SavedDigest;
     auto* timer = new QTimer(this);
     timer->setInterval(20);
-    connect(timer, &QTimer::timeout, this, [this, timer, epoch, digest, action, debugger, setup]() {
-        if (Audio_->PreviewFinished() == false)
+    connect(timer,
+            &QTimer::timeout,
+            this,
+            [this, timer, epoch, digest, action, debugger, shouldSetUpDebugger, hostedWindowAddress]() {
+                if (Audio_->PreviewFinished() == false)
+                {
+                    return;
+                }
+                timer->stop();
+                timer->deleteLater();
+                AudioLaunchPending_ = false;
+                if (AudioClosing_)
+                {
+                    return;
+                }
+                Audio_->ResetPreview();
+                Audio_->setEnabled(Controller_->State().Document == DocumentState::ProjectLoaded);
+                RenderCapabilities();
+                if (epoch != Controller_->State().ProjectEpoch || digest != Controller_->State().SavedDigest)
+                {
+                    World_->EndPlayInViewport();
+                    mIsPlayRunInViewport = false;
+                    return;
+                }
+                switch (action)
+                {
+                    case LaunchAction::Run:
+                        Controller_->BuildRun(hostedWindowAddress);
+                        break;
+                    case LaunchAction::Play:
+                        Controller_->Play();
+                        break;
+                    case LaunchAction::Debug:
+                        Controller_->BuildDebug(debugger, shouldSetUpDebugger);
+                        break;
+                }
+            });
+    timer->start();
+}
+
+void MainWindow::stopRun()
+{
+    if (mIsPlayRunInViewport == false || World_->IsPlayingInViewport() == false ||
+        Controller_->State().OperationPhase != Phase::Running)
+    {
+        Controller_->Stop();
+        return;
+    }
+    // Stop closes the game's window like its own close button; the supervisor's stop is the backstop.
+    World_->RequestPlayClose();
+    const foundation::uint64 epoch = Controller_->State().ProjectEpoch;
+    QTimer::singleShot(PLAY_CLOSE_GRACE_MILLISECONDS, this, [this, epoch]() {
+        if (Controller_->State().ProjectEpoch == epoch && Controller_->State().OperationPhase == Phase::Running)
         {
-            return;
-        }
-        timer->stop();
-        timer->deleteLater();
-        AudioLaunchPending_ = false;
-        if (AudioClosing_)
-        {
-            return;
-        }
-        Audio_->ResetPreview();
-        Audio_->setEnabled(Controller_->State().Document == DocumentState::ProjectLoaded);
-        RenderCapabilities();
-        if (epoch != Controller_->State().ProjectEpoch || digest != Controller_->State().SavedDigest)
-        {
-            return;
-        }
-        switch (action)
-        {
-            case LaunchAction::Run:
-                Controller_->BuildRun();
-                break;
-            case LaunchAction::Play:
-                Controller_->Play();
-                break;
-            case LaunchAction::Debug:
-                Controller_->BuildDebug(debugger, setup);
-                break;
+            Controller_->Stop();
         }
     });
-    timer->start();
 }
 
 ProjectDescriptor MainWindow::DraftFromFields() const
@@ -866,6 +909,12 @@ void MainWindow::OnStateChanged()
         Content_->SetProject(QString(), state.ProjectEpoch);
     }
 
+    if (mIsPlayRunInViewport == true && state.OperationPhase == Phase::Idle && AudioLaunchPending_ == false)
+    {
+        // The game exited, crashed, was stopped or never launched: the viewport edits again.
+        mIsPlayRunInViewport = false;
+        World_->EndPlayInViewport();
+    }
     if (ResumeViewport_ && state.OperationPhase == Phase::Idle && AudioLaunchPending_ == false)
     {
         ResumeViewport_ = false;
@@ -1315,7 +1364,7 @@ void MainWindow::OnDebuggerSetupRequested()
         }
         if (dialog->clickedButton() == setup)
         {
-            LaunchAfterPreview(LaunchAction::Debug, {}, true);
+            launchAfterPreview(LaunchAction::Debug, {}, true);
         }
         else if (dialog->clickedButton() == choose)
         {
@@ -1325,7 +1374,7 @@ void MainWindow::OnDebuggerSetupRequested()
             connect(picker, &QFileDialog::fileSelected, this, [this, current](const QString& path) {
                 if (current())
                 {
-                    LaunchAfterPreview(LaunchAction::Debug, path);
+                    launchAfterPreview(LaunchAction::Debug, path);
                 }
             });
             picker->open();

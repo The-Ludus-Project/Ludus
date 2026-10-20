@@ -142,6 +142,10 @@ void ToolProcess::SendRequest()
         request.insert(QStringLiteral("platform"), Launch_.ReleasePlatform);
         request.insert(QStringLiteral("itch_target"), Launch_.ItchTarget);
     }
+    if (Launch_.Operation == ToolOperation::BuildRun && Launch_.HostedWindowAddress.isEmpty() == false)
+    {
+        request.insert(QStringLiteral("hosted_window"), Launch_.HostedWindowAddress);
+    }
     if (Launch_.Operation == ToolOperation::Package)
     {
         request.insert(QStringLiteral("profile"), Launch_.ReleaseProfile);

@@ -19,6 +19,7 @@ namespace ludus::editor
 {
 class RenderLoadJob;
 class PreviewViewport;
+class PlayViewportSource;
 class RenderPanel final : public QWidget
 {
     Q_OBJECT
@@ -43,7 +44,24 @@ public:
     {
         return *Viewport_;
     }
+    /// @brief Begin Play in the viewport: the game launched with outAddress opens in this viewport.
+    ///
+    /// Keeps the edit preview's device (the game's frames are imported onto it) and starts a
+    /// play source. The viewport keeps the edit image until the game's first frame arrives,
+    /// then presents the game and forwards input to it. Native builds only.
+    /// @param outAddress The `LUDUS_HOSTED_WINDOW` value for the game, set on success.
+    /// @param outReason Why Play cannot open in the viewport, set on failure.
+    /// @return True when the game's window will be this viewport.
+    [[nodiscard]] bool BeginPlay(QString& outAddress, QString& outReason);
+    /// End Play in the viewport: present edit frames again and close the game's window.
+    void EndPlay() noexcept;
+    /// Close the game's window, as clicking a native window's close button would.
+    void RequestPlayClose() noexcept;
+    /// Whether a Play-in-the-viewport session is open.
+    [[nodiscard]] bool IsPlaying() const noexcept;
 Q_SIGNALS:
+    /// The Play-in-the-viewport session changed state (started, showing the game, or ended).
+    void PlayStateChanged();
     void Starting();
     void Loaded(bool success);
     void TintRequested(const QString& id, const QJsonObject& binding);
@@ -67,6 +85,9 @@ private:
     bool mShouldUseDefaultCamera = false;
     RenderPreview Preview_;
     PreviewViewport* Viewport_;
+    void updatePlay();
+    PlayViewportSource* mPlayOrNull = nullptr;
+    bool mIsPlaying = false;
     WorldDocument PreviewWorld_;
     QLabel* Status_;
     QLabel* Trace_;

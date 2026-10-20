@@ -500,11 +500,13 @@ void EditorController::Build()
         StartJob(ActionKind::Build, ToolOperation::Build);
     }
 }
-void EditorController::BuildRun()
+void EditorController::BuildRun(const QString& hostedWindowAddress)
 {
     if (Caps().CanBuildRun)
     {
-        StartJob(ActionKind::BuildRun, ToolOperation::BuildRun);
+        ToolLaunch options;
+        options.HostedWindowAddress = hostedWindowAddress;
+        StartJob(ActionKind::BuildRun, ToolOperation::BuildRun, options);
     }
 }
 

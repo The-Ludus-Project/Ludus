@@ -6,6 +6,11 @@
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
+#include "internal/world_workspace.h"
+
+#if defined(LUDUS_WORLD_DEMO_PLAYER)
+#    include "internal/level.h"
+#endif
 
 #include <ludus/graphics/rhi/native_interop.h>
 #include <ludus/graphics/rhi/rhi.h>
@@ -16,12 +21,19 @@
 #endif
 
 #include <QByteArray>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
+#include <QFocusEvent>
 #include <QGuiApplication>
 #include <QImage>
+#include <QJsonObject>
+#include <QKeyEvent>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QQuickWindow>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <cstdlib>
@@ -198,5 +210,156 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
     preview.Stop();
 #else
     SKIP("Needs macOS, the native GPU preview and the RHI hosted test producer");
+#endif
+}
+
+#if defined(LUDUS_WORLD_DEMO_PLAYER) && defined(Q_OS_MACOS)
+namespace
+{
+/// macOS kVK_ANSI_D: the World-demo player moves right while it is held.
+constexpr uint32 MAC_KEY_D = 0x02;
+/// How long the journey holds D, so the player moves a visible distance.
+constexpr int32 HOLD_MILLISECONDS = 600;
+
+/// The orange player through the Renderer's display transform (docs/examples/world-demo.md).
+bool IsPlayerPixel(const QColor& color)
+{
+    return color.red() >= 175 && color.red() <= 200 && color.green() >= 155 && color.green() <= 185 &&
+           color.blue() >= 85 && color.blue() <= 118;
+}
+/// Mean x of the player's pixels in the viewport's current image, or a negative value when absent.
+float64 GetPlayerCentroid()
+{
+    for (QWindow* window : QGuiApplication::allWindows())
+    {
+        if (window->objectName() != QStringLiteral("LudusGpuViewport"))
+        {
+            continue;
+        }
+        const QImage image = static_cast<QQuickWindow*>(window)->grabWindow();
+        float64 sum = 0;
+        int32 count = 0;
+        for (int32 y = 0; y < image.height(); ++y)
+        {
+            for (int32 x = 0; x < image.width(); ++x)
+            {
+                if (IsPlayerPixel(image.pixelColor(x, y)) == true)
+                {
+                    sum += x;
+                    ++count;
+                }
+            }
+        }
+        return count == 0 ? -1 : sum / count;
+    }
+    return -1;
+}
+void SendNativeKey(QWidget& inoutTarget, QEvent::Type type, int key, uint32 nativeKey, Qt::KeyboardModifiers modifiers)
+{
+    QKeyEvent event(type, key, modifiers, 0, nativeKey, 0);
+    QCoreApplication::sendEvent(&inoutTarget, &event);
+}
+} // namespace
+#endif
+
+TEST_CASE("Play runs the World-demo game in the World viewport, with keys, resize, Stop and a crash",
+          "[editor][play][viewport][gpu][.play-native]")
+{
+#if defined(LUDUS_WORLD_DEMO_PLAYER) && defined(Q_OS_MACOS)
+    REQUIRE(QGuiApplication::platformName() == QStringLiteral("cocoa"));
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    const QString path =
+        QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(QStringLiteral("room.world.json"));
+    const std::string_view sample = ludus::world_demo::ExampleLevel();
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        REQUIRE(file.write(sample.data(), static_cast<int64>(sample.size())) == static_cast<int64>(sample.size()));
+    }
+    WorldWorkspace workspace;
+    workspace.resize(1200, 850);
+    workspace.show();
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path));
+    RenderPreview& preview = workspace.GetRenderPreview();
+    REQUIRE(AwaitCondition([&preview]() { return preview.Running() == true && preview.Frames() >= 2; }));
+    // PreviewViewport has no Q_OBJECT; the bound viewport is found by its object name.
+    PreviewViewport* viewport =
+        static_cast<PreviewViewport*>(workspace.findChild<QWidget*>(QStringLiteral("worldViewport")));
+    REQUIRE(viewport != nullptr);
+    const auto startGame = [&](QProcess& inoutGame) {
+        QString address;
+        QString reason;
+        REQUIRE(workspace.BeginPlayInViewport(address, reason));
+        INFO(reason.toStdString());
+        QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+        environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE), address);
+        inoutGame.setProcessEnvironment(environment);
+        inoutGame.start(QStringLiteral(LUDUS_WORLD_DEMO_PLAYER), {QStringLiteral("--level"), path});
+        REQUIRE(inoutGame.waitForStarted() == true);
+        // The viewport switches to the game at its first frame.
+        REQUIRE(AwaitCondition([&]() { return &viewport->GetFrameSource() != &preview; }));
+        const uint64 shown = viewport->PresentedFrames();
+        REQUIRE(AwaitCondition([&]() { return viewport->PresentedFrames() >= shown + PRESENTED_FRAMES; }));
+    };
+
+    QProcess game;
+    startGame(game);
+    CHECK(workspace.IsPlayingInViewport());
+    // The game draws its own room: the player is on screen in the game's own frame.
+    const float64 before = GetPlayerCentroid();
+    REQUIRE(before >= 0);
+
+    // The viewport is the game's window: focus, then a held physical D moves the player right.
+    QFocusEvent focusIn(QEvent::FocusIn, Qt::MouseFocusReason);
+    QCoreApplication::sendEvent(viewport, &focusIn);
+    SendNativeKey(*viewport, QEvent::KeyPress, Qt::Key_D, MAC_KEY_D, Qt::NoModifier);
+    QTest::qWait(HOLD_MILLISECONDS);
+    SendNativeKey(*viewport, QEvent::KeyRelease, Qt::Key_D, MAC_KEY_D, Qt::NoModifier);
+    const uint64 moved = viewport->PresentedFrames();
+    REQUIRE(AwaitCondition([&]() { return viewport->PresentedFrames() >= moved + PRESENTED_FRAMES; }));
+    const float64 after = GetPlayerCentroid();
+    CHECK(after > before);
+
+    // Editor shortcuts do not take the game's keys while it has the keyboard.
+    QKeyEvent shortcut(QEvent::ShortcutOverride, Qt::Key_S, Qt::ControlModifier);
+    QCoreApplication::sendEvent(viewport, &shortcut);
+    CHECK(shortcut.isAccepted());
+    // Shift+F6 stays the editor's Stop shortcut.
+    QKeyEvent stop(QEvent::ShortcutOverride, Qt::Key_F6, Qt::ShiftModifier);
+    stop.ignore();
+    QCoreApplication::sendEvent(viewport, &stop);
+    CHECK_FALSE(stop.isAccepted());
+
+    // Resizing the World viewport resizes the game's window; its frames keep coming.
+    workspace.resize(1000, 700);
+    const uint64 resized = viewport->PresentedFrames();
+    CHECK(AwaitCondition([&]() { return viewport->PresentedFrames() >= resized + PRESENTED_FRAMES; }));
+
+    // Stop closes the game's window like its close button; the game exits normally.
+    workspace.RequestPlayClose();
+    REQUIRE(game.waitForFinished(TIMEOUT_MILLISECONDS) == true);
+    CHECK(game.exitStatus() == QProcess::NormalExit);
+    CHECK(game.exitCode() == 0);
+    REQUIRE(AwaitCondition([&]() { return workspace.IsPlayingInViewport() == false; }));
+    CHECK(&viewport->GetFrameSource() == &preview);
+    const uint64 edited = viewport->PresentedFrames();
+    CHECK(AwaitCondition([&]() { return viewport->PresentedFrames() >= edited + PRESENTED_FRAMES; }));
+
+    // A crash ends Play too: the viewport edits again and the World is untouched.
+    const QJsonObject draft = workspace.Document().Draft();
+    QProcess crashing;
+    startGame(crashing);
+    crashing.kill();
+    REQUIRE(crashing.waitForFinished(TIMEOUT_MILLISECONDS) == true);
+    REQUIRE(AwaitCondition([&]() { return workspace.IsPlayingInViewport() == false; }));
+    CHECK(&viewport->GetFrameSource() == &preview);
+    CHECK(workspace.Document().Draft() == draft);
+    const uint64 recovered = viewport->PresentedFrames();
+    CHECK(AwaitCondition([&]() { return viewport->PresentedFrames() >= recovered + PRESENTED_FRAMES; }));
+    workspace.StopPreview();
+#else
+    SKIP("Needs macOS, the native GPU preview and the World-demo player");
 #endif
 }

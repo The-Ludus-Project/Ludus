@@ -30,6 +30,7 @@ import errno
 import json
 import os
 import platform
+import re
 import selectors
 import shutil
 import signal
@@ -46,6 +47,13 @@ from ludus_tools.errors import ToolingError
 
 
 PROTOCOL_VERSION = 1
+# Play in the editor viewport: the game's hosted-window channel address
+# (modules/platform/include/ludus/platform/hosted_window.h). Only the launched
+# game receives it; configure and build children never do.
+HOSTED_WINDOW_VARIABLE = "LUDUS_HOSTED_WINDOW"
+# "1:" + 64 hex token digits + ":" + an absolute socket path of at most 103 bytes.
+MAX_HOSTED_WINDOW_BYTES = 256
+HOSTED_WINDOW_ADDRESS = re.compile(r"1:[0-9a-f]{64}:/[^\x00-\x1f]+")
 
 # Bounded resource limits (design section 10), conservative initial values.
 OUTPUT_CREDIT_WINDOW = 256 * 1024       # encoded output bytes in flight
@@ -660,6 +668,8 @@ def build_plan(context: ToolContext, descriptor: editor_project.Descriptor, proj
         env["LUDUS_SDK_PREFIX"] = str(resolution.prefix)
 
     env.pop("BUTLER_API_KEY", None)
+    # A channel address belongs to one launch; never inherit one into tool children.
+    env.pop(HOSTED_WINDOW_VARIABLE, None)
 
     sdk_identity = resolution.identity if resolution is not None else None
     if sdk_identity is None and env.get("LUDUS_SDK_PREFIX"):
@@ -1305,8 +1315,13 @@ class Operation:
             raise _StageFailed("launching", "SpawnFailed", None,
                                message=f"run working directory does not exist: {plan.run_cwd}")
         self._check_cancel()
+        runtime_env = plan.env
+        hosted_window = self._options.get("hosted_window")
+        if hosted_window:
+            # Play in the editor viewport: the game's window is the editor's viewport.
+            runtime_env = {**plan.env, HOSTED_WINDOW_VARIABLE: hosted_window}
         try:
-            child = OwnedProcess(run_argv, str(plan.run_cwd), plan.env)
+            child = OwnedProcess(run_argv, str(plan.run_cwd), runtime_env)
         except OSError as exc:
             raise _StageFailed("launching", "SpawnFailed", None, message=str(exc)) from exc
         self._stage = "running"
@@ -1431,6 +1446,11 @@ def _validate_request(message: dict) -> tuple[str, str, Path, str]:
         value = message.get(key)
         if not isinstance(value, str) or len(value.encode()) > maximum or any(ord(c) < 32 for c in value):
             raise ProtocolError("invalid release request field: " + key)
+    if "hosted_window" in message:
+        hosted = message.get("hosted_window")
+        if (operation != "build_run" or not isinstance(hosted, str) or len(hosted.encode()) > MAX_HOSTED_WINDOW_BYTES
+                or HOSTED_WINDOW_ADDRESS.fullmatch(hosted) is None):
+            raise ProtocolError("hosted_window must be a build_run channel address")
     return job, operation, Path(project), expected
 
 
