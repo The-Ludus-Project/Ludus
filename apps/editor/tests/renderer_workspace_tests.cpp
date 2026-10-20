@@ -8,6 +8,10 @@
 #include "internal/render_graph_job.h"
 #include "internal/render_graph_shader_interface.h"
 #include "internal/renderer_workspace.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/preview_viewport.h"
+#    include "internal/render_preview.h"
+#endif
 #include "internal/workspace_style.h"
 
 #include <ludus/foundation/base/types.h>
@@ -18,6 +22,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -471,6 +476,69 @@ TEST_CASE("RG3 build outputs stay inside a project opened through a symlink", "[
     CHECK(workspace.GetRuntimePackagePath().isEmpty() == true);
     CHECK(workspace.Build() == false);
     CHECK(QFileInfo::exists(QDir(root).filePath(QStringLiteral("out"))) == false);
+}
+
+TEST_CASE("Preview build failures expose the current graph problem and ignore stale failures", "[editor][render-graph]")
+{
+    const QString python = FindPython();
+    REQUIRE(python.isEmpty() == false);
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString package = MakePackage(project);
+    const QString path = QDir(package).filePath(LIBRARY);
+    QJsonObject library = QJsonDocument::fromJson(ReadFile(path)).object();
+    QJsonArray configurations = library.value(QStringLiteral("configurations")).toArray();
+    QJsonObject configuration = configurations.at(0).toObject();
+    QJsonArray outputs = configuration.value(QStringLiteral("outputs")).toArray();
+    QJsonObject output = outputs.at(0).toObject();
+    output.remove(QStringLiteral("required"));
+    outputs[0] = output;
+    configuration.insert(QStringLiteral("outputs"), outputs);
+    configurations[0] = configuration;
+    library.insert(QStringLiteral("configurations"), configurations);
+    WriteFile(path, QJsonDocument(library).toJson());
+    RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    const QString helper = QDir(project.path()).filePath(QStringLiteral("shader-helper"));
+    MakeShaderHelper(helper);
+    // The malformed interface is rejected before compiler invocation. Use a known local
+    // executable for tool hashing so this regression needs no installed shader compiler.
+    workspace.SetBuildTools(helper, python);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.UseProjectGraph(workspace);
+#endif
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    const RenderGraphJobResult failure = workspace.GetLastResult();
+    INFO(failure.Message.toStdString());
+    REQUIRE(failure.IsSuccessful == false);
+    CHECK(failure.Code == QStringLiteral("RenderGraphSchema"));
+    CHECK(workspace.GetRenderProblem().contains(failure.Code) == true);
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("required")) == true);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    QCoreApplication::processEvents();
+    CHECK(source.Start() == false);
+    CHECK(source.Status().contains(failure.Code) == true);
+#endif
+    RenderGraphJobResult stale = failure;
+    stale.Request.InputIdentity = QByteArrayLiteral("superseded graph inputs");
+    stale.Message = QStringLiteral("stale failure must not replace the current problem");
+    workspace.AcceptResult(stale);
+    CHECK(workspace.GetRenderProblem().contains(stale.Message) == false);
+    QTemporaryDir nextProject;
+    REQUIRE(nextProject.isValid() == true);
+    workspace.SetProject(nextProject.path(), 2);
+    workspace.AcceptResult(failure);
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    QCoreApplication::processEvents();
+    CHECK(source.Start() == false);
+    CHECK(source.Status().contains(failure.Code) == false);
+#endif
 }
 
 TEST_CASE("RG3 Renderer workspace maps CLI errors and matches CLI plans", "[editor][render-graph]")

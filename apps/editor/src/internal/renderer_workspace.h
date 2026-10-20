@@ -368,6 +368,8 @@ private:
     foundation::uint64 mPreviewDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;
     QByteArray mPreviewSceneIdentity;
+    /// Semantic graph inputs of the runtime request; older activation errors cannot fail a new draft.
+    QByteArray mPreviewInputIdentity;
     foundation::math::Matrix4 mPreviewWorldToClip = foundation::math::Matrix4::Identity();
 };
 } // namespace ludus::editor

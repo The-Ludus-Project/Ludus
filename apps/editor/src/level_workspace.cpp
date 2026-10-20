@@ -385,7 +385,7 @@ QWidget* LevelWorkspace::TakeViewport(QWidget* parent)
 }
 void LevelWorkspace::ShowSceneFailure(const QString& error)
 {
-    if (Preview_.FrameAvailable() == false)
+    if (Preview_.FrameAvailable() == false && Viewport_->HasRetainedGraphFrame() == false)
     {
         Viewport_->ClearFrame(QStringLiteral("Scene unavailable: ") + error);
     }
@@ -825,6 +825,7 @@ void LevelWorkspace::CommitCandidate()
 }
 void LevelWorkspace::Rollback(const QString& error)
 {
+    const bool hasPreviousFrame = Viewport_->HasRetainedGraphFrame();
     AwaitingViewport_ = false;
     PublishingCatalog_ = false;
     Preview_.Stop();
@@ -832,7 +833,7 @@ void LevelWorkspace::Rollback(const QString& error)
     {
         (void)Preview_.Start();
     }
-    if (Preview_.Running() == false)
+    if (Preview_.Running() == false && hasPreviousFrame == false)
     {
         // Show the refusal in the viewport, not only in the status line.
         Viewport_->ClearFrame(error);
