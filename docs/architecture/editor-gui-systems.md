@@ -771,7 +771,15 @@ presentation path: QQuickWindow, `ImageItem`, two frame slots, and release at
 - `RenderPreview`, the in-process edit renderer;
 - `PlayViewportSource`, which holds the imported hosted images.
 
-Each source owns its leases and generations. The play source keeps a retired
+Each source owns its leases and generations, and the native read Qt samples.
+`TakeFrameRead` opens a read of the pending image on the viewport's device and
+returns its `NativeTextureInfo`. After the Qt frame that sampled it has been
+submitted, the viewport calls `EndFrameRead`. The source answers Pending until the
+consumer queue has finished that sampling, and the viewport keeps the slot and
+asks again. `DrainFrameRead` ends a read during teardown. The default
+implementation opens an RHI native read of a `RasterViewport` image, which is what
+`RenderPreview` uses; the play source overrides all three with its imported
+frames. The play source keeps a retired
 generation alive until its last lease is released, as `PreviewGpuGeneration`
 does. Play frames are shown 1:1 at the full viewport pixel size. The 1024-pixel
 cap and the stretch mapping apply only to edit previews.
@@ -967,6 +975,9 @@ AGENTS.md gates.
 | P4 | Platform hosted-window backend, editor endpoint and public native key-code maps | Socket-pair tests for each event, the focus baseline, close on channel loss, and token/uid refusal |
 | P5 | RHI hosted surface: Metal IOSurface and Vulkan external-memory export and import | Two-process GPU tests: known colour, release-gated acquire, Skipped on exhaustion, retirement of resized generations, adapter-mismatch refusal |
 | P6 | Play in the viewport: launcher variable, play source, input forwarding, reserved chords and transitions | Controller and viewport state tests; Cocoa journey playing World-demo in the viewport with native keys and resize; return to edit after crash and Stop |
+| P6a | Source-owned native frame reads: `ViewportFrameSource` opens and ends the read Qt samples, with no behaviour change | Existing frame-source, viewport and native World tests; a source answering Pending keeps its slot until it ends the read |
+| P6b | Play source over the hosted surface, with a queue-ordered release on Qt's queue (macOS Metal) | Two-process test presenting a producer's frames through `PreviewViewport`; releases follow Qt's completed sampling |
+| P6c | Launcher variable, edit and play transitions, input forwarding and reserved chords | Controller and viewport state tests; Cocoa journey playing World-demo in the viewport; return to edit after crash and Stop |
 | P7 | Separate-window preference and unavailable reasons | Preference persistence; launch without the variable; refusal-message tests |
 
 P3's private `ViewportFrameSource` carries only frame
@@ -974,9 +985,13 @@ production and leases: `HasPendingFrame`, `TakeFrame`, `ReleaseFrame`, `Resize`,
 `FrameReady` and `ResettingFrames`. Device admission, navigation and the
 statistics overlay stay on `RenderPreview`, and the browser canvas still leases
 from `RenderPreview` directly.
-A source's images must live on the device that `RenderPreview` admitted. Its
-leases use the Renderer's `ViewportFrame`, which only `RasterViewport` can issue,
-so P6 must give the play source a way to issue leases.
+A source's images must live on the device that `RenderPreview` admitted. P6
+splits into three PRs. P6a moves the native read into the source, so the play
+source issues its own reads instead of the Renderer's `ViewportFrame` leases,
+which only `RasterViewport` can create. Play in the viewport ships on macOS Metal
+first. Linux states that it is not yet available until Qt's Vulkan device enables
+`VK_KHR_external_memory_fd` and the viewport records the external queue-family
+acquire.
 
 P1, P3 and P4 are independent of each other. P2 needs P1, P5 needs P4, and P6
 needs P2, P3 and P5. P5 opens with its macOS Mach rendezvous and Linux
