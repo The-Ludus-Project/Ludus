@@ -271,6 +271,127 @@ struct Instance final
     math::Vector4 Color;
     math::Vector4 WorldRows[3], NormalRows[3], Eye;
 };
+constexpr usize FLAT_STREAM_COUNT = 2;
+constexpr usize FLAT_ATTRIBUTE_COUNT = 6;
+constexpr StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT> FLAT_STREAMS{{
+    {sizeof(Vertex), false},
+    {sizeof(Instance), true},
+}};
+constexpr StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT> FLAT_ATTRIBUTES{{
+    {0, 0, 0, rhi::RasterVertexFormat::Float3},
+    {1, 1, 0, rhi::RasterVertexFormat::Float4},
+    {2, 1, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {3, 1, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {4, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {5, 1, 4 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+}};
+/// Grid resources are private to one immutable prepared view; RHI retires submitted uses.
+struct WorldGridBuffers final
+{
+    rhi::DeviceHandle Device{};
+    rhi::BufferHandle Vertices{};
+    rhi::BufferHandle Indices{};
+    rhi::BufferHandle Instances{};
+    uint32 Count = 0;
+    usize PipelineCount = 0;
+    ~WorldGridBuffers() noexcept
+    {
+        static_cast<void>(rhi::Destroy(Device, Vertices));
+        static_cast<void>(rhi::Destroy(Device, Indices));
+        static_cast<void>(rhi::Destroy(Device, Instances));
+    }
+};
+constexpr usize WORLD_GRID_VERTEX_COUNT = 4;
+constexpr usize WORLD_GRID_INDEX_COUNT = 6;
+constexpr usize WORLD_GRID_PIPELINE_COUNT = 6;
+constexpr usize WORLD_GRID_TARGET_VARIANTS = 2;
+constexpr usize WORLD_GRID_UNORM_PIPELINE = 2;
+constexpr usize WORLD_GRID_HDR_PIPELINE = 4;
+constexpr usize WORLD_GRID_MATRIX_ROWS = 4;
+/// Owner-thread scratch, charged to the renderer's host budget instead of the browser stack.
+struct WorldGridScratch final
+{
+    StaticArray<WorldGridLine, WORLD_GRID_LINE_CAPACITY> Lines{};
+    StaticArray<Instance, WORLD_GRID_LINE_CAPACITY> Instances{};
+};
+Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
+                               const ViewDescription& description,
+                               WorldGridScratch& inoutScratch,
+                               core::UniquePtr<WorldGridBuffers>& outBuffers) noexcept
+{
+    usize count = 0;
+    float32 spacing = 0;
+    if (BuildWorldGridLines(description, {inoutScratch.Lines.GetData(), WORLD_GRID_LINE_CAPACITY}, count, spacing) ==
+        false)
+    {
+        return Status::InvalidDescription;
+    }
+    if (count == 0)
+    {
+        return Status::Ready;
+    }
+    core::UniquePtr<WorldGridBuffers> candidate;
+    candidate.Reset(new (std::nothrow) WorldGridBuffers);
+    if (candidate.Get() == nullptr)
+    {
+        return Status::OutOfMemory;
+    }
+    candidate->Device = device;
+    StaticArray<Vertex, WORLD_GRID_VERTEX_COUNT> vertices{};
+    vertices[0].Position = {-1, -1, 0};
+    vertices[1].Position = {1, -1, 0};
+    vertices[2].Position = {1, 1, 0};
+    vertices[WORLD_GRID_VERTEX_COUNT - 1].Position = {-1, 1, 0};
+    constexpr StaticArray<uint32, WORLD_GRID_INDEX_COUNT> indices{0, 1, 2, 2, 3, 0};
+    for (usize i = 0; i < count; ++i)
+    {
+        const WorldGridLine& line = inoutScratch.Lines[i];
+        const math::Vector3 alongWorld = (line.EndWorld - line.StartWorld) * 0.5F;
+        const math::Vector3 centerWorld = (line.StartWorld + line.EndWorld) * 0.5F;
+        const math::Affine3 transformWorld{{alongWorld, line.HalfWidthWorld, {}}, centerWorld};
+        const math::Matrix4 meshToClip = description.WorldToClip * math::ToMatrix4(transformWorld);
+        Instance& instance = inoutScratch.Instances[i];
+        instance = {};
+        for (usize row = 0; row < WORLD_GRID_MATRIX_ROWS; ++row)
+        {
+            instance.Rows[row] = {meshToClip.At(row, 0),
+                                  meshToClip.At(row, 1),
+                                  meshToClip.At(row, 2),
+                                  meshToClip.At(row, WORLD_GRID_MATRIX_ROWS - 1)};
+        }
+        instance.Color = line.Color;
+    }
+    Status status = rhi::CreateBuffer(device,
+                                      {rhi::BufferRole::Vertex, sizeof(vertices)},
+                                      {reinterpret_cast<const uint8*>(vertices.GetData()), sizeof(vertices)},
+                                      candidate->Vertices);
+    if (Accepted(status) == false)
+    {
+        return status;
+    }
+    bool isPending = status == Status::Pending;
+    status = rhi::CreateBuffer(device,
+                               {rhi::BufferRole::Index32, sizeof(indices)},
+                               {reinterpret_cast<const uint8*>(indices.GetData()), sizeof(indices)},
+                               candidate->Indices);
+    if (Accepted(status) == false)
+    {
+        return status;
+    }
+    isPending = isPending == true || status == Status::Pending;
+    const usize bytes = count * sizeof(Instance);
+    status = rhi::CreateBuffer(device,
+                               {rhi::BufferRole::Vertex, bytes},
+                               {reinterpret_cast<const uint8*>(inoutScratch.Instances.GetData()), bytes},
+                               candidate->Instances);
+    if (Accepted(status) == false)
+    {
+        return status;
+    }
+    candidate->Count = static_cast<uint32>(count);
+    outBuffers = Move(candidate);
+    return isPending == true || status == Status::Pending ? Status::Pending : Status::Ready;
+}
 static_assert(sizeof(math::Vector3) == 12 && sizeof(Vertex) == LUDUS_AUTHORED_VERTEX_BYTES && sizeof(Instance) == 192);
 struct Rect final
 {
@@ -381,6 +502,7 @@ struct Renderer::State final
     struct ViewRecord final : SlotIdentity
     {
         rhi::BufferHandle Instances{};
+        core::UniquePtr<WorldGridBuffers> Grid;
         rhi::UploadTicket Upload{};
         bool UploadOwned = false;
         rhi::CommandBatch Retry{};
@@ -495,6 +617,10 @@ struct Renderer::State final
     Array<Candidate> Candidates, Scratch;
     Array<Instance> Instances;
     Array<math::FrustumRelation> GroupRelations;
+    core::UniquePtr<WorldGridScratch> GridScratch;
+    StaticArray<rhi::RasterPipelineHandle, WORLD_GRID_PIPELINE_COUNT> GridPipelines{};
+    StaticArray<bool, WORLD_GRID_PIPELINE_COUNT> HasGridPipelines{};
+    Status PrepareGridPipelines() noexcept;
     Limits Capacities;
     usize HostBytes = 0;
     Status ReserveStorage(const Limits&) noexcept;
@@ -523,6 +649,10 @@ struct Renderer::State final
     {
         ClearGpuPreview();
         ClearReference();
+        for (rhi::RasterPipelineHandle pipeline : GridPipelines)
+        {
+            static_cast<void>(rhi::Destroy(Device, pipeline));
+        }
         for (usize i = 0; i < ViewRecords.GetSize(); ++i)
         {
             if (ViewRecords[i].Used)
@@ -811,6 +941,11 @@ struct Renderer::State final
         {
             static_cast<void>(rhi::Destroy(Device, view.Instances));
         }
+        if (view.Grid.Get() != nullptr)
+        {
+            HostBytes -= sizeof(WorldGridBuffers);
+            view.Grid.Reset();
+        }
         auto& scene = SnapshotRecords[view.SnapshotSlot];
         --scene.References;
         DropSnapshot(view.SnapshotSlot);
@@ -990,13 +1125,8 @@ Status Renderer::Poll() noexcept
     {
         return state.Setup;
     }
-    const rhi::RasterVertexStream streams[]{{sizeof(Vertex), false}, {sizeof(Instance), true}};
-    const rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
-                                                  {1, 1, 0, rhi::RasterVertexFormat::Float4},
-                                                  {2, 1, 16, rhi::RasterVertexFormat::Float4},
-                                                  {3, 1, 32, rhi::RasterVertexFormat::Float4},
-                                                  {4, 1, 48, rhi::RasterVertexFormat::Float4},
-                                                  {5, 1, 64, rhi::RasterVertexFormat::Float4}};
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
+    const StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT>& attributes = FLAT_ATTRIBUTES;
     for (;;)
     {
         Status status = Status::Ready;
@@ -1139,13 +1269,8 @@ Status Renderer::PollViews() noexcept
     {
         return s.ViewsSetup;
     }
-    const rhi::RasterVertexStream streams[]{{sizeof(Vertex), false}, {sizeof(Instance), true}};
-    const rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
-                                                  {1, 1, 0, rhi::RasterVertexFormat::Float4},
-                                                  {2, 1, 16, rhi::RasterVertexFormat::Float4},
-                                                  {3, 1, 32, rhi::RasterVertexFormat::Float4},
-                                                  {4, 1, 48, rhi::RasterVertexFormat::Float4},
-                                                  {5, 1, 64, rhi::RasterVertexFormat::Float4}};
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
+    const StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT>& attributes = FLAT_ATTRIBUTES;
     const rhi::RasterVertexStream quadStreams[]{{16, false}};
     const rhi::RasterVertexAttribute quadAttributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float4}};
     for (;;)
@@ -1256,6 +1381,39 @@ Status Renderer::PollViews() noexcept
         }
     }
 }
+Status Renderer::State::PrepareGridPipelines() noexcept
+{
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
+    const StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT>& attributes = FLAT_ATTRIBUTES;
+    bool isPending = false;
+    const usize count = Hdr == true ? WORLD_GRID_PIPELINE_COUNT : WORLD_GRID_HDR_PIPELINE;
+    for (usize i = 0; i < count; ++i)
+    {
+        Status status;
+        if (HasGridPipelines[i] == false)
+        {
+            rhi::RasterPipelineDescription pipeline{Vertex, Fragment, Layout, streams, attributes, true};
+            pipeline.Target = i < WORLD_GRID_UNORM_PIPELINE ? rhi::RasterTarget::Surface
+                              : i < WORLD_GRID_HDR_PIPELINE ? rhi::RasterTarget::Rgba8Unorm
+                                                            : rhi::RasterTarget::Rgba16Float;
+            pipeline.DepthWrite = false;
+            pipeline.DepthCompare =
+                i % WORLD_GRID_TARGET_VARIANTS == 0 ? rhi::RasterDepthCompare::Less : rhi::RasterDepthCompare::Greater;
+            status = rhi::CreateRasterPipeline(Device, pipeline, GridPipelines[i]);
+            HasGridPipelines[i] = Accepted(status);
+        }
+        else
+        {
+            status = rhi::GetStatus(Device, GridPipelines[i]);
+        }
+        if (Accepted(status) == false)
+        {
+            return status;
+        }
+        isPending = isPending == true || status == Status::Pending;
+    }
+    return isPending == true ? Status::Pending : Status::Ready;
+}
 Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription& description) noexcept
 {
     auto status = GetStatus(handle);
@@ -1301,9 +1459,39 @@ Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription&
     {
         return status;
     }
+    bool hasDrawnGrid = false;
+    const auto drawGrid = [&]() noexcept {
+        hasDrawnGrid = true;
+        if (view.Grid.Get() == nullptr)
+        {
+            return Status::Ready;
+        }
+        const WorldGridBuffers& grid = *view.Grid;
+        const rhi::RasterVertexSlice slices[]{{grid.Vertices, 0, WORLD_GRID_VERTEX_COUNT * sizeof(Vertex)},
+                                              {grid.Instances, 0, grid.Count * sizeof(Instance)}};
+        const usize target = hdr == true ? WORLD_GRID_HDR_PIPELINE : surface == true ? 0 : WORLD_GRID_UNORM_PIPELINE;
+        const usize reverse = view.Depth == DepthConvention::ReverseZ ? 1 : 0;
+        return rhi::DrawIndexed(s.Device,
+                                {s.GridPipelines[target + reverse],
+                                 s.Bindings,
+                                 slices,
+                                 grid.Indices,
+                                 0,
+                                 WORLD_GRID_INDEX_COUNT,
+                                 WORLD_GRID_VERTEX_COUNT,
+                                 grid.Count});
+    };
     for (usize i = 0; i < view.DrawCount; ++i)
     {
         const auto& packet = view.Packets[i];
+        if (packet.Pass == Layer::Overlay && hasDrawnGrid == false)
+        {
+            status = drawGrid();
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+        }
         const auto& mesh = s.MeshRecords[packet.MeshSlot];
         const rhi::RasterVertexSlice slices[]{
             {mesh.Vertices, 0, mesh.VertexCount * sizeof(Vertex)},
@@ -1333,7 +1521,7 @@ Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription&
             return status;
         }
     }
-    return Status::Ready;
+    return hasDrawnGrid == true ? Status::Ready : drawGrid();
 }
 Status
 Renderer::PreparePresentation(rhi::TextureHandle source, const ViewMapping& mapping, Presentation& output) noexcept
@@ -1978,7 +2166,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
     // https://docs.vulkan.org/guide/latest/pipeline_cache.html: make expensive
     // driver creation a prewarm obligation. We reuse R2's field-comparing cache;
     // no persisted driver blob or unbounded permutation cache is introduced.
-    const rhi::RasterVertexStream streams[]{{sizeof(Vertex), false}, {sizeof(Instance), true}};
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
     rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
                                             {1, 1, 0, rhi::RasterVertexFormat::Float4},
                                             {2, 1, 16, rhi::RasterVertexFormat::Float4},
@@ -3012,6 +3200,45 @@ Status Renderer::PrepareView(Snapshot handle,
     {
         return Status::InvalidDescription;
     }
+    core::UniquePtr<WorldGridBuffers> gridBuffers;
+    Status gridStatus = Status::Ready;
+    if (description.WorldGrid.IsVisible == true && description.ShadowCasters == false)
+    {
+        gridStatus = mState->PrepareGridPipelines();
+        if (Accepted(gridStatus) == false)
+        {
+            return gridStatus;
+        }
+        usize gridHostBytes = sizeof(WorldGridBuffers);
+        if (mState->GridScratch.Get() == nullptr)
+        {
+            gridHostBytes += sizeof(WorldGridScratch);
+        }
+        usize requiredHostBytes = 0;
+        if (TryAdd(mState->HostBytes, gridHostBytes, requiredHostBytes) == false ||
+            requiredHostBytes > mState->Capacities.HostBytes)
+        {
+            return Status::CapacityExceeded;
+        }
+        if (mState->GridScratch.Get() == nullptr)
+        {
+            mState->GridScratch.Reset(new (std::nothrow) WorldGridScratch);
+            if (mState->GridScratch.Get() == nullptr)
+            {
+                return Status::OutOfMemory;
+            }
+            mState->HostBytes += sizeof(WorldGridScratch);
+        }
+        const Status buffers = PrepareWorldGridBuffers(mState->Device, description, *mState->GridScratch, gridBuffers);
+        if (Accepted(buffers) == false)
+        {
+            return buffers;
+        }
+        if (buffers == Status::Pending)
+        {
+            gridStatus = Status::Pending;
+        }
+    }
     usize slot = 0;
     auto status = FreeSlot(mState->ViewRecords, slot);
     if (status != Status::Ready)
@@ -3286,13 +3513,19 @@ Status Renderer::PrepareView(Snapshot handle,
             return status;
         }
     }
+    view.Grid = Move(gridBuffers);
+    if (view.Grid.Get() != nullptr)
+    {
+        mState->HostBytes += sizeof(WorldGridBuffers);
+        view.Grid->PipelineCount = mState->Hdr == true ? WORLD_GRID_PIPELINE_COUNT : WORLD_GRID_HDR_PIPELINE;
+    }
     view.Depth = description.Depth;
     view.Visible = count;
     view.SnapshotSlot = Access::Slot(handle);
     ++mState->SnapshotRecords[view.SnapshotSlot].References;
     view.Used = view.Owned = true;
     view.HasRetry = false;
-    result.Draws = static_cast<uint32>(view.DrawCount);
+    result.Draws = static_cast<uint32>(view.DrawCount + (view.Grid.Get() != nullptr ? 1 : 0));
     for (usize i = 0; i < count; ++i)
     {
         if (result.SourceIdOutput != nullptr)
@@ -3306,7 +3539,7 @@ Status Renderer::PrepareView(Snapshot handle,
     }
     report = result;
     output = Access::Make<PreparedView>({mState->Owner, view.Generation, slot});
-    return status;
+    return gridStatus == Status::Pending ? gridStatus : status;
 }
 Status Renderer::GetStatus(PreparedView handle) const noexcept
 {
@@ -3339,6 +3572,28 @@ Status Renderer::GetStatus(PreparedView handle) const noexcept
         }
         view->UploadOwned = false;
     }
+    if (view->Grid.Get() != nullptr)
+    {
+        const usize pipelineCount = view->Grid->PipelineCount;
+        for (usize i = 0; i < pipelineCount; ++i)
+        {
+            const Status ready = rhi::GetStatus(mState->Device, mState->GridPipelines[i]);
+            if (ready != Status::Ready)
+            {
+                return ready;
+            }
+        }
+        const WorldGridBuffers& grid = *view->Grid;
+        const rhi::BufferHandle buffers[]{grid.Vertices, grid.Indices, grid.Instances};
+        for (rhi::BufferHandle buffer : buffers)
+        {
+            const Status ready = rhi::GetStatus(mState->Device, buffer);
+            if (ready != Status::Ready)
+            {
+                return ready;
+            }
+        }
+    }
     return view->Visible == 0 ? Status::Ready : rhi::GetStatus(mState->Device, view->Instances);
 }
 Status Renderer::Submit(PreparedView handle, rhi::SurfaceHandle surface, rhi::SubmissionToken& completion) noexcept
@@ -3369,9 +3624,38 @@ Status Renderer::Submit(PreparedView handle, rhi::SurfaceHandle surface, rhi::Su
             return status;
         }
         view.HasRetry = true;
+        bool hasRecordedGrid = false;
+        const auto recordGrid = [&]() noexcept {
+            hasRecordedGrid = true;
+            if (view.Grid.Get() == nullptr)
+            {
+                return Status::Ready;
+            }
+            const WorldGridBuffers& grid = *view.Grid;
+            const rhi::RasterVertexSlice slices[]{{grid.Vertices, 0, WORLD_GRID_VERTEX_COUNT * sizeof(Vertex)},
+                                                  {grid.Instances, 0, grid.Count * sizeof(Instance)}};
+            return rhi::RecordDraw(mState->Device,
+                                   view.Retry,
+                                   {mState->GridPipelines[0],
+                                    mState->Bindings,
+                                    slices,
+                                    grid.Indices,
+                                    0,
+                                    WORLD_GRID_INDEX_COUNT,
+                                    WORLD_GRID_VERTEX_COUNT,
+                                    grid.Count});
+        };
         for (usize i = 0; i < view.DrawCount; ++i)
         {
             const auto& packet = view.Packets[i];
+            if (packet.Pass == Layer::Overlay && hasRecordedGrid == false)
+            {
+                status = recordGrid();
+                if (status != Status::Ready)
+                {
+                    break;
+                }
+            }
             const auto& mesh = mState->MeshRecords[packet.MeshSlot];
             const rhi::RasterVertexSlice slices[]{
                 {mesh.Vertices, 0, mesh.VertexCount * sizeof(Vertex)},
@@ -3394,6 +3678,10 @@ Status Renderer::Submit(PreparedView handle, rhi::SurfaceHandle surface, rhi::Su
             {
                 break;
             }
+        }
+        if (status == Status::Ready && hasRecordedGrid == false)
+        {
+            status = recordGrid();
         }
         if (status == Status::Ready)
         {
@@ -3521,13 +3809,8 @@ Status Renderer::PollLighting() noexcept
     }
     const rhi::RasterVertexStream quadStreams[]{{16, false}};
     const rhi::RasterVertexAttribute quadAttributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float4}};
-    const rhi::RasterVertexStream streams[]{{sizeof(Vertex), false}, {sizeof(Instance), true}};
-    const rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
-                                                  {1, 1, 0, rhi::RasterVertexFormat::Float4},
-                                                  {2, 1, 16, rhi::RasterVertexFormat::Float4},
-                                                  {3, 1, 32, rhi::RasterVertexFormat::Float4},
-                                                  {4, 1, 48, rhi::RasterVertexFormat::Float4},
-                                                  {5, 1, 64, rhi::RasterVertexFormat::Float4}};
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
+    const StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT>& attributes = FLAT_ATTRIBUTES;
     rhi::RasterPipelineHandle* targets[]{&s.OutputPipelines[0],
                                          &s.OutputPipelines[1],
                                          &s.FlatShadow,
