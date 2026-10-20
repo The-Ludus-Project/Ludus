@@ -416,6 +416,16 @@ CompileOrderedGraph(DeviceHandle, OrderedGraph, GraphReport&, const GraphCompile
 /// retry; once encoding begins graph is consumed even on failure. Partial backend work
 /// faults the session. Success publishes GPU completion and commits the existing ledger.
 [[nodiscard]] RasterStatus ExecuteOrderedGraph(DeviceHandle, SurfaceHandle, OrderedGraph&, SubmissionToken&) noexcept;
+/// Encode a compiled graph into the device's acquired frame without submitting it.
+/// The graph must have been built between frames; imports and packets are revalidated.
+/// Consumes the graph once encoding starts, retaining all GPU uses in the current
+/// frame ledger. The caller must EndFrame even after a partial failure and retain
+/// outputs through its actual submission completion. Owner thread only; no waiting.
+/// @param device Owned device with an acquired frame on surface.
+/// @param surface Surface of that frame.
+/// @param inoutGraph Compiled graph; cleared after accepted encoding, preserved on preflight rejection.
+[[nodiscard]] RasterStatus
+EncodeOrderedGraph(DeviceHandle device, SurfaceHandle surface, OrderedGraph& inoutGraph) noexcept;
 /// Drop all graph packet/resource leases without GPU work; clears handle on success.
 /// Invalid handle or open frame preserves it. Pool reuse still waits for completion.
 [[nodiscard]] RasterStatus DiscardOrderedGraph(DeviceHandle, OrderedGraph&) noexcept;

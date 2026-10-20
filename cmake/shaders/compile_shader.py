@@ -268,7 +268,7 @@ def main():
     # browser backend artifact. When absent, SPIR-V/WGSL builds are unchanged.
     parser.add_argument('--spirv-cross')
     parser.add_argument('--spirv-cross-lock')
-    parser.add_argument("--graph-stage", choices=("vertex", "fragment"))
+    parser.add_argument("--graph-stage", choices=("vertex", "fragment", "compute"))
     parser.add_argument("--graph-target", choices=("spirv", "wgsl", "metal", "glsl"))
     args = parser.parse_args()
     lock = json.loads(Path(args.lock).read_text())

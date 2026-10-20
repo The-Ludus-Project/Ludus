@@ -25,7 +25,9 @@ struct RenderGraphPlan final
     /// Target byte offset of each schema field of each binding.
     foundation::BorrowedView<const content::render_graph_format::UniformField> UniformFields;
 };
-/// Cooked static-instanced stage pairs. No compiler or shader-source discovery.
+/// Cooked static raster stage pairs and linked triangle ray compute/image stages.
+/// No compiler or shader-source discovery. Ray plans also carry ColorVertex/ColorFragment
+/// for shared static mesh ownership; that pair never rasterizes the ray scene.
 /// Artifact/reflection storage remains immutable and alive until Initialize/Poll
 /// reaches Ready; generated package headers provide static storage.
 /// Each selected vertex uses the six Renderer flat locations. Stage bindings, when
@@ -44,7 +46,16 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription MaskedColorFragment{}; ///< Authored masked color entry with its coverage function.
     rhi::RasterShaderDescription MaskedDepthVertex{};   ///< Authored MaskedDepthOnly geometry entry.
     rhi::RasterShaderDescription MaskedDepthFragment{}; ///< Separately authored void masked coverage entry.
+    rhi::RasterShaderDescription RayCompute{};          ///< Linked authored triangle ray functions and BVH traversal.
+    rhi::RasterShaderDescription RayImageVertex{};      ///< Renderer-owned GPU-produced pixel presentation.
+    rhi::RasterShaderDescription RayImageFragment{};    ///< Renderer-owned color copy; no host pixel transfer.
 };
+/// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.
+/// Does not compile, allocate or change artifact bytes. Used by generated headers and
+/// runtime decoders; the RHI independently checks actual native shader reflection.
+/// @param inoutDescription Receives binding metadata, and workgroup size for Compute.
+/// @param stage Compute for the linked ray kernel, Vertex/Fragment for the image recipe.
+void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, rhi::ShaderStage stage) noexcept;
 /// Declared geometry interface of an extracted draw item.
 enum class RenderGraphLayout : foundation::uint8
 {
@@ -54,7 +65,7 @@ enum class RenderGraphLayout : foundation::uint8
 /// Required material/coverage semantics; never disappear in a query filter.
 enum class RenderGraphMaterial : foundation::uint8
 {
-    Opaque,      ///< Static opaque coverage; covered only by DefaultStaticOpaque techniques.
+    Opaque,      ///< Static opaque coverage; covered by DefaultStaticOpaque or triangle ray techniques.
     Masked,      ///< Authored coverage; covered only by explicitly authored DefaultStaticMasked techniques.
     Transparent, ///< Does not implicitly participate in pre-Z.
     Unsupported, ///< Unmatched material or deformation contract.
@@ -271,8 +282,16 @@ public:
                                            foundation::uint32 surfaceWidth,
                                            foundation::uint32 surfaceHeight,
                                            rhi::SubmissionToken& outCompletion) noexcept;
+    /// Prepare per-frame ray dispatch graphs between frames, after the preceding producer completes.
+    /// Render calls this automatically. Call before acquiring a frame when using Encode with ray
+    /// passes; preparation allocates graph records but never shades or submits GPU commands.
+    /// Pending/failed replacement scenes do not change the current drawable extraction.
+    /// @return Ready when encoding is prepared, NotReady for outstanding producer/setup work;
+    /// allocation/device failures preserve drawable scene and existing output.
+    [[nodiscard]] rhi::RasterStatus PrepareEncoding() noexcept;
     /// Encode into this device's already acquired frame without acquiring/presenting a surface.
-    /// Setup is complete and no earlier producer/encoding may be pending. After any attempted
+    /// Setup is complete and no earlier producer/encoding may be pending. Ray passes require
+    /// PrepareEncoding between frames before this call. After any attempted
     /// encoding, call ConfirmSubmission with the actual caller-owned EndFrame result, even
     /// after a partial failure. Update/Poll/Render reject until that submission is confirmed.
     /// No shader/pipeline creation. Camera surface extents use actual acquired pixels.

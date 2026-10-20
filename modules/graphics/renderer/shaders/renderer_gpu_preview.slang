@@ -200,7 +200,7 @@ Hit Trace(float3 originWorld,
           bool visibility = false)
 {
     Hit hit;
-    hit.Triangle = 0xffffffff;
+    hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
     hit.DistanceWorld = farDistanceWorld;
     hit.Barycentric = 0;
     if (Counts.y == 0)
@@ -219,7 +219,7 @@ Hit Trace(float3 originWorld,
         {
             if (pending > 62)
             {
-                hit.Triangle = 0xfffffffe;
+                hit.Triangle = LUDUS_GPU_PREVIEW_FAILED_TRIANGLE;
                 return hit;
             }
             stack[pending++] = asuint(SceneValue(b).w);
@@ -458,9 +458,9 @@ float3 Integrate(uint pixel, uint sample)
     for (uint depth = 0; depth <= Dimensions.z; ++depth)
     {
         Hit hit = Trace(originWorld, directionWorld, minimum, maximum);
-        if (hit.Triangle == 0xfffffffe)
+        if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
             return float3(-1);
-        if (hit.Triangle == 0xffffffff)
+        if (hit.Triangle == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)
         {
             float4 environment = EvaluateEnvironmentWorld(directionWorld);
             float w = depth == 0 ? 1 : PowerWeight(previousPdf, lights > 0 ? environment.w / float(lights) : 0);
@@ -533,7 +533,7 @@ float3 Integrate(uint pixel, uint sample)
             float3 lightPositionWorld = 0;
             float pdf = 0;
             float range = Options.x;
-            uint emitter = 0xffffffff;
+            uint emitter = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
             bool isDelta = false;
             bool hasFiniteEndpoint = false;
             if (selected < Counts.w)
@@ -612,7 +612,7 @@ float3 Integrate(uint pixel, uint sample)
                 float3 shadowOriginWorld = OffsetPositionWorld(positionWorld, t, lightDirectionWorld);
                 float3 shadowDirectionWorld = lightDirectionWorld;
                 float distance = range;
-                if (emitter != 0xffffffff)
+                if (emitter != LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)
                 {
                     float3 shadowEndWorld = OffsetPositionWorld(lightPositionWorld, emitter, -lightDirectionWorld);
                     float3 offsetWorld = shadowEndWorld - shadowOriginWorld;
@@ -628,9 +628,9 @@ float3 Integrate(uint pixel, uint sample)
                     distance = asfloat(asuint(distance) - 1);
                 }
                 Hit shadow = Trace(shadowOriginWorld, shadowDirectionWorld, 0, distance, true);
-                if (shadow.Triangle == 0xfffffffe)
+                if (shadow.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
                     return float3(-1);
-                if (shadow.Triangle == 0xffffffff)
+                if (shadow.Triangle == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)
                     radiance +=
                         throughput * value * lightColor *
                         (dot(normalWorld, lightDirectionWorld) * (isDelta ? 1 : PowerWeight(pdf, bsdfPdf)) / pdf);
@@ -669,8 +669,7 @@ float3 Integrate(uint pixel, uint sample)
     }
     return radiance;
 }
-[numthreads(64, 1, 1)] void ComputeMain(uint3 id
-                                        : SV_DispatchThreadID) {
+[numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)] void ComputeMain(uint3 id : SV_DispatchThreadID) {
     if (id.x >= Dimensions.x || id.y >= Dimensions.y)
         return;
     uint pixel = id.y * Dimensions.x + id.x;
@@ -678,7 +677,11 @@ float3 Integrate(uint pixel, uint sample)
     float4 compensation = accumulation[pixel * 2 + 1];
     if (sum.w < float(Sampling.w) && compensation.w == 0)
     {
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+        float3 sample = EvaluateGraphRay(pixel);
+#else
         float3 sample = Integrate(pixel, uint(sum.w));
+#endif
         if (any(!isfinite(sample)) || any(sample < 0))
             compensation.w = 1;
         else
@@ -698,6 +701,9 @@ float3 Integrate(uint pixel, uint sample)
         accumulation[pixel * 2 + 1] = compensation;
     }
     float3 mean = sum.w > 0 ? sum.xyz / sum.w : float3(0);
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+    colors[pixel] = float4(compensation.w != 0 ? float3(1, 0, 1) : saturate(mean), float(pixel));
+#else
     float3 linear = mean * Options.y;
     for (uint channel = 0; channel < 3; ++channel)
     {
@@ -707,4 +713,5 @@ float3 Integrate(uint pixel, uint sample)
     }
     float3 encoded = select(linear > .0031308, 1.055 * pow(linear, 1.0 / 2.4) - .055, linear * 12.92);
     colors[pixel] = float4(compensation.w != 0 ? float3(1, 0, 1) : saturate(encoded), float(pixel));
+#endif
 }
