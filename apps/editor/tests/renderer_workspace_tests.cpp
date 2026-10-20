@@ -3,6 +3,7 @@
 // Offscreen widgets prove document/job wiring, not GPU output or a node canvas.
 #include "internal/controller.h"
 #include "internal/main_window.h"
+#include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
 #include "internal/renderer_workspace.h"
@@ -17,9 +18,11 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLabel>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPlainTextEdit>
@@ -32,8 +35,10 @@
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QTextCursor>
 #include <QTimer>
+#include <QTreeWidget>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -738,4 +743,163 @@ TEST_CASE("Code editor handoff cancellation retains unapplied source text", "[ed
     CHECK(ReadFile(QDir(package).filePath(shader)) == original);
     CHECK(workspace.ReloadSourcesFromDisk() == false);
     CHECK(sourceOrNull->toPlainText() == pending);
+}
+
+TEST_CASE("Add Node uses the displayed file default and generates collision-free IDs",
+          "[editor][render-graph][node-creation]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString package = MakePackage(project);
+    QWidget host;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    QLabel* message = workspace.findChild<QLabel*>(QStringLiteral("renderGraphNodeCreationMessage"));
+    QTreeWidget* tree = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+    REQUIRE(add != nullptr);
+    REQUIRE(message != nullptr);
+    REQUIRE(tree != nullptr);
+    QHBoxLayout* layout = new QHBoxLayout(&host);
+    layout->addWidget(&workspace, 1);
+    layout->addWidget(workspace.TakeInspectorPanel(&host));
+    host.resize(CREATION_WORKSPACE_WIDTH, CREATION_WORKSPACE_HEIGHT);
+    host.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&host) == true);
+    const QList<QTreeWidgetItem*> files = tree->findItems(ROOT_GRAPH, Qt::MatchExactly);
+    REQUIRE(files.size() == 1);
+    tree->setCurrentItem(files.front());
+    CHECK(workspace.GetSelection().isEmpty() == true);
+    CHECK(workspace.GetCanvas().GetConfiguration() == QStringLiteral("Default"));
+    const QByteArray original = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    QTest::mouseClick(add, Qt::LeftButton);
+    CHECK(workspace.GetSelection() == ROOT_GRAPH + QStringLiteral("#Default/scene2"));
+    CHECK(workspace.GetCanvas().HasNode(QStringLiteral("scene2")) == true);
+    CHECK(workspace.GetCanvas().GetSelectedNodes() == QStringList{QStringLiteral("scene2")});
+    CHECK(message->isVisible() == true);
+    CHECK(message->text() == QStringLiteral("Added scene2 to main.lurender.json#Default."));
+    CHECK(workspace.GetDocument().GetRevision() == 1);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
+    CHECK(workspace.GetCanvas().HasNode(QStringLiteral("scene2")) == false);
+    workspace.Redo();
+    CHECK(workspace.GetCanvas().HasNode(QStringLiteral("scene2")) == true);
+    // A second click needs no selection or naming work, and avoids the generated ID too.
+    const float64 zoom = workspace.GetCanvas().transform().m11();
+    workspace.GetCanvas().centerOn(10000, 10000);
+    QTest::mouseClick(add, Qt::LeftButton);
+    CHECK(workspace.GetCanvas().HasNode(QStringLiteral("scene3")) == true);
+    CHECK(workspace.GetSelection() == ROOT_GRAPH + QStringLiteral("#Default/scene3"));
+    CHECK(workspace.GetCanvas().transform().m11() == zoom);
+    CHECK(workspace.GetCanvas().viewport()->rect().contains(workspace.GetCanvas().mapFromScene(
+              workspace.GetCanvas().GetNodePosition(QStringLiteral("scene3")))) == true);
+    CHECK(workspace.GetDocument().GetSaved(ROOT_GRAPH) == original);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_ADD_NODE_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(host.grab().save(capture) == true);
+    }
+}
+
+TEST_CASE("Add Node follows library configurations and avoids IDs belonging to other node types",
+          "[editor][render-graph][node-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    const QByteArray rootBefore = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    const QString configuration = QStringLiteral("DepthOnly");
+    REQUIRE(workspace.SelectNode(LIBRARY, configuration, {}) == true);
+    REQUIRE(workspace.GetDocument().AddNode(LIBRARY,
+                                            configuration,
+                                            QJsonObject{{QStringLiteral("id"), QStringLiteral("raster")},
+                                                        {QStringLiteral("kind"), QStringLiteral("Scene")}}) ==
+            RenderGraphDocumentStatus::Ok);
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(add != nullptr);
+    QComboBox* kind = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    REQUIRE(kind != nullptr);
+    kind->setCurrentText(QStringLiteral("Raster"));
+    add->click();
+    CHECK(FindNode(workspace.GetDocument(), LIBRARY, configuration, QStringLiteral("raster2"))
+              .value(QStringLiteral("kind")) == QStringLiteral("Raster"));
+    CHECK(FindNode(workspace.GetDocument(), LIBRARY, QStringLiteral("ColorAndDepth"), QStringLiteral("raster2"))
+              .isEmpty() == true);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == rootBefore);
+    CHECK(workspace.GetSelection() == LIBRARY + QStringLiteral("#DepthOnly/raster2"));
+}
+
+TEST_CASE("Add Node explains when no graph is open", "[editor][render-graph][node-creation]")
+{
+    RendererWorkspace workspace({});
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    QLabel* message = workspace.findChild<QLabel*>(QStringLiteral("renderGraphNodeCreationMessage"));
+    REQUIRE(add != nullptr);
+    REQUIRE(message != nullptr);
+    add->click();
+    CHECK(message->text() == QStringLiteral("Cannot add a node: open or create a render graph first."));
+    CHECK(message->isHidden() == false);
+    CHECK(workspace.GetStatusText() == message->text());
+    CHECK(workspace.GetDocument().CanUndo() == false);
+}
+
+TEST_CASE("Add Node explains rejected drafts without changing their content or history",
+          "[editor][render-graph][node-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    QJsonObject graph;
+    REQUIRE(workspace.GetDocument().GetGraph(ROOT_GRAPH, graph) == true);
+    QString expected;
+    QByteArray bytes;
+    SECTION("malformed graph")
+    {
+        bytes = QByteArrayLiteral("{");
+        expected = QStringLiteral("not a valid graph JSON object");
+    }
+    SECTION("invalid default configuration")
+    {
+        graph.insert(QStringLiteral("default"), QStringLiteral("Missing"));
+        bytes = EncodeCanonicalJson(graph);
+        expected = QStringLiteral("Fix its default or configurations in Source");
+    }
+    SECTION("missing nodes array")
+    {
+        QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+        QJsonObject configuration = configurations.at(0).toObject();
+        configuration.remove(QStringLiteral("nodes"));
+        configurations.replace(0, configuration);
+        graph.insert(QStringLiteral("configurations"), configurations);
+        bytes = EncodeCanonicalJson(graph);
+        expected = QStringLiteral("must contain a nodes array");
+    }
+    SECTION("source capacity")
+    {
+        graph.insert(QStringLiteral("padding"), QString());
+        const qsizetype padding = RenderGraphDocument::MAX_FILE_BYTES - EncodeCanonicalJson(graph).size();
+        graph.insert(QStringLiteral("padding"), QString(padding, QLatin1Char('x')));
+        bytes = EncodeCanonicalJson(graph);
+        REQUIRE(bytes.size() == RenderGraphDocument::MAX_FILE_BYTES);
+        expected = QStringLiteral("exceeds the bounded source limits");
+    }
+    REQUIRE(workspace.GetDocument().SetText(ROOT_GRAPH, bytes) == RenderGraphDocumentStatus::Ok);
+    static_cast<void>(workspace.SelectNode(ROOT_GRAPH, {}, {}));
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    QLabel* message = workspace.findChild<QLabel*>(QStringLiteral("renderGraphNodeCreationMessage"));
+    REQUIRE(add != nullptr);
+    REQUIRE(message != nullptr);
+    add->click();
+    CHECK(message->text().startsWith(QStringLiteral("Cannot add")) == true);
+    CHECK(message->text().contains(expected) == true);
+    CHECK(message->isHidden() == false);
+    CHECK(workspace.GetStatusText() == message->text());
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == bytes);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
 }
