@@ -41,6 +41,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScrollArea>
+#include <QSettings>
 #include <QShortcut>
 #include <QSplitter>
 #include <QToolButton>
@@ -92,6 +93,14 @@ QString Display(const QJsonValue& value)
     }
     return value.toString();
 }
+/// Editor preference holding the Play mode; project data never records it.
+const QString PLAY_MODE_KEY = QStringLiteral("play/mode");
+const QString PLAY_MODE_IN_VIEWPORT = QStringLiteral("viewport");
+const QString PLAY_MODE_SEPARATE_WINDOW = QStringLiteral("window");
+/// File-row grid column of the Play mode box and the separate-window offer, right of Play saved World.
+constexpr int PLAY_CHOICE_COLUMN = 3;
+/// File-row grid row of the Play-in-the-viewport refusal and its offer, below Play saved World.
+constexpr int PLAY_NOTICE_ROW = 2;
 } // namespace
 WorldWorkspace::WorldWorkspace(QWidget* parent) : WorldWorkspace(ToolingPaths{}, parent) {}
 WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent)
@@ -162,7 +171,41 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         // The launcher decides whether the viewport stays alive as the game's window.
         if (Save() && Dirty() == false && SceneBusy() == false)
         {
-            Q_EMIT PlayRequested();
+            hidePlayUnavailable();
+            Q_EMIT PlayRequested(GetPlayMode());
+        }
+    });
+    mPlayModeBox = new QComboBox(this);
+    mPlayModeBox->setObjectName(QStringLiteral("worldPlayMode"));
+    mPlayModeBox->setAccessibleName(QStringLiteral("Play mode"));
+    mPlayModeBox->setToolTip(QStringLiteral("Where Play saved World opens the game. The choice is an editor "
+                                            "preference and applies to the next Play."));
+    mPlayModeBox->addItem(QStringLiteral("In viewport"), static_cast<int>(PlayMode::InViewport));
+    mPlayModeBox->addItem(QStringLiteral("In separate window"), static_cast<int>(PlayMode::SeparateWindow));
+    const bool isSeparateWindowSaved = QSettings().value(PLAY_MODE_KEY).toString() == PLAY_MODE_SEPARATE_WINDOW;
+    mPlayModeBox->setCurrentIndex(mPlayModeBox->findData(
+        static_cast<int>(isSeparateWindowSaved == true ? PlayMode::SeparateWindow : PlayMode::InViewport)));
+    files->addWidget(mPlayModeBox, 1, PLAY_CHOICE_COLUMN);
+    connect(mPlayModeBox, &QComboBox::activated, this, [this]() {
+        SetPlayMode(static_cast<PlayMode>(mPlayModeBox->currentData().toInt()));
+    });
+    mPlayUnavailableLabel = new QLabel(this);
+    mPlayUnavailableLabel->setObjectName(QStringLiteral("worldPlayUnavailable"));
+    mPlayUnavailableLabel->setTextFormat(Qt::PlainText);
+    mPlayUnavailableLabel->setWordWrap(true);
+    mPlayUnavailableLabel->hide();
+    files->addWidget(mPlayUnavailableLabel, PLAY_NOTICE_ROW, 0, 1, PLAY_CHOICE_COLUMN);
+    mPlayElsewhereButton = new QPushButton(QStringLiteral("Play in a separate window"), this);
+    mPlayElsewhereButton->setObjectName(QStringLiteral("worldPlayElsewhere"));
+    mPlayElsewhereButton->setToolTip(QStringLiteral("Open the game in its own window this time. The Play mode "
+                                                    "preference is unchanged."));
+    mPlayElsewhereButton->hide();
+    files->addWidget(mPlayElsewhereButton, PLAY_NOTICE_ROW, PLAY_CHOICE_COLUMN);
+    connect(mPlayElsewhereButton, &QPushButton::clicked, this, [this]() {
+        if (Save() && Dirty() == false && SceneBusy() == false)
+        {
+            hidePlayUnavailable();
+            Q_EMIT PlayRequested(PlayMode::SeparateWindow);
         }
     });
     files->setColumnStretch(4, 1);
@@ -226,6 +269,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         Q_EMIT PreviewStarting();
     });
     connect(Render_, &RenderPanel::TintRequested, this, &WorldWorkspace::PickTint);
+    connect(Render_, &RenderPanel::PlayStateChanged, this, [this]() {
+        // The game's images were refused after launch: Play ended, and the offer stands.
+        if (Render_->IsPlaying() == false && Render_->GetPlayUnavailableReason().isEmpty() == false)
+        {
+            showPlayUnavailable(Render_->GetPlayUnavailableReason());
+        }
+    });
     auto* split = new QSplitter(this);
     Split_ = split;
     split->setObjectName(QStringLiteral("worldSplitter"));
@@ -1848,15 +1898,64 @@ bool WorldWorkspace::BeginPlayInViewport(QString& outAddress, QString& outReason
     // Only the bound viewport of a World without an imported scene hosts Play today.
     if (Document_.Loaded() == false || Document_.SceneLevel().isEmpty() == false || Render_->isHidden() == true)
     {
-        outReason = QStringLiteral("this World is not shown in the bound viewport");
+        outReason = QStringLiteral("Play in the viewport needs this World shown in the World viewport.");
         return false;
     }
     if (Render_->Preview().Running() == false)
     {
-        outReason = QStringLiteral("the World viewport is paused");
+        outReason = QStringLiteral("Play in the viewport needs the World viewport running; it is paused.");
         return false;
     }
     return Render_->BeginPlay(outAddress, outReason);
+}
+PlayMode WorldWorkspace::GetPlayMode() const noexcept
+{
+    return static_cast<PlayMode>(mPlayModeBox->currentData().toInt());
+}
+void WorldWorkspace::SetPlayMode(PlayMode mode)
+{
+    mPlayModeBox->setCurrentIndex(mPlayModeBox->findData(static_cast<int>(mode)));
+    QSettings().setValue(PLAY_MODE_KEY,
+                         mode == PlayMode::SeparateWindow ? PLAY_MODE_SEPARATE_WINDOW : PLAY_MODE_IN_VIEWPORT);
+    hidePlayUnavailable();
+}
+PlayWindow WorldWorkspace::PreparePlay(PlayMode mode, QString& outAddress)
+{
+    hidePlayUnavailable();
+    if (mode == PlayMode::SeparateWindow)
+    {
+        return PlayWindow::SeparateWindow;
+    }
+    QString address;
+    QString reason;
+    if (BeginPlayInViewport(address, reason) == false)
+    {
+        showPlayUnavailable(reason);
+        return PlayWindow::Unavailable;
+    }
+    outAddress = address;
+    return PlayWindow::InViewport;
+}
+QString WorldWorkspace::GetPlayUnavailableText() const
+{
+    return mPlayUnavailableLabel->isHidden() == true ? QString() : mPlayUnavailableLabel->text();
+}
+void WorldWorkspace::SetPlayingElsewhere(bool isPlayingElsewhere)
+{
+    Render_->SetPlayingElsewhere(isPlayingElsewhere);
+}
+void WorldWorkspace::showPlayUnavailable(const QString& reason)
+{
+    mPlayUnavailableLabel->setText(reason + QStringLiteral(" The game was not started. Play it in a separate window "
+                                                           "now, or choose In separate window to always do so."));
+    mPlayUnavailableLabel->show();
+    mPlayElsewhereButton->show();
+}
+void WorldWorkspace::hidePlayUnavailable()
+{
+    mPlayUnavailableLabel->hide();
+    mPlayUnavailableLabel->clear();
+    mPlayElsewhereButton->hide();
 }
 void WorldWorkspace::EndPlayInViewport() noexcept
 {

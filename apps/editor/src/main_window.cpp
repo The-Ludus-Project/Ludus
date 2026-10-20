@@ -116,7 +116,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
         }
     });
     connect(World_, &WorldWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
-    connect(World_, &WorldWorkspace::PlayRequested, this, [this]() {
+    connect(World_, &WorldWorkspace::PlayRequested, this, [this](PlayMode mode) {
         const auto& state = Controller_->State();
         const auto base = QFileInfo(state.DescriptorPath).absolutePath();
         const auto source = QDir(base).absoluteFilePath(state.Saved.SourceDir);
@@ -137,13 +137,13 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
                                "arguments to --level and this World path, then save Project settings."));
             return;
         }
-        // Play in the viewport when the World viewport can host the game; otherwise its own window.
+        // The World workspace states a refusal and offers a separate window; Play never switches silently.
         QString address;
-        QString reason;
-        if (World_->BeginPlayInViewport(address, reason) == false)
+        const PlayWindow window = World_->PreparePlay(mode, address);
+        if (window == PlayWindow::Unavailable)
         {
-            StatusLabel_->setText(QStringLiteral("Play in the viewport is unavailable: ") + reason +
-                                  QStringLiteral(". The game opens in its own window."));
+            StatusLabel_->setText(World_->GetPlayUnavailableText());
+            return;
         }
         launchAfterPreview(LaunchAction::Run, {}, false, address);
     });
@@ -565,6 +565,8 @@ void MainWindow::launchAfterPreview(LaunchAction action,
         ResumeViewport_ = World_->PreviewRunning();
         ResumeViewportEpoch_ = Controller_->State().ProjectEpoch;
         World_->StopPreview();
+        World_->SetPlayingElsewhere(true);
+        mIsRunElsewhere = true;
     }
     AudioLaunchPending_ = true;
     Audio_->setEnabled(false);
@@ -596,6 +598,8 @@ void MainWindow::launchAfterPreview(LaunchAction action,
                 {
                     World_->EndPlayInViewport();
                     mIsPlayRunInViewport = false;
+                    World_->SetPlayingElsewhere(false);
+                    mIsRunElsewhere = false;
                     return;
                 }
                 switch (action)
@@ -914,6 +918,12 @@ void MainWindow::OnStateChanged()
         // The game exited, crashed, was stopped or never launched: the viewport edits again.
         mIsPlayRunInViewport = false;
         World_->EndPlayInViewport();
+    }
+    if (mIsRunElsewhere == true && state.OperationPhase == Phase::Idle && AudioLaunchPending_ == false)
+    {
+        // The game in its own window exited, or never launched: remove the viewport's label first.
+        mIsRunElsewhere = false;
+        World_->SetPlayingElsewhere(false);
     }
     if (ResumeViewport_ && state.OperationPhase == Phase::Idle && AudioLaunchPending_ == false)
     {

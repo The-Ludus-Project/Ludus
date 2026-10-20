@@ -31,6 +31,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -1171,4 +1172,135 @@ TEST_CASE("World group duplication rolls back when only the first copy fits", "[
     REQUIRE(document.Undo() == true);
     CHECK(document.Draft() == original);
     CHECK(document.CanUndo() == false);
+}
+namespace
+{
+/// Restores the editor's saved Play mode when a test that changes it ends.
+class PlayModePreference final
+{
+public:
+    PlayModePreference() : mSaved(QSettings().value(KEY))
+    {
+        QSettings().remove(KEY);
+    }
+    ~PlayModePreference()
+    {
+        if (mSaved.isValid() == true)
+        {
+            QSettings().setValue(KEY, mSaved);
+            return;
+        }
+        QSettings().remove(KEY);
+    }
+    PlayModePreference(const PlayModePreference&) = delete;
+    PlayModePreference& operator=(const PlayModePreference&) = delete;
+    static inline const QString KEY = QStringLiteral("play/mode");
+
+private:
+    QVariant mSaved;
+};
+} // namespace
+TEST_CASE("Play mode is a remembered editor preference that defaults to the viewport", "[editor][world][play]")
+{
+    const PlayModePreference preference;
+    WorldWorkspace first;
+    CHECK(first.GetPlayMode() == PlayMode::InViewport);
+    QComboBox* box = first.findChild<QComboBox*>(QStringLiteral("worldPlayMode"));
+    REQUIRE(box != nullptr);
+    CHECK(box->currentData().toInt() == static_cast<int>(PlayMode::InViewport));
+
+    // Choosing In separate window saves it for every later World view, not in project data.
+    const int separate = box->findData(static_cast<int>(PlayMode::SeparateWindow));
+    REQUIRE(separate >= 0);
+    box->setCurrentIndex(separate);
+    Q_EMIT box->activated(separate);
+    CHECK(first.GetPlayMode() == PlayMode::SeparateWindow);
+    CHECK(QSettings().value(PlayModePreference::KEY).toString() == QStringLiteral("window"));
+    WorldWorkspace second;
+    CHECK(second.GetPlayMode() == PlayMode::SeparateWindow);
+
+    second.SetPlayMode(PlayMode::InViewport);
+    CHECK(QSettings().value(PlayModePreference::KEY).toString() == QStringLiteral("viewport"));
+    const WorldWorkspace third;
+    CHECK(third.GetPlayMode() == PlayMode::InViewport);
+}
+TEST_CASE("Separate-window Play leaves the viewport alone and a refusal offers it without launching",
+          "[editor][world][play]")
+{
+    const PlayModePreference preference;
+    QTemporaryDir dir;
+    const QString path = Fixture(dir);
+    WorldWorkspace view;
+    QList<PlayMode> requests;
+    QObject::connect(&view, &WorldWorkspace::PlayRequested, &view, [&requests](PlayMode mode) {
+        requests.append(mode);
+    });
+    QPushButton* offer = view.findChild<QPushButton*>(QStringLiteral("worldPlayElsewhere"));
+    REQUIRE(offer != nullptr);
+
+    // Without a World in the viewport, Play in the viewport says why and starts nothing.
+    QString address;
+    CHECK(view.PreparePlay(PlayMode::InViewport, address) == PlayWindow::Unavailable);
+    CHECK(address.isEmpty() == true);
+    CHECK(view.GetPlayUnavailableText().contains(QStringLiteral("needs this World shown in the World viewport")));
+    CHECK(view.GetPlayUnavailableText().contains(QStringLiteral("The game was not started")));
+    CHECK(offer->isHidden() == false);
+    CHECK(view.IsPlayingInViewport() == false);
+
+    // A separate window needs no hosted window: no address, and the viewport keeps editing.
+    view.SetProject(dir.path(), 1);
+    REQUIRE(view.Open(path));
+    CHECK(view.PreparePlay(PlayMode::SeparateWindow, address) == PlayWindow::SeparateWindow);
+    CHECK(address.isEmpty() == true);
+    CHECK(view.IsPlayingInViewport() == false);
+    CHECK(view.GetPlayUnavailableText().isEmpty() == true);
+    CHECK(offer->isHidden() == true);
+
+    // Play saved World asks for the chosen mode.
+    QPushButton* play = view.findChild<QPushButton*>(QStringLiteral("worldPlay"));
+    REQUIRE(play != nullptr);
+    play->click();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests.front() == PlayMode::InViewport);
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // Offscreen tests have no on-screen GPU viewport, so the viewport refuses with its reason.
+    if (PreviewViewport::GetPresentation() != ViewportPresentation::SharedDevice)
+    {
+        CHECK(view.PreparePlay(PlayMode::InViewport, address) == PlayWindow::Unavailable);
+        CHECK(address.isEmpty() == true);
+        CHECK(view.GetPlayUnavailableText().isEmpty() == false);
+        CHECK(view.IsPlayingInViewport() == false);
+    }
+#else
+    CHECK(view.PreparePlay(PlayMode::InViewport, address) == PlayWindow::Unavailable);
+    CHECK(view.GetPlayUnavailableText().contains(QStringLiteral("needs")));
+#endif
+    if (view.GetPlayUnavailableText().isEmpty() == false)
+    {
+        // The offer plays this once in a separate window and keeps the preference.
+        offer->click();
+        REQUIRE(requests.size() == 2);
+        CHECK(requests.back() == PlayMode::SeparateWindow);
+        CHECK(view.GetPlayMode() == PlayMode::InViewport);
+        CHECK(offer->isHidden() == true);
+        CHECK(view.GetPlayUnavailableText().isEmpty() == true);
+    }
+    view.EndPlayInViewport();
+    view.StopPreview();
+}
+TEST_CASE("The World viewport is labelled while the game plays in its own window", "[editor][world][play]")
+{
+    QTemporaryDir dir;
+    const QString path = Fixture(dir);
+    WorldWorkspace view;
+    view.SetProject(dir.path(), 1);
+    REQUIRE(view.Open(path));
+    view.StopPreview();
+    QLabel* status = view.findChild<QLabel*>(QStringLiteral("worldPreviewStatus"));
+    REQUIRE(status != nullptr);
+    view.SetPlayingElsewhere(true);
+    CHECK(status->text().startsWith(QStringLiteral("Playing in a separate window.")));
+    view.SetPlayingElsewhere(false);
+    CHECK(status->text() == QStringLiteral("Viewport paused. World data is preserved."));
 }
