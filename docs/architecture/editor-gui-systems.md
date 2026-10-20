@@ -550,8 +550,10 @@ Status: approved 2026-10-19. P1 (the World-demo player on the engine Renderer),
 P2 (World-demo Worlds in the shared World viewport, ScenePreview deleted) and P3
 (the viewport frame source) are implemented. P4, the Platform
 [hosted window channel](#hosted-window-channel), and P5, the RHI
-[hosted surface](#hosted-surface-channel), are implemented; the editor does not
-use them until P6. P6 and P7 are pending. It replaces the separate World-demo
+[hosted surface](#hosted-surface-channel), are implemented. P6a (source-owned
+frame reads) and P6b (`PlayViewportSource`, which presents a hosted game's frames
+in a `PreviewViewport` on macOS Metal) are implemented. No editor command starts
+Play in the viewport until P6c; P6c and P7 are pending. It replaces the separate World-demo
 authoring window, the World-demo private shader and the separate-window default
 for Play.
 
@@ -770,6 +772,19 @@ presentation path: QQuickWindow, `ImageItem`, two frame slots, and release at
 
 - `RenderPreview`, the in-process edit renderer;
 - `PlayViewportSource`, which holds the imported hosted images.
+
+`PlayViewportSource` owns the session's `HostedWindowEndpoint` and
+`HostedSurfaceConsumer` and pumps both on a 4 ms timer, including before a
+viewport shows it, because the game waits in window creation for the endpoint.
+Each read it opens holds one game frame. Ending a read calls
+`HostedSurfaceConsumer::ReleaseFrameAfterQueue`, which commits an empty marker
+command buffer on Qt's Metal queue behind the sampling. The next pump returns
+the image to the game once that marker completes. This uses the same
+queue-order guarantee as RHI's native texture reads, with no CPU wait.
+`PreviewViewport::SetFrameSource` switches a viewport between `RenderPreview` and
+the play source: it ends every read of the old source, then presents the new
+source's pending frame, so the caller switches once the game has a frame. On
+Vulkan, `Start` refuses with a reason and the game opens its own window.
 
 Each source owns its leases and generations, and the native read Qt samples.
 `TakeFrameRead` opens a read of the pending image on the viewport's device and

@@ -23,4 +23,22 @@ void DestroyHostedImport([[maybe_unused]] const NativeDeviceIdentity& device,
                          [[maybe_unused]] HostedImport& inoutImport) noexcept
 {
 }
+
+bool EnqueueHostedQueueMarker([[maybe_unused]] const NativeDeviceIdentity& device,
+                              [[maybe_unused]] HostedQueueMarker& outMarker) noexcept
+{
+    return false;
+}
+
+bool IsHostedQueueMarkerComplete([[maybe_unused]] const HostedQueueMarker& marker) noexcept
+{
+    return true;
+}
+
+void WaitHostedQueueMarker([[maybe_unused]] const HostedQueueMarker& marker) noexcept {}
+
+void DestroyHostedQueueMarker(HostedQueueMarker& inoutMarker) noexcept
+{
+    inoutMarker = {};
+}
 } // namespace ludus::graphics::rhi::internal

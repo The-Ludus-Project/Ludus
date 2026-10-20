@@ -94,8 +94,9 @@ struct HostedFrame final
 /// Pump() takes the endpoint's surface events: it imports each new generation and
 /// records completed frames. AcquireFrame() returns the newest completed frame;
 /// frames superseded before they were acquired are returned to the game at once.
-/// ReleaseFrame() returns a frame after the editor's sampling has completed, and
-/// destroys a replaced generation once none of its frames is held.
+/// ReleaseFrame() returns a frame after the editor's sampling has completed, or
+/// ReleaseFrameAfterQueue() returns it once the editor's queue has finished that
+/// sampling, and a replaced generation is destroyed once none of its frames is held.
 ///
 /// Completion is fenced on the CPU: the game announces a frame only after its GPU
 /// work completed, so a frame needs no wait before sampling; and the editor must
@@ -169,6 +170,21 @@ public:
     /// @return Ok (also when the window has gone; the frame is forgotten); InvalidState
     /// for a frame this consumer does not hold.
     [[nodiscard]] HostedConsumerStatus ReleaseFrame(const HostedFrame& frame) noexcept;
+
+    /// @brief Return a held frame once the consumer's queue has finished the work already
+    /// submitted to it.
+    ///
+    /// Commits an empty completion marker on the device identity's `CommandQueue`, behind the
+    /// editor's sampling of the frame; a later Pump() returns the image to the game once the
+    /// marker completes. Call it right after the sampling work was submitted, for example after
+    /// Qt's `afterFrameEnd`. No CPU wait. Metal only today.
+    /// @param frame A frame from AcquireFrame() that is still held and not already queued.
+    /// @return Ok; InvalidState for a frame not held or already queued; Unavailable when this
+    /// backend has no queue marker (Vulkan), in which case the frame stays held.
+    [[nodiscard]] HostedConsumerStatus ReleaseFrameAfterQueue(const HostedFrame& frame) noexcept;
+
+    /// Frames queued by ReleaseFrameAfterQueue() whose marker has not completed yet.
+    [[nodiscard]] foundation::usize GetQueuedReleaseCount() const noexcept;
 
     /// Why the consumer refused the game's images, or None.
     [[nodiscard]] HostedConsumerRefusal GetRefusal() const noexcept;
