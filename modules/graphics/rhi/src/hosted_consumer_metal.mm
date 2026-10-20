@@ -1,11 +1,15 @@
 #include "internal/hosted_consumer.h"
 
+#include <ludus/foundation/containers/static_array.hpp>
+
 #import <CoreFoundation/CoreFoundation.h>
 #import <IOSurface/IOSurfaceRef.h>
 #import <Metal/MTLCommandBuffer.h>
 #import <Metal/MTLCommandQueue.h>
 #import <Metal/MTLDevice.h>
 #import <Metal/MTLTexture.h>
+
+#include <new>
 
 // Thanks to Apple for the IOSurface reference (https://developer.apple.com/documentation/iosurface):
 // IOSurfaceLookupFromMachPort recreates a surface from a received send right and
@@ -21,20 +25,88 @@ constexpr uint32 RGBA_PIXEL_FORMAT = 'RGBA';
 constexpr usize BYTES_PER_PIXEL = 4;
 } // namespace
 
+/// Metal objects of one consumer; every pointer is a retained (CFBridgingRetain) Objective-C object or null.
+struct HostedConsumerBackend final
+{
+    /// @param device A Metal identity with its `id<MTLDevice>` and, optionally, its `id<MTLCommandQueue>`.
+    explicit HostedConsumerBackend(const NativeDeviceIdentity& device) noexcept
+        : Device(device.Device.GetObject()), QueueOrNull(device.CommandQueue.GetObject())
+    {
+    }
+
+    /// The consumer's `id<MTLDevice>`, borrowed.
+    void* Device;
+    /// The consumer's `id<MTLCommandQueue>`, borrowed; null when the identity has none.
+    void* QueueOrNull;
+    /// IOSurface-backed `id<MTLTexture>` objects per generation slot.
+    StaticArray<StaticArray<void*, platform::HOSTED_SURFACE_IMAGE_COUNT>, HOSTED_GENERATION_SLOTS> Textures{};
+    /// Queued release markers, `id<MTLCommandBuffer>`, per generation slot.
+    StaticArray<StaticArray<void*, platform::HOSTED_SURFACE_IMAGE_COUNT>, HOSTED_GENERATION_SLOTS> Markers{};
+};
+
+namespace
+{
+void ReleaseObject(void*& inoutObject) noexcept
+{
+    if (inoutObject != nullptr)
+    {
+        CFRelease(inoutObject);
+        inoutObject = nullptr;
+    }
+}
+
+void ReleaseSlot(HostedConsumerBackend& inoutBackend, usize slot) noexcept
+{
+    for (usize i = 0; i < platform::HOSTED_SURFACE_IMAGE_COUNT; ++i)
+    {
+        ReleaseObject(inoutBackend.Textures[slot][i]);
+        ReleaseObject(inoutBackend.Markers[slot][i]);
+    }
+}
+} // namespace
+
+void HostedConsumerBackendDeleter::operator()(HostedConsumerBackend* backendOrNull) const noexcept
+{
+    if (backendOrNull == nullptr)
+    {
+        return;
+    }
+    for (usize slot = 0; slot < HOSTED_GENERATION_SLOTS; ++slot)
+    {
+        ReleaseSlot(*backendOrNull, slot);
+    }
+    delete backendOrNull;
+}
+
 bool IsHostedImportAvailable(Backend api) noexcept
 {
     return api == Backend::Metal;
 }
 
-HostedConsumerRefusal ImportHostedGeneration(const NativeDeviceIdentity& device,
-                                             platform::HostedSurfaceImages& inoutImages,
-                                             HostedImport& outImport) noexcept
+HostedConsumerStatus CreateHostedConsumerBackend(const NativeDeviceIdentity& device,
+                                                 HostedConsumerBackendOwner& outBackend) noexcept
+{
+    if (device.Api != Backend::Metal || device.Device.IsNull() == true)
+    {
+        return HostedConsumerStatus::InvalidArgument;
+    }
+    HostedConsumerBackend* backendOrNull = new (std::nothrow) HostedConsumerBackend(device);
+    if (backendOrNull == nullptr)
+    {
+        return HostedConsumerStatus::Unavailable;
+    }
+    outBackend.Reset(backendOrNull);
+    return HostedConsumerStatus::Ok;
+}
+
+HostedConsumerRefusal ImportHostedGeneration(HostedConsumerBackend& inoutBackend,
+                                             usize slot,
+                                             platform::HostedSurfaceImages& inoutImages) noexcept
 {
     @autoreleasepool
     {
-        HostedImport imported;
         HostedConsumerRefusal refusal = HostedConsumerRefusal::None;
-        id<MTLDevice> metal = (__bridge id<MTLDevice>)device.Device.GetObject();
+        id<MTLDevice> metal = (__bridge id<MTLDevice>)inoutBackend.Device;
         MTLTextureDescriptor* description =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                width:inoutImages.Width
@@ -71,7 +143,7 @@ HostedConsumerRefusal ImportHostedGeneration(const NativeDeviceIdentity& device,
                 refusal = HostedConsumerRefusal::ImportFailed;
                 break;
             }
-            imported.MetalTextures[i] = (__bridge_retained void*)texture;
+            inoutBackend.Textures[slot][i] = (__bridge_retained void*)texture;
         }
         for (platform::HostedImageHandle& handle : inoutImages.Handles)
         {
@@ -79,38 +151,36 @@ HostedConsumerRefusal ImportHostedGeneration(const NativeDeviceIdentity& device,
         }
         if (refusal != HostedConsumerRefusal::None)
         {
-            DestroyHostedImport(device, imported);
-            return refusal;
+            ReleaseSlot(inoutBackend, slot);
         }
-        outImport = imported;
-        return HostedConsumerRefusal::None;
+        return refusal;
     }
 }
 
-void DestroyHostedImport([[maybe_unused]] const NativeDeviceIdentity& device, HostedImport& inoutImport) noexcept
+void DestroyHostedGeneration(HostedConsumerBackend& inoutBackend, usize slot) noexcept
 {
-    for (void*& texture : inoutImport.MetalTextures)
-    {
-        if (texture != nullptr)
-        {
-            CFRelease(texture);
-            texture = nullptr;
-        }
-    }
+    ReleaseSlot(inoutBackend, slot);
+}
+
+// Metal tracks hazards of shared IOSurface textures itself; there is nothing to submit.
+bool AcquireHostedImage(HostedConsumerBackend& inoutBackend, usize slot, uint32 image, HostedFrame& inoutFrame) noexcept
+{
+    inoutFrame.MetalTexture = NativeMetalTexture(inoutBackend.Textures[slot][image]);
+    return true;
 }
 
 // Metal runs a queue's command buffers in commit order, so an empty buffer committed
 // after the editor's sampling completes only once that sampling has finished. This is
 // the same queue-order guarantee RHI's native texture reads rely on.
-bool EnqueueHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMarker& outMarker) noexcept
+bool EnqueueHostedRelease(HostedConsumerBackend& inoutBackend, usize slot, uint32 image) noexcept
 {
     @autoreleasepool
     {
-        if (device.Api != Backend::Metal || device.CommandQueue.IsNull() == true)
+        if (inoutBackend.QueueOrNull == nullptr || inoutBackend.Markers[slot][image] != nullptr)
         {
             return false;
         }
-        id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)device.CommandQueue.GetObject();
+        id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)inoutBackend.QueueOrNull;
         id<MTLCommandBuffer> marker = [queue commandBuffer];
         if (marker == nil)
         {
@@ -118,36 +188,34 @@ bool EnqueueHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMar
         }
         marker.label = @"Ludus hosted frame release";
         [marker commit];
-        outMarker.MetalCommandBufferOrNull = (__bridge_retained void*)marker;
+        inoutBackend.Markers[slot][image] = (__bridge_retained void*)marker;
         return true;
     }
 }
 
-bool IsHostedQueueMarkerComplete(const HostedQueueMarker& marker) noexcept
+bool TryCompleteHostedRelease(HostedConsumerBackend& inoutBackend, usize slot, uint32 image) noexcept
 {
-    if (marker.MetalCommandBufferOrNull == nullptr)
+    void*& marker = inoutBackend.Markers[slot][image];
+    if (marker == nullptr)
     {
         return true;
     }
-    id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)marker.MetalCommandBufferOrNull;
-    const MTLCommandBufferStatus status = buffer.status;
-    return status == MTLCommandBufferStatusCompleted || status == MTLCommandBufferStatusError;
+    const MTLCommandBufferStatus status = ((__bridge id<MTLCommandBuffer>)marker).status;
+    if (status != MTLCommandBufferStatusCompleted && status != MTLCommandBufferStatusError)
+    {
+        return false;
+    }
+    ReleaseObject(marker);
+    return true;
 }
 
-void WaitHostedQueueMarker(const HostedQueueMarker& marker) noexcept
+void CompleteHostedRelease(HostedConsumerBackend& inoutBackend, usize slot, uint32 image) noexcept
 {
-    if (marker.MetalCommandBufferOrNull != nullptr)
+    void*& marker = inoutBackend.Markers[slot][image];
+    if (marker != nullptr)
     {
-        [(__bridge id<MTLCommandBuffer>)marker.MetalCommandBufferOrNull waitUntilCompleted];
+        [(__bridge id<MTLCommandBuffer>)marker waitUntilCompleted];
+        ReleaseObject(marker);
     }
-}
-
-void DestroyHostedQueueMarker(HostedQueueMarker& inoutMarker) noexcept
-{
-    if (inoutMarker.MetalCommandBufferOrNull != nullptr)
-    {
-        CFRelease(inoutMarker.MetalCommandBufferOrNull);
-    }
-    inoutMarker = {};
 }
 } // namespace ludus::graphics::rhi::internal

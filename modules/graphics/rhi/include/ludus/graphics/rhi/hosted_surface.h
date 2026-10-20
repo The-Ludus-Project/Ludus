@@ -14,8 +14,6 @@
 
 namespace ludus::graphics::rhi
 {
-/// `VK_QUEUE_FAMILY_EXTERNAL`: the queue family a Vulkan hosted image is released to.
-inline constexpr foundation::uint32 HOSTED_VULKAN_QUEUE_FAMILY_EXTERNAL = ~foundation::uint32{0} - 1;
 /// `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`: the layout of a Vulkan hosted image when presented.
 inline constexpr foundation::uint32 HOSTED_VULKAN_SHADER_READ_LAYOUT = 5;
 
@@ -78,14 +76,11 @@ struct HostedFrame final
     NativeMetalTexture MetalTexture{nullptr};
     /// Vulkan: the imported `VkImage` (2D, one mip and layer, `VK_FORMAT_R8G8B8A8_UNORM`, sampled usage).
     NativeVulkanImage VulkanImage{0};
-    /// @brief Vulkan: the image layout when presented, HOSTED_VULKAN_SHADER_READ_LAYOUT.
+    /// @brief Vulkan: the image layout once acquired, HOSTED_VULKAN_SHADER_READ_LAYOUT; zero on Metal.
     ///
-    /// Before sampling, record an acquire barrier from HOSTED_VULKAN_QUEUE_FAMILY_EXTERNAL
-    /// to the consumer's queue family with this old and new layout. No barrier is needed
-    /// to give the image back: the game discards its contents. Zero on Metal.
+    /// AcquireFrame() has already transferred the image to the identity's queue family on its
+    /// queue, so commands submitted there afterwards sample it with no barrier of their own.
     foundation::uint32 VulkanLayout = 0;
-    /// Vulkan: the queue family that owns the image when presented, HOSTED_VULKAN_QUEUE_FAMILY_EXTERNAL; zero on Metal.
-    foundation::uint32 VulkanSourceQueueFamily = 0;
 };
 
 /// @brief Imports a hosted game's surface onto the editor's GPU device.
@@ -101,7 +96,9 @@ struct HostedFrame final
 /// Completion is fenced on the CPU: the game announces a frame only after its GPU
 /// work completed, so a frame needs no wait before sampling; and the editor must
 /// release it only after its own GPU work that sampled it has completed. Neither
-/// side shares fence objects.
+/// side shares fence objects. The consumer itself submits whatever its backend needs
+/// on the identity's queue around that sampling (Vulkan's queue family transfers), so
+/// callers record nothing backend-specific.
 ///
 /// - macOS: the images are IOSurfaces received as Mach send rights through the
 ///   session's Mach rendezvous; the consumer creates its textures on the given
@@ -110,7 +107,7 @@ struct HostedFrame final
 ///   (`VK_KHR_external_memory_fd`). They import only when the game's
 ///   `deviceUUID` and `driverUUID` equal the consumer's; otherwise the consumer
 ///   refuses with AdapterMismatch. The consumer device must have been created with
-///   `VK_KHR_external_memory_fd` enabled.
+///   `VK_KHR_external_memory_fd` enabled, on Vulkan 1.1 or later.
 ///
 /// Qt-free and not synchronized: use it on the thread that owns the device and
 /// pumps the endpoint. The endpoint and the device must outlive Stop().
@@ -134,11 +131,13 @@ public:
     /// @param inoutEndpoint Started endpoint, borrowed until Stop(); the consumer takes its
     /// surface events and sends releases through it. The caller keeps pumping it.
     /// @param device The consumer's device. Metal: `Api` Metal and `Device` an `id<MTLDevice>`.
-    /// Vulkan: `Api` Vulkan with `Instance`, `PhysicalDevice` and `Device`; the instance
-    /// must use Vulkan 1.1 or later.
+    /// Vulkan: `Api` Vulkan with `Instance`, `PhysicalDevice`, `Device`, `CommandQueue` and its
+    /// `QueueFamily`; the instance must use Vulkan 1.1 or later. The consumer submits its queue
+    /// family transfers and release fences to that queue.
     /// @return Ok; InvalidState when already started; InvalidArgument for an incomplete
     /// identity or an API without a hosted import in this build; Unavailable when the
-    /// target has no hosted surface or allocation failed.
+    /// target has no hosted surface, the device's entry points cannot be loaded or allocation
+    /// failed.
     [[nodiscard]] HostedConsumerStatus Start(platform::HostedWindowEndpoint& inoutEndpoint,
                                              const NativeDeviceIdentity& device) noexcept;
 
@@ -159,13 +158,21 @@ public:
     /// @brief Take the newest completed frame.
     ///
     /// The consumer holds it until ReleaseFrame(). Several frames may be held at once,
-    /// for example one on screen and one pending; the game renders into the rest.
+    /// for example one on screen and one pending; the game renders into the rest. On Vulkan
+    /// this submits the second half of the game's queue family transfer to the identity's
+    /// queue, so sampling submitted there afterwards needs no barrier; call it on the thread
+    /// that submits to that queue, between its submissions.
     /// @param outFrame The frame; unchanged unless Ok.
-    /// @return Ok, Empty, Refused or InvalidState.
+    /// @return Ok, Empty, Refused or InvalidState; Unavailable when the transfer could not be
+    /// submitted, in which case the frame went back to the game unseen.
     [[nodiscard]] HostedConsumerStatus AcquireFrame(HostedFrame& outFrame) noexcept;
 
     /// @brief Return a held frame to the game.
-    /// @pre The consumer's GPU work that sampled the frame has completed.
+    ///
+    /// Submits nothing: the game discards the image's contents before it renders into it again,
+    /// so the image needs no queue family release once its sampling has completed.
+    /// @pre The work submitted to the identity's queue up to the consumer's last sampling of the
+    /// frame has completed (on Vulkan this includes the transfer AcquireFrame() submitted).
     /// @param frame A frame from AcquireFrame() that is still held.
     /// @return Ok (also when the window has gone; the frame is forgotten); InvalidState
     /// for a frame this consumer does not hold.
@@ -174,13 +181,16 @@ public:
     /// @brief Return a held frame once the consumer's queue has finished the work already
     /// submitted to it.
     ///
-    /// Commits an empty completion marker on the device identity's `CommandQueue`, behind the
-    /// editor's sampling of the frame; a later Pump() returns the image to the game once the
-    /// marker completes. Call it right after the sampling work was submitted, for example after
-    /// Qt's `afterFrameEnd`. No CPU wait. Metal only today.
+    /// Commits a completion marker on the device identity's `CommandQueue`, behind the editor's
+    /// sampling of the frame; a later Pump() returns the image to the game once the marker
+    /// completes. Metal commits an empty command buffer. Vulkan submits the image's release to
+    /// the external queue family with a fence, which signals once all work submitted to the
+    /// queue before it has completed. Call it right after the sampling work was submitted, for
+    /// example after Qt's `afterFrameEnd`, on the thread that submits to that queue. No CPU wait.
     /// @param frame A frame from AcquireFrame() that is still held and not already queued.
-    /// @return Ok; InvalidState for a frame not held or already queued; Unavailable when this
-    /// backend has no queue marker (Vulkan), in which case the frame stays held.
+    /// @return Ok; InvalidState for a frame not held or already queued; Unavailable when the
+    /// marker could not be committed (Metal: no `CommandQueue` in the identity), in which case
+    /// the frame stays held.
     [[nodiscard]] HostedConsumerStatus ReleaseFrameAfterQueue(const HostedFrame& frame) noexcept;
 
     /// Frames queued by ReleaseFrameAfterQueue() whose marker has not completed yet.

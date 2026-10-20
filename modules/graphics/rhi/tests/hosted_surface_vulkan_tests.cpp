@@ -38,7 +38,6 @@ constexpr usize BYTES_PER_PIXEL = 4;
 constexpr usize RESIZE_ROUNDS = 5;
 constexpr uint32 MAX_PHYSICAL_DEVICES = 16;
 constexpr uint32 MAX_QUEUE_FAMILIES = 32;
-constexpr uint64 FENCE_TIMEOUT_NANOSECONDS = 5'000'000'000ULL;
 
 /// The editor's own Vulkan device with VK_KHR_external_memory_fd, as Qt would own it.
 class ConsumerDevice final
@@ -167,65 +166,56 @@ public:
         return identity;
     }
 
-    /// Sample a frame: acquire it from VK_QUEUE_FAMILY_EXTERNAL, copy its centre pixel, wait.
-    [[nodiscard]] StaticArray<uint8, BYTES_PER_PIXEL> ReadCenterPixel(const rhi::HostedFrame& frame) const
+    /// A copy of a frame's centre pixel submitted to the consumer's queue, not yet waited for.
+    struct PixelCopy final
+    {
+        VkBuffer Buffer = VK_NULL_HANDLE;
+        VkDeviceMemory Memory = VK_NULL_HANDLE;
+        VkCommandBuffer Command = VK_NULL_HANDLE;
+    };
+
+    /// @brief Sample a frame as the editor does, without waiting: copy its centre pixel on the
+    /// consumer's queue. AcquireFrame() already submitted the queue family acquire ahead of it,
+    /// so the copy needs only its own layout transitions, back to the presented layout after.
+    [[nodiscard]] PixelCopy SubmitCenterPixelCopy(const rhi::HostedFrame& frame) const
     {
         REQUIRE(frame.VulkanLayout == rhi::HOSTED_VULKAN_SHADER_READ_LAYOUT);
-        REQUIRE(frame.VulkanSourceQueueFamily == rhi::HOSTED_VULKAN_QUEUE_FAMILY_EXTERNAL);
         const VkImage image = reinterpret_cast<VkImage>(frame.VulkanImage.GetBits());
+        PixelCopy copy;
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = BYTES_PER_PIXEL;
         bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        VkBuffer buffer = VK_NULL_HANDLE;
-        REQUIRE(vkCreateBuffer(mDevice, &bufferInfo, nullptr, &buffer) == VK_SUCCESS);
+        REQUIRE(vkCreateBuffer(mDevice, &bufferInfo, nullptr, &copy.Buffer) == VK_SUCCESS);
         VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(mDevice, buffer, &requirements);
-        VkDeviceMemory memory = AllocateHostVisible(requirements);
-        REQUIRE(vkBindBufferMemory(mDevice, buffer, memory, 0) == VK_SUCCESS);
+        vkGetBufferMemoryRequirements(mDevice, copy.Buffer, &requirements);
+        copy.Memory = AllocateHostVisible(requirements);
+        REQUIRE(vkBindBufferMemory(mDevice, copy.Buffer, copy.Memory, 0) == VK_SUCCESS);
 
         VkCommandBufferAllocateInfo allocate{};
         allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         allocate.commandPool = mCommands;
         allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocate.commandBufferCount = 1;
-        VkCommandBuffer command = VK_NULL_HANDLE;
-        REQUIRE(vkAllocateCommandBuffers(mDevice, &allocate, &command) == VK_SUCCESS);
+        REQUIRE(vkAllocateCommandBuffers(mDevice, &allocate, &copy.Command) == VK_SUCCESS);
         VkCommandBufferBeginInfo begin{};
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        REQUIRE(vkBeginCommandBuffer(command, &begin) == VK_SUCCESS);
-        // Acquire half of the producer's release: same layouts, EXTERNAL to this family.
-        VkImageMemoryBarrier acquire{};
-        acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        acquire.srcAccessMask = 0;
-        acquire.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        acquire.oldLayout = static_cast<VkImageLayout>(frame.VulkanLayout);
-        acquire.newLayout = static_cast<VkImageLayout>(frame.VulkanLayout);
-        acquire.srcQueueFamilyIndex = frame.VulkanSourceQueueFamily;
-        acquire.dstQueueFamilyIndex = mFamily;
-        acquire.image = image;
-        acquire.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        acquire.subresourceRange.levelCount = 1;
-        acquire.subresourceRange.layerCount = 1;
-        VkImageMemoryBarrier toTransfer = acquire;
-        toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        REQUIRE(vkBeginCommandBuffer(copy.Command, &begin) == VK_SUCCESS);
+        VkImageMemoryBarrier toTransfer{};
+        toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransfer.srcAccessMask = 0;
         toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toTransfer.oldLayout = static_cast<VkImageLayout>(frame.VulkanLayout);
         toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(command,
-                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0,
-                             0,
-                             nullptr,
-                             0,
-                             nullptr,
-                             1,
-                             &acquire);
-        vkCmdPipelineBarrier(command,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        toTransfer.image = image;
+        toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toTransfer.subresourceRange.levelCount = 1;
+        toTransfer.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(copy.Command,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0,
                              0,
@@ -244,29 +234,54 @@ public:
             .z = 0,
         };
         region.imageExtent = { .width = 1, .height = 1, .depth = 1 };
-        vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
-        REQUIRE(vkEndCommandBuffer(command) == VK_SUCCESS);
-        VkFenceCreateInfo fenceInfo{};
-        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        VkFence fence = VK_NULL_HANDLE;
-        REQUIRE(vkCreateFence(mDevice, &fenceInfo, nullptr, &fence) == VK_SUCCESS);
+        vkCmdCopyImageToBuffer(copy.Command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, copy.Buffer, 1, &region);
+        // Back to the presented layout, which the consumer's release expects.
+        VkImageMemoryBarrier toPresented = toTransfer;
+        toPresented.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toPresented.dstAccessMask = 0;
+        toPresented.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toPresented.newLayout = static_cast<VkImageLayout>(frame.VulkanLayout);
+        vkCmdPipelineBarrier(copy.Command,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0,
+                             0,
+                             nullptr,
+                             0,
+                             nullptr,
+                             1,
+                             &toPresented);
+        REQUIRE(vkEndCommandBuffer(copy.Command) == VK_SUCCESS);
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &command;
-        REQUIRE(vkQueueSubmit(mQueue, 1, &submit, fence) == VK_SUCCESS);
-        // The frame may be released only after this sampling has completed.
-        REQUIRE(vkWaitForFences(mDevice, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NANOSECONDS) == VK_SUCCESS);
+        submit.pCommandBuffers = &copy.Command;
+        REQUIRE(vkQueueSubmit(mQueue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
+        return copy;
+    }
+
+    /// Read a completed copy's pixel and free it. @pre The copy's submission has completed.
+    [[nodiscard]] StaticArray<uint8, BYTES_PER_PIXEL> FinishPixelCopy(PixelCopy& inoutCopy) const
+    {
         void* mappedOrNull = nullptr;
-        REQUIRE(vkMapMemory(mDevice, memory, 0, BYTES_PER_PIXEL, 0, &mappedOrNull) == VK_SUCCESS);
+        REQUIRE(vkMapMemory(mDevice, inoutCopy.Memory, 0, BYTES_PER_PIXEL, 0, &mappedOrNull) == VK_SUCCESS);
         StaticArray<uint8, BYTES_PER_PIXEL> pixel{};
         std::memcpy(pixel.GetData(), mappedOrNull, BYTES_PER_PIXEL);
-        vkUnmapMemory(mDevice, memory);
-        vkDestroyFence(mDevice, fence, nullptr);
-        vkFreeCommandBuffers(mDevice, mCommands, 1, &command);
-        vkDestroyBuffer(mDevice, buffer, nullptr);
-        vkFreeMemory(mDevice, memory, nullptr);
+        vkUnmapMemory(mDevice, inoutCopy.Memory);
+        vkFreeCommandBuffers(mDevice, mCommands, 1, &inoutCopy.Command);
+        vkDestroyBuffer(mDevice, inoutCopy.Buffer, nullptr);
+        vkFreeMemory(mDevice, inoutCopy.Memory, nullptr);
+        inoutCopy = {};
         return pixel;
+    }
+
+    /// Sample a frame and wait for the queue, so the frame may be released at once.
+    [[nodiscard]] StaticArray<uint8, BYTES_PER_PIXEL> ReadCenterPixel(const rhi::HostedFrame& frame) const
+    {
+        PixelCopy copy = SubmitCenterPixelCopy(frame);
+        // The frame may be released only after this sampling has completed.
+        REQUIRE(vkQueueWaitIdle(mQueue) == VK_SUCCESS);
+        return FinishPixelCopy(copy);
     }
 
 private:
@@ -485,4 +500,66 @@ TEST_CASE("The editor refuses hosted images from another adapter", "[rhi][hosted
     CHECK(session.GetLastStatus() == rhi::HostedConsumerStatus::Refused);
     hosted_test::ProducerStatistics statistics;
     session.Close(statistics);
+}
+
+TEST_CASE("Vulkan frames released after the editor's queue return to the game once that queue finishes",
+          "[rhi][hosted][linux][gpu]")
+{
+    const ConsumerDevice device;
+    RequireConsumerDevice(device);
+    hosted_test::HostedSession session;
+    session.Start(device.GetIdentity(), "render");
+    rhi::HostedSurfaceConsumer& hosted = session.GetConsumer();
+
+    rhi::HostedFrame frame;
+    REQUIRE(session.TryAcquireNext(frame));
+    // Sample the frame on the editor's queue without waiting, as Qt's frame does.
+    ConsumerDevice::PixelCopy copy = device.SubmitCenterPixelCopy(frame);
+    REQUIRE(hosted.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::Ok);
+    CHECK(hosted.GetQueuedReleaseCount() == 1);
+    // A queued frame is still held, but it cannot be released or queued a second time.
+    CHECK(hosted.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::InvalidState);
+    CHECK(hosted.ReleaseFrame(frame) == rhi::HostedConsumerStatus::InvalidState);
+    REQUIRE(session.PumpUntil([&hosted]() { return hosted.GetQueuedReleaseCount() == 0; }));
+    // The release's fence signalled after the sampling submitted ahead of it on the same queue.
+    CheckTestColor(device.FinishPixelCopy(copy));
+
+    // Every returned image comes back: more frames than the ring holds keep arriving, and each
+    // image's acquire and release are submitted again for every presentation.
+    rhi::HostedFrame previous = frame;
+    for (usize i = 0; i < ludus::platform::HOSTED_SURFACE_IMAGE_COUNT * 2; ++i)
+    {
+        rhi::HostedFrame next;
+        REQUIRE(session.TryAcquireNext(next));
+        CHECK(next.Sequence > previous.Sequence);
+        REQUIRE(hosted.ReleaseFrameAfterQueue(next) == rhi::HostedConsumerStatus::Ok);
+        previous = next;
+    }
+    rhi::HostedFrame sampled;
+    REQUIRE(session.TryAcquireNext(sampled));
+    CheckTestColor(device.ReadCenterPixel(sampled));
+    // Stopping with a queued release waits for its fence before destroying the imports.
+    REQUIRE(hosted.ReleaseFrameAfterQueue(sampled) == rhi::HostedConsumerStatus::Ok);
+    hosted_test::ProducerStatistics statistics;
+    session.Close(statistics);
+    CHECK(hosted.GetRefusal() == rhi::HostedConsumerRefusal::None);
+}
+
+TEST_CASE("The Vulkan consumer needs the queue it submits its transfers to", "[rhi][hosted][linux][gpu]")
+{
+    const ConsumerDevice device;
+    RequireConsumerDevice(device);
+    ludus::platform::HostedWindowEndpoint endpoint;
+    rhi::HostedSurfaceConsumer consumer;
+    rhi::NativeDeviceIdentity identity = device.GetIdentity();
+    identity.CommandQueue = rhi::NativeCommandQueue();
+    CHECK(consumer.Start(endpoint, identity) == rhi::HostedConsumerStatus::InvalidArgument);
+    identity = device.GetIdentity();
+    identity.Instance = rhi::NativeInstance();
+    CHECK(consumer.Start(endpoint, identity) == rhi::HostedConsumerStatus::InvalidArgument);
+    REQUIRE(consumer.Start(endpoint, device.GetIdentity()) == rhi::HostedConsumerStatus::Ok);
+    rhi::HostedFrame frame;
+    CHECK(consumer.AcquireFrame(frame) == rhi::HostedConsumerStatus::Empty);
+    CHECK(consumer.ReleaseFrameAfterQueue(frame) == rhi::HostedConsumerStatus::InvalidState);
+    consumer.Stop();
 }

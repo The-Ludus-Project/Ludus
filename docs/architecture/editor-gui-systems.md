@@ -864,9 +864,27 @@ does not use it until P6.
     unseen.
   - `ReleaseFrame` goes after the editor's sampling has completed. A replaced
     generation's imports are destroyed once none of its frames is held.
-  - On Vulkan, the editor records the acquire barrier from
-    `VK_QUEUE_FAMILY_EXTERNAL` that `HostedFrame` describes. It needs no barrier
-    to return an image, because the game discards the contents.
+  - The consumer submits what its backend needs on the identity's queue, so
+    callers record nothing backend-specific and the public API names no
+    Vulkan object beyond the sampled `VkImage` and its layout. Each backend
+    keeps its native objects behind an opaque state that the portable
+    bookkeeping addresses by generation slot and image index. Vulkan entry
+    points come from volk instance and device tables loaded at `Start`, so they
+    survive an RHI session on the same device finalizing volk.
+  - On Vulkan, an image changes queue family ownership in both directions,
+    through two command buffers recorded once per imported image.
+    `AcquireFrame` submits the second half of the game's release: from
+    `VK_QUEUE_FAMILY_EXTERNAL` to the identity's queue family, with the same
+    layouts (`TRANSFER_SRC_OPTIMAL` to `SHADER_READ_ONLY_OPTIMAL`). Sampling
+    submitted to that queue afterwards needs no barrier.
+  - `ReleaseFrameAfterQueue` returns a frame once the consumer's queue has
+    finished the work already submitted to it, with no CPU wait. Metal commits
+    an empty command buffer behind the sampling. Vulkan submits the image's
+    release back to `VK_QUEUE_FAMILY_EXTERNAL` with a per-image fence, which
+    signals once all earlier work on the queue has completed; teardown waits
+    for it before destroying the imports. `ReleaseFrame` submits nothing,
+    because the game discards an image's contents before it renders into it
+    again.
   - A refusal is terminal for the session and has a reason: `AdapterMismatch`
     (Vulkan UUIDs differ), `UnsupportedHandle`, `ImportFailed` or
     `ProtocolViolation`.
@@ -886,7 +904,11 @@ does not use it until P6.
     no reuse of a held image, Skipped while every image is held (each call
     returns in under 100 ms), recovery on release, five resizes that need
     retirement, and refusal of forged images. On Linux it opens with the
-    device-UUID probe and refuses forged adapter UUIDs.
+    device-UUID probe and refuses forged adapter UUIDs. Its Linux cases sample
+    acquired frames with no barrier of their own, check that frames released
+    after the queue come back only once the fence behind their unwaited
+    sampling has signalled, and that a Vulkan identity without its queue is
+    refused.
 
 ### Input, focus and capture
 
@@ -1005,6 +1027,8 @@ AGENTS.md gates.
 | P6b | Play source over the hosted surface, with a queue-ordered release on Qt's queue (macOS Metal) | Two-process test presenting a producer's frames through `PreviewViewport`; releases follow Qt's completed sampling |
 | P6c | Launcher variable, edit and play transitions, input forwarding and reserved chords | Controller and viewport state tests; Cocoa journey playing World-demo in the viewport; return to edit after crash and Stop |
 | P7 | Separate-window preference and unavailable reasons | Preference persistence; launch without the variable; refusal-message tests |
+| P8 | Play in the viewport on Linux Vulkan, in two PRs | As below |
+| P8a | RHI consumer on Vulkan: the consumer submits the queue family acquire and release itself, with a fence as the queue-ordered release marker | Linux two-process tests sampling acquired frames; queued releases return only after the fence behind the sampling |
 
 P3's private `ViewportFrameSource` carries only frame
 production and leases: `HasPendingFrame`, `TakeFrame`, `ReleaseFrame`, `Resize`,
