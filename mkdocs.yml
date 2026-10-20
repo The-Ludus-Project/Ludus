@@ -98,6 +98,7 @@ nav:
       - Behavior reference performance and release acceptance: architecture/behavior-s7.md
       - Live gameplay editing: development/project-live-reload.md
       - Rendering and shaders: development/fullscreen-rendering.md
+      - Graphics debugging architecture and plan: architecture/graphics-debugging.md
       - Save, validate and build render graphs: development/render-graph-authoring.md
       - Render graph authoring proposal: architecture/render-graph-authoring.md
       - Benchmark scenes and suites: development/benchmark-scenes.md

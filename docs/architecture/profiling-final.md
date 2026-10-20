@@ -46,6 +46,11 @@ single-precision seconds, shared current-node, draw-time reset) was adopted.
 
 ## 1. Goals and non-goals (kept, with two sharpened goals)
 
+The [graphics debugging architecture](graphics-debugging.md) owns the proposed
+GPU annotation and external capture integration. Annotation enablement is
+independent of CPU trace recording and deferred GPU timestamp collection; the
+external debugger still owns capture visualization and shader/resource analysis.
+
 Baseline goals stand **[FP]**. Sharpened by the references:
 
 - **[R→adopt]** Add explicit goal: *distinguish workload change (calls/frame) from cost
