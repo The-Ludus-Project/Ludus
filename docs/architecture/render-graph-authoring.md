@@ -7,6 +7,12 @@ and trusted in-editor preview implemented, October 16, 2026; execution profile w
 to per-draw uniform bindings and authored masked coverage, October 17, 2026; RG4a
 exact-descriptor transient pooling with a serial control implemented, October 18,
 2026; the remaining RG4 optimizations remain proposed.
+Design update, October 19, 2026: GPU work uses graphics, compute and ray tracing
+pipeline nodes with customizable interfaces and node-owned shaders/state. This
+authoring records, editor controls and explicit raster conversion are implemented.
+Graphics nodes lower through the existing qualified raster profile; compute/ray
+execution and broader stage/state support remain capability-gated. The delivered
+profiles listed below retain their documented limits.
 This defines the renderer authoring/compiler contract; it does not claim
 unrestricted shader composition or new RHI capability.
 Baseline design: `5c44d19`. See [usage and source formats](../development/render-graph-authoring.md).
@@ -16,8 +22,12 @@ their implementation and lifetime contracts.
 
 ## Decision and scope
 
-Author rendering through reusable typed graphs. A shader function is the smallest
-programmable unit; execution/resource nodes describe how those functions run.
+Author rendering through reusable typed graphs. GPU work is authored through
+three pipeline node types: Graphics Pipeline (raster), Compute Pipeline and
+Ray Tracing Pipeline. Each node owns its customizable inputs, outputs, shader
+assignments, pipeline state and invocation description. A shader function is the
+smallest programmable unit inside that pipeline; graph connections describe
+resource flow and dependencies between invocations.
 Compile the authored documents into immutable shader packages and an inspectable
 execution plan. The runtime executes that plan through the existing RHI instead
 of traversing editor objects or generating shaders during a draw.
@@ -77,26 +87,96 @@ sizes and build jobs before admitting a document.
 
 ## Node and connection contracts
 
-Everything authored is a graph, with different connection domains:
+### Three GPU pipeline node types
+
+Creating a GPU work node means choosing Graphics Pipeline, Compute Pipeline or
+Ray Tracing Pipeline. The new node starts as a draft with no authored inputs or
+outputs; Scene, View, Color and Depth are additions, not mandatory built-in ports.
+A template may populate the same fields explicitly. An incomplete node can be
+edited and saved, but cannot build or execute until its selected configuration
+satisfies the shader, resource, invocation and capability contracts.
+
+| Pipeline node | Customizable inputs and outputs | Node-owned shaders, state and invocation |
+| --- | --- | --- |
+| Graphics Pipeline (raster) | Scene/draw selection, View, typed values and readable resources; color/depth attachments and other declared written resources | Vertex and fragment/pixel shader assignments, optional admitted geometry/tessellation stages; vertex interface, topology, rasterization, depth/stencil, per-attachment blending, write masks and multisampling; draw source and viewport/scissor policy |
+| Compute Pipeline | Typed values, readable textures/buffers and writable storage resources | Compute shader assignment, resource interface and admitted specialization; thread-group size and dispatch dimensions or admitted indirect dispatch source |
+| Ray Tracing Pipeline | Typed values, View, acceleration structures and readable/writable resources | Ray generation, miss, hit-group and optional callable shader assignments; payload/attribute interfaces, bounded recursion and shader-table configuration; launch dimensions |
+
+All three types use the same port identity, schema, access, versioning,
+configuration and readiness rules below. Outputs describe produced resource
+versions, not shader return values: a compute or ray tracing node can publish an
+image through storage writes without a fragment stage or a color attachment.
+Resource read/update access declares both the previous version dependency and
+the new written version. Raster attachment outputs additionally declare format,
+aspect, extent, samples and clear/load/store/resolve intent.
+
+Pipeline state belongs to the node's authored record and inspector. Named
+configurations may select complete shader/state combinations within its bounded
+manifest; reusable shader sources can be referenced without duplicating their
+text. Attachment operations and draw/dispatch/launch parameters belong to the
+same node's execution description, even where they are dynamic rather than part
+of a device pipeline key. The compiler derives dependency ordering from declared
+resource uses; the existing RHI boundary owns hazard lowering and barriers.
+Blending and rasterization are fields for now. Separately connectable
+pipeline-state blocks are deferred, as is stream output.
+
+Scene and View are engine-level inputs, not implicit global shader variables.
+Their declared schemas map scene extraction/draw selection and per-view values
+to the node's shader resource interface. Inputs may be used by any legal stage;
+adding Scene or View does not require a geometry shader. Geometry and other
+optional stages must pass the selected backend profile's capability checks.
+Likewise, adding Depth does not require a fragment shader to write depth:
+ordinary rasterized depth is valid under the admitted profile. Custom fragment
+depth or alpha coverage requires the corresponding authored shader behavior.
+Color outputs must agree with fragment output locations/types and attachment
+state. Port edits expose missing bindings and stage mismatches as diagnostics;
+they do not synthesize shader bodies or silently choose another technique.
+
+A typical raster authoring sequence is:
+
+1. Create a Graphics Pipeline node, initially with no inputs or outputs.
+2. Add Scene and View inputs, define their schemas/draw contract, and author or
+   assign the vertex shader and any explicitly needed optional geometry stages.
+3. Add Color and/or Depth outputs with attachment descriptors. Author or assign
+   a matching fragment shader where required; retain the selected profile's
+   depth-only and coverage rules.
+4. Set rasterization, depth/stencil, blending and other pipeline state in the
+   node, then connect providers and output consumers.
+5. Validate and build a candidate, prepare its required device pipelines, and
+   activate only when Ready. Pending or invalid edits retain the last drawable
+   generation.
+
+Compute and ray tracing follow the same interface/shader/state workflow, with
+their own dispatch or launch contracts instead of raster stages/attachments.
+Declaring either type does not admit it on every target. Unsupported stages,
+resource kinds, shader tables or state combinations produce explicit capability
+errors; no graphics fallback or ignored setting is invented.
+
+### Connection domains and supporting operations
+
+The graph retains different connection domains:
 
 | Node/edge domain | Meaning | Compiler treatment |
 | --- | --- | --- |
 | Shader function / value | Typed computation, stage inputs/outputs and logical resource requirements | Compose within legal stage boundaries and generate entry wrappers |
-| Execution | Raster draw, compute dispatch, ray invocation, copy, clear, resolve or presentation | Defines invocation, fixed state, uses and ordering; validates supported profile |
+| Pipeline execution | Graphics, compute or ray tracing pipeline node | Validates node-owned interface, shaders, state, invocation and profile; lowers declared uses and ordering |
+| Supporting operation | Copy, clear, resolve or presentation | Explicit resource/target operation with its own legal uses; not a fourth programmable pipeline type |
 | Resource | Texture/buffer versions, imported targets, persistent history and exported results | Validates descriptor, access, initialization and lifetime requirements |
 | Scene/view | Scene snapshot, camera/view, query and draw-item stream | Renderer supplies CPU values and draw selection; not a GPU texture |
 | Subgraph | Immutable referenced graph plus exposed interface and chosen configuration | Lower through the same rules, preserving the nested source path |
 
-`VSMain`, `PSMain` and `RayGen` can be named function nodes. They are not
-individually schedulable frame passes. Rasterization/interpolation connects
+`VSMain`, `PSMain` and `RayGen` identify shader functions assigned within a
+pipeline node. A future shader-expression view may expose function nodes inside
+that composition; they are not separate GPU work nodes or independently
+schedulable frame passes. Rasterization/interpolation connects
 vertex outputs to fragment inputs; these edges do not allocate intermediate
 textures. Stage inputs, derivatives, built-ins, payloads and invocation rules
 need stage-aware validation. Ray function tables and recursion remain an
 optional backend profile, not arbitrary ordinary-function links.
 
-Each function node declares a signature, stage eligibility, parameter schema,
-logical resources/access and effects. The shader author writes computations and
-resource accesses against that interface. The graph binds actual resources;
+Each assigned shader function declares a signature, stage eligibility, parameter
+schema, logical resources/access and effects. The shader author writes
+computations and resource accesses against that interface. The graph binds actual resources;
 generated wrappers assign physical bindings and target semantics. Handwritten
 entry points may supply the equivalent manifest, checked against reflection.
 Neither path requires hand-authored descriptor numbers, barriers or per-frame
@@ -123,10 +203,10 @@ resource usage as a checked union of legal producers/consumers; unsupported
 attachment-plus-sampling/resolve combinations reject. Extents are data or bounded
 expressions, not compile-time shader switches by default.
 
-Each output names a logical resource version. Writes produce a new version;
-preserve/load requires a dependency on initialized previous contents. External
-targets are imports supplied to the root graph, including an acquired back
-buffer. An output edge exposes the written version, not an instruction to bind
+Each GPU resource output names a logical resource version. Writes produce a new
+version; preserve/load requires a dependency on initialized previous contents.
+External targets are imports supplied to the root graph, including an acquired
+back buffer. An output edge exposes the written version, not an instruction to bind
 an arbitrary GPU object after execution. Multiple writers must use explicit
 version/order edges or a composition node. Clear/load/discard, store, depth,
 stencil, blend and resolve intent are part of the execution contract.
@@ -145,9 +225,10 @@ default raster graph. Inactive cameras need no executing route; texture cameras
 terminate at an exported offscreen texture. Loading a saved broken assignment
 reports it and preserves the document instead of silently replacing it.
 
-The saved `RasterizeGraph` exposes scene, view/camera, material policy, vertex
-contract and target requirements, plus Color and Depth outputs. Its target is
-supplied/requested by the parent; its implementation does not hardcode a surface.
+The saved `RasterizeGraph` is a reusable subgraph/template containing a Graphics
+Pipeline node, not a fourth pipeline type. It exposes scene, view/camera, material
+policy, vertex contract and target requirements, plus Color and Depth outputs.
+Its target is supplied/requested by the parent; its implementation does not hardcode a surface.
 The default initially uses a documented default-material override on admitted
 vertex layouts. It does not promise compatibility with arbitrary mesh layouts.
 Later scene-material selection uses explicit compatible technique interfaces.
@@ -458,8 +539,16 @@ save/undo/conflict policy. Show function, execution and resource domains visuall
 reject illegal links with actionable reasons. Double-click a subgraph to navigate
 its source; edits create a draft/new asset version rather than secretly mutating
 all imported runtime instances. Expose configuration choices and their count/cost
-before build. Layout-only edits do not compile; parameter edits follow declared
-runtime update paths; configuration/source edits build a candidate.
+before build. Create GPU Work offers the three pipeline types. The selected node's
+inspector owns Inputs, Outputs, Shaders, Pipeline State and Invocation editing;
+adding/removing/retyping ports is a semantic edit with stable IDs, undo and
+mapped validation diagnostics. Removing a connected port reports the affected
+links and requires an explicit draft edit rather than silently retargeting them.
+Shader assignments open their source in the existing source editor. Stage
+interfaces remain inside the pipeline node instead of appearing as independently
+scheduled passes on the execution canvas. The editor provides explicit Apply
+Pipeline and Convert to Graphics Pipeline actions; Save publishes the draft. Layout-only edits do not compile; parameter edits
+follow declared runtime update paths; configuration/source edits build a candidate.
 
 Build, Preview and Apply to Session are explicit actions. Background compilation
 is an opt-in preference and never implicitly saves drafts or applies stale output.
@@ -696,6 +785,34 @@ the RendererStatic offscreen fixture's interface; preview/live parity compares
 that frozen fixture's cooked generation with its compiled header byte for byte.
 Presentation-surface roots stay in the game host. See
 [RG3b usage and evidence](../development/render-graph-authoring.md#node-canvas-and-preview-rg3b).
+
+### Pipeline-node authoring migration and qualification
+
+Version-2 graph documents and the editor support all three pipeline record types,
+custom port names/types, shader program references, state and invocation editing.
+Empty drafts can be saved; execution validation requires complete admitted inputs
+and shaders. Compute/ray dispatch, optional graphics stages, procedural draws,
+additional resources and arbitrary state remain outside the current graph build
+profile and fail explicitly. Existing version-1 documents stay readable without
+rewriting on load. The explicit conversion maps each raster execution record and
+its selected technique/recipe to a Graphics Pipeline node, preserving stable identities,
+connections, shaders, state and configuration choices. Keep `RasterizeGraph` as
+its reusable subgraph wrapper. Unsupported or ambiguous conversions report an
+error and preserve the source; do not guess defaults or rewrite assets on load.
+
+The shared authored record, CLI validation and editor commands precede further
+execution qualification per pipeline type/profile. Acceptance covers empty
+saved drafts, adding/removing/retyping ports with undo/save, shader/interface
+mismatches, complete state round trips, existing raster asset migration and
+unchanged pixels, and failed/pending candidate preservation. Raster fixtures
+include procedural input-free draws, Scene/View bindings, color/depth outputs
+and per-attachment blending as those execution extensions are admitted. Current
+compute/ray fixtures validate bounded draft settings and explicit capability
+rejection. Future execution fixtures must verify storage read/write versions,
+dispatch bounds, acceleration-structure readiness, shader-group/payload
+compatibility and launch/recursion limits. Backend rejection
+must be explicit, including targets without optional geometry or ray support.
+Existing RG0-RG4 delivery evidence does not qualify these new capabilities.
 
 Run representative native and browser raster fixtures under pinned tools, SDK
 consumer checks, warning/format/tidy gates and sanitizers for implementation.

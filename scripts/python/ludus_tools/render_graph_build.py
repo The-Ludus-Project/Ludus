@@ -390,6 +390,7 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None):
         paths['helper/' + NATIVE_WORKER_HELPER] = client
     paths['generator/render_graph_build.py'] = Path(__file__)
     paths['generator/render_graph.py'] = Path(graph.__file__)
+    paths['generator/render_graph_pipeline.py'] = Path(graph.pipeline.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
     if validator:
         paths['tool/spirv-val'] = Path(validator).resolve()
@@ -659,6 +660,17 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         require(all(digest(snapshot.files[d['source']]) == d['sha256'] for d in plan['dependencies']),
                 'Stale', plan['configuration'], 'graph changed during plan compilation')
         require(set(plan['techniques']) <= techniques.keys(), 'Configuration', plan['configuration'], 'graph selects an undeclared technique')
+        for operation in plan['passes']:
+            if 'pipeline' not in operation:
+                continue
+            node = operation['pipeline']
+            technique = techniques[operation['technique']]
+            assigned = {shader['stage']: shader['program'] for shader in node['shaders']}
+            require(assigned == {stage: technique[stage] for stage in ('vertex', 'fragment')},
+                    'ShaderInterface', operation['id'], 'node shader assignments differ from the authored technique')
+            require(any(all(recipe[key] == value for key, value in node['state'].items())
+                        for recipe in technique['recipes']), 'Capability', operation['id'],
+                    'no authored recipe matches the complete node-owned pipeline state')
     counts['root_configurations'] = len(plans)
     counts['graph_configurations'] = sum(len(a['configurations']) for a in library.assets.values())
     require(counts['graph_configurations'] <= value['budgets']['configurations'], 'Capacity', 'graph configurations', 'closure configuration budget exceeded')
@@ -685,7 +697,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'schemas': [schemas[s] for s in sorted(used)], 'target': target,
                                 'sources': {p: digest(snapshot.files[p]) for p in closure}, 'wrapper': shader_source(program, schemas),
                                 'tools': {k: h for k, h in tool_hashes.items()
-                                          if k != 'generator/render_graph.py'
+                                          if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py')
                                           and not (target in ('metal', 'wgsl') and k == 'tool/spirv-val')
                                           and not (target != 'glsl' and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
                     key = identity(key_data)
@@ -728,7 +740,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                     if operation['kind'] != 'Raster':
                         continue
                     technique = techniques[operation['technique']]
-                    matches = [r for r in technique['recipes'] if r['samples'] == 1 and r['depth'] == 'Depth32Float' and
+                    matches = [r for r in technique['recipes'] if
+                               ('pipeline' not in operation or all(r[key] == value for key, value in operation['pipeline']['state'].items())) and r['samples'] == 1 and r['depth'] == 'Depth32Float' and
                                r['color'] == ('RGBA8Unorm' if operation['configuration'] == 'ColorAndDepth' else 'None')]
                     require(matches, 'Configuration', operation['id'], 'no admitted attachment recipe')
                     routes.append({'configuration': plan['configuration'], 'node': operation['id'], 'technique': operation['technique'],

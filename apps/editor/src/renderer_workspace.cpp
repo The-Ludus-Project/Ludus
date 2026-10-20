@@ -2,6 +2,7 @@
 #    include "internal/render_graph_worker.h"
 #endif
 #include "internal/item_selection.h"
+#include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_shader_interface.h"
 #include "internal/renderer_workspace.h"
 
@@ -193,6 +194,10 @@ QStringList GetChoices(const QString& field)
 /// Default authored record for a new node; the shared validator still owns legality.
 QJsonObject MakeNode(const QString& kind, const QString& identity)
 {
+    if (IsPipelineNode(kind) == true)
+    {
+        return MakePipelineNode(kind, identity);
+    }
     QJsonObject node{{QStringLiteral("id"), identity}, {QStringLiteral("kind"), kind}};
     if (kind == QStringLiteral("Camera"))
     {
@@ -209,16 +214,6 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
         node.insert(QStringLiteral("imported"), false);
         node.insert(QStringLiteral("initialized"), false);
         node.insert(QStringLiteral("presentation"), false);
-    }
-    else if (kind == QStringLiteral("Raster"))
-    {
-        node.insert(QStringLiteral("mode"), QStringLiteral("ColorAndDepth"));
-        node.insert(QStringLiteral("vertex_layout"), QStringLiteral("RendererStatic"));
-        node.insert(QStringLiteral("material"), QStringLiteral("DefaultOpaque"));
-        node.insert(QStringLiteral("depth_load"), QStringLiteral("Clear"));
-        node.insert(QStringLiteral("depth_store"), QStringLiteral("Store"));
-        node.insert(QStringLiteral("color_load"), QStringLiteral("Clear"));
-        node.insert(QStringLiteral("color_store"), QStringLiteral("Store"));
     }
     else if (kind == QStringLiteral("Subgraph"))
     {
@@ -364,7 +359,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mNewKind->addItems({QStringLiteral("Scene"),
                         QStringLiteral("Camera"),
                         QStringLiteral("Target"),
-                        QStringLiteral("Raster"),
+                        QStringLiteral("GraphicsPipeline"),
+                        QStringLiteral("ComputePipeline"),
+                        QStringLiteral("RayTracingPipeline"),
                         QStringLiteral("Subgraph"),
                         QStringLiteral("Export"),
                         QStringLiteral("Present")});
@@ -1791,10 +1788,43 @@ void RendererWorkspace::renderInspector()
                     new QLabel(mSelectedNode + QStringLiteral(" (") + node.value(QStringLiteral("kind")).toString() +
                                    QLatin1Char(')'),
                                mInspector));
+    if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+    {
+        RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, mInspector);
+        connect(editor, &RenderGraphPipelineEditor::Applied, this, [this](const QJsonObject& candidate) {
+            const RenderGraphDocumentStatus status =
+                mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate);
+            if (status != RenderGraphDocumentStatus::Ok)
+            {
+                mStatus->setText(QStringLiteral("Disconnect affected ports before removing or changing their type."));
+                return;
+            }
+            documentEdited(status);
+        });
+        mFields->addRow(editor);
+    }
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster"))
+    {
+        QPushButton* migrate = new QPushButton(QStringLiteral("Convert to Graphics Pipeline"), mInspector);
+        migrate->setObjectName(QStringLiteral("renderGraphMigratePipeline"));
+        connect(migrate, &QPushButton::clicked, this, [this]() {
+            QJsonObject candidate;
+            const QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object();
+            if (MigrateRasterNode(selectedNode(), manifest, candidate) == false)
+            {
+                mStatus->setText(QStringLiteral("Conversion requires one explicit technique and one complete recipe. "
+                                                "The draft was preserved."));
+                return;
+            }
+            documentEdited(mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate));
+        });
+        mFields->addRow(migrate);
+    }
     for (QJsonObject::const_iterator field = node.constBegin(); field != node.constEnd(); ++field)
     {
         const QString name = field.key();
-        if (name == QStringLiteral("id") || name == QStringLiteral("kind"))
+        if (name == QStringLiteral("id") || name == QStringLiteral("kind") ||
+            IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
         {
             continue;
         }
@@ -2088,6 +2118,27 @@ bool RendererWorkspace::CreateSubgraph(const QString& name)
 QStringList RendererWorkspace::GetSelectedShaderSources() const
 {
     const QJsonObject node = selectedNode();
+    if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+    {
+        QStringList sources;
+        const QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object();
+        const QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+        const QJsonArray shaders = node.value(QStringLiteral("shaders")).toArray();
+        for (const QJsonValueConstRef shader : shaders)
+        {
+            for (const QJsonValueConstRef program : programs)
+            {
+                const QJsonObject record = program.toObject();
+                const QString source = record.value(QStringLiteral("source")).toString();
+                if (record.value(QStringLiteral("id")) == shader.toObject().value(QStringLiteral("program")) &&
+                    mDocument.GetFiles().contains(source) == true && sources.contains(source) == false)
+                {
+                    sources.append(source);
+                }
+            }
+        }
+        return sources;
+    }
     if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("Raster"))
     {
         return {};

@@ -414,6 +414,16 @@ def cmd_install_butler(args) -> int:
 def cmd_render_graph(args) -> int:
     from . import render_graph
 
+    if args.graph_action == "migrate-pipelines":
+        from . import render_graph_pipeline
+        document = render_graph._parse(render_graph._read(Path(args.graph)), args.graph)
+        from . import render_graph_build
+        manifest = render_graph_build.document(render_graph_build.read(Path(args.manifest)), args.manifest)
+        migrated = render_graph_pipeline.migrate_document(document, manifest)
+        _emit(args, {"document": migrated})
+        if not args.json:
+            print(render_graph.canonical_asset(migrated).decode(), end="")
+        return EXIT_OK
     if args.graph_action == "watch":
         from . import render_graph_reload
         if not args.runtime_package or not (args.worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')):
@@ -526,6 +536,10 @@ def build_parser() -> argparse.ArgumentParser:
     new_graph.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl"),
                            help="explicit shader targets for --renderer-static")
     new_graph.set_defaults(func=cmd_render_graph)
+    migrate_pipelines = graphs.add_parser("migrate-pipelines", help="print a converted version-2 document; never rewrites sources or imports")
+    migrate_pipelines.add_argument("graph")
+    migrate_pipelines.add_argument("--manifest", required=True, help="explicit sibling build manifest")
+    migrate_pipelines.set_defaults(func=cmd_render_graph)
     for action in ("validate", "dump"):
         graph = graphs.add_parser(action)
         graph.add_argument("graph", help="saved .lurender.json root graph")

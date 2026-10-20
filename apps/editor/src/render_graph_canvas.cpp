@@ -1,4 +1,5 @@
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_pipeline_node.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -211,7 +212,12 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
 {
     const QString kind = node.value(QStringLiteral("kind")).toString();
     RenderGraphNodePorts ports;
-    if (kind == QStringLiteral("Scene"))
+    if (IsPipelineNode(kind) == true)
+    {
+        ports.Inputs = ReadInterface(node.value(QStringLiteral("inputs")).toArray());
+        ports.Outputs = ReadInterface(node.value(QStringLiteral("outputs")).toArray());
+    }
+    else if (kind == QStringLiteral("Scene"))
     {
         ports.Outputs = {{QStringLiteral("scene"), QStringLiteral("Scene")}};
     }
