@@ -18,7 +18,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -39,6 +38,7 @@
 #include <QTextCursor>
 #include <QTimer>
 #include <QTreeWidget>
+#include <QVBoxLayout>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -47,6 +47,7 @@ namespace
 constexpr int32 JOB_TIMEOUT_MILLISECONDS = 60000;
 constexpr int32 CREATION_WORKSPACE_WIDTH = 1280;
 constexpr int32 CREATION_WORKSPACE_HEIGHT = 800;
+constexpr int32 CREATION_PROPERTIES_WIDTH = 320;
 constexpr int32 MINIMUM_VISIBLE_CANVAS_WIDTH = 480;
 const QString ROOT_GRAPH = QStringLiteral("main.lurender.json");
 const QString LIBRARY = QStringLiteral("rasterize.lurender.json");
@@ -761,12 +762,20 @@ TEST_CASE("Add Node uses the displayed file default and generates collision-free
     REQUIRE(add != nullptr);
     REQUIRE(message != nullptr);
     REQUIRE(tree != nullptr);
-    QHBoxLayout* layout = new QHBoxLayout(&host);
-    layout->addWidget(&workspace, 1);
-    layout->addWidget(workspace.TakeInspectorPanel(&host));
-    host.resize(CREATION_WORKSPACE_WIDTH, CREATION_WORKSPACE_HEIGHT);
+    QVBoxLayout* layout = new QVBoxLayout(&host);
+    QWidget* properties = workspace.TakeInspectorPanel(&host);
+    properties->setFixedWidth(CREATION_PROPERTIES_WIDTH);
+    layout->addWidget(properties);
+    host.resize(CREATION_PROPERTIES_WIDTH, CREATION_WORKSPACE_HEIGHT);
+    workspace.resize(CREATION_WORKSPACE_WIDTH, CREATION_WORKSPACE_HEIGHT);
+    ApplyWorkspaceStyle(&workspace);
+    ApplyWorkspaceStyle(&host);
+    workspace.show();
     host.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&workspace) == true);
     REQUIRE(QTest::qWaitForWindowExposed(&host) == true);
+    QApplication::processEvents();
+    CHECK(properties->x() + properties->width() <= host.width());
     const QList<QTreeWidgetItem*> files = tree->findItems(ROOT_GRAPH, Qt::MatchExactly);
     REQUIRE(files.size() == 1);
     tree->setCurrentItem(files.front());
@@ -774,10 +783,13 @@ TEST_CASE("Add Node uses the displayed file default and generates collision-free
     CHECK(workspace.GetCanvas().GetConfiguration() == QStringLiteral("Default"));
     const QByteArray original = workspace.GetDocument().GetDraft(ROOT_GRAPH);
     QTest::mouseClick(add, Qt::LeftButton);
+    QApplication::processEvents();
     CHECK(workspace.GetSelection() == ROOT_GRAPH + QStringLiteral("#Default/scene2"));
     CHECK(workspace.GetCanvas().HasNode(QStringLiteral("scene2")) == true);
     CHECK(workspace.GetCanvas().GetSelectedNodes() == QStringList{QStringLiteral("scene2")});
     CHECK(message->isVisible() == true);
+    CHECK(message->width() > 0);
+    CHECK(properties->rect().contains(add->mapTo(properties, add->rect().center())) == true);
     CHECK(message->text() == QStringLiteral("Added scene2 to main.lurender.json#Default."));
     CHECK(workspace.GetDocument().GetRevision() == 1);
     workspace.Undo();
@@ -789,6 +801,7 @@ TEST_CASE("Add Node uses the displayed file default and generates collision-free
     const float64 zoom = workspace.GetCanvas().transform().m11();
     workspace.GetCanvas().centerOn(10000, 10000);
     QTest::mouseClick(add, Qt::LeftButton);
+    QApplication::processEvents();
     CHECK(workspace.GetCanvas().HasNode(QStringLiteral("scene3")) == true);
     CHECK(workspace.GetSelection() == ROOT_GRAPH + QStringLiteral("#Default/scene3"));
     CHECK(workspace.GetCanvas().transform().m11() == zoom);
@@ -799,6 +812,7 @@ TEST_CASE("Add Node uses the displayed file default and generates collision-free
     if (capture.isEmpty() == false)
     {
         REQUIRE(host.grab().save(capture) == true);
+        REQUIRE(workspace.grab().save(capture + QStringLiteral("-canvas.png")) == true);
     }
 }
 
