@@ -7,7 +7,7 @@ add_library(ludus_scene_cook STATIC
     src/importers/image/image_reader.cpp src/importers/image/exr_reader.cpp src/importers/source_resolver.cpp
     src/importers/front_end_support.cpp src/importers/obj/obj_reader.cpp src/importers/tangent_generation.cpp
     src/importers/name_index.cpp src/importers/gltf/gltf_reader.cpp src/importers/texture_decode_queue.cpp
-    src/importers/parallel_tasks.cpp)
+    src/importers/parallel_tasks.cpp src/file_digests.cpp)
 add_library(Ludus::SceneCook ALIAS ludus_scene_cook)
 set_target_properties(ludus_scene_cook PROPERTIES EXPORT_NAME SceneCook)
 target_sources(ludus_scene_cook PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
@@ -54,7 +54,8 @@ if(LUDUS_BUILD_TESTS)
         LUDUS_SCENE_GOLDENS_DIR="${PROJECT_SOURCE_DIR}/tests/goldens/scene_pipeline"
         LUDUS_SCENE_IMPORT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     target_link_libraries(ludus_scene_assets_tests PRIVATE
-        Ludus::SceneCook Ludus::Resources Ludus::FoundationParsingJson Ludus::FoundationStrings Catch2::Catch2WithMain)
+        Ludus::SceneCook Ludus::Resources Ludus::FoundationParsingJson Ludus::FoundationStrings
+        Ludus::FoundationThreading Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_scene_assets_tests)
     ludus_enable_test_exceptions(ludus_scene_assets_tests)
     add_test(NAME ludus_scene_assets_tests COMMAND ludus_scene_assets_tests)
@@ -76,7 +77,7 @@ endif()
 if(LUDUS_BUILD_TESTS)
     add_executable(ludus_scene_import_tests
         tests/image_decoder_tests.cpp tests/obj_import_tests.cpp tests/gltf_import_tests.cpp tests/tangent_tests.cpp
-        tests/texture_decode_tests.cpp)
+        tests/texture_decode_tests.cpp tests/file_digest_tests.cpp)
     target_include_directories(ludus_scene_import_tests PRIVATE src)
     target_compile_definitions(ludus_scene_import_tests PRIVATE
         LUDUS_SCENE_IMPORT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

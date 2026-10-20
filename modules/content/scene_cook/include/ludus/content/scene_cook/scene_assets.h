@@ -114,7 +114,10 @@ struct AssetOptions final
     std::string_view ExpectedSourceDigest;
     /// Optional caller-owned job system for the best-effort importer's texture decoding;
     /// see BestEffortOptions::JobsOrNull for the budget, memory and thread contract.
-    /// nullptr decodes serially. The pbrt-reference-v1 cooker does not use it. Not owned.
+    /// Imports and commits with workers also re-hash the source inputs on it, reading
+    /// them on the calling thread in batches of at most 256 MiB; results and messages
+    /// match the serial check. nullptr decodes and re-hashes serially. The
+    /// pbrt-reference-v1 cooker does not decode on it. Not owned.
     foundation::threading::JobSystem* JobsOrNull = nullptr;
     /// Optional replacement for Cook, for tests that need a synthetic source;
     /// nullptr selects the pbrt-reference-v1 cooker.
