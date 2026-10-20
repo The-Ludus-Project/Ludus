@@ -2,6 +2,7 @@
 #    include "internal/render_graph_worker.h"
 #endif
 #include "internal/item_selection.h"
+#include "internal/render_graph_shader_interface.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/core.h>
@@ -299,7 +300,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)), mNewKind(new QComboBox(mInspector)),
       mNewIdentity(new QLineEdit(mInspector)), mEdges(new QTableWidget(mInspector)),
       mEdgeFrom(new QLineEdit(mInspector)), mEdgeTo(new QLineEdit(mInspector)), mSourceFile(new QComboBox(this)),
-      mSource(new QPlainTextEdit(this)), mPlan(new QPlainTextEdit(this)),
+      mSource(new QPlainTextEdit(this)), mSourceInterface(new QPlainTextEdit(this)), mPlan(new QPlainTextEdit(this)),
       mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)), mStatus(new QLabel(this)),
       mCanvas(new RenderGraphCanvas(mDocument, this)), mPreviewPage(new QWidget(this)),
       mPreviewImage(new PreviewImage(mPreviewPage)), mPreviewStatus(new QLabel(mPreviewPage)),
@@ -430,7 +431,23 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     chooseCodeEditor->setEnabled(false);
     sourceHint->setText(QStringLiteral("External code editors are available in the native Ludus editor."));
 #endif
-    sourceLayout->addWidget(mSource, 1);
+    mSourceInterface->setObjectName(QStringLiteral("renderGraphSourceInterface"));
+    mSourceInterface->setReadOnly(true);
+    mSourceInterface->setToolTip(QStringLiteral("Shader fields and uniforms declared by the draft build manifest. "
+                                                "Canvas ports describe pass resources, not shader parameters."));
+    mSourceInterface->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    mSourceInterface->setAccessibleName(QStringLiteral("Shader inputs and outputs"));
+    QWidget* interfacePage = new QWidget(sourcePage);
+    QVBoxLayout* interfaceLayout = new QVBoxLayout(interfacePage);
+    interfaceLayout->setContentsMargins(0, 0, 0, 0);
+    interfaceLayout->addWidget(new QLabel(QStringLiteral("Inputs / Outputs — draft manifest"), interfacePage));
+    interfaceLayout->addWidget(mSourceInterface, 1);
+    QSplitter* sourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
+    sourceSplit->addWidget(mSource);
+    sourceSplit->addWidget(interfacePage);
+    sourceSplit->setStretchFactor(0, 2);
+    sourceSplit->setStretchFactor(1, 1);
+    sourceLayout->addWidget(sourceSplit, 1);
 
     mPlan->setObjectName(QStringLiteral("renderGraphPlan"));
     mPlan->setReadOnly(true);
@@ -1846,6 +1863,8 @@ void RendererWorkspace::renderSource()
         mSource->setPlainText(text);
     }
     mSource->setEnabled(file.isEmpty() == false);
+    mSourceInterface->parentWidget()->setVisible(file.endsWith(QStringLiteral(".slang")));
+    mSourceInterface->setPlainText(DescribeShaderInterface(mDocument.GetDraft(manifestFile()), file));
 }
 
 void RendererWorkspace::renderStatus()
