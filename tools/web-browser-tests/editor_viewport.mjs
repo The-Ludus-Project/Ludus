@@ -57,6 +57,7 @@ async function open(page) {
 }
 async function importScene(page) {
   await click(page, 551, 280);
+  await page.screenshot({path: resolve(output, 'import-menu.png')});
   const chooser = page.waitForEvent('filechooser', {timeout: 10000});
   await click(page, 556, 334);
   await (await chooser).setFiles({name: 'scene.pbrt', mimeType: 'text/plain', buffer: source});
@@ -89,8 +90,10 @@ async function shot(page, name) {
   return {bytes, lit, warm, center: [...image.data.subarray(center, center + 3)],
     width: image.width, height: image.height};
 }
+let activePage;
 try {
   const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
+  activePage = page;
   await page.addInitScript(() => {
     globalThis.qaGpuErrors = [];
     const create = GPUDevice.prototype.createRenderPipelineAsync;
@@ -121,6 +124,7 @@ try {
     };
   });
   await open(page);
+  await page.screenshot({path: resolve(output, 'world-opened.png')});
   await importScene(page);
   await rendered(page);
   report.adapter = await page.evaluate(() => globalThis.qaViewportAdapter);
@@ -201,6 +205,7 @@ try {
   report.cases.push('Actual GPU device destruction reports a viewport failure while editor stays available');
   await page.close();
   const unavailable = await browser.newPage({viewport: {width: 1440, height: 1000}});
+  activePage = unavailable;
   await unavailable.addInitScript(() => Object.defineProperty(navigator, 'gpu', {value: undefined}));
   await open(unavailable);
   await importScene(unavailable);
@@ -211,6 +216,11 @@ try {
   report.cases.push('Missing WebGPU reports failure without a CPU rendering fallback');
   assert.deepEqual(report.errors, []);
   report.passed = true;
+} catch (error) {
+  report.failure = String(error);
+  if (activePage && !activePage.isClosed())
+    await activePage.screenshot({path: resolve(output, 'failure.png')});
+  throw error;
 } finally {
   await writeFile(resolve(output, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   await browser.close();
