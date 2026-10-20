@@ -3,7 +3,6 @@
 #include <ludus/foundation/logging/log.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 
-#include <cstring>
 #include <unistd.h>
 
 namespace ludus::graphics::rhi::backend
@@ -20,15 +19,10 @@ void HostedProducerVulkan::Connect(const HostedVulkanDevice& device,
     Disconnect();
     mDevice = device;
     mChannelOrNull = &inoutChannel;
-    VkPhysicalDeviceIDProperties identity{};
-    identity.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
-    VkPhysicalDeviceProperties2 properties{};
-    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    properties.pNext = &identity;
-    vkGetPhysicalDeviceProperties2(device.PhysicalDevice, &properties);
-    static_assert(VK_UUID_SIZE == platform::HOSTED_ADAPTER_UUID_BYTES);
-    std::memcpy(mDeviceUuid.GetData(), identity.deviceUUID, VK_UUID_SIZE);
-    std::memcpy(mDriverUuid.GetData(), identity.driverUUID, VK_UUID_SIZE);
+    platform::HostedAdapterIdentity adapter;
+    ReadHostedAdapterIdentity(device.PhysicalDevice, adapter);
+    mDeviceUuid = adapter.DeviceUuid;
+    mDriverUuid = adapter.DriverUuid;
 }
 
 void HostedProducerVulkan::Disconnect() noexcept

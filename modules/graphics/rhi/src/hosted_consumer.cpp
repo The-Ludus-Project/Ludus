@@ -277,6 +277,23 @@ HostedSurfaceConsumer::~HostedSurfaceConsumer() noexcept
     Stop();
 }
 
+bool TryGetHostedConsumerAdapter(const NativeDeviceIdentity& device,
+                                 platform::HostedAdapterIdentity& outAdapter) noexcept
+{
+    if (device.Api != Backend::Vulkan || device.Instance.IsNull() == true || device.PhysicalDevice.IsNull() == true ||
+        internal::IsHostedImportAvailable(device.Api) == false)
+    {
+        return false;
+    }
+    platform::HostedAdapterIdentity adapter;
+    if (internal::TryReadHostedConsumerAdapter(device, adapter) == false)
+    {
+        return false;
+    }
+    outAdapter = adapter;
+    return true;
+}
+
 HostedConsumerStatus HostedSurfaceConsumer::Start(platform::HostedWindowEndpoint& inoutEndpoint,
                                                   const NativeDeviceIdentity& device) noexcept
 {

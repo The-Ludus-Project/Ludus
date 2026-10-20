@@ -1,3 +1,4 @@
+#include "internal/hosted_adapter.h"
 #include "internal/hosted_consumer.h"
 #include "internal/hosted_vulkan.h"
 
@@ -77,18 +78,28 @@ namespace
 {
 using Image = HostedConsumerBackend::Image;
 
-[[nodiscard]] bool AreAdaptersEqual(const HostedConsumerBackend& backend,
-                                    const platform::HostedSurfaceImages& images) noexcept
+/// Read an adapter's UUIDs through a volk instance table, independent of volk's global pointers.
+void ReadAdapter(const VolkInstanceTable& instance,
+                 VkPhysicalDevice physicalDevice,
+                 platform::HostedAdapterIdentity& outAdapter) noexcept
 {
     VkPhysicalDeviceIDProperties identity{};
     identity.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
     VkPhysicalDeviceProperties2 properties{};
     properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     properties.pNext = &identity;
-    backend.Instance.vkGetPhysicalDeviceProperties2(backend.PhysicalDevice, &properties);
+    instance.vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
     static_assert(VK_UUID_SIZE == platform::HOSTED_ADAPTER_UUID_BYTES);
-    return std::memcmp(identity.deviceUUID, images.DeviceUuid.GetData(), VK_UUID_SIZE) == 0 &&
-           std::memcmp(identity.driverUUID, images.DriverUuid.GetData(), VK_UUID_SIZE) == 0;
+    std::memcpy(outAdapter.DeviceUuid.GetData(), identity.deviceUUID, VK_UUID_SIZE);
+    std::memcpy(outAdapter.DriverUuid.GetData(), identity.driverUUID, VK_UUID_SIZE);
+}
+
+[[nodiscard]] bool HasMatchingAdapter(const HostedConsumerBackend& backend,
+                                      const platform::HostedSurfaceImages& images) noexcept
+{
+    platform::HostedAdapterIdentity consumer;
+    ReadAdapter(backend.Instance, backend.PhysicalDevice, consumer);
+    return AreAdaptersEqual(consumer, { .DeviceUuid = images.DeviceUuid, .DriverUuid = images.DriverUuid });
 }
 
 void DestroyImage(const HostedConsumerBackend& backend, Image& inoutImage) noexcept
@@ -273,6 +284,24 @@ bool IsHostedImportAvailable(Backend api) noexcept
     return api == Backend::Vulkan;
 }
 
+bool TryReadHostedConsumerAdapter(const NativeDeviceIdentity& device,
+                                  platform::HostedAdapterIdentity& outAdapter) noexcept
+{
+    // volkInitialize() resolves only the loader's entry points; the table below needs it once.
+    if (vkGetInstanceProcAddr == nullptr && volkInitialize() != VK_SUCCESS)
+    {
+        return false;
+    }
+    VolkInstanceTable instance{};
+    volkLoadInstanceTable(&instance, static_cast<VkInstance>(device.Instance.GetObject()));
+    if (instance.vkGetPhysicalDeviceProperties2 == nullptr)
+    {
+        return false;
+    }
+    ReadAdapter(instance, static_cast<VkPhysicalDevice>(device.PhysicalDevice.GetObject()), outAdapter);
+    return true;
+}
+
 HostedConsumerStatus CreateHostedConsumerBackend(const NativeDeviceIdentity& device,
                                                  HostedConsumerBackendOwner& outBackend) noexcept
 {
@@ -327,7 +356,7 @@ HostedConsumerRefusal ImportHostedGeneration(HostedConsumerBackend& inoutBackend
             refusal = HostedConsumerRefusal::UnsupportedHandle;
         }
     }
-    if (refusal == HostedConsumerRefusal::None && AreAdaptersEqual(inoutBackend, inoutImages) == false)
+    if (refusal == HostedConsumerRefusal::None && HasMatchingAdapter(inoutBackend, inoutImages) == false)
     {
         refusal = HostedConsumerRefusal::AdapterMismatch;
     }

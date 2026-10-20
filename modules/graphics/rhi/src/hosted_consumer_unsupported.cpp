@@ -17,6 +17,13 @@ bool IsHostedImportAvailable([[maybe_unused]] Backend api) noexcept
     return false;
 }
 
+bool TryReadHostedConsumerAdapter([[maybe_unused]] const NativeDeviceIdentity& device,
+                                  [[maybe_unused]] platform::HostedAdapterIdentity& outAdapter) noexcept
+{
+    // Nothing is imported, so there is no adapter to announce.
+    return false;
+}
+
 HostedConsumerStatus CreateHostedConsumerBackend([[maybe_unused]] const NativeDeviceIdentity& device,
                                                  [[maybe_unused]] HostedConsumerBackendOwner& outBackend) noexcept
 {

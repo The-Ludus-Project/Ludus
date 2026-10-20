@@ -34,6 +34,14 @@ using HostedConsumerBackendOwner = foundation::UniquePtr<HostedConsumerBackend, 
 /// True when this build can import hosted images onto a device of `api`.
 [[nodiscard]] bool IsHostedImportAvailable(Backend api) noexcept;
 
+/// @brief Read the adapter identity of the consumer's device, without creating its native state.
+/// @pre `device` is a Vulkan identity with `Instance` and `PhysicalDevice`, and IsHostedImportAvailable()
+/// accepts its API.
+/// @param outAdapter Unchanged unless true is returned.
+/// @return false when the backend has no adapter identity (Metal) or it cannot be queried.
+[[nodiscard]] bool TryReadHostedConsumerAdapter(const NativeDeviceIdentity& device,
+                                                platform::HostedAdapterIdentity& outAdapter) noexcept;
+
 /// @brief Create the native state for `device`, whose API IsHostedImportAvailable() accepts.
 /// @return Ok; InvalidArgument when the identity lacks what the backend needs; Unavailable when
 /// its entry points cannot be loaded or allocation failed. `outBackend` is unchanged unless Ok.

@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/hosted_adapter.h"
 #include "internal/hosted_vulkan.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
@@ -9,6 +10,7 @@
 #include "internal/resources.h"
 #include "internal/vma.h"
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/rhi/render.h>
@@ -35,6 +37,8 @@ using namespace foundation;
 constexpr logging::LogCategory LOG_RHI{"RHI"};
 constexpr usize FRAMES = 2;
 constexpr usize IMAGES = 8;
+/// Adapters one instance may enumerate; a larger count is rejected, never truncated.
+constexpr uint32 MAX_PHYSICAL_DEVICES = 32;
 void RasterVkDependencies(bool surface, VkSubpassDependency (&dependencies)[2]) noexcept;
 struct Frame final
 {
@@ -776,12 +780,13 @@ bool ConnectWindow(const WindowInfo& window) noexcept
 #endif
     }
     uint32 count = 0;
-    if (Check(vkEnumeratePhysicalDevices(gInstance, &count, nullptr)) == false || count == 0 || count > 32)
+    if (Check(vkEnumeratePhysicalDevices(gInstance, &count, nullptr)) == false || count == 0 ||
+        count > MAX_PHYSICAL_DEVICES)
     {
         return false;
     }
-    VkPhysicalDevice devices[32]{};
-    if (Check(vkEnumeratePhysicalDevices(gInstance, &count, devices)) == false)
+    foundation::StaticArray<VkPhysicalDevice, MAX_PHYSICAL_DEVICES> devices{};
+    if (Check(vkEnumeratePhysicalDevices(gInstance, &count, devices.GetData())) == false)
     {
         return false;
     }
@@ -1035,8 +1040,33 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         LUDUS_LOG_INFO(LOG_RHI, "Vulkan adapter: {}", properties.deviceName);
         return true;
     };
-    for (usize i = 0; i < count; ++i)
+    // A hosted window tries the adapter its consumer imports onto first; see internal/hosted_adapter.h.
+    platform::HostedAdapterIdentity consumerAdapter;
+    const bool hasConsumerAdapter =
+        IsHostedWindow() == true && window.HostedSurfaceOrNull->TryGetConsumerAdapter(consumerAdapter) == true;
+    foundation::StaticArray<platform::HostedAdapterIdentity, MAX_PHYSICAL_DEVICES> adapters{};
+    for (usize i = 0; i < count && hasConsumerAdapter == true; ++i)
     {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(devices[i], &properties);
+        // Older adapters keep a zero identity: they never match, and connectAdapter rejects them.
+        if (properties.apiVersion >= VK_API_VERSION_1_1)
+        {
+            ReadHostedAdapterIdentity(devices[i], adapters[i]);
+        }
+    }
+    foundation::StaticArray<usize, MAX_PHYSICAL_DEVICES> order{};
+    const usize matchCount =
+        internal::OrderAdaptersByPreference({adapters.GetData(), count},
+                                            hasConsumerAdapter == true ? &consumerAdapter : nullptr,
+                                            {order.GetData(), count});
+    if (hasConsumerAdapter == true && matchCount == 0)
+    {
+        LUDUS_LOG_WARN(LOG_RHI, "No Vulkan adapter matches the hosting editor's; it will refuse this game's images");
+    }
+    for (usize position = 0; position < count; ++position)
+    {
+        const usize i = order[position];
         uint32 families = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &families, nullptr);
         if (families > 32)

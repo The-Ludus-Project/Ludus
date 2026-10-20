@@ -76,6 +76,12 @@ bool PlayViewportSource::Start(const QString& parentDirectory,
     info.Width = width;
     info.Height = height;
     info.Scale = scale;
+    // A Vulkan game prefers this device's adapter, so a multi-GPU host renders where the editor imports.
+    platform::HostedAdapterIdentity adapter;
+    if (rhi::TryGetHostedConsumerAdapter(device, adapter) == true)
+    {
+        info.ConsumerAdapterOrNull = &adapter;
+    }
     const platform::HostedEndpointStatus started = mEndpoint.Start(info);
     if (started != platform::HostedEndpointStatus::Ok)
     {

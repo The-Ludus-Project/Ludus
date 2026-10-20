@@ -403,6 +403,32 @@ TEST_CASE("Probe: the adapter identifies itself and exports hosted images as opa
     CHECK(formatProperties.imageFormatProperties.maxExtent.width >= hosted_test::INITIAL_WIDTH);
 }
 
+TEST_CASE("The consumer announces its own adapter to the hosted game", "[rhi][hosted][linux][gpu]")
+{
+    const ConsumerDevice device;
+    RequireConsumerDevice(device);
+    VkPhysicalDeviceIDProperties identity{};
+    identity.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &identity;
+    vkGetPhysicalDeviceProperties2(device.GetPhysicalDevice(), &properties);
+    ludus::platform::HostedAdapterIdentity adapter;
+    REQUIRE(rhi::TryGetHostedConsumerAdapter(device.GetIdentity(), adapter));
+    CHECK(std::memcmp(adapter.DeviceUuid.GetData(), identity.deviceUUID, VK_UUID_SIZE) == 0);
+    CHECK(std::memcmp(adapter.DriverUuid.GetData(), identity.driverUUID, VK_UUID_SIZE) == 0);
+
+    // Only Vulkan identities name an adapter; the output is untouched otherwise.
+    rhi::NativeDeviceIdentity metal = device.GetIdentity();
+    metal.Api = rhi::Backend::Metal;
+    ludus::platform::HostedAdapterIdentity untouched;
+    CHECK_FALSE(rhi::TryGetHostedConsumerAdapter(metal, untouched));
+    rhi::NativeDeviceIdentity incomplete = device.GetIdentity();
+    incomplete.PhysicalDevice = rhi::NativePhysicalDevice{nullptr};
+    CHECK_FALSE(rhi::TryGetHostedConsumerAdapter(incomplete, untouched));
+    CHECK(untouched.DeviceUuid[0] == 0);
+}
+
 TEST_CASE("A hosted Vulkan game's frame arrives in the editor with its known colour", "[rhi][hosted][linux][gpu]")
 {
     const ConsumerDevice device;

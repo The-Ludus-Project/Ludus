@@ -10,6 +10,7 @@
 #include <ludus/input/key.h>
 #include <ludus/input/keyboard_event.h>
 #include <ludus/platform/base/window.h>
+#include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/hosted_window.h>
 #include <ludus/platform/keyboard_sink.h>
 #include <ludus/platform/native_window.h>
@@ -818,7 +819,13 @@ TEST_CASE("WindowManager opens a hosted window from the endpoint's environment a
     startInfo.Width = 1024;
     startInfo.Height = 768;
     startInfo.Scale = 2.0F;
+    // The endpoint copies the borrowed adapter during Start().
+    ludus::platform::HostedAdapterIdentity consumerAdapter;
+    consumerAdapter.DeviceUuid.Fill(0x5D);
+    consumerAdapter.DriverUuid.Fill(0x6E);
+    startInfo.ConsumerAdapterOrNull = &consumerAdapter;
     REQUIRE(endpoint.Start(startInfo) == HostedEndpointStatus::Ok);
+    consumerAdapter = {};
     CHECK(endpoint.Start(startInfo) == HostedEndpointStatus::InvalidState);
     CHECK(endpoint.GetState() == HostedConnectionState::Listening);
 
@@ -853,6 +860,12 @@ TEST_CASE("WindowManager opens a hosted window from the endpoint's environment a
     CHECK(window->GetNativeWindowInfo().System == WindowSystem::Hosted);
     CHECK(window->GetNativeWindowInfo().Width == 1024);
     CHECK(window->GetNativeWindowInfo().Scale == 2.0F);
+    ludus::platform::HostedSurfaceChannel* channelOrNull = window->GetNativeWindowInfo().HostedSurfaceOrNull;
+    REQUIRE(channelOrNull != nullptr);
+    ludus::platform::HostedAdapterIdentity reportedAdapter;
+    REQUIRE(channelOrNull->TryGetConsumerAdapter(reportedAdapter));
+    CHECK(reportedAdapter.DeviceUuid[0] == 0x5D);
+    CHECK(reportedAdapter.DriverUuid[ludus::platform::HOSTED_ADAPTER_UUID_BYTES - 1] == 0x6E);
     CHECK(endpoint.Pump() == HostedEndpointStatus::Ok);
     CHECK(endpoint.GetState() == HostedConnectionState::Connected);
     // Once a window is admitted no other process can connect.

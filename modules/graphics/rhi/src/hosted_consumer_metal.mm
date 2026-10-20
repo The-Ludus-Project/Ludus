@@ -83,6 +83,13 @@ bool IsHostedImportAvailable(Backend api) noexcept
     return api == Backend::Metal;
 }
 
+bool TryReadHostedConsumerAdapter([[maybe_unused]] const NativeDeviceIdentity& device,
+                                  [[maybe_unused]] platform::HostedAdapterIdentity& outAdapter) noexcept
+{
+    // IOSurfaces work across GPUs, so the game needs no adapter hint.
+    return false;
+}
+
 HostedConsumerStatus CreateHostedConsumerBackend(const NativeDeviceIdentity& device,
                                                  HostedConsumerBackendOwner& outBackend) noexcept
 {

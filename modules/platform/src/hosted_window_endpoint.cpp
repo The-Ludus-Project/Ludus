@@ -173,6 +173,10 @@ HostedEndpointStatus HostedWindowEndpoint::Start(const StartInfo& info) noexcept
     initial.Scale = info.Scale;
     initial.Visibility = info.Visibility;
     state->Session.Configure(token, hosted::GetCurrentUserId(), initial);
+    if (info.ConsumerAdapterOrNull != nullptr)
+    {
+        state->Session.SetConsumerAdapter(*info.ConsumerAdapterOrNull);
+    }
 #    if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     // IOSurface send rights reach the editor through a per-session Mach rendezvous.
     hosted::RendezvousNonce nonce{};
