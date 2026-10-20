@@ -633,3 +633,208 @@ TEST_CASE("same-name writable ports repair a stale target on a completed edit", 
     CHECK(applied.value(QStringLiteral("outputs")).toArray().at(0).toObject().value(QStringLiteral("target")) ==
           QStringLiteral("color"));
 }
+
+TEST_CASE("shader renames and stage changes preserve one source per assignment",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    const qsizetype initialFiles = document.GetFiles().size();
+    QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    QJsonArray shaders{QJsonObject{{QStringLiteral("id"), QStringLiteral("shader")},
+                                   {QStringLiteral("stage"), QStringLiteral("ray_generation")},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}}};
+    node.insert(QStringLiteral("shaders"), shaders);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QString originalSource = QStringLiteral("shader_Shader_trace_shader.slang");
+    REQUIRE(document.GetFiles().contains(originalSource) == true);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    const QByteArray authored("// authored lighting function: preserve this text\n");
+    REQUIRE(document.SetText(originalSource, authored) == RenderGraphDocumentStatus::Ok);
+    QJsonObject shader = shaders.at(0).toObject();
+    shader.insert(QStringLiteral("program"), QStringLiteral("Shader_trace_shader"));
+    shader.insert(QStringLiteral("id"), QStringLiteral("raygen"));
+    shaders.replace(0, shader);
+    node.insert(QStringLiteral("shaders"), shaders);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QString renamedSource = QStringLiteral("shader_Shader_trace_raygen.slang");
+    CHECK(document.GetFiles().contains(originalSource) == false);
+    CHECK(document.GetDraft(renamedSource) == authored);
+    CHECK(document.GetFiles().size() == initialFiles + 1);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(originalSource) == authored);
+    CHECK(document.GetFiles().contains(renamedSource) == false);
+    REQUIRE(document.Redo() == true);
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    CHECK(QFileInfo::exists(QDir(package).filePath(originalSource)) == false);
+    CHECK(QFileInfo::exists(QDir(package).filePath(renamedSource)) == true);
+    // A stage edit updates the same manifest entry and preserves authored code.
+    shader.insert(QStringLiteral("program"), QStringLiteral("Shader_trace_raygen"));
+    shader.insert(QStringLiteral("stage"), QStringLiteral("miss"));
+    shaders.replace(0, shader);
+    node.insert(QStringLiteral("shaders"), shaders);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetDraft(renamedSource) == authored);
+    CHECK(document.GetFiles().size() == initialFiles + 1);
+    const QJsonArray programs =
+        QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("programs")).toArray();
+    const QJsonObject program = programs.last().toObject();
+    CHECK(program.value(QStringLiteral("id")).toString() == QStringLiteral("Shader_trace_raygen"));
+    CHECK(program.value(QStringLiteral("stage")).toString() == QStringLiteral("miss"));
+    CHECK(program.value(QStringLiteral("input")).toString() == QStringLiteral("Ray"));
+    // Renaming Program explicitly moves the existing source as well.
+    shader.insert(QStringLiteral("program"), QStringLiteral("SkyMiss"));
+    shaders.replace(0, shader);
+    node.insert(QStringLiteral("shaders"), shaders);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetFiles().contains(renamedSource) == false);
+    CHECK(document.GetDraft(QStringLiteral("shader_SkyMiss.slang")) == authored);
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reloaded.GetFiles() == document.GetFiles());
+    CHECK(reloaded.GetDraft(manifestFile) == document.GetDraft(manifestFile));
+}
+
+TEST_CASE("shader edits reclaim only untouched unused generated sources",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    QJsonArray shaders;
+    for (const QString& identity :
+         {QStringLiteral("raygen"), QStringLiteral("closestHit"), QStringLiteral("unused"), QStringLiteral("authored")})
+    {
+        shaders.append(QJsonObject{{QStringLiteral("id"), identity},
+                                   {QStringLiteral("stage"), QStringLiteral("ray_generation")},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}});
+    }
+    node.insert(QStringLiteral("shaders"), shaders);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QString retained = QStringLiteral("shader_Shader_trace_authored.slang");
+    REQUIRE(document.SetText(retained, QByteArray("// custom work must survive\n")) == RenderGraphDocumentStatus::Ok);
+    const QJsonArray assigned = GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION)
+                                    .value(QStringLiteral("nodes"))
+                                    .toArray()
+                                    .last()
+                                    .toObject()
+                                    .value(QStringLiteral("shaders"))
+                                    .toArray();
+    node.insert(QStringLiteral("shaders"), QJsonArray{assigned.at(0), assigned.at(1)});
+    const QStringList before = document.GetFiles();
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetFiles().size() == before.size() - 1);
+    CHECK(document.GetFiles().contains(QStringLiteral("shader_Shader_trace_unused.slang")) == false);
+    CHECK(document.GetDraft(retained) == QByteArray("// custom work must survive\n"));
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles() == before);
+    REQUIRE(document.Redo() == true);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    const uint64 revision = document.GetRevision();
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetRevision() == revision);
+}
+
+TEST_CASE("shared shader renames update all assignments and protect stages and external files",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    QJsonObject shader{{QStringLiteral("id"), QStringLiteral("callback")},
+                       {QStringLiteral("stage"), QStringLiteral("ray_generation")},
+                       {QStringLiteral("program"), QStringLiteral("CameraRay")}};
+    node.insert(QStringLiteral("shaders"), QJsonArray{shader});
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    QJsonObject other = node;
+    other.insert(QStringLiteral("id"), QStringLiteral("other"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, other) == RenderGraphDocumentStatus::Ok);
+    shader.insert(QStringLiteral("stage"), QStringLiteral("miss"));
+    node.insert(QStringLiteral("shaders"), QJsonArray{shader});
+    const uint64 revision = document.GetRevision();
+    CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::InvalidEdit);
+    CHECK(document.GetRevision() == revision);
+    shader.insert(QStringLiteral("stage"), QStringLiteral("ray_generation"));
+    shader.insert(QStringLiteral("program"), QStringLiteral("RenamedRay"));
+    node.insert(QStringLiteral("shaders"), QJsonArray{shader});
+    SECTION("shared references")
+    {
+        REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+        const QJsonArray nodes =
+            GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray();
+        CHECK(nodes.at(nodes.size() - 2).toObject().value(QStringLiteral("shaders")) == QJsonArray{shader});
+        CHECK(nodes.last().toObject().value(QStringLiteral("shaders")) == QJsonArray{shader});
+        CHECK(document.GetFiles().contains(QStringLiteral("shader_CameraRay.slang")) == false);
+        CHECK(document.GetFiles().contains(QStringLiteral("shader_RenamedRay.slang")) == true);
+    }
+    SECTION("external destination")
+    {
+        QFile external(QDir(package).filePath(QStringLiteral("shader_RenamedRay.slang")));
+        REQUIRE(external.open(QIODevice::WriteOnly) == true);
+        REQUIRE(external.write("// external file\n") > 0);
+        external.close();
+        CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Conflict);
+        CHECK(document.GetRevision() == revision);
+    }
+    SECTION("external source changes before Save")
+    {
+        QStringList saved;
+        REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+        QFile external(QDir(package).filePath(QStringLiteral("shader_CameraRay.slang")));
+        REQUIRE(external.open(QIODevice::WriteOnly) == true);
+        REQUIRE(external.write("// changed in external editor\n") > 0);
+        external.close();
+        CHECK(document.Save(saved) == RenderGraphDocumentStatus::Conflict);
+        CHECK(QFileInfo::exists(QDir(package).filePath(QStringLiteral("shader_RenamedRay.slang"))) == false);
+    }
+}
+
+TEST_CASE("renaming a registered shader updates techniques and local include references",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString original = QStringLiteral("main_shaders/geometry.slang");
+    const QByteArray source = document.GetDraft(original);
+    const QString consumer = QStringLiteral("main_shaders/color.slang");
+    REQUIRE(document.SetText(consumer, QByteArray("#include \"geometry.slang\"\n// keep this comment\n")) ==
+            RenderGraphDocumentStatus::Ok);
+    QJsonObject node = MakePipelineNode(QStringLiteral("GraphicsPipeline"), QStringLiteral("work"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    QJsonObject shader{{QStringLiteral("id"), QStringLiteral("vertex")},
+                       {QStringLiteral("stage"), QStringLiteral("vertex")},
+                       {QStringLiteral("program"), QStringLiteral("Geometry")}};
+    node.insert(QStringLiteral("shaders"), QJsonArray{shader});
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    shader.insert(QStringLiteral("program"), QStringLiteral("CustomGeometry"));
+    node.insert(QStringLiteral("shaders"), QJsonArray{shader});
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject manifest =
+        QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    for (const QJsonValueConstRef technique : manifest.value(QStringLiteral("techniques")).toArray())
+    {
+        CHECK(technique.toObject().value(QStringLiteral("vertex")).toString() == QStringLiteral("CustomGeometry"));
+    }
+    CHECK(document.GetFiles().contains(original) == false);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/shader_CustomGeometry.slang")) == source);
+    CHECK(document.GetDraft(consumer) ==
+          QByteArray("#include \"shader_CustomGeometry.slang\"\n// keep this comment\n"));
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(original) == source);
+    CHECK(document.GetDraft(consumer).contains("geometry.slang") == true);
+}

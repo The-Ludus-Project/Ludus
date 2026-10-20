@@ -257,9 +257,10 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     mError->setObjectName(QStringLiteral("renderGraphPipelineError"));
     mError->setWordWrap(true);
     layout->addWidget(mError);
-    QLabel* hint = new QLabel(QStringLiteral("New program names create .slang sources automatically. "
-                                             "Program gets a unique name. Edit sources in Source; Save writes files."),
-                              this);
+    QLabel* hint = new QLabel(
+        QStringLiteral("New shaders create .slang sources automatically. "
+                       "Renaming moves its source; stage edits reuse it. Edit sources in Source; Save writes files."),
+        this);
     hint->setWordWrap(true);
     layout->addWidget(hint);
 }
@@ -495,21 +496,7 @@ void RenderGraphPipelineEditor::connectChoices(QTableWidget& inoutTable, int32 r
         QComboBox* controlOrNull = qobject_cast<QComboBox*>(inoutTable.cellWidget(row, column));
         if (controlOrNull != nullptr)
         {
-            connect(controlOrNull, &QComboBox::currentTextChanged, this, [this, &inoutTable, controlOrNull, column]() {
-                if (&inoutTable == mShaders && column == 1)
-                {
-                    const QSignalBlocker blocker(mShaders);
-                    for (int32 shaderRow = 0; shaderRow < mShaders->rowCount(); ++shaderRow)
-                    {
-                        if (mShaders->cellWidget(shaderRow, 1) == controlOrNull)
-                        {
-                            mShaders->item(shaderRow, 2)->setText(QStringLiteral("Program"));
-                            break;
-                        }
-                    }
-                }
-                publishEdit();
-            });
+            connect(controlOrNull, &QComboBox::currentTextChanged, this, [this]() { publishEdit(); });
         }
     }
 }

@@ -568,11 +568,26 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
             CHECK(workspace.GetDocument().GetDraft(source).contains("ShaderMain") == true);
         }
         CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayHit") == true);
+        CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
+        stage->setCurrentText(QStringLiteral("miss"));
+        CHECK(workspace.GetSelectedShaderSources() == sources);
+        CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("ShaderMain(Ray input)") == true);
+        CHECK(editor->findChild<QTableWidget*>(QStringLiteral("shaders")) == shaders);
+        stage->setCurrentText(QStringLiteral("closest_hit"));
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("ShaderMain(Ray input)") == true);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayHit") == true);
         workspace.Undo();
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
-        CHECK(selector->findText(sources.last()) < 0);
+        CHECK(selector->findText(sources.last()) >= 0);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayLaunch") == true);
+        workspace.Redo();
+        workspace.Redo();
         workspace.Redo();
         CHECK(workspace.GetSelectedShaderSources() == sources);
+        CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
         REQUIRE(workspace.Save() == true);
         for (const QString& source : sources)
         {

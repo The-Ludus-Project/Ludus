@@ -300,8 +300,6 @@ def validate_manifest(value):
     masked_depth = techniques.get('DefaultStaticMasked.DepthOnly')
     require(opaque_depth is None or masked_depth is None or opaque_depth['fragment'] != masked_depth['fragment'],
             'Schema', 'DefaultStaticMasked.DepthOnly', 'masked coverage requires a separately authored depth function')
-    used_programs = {t[s] for t in techniques.values() for s in (ray.STAGES if t['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))}
-    require(used_programs == programs.keys(), 'Schema', 'programs', 'every program must belong to a declared technique')
     counts = {'configurations': len(techniques), 'programs': len(programs),
               'artifacts': len(programs) * len(value['profiles']),
               'pipelines': sum(len(t['recipes']) for t in techniques.values()) * len(value['profiles'])}
@@ -681,7 +679,12 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         require(validator, 'Tools', 'profiles', 'SPIR-V/glsl requires --validator')
     if 'glsl' in value['profiles']:
         require(spirv_cross, 'Tools', 'profiles', 'glsl requires --spirv-cross')
+    # Registered programs include authoring drafts. Only explicit techniques select
+    # executable stages; unused callbacks must never be compiled as entry points.
     closures = {pid: snapshot.shader_closure(p['source']) for pid, p in programs.items()}
+    selected_programs = {technique[stage] for technique in techniques.values()
+                         for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))}
+    programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     if ray.TECHNIQUE in techniques:
         original_programs = programs
         programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__])

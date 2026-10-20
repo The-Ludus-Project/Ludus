@@ -370,6 +370,36 @@ class BuildTests(unittest.TestCase):
             with self.assertRaises(ToolingError):
                 build.validate_manifest(value)
 
+    def test_registered_draft_callbacks_do_not_require_techniques_or_compile(self):
+        program = {'id': 'DraftMiss', 'stage': 'miss', 'source': 'draft.slang',
+                   'function': 'ShaderMain', 'input': 'Ray', 'output': 'Color', 'bindings': []}
+        (self.graph.parent / 'draft.slang').write_text('// unfinished authoring draft')
+        self.edit(lambda value: value['programs'].append(program))
+        build.validate_manifest(self.value())
+        result = self.run_build()
+        self.assertEqual(result['cache_misses'], 6)
+        self.assertEqual(len(self.calls), 6)
+        self.assertTrue(all('unfinished authoring draft' not in code for _, _, code in self.calls))
+
+    def test_incomplete_pipeline_reports_missing_stages_instead_of_unused_programs(self):
+        fixture = ROOT / 'tests/sdk_consumer/rg2/raytracing/main.lurender.json'
+        value = json.loads(fixture.read_text())
+        node = next(node for node in value['configurations'][0]['nodes'] if node['kind'] == 'RayTracingPipeline')
+        node['shaders'] = [shader for shader in node['shaders'] if shader['stage'] != 'miss']
+        self.graph.write_text(json.dumps(value))
+        for shader in node['shaders']:
+            program = {'id': shader['program'], 'stage': shader['stage'], 'source': shader['program'] + '.slang',
+                       'function': 'ShaderMain', 'bindings': [],
+                       'input': 'RayLaunch' if shader['stage'] == 'ray_generation' else 'RayHit',
+                       'output': 'Ray' if shader['stage'] == 'ray_generation' else 'Color'}
+            (self.graph.parent / program['source']).write_text('// unfinished callback')
+            self.edit(lambda value: value['programs'].append(program))
+        with self.assertRaises(ToolingError) as failure:
+            self.run_build()
+        self.assertEqual('RenderGraphIncompletePipeline', failure.exception.code)
+        self.assertIn('miss', str(failure.exception))
+        self.assertFalse(self.calls)
+
     def test_structs_resources_arrays_and_matrix_profiles_are_closed(self):
         for bad in ('Bool', 'Float4x4', 'Float4Array', 'Pointer', 'Texture2D'):
             value = self.value()

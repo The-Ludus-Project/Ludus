@@ -120,6 +120,23 @@ resource uses; the existing RHI boundary owns hazard lowering and barriers.
 Blending and rasterization are fields for now. Separately connectable
 pipeline-state blocks are deferred, as is stream output.
 
+Shader rows create one registered `.slang` draft each. Renaming a generated row
+renames its program and source; renaming the Program field to a new identity
+moves the existing source and updates graph and technique references. Selecting
+an existing Program reuses it. Stage edits update the same manifest entry and
+replace an untouched template with the new stage template. Authored source text
+is preserved and may need its function signature adjusted for the new stage.
+A shared program's stage cannot change while other assignments or techniques
+still require its previous stage. These edits share one undo/redo transaction;
+Save checks external changes before publishing file moves.
+
+Unused, untouched generated templates left by earlier editor versions are
+reclaimed during pipeline edits. Edited or shared sources are preserved.
+The manifest is also the registry for unfinished shader drafts: programs need
+not belong to a technique until selected for execution. Builds validate the
+registry and compile only programs selected by explicit techniques. Incomplete
+pipelines still report their missing stages, resources or unsupported state.
+
 Scene and View are engine-level inputs, not implicit global shader variables.
 Their declared schemas map scene extraction/draw selection and per-view values
 to the node's shader resource interface. Inputs may be used by any legal stage;

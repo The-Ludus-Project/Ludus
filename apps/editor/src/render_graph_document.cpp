@@ -819,11 +819,23 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
     QString manifest = mRootGraph;
     manifest.chop(QStringLiteral(".lurender.json").size());
     manifest += QStringLiteral(".lushader.json");
-    const RenderGraphDocumentStatus status = PreparePipelineShaders(candidate, pipeline, manifest, mPackageRoot);
+    QJsonObject previousNode;
+    for (const QJsonValueConstRef value : configurations.at(index).toObject().value(QStringLiteral("nodes")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")) == node.value(QStringLiteral("id")))
+        {
+            previousNode = value.toObject();
+        }
+    }
+    const RenderGraphDocumentStatus status =
+        PreparePipelineShaders(candidate, pipeline, previousNode, manifest, mPackageRoot);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         return status;
     }
+    // Shader renames may update references in other nodes in this graph.
+    graph = QJsonDocument::fromJson(candidate.Files.value(file)).object();
+    configurations = graph.value(QStringLiteral("configurations")).toArray();
     QJsonObject record = configurations.at(index).toObject();
     if (ReplaceNodeChecked(record, {QString::fromUtf8(EncodeCanonicalJson(pipeline))}, outErrorOrNull) == false)
     {
