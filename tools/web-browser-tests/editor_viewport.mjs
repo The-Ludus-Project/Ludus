@@ -75,6 +75,12 @@ async function rendered(page, previous = 0, isRecovering = false) {
   assert.equal(await page.locator('#screen').getAttribute('data-viewport-error'), '');
   await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
 }
+function isNeutral(pixel) {
+  return Math.min(...pixel) > 32 && Math.max(...pixel) - Math.min(...pixel) <= 2;
+}
+function isWarm(pixel) {
+  return pixel[0] > pixel[1] + 30 && pixel[0] > pixel[2] + 30;
+}
 async function shot(page, name) {
   const box = await canvas(page).boundingBox();
   assert.ok(box && box.width > 1 && box.height > 1);
@@ -88,7 +94,20 @@ async function shot(page, name) {
     if (red > green + 30 && red > blue + 30) ++warm;
   }
   const center = (Math.floor(image.height / 2) * image.width + Math.floor(image.width / 2)) * 4;
-  return {bytes, lit, warm, center: [...image.data.subarray(center, center + 3)],
+  // The World axes cross the exact center and remain colored in Solid mode.
+  // Sample a small fixture-triangle interior patch away from those thin lines.
+  const geometryPatch = [];
+  const sampleX = Math.floor(image.width / 2) + 10;
+  const sampleY = Math.floor(image.height / 2) - 10;
+  for (let y = -2; y <= 2; ++y) for (let x = -2; x <= 2; ++x) {
+    const offset = ((sampleY + y) * image.width + sampleX + x) * 4;
+    geometryPatch.push([...image.data.subarray(offset, offset + 3)]);
+  }
+  const geometry = [0, 1, 2].map(channel => geometryPatch.map(pixel => pixel[channel])
+    .sort((a, b) => a - b)[Math.floor(geometryPatch.length / 2)]);
+  report.geometrySamples ??= {};
+  report.geometrySamples[name] = geometry;
+  return {bytes, lit, warm, geometry, center: [...image.data.subarray(center, center + 3)],
     width: image.width, height: image.height};
 }
 let activePage;
@@ -130,7 +149,7 @@ try {
   await rendered(page);
   report.adapter = await page.evaluate(() => globalThis.qaViewportAdapter);
   const first = await shot(page, 'solid');
-  assert.ok(first.lit > 100, 'Imported geometry must be visible in composited GPU pixels');
+  assert.ok(first.lit > 100 && isNeutral(first.geometry), 'Imported geometry must have visible neutral Solid pixels');
   report.cases.push('PBRT import, immutable MEMFS publication and visible GPU Solid pixels');
   const beforeZoom = await frames(page);
   const box = await canvas(page).boundingBox();
@@ -156,7 +175,8 @@ try {
     await click(page, rectangle.x + 100, rectangle.y - 17);
     await page.screenshot({path: resolve(output, mode + '-selected.png')});
     await rendered(page, previous);
-    assert.ok((await shot(page, mode)).warm > 50, 'Authored material color must reach the GPU image');
+    const shaded = await shot(page, mode);
+    assert.ok(shaded.warm > 50 && isWarm(shaded.geometry), 'Authored material color must reach the geometry pixels');
   }
   report.cases.push('Albedo and authored Lit material replacement with directional shadow preparation');
   const accepted = await shot(page, 'accepted-lit');
@@ -169,21 +189,22 @@ try {
     'Pending preparation must retain the last GPU image');
   await rendered(page, previous);
   const solid = await shot(page, 'published-solid');
-  assert.ok(solid.lit > 100 && solid.warm === 0);
+  assert.ok(solid.lit > 100 && isNeutral(solid.geometry));
   await page.evaluate(() => { globalThis.qaRejectNextPipeline = true; });
   await click(page, toolbar.x + 100, toolbar.y - 48);
   await click(page, toolbar.x + 100, toolbar.y - 17); // Solid -> Albedo.
   await page.waitForFunction(() => document.querySelector('#screen').dataset.viewportError, null, {timeout: 10000});
   const retained = await shot(page, 'rejected');
   assert.ok(retained.lit > 50);
-  assert.ok(retained.center.every((value, index) => Math.abs(value - solid.center[index]) <= 2),
+  assert.ok(retained.geometry.every((value, index) => Math.abs(value - solid.geometry[index]) <= 2),
     'A rejected candidate must retain the previous GPU image');
   const beforeRecovery = await frames(page);
   await page.evaluate(() => { globalThis.qaGpuErrors = []; });
   await click(page, toolbar.x + 100, toolbar.y - 48);
   await click(page, toolbar.x + 100, toolbar.y - 17); // Requested Albedo -> Lit.
   await rendered(page, beforeRecovery, true);
-  assert.ok((await shot(page, 'recovered-lit')).warm > 50);
+  const recovered = await shot(page, 'recovered-lit');
+  assert.ok(recovered.warm > 50 && isWarm(recovered.geometry));
   report.cases.push('Synthetic delayed/rejected preparation retains prior pixels, then successfully publishes recovery');
   await click(page, 45, 191);
   await page.waitForTimeout(200);
@@ -198,7 +219,7 @@ try {
   await rendered(page, beforeResize);
   const resized = await shot(page, 'resized');
   assert.notEqual(resized.width, first.width);
-  assert.ok(resized.lit > 50);
+  assert.ok(resized.lit > 50 && isWarm(resized.geometry));
   report.cases.push('Tab visibility, resumed presentation and resized GPU pixels');
   await page.evaluate(() => globalThis.qaViewportDevice.destroy());
   await page.waitForFunction(() => document.querySelector('#screen').dataset.viewportError, null, {timeout: 10000});

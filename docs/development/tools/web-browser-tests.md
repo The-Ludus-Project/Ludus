@@ -67,6 +67,10 @@ The Qt controls are canvas-drawn, so this runner uses a fixed 1440×1000 layout
 and explicit input coordinates. Update its interaction steps when that layout
 changes. Frame counters are paired with composited screenshot checks; neither
 Qt widget pixels nor a completed shader build alone proves scene rendering.
+The material checks sample a small triangle-interior patch away from the World
+axes, which remain colored in Solid mode. Reports retain those RGB samples and
+failure screenshots so an overlay or layout change cannot silently qualify a
+material result.
 
 ## Offscreen WebGPU frames
 
