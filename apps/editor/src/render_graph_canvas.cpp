@@ -4,6 +4,7 @@
 
 #include <QBrush>
 #include <QColor>
+#include <QContextMenuEvent>
 #include <QFont>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
@@ -847,6 +848,11 @@ bool RenderGraphCanvas::RequestLink(const QString& from, const QString& to)
 bool RenderGraphCanvas::ActivateNode(const QString& node)
 {
     const QJsonObject record = FindNode(configuration(), node);
+    if (record.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster"))
+    {
+        Q_EMIT ShaderSourcesRequested(node);
+        return true;
+    }
     if (record.value(QStringLiteral("kind")).toString() != QStringLiteral("Subgraph"))
     {
         return false;
@@ -917,6 +923,14 @@ void RenderGraphCanvas::cancelLink()
         delete mLinkPreviewOrNull;
         mLinkPreviewOrNull = nullptr;
     }
+}
+
+void RenderGraphCanvas::contextMenuEvent(QContextMenuEvent* event)
+{
+    const QString node = nodeAt(mapToScene(event->pos()));
+    const bool isAuthoredNode = FindNode(configuration(), node).isEmpty() == false;
+    Q_EMIT ContextMenuRequested(isAuthoredNode == true ? node : QString(), event->globalPos());
+    event->accept();
 }
 
 void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
@@ -1026,6 +1040,11 @@ void RenderGraphCanvas::mouseReleaseEvent(QMouseEvent* event)
 
 void RenderGraphCanvas::mouseDoubleClickEvent(QMouseEvent* event)
 {
+    if (event->button() != Qt::LeftButton)
+    {
+        QGraphicsView::mouseDoubleClickEvent(event);
+        return;
+    }
     const QString node = nodeAt(mapToScene(event->position().toPoint()));
     if (node.isEmpty() == false && ActivateNode(node) == true)
     {

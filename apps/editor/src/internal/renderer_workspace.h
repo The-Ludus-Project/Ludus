@@ -83,6 +83,17 @@ public:
     /// graphs/name directory. Completion is asynchronous through JobFinished.
     /// Existing files and the current draft are retained if creation fails.
     [[nodiscard]] bool CreateGraph(const QString& name);
+    /// Create an empty library and reference in the selected configuration, or rebind the
+    /// selected Subgraph. Opens its Default configuration; Save publishes the draft.
+    /// Failure/cancellation preserves sources. GUI thread only.
+    [[nodiscard]] bool CreateSubgraph(const QString& name);
+    /// Prompt for an asset name and create/open the library in the current package.
+    [[nodiscard]] bool PromptCreateSubgraph();
+    /// True when a configuration is selected and no unapplied text or source conflict exists.
+    [[nodiscard]] bool CanCreateSubgraph() const;
+    /// Shader sources mapped by the root build manifest to the selected Raster's technique.
+    /// Empty for resource/scene nodes or missing mappings. Never guesses from filenames.
+    [[nodiscard]] QStringList GetSelectedShaderSources() const;
     /// True when a project is bound and no job or creation is running, so New Graph and
     /// Open Graph can start.
     [[nodiscard]] bool CanCreateGraph() const;
@@ -271,6 +282,8 @@ private:
     void documentEdited(RenderGraphDocumentStatus status);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
     void addNode();
+    void showNodeContextMenu(const QPoint& globalPosition);
+    void activateSelectedNode();
     void openSourceLine(const QString& file, foundation::int32 line);
     [[nodiscard]] QJsonObject getDiagnosticLocation(foundation::int32 row) const;
     [[nodiscard]] QJsonObject selectedConfiguration() const;

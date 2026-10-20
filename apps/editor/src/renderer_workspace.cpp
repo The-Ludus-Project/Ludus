@@ -322,6 +322,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     header->addWidget(mPath, 1);
     header->addWidget(new QLabel(QStringLiteral("Configuration"), this));
     header->addWidget(mConfiguration);
+    QPushButton* createSubgraph = new QPushButton(QStringLiteral("Create Subgraph..."), this);
+    createSubgraph->setObjectName(QStringLiteral("renderGraphCreateSubgraph"));
+    header->addWidget(createSubgraph);
+    connect(createSubgraph, &QPushButton::clicked, this, [this]() { static_cast<void>(PromptCreateSubgraph()); });
+    connect(this, &RendererWorkspace::CommandsChanged, createSubgraph, [this, createSubgraph]() {
+        createSubgraph->setEnabled(CanCreateSubgraph());
+    });
 
     mTree->setObjectName(QStringLiteral("renderGraphTree"));
     ConfigureItemSelection(*mTree);
@@ -508,13 +515,16 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     connect(mCustomize, &QAction::triggered, this, [this]() { static_cast<void>(CustomizeBuiltIn()); });
     connect(mTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {
-        if (mCustomize->isVisible() == false)
+        QTreeWidgetItem* itemOrNull = mTree->itemAt(position);
+        if (itemOrNull != nullptr)
         {
-            return;
+            mTree->setCurrentItem(itemOrNull);
         }
-        QMenu menu(this);
-        menu.addAction(mCustomize);
-        menu.exec(mTree->viewport()->mapToGlobal(position));
+        else
+        {
+            mSelectedNode.clear();
+        }
+        showNodeContextMenu(mTree->viewport()->mapToGlobal(position));
     });
     connect(&mCreation, &RenderGraphCreation::Finished, this, [this]() {
         updateActions();
@@ -557,6 +567,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         renderInspector();
         renderEdges();
         renderCanvas();
+        updateActions();
+    });
+    connect(mTree, &QTreeWidget::itemDoubleClicked, this, [this]() { activateSelectedNode(); });
+    connect(mCanvas, &RenderGraphCanvas::ShaderSourcesRequested, this, [this](const QString& node) {
+        static_cast<void>(SelectNode(mCanvas->GetFile(), mCanvas->GetConfiguration(), node));
+        activateSelectedNode();
     });
     connect(mCanvas, &RenderGraphCanvas::NodeSelected, this, [this](const QString& node) {
         mSelectedFile = mCanvas->GetFile();
@@ -596,6 +612,16 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         mStatus->setText(QStringLiteral("Link rejected - %1").arg(reason));
     });
     connect(mCanvas, &RenderGraphCanvas::SubgraphActivated, this, &RendererWorkspace::openSubgraph);
+    connect(mCanvas,
+            &RenderGraphCanvas::ContextMenuRequested,
+            this,
+            [this](const QString& node, const QPoint& globalPosition) {
+                mSelectedFile = mCanvas->GetFile();
+                mSelectedConfiguration = mCanvas->GetConfiguration();
+                mSelectedNode = node;
+                renderTree();
+                showNodeContextMenu(globalPosition);
+            });
     connect(mPreviewButton, &QPushButton::clicked, this, [this]() { static_cast<void>(PreviewRuntime()); });
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mPreviewOrNull = new RenderGraphPreview(
@@ -1601,6 +1627,14 @@ void RendererWorkspace::documentEdited(RenderGraphDocumentStatus status)
         mStatus->setText(DescribeStatus(status));
         return;
     }
+    if (mDocument.GetFiles().contains(mSelectedFile) == false)
+    {
+        mSelectedFile = mDocument.GetRootGraph();
+        QJsonObject graph;
+        static_cast<void>(mDocument.GetGraph(mSelectedFile, graph));
+        mSelectedConfiguration = graph.value(QStringLiteral("default")).toString();
+        mSelectedNode.clear();
+    }
     renderTree();
     renderSource();
     renderStatus();
@@ -1965,6 +1999,191 @@ void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonVa
     documentEdited(mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, node));
 }
 
+bool RendererWorkspace::CanCreateSubgraph() const
+{
+    return mDocument.IsLoaded() == true && mCanvas->GetConfiguration().isEmpty() == false && IsJobActive() == false &&
+           hasPendingSourceText() == false && mSourceProblem.isEmpty() == true;
+}
+
+bool RendererWorkspace::PromptCreateSubgraph()
+{
+    if (CanCreateSubgraph() == false)
+    {
+        return false;
+    }
+    bool isAccepted = false;
+    const QString suggested = selectedNode().value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph")
+                                  ? mSelectedNode
+                                  : QString();
+    const QString prompt = suggested.isEmpty() == true ? QStringLiteral("Name (creates <name>.lurender.json):")
+                                                       : QStringLiteral("Create a new source for Subgraph '%1'.\n"
+                                                                        "Name (creates <name>.lurender.json):")
+                                                             .arg(suggested);
+    const QString name = QInputDialog::getText(this,
+                                               QStringLiteral("Create Subgraph"),
+                                               prompt,
+                                               QLineEdit::Normal,
+                                               suggested,
+                                               &isAccepted)
+                             .trimmed();
+    return isAccepted == true && CreateSubgraph(name) == true;
+}
+
+bool RendererWorkspace::CreateSubgraph(const QString& name)
+{
+    if (CanCreateSubgraph() == false)
+    {
+        return false;
+    }
+    const QString node =
+        selectedNode().value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph") ? mSelectedNode : name;
+    const RenderGraphDocumentStatus status =
+        mDocument.CreateSubgraph(mCanvas->GetFile(), mCanvas->GetConfiguration(), node, name);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(QStringLiteral("Cannot create subgraph. Use a unique name beginning with an ASCII letter, "
+                                        "followed by letters, digits, '_' or '-' (up to 63 characters). "
+                                        "Existing files and non-Subgraph nodes are never replaced. %1")
+                             .arg(DescribeStatus(status)));
+        return false;
+    }
+    const QString asset = name + QStringLiteral(".lurender.json");
+    mSelectedFile = asset;
+    mSelectedConfiguration = QStringLiteral("Default");
+    mSelectedNode.clear();
+    documentEdited(status);
+    mSourceFile->setCurrentText(asset);
+    mViews->setCurrentIndex(CANVAS_VIEW);
+    mStatus->setText(QStringLiteral("Created %1 as an empty draft. Add nodes on the canvas; edit inputs and outputs "
+                                    "in Source. Save publishes the file.")
+                         .arg(asset));
+    return true;
+}
+
+QStringList RendererWorkspace::GetSelectedShaderSources() const
+{
+    const QJsonObject node = selectedNode();
+    if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("Raster"))
+    {
+        return {};
+    }
+    const QString material = node.value(QStringLiteral("material")).toString();
+    const QString mode = node.value(QStringLiteral("mode")).toString();
+    if ((material != QStringLiteral("DefaultOpaque") && material != QStringLiteral("DefaultMasked")) ||
+        (mode != QStringLiteral("ColorAndDepth") && mode != QStringLiteral("DepthOnly")))
+    {
+        return {};
+    }
+    const QString techniqueId = (material == QStringLiteral("DefaultMasked") ? QStringLiteral("DefaultStaticMasked.")
+                                                                             : QStringLiteral("DefaultStaticOpaque.")) +
+                                node.value(QStringLiteral("mode")).toString();
+    const QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object();
+    QStringList programIds;
+    const QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    for (const QJsonValueConstRef value : techniques)
+    {
+        const QJsonObject technique = value.toObject();
+        if (technique.value(QStringLiteral("id")).toString() == techniqueId)
+        {
+            programIds = {technique.value(QStringLiteral("vertex")).toString(),
+                          technique.value(QStringLiteral("fragment")).toString()};
+        }
+    }
+    QStringList sources;
+    const QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+    for (const QJsonValueConstRef value : programs)
+    {
+        const QJsonObject program = value.toObject();
+        const QString source = program.value(QStringLiteral("source")).toString();
+        if (programIds.contains(program.value(QStringLiteral("id")).toString()) == true &&
+            mDocument.GetFiles().contains(source) == true && sources.contains(source) == false)
+        {
+            sources.append(source);
+        }
+    }
+    return sources;
+}
+
+void RendererWorkspace::activateSelectedNode()
+{
+    if (hasPendingSourceText() == true)
+    {
+        mStatus->setText(QStringLiteral("Apply or revert pending Source text before navigating."));
+        return;
+    }
+    const QJsonObject node = selectedNode();
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
+    {
+        openSubgraph(node.value(QStringLiteral("asset")).toString(),
+                     node.value(QStringLiteral("configuration")).toString());
+        return;
+    }
+    const QStringList sources = GetSelectedShaderSources();
+    if (sources.isEmpty() == false)
+    {
+        openSourceLine(sources.first(), 1);
+    }
+}
+
+void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
+{
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("renderGraphNodeMenu"));
+    const QJsonObject node = selectedNode();
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
+    {
+        const QString asset = node.value(QStringLiteral("asset")).toString();
+        const QString configuration = node.value(QStringLiteral("configuration")).toString();
+        QAction* open = menu.addAction(QStringLiteral("Open Subgraph"));
+        open->setObjectName(QStringLiteral("renderGraphOpenSubgraph"));
+        RenderGraphNodePorts ports;
+        open->setEnabled(GetRenderGraphNodePorts(mDocument, node, ports) == true && hasPendingSourceText() == false);
+        connect(open, &QAction::triggered, this, [this, asset, configuration]() {
+            openSubgraph(asset, configuration);
+        });
+    }
+    else if (node.isEmpty() == false)
+    {
+        QMenu* shaders = menu.addMenu(QStringLiteral("View Shaders"));
+        shaders->setObjectName(QStringLiteral("renderGraphViewShaders"));
+        const QStringList sources = GetSelectedShaderSources();
+        shaders->setEnabled(sources.isEmpty() == false && hasPendingSourceText() == false);
+        shaders->setToolTip(QStringLiteral("Shader sources used by this pass's authored technique; scene and resource "
+                                           "nodes have no shaders."));
+        for (const QString& source : sources)
+        {
+            QAction* open = shaders->addAction(source);
+            connect(open, &QAction::triggered, this, [this, source]() { openSourceLine(source, 1); });
+        }
+    }
+    QAction* create = menu.addAction(QStringLiteral("Create Subgraph..."));
+    create->setObjectName(QStringLiteral("renderGraphCreateSubgraphAction"));
+    create->setEnabled(CanCreateSubgraph());
+    connect(create, &QAction::triggered, this, [this]() { static_cast<void>(PromptCreateSubgraph()); });
+    if (node.isEmpty() == false)
+    {
+        menu.addSeparator();
+        QAction* remove = menu.addAction(QStringLiteral("Remove Node"));
+        remove->setObjectName(QStringLiteral("renderGraphRemoveNodeAction"));
+        remove->setEnabled(hasPendingSourceText() == false);
+        connect(remove, &QAction::triggered, this, [this]() {
+            const QString identity = mSelectedNode;
+            const RenderGraphDocumentStatus status =
+                mDocument.RemoveNode(mSelectedFile, mSelectedConfiguration, identity);
+            if (status == RenderGraphDocumentStatus::Ok)
+            {
+                mSelectedNode.clear();
+            }
+            documentEdited(status);
+        });
+    }
+    if (mCustomize->isVisible() == true)
+    {
+        menu.addAction(mCustomize);
+    }
+    menu.exec(globalPosition);
+}
+
 void RendererWorkspace::addNode()
 {
     const QString identity = mNewIdentity->text().trimmed();
@@ -2164,6 +2383,11 @@ QWidget* RendererWorkspace::TakePreviewPanel(QWidget* newParent)
 
 void RendererWorkspace::openSubgraph(const QString& asset, const QString& configuration)
 {
+    if (hasPendingSourceText() == true)
+    {
+        mStatus->setText(QStringLiteral("Apply or revert pending Source text before navigating."));
+        return;
+    }
     if (mDocument.GetFiles().contains(asset) == false)
     {
         mStatus->setText(QStringLiteral("Subgraph source %1 is not part of this package.").arg(asset));
@@ -2176,6 +2400,7 @@ void RendererWorkspace::openSubgraph(const QString& asset, const QString& config
     mSourceFile->setCurrentText(asset);
     renderTree();
     renderSource();
+    mViews->setCurrentIndex(CANVAS_VIEW);
     mStatus->setText(QStringLiteral("Showing subgraph %1#%2.").arg(asset, configuration));
 }
 

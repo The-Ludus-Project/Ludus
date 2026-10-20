@@ -108,6 +108,12 @@ public:
     ReplaceNode(const QString& file, const QString& configuration, const QJsonObject& node);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// Create name.lurender.json with an empty Default configuration and bind the named
+    /// Subgraph node (or add it when absent). One undoable draft edit; Save publishes it.
+    /// Names must be ASCII graph identifiers. Existing assets/files are never replaced.
+    /// Failure preserves the draft. GUI thread only; package limits still apply.
+    [[nodiscard]] RenderGraphDocumentStatus
+    CreateSubgraph(const QString& file, const QString& configuration, const QString& node, const QString& name);
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveNode(const QString& file, const QString& configuration, const QString& node);
     [[nodiscard]] RenderGraphDocumentStatus
@@ -140,8 +146,10 @@ public:
 
     /// Write the complete draft package into an empty directory for a validation or build job.
     [[nodiscard]] RenderGraphDocumentStatus WriteSnapshot(const QString& directory) const;
-    /// Replace each dirty file atomically after checking that disk still holds the saved bytes.
-    /// Conflict or Locked writes nothing. A failed replacement keeps the remaining files dirty.
+    /// Replace existing dirty files atomically, create new files without replacement, and
+    /// remove saved files absent from the draft (Undo), after checking saved disk bytes.
+    /// Conflict or Locked writes nothing. A write failure keeps remaining
+    /// files dirty; outSavedFiles names completed writes/removals. New files use exclusive creation.
     /// For a built-in document, Save creates every file below the destination, even when
     /// nothing was edited, and then becomes an ordinary project package. Any existing file
     /// there is a Conflict; a failed creation removes the files it wrote and stays built-in.
