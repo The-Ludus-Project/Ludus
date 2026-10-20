@@ -85,6 +85,9 @@ public:
     void HoldFrame();
     void ShowFrame();
     void ClearFrame(const QString& text);
+    /// Whether a delegated graph image remains displayed, including after its device stops.
+    /// GUI thread only. Native graph viewports only; false before the first image or after ClearFrame.
+    [[nodiscard]] bool HasRetainedGraphFrame() const noexcept;
     /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.
     [[nodiscard]] QString GetStatisticsText() const;
     /// Live shader status shown below the statistics (reload notices and errors); empty when none.

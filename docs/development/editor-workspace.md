@@ -920,6 +920,10 @@ World; they do not expose another object hierarchy or authoring document.
    text fields available and coalesces continued typing.
    **Cancel scene operation** retains the previous document. Reopen reads the
    project's cooked assets without needing the original source directory.
+   A project render-graph build or activation failure ends pending scene preparation
+   with its diagnostic instead of waiting indefinitely for a first frame. The last
+   presented viewport image is retained. Repair the graph and reopen the World to retry;
+   ordinary raster navigation requires a valid raster output, not a ray tracing pass.
 
 **Open World…** also accepts an existing `.lulevel` file. Successful conversion
 creates an unsaved sibling `<level-name>.world.json`; it preserves the original

@@ -142,19 +142,23 @@ GraphRecord* ResolveGraph(OrderedGraph handle) noexcept
                ? &graph
                : nullptr;
 }
-RasterStatus GraphAdmission(DeviceHandle device, OrderedGraph handle, GraphRecord*& graph, bool setup = true) noexcept
+RasterStatus GraphAdmission(DeviceHandle device,
+                            OrderedGraph handle,
+                            GraphRecord*& outGraphOrNull,
+                            bool isSetup = true,
+                            bool canEncodeInFrame = false) noexcept
 {
-    const auto admission = Admission(device);
+    const RasterStatus admission = Admission(device, canEncodeInFrame == false);
     if (admission != RasterStatus::Ready)
     {
         return admission;
     }
-    graph = ResolveGraph(handle);
-    if (graph == nullptr)
+    outGraphOrNull = ResolveGraph(handle);
+    if (outGraphOrNull == nullptr)
     {
         return RasterStatus::InvalidHandle;
     }
-    return setup && graph->Compiled ? RasterStatus::InvalidState : RasterStatus::Ready;
+    return isSetup == true && outGraphOrNull->Compiled == true ? RasterStatus::InvalidState : RasterStatus::Ready;
 }
 bool ValidVersion(const GraphRecord& graph, OrderedGraph handle, GraphVersion version) noexcept
 {
@@ -2074,22 +2078,34 @@ RasterStatus DiscardOrderedGraph(DeviceHandle device, OrderedGraph& handle) noex
     Collect();
     return RasterStatus::Ready;
 }
-RasterStatus ExecuteOrderedGraph(DeviceHandle device,
-                                 SurfaceHandle surface,
-                                 OrderedGraph& handle,
-                                 SubmissionToken& completion) noexcept
+namespace
 {
-    GraphRecord* graph = nullptr;
-    const auto admission = GraphAdmission(device, handle, graph, false);
+RasterStatus ExecuteGraphCommands(DeviceHandle device,
+                                  SurfaceHandle surface,
+                                  OrderedGraph& inoutHandle,
+                                  SubmissionToken& outCompletion,
+                                  bool shouldSubmit) noexcept
+{
+    GraphRecord* graph;
+    const RasterStatus admission = GraphAdmission(device, inoutHandle, graph, false, shouldSubmit == false);
     if (admission != RasterStatus::Ready)
     {
         return admission;
     }
-    if (graph->Compiled == false || LifetimeAccess::Owner(completion) != 0)
+    if (shouldSubmit == false)
+    {
+        FrameInfo information;
+        if (GetFrameInfo(device, surface, information) != DeviceStatus::Ready)
+        {
+            return RasterStatus::InvalidState;
+        }
+    }
+    if (FrameOpen() != (shouldSubmit == false) || graph->Compiled == false || LifetimeAccess::Owner(outCompletion) != 0)
     {
         return RasterStatus::InvalidState;
     }
-    if (graph->Report.Summary.DrawCount > CurrentDeviceProfile().Raster.DrawsPerFrame)
+    if (graph->Report.Summary.DrawCount >
+        CurrentDeviceProfile().Raster.DrawsPerFrame - (shouldSubmit == true ? 0 : gDrawCount))
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -2130,7 +2146,7 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
         const auto currentPrepare = Admission(device, false);
         if (currentPrepare != RasterStatus::Ready)
         {
-            handle = {};
+            inoutHandle = {};
             return currentPrepare;
         }
         if (prepared != RasterStatus::Ready)
@@ -2142,28 +2158,31 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
     {
         return RasterStatus::IdentityExhausted;
     }
-    const auto preparedStorage = backend::RasterPrepareStorage();
-    if (preparedStorage != RasterStatus::Ready)
+    if (shouldSubmit == true)
     {
-        return preparedStorage;
-    }
-    const auto reserve = backend::RasterReserveSubmission();
-    if (reserve != RasterStatus::Ready)
-    {
-        return reserve;
-    }
-    const auto begun = BeginFrame(device, surface);
-    if (begun != DeviceStatus::Ready)
-    {
-        backend::RasterDiscardSubmission();
-        return begun == DeviceStatus::Skipped         ? RasterStatus::NotReady
-               : begun == DeviceStatus::InvalidHandle ? RasterStatus::InvalidHandle
-               : begun == DeviceStatus::DeviceLost    ? RasterStatus::DeviceLost
-                                                      : RasterStatus::Failed;
+        const RasterStatus preparedStorage = backend::RasterPrepareStorage();
+        if (preparedStorage != RasterStatus::Ready)
+        {
+            return preparedStorage;
+        }
+        const RasterStatus reserve = backend::RasterReserveSubmission();
+        if (reserve != RasterStatus::Ready)
+        {
+            return reserve;
+        }
+        const DeviceStatus begun = BeginFrame(device, surface);
+        if (begun != DeviceStatus::Ready)
+        {
+            backend::RasterDiscardSubmission();
+            return begun == DeviceStatus::Skipped         ? RasterStatus::NotReady
+                   : begun == DeviceStatus::InvalidHandle ? RasterStatus::InvalidHandle
+                   : begun == DeviceStatus::DeviceLost    ? RasterStatus::DeviceLost
+                                                          : RasterStatus::Failed;
+        }
     }
     if (Admission(device, false) != RasterStatus::Ready)
     {
-        handle = {};
+        inoutHandle = {};
         return RasterStatus::Failed;
     }
     // Surface rectangles can only be checked against the actual acquired extent.
@@ -2176,9 +2195,13 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
         if (graph->Report.Passes[p].Culled == false && pass.IsCompute == false && pass.Info.Texture == RASTER_INVALID &&
             RasterResolveArea(pass.Info.Description, extent.Width, extent.Height, area) == false)
         {
-            const auto ended = EndFrame(device, completion);
+            if (shouldSubmit == false)
+            {
+                return RasterStatus::InvalidDescription;
+            }
+            const RasterStatus ended = EndFrame(device, outCompletion);
             ResetGraph(*graph);
-            handle = {};
+            inoutHandle = {};
             return ended == RasterStatus::Ready ? RasterStatus::InvalidDescription : ended;
         }
     }
@@ -2187,7 +2210,7 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
     if (ClaimRasterFrame() == false)
     {
         internal::FaultRasterSession();
-        handle = {};
+        inoutHandle = {};
         return RasterStatus::Failed;
     }
     for (usize p = 0; p < graph->PassCount; ++p)
@@ -2204,7 +2227,7 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
             const auto currentEnd = Admission(device, false);
             if (currentEnd != RasterStatus::Ready)
             {
-                handle = {};
+                inoutHandle = {};
                 return currentEnd;
             }
             for (usize i = 0; i < pass.UseCount; ++i)
@@ -2217,7 +2240,7 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
                     const auto currentBuffer = Admission(device, false);
                     if (currentBuffer != RasterStatus::Ready)
                     {
-                        handle = {};
+                        inoutHandle = {};
                         return currentBuffer;
                     }
                     FrameRetain(RasterKind::Buffer, resource.Slot);
@@ -2234,7 +2257,7 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
                 const auto currentBarrier = Admission(device, false);
                 if (currentBarrier != RasterStatus::Ready)
                 {
-                    handle = {};
+                    inoutHandle = {};
                     return currentBarrier;
                 }
                 FrameRetain(RasterKind::Texture, resource.Slot);
@@ -2244,13 +2267,13 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
             if (started != RasterStatus::Ready)
             {
                 internal::FaultRasterSession();
-                handle = {};
+                inoutHandle = {};
                 return started;
             }
             const auto current = Admission(device, false);
             if (current != RasterStatus::Ready)
             {
-                handle = {};
+                inoutHandle = {};
                 return current;
             }
         }
@@ -2264,13 +2287,13 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
             const auto currentDraw = Admission(device, false);
             if (currentDraw != RasterStatus::Ready)
             {
-                handle = {};
+                inoutHandle = {};
                 return currentDraw;
             }
             if (encoded != RasterStatus::Ready)
             {
                 internal::FaultRasterSession();
-                handle = {};
+                inoutHandle = {};
                 return encoded;
             }
         }
@@ -2279,7 +2302,7 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
     const auto currentEnd = Admission(device, false);
     if (currentEnd != RasterStatus::Ready)
     {
-        handle = {};
+        inoutHandle = {};
         return currentEnd;
     }
     for (usize r = 0; r < graph->ResourceCount; ++r)
@@ -2298,7 +2321,7 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
                 const auto currentBuffer = Admission(device, false);
                 if (currentBuffer != RasterStatus::Ready)
                 {
-                    handle = {};
+                    inoutHandle = {};
                     return currentBuffer;
                 }
             }
@@ -2312,23 +2335,40 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
         const auto currentBarrier = Admission(device, false);
         if (currentBarrier != RasterStatus::Ready)
         {
-            handle = {};
+            inoutHandle = {};
             return currentBarrier;
         }
         FrameRetain(RasterKind::Texture, resource.Slot);
         At(RasterKind::Texture, resource.Slot).FrameTextureUse = resource.Final;
     }
-    const auto ended = EndFrame(device, completion);
+    const RasterStatus ended = shouldSubmit == true ? EndFrame(device, outCompletion) : RasterStatus::Ready;
+    if (shouldSubmit == false)
+    {
+        gGraphExecuting = false;
+    }
     if (graph->Owner != 0)
     {
         DropGraph(*graph);
     }
-    handle = {};
+    inoutHandle = {};
     Collect();
     if (ended != RasterStatus::Ready && GetStartup().State == StartupState::Ready)
     {
         internal::FaultRasterSession();
     }
     return ended;
+}
+} // namespace
+RasterStatus ExecuteOrderedGraph(DeviceHandle device,
+                                 SurfaceHandle surface,
+                                 OrderedGraph& inoutHandle,
+                                 SubmissionToken& outCompletion) noexcept
+{
+    return ExecuteGraphCommands(device, surface, inoutHandle, outCompletion, true);
+}
+RasterStatus EncodeOrderedGraph(DeviceHandle device, SurfaceHandle surface, OrderedGraph& inoutHandle) noexcept
+{
+    SubmissionToken completion;
+    return ExecuteGraphCommands(device, surface, inoutHandle, completion, false);
 }
 } // namespace ludus::graphics::rhi

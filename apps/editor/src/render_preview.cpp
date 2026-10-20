@@ -317,6 +317,12 @@ bool RenderPreview::rejectShaders()
 bool RenderPreview::Start()
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (mIsProjectGraphEnabled == true && mProjectGraphProblem.isEmpty() == false)
+    {
+        Status_ = mProjectGraphProblem;
+        Q_EMIT Changed();
+        return false;
+    }
     if (Scene_.Identity.isEmpty())
     {
         Status_ = QStringLiteral("Load and validate a World preview first.");
@@ -1084,6 +1090,23 @@ bool RenderPreview::prepare()
 void RenderPreview::UseProjectGraph() noexcept
 {
     mIsProjectGraphEnabled = true;
+}
+void RenderPreview::SetProjectGraphProblem(const QString& problem)
+{
+    if (mIsProjectGraphEnabled == false || mProjectGraphProblem == problem)
+    {
+        return;
+    }
+    mProjectGraphProblem = problem;
+    if (problem.isEmpty() == false)
+    {
+        Status_ = problem;
+        Q_EMIT Changed();
+        if (Running() == true)
+        {
+            Q_EMIT Failed(problem);
+        }
+    }
 }
 void RenderPreview::NotifyProjectFrame()
 {

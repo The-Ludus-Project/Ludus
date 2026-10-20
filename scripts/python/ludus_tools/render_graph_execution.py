@@ -14,10 +14,12 @@ import struct
 
 from . import render_graph as graph
 from . import render_graph_build as build
+from . import render_graph_ray as ray
 
 MAX_PASSES = 16
 MAX_RESOURCES = 32
 MAX_CAMERAS = 8
+MAX_RAY_PASSES = 1
 MAX_UNIFORM_VALUES = 64
 MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
@@ -27,10 +29,10 @@ FORMAT_VERSION = 2
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
-            'DefaultStaticMasked.ColorAndDepth': 'MaskedColorAndDepth', 'DefaultStaticMasked.DepthOnly': 'MaskedDepthOnly'}
+            'DefaultStaticMasked.ColorAndDepth': 'MaskedColorAndDepth', 'DefaultStaticMasked.DepthOnly': 'MaskedDepthOnly', ray.TECHNIQUE: 'RayTracing'}
 PROGRAM_CODES = {name: code for code, name in enumerate(PROGRAMS.values())}
 PROGRAM_MEMBERS = {'ColorAndDepth': 'Color', 'DepthOnly': 'Depth', 'MaskedColorAndDepth': 'MaskedColor',
-                   'MaskedDepthOnly': 'MaskedDepth'}
+                   'MaskedDepthOnly': 'MaskedDepth', 'RayTracing': 'RayImage'}
 VISIBILITY = {'Vertex': 1, 'Fragment': 2, 'Both': 3}
 
 
@@ -51,12 +53,14 @@ def lower_plan(package, configuration):
     build.require(len(plans) == 1, 'Configuration', configuration, 'one declared root configuration required')
     plan = plans[0]
     resources = sorted(plan['resources'])
-    rasters = [p for p in plan['passes'] if p['kind'] == 'Raster']
+    rasters = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
     cameras = sorted({p['view'] for p in rasters})
-    build.require(all(p['kind'] in ('Raster', 'Export', 'Present') for p in plan['passes']) and
-                  all(p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
+    build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
+                  'one triangle ray invocation is admitted per configuration')
+    build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Export', 'Present') for p in plan['passes']) and
+                  all((p['kind'] == 'RayTracing' and p['technique'] == ray.TECHNIQUE) or (p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
                       p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] and
-                      p['technique'] in PROGRAMS and p['vertex_layout'] == 'RendererStatic' for p in rasters),
+                      p['technique'] in PROGRAMS and p['vertex_layout'] == 'RendererStatic') for p in rasters),
                   'Configuration', configuration, 'unqualified operation/layout/material/technique')
     build.require(0 < len(rasters) <= MAX_PASSES and 0 < len(resources) <= MAX_RESOURCES and len(cameras) <= MAX_CAMERAS,
                   'Capacity', configuration, 'Renderer execution limits exceeded')
@@ -64,6 +68,8 @@ def lower_plan(package, configuration):
     backing = {r: r for r in resources}
     for operation in rasters:
         attachments = operation['attachments']
+        if operation['kind'] == 'RayTracing':
+            continue
         depth = attachments['depth']['resource']
         if 'color' in attachments:
             color = attachments['color']['resource']
@@ -88,6 +94,12 @@ def lower_plan(package, configuration):
     pass_records = []
     color_defined = {r: False for r in resources}
     for operation in rasters:
+        if operation['kind'] == 'RayTracing':
+            color = operation['attachments']['color']
+            pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']),
+                'Color': resources.index(color['resource']), 'Depth': ABSENT, 'ColorLoad': 'Clear', 'ColorStore': 'Store',
+                'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0})
+            continue
         choices = [r for r in package['recipes'] if r['technique'] == operation['technique'] and
                    ('pipeline' not in operation or all(r['state'][key] == value
                     for key, value in operation['pipeline']['state'].items()))]
@@ -125,6 +137,8 @@ FORMAT_CODES = {'Float32': 0, 'Float2': 1, 'Float3': 2, 'Float4': 3}
 
 def role(program, stage):
     """Numeric StageRole: two consecutive roles (vertex, fragment) per program."""
+    if program == 'RayTracing':
+        return {'compute': 8, 'vertex': 9, 'fragment': 10}[stage]
     return PROGRAM_CODES[program] * 2 + (0 if stage == 'vertex' else 1)
 
 
@@ -224,12 +238,16 @@ def _runtime_contents(path, configuration):
     plan, resources, passes, cameras = lower_plan(package, configuration)
     stages = {}
     vertex_schemas = []
-    for technique in plan['techniques']:
+    selected_techniques = set(plan['techniques'])
+    if ray.TECHNIQUE in selected_techniques:
+        selected_techniques.add('DefaultStaticOpaque.ColorAndDepth')
+    for technique in sorted(selected_techniques):
         program_name = PROGRAMS[technique]
         recipes = [r for r in package['recipes'] if r['technique'] == technique]
         for recipe in recipes:
-            vertex_schemas.append(recipe['vertex_schema'])
-            for stage in ('vertex', 'fragment'):
+            if technique != ray.TECHNIQUE:
+                vertex_schemas.append(recipe['vertex_schema'])
+            for stage in (('compute', 'vertex', 'fragment') if technique == ray.TECHNIQUE else ('vertex', 'fragment')):
                 matches = [p for p in package['programs'] if p['key'] == recipe[stage] and p['profile'] == recipe['profile']]
                 build.require(len(matches) == 1, 'Package', technique, 'stage identity is ambiguous')
                 key = (program_name, stage, recipe['profile'])
@@ -256,10 +274,12 @@ def _runtime_contents(path, configuration):
     for ordinal, (key, program) in enumerate(sorted(stages.items(), key=lambda x: (role(x[0][0], x[0][1]), TARGET_CODES[x[0][2]]))):
         program_name, stage, target = key
         descriptor = program['descriptor']
-        build.require(all(e['kind'] == 'UniformBuffer' for e in descriptor['interface']['entries']) and
-                      len(descriptor['interface']['entries']) == len(descriptor.get('layouts', [])),
+        is_ray = program_name == 'RayTracing'
+        build.require(is_ray or (all(e['kind'] == 'UniformBuffer' for e in descriptor['interface']['entries']) and
+                      len(descriptor['interface']['entries']) == len(descriptor.get('layouts', []))),
                       'Configuration', program['id'], 'runtime profile admits only verified uniform bindings')
-        expected = STATIC_INPUTS if stage == 'vertex' else []
+        expected = ([{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}]
+                    if is_ray and stage == 'vertex' else STATIC_INPUTS if stage == 'vertex' else [])
         build.require([{k: v for k, v in x.items() if k != 'name'} for x in descriptor['interface']['inputs']] == expected,
                       'Configuration', program['id'], 'static vertex/instance interface mismatch')
         artifact_name = Path(descriptor['artifact'])
@@ -393,18 +413,21 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '    const rhi::RasterShaderDescription& compositeVertex,',
               '    const rhi::RasterShaderDescription& compositeFragment) noexcept', '{', '    renderer::RenderGraphPrograms result;']
     for program_name in PROGRAMS.values():
-        for stage in ('vertex', 'fragment'):
-            member = PROGRAM_MEMBERS[program_name] + stage.title()
+        for stage in (('compute', 'vertex', 'fragment') if program_name == 'RayTracing' else ('vertex', 'fragment')):
+            member = 'RayCompute' if stage == 'compute' else PROGRAM_MEMBERS[program_name] + stage.title()
             keys = [key for key in artifact_labels if key[0] == program_name and key[1] == stage]
             if not keys:
                 continue
             lines.append('    result.' + member + '.Artifact.Stage = rhi::ShaderStage::' + stage.title() + ';')
             if stage == 'vertex':
+                input_values = [{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}] if program_name == 'RayTracing' else STATIC_INPUTS
                 constant = member.upper() + '_INPUT_COUNT'
-                lines += [f'    static constexpr foundation::usize {constant} = 6;',
+                lines += [f'    static constexpr foundation::usize {constant} = {len(input_values)};',
                           f'    static constexpr foundation::StaticArray<rhi::RasterShaderInput, {constant}> {member}Inputs', '{', '        {']
-                lines += ['            {' + str(i) + ', rhi::RasterVertexFormat::' + ('Float3' if i == 0 else 'Float4') + '},' for i in range(6)]
+                lines += ['            {' + str(value['location']) + ', rhi::RasterVertexFormat::' + value['format'] + '},' for value in input_values]
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {member}Inputs.AsSpan();']
+            if program_name == 'RayTracing':
+                lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ');']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
             if stage_bindings:
                 constant = member.upper() + '_BINDING_COUNT'
@@ -428,7 +451,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
             'resources': len(resources), 'passes': len(passes), 'cameras': cameras,
             'uniform_values': contents['uniform_values'], 'uniform_bindings': len(contents['bindings']),
             'interface_identity': contents['interface_identity'],
-            'scene': next(p['scene'] for p in plan['passes'] if p['kind'] == 'Raster')}
+            'scene': next(p['scene'] for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing'))}
 
 
 def encode_runtime_package(contents):
@@ -463,7 +486,8 @@ def encode_runtime_package(contents):
     for f in contents['fields']:
         data += u32(f['Binding'], TARGET_CODES[f['Target']], f['ValueOffset'], f['Components'], f['ByteOffset'])
     for (program_name, stage, target), item in stages:
-        inputs = STATIC_INPUTS if stage == 'vertex' else []
+        inputs = ([{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}]
+                  if program_name == 'RayTracing' and stage == 'vertex' else STATIC_INPUTS if stage == 'vertex' else [])
         entry = item['entry'].encode()
         data += u32(role(program_name, stage), TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
                     len(item['blocks']))
@@ -503,7 +527,7 @@ def encode_resource_names(contents):
     # Expanded operation IDs let a canvas node (Raster, Subgraph, Export, Present) find what it wrote or read.
     operations = []
     for operation in plan['passes']:
-        if operation['kind'] == 'Raster':
+        if operation['kind'] in ('Raster', 'RayTracing'):
             attachments = {aspect: {'resource': value['resource'], 'load': value['load'], 'store': value['store']}
                            for aspect, value in sorted(operation['attachments'].items())}
         else:

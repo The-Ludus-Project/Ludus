@@ -343,9 +343,14 @@ print(json.dumps({'schema': 1, 'captured': captured}))
     REQUIRE(workspace.Save() == true);
     QTest::qWait(SETTLE_MILLISECONDS);
     CHECK(finished.count() == 3);
+    REQUIRE(QFile::remove(QDir(tooling.path()).filePath(QStringLiteral("release"))) == true);
     workspace.SetLivePreview(true);
+    REQUIRE(waitFor([&]() { return workspace.IsJobActive(); }) == true);
+    REQUIRE(document.SetText(shader, QByteArrayLiteral("later unsaved edit")) == RenderGraphDocumentStatus::Ok);
+    write(QDir(tooling.path()).filePath(QStringLiteral("release")), {});
     REQUIRE(waitFor([&]() { return finished.count() == 4; }) == true);
     CHECK(workspace.GetLastResult().IsSuccessful == false);
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("bad shader")) == true);
     CHECK(workspace.GetStatusText().contains(QStringLiteral("Preview unchanged")) == true);
     QTest::qWait(SETTLE_MILLISECONDS);
     CHECK(finished.count() == 4);

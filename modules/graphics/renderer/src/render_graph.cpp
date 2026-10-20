@@ -1,6 +1,7 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 
 #include "internal/render_graph_pool.h"
+#include "internal/render_graph_ray.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/queries.hpp>
@@ -38,7 +39,7 @@ constexpr usize MAX_COMPONENTS = 4;
 /// Largest packed uniform bytes of one technique: every slot at its largest block.
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
 constexpr usize NO_SET = ~usize{0};
-constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::Technique::MaskedDepthOnly);
+constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::Technique::RayTracing);
 constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
 bool IsAccepted(Status status) noexcept
 {
@@ -46,7 +47,8 @@ bool IsAccepted(Status status) noexcept
 }
 bool IsColorTechnique(format::Technique technique) noexcept
 {
-    return technique == format::Technique::ColorAndDepth || technique == format::Technique::MaskedColorAndDepth;
+    return technique == format::Technique::ColorAndDepth || technique == format::Technique::MaskedColorAndDepth ||
+           technique == format::Technique::RayTracing;
 }
 bool IsMaskedTechnique(format::Technique technique) noexcept
 {
@@ -214,6 +216,8 @@ GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::
     {
         case format::Technique::ColorAndDepth:
             return isVertex == true ? programs.ColorVertex : programs.ColorFragment;
+        case format::Technique::RayTracing:
+            return isVertex == true ? programs.ColorVertex : programs.ColorFragment;
         case format::Technique::DepthOnly:
             return isVertex == true ? programs.DepthVertex : programs.DepthFragment;
         case format::Technique::MaskedColorAndDepth:
@@ -343,6 +347,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         return Status::InvalidDescription;
     }
     uint32 surfaceOwner = format::ABSENT;
+    usize rayPassCount = 0;
     StaticArray<bool, format::MAX_RESOURCES> colorDefined{};
     StaticArray<bool, format::MAX_RESOURCES> depthDefined{};
     StaticArray<bool, format::MAX_CAMERAS> hasCameraRoute{};
@@ -395,7 +400,8 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     {
         const format::Pass& pass = plan.Passes[passIndex];
         if (static_cast<uint32>(pass.Program) > MAX_TECHNIQUE || pass.Camera >= plan.Description.CameraCount ||
-            pass.Depth >= plan.Resources.GetSize() || pass.AllowsRepeatedCoverage > 1 ||
+            (pass.Program != format::Technique::RayTracing && pass.Depth >= plan.Resources.GetSize()) ||
+            pass.AllowsRepeatedCoverage > 1 ||
             static_cast<uint32>(pass.ColorLoad) > static_cast<uint32>(format::Load::Discard) ||
             static_cast<uint32>(pass.DepthLoad) > static_cast<uint32>(format::Load::Discard) ||
             static_cast<uint32>(pass.ColorStore) > static_cast<uint32>(format::Store::Discard) ||
@@ -407,6 +413,21 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
         hasCameraRoute[pass.Camera] =
             hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
+        if (pass.Program == format::Technique::RayTracing)
+        {
+            ++rayPassCount;
+            if (rayPassCount > format::MAX_RAY_PASSES || pass.Color >= plan.Resources.GetSize() ||
+                pass.Depth != format::ABSENT || plan.Resources[pass.Color].Kind != format::Aspect::Color ||
+                plan.Resources[pass.Color].IsSurface != 0 || pass.ColorLoad != format::Load::Clear ||
+                pass.ColorStore != format::Store::Store || pass.DepthLoad != format::Load::Discard ||
+                pass.DepthStore != format::Store::Discard)
+            {
+                return Status::Unsupported;
+            }
+            colorDefined[pass.Color] = true;
+            depthDefined[pass.Color] = false;
+            continue;
+        }
         const format::Resource& depth = plan.Resources[pass.Depth];
         if (depth.Kind != format::Aspect::Depth ||
             (pass.DepthLoad == format::Load::Load && depthDefined[depth.Backing] == false))
@@ -509,6 +530,7 @@ struct RenderGraph::State final
     StaticArray<Renderer, format::TECHNIQUE_COUNT> Contexts{};
     StaticArray<bool, format::TECHNIQUE_COUNT> IsUsed{};
     StaticArray<bool, format::TECHNIQUE_COUNT> HasViews{};
+    bool HasRaySetup = false;
     StaticArray<bool, format::TECHNIQUE_COUNT> IsBound{};
     RenderGraphPrograms Programs{};
     /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
@@ -525,6 +547,7 @@ struct RenderGraph::State final
         StaticArray<StaticArray<usize, format::MAX_ITEMS>, format::TECHNIQUE_COUNT> ItemSets{};
         StaticArray<Snapshot, format::MAX_PASSES> Snapshots{};
         StaticArray<PreparedView, format::MAX_PASSES> Views{};
+        StaticArray<internal::RenderGraphRayPass, format::MAX_PASSES> RayPasses{};
         StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
         StaticArray<StaticArray<SceneItem, format::MAX_ITEMS>, format::MAX_PASSES> Items{};
         StaticArray<usize, format::MAX_PASSES> Counts{};
@@ -656,6 +679,29 @@ struct RenderGraph::State final
                 }
                 inoutScene.HasSnapshots[i] = true;
             }
+            if (Passes[i].Program == format::Technique::RayTracing)
+            {
+                if (inoutScene.HasViews[i] == false)
+                {
+                    const Status created = inoutScene.RayPasses[i].Initialize(context,
+                                                                              Device,
+                                                                              inoutScene.Snapshots[i],
+                                                                              inoutScene.Cameras[Passes[i].Camera],
+                                                                              Resources[Passes[i].Color].Width,
+                                                                              Resources[Passes[i].Color].Height);
+                    if (IsAccepted(created) == false)
+                    {
+                        return created;
+                    }
+                    inoutScene.HasViews[i] = true;
+                }
+                const Status ready = inoutScene.RayPasses[i].Poll();
+                if (ready != Status::Ready)
+                {
+                    return ready;
+                }
+                continue;
+            }
             if (inoutScene.HasViews[i] == false)
             {
                 ViewReport report;
@@ -703,6 +749,16 @@ struct RenderGraph::State final
         for (usize pass = 0; pass < Header.PassCount && RecordingStatus == Status::Ready; ++pass)
         {
             const format::Pass& operation = Passes[pass];
+            if (operation.Program == format::Technique::RayTracing)
+            {
+                if (Current->RayPasses[pass].IsPrepared() == false)
+                {
+                    return RecordingStatus = Status::NotReady;
+                }
+                HasAttemptedDraw = true;
+                RecordingStatus = Current->RayPasses[pass].Encode(surface);
+                continue;
+            }
             const uint32 backing = Resources[operation.Depth].Backing;
             rhi::RasterPassDescription description;
             description.Color = Textures[backing];
@@ -972,6 +1028,29 @@ Status RenderGraph::Poll() noexcept
         {
             return status;
         }
+        if (i == static_cast<usize>(format::Technique::RayTracing))
+        {
+            if (state.HasRaySetup == false)
+            {
+                constexpr usize RAY_CPU_BYTES = usize{256} * 1024 * 1024;
+                constexpr usize RAY_GPU_BYTES = usize{256} * 1024 * 1024;
+                status = state.Contexts[i].EnableTriangleRayPipeline(state.Programs.RayCompute,
+                                                                     state.Programs.RayImageVertex,
+                                                                     state.Programs.RayImageFragment,
+                                                                     {RAY_CPU_BYTES, RAY_GPU_BYTES, 1});
+                if (IsAccepted(status) == false)
+                {
+                    return status;
+                }
+                state.HasRaySetup = true;
+            }
+            status = state.Contexts[i].PollGpuPreview();
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+            continue;
+        }
         if (state.HasViews[i] == false)
         {
             status =
@@ -1095,7 +1174,10 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             {
                 const format::Pass& operation = state.Passes[pass];
                 routeCount +=
-                    operation.Camera == camera && (role == 1 || IsColorTechnique(operation.Program) == true) ? 1U : 0U;
+                    operation.Camera == camera && ((role == 1 && operation.Program != format::Technique::RayTracing) ||
+                                                   (role == 0 && IsColorTechnique(operation.Program) == true))
+                        ? 1U
+                        : 0U;
             }
             if (routeCount == 0)
             {
@@ -1112,7 +1194,9 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 for (usize pass = 0; pass < state.Header.PassCount; ++pass)
                 {
                     const format::Pass& operation = state.Passes[pass];
-                    if (operation.Camera == camera && (role == 1 || IsColorTechnique(operation.Program) == true) &&
+                    if (operation.Camera == camera &&
+                        ((role == 1 && operation.Program != format::Technique::RayTracing) ||
+                         (role == 0 && IsColorTechnique(operation.Program) == true)) &&
                         IsCompatible(operation.Program, item, mesh) == true)
                     {
                         ++compatibleCount;
@@ -1404,6 +1488,41 @@ uint64 RenderGraph::GetOutputSceneRevision() const noexcept
     }
     return mState->OutputRevision;
 }
+Status RenderGraph::PrepareEncoding() noexcept
+{
+    if (mState.Get() == nullptr || mState->Current.Get() == nullptr || mState->IsReady == false)
+    {
+        return Status::NotReady;
+    }
+    State& state = *mState;
+    const Status admitted = CheckDevice(state.Device);
+    if (admitted != Status::Ready || state.HasExternalRecording == true)
+    {
+        return admitted == Status::Ready ? Status::InvalidState : admitted;
+    }
+    if (state.Producer.IsNull() == false)
+    {
+        const Status completed = rhi::GetStatus(state.Device, state.Producer);
+        if (completed != Status::Ready)
+        {
+            return completed == Status::Pending ? Status::NotReady : completed;
+        }
+    }
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        if (state.Passes[pass].Program != format::Technique::RayTracing ||
+            state.Current->RayPasses[pass].IsPrepared() == true)
+        {
+            continue;
+        }
+        const Status prepared = state.Current->RayPasses[pass].Prepare(state.Textures[state.Passes[pass].Color]);
+        if (prepared != Status::Ready)
+        {
+            return prepared;
+        }
+    }
+    return Status::Ready;
+}
 Status RenderGraph::Render(rhi::SurfaceHandle surface,
                            uint32 surfaceWidth,
                            uint32 surfaceHeight,
@@ -1447,6 +1566,11 @@ Status RenderGraph::Render(rhi::SurfaceHandle surface,
             return Status::NotReady;
         }
     }
+    const Status prepared = PrepareEncoding();
+    if (prepared != Status::Ready)
+    {
+        return prepared;
+    }
     const rhi::DeviceStatus started = rhi::BeginFrame(state.Device, surface);
     if (started != rhi::DeviceStatus::Ready)
     {
@@ -1483,6 +1607,14 @@ Status RenderGraph::Encode(rhi::SurfaceHandle surface) noexcept
         if (completed != Status::Ready)
         {
             return completed == Status::Pending ? Status::NotReady : completed;
+        }
+    }
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        if (state.Passes[pass].Program == format::Technique::RayTracing &&
+            state.Current->RayPasses[pass].IsPrepared() == false)
+        {
+            return Status::NotReady;
         }
     }
     const Status encoded = state.EncodePasses(surface);

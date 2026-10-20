@@ -8,6 +8,7 @@ packing. See docs/architecture/render-graph-authoring.md. No GPU work occurs her
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 
 import hashlib
 import json
@@ -23,6 +24,7 @@ import time
 from .buildlock import BuildTreeLock
 from .errors import ToolingError
 from . import render_graph as graph
+from . import render_graph_ray as ray
 
 VERSION = 1
 TARGETS = ('spirv', 'wgsl', 'metal', 'glsl')
@@ -112,6 +114,7 @@ class Snapshot:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.files = {}
+        self.external = {}
         self.total = 0
 
     def path(self, relative):
@@ -157,7 +160,7 @@ class Snapshot:
 
     def verify(self):
         for relative, data in self.files.items():
-            require(read(self.path(relative)) == data, 'Stale', relative, 'source changed during build; prior package retained')
+            require(read(self.external.get(relative, self.path(relative))) == data, 'Stale', relative, 'source changed during build; prior package retained')
 
 
 def validate_manifest(value):
@@ -208,7 +211,11 @@ def validate_manifest(value):
         require(program['source'] != 'wrapper.slang', 'Source', program['id'], 'wrapper.slang is reserved')
         require(program['function'] != 'rgEntry', 'Schema', program['id'], 'rgEntry is generated')
         require(program['id'] not in programs, 'Schema', program['id'], 'duplicate program identity')
-        enum(program['stage'], ('vertex', 'fragment'), 'stage')
+        enum(program['stage'], ('vertex', 'fragment', *ray.STAGES), 'stage')
+        if program['stage'] in ray.STAGES:
+            ray.validate_program(program, sys.modules[__name__])
+            programs[program['id']] = program
+            continue
         require(type(program['input']) is str and program['input'] in schemas, 'Schema', program['id'], 'unknown input schema')
         expected = 'Vertex' if program['stage'] == 'vertex' else 'Varying'
         require(schemas[program['input']]['role'] == expected, 'Schema', program['id'], 'wrong input schema role')
@@ -232,6 +239,17 @@ def validate_manifest(value):
     techniques = {}
     bounded_list(value['techniques'], 8, 'techniques')
     for technique in value['techniques']:
+        if technique.get('id') == ray.TECHNIQUE:
+            keys(technique, ('id', 'configuration', *ray.STAGES, 'recipes'), 'ray technique')
+            require(technique['configuration'] == 'RayTracing' and technique['recipes'] == [{'id': 'Triangles', **ray.STATE}],
+                    'Capability', ray.TECHNIQUE, 'expected the bounded triangle ray profile state')
+            for stage in ray.STAGES:
+                require(technique[stage] in programs and programs[technique[stage]]['stage'] == stage,
+                        'ShaderInterface', ray.TECHNIQUE, 'unknown or wrong ray stage program')
+            require(ray.TECHNIQUE not in techniques and 'glsl' not in value['profiles'], 'Capability', ray.TECHNIQUE,
+                    'duplicate ray technique or unsupported GLSL ES compute target')
+            techniques[ray.TECHNIQUE] = technique
+            continue
         keys(technique, ('id', 'configuration', 'vertex', 'fragment', 'recipes'), 'technique')
         require(type(technique['configuration']) is str and
                 technique['id'] in (family + '.' + technique['configuration'] for family in graph.MATERIALS.values()),
@@ -269,7 +287,7 @@ def validate_manifest(value):
     masked_depth = techniques.get('DefaultStaticMasked.DepthOnly')
     require(opaque_depth is None or masked_depth is None or opaque_depth['fragment'] != masked_depth['fragment'],
             'Schema', 'DefaultStaticMasked.DepthOnly', 'masked coverage requires a separately authored depth function')
-    used_programs = {t[s] for t in techniques.values() for s in ('vertex', 'fragment')}
+    used_programs = {t[s] for t in techniques.values() for s in (ray.STAGES if t['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))}
     require(used_programs == programs.keys(), 'Schema', 'programs', 'every program must belong to a declared technique')
     counts = {'configurations': len(techniques), 'programs': len(programs),
               'artifacts': len(programs) * len(value['profiles']),
@@ -281,6 +299,8 @@ def validate_manifest(value):
 
 def shader_source(program, schemas):
     """Generate declarations/bindings and entry wrapper; user source owns functions."""
+    if 'ray_wrapper' in program:
+        return program['ray_wrapper']
     used = {program['input'], *(b['schema'] for b in program['bindings'])}
     if program['stage'] == 'vertex':
         used.add(program['output'])
@@ -312,6 +332,9 @@ def shader_source(program, schemas):
 
 def check_layout(program, schemas, result, raw):
     """Verify field identity/type/offset and declared read-only binding use."""
+    if 'ray_wrapper' in program:
+        ray.check_interface(program, result, sys.modules[__name__])
+        return []
     declared = {b['id']: b for b in program['bindings']}
     parameters = raw.get('parameters', [])
     require(all(p.get('name') in declared for p in parameters), 'Layout', program['id'], 'source declares a resource outside generated bindings')
@@ -391,6 +414,7 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None):
     paths['generator/render_graph_build.py'] = Path(__file__)
     paths['generator/render_graph.py'] = Path(graph.__file__)
     paths['generator/render_graph_pipeline.py'] = Path(graph.pipeline.__file__)
+    paths['generator/render_graph_ray.py'] = Path(ray.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
     if validator:
         paths['tool/spirv-val'] = Path(validator).resolve()
@@ -645,6 +669,13 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     if 'glsl' in value['profiles']:
         require(spirv_cross, 'Tools', 'profiles', 'glsl requires --spirv-cross')
     closures = {pid: snapshot.shader_closure(p['source']) for pid, p in programs.items()}
+    if ray.TECHNIQUE in techniques:
+        original_programs = programs
+        programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__])
+        ray_closure = sorted(set(p for program in original_programs.values() if program['stage'] in ray.STAGES
+                                 for p in closures[program['id']]) | set(snapshot.external))
+        for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
+            closures[program_identity] = ray_closure
     # Build plans for every declared closed root configuration and preserve graph
     # imports in the same source snapshot used by shaders.
     graph_path = manifest.with_suffix('').with_suffix('.lurender.json')
@@ -666,7 +697,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             node = operation['pipeline']
             technique = techniques[operation['technique']]
             assigned = {shader['stage']: shader['program'] for shader in node['shaders']}
-            require(assigned == {stage: technique[stage] for stage in ('vertex', 'fragment')},
+            stage_names = ray.STAGES if node['kind'] == 'RayTracingPipeline' else ('vertex', 'fragment')
+            require(assigned == {stage: technique[stage] for stage in stage_names},
                     'ShaderInterface', operation['id'], 'node shader assignments differ from the authored technique')
             require(any(all(recipe[key] == value for key, value in node['state'].items())
                         for recipe in technique['recipes']), 'Capability', operation['id'],
@@ -694,7 +726,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                     if program['stage'] == 'vertex':
                         used.add(program['output'])
                     key_data = {'version': VERSION, 'program': {k: v for k, v in program.items() if k != 'id'},
-                                'schemas': [schemas[s] for s in sorted(used)], 'target': target,
+                                'schemas': [schemas[s] for s in sorted(used) if s in schemas], 'target': target,
                                 'sources': {p: digest(snapshot.files[p]) for p in closure}, 'wrapper': shader_source(program, schemas),
                                 'tools': {k: h for k, h in tool_hashes.items()
                                           if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py')
@@ -723,6 +755,14 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             recipes, routes = [], []
             for tid, technique in sorted(techniques.items()):
                 for target in sorted(value['profiles']):
+                    if tid == ray.TECHNIQUE:
+                        record = {'technique': tid, 'profile': target, 'state': technique['recipes'][0],
+                            'compute': entries[(ray.COMPUTE_ID, target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
+                            'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
+                        record['canonical'] = deepcopy(record)
+                        record['key'] = identity(record['canonical'])
+                        recipes.append(record)
+                        continue
                     vertex, fragment = (compiled[(technique[s], target)] for s in ('vertex', 'fragment'))
                     provided = {x['location']: x['type'] for x in vertex['links']}
                     require(all(provided.get(x['location']) == x['type'] for x in fragment['links']), 'Layout', tid, 'vertex/fragment stage links mismatch')
