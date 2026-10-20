@@ -1137,6 +1137,14 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         Preview_->Stop();
     }
     Preview_->UseProjectGraph();
+    const auto synchronizeProblem = [this, &inoutWorkspace]() {
+        Preview_->SetProjectGraphProblem(inoutWorkspace.GetRenderProblem());
+    };
+    // A failure can originate inside activation polling. Rollback may detach that activation,
+    // so deliver the current diagnostic only after the producer has left its stack.
+    connect(&inoutWorkspace, &RendererWorkspace::RenderProblemChanged, this, synchronizeProblem, Qt::QueuedConnection);
+    connect(&inoutWorkspace, &RendererWorkspace::DocumentChanged, this, synchronizeProblem);
+    synchronizeProblem();
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
@@ -1187,6 +1195,14 @@ void PreviewViewport::ShowFrame()
     {
         mState->GraphViewOrNull->SetCanPresent(true);
     }
+#endif
+}
+bool PreviewViewport::HasRetainedGraphFrame() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    return mState->GraphViewOrNull != nullptr && mState->GraphViewOrNull->GetImage().isNull() == false;
+#else
+    return false;
 #endif
 }
 void PreviewViewport::ClearFrame(const QString& text)

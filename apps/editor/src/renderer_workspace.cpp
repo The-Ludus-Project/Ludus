@@ -1693,6 +1693,10 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
         mStatus->setText(
             QStringLiteral("%1 failed - %2: %3 [%4]")
                 .arg(result.Request.Action, result.Code, result.Message, DescribeLocation(result.Location)));
+        if (result.Request.ShouldPreview == true && result.Request.InputIdentity == getBuildIdentity())
+        {
+            setProblem(mBuildProblem, mStatus->text());
+        }
     }
     Q_EMIT JobFinished();
 }
@@ -2869,7 +2873,12 @@ bool RendererWorkspace::PreviewRuntime()
     const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime);
     if (loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting)
     {
+        mPreviewInputIdentity = getBuildIdentity();
         setProblem(mBuildProblem, {});
+    }
+    else
+    {
+        setProblem(mBuildProblem, mPreviewOrNull->GetDisplayStatus());
     }
     if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true)
     {
@@ -2955,6 +2964,14 @@ void RendererWorkspace::renderPreview()
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mPreviewOrNull != nullptr)
     {
+        const graphics::renderer::RenderGraphCandidateState candidate = mPreviewOrNull->GetReport().Candidate;
+        if ((candidate == graphics::renderer::RenderGraphCandidateState::Failed ||
+             candidate == graphics::renderer::RenderGraphCandidateState::RestartRequired) &&
+            IsJobActive() == false && mHasPendingWorkerBuild == false && mBuildProblem.isEmpty() == true &&
+            mPreviewInputIdentity == getBuildIdentity())
+        {
+            setProblem(mBuildProblem, mPreviewOrNull->GetDisplayStatus());
+        }
         static_cast<PreviewImage*>(mPreviewImage)->SetImage(mPreviewOrNull->GetImage());
         mPreviewStatus->setText(mPreviewOrNull->GetStatus());
         mPreviewButton->setEnabled(mDocument.IsLoaded());

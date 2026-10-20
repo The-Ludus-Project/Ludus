@@ -126,6 +126,10 @@ public:
     /// Delegate GPU frame production to the project graph; this owner keeps scene/navigation
     /// and device lifetime, without preparing or drawing a second built-in scene.
     void UseProjectGraph() noexcept;
+    /// Set the current delegated renderer diagnostic on the GUI thread. A nonempty problem
+    /// refuses Start and fails pending scene preparation without destroying the last frame
+    /// or device. Clearing the problem permits an explicit retry.
+    void SetProjectGraphProblem(const QString& problem);
     /// Publish completion of the current World extraction from the delegated graph producer.
     void NotifyProjectFrame();
     void Tick();
@@ -223,6 +227,7 @@ private:
     bool mIsStatisticsVisible = false;
     ViewportStatistics mStatistics;
     bool mIsProjectGraphEnabled = false;
+    QString mProjectGraphProblem;
     QElapsedTimer mStatisticsRefresh;
     foundation::UniquePtr<PreviewGpuGeneration> mResources;
     foundation::UniquePtr<PreviewGpuGeneration> mRetiredResources;

@@ -9,13 +9,19 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
+#include <QMetaObject>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/renderer_workspace.h"
+#    include "internal/world_graph_view.h"
 #    include <QQuickWindow>
 #endif
 
@@ -111,6 +117,102 @@ TEST_CASE("new 3D level IDs come from FoundationIdentity and fail without entrop
 }
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+TEST_CASE("Delegated graph failures finish scene opening and permit a raster retry",
+          "[.level-native][editor][level][world-graph]")
+{
+    using namespace ludus::foundation;
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QDir(directory.path()).filePath(QStringLiteral("project"));
+    const QString source = QDir(directory.path()).filePath(QStringLiteral("source"));
+    const QString relative = QStringLiteral("scenes/main.lulevel");
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(source) == true);
+    QString error;
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(root, relative, source, error) == true);
+    RendererWorkspace renderer({});
+    renderer.SetProject(root, 1);
+    LevelWorkspace scene(SceneTools());
+    scene.SetProject(root, 1);
+    PreviewViewport& viewport = scene.GetViewport();
+    viewport.UseProjectGraph(renderer);
+    WorldGraphView* graphViewOrNull = viewport.findChild<WorldGraphView*>();
+    REQUIRE(graphViewOrNull != nullptr);
+    renderer.SetPreviewSource(&scene.GetRenderPreview());
+    scene.resize(1000, 700);
+    scene.show();
+    const QString problem = QStringLiteral("RenderGraphSchema: missing required output flag");
+    QSignalSpy finished(&scene, &LevelWorkspace::OperationFinished);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            renderer.ServicePreview();
+        }
+        return isReady();
+    };
+    QImage previousImage;
+    QJsonObject previousDocument;
+    QMetaObject::Connection failureConnection;
+    SECTION("failure before the candidate starts")
+    {
+        scene.GetRenderPreview().SetProjectGraphProblem(problem);
+    }
+    SECTION("failure while waiting for the first frame")
+    {
+        failureConnection = QObject::connect(&scene.GetRenderPreview(), &RenderPreview::DeviceRequested, &scene, [&]() {
+            QTimer::singleShot(0, &scene, [&]() { scene.GetRenderPreview().SetProjectGraphProblem(problem); });
+        });
+    }
+    SECTION("failure retains the last presented scene")
+    {
+        REQUIRE(renderer.BuildAndPreview() == true);
+        REQUIRE(scene.Open(QDir(root).filePath(relative)) == true);
+        REQUIRE(waitFor([&]() { return scene.Busy() == false; }) == true);
+        REQUIRE(scene.GetRenderPreview().Frames() != 0);
+        previousImage = graphViewOrNull->GetImage();
+        REQUIRE(previousImage.isNull() == false);
+        previousDocument = scene.Document();
+        QJsonObject replacement = previousDocument;
+        QJsonObject camera = replacement.value(QStringLiteral("camera")).toObject();
+        camera.insert(QStringLiteral("fov"), 0.5);
+        replacement.insert(QStringLiteral("camera"), camera);
+        QFile file(QDir(root).filePath(relative));
+        REQUIRE(file.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+        const QByteArray bytes = QJsonDocument(replacement).toJson();
+        REQUIRE(file.write(bytes) == bytes.size());
+        file.close();
+        scene.GetRenderPreview().SetProjectGraphProblem(problem);
+        finished.clear();
+    }
+    REQUIRE(scene.Open(QDir(root).filePath(relative)) == true);
+    REQUIRE(waitFor([&]() { return scene.Busy() == false; }) == true);
+    REQUIRE(finished.size() == 1);
+    CHECK(finished.at(0).at(0).toBool() == false);
+    CHECK(scene.StatusText().contains(problem) == true);
+    CHECK(scene.Document() == previousDocument);
+    if (previousImage.isNull() == false)
+    {
+        // WorldWorkspace forwards the failed operation's diagnostic through this production path.
+        scene.ShowSceneFailure(problem);
+        CHECK(graphViewOrNull->GetImage() == previousImage);
+    }
+    QObject::disconnect(failureConnection);
+    scene.GetRenderPreview().SetProjectGraphProblem({});
+    REQUIRE(renderer.BuildAndPreview() == true);
+    finished.clear();
+    REQUIRE(scene.Open(QDir(root).filePath(relative)) == true);
+    REQUIRE(waitFor([&]() { return scene.Busy() == false; }) == true);
+    REQUIRE(finished.size() == 1);
+    CHECK(finished.at(0).at(0).toBool() == true);
+    CHECK(scene.GetRenderPreview().Frames() != 0);
+    CHECK(graphViewOrNull->GetImage().isNull() == false);
+    scene.StopPreview();
+    renderer.SetPreviewSource(nullptr);
+}
+
 TEST_CASE("saved cooked level renders after moving the project and removing source inputs", "[.level-native]")
 {
     QTemporaryDir directory;
