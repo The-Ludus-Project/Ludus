@@ -360,11 +360,86 @@ void Summarise(const Header& header, PlyHeaderSummary& outSummary) noexcept
     }
 }
 
+/// Assemble a binary scalar of `size` bytes (1, 2, 4 or 8) in the body's byte order.
+[[nodiscard]] uint64 LoadRaw(const uint8* bytes, usize size, bool isLittleEndian) noexcept
+{
+    uint64 raw = 0;
+    if (isLittleEndian == true)
+    {
+        for (usize i = size; i != 0; --i)
+        {
+            raw = (raw << 8) | bytes[i - 1];
+        }
+        return raw;
+    }
+    for (usize i = 0; i < size; ++i)
+    {
+        raw = (raw << 8) | bytes[i];
+    }
+    return raw;
+}
+
+/// Interpret raw scalar bits as type and widen to float64.
+[[nodiscard]] float64 ConvertRaw(ScalarType type, uint64 raw) noexcept
+{
+    switch (type)
+    {
+        case ScalarType::Int8:
+            return static_cast<int8>(static_cast<uint8>(raw));
+        case ScalarType::Uint8:
+        case ScalarType::Uint16:
+        case ScalarType::Uint32:
+            return static_cast<float64>(raw);
+        case ScalarType::Int16:
+            return static_cast<int16>(static_cast<uint16>(raw));
+        case ScalarType::Int32:
+            return static_cast<int32>(static_cast<uint32>(raw));
+        case ScalarType::Float32:
+            return static_cast<float64>(std::bit_cast<float32>(static_cast<uint32>(raw)));
+        case ScalarType::Float64:
+            return std::bit_cast<float64>(raw);
+    }
+    return 0.0;
+}
+
 /// Body cursor that reads scalars in either binary byte order or as ASCII words.
 class BodyReader final
 {
 public:
     BodyReader(std::span<const uint8> body, PlyFormat format) noexcept : mBody(body), mFormat(format) {}
+
+    [[nodiscard]] bool IsBinary() const noexcept
+    {
+        return mFormat != PlyFormat::Ascii;
+    }
+
+    [[nodiscard]] bool IsLittleEndian() const noexcept
+    {
+        return mFormat == PlyFormat::BinaryLittleEndian;
+    }
+
+    [[nodiscard]] usize GetRemainingBytes() const noexcept
+    {
+        return mBody.size() - mOffset;
+    }
+
+    /// Consume count binary bytes; nullptr (nothing consumed) when the body is shorter.
+    [[nodiscard]] const uint8* TakeOrNull(usize count) noexcept
+    {
+        if (mBody.size() - mOffset < count)
+        {
+            return nullptr;
+        }
+        const uint8* bytes = mBody.data() + mOffset;
+        mOffset += count;
+        return bytes;
+    }
+
+    /// Unconsumed bytes; valid for GetRemainingBytes() bytes.
+    [[nodiscard]] const uint8* PeekRemaining() const noexcept
+    {
+        return mBody.data() + mOffset;
+    }
 
     [[nodiscard]] bool ReadScalar(ScalarType type, float64& outValue) noexcept
     {
@@ -373,49 +448,12 @@ public:
             return readAscii(outValue);
         }
         const usize size = GetScalarBytes(type);
-        if (mBody.size() - mOffset < size)
+        const uint8* bytes = TakeOrNull(size);
+        if (bytes == nullptr)
         {
             return false;
         }
-        uint8 bytes[8]{};
-        for (usize i = 0; i < size; ++i)
-        {
-            const usize source = mFormat == PlyFormat::BinaryLittleEndian ? i : size - 1 - i;
-            bytes[i] = mBody[mOffset + source];
-        }
-        mOffset += size;
-        uint64 raw = 0;
-        for (usize i = 0; i < size; ++i)
-        {
-            raw |= static_cast<uint64>(bytes[i]) << (8 * i);
-        }
-        switch (type)
-        {
-            case ScalarType::Int8:
-                outValue = static_cast<int8>(static_cast<uint8>(raw));
-                break;
-            case ScalarType::Uint8:
-                outValue = static_cast<float64>(raw);
-                break;
-            case ScalarType::Int16:
-                outValue = static_cast<int16>(static_cast<uint16>(raw));
-                break;
-            case ScalarType::Uint16:
-                outValue = static_cast<float64>(raw);
-                break;
-            case ScalarType::Int32:
-                outValue = static_cast<int32>(static_cast<uint32>(raw));
-                break;
-            case ScalarType::Uint32:
-                outValue = static_cast<float64>(raw);
-                break;
-            case ScalarType::Float32:
-                outValue = static_cast<float64>(std::bit_cast<float32>(static_cast<uint32>(raw)));
-                break;
-            case ScalarType::Float64:
-                outValue = std::bit_cast<float64>(raw);
-                break;
-        }
+        outValue = ConvertRaw(type, LoadRaw(bytes, size, IsLittleEndian()));
         return true;
     }
 
@@ -449,6 +487,148 @@ private:
 [[nodiscard]] bool IsValidIndex(float64 value, uint64 vertexCount) noexcept
 {
     return value >= 0.0 && value < static_cast<float64>(vertexCount) && math::Floor(value) == value;
+}
+
+/// Store one decoded vertex row (slots indexed by VertexSlot) into the mesh.
+void StoreVertex(const float64 (&slots)[9], usize vertex, IrMesh& inoutMesh) noexcept
+{
+    for (usize k = 0; k < 3; ++k)
+    {
+        inoutMesh.Positions[vertex * 3 + k] = static_cast<float32>(slots[1 + k]);
+        if (inoutMesh.Normals.IsEmpty() == false)
+        {
+            inoutMesh.Normals[vertex * 3 + k] = static_cast<float32>(slots[4 + k]);
+        }
+    }
+    if (inoutMesh.Uvs.IsEmpty() == false)
+    {
+        inoutMesh.Uvs[vertex * 2] = static_cast<float32>(slots[7]);
+        inoutMesh.Uvs[vertex * 2 + 1] = static_cast<float32>(1.0 - slots[8]);
+    }
+}
+
+[[nodiscard]] bool HasOnlyScalarProperties(const Element& element) noexcept
+{
+    for (usize p = 0; p < element.PropertyCount; ++p)
+    {
+        if (element.Properties[p].IsList == true)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Binary rows of fixed width: bounds-check a whole row, then decode it with the
+/// same conversions as BodyReader::ReadScalar.
+[[nodiscard]] bool ReadScalarRows(BodyReader& inoutReader,
+                                  const Element& element,
+                                  bool isVertex,
+                                  IrMesh& inoutMesh,
+                                  std::string_view& outMessage) noexcept
+{
+    usize rowBytes = 0;
+    for (usize p = 0; p < element.PropertyCount; ++p)
+    {
+        rowBytes += GetScalarBytes(element.Properties[p].Type);
+    }
+    const bool isLittleEndian = inoutReader.IsLittleEndian();
+    for (uint64 row = 0; row < element.Count; ++row)
+    {
+        const uint8* bytes = inoutReader.TakeOrNull(rowBytes);
+        if (bytes == nullptr)
+        {
+            outMessage = "PLY body is truncated or malformed";
+            return false;
+        }
+        if (isVertex == false)
+        {
+            continue;
+        }
+        float64 slots[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        for (usize p = 0; p < element.PropertyCount; ++p)
+        {
+            const Property& property = element.Properties[p];
+            const usize size = GetScalarBytes(property.Type);
+            slots[static_cast<usize>(property.Slot)] = ConvertRaw(property.Type, LoadRaw(bytes, size, isLittleEndian));
+            bytes += size;
+        }
+        StoreVertex(slots, static_cast<usize>(row), inoutMesh);
+    }
+    return true;
+}
+
+[[nodiscard]] bool IsSingleIndexList(const Element& element) noexcept
+{
+    return element.PropertyCount == 1 && element.Properties[0].IsList == true &&
+           element.Properties[0].IsVertexIndices == true;
+}
+
+/// Binary face rows holding only a vertex index list: bounds-check each polygon
+/// once, then validate and fan-triangulate exactly as the general row loop does.
+[[nodiscard]] bool ReadIndexLists(BodyReader& inoutReader,
+                                  const Element& element,
+                                  bool hasVertices,
+                                  uint64 vertexCount,
+                                  IrMesh& inoutMesh,
+                                  std::string_view& outMessage) noexcept
+{
+    const Property& property = element.Properties[0];
+    const usize countBytes = GetScalarBytes(property.CountType);
+    const usize indexBytes = GetScalarBytes(property.Type);
+    const bool isLittleEndian = inoutReader.IsLittleEndian();
+    // Triangles are the common case; a failed reservation only loses the hint.
+    const uint64 boundedFaces = inoutReader.GetRemainingBytes() / (countBytes + 3 * indexBytes);
+    const uint64 expectedFaces = element.Count < boundedFaces ? element.Count : boundedFaces;
+    (void)inoutMesh.Indices.TryEnsureCapacity(inoutMesh.Indices.GetSize() + static_cast<usize>(expectedFaces) * 3);
+    for (uint64 row = 0; row < element.Count; ++row)
+    {
+        const uint8* countData = inoutReader.TakeOrNull(countBytes);
+        const float64 countValue = countData == nullptr
+                                       ? -1.0
+                                       : ConvertRaw(property.CountType, LoadRaw(countData, countBytes, isLittleEndian));
+        if (countValue < 0.0 || countValue > MAX_POLYGON_VERTICES)
+        {
+            outMessage = "PLY list count out of range";
+            return false;
+        }
+        const uint32 count = static_cast<uint32>(countValue);
+        const uint8* indexData = inoutReader.TakeOrNull(count * indexBytes);
+        // A short polygon still validates its complete indices first, as the row loop would.
+        const uint32 available =
+            indexData != nullptr ? count : static_cast<uint32>(inoutReader.GetRemainingBytes() / indexBytes);
+        if (indexData == nullptr)
+        {
+            indexData = inoutReader.PeekRemaining();
+        }
+        uint32 polygon[MAX_POLYGON_VERTICES]{};
+        for (uint32 k = 0; k < available; ++k)
+        {
+            const float64 value =
+                ConvertRaw(property.Type, LoadRaw(indexData + k * indexBytes, indexBytes, isLittleEndian));
+            if (hasVertices == false || IsValidIndex(value, vertexCount) == false)
+            {
+                outMessage = "PLY face index out of range";
+                return false;
+            }
+            polygon[k] = static_cast<uint32>(value);
+        }
+        if (available < count)
+        {
+            outMessage = "PLY body is truncated or malformed";
+            return false;
+        }
+        for (uint32 k = 2; k < count; ++k)
+        {
+            if (inoutMesh.Indices.TryAdd(polygon[0]) == false || inoutMesh.Indices.TryAdd(polygon[k - 1]) == false ||
+                inoutMesh.Indices.TryAdd(polygon[k]) == false)
+            {
+                outMessage = "out of memory";
+                return false;
+            }
+        }
+    }
+    return true;
 }
 } // namespace
 
@@ -512,6 +692,22 @@ bool ReadPly(std::span<const uint8> data,
                 return false;
             }
         }
+        if (reader.IsBinary() == true && HasOnlyScalarProperties(element) == true)
+        {
+            if (ReadScalarRows(reader, element, isVertex, outMesh, outMessage) == false)
+            {
+                return false;
+            }
+            continue;
+        }
+        if (reader.IsBinary() == true && isFace == true && IsSingleIndexList(element) == true)
+        {
+            if (ReadIndexLists(reader, element, hasVertices, vertexCount, outMesh, outMessage) == false)
+            {
+                return false;
+            }
+            continue;
+        }
         for (uint64 row = 0; row < element.Count; ++row)
         {
             float64 slots[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -572,20 +768,7 @@ bool ReadPly(std::span<const uint8> data,
             }
             if (isVertex == true)
             {
-                const usize v = static_cast<usize>(row);
-                for (usize k = 0; k < 3; ++k)
-                {
-                    outMesh.Positions[v * 3 + k] = static_cast<float32>(slots[1 + k]);
-                    if (outMesh.Normals.IsEmpty() == false)
-                    {
-                        outMesh.Normals[v * 3 + k] = static_cast<float32>(slots[4 + k]);
-                    }
-                }
-                if (outMesh.Uvs.IsEmpty() == false)
-                {
-                    outMesh.Uvs[v * 2] = static_cast<float32>(slots[7]);
-                    outMesh.Uvs[v * 2 + 1] = static_cast<float32>(1.0 - slots[8]);
-                }
+                StoreVertex(slots, static_cast<usize>(row), outMesh);
             }
         }
     }
