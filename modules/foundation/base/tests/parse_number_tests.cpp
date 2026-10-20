@@ -173,3 +173,121 @@ TEST_CASE("Owned conversion agrees with CRT binary32 rounding for long fractiona
         }
     }
 }
+TEST_CASE("Owned conversion rounds fixed-point decimals like the CRT", "[base][parse]")
+{
+    // Test-only CRT oracle. Scene files spell most values as fixed-point decimals
+    // with up to 19 significant digits, the exact short-input conversion path.
+    constexpr usize CASE_COUNT = 20000;
+    constexpr uint32 MAX_DIGITS = 19;
+    constexpr uint32 DECIMAL_RADIX = 10;
+    constexpr uint32 EXPONENT_SPAN = 40;
+    constexpr int32 EXPONENT_OFFSET = 25;
+    constexpr uint64 LCG_MULTIPLIER = 6364136223846793005ULL;
+    constexpr uint64 LCG_INCREMENT = 1442695040888963407ULL;
+    constexpr uint32 BINARY32_MAGNITUDE_MASK = 0x7fffffffU;
+    constexpr uint32 BINARY32_INFINITY_BITS = 0x7f800000U;
+    constexpr float32 UNCHANGED = 17;
+    uint64 state = 0x2545f4914f6cdd1dULL;
+    const auto next = [&state]() {
+        state = state * LCG_MULTIPLIER + LCG_INCREMENT;
+        return static_cast<uint32>(state >> 32);
+    };
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const uint32 digitCount = 1 + next() % MAX_DIGITS;
+        const uint32 pointPosition = next() % (digitCount + 1);
+        std::string text = next() % 2 != 0 ? "-" : "";
+        std::string digits;
+        for (uint32 digit = 0; digit < digitCount; ++digit)
+        {
+            digits += static_cast<char>('0' + next() % DECIMAL_RADIX);
+        }
+        std::string integer = digits.substr(0, pointPosition);
+        while (integer.size() > 1 && integer[0] == '0')
+        {
+            integer.erase(0, 1);
+        }
+        text += integer.empty() == true ? "0" : integer;
+        if (pointPosition < digitCount)
+        {
+            text += '.';
+            text += digits.substr(pointPosition);
+        }
+        if (next() % 4 == 0)
+        {
+            text += 'e';
+            text += std::to_string(static_cast<int32>(next() % EXPONENT_SPAN) - EXPONENT_OFFSET);
+        }
+        CAPTURE(text);
+        const uint32 bits = std::bit_cast<uint32>(std::strtof(text.c_str(), nullptr));
+        float32 actual = UNCHANGED;
+        const NumberParseStatus result = ParseFloat32(text.data(), text.size(), actual);
+        const bool isNonzeroInput = digits.find_first_not_of('0') != std::string::npos;
+        if ((bits & BINARY32_MAGNITUDE_MASK) >= BINARY32_INFINITY_BITS ||
+            ((bits & BINARY32_MAGNITUDE_MASK) == 0 && isNonzeroInput == true))
+        {
+            REQUIRE(result == NumberParseStatus::OutOfRange);
+            REQUIRE(actual == UNCHANGED);
+            continue;
+        }
+        REQUIRE(result == NumberParseStatus::Success);
+        REQUIRE(std::bit_cast<uint32>(actual) == bits);
+    }
+}
+TEST_CASE("Short and long spellings of one value convert identically", "[base][parse]")
+{
+    // Twenty trailing zeroes exceed the short-input path, so each pair compares it
+    // with the general exact conversion on the same rational value.
+    constexpr usize CASE_COUNT = 5000;
+    constexpr uint64 MANTISSA_LIMIT = 10000000000000000000ULL;
+    constexpr uint32 MAX_FRACTION_DIGITS = 20;
+    constexpr usize PADDING_ZEROES = 20;
+    constexpr uint64 LCG_MULTIPLIER = 6364136223846793005ULL;
+    constexpr uint64 LCG_INCREMENT = 1442695040888963407ULL;
+    const std::string padding(PADDING_ZEROES, '0');
+    uint64 state = 0x9e3779b97f4a7c15ULL;
+    const auto next = [&state]() {
+        state = state * LCG_MULTIPLIER + LCG_INCREMENT;
+        return state;
+    };
+    for (usize index = 0; index < CASE_COUNT; ++index)
+    {
+        const uint64 mantissa = (next() >> 1) % MANTISSA_LIMIT;
+        const uint32 fractionDigits = static_cast<uint32>((next() >> 32) % MAX_FRACTION_DIGITS);
+        std::string digits = std::to_string(mantissa);
+        while (digits.size() <= fractionDigits)
+        {
+            digits.insert(0, 1, '0');
+        }
+        std::string text = digits.substr(0, digits.size() - fractionDigits);
+        if (fractionDigits != 0)
+        {
+            text += '.';
+            text += digits.substr(digits.size() - fractionDigits);
+        }
+        const std::string padded = fractionDigits != 0 ? text + padding : text + "." + padding;
+        CAPTURE(text);
+        float32 shortValue = 17;
+        float32 longValue = 23;
+        const NumberParseStatus shortResult = ParseFloat32(text.data(), text.size(), shortValue);
+        const NumberParseStatus longResult = ParseFloat32(padded.data(), padded.size(), longValue);
+        REQUIRE(shortResult == longResult);
+        if (shortResult == NumberParseStatus::Success)
+        {
+            REQUIRE(std::bit_cast<uint32>(shortValue) == std::bit_cast<uint32>(longValue));
+        }
+    }
+    // Exact binary32 midpoints within the short path round to even.
+    for (const char* text : {"16777217", "16777219", "33554434", "33554438", "0.5000000298023223876953125"})
+    {
+        CAPTURE(text);
+        const std::string padded = std::string(text).find('.') != std::string::npos ? std::string(text) + padding
+                                                                                    : std::string(text) + "." + padding;
+        float32 shortValue = 0;
+        float32 longValue = 1;
+        REQUIRE(ParseFloat32(text, std::strlen(text), shortValue) == NumberParseStatus::Success);
+        REQUIRE(ParseFloat32(padded.data(), padded.size(), longValue) == NumberParseStatus::Success);
+        REQUIRE(std::bit_cast<uint32>(shortValue) == std::bit_cast<uint32>(longValue));
+        REQUIRE(std::bit_cast<uint32>(shortValue) == std::bit_cast<uint32>(std::strtof(text, nullptr)));
+    }
+}
