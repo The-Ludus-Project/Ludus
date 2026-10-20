@@ -1020,6 +1020,22 @@ checks. Offscreen GPU tests establish resource/publication behavior; interactive
 native and browser viewport acceptance remains a separate requirement. Do not
 mark later stages complete because a file became shorter.
 
+### Project graph owns native World output
+
+The native World viewport delegates frame production to the current project's render graph.
+`RenderPreview` retains the scene extraction, camera controller and device lifetime; it does
+not prepare a second built-in scene renderer while delegated. `RendererWorkspace` owns the
+immutable build requests and graph activation; `WorldGraphView` owns output/configuration
+selection and display. The engine default is used only when no project graph is present.
+The Render Preview dock mirrors that producer instead of defining a second rendering choice.
+
+The existing graph producer finishes its asynchronous attachment read before polling an
+activation that can retire that generation. Pending and failed builds retain the last
+complete displayed image. Native import publication receives frame completion only for the
+current extraction revision. External saves are debounced and re-read before accepting a
+matching build result; dirty-source conflicts preserve the draft. Attachments and authored
+root configurations supply diagnostic views. See the [canonical workflow and profile limits](../development/render-graph-authoring.md#start-customizing-the-renderer).
+
 ## Workspace and visual system
 
 Redesign around the active document, using the

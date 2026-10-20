@@ -1,6 +1,7 @@
 #include "internal/world_workspace.h"
 #include "internal/import_report.h"
 #include "internal/item_selection.h"
+#include "internal/preview_viewport.h"
 
 #include "internal/controller.h"
 #include "internal/editor_files.h"
@@ -220,7 +221,10 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     });
     Render_ = new RenderPanel(this);
     layout->addWidget(Render_);
-    connect(Render_, &RenderPanel::Starting, this, &WorldWorkspace::PreviewStarting);
+    connect(Render_, &RenderPanel::Starting, this, [this]() {
+        updateShownRenderPreview(false);
+        Q_EMIT PreviewStarting();
+    });
     connect(Render_, &RenderPanel::TintRequested, this, &WorldWorkspace::PickTint);
     auto* split = new QSplitter(this);
     Split_ = split;
@@ -269,6 +273,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         // viewport beside the current World view; Render() hides the old view after
         // the commit, or hides the candidate again if the import fails.
         Viewport_->show();
+        updateShownRenderPreview(true);
         Q_EMIT PreviewStarting();
     });
     QWidget* inspectorPanel = new QWidget(split);
@@ -1828,6 +1833,11 @@ bool WorldWorkspace::ConfirmDiscard()
     Render();
     Changed(QStringLiteral("Changes discarded."));
     return true;
+}
+void WorldWorkspace::UseProjectGraph(RendererWorkspace& inoutWorkspace)
+{
+    Render_->GetViewport().UseProjectGraph(inoutWorkspace);
+    Scene_->GetViewport().UseProjectGraph(inoutWorkspace);
 }
 RenderPreview& WorldWorkspace::GetRenderPreview() noexcept
 {

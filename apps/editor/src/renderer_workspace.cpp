@@ -1,5 +1,8 @@
-#include "internal/renderer_workspace.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/render_graph_worker.h"
+#endif
 #include "internal/item_selection.h"
+#include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -35,6 +38,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -416,8 +420,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     editorRow->addWidget(chooseCodeEditor);
     editorRow->addWidget(reloadSources);
     sourceLayout->addLayout(editorRow);
-    QLabel* sourceHint = new QLabel(QStringLiteral("Save in your code editor, then Build & Preview. "
-                                                   "Reload Sources refreshes this pane."),
+    QLabel* sourceHint = new QLabel(QStringLiteral("Shader edits update the World viewport automatically. "
+                                                   "Save external edits in your code editor to reload them."),
                                     sourcePage);
     sourceHint->setWordWrap(true);
     sourceLayout->addWidget(sourceHint);
@@ -498,7 +502,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     layout->addWidget(mStatus);
 
     connect(mCreateFirst, &QPushButton::clicked, this, [this]() { static_cast<void>(PromptNewGraph()); });
-    connect(mConfiguration, &QComboBox::currentTextChanged, this, [this]() { scheduleLiveBuild(); });
+    connect(mConfiguration, &QComboBox::currentTextChanged, this, [this]() {
+        scheduleLiveBuild();
+        Q_EMIT DocumentChanged();
+    });
     connect(mCustomize, &QAction::triggered, this, [this]() { static_cast<void>(CustomizeBuiltIn()); });
     connect(mTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {
         if (mCustomize->isVisible() == false)
@@ -518,8 +525,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         {
             if (OpenGraph(rootGraph) == true)
             {
-                mStatus->setText(QStringLiteral("Created %1. Open a World viewport, then choose Build & Preview.")
-                                     .arg(QDir(mProjectRoot).relativeFilePath(rootGraph)));
+                mStatus->setText(
+                    (mIsWorldRenderingEnabled == true
+                         ? QStringLiteral("Created %1. The World viewport now uses this graph.")
+                         : QStringLiteral("Created %1. Open a World viewport, then choose Build & Preview."))
+                        .arg(QDir(mProjectRoot).relativeFilePath(rootGraph)));
             }
             else
             {
@@ -635,7 +645,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                                                 mEdges->item(row, 1)->text()));
         }
     });
-    connect(mSourceFile, &QComboBox::currentTextChanged, this, [this]() { renderSource(); });
+    connect(mSourceFile, &QComboBox::currentTextChanged, this, [this]() {
+        if (mSourceEditDebounce.isActive() == true)
+        {
+            applySourceEdit();
+        }
+        renderSource();
+    });
     connect(applyText, &QPushButton::clicked, this, [this]() {
         documentEdited(mDocument.SetText(mSourceFile->currentText(), mSource->toPlainText().toUtf8()));
     });
@@ -646,6 +662,66 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     connect(reloadSources, &QPushButton::clicked, this, [this]() { static_cast<void>(ReloadSourcesFromDisk()); });
     connect(&mJob, &RenderGraphJob::Finished, this, &RendererWorkspace::AcceptResult);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mPreviewOrNull != nullptr)
+    {
+        connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, [this]() {
+            if (mPreviewSourceOrNull != nullptr && mPreviewOrNull->GetPresentedRevision() == mPreviewRevision &&
+                mPreviewSourceOrNull->Scene().Identity == mPreviewSceneIdentity &&
+                mPreviewSourceOrNull->GetDeviceSerial() == mPreviewDeviceSerial)
+            {
+                mPreviewSourceOrNull->NotifyProjectFrame();
+            }
+        });
+    }
+#endif
+    constexpr int32 SOURCE_EDIT_DEBOUNCE_MILLISECONDS = 250;
+    mSourceEditDebounce.setSingleShot(true);
+    mSourceEditDebounce.setInterval(SOURCE_EDIT_DEBOUNCE_MILLISECONDS);
+    connect(mSource, &QPlainTextEdit::textChanged, this, [this]() {
+        if (mIsWorldRenderingEnabled == true && mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == true)
+        {
+            mEditingSource = mSourceFile->currentText();
+            mEditingText = mSource->toPlainText().toUtf8();
+            mSourceEditDebounce.start();
+        }
+    });
+    connect(&mSourceEditDebounce, &QTimer::timeout, this, &RendererWorkspace::applySourceEdit);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mWorkerOrNull = new RenderGraphWorker(this);
+    connect(mWorkerOrNull, &RenderGraphWorker::Ready, this, [this]() {
+        if (mHasPendingWorkerBuild == true)
+        {
+            mHasPendingWorkerBuild = false;
+            if (mShouldPreviewAfterWorker == true)
+            {
+                static_cast<void>(BuildAndPreview());
+            }
+            else
+            {
+                static_cast<void>(Build());
+            }
+        }
+    });
+    connect(mWorkerOrNull, &RenderGraphWorker::Failed, this, [this]() {
+        mHasPendingWorkerBuild = false;
+        mStatus->setText(mWorkerOrNull->GetError());
+        setProblem(mBuildProblem, mStatus->text());
+        Q_EMIT JobFinished();
+    });
+#endif
+    connect(&mSourceWatch, &RenderGraphSourceWatch::SourcesChanged, this, [this]() {
+        mHasPendingSourceChange = true;
+        refreshWatchedSources();
+    });
+    connect(this, &RendererWorkspace::JobFinished, this, [this]() { refreshWatchedSources(); });
+    connect(this, &RendererWorkspace::DocumentChanged, this, [this]() {
+        mSourceWatch.SetDocument(mDocument, mProjectRoot);
+        if (mIsWorldRenderingEnabled == true)
+        {
+            scheduleLiveBuild();
+        }
+    });
     renderStatus();
     renderPreview();
 }
@@ -660,13 +736,24 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     {
         mCreation.Cancel();
     }
-    mLiveBuild.Reset();
     const bool isSameRoot = canonicalRoot == mProjectRoot;
+    const bool hasNewEpoch = epoch != mEpoch;
     mEpoch = epoch;
     if (isSameRoot == true)
     {
+        if (hasNewEpoch == true)
+        {
+            CancelJob();
+            mLiveBuild.Reset();
+            if (mIsWorldRenderingEnabled == true)
+            {
+                SetLivePreview(true);
+            }
+        }
         return;
     }
+    mSourceEditDebounce.stop();
+    mLiveBuild.Reset();
     CancelJob();
     mProjectRoot = canonicalRoot;
     // Tool overrides and resolved tools belong to one project's SDK; the worker socket is an
@@ -676,6 +763,9 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mResolvedTools = {};
     mResolvedSdk.clear();
     mDocument.Reset();
+    mBuildProblem.clear();
+    mSourceProblem.clear();
+    mExtractionProblem.clear();
     mSelectedFile.clear();
     mSelectedConfiguration.clear();
     mSelectedNode.clear();
@@ -700,15 +790,12 @@ void RendererWorkspace::openProjectGraph()
     // The project's own graph wins; otherwise the engine default stands in, so rendering
     // never asks for a graph. Neither path writes a file.
     const QString package = QDir(mProjectRoot).filePath(PROJECT_RENDER_GRAPH_DIRECTORY);
-    const QString projectGraph = QDir(package).filePath(DEFAULT_RENDER_GRAPH_ROOT);
-    QString problem;
-    if (QFileInfo::exists(projectGraph) == true)
+    const QString projectGraph = ResolveProjectRenderGraph(mProjectRoot);
+    if (projectGraph.isEmpty() == false)
     {
-        if (OpenGraph(projectGraph) == true)
-        {
-            return;
-        }
-        problem = mStatus->text();
+        // A broken authored graph is an error, never a request to silently draw the default.
+        static_cast<void>(OpenGraph(projectGraph));
+        return;
     }
     RenderGraphDocument candidate;
     if (candidate.LoadBuiltIn(GetDefaultRenderGraphSource(), DEFAULT_RENDER_GRAPH_ROOT, package) !=
@@ -718,17 +805,6 @@ void RendererWorkspace::openProjectGraph()
         return;
     }
     showDocument(candidate);
-    if (problem.isEmpty() == false)
-    {
-        // The reason is a full sentence; drop its period so the parenthesis closes the clause.
-        if (problem.endsWith(QLatin1Char('.')) == true)
-        {
-            problem.chop(1);
-        }
-        mStatus->setText(QStringLiteral("%1/%2 could not be opened (%3). Showing the engine default; Save will not "
-                                        "replace the existing files.")
-                             .arg(PROJECT_RENDER_GRAPH_DIRECTORY, DEFAULT_RENDER_GRAPH_ROOT, problem));
-    }
 }
 
 bool RendererWorkspace::CanCreateGraph() const
@@ -812,7 +888,26 @@ bool RendererWorkspace::OpenGraph(const QString& path)
         mStatus->setText(DescribeStatus(status));
         return false;
     }
+    const QString selectedFile = candidate.GetRootGraph();
+    QJsonObject selectedGraph;
+    if (selectedFile != DEFAULT_RENDER_GRAPH_ROOT && candidate.GetGraph(selectedFile, selectedGraph) == true &&
+        QFileInfo::exists(QDir(candidate.GetPackageRoot()).filePath(DEFAULT_RENDER_GRAPH_ROOT)) == true)
+    {
+        const QJsonArray configurations = selectedGraph.value(QStringLiteral("configurations")).toArray();
+        bool hasRoot = false;
+        for (const QJsonValueConstRef configuration : configurations)
+        {
+            hasRoot = hasRoot == true || configuration.toObject().value(QStringLiteral("inputs")).toArray().isEmpty();
+        }
+        if (hasRoot == false &&
+            candidate.Load(candidate.GetPackageRoot(), DEFAULT_RENDER_GRAPH_ROOT) != RenderGraphDocumentStatus::Ok)
+        {
+            return false;
+        }
+    }
     showDocument(candidate);
+    mSelectedFile = selectedFile;
+    renderTree();
     Q_EMIT DocumentChanged();
     return true;
 }
@@ -820,7 +915,12 @@ bool RendererWorkspace::OpenGraph(const QString& path)
 void RendererWorkspace::showDocument(const RenderGraphDocument& document)
 {
     CancelJob();
+    mSourceEditDebounce.stop();
     mDocument = document;
+    mBuildProblem.clear();
+    mSourceProblem.clear();
+    mExtractionProblem.clear();
+    mPreviewSceneIdentity.clear();
     mSelectedFile = mDocument.GetRootGraph();
     mSelectedConfiguration.clear();
     mSelectedNode.clear();
@@ -831,6 +931,10 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     renderTree();
     renderSource();
     renderStatus();
+    if (mIsWorldRenderingEnabled == true)
+    {
+        SetLivePreview(true);
+    }
 }
 
 bool RendererWorkspace::ConfirmDiscard()
@@ -864,6 +968,10 @@ bool RendererWorkspace::CanSave() const
 
 bool RendererWorkspace::Save()
 {
+    if (mSourceEditDebounce.isActive() == true)
+    {
+        applySourceEdit();
+    }
     if (isUneditedBuiltIn() == true)
     {
         // The unedited engine default is not project content; Save never copies it.
@@ -950,8 +1058,10 @@ bool RendererWorkspace::ReloadSourcesFromDisk()
                 ? QStringLiteral("External sources changed while local edits exist. Undo local edits or reopen "
                                  "the graph to resolve them; the current draft is retained.")
                 : DescribeStatus(status));
+        setProblem(mSourceProblem, mStatus->text());
         return false;
     }
+    setProblem(mSourceProblem, {});
     if (hasChanged == true)
     {
         documentEdited(RenderGraphDocumentStatus::Ok);
@@ -1082,6 +1192,7 @@ bool RendererWorkspace::startJob(const QString& action,
         mStatus->setText(QStringLiteral("The render-graph tool is unavailable from this editor's tooling root."));
         return false;
     }
+    setProblem(mBuildProblem, {});
     mLiveBuild.SetBusy(true);
     mActiveRequest = request.Request;
     mStatus->setText(
@@ -1109,6 +1220,10 @@ bool RendererWorkspace::Build()
 
 bool RendererWorkspace::BuildAndPreview()
 {
+    if (mSourceEditDebounce.isActive() == true)
+    {
+        applySourceEdit();
+    }
     // The unedited default already has a generation built with the editor: no tools needed.
     if (isUneditedBuiltIn() == true && GetDefaultRenderGraphRuntime().isEmpty() == false && mPreviewOrNull != nullptr)
     {
@@ -1117,6 +1232,10 @@ bool RendererWorkspace::BuildAndPreview()
     }
     if (startBuild(true) == false)
     {
+        if (mHasPendingWorkerBuild == false)
+        {
+            setProblem(mBuildProblem, mSourceProblem.isEmpty() == true ? mStatus->text() : QString());
+        }
         return false;
     }
     mLiveBuild.MarkRequested(getBuildIdentity());
@@ -1128,6 +1247,103 @@ bool RendererWorkspace::CanBuild() const
     return mDocument.IsLoaded() == true && IsJobActive() == false;
 }
 
+QString RendererWorkspace::GetRenderProblem() const
+{
+    if (mSourceProblem.isEmpty() == false)
+    {
+        return mSourceProblem;
+    }
+    return mExtractionProblem.isEmpty() == false ? mExtractionProblem : mBuildProblem;
+}
+void RendererWorkspace::setProblem(QString& inoutProblem, const QString& text)
+{
+    if (inoutProblem != text)
+    {
+        inoutProblem = text;
+        Q_EMIT RenderProblemChanged();
+    }
+}
+void RendererWorkspace::applySourceEdit()
+{
+    mSourceEditDebounce.stop();
+    const RenderGraphDocumentStatus status = mDocument.SetText(mEditingSource, mEditingText);
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        renderStatus();
+        Q_EMIT DocumentChanged();
+        scheduleLiveBuild();
+    }
+    else
+    {
+        mStatus->setText(DescribeStatus(status));
+    }
+}
+void RendererWorkspace::EnableWorldRendering()
+{
+    mIsWorldRenderingEnabled = true;
+    mSourceWatch.SetDocument(mDocument, mProjectRoot);
+    SetLivePreview(true);
+}
+void RendererWorkspace::refreshWatchedSources()
+{
+    if (mHasPendingSourceChange == false || IsJobActive() == true)
+    {
+        return;
+    }
+    mHasPendingSourceChange = false;
+    if (mDocument.IsLoaded() == false || mDocument.IsBuiltIn() == true)
+    {
+        if (ResolveProjectRenderGraph(mProjectRoot).isEmpty() == false)
+        {
+            openProjectGraph();
+        }
+    }
+    else
+    {
+        if (ReloadSourcesFromDisk() == true)
+        {
+            setProblem(mSourceProblem, {});
+            scheduleLiveBuild();
+        }
+        else
+        {
+            setProblem(mSourceProblem, mStatus->text());
+        }
+    }
+    mSourceWatch.SetDocument(mDocument, mProjectRoot);
+}
+QStringList RendererWorkspace::GetConfigurations() const
+{
+    QStringList configurations;
+    for (int32 i = 0; i < mConfiguration->count(); ++i)
+    {
+        const QString configuration = mConfiguration->itemText(i);
+        if (configuration != DEFAULT_CONFIGURATION)
+        {
+            configurations.append(configuration);
+        }
+    }
+    return configurations;
+}
+QString RendererWorkspace::GetConfiguration() const
+{
+    if (mConfiguration->currentText() == DEFAULT_CONFIGURATION)
+    {
+        QJsonObject graph;
+        if (mDocument.GetGraph(mDocument.GetRootGraph(), graph) == true)
+        {
+            return graph.value(QStringLiteral("default")).toString();
+        }
+    }
+    return mConfiguration->currentText();
+}
+void RendererWorkspace::SetConfiguration(const QString& configuration)
+{
+    if (mConfiguration->findText(configuration) >= 0)
+    {
+        mConfiguration->setCurrentText(configuration);
+    }
+}
 void RendererWorkspace::SetWorkerSocket(const QString& endpoint)
 {
     mBuildSettings.WorkerSocket = endpoint;
@@ -1177,9 +1393,32 @@ bool RendererWorkspace::startBuild(bool shouldPreview)
     {
         arguments += {QStringLiteral("--spirv-cross"), tools.SpirvCross};
     }
-    if (mBuildSettings.WorkerSocket.isEmpty() == false)
+    QString endpoint = mBuildSettings.WorkerSocket;
+    if (endpoint.isEmpty() == true)
     {
-        arguments += {QStringLiteral("--worker-socket"), mBuildSettings.WorkerSocket};
+        endpoint = qEnvironmentVariable("LUDUS_SHADER_WORKER_SOCKET");
+    }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsWorldRenderingEnabled == true && shouldOverride == false && endpoint.isEmpty() == true)
+    {
+        endpoint = mWorkerOrNull->Prepare();
+        if (endpoint.isEmpty() == true)
+        {
+            const QString error = mWorkerOrNull->GetError();
+            mHasPendingWorkerBuild = mWorkerOrNull->GetState() == RenderGraphWorkerState::Starting;
+            mShouldPreviewAfterWorker = shouldPreview;
+            mStatus->setText(error.isEmpty() == true ? QStringLiteral("Starting shader compiler…") : error);
+            if (error.isEmpty() == false)
+            {
+                Q_EMIT JobFinished();
+            }
+            return false;
+        }
+    }
+#endif
+    if (endpoint.isEmpty() == false)
+    {
+        arguments += {QStringLiteral("--worker-socket"), endpoint};
     }
     if (shouldPreview == true)
     {
@@ -1212,6 +1451,7 @@ bool RendererWorkspace::CookRuntime()
 
 void RendererWorkspace::CancelJob()
 {
+    mHasPendingWorkerBuild = false;
     const bool isCreating = mCreation.IsActive();
     SetLivePreview(false);
     mCreation.Cancel();
@@ -1315,7 +1555,17 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     {
         mIsValidated = false;
     }
-    if (result.IsSuccessful == true && result.Request.ShouldPreview == true &&
+    if (result.Request.ShouldPreview == true)
+    {
+        // Files can change while the compiler runs, before the watch debounce expires.
+        mHasPendingSourceChange = true;
+    }
+    refreshWatchedSources();
+    if (mSourceProblem.isEmpty() == false)
+    {
+        mLiveBuild.Reset();
+    }
+    if (result.IsSuccessful == true && result.Request.ShouldPreview == true && mSourceProblem.isEmpty() == true &&
         result.Request.InputIdentity == getBuildIdentity())
     {
         static_cast<void>(PreviewRuntime());
@@ -1592,6 +1842,7 @@ void RendererWorkspace::renderSource()
     const QString text = QString::fromUtf8(mDocument.GetDraft(file));
     if (mSource->toPlainText() != text)
     {
+        const QSignalBlocker blocker(mSource);
         mSource->setPlainText(text);
     }
     mSource->setEnabled(file.isEmpty() == false);
@@ -1934,6 +2185,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
     {
         return;
     }
+    mPreviewTimer.stop();
     if (mPreviewSourceOrNull != nullptr)
     {
         disconnect(mPreviewSourceOrNull, nullptr, this, nullptr);
@@ -1954,6 +2206,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
     {
         // Release generations before RenderPreview destroys the shared device.
         connect(mPreviewSourceOrNull, &RenderPreview::DeviceStopping, this, [this]() {
+            mPreviewTimer.stop();
             mPreviewOrNull->Detach();
             mPreviewDeviceSerial = 0;
         });
@@ -1961,7 +2214,20 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
 #endif
     if (mPreviewSourceOrNull != nullptr)
     {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
+            if (mPreviewSourceOrNull->HasDevice() == true && mPreviewTimer.isActive() == false)
+            {
+                mPreviewTimer.start();
+            }
+        });
+        if (mPreviewSourceOrNull->HasDevice() == true)
+        {
+            mPreviewTimer.start();
+        }
+#endif
         connect(mPreviewSourceOrNull, &QObject::destroyed, this, [this]() {
+            mPreviewTimer.stop();
             mPreviewSourceOrNull = nullptr;
             mPreviewDeviceSerial = 0;
         });
@@ -1987,7 +2253,14 @@ bool RendererWorkspace::PreviewRuntime()
         return false;
     }
     const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime);
-    mPreviewTimer.start();
+    if (loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting)
+    {
+        setProblem(mBuildProblem, {});
+    }
+    if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true)
+    {
+        mPreviewTimer.start();
+    }
     ServicePreview();
     return loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting;
 #else
@@ -2016,6 +2289,10 @@ void RendererWorkspace::ServicePreview()
     const QSize target = preview.GetTargetSize();
     if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false)
     {
+        if (mIsWorldRenderingEnabled == true)
+        {
+            mPreviewSourceOrNull->Resize(target.width(), target.height());
+        }
         // The World viewport's current camera or orbit, at the graph's exported extent. The
         // runtime profile admits only conventional depth, so request a finite conventional
         // projection of the same camera instead of the viewport's infinite reverse-Z one.
@@ -2029,6 +2306,7 @@ void RendererWorkspace::ServicePreview()
         if (hasView == false && scene.Identity != mPreviewSceneIdentity)
         {
             mPreviewStatus->setText(error);
+            setProblem(mExtractionProblem, error);
             mPreviewSceneIdentity = scene.Identity;
         }
         if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
@@ -2037,10 +2315,12 @@ void RendererWorkspace::ServicePreview()
             RenderGraphExtraction extraction;
             if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)
             {
+                setProblem(mExtractionProblem, {});
                 preview.SetExtraction(extraction);
             }
             else
             {
+                setProblem(mExtractionProblem, error);
                 mPreviewStatus->setText(error);
             }
             mPreviewSceneIdentity = scene.Identity;
@@ -2048,6 +2328,11 @@ void RendererWorkspace::ServicePreview()
         }
     }
     preview.Tick();
+    if (mPreviewSourceOrNull == nullptr || mPreviewSourceOrNull->HasDevice() == false ||
+        preview.GetTargetSize().isEmpty() == true)
+    {
+        mPreviewTimer.stop();
+    }
 #endif
 }
 

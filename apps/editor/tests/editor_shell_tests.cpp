@@ -935,6 +935,13 @@ TEST_CASE("Live Preview and Cancel are shell commands over the Renderer document
     REQUIRE(renderer->GetDocument().IsLoaded() == true);
     CHECK(live->isEnabled() == true);
     CHECK(cancel->isEnabled() == false);
+    // Native World rendering starts live automatically; the command can pause and resume it.
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    CHECK(renderer->IsLivePreviewEnabled() == true);
+    CHECK(live->isChecked() == true);
+    live->trigger();
+    CHECK(renderer->IsLivePreviewEnabled() == false);
+#endif
     live->trigger();
     CHECK(renderer->IsLivePreviewEnabled() == true);
     CHECK(live->isChecked() == true);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include "internal/render_preview.h"
@@ -36,6 +37,11 @@ public:
     [[nodiscard]] RenderPreview& Preview() noexcept
     {
         return Preview_;
+    }
+    /// Embedded viewport; borrowed for project render-graph binding.
+    [[nodiscard]] LUDUS_INLINE PreviewViewport& GetViewport() noexcept
+    {
+        return *Viewport_;
     }
 Q_SIGNALS:
     void Starting();

@@ -26,6 +26,8 @@
 #    include "internal/offscreen_frame_reader.h"
 #    include "internal/preview_shader_reload.h"
 #    include "internal/qt_viewport_device.h"
+#    include "internal/renderer_workspace.h"
+#    include "internal/world_graph_view.h"
 #    include <QLibraryInfo>
 #    include <QPainter>
 #    include <QQuickItem>
@@ -258,6 +260,7 @@ struct PreviewViewport::State final
     QPointer<ViewportFrameSource> Source;
     PreviewViewport* Widget = nullptr;
     QVBoxLayout* Layout = nullptr;
+    QHBoxLayout* ControlsOrNull = nullptr;
     QLabel* Message = nullptr;
     uint64 Presented = 0;
     /// Statistics overlay text currently shown; empty while the overlay is off.
@@ -348,6 +351,7 @@ struct PreviewViewport::State final
     PreviewShaderReload* ShaderReloadOrNull = nullptr;
     QWidget* Container = nullptr;
     FrameCanvas* CanvasOrNull = nullptr;
+    WorldGraphView* GraphViewOrNull = nullptr;
     OffscreenFrameReader Reader;
     renderer::ViewportFrame ReadLease{};
     bool HasReadLease = false;
@@ -488,6 +492,20 @@ private:
     }
     void createWindow()
     {
+        if (GraphViewOrNull != nullptr)
+        {
+            if (Preview->HasDevice() == false && Preview->AdmitOffscreenDevice() == false)
+            {
+                Message->setText(Preview->Status());
+                Message->show();
+            }
+            else
+            {
+                Message->hide();
+                GraphViewOrNull->show();
+            }
+            return;
+        }
         if (Window != nullptr || CanvasOrNull != nullptr || Preview.isNull() == true)
         {
             return;
@@ -684,6 +702,10 @@ private:
     void clearFrames()
     {
         CanShowFrames = IsAutomatic;
+        if (GraphViewOrNull != nullptr)
+        {
+            GraphViewOrNull->SetCanPresent(IsAutomatic);
+        }
         if (CanvasOrNull != nullptr)
         {
             releaseReadLease();
@@ -854,6 +876,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                        "one material or lighting quantity per pixel so it can be inspected directly."));
     shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
     QHBoxLayout* controls = new QHBoxLayout;
+    mState->ControlsOrNull = controls;
     controls->addWidget(shading, 1);
     QToolButton* frameAll = new QToolButton(this);
     frameAll->setObjectName(QStringLiteral("viewportFrameAll"));
@@ -968,6 +991,10 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         }
     });
     connect(&mState->Service, &QTimer::timeout, this, [this]() {
+        if (mState->GraphViewOrNull != nullptr)
+        {
+            return;
+        }
         mState->recreatePendingSurface();
         mState->releaseRetired();
         // Always finish an in-flight offscreen copy; otherwise only present when admitted.
@@ -997,6 +1024,50 @@ PreviewViewport::~PreviewViewport()
     mState->destroyWindow();
 #endif
 }
+void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->GraphViewOrNull != nullptr || inoutWorkspace.GetPreviewOrNull() == nullptr)
+    {
+        return;
+    }
+    const bool wasRunning = Preview_->Running();
+    if (wasRunning == true)
+    {
+        Preview_->Stop();
+    }
+    Preview_->UseProjectGraph();
+    mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
+    mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
+    mState->Layout->addWidget(mState->GraphViewOrNull, 1);
+    mState->ControlsOrNull->insertWidget(0, mState->GraphViewOrNull->TakeControls(this), 1);
+    findChild<QComboBox*>(QStringLiteral("viewportShading"))->hide();
+    for (const QString& name : {QStringLiteral("viewportLiveShaders"), QStringLiteral("viewportStatistics")})
+    {
+        QToolButton* buttonOrNull = findChild<QToolButton*>(name);
+        if (buttonOrNull != nullptr)
+        {
+            buttonOrNull->hide();
+        }
+    }
+    if (wasRunning == true)
+    {
+        static_cast<void>(Preview_->Start());
+    }
+#else
+    static_cast<void>(inoutWorkspace);
+#endif
+}
+void PreviewViewport::HoldFrame()
+{
+    mState->CanShowFrames = false;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->GraphViewOrNull != nullptr)
+    {
+        mState->GraphViewOrNull->SetCanPresent(false);
+    }
+#endif
+}
 void PreviewViewport::ShowFrame()
 {
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -1007,7 +1078,14 @@ void PreviewViewport::ShowFrame()
     // A manually gated import may present only after its catalog is committed.
     // Once admitted, also retry frames that arrived while both slots were leased.
     mState->CanShowFrames = true;
-    mState->showFrame();
+    if (mState->GraphViewOrNull == nullptr)
+    {
+        mState->showFrame();
+    }
+    else
+    {
+        mState->GraphViewOrNull->SetCanPresent(true);
+    }
 #endif
 }
 void PreviewViewport::ClearFrame(const QString& text)
@@ -1019,6 +1097,10 @@ void PreviewViewport::ClearFrame(const QString& text)
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mState->clearFrames();
+    if (mState->GraphViewOrNull != nullptr)
+    {
+        mState->GraphViewOrNull->ClearFrame();
+    }
 #endif
     mState->Message->setText(text);
 }
@@ -1131,6 +1213,10 @@ foundation::float32 PreviewViewport::getDrawableHeight() const noexcept
     return static_cast<foundation::float32>(mState->BrowserOrNull->height());
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->GraphViewOrNull != nullptr)
+    {
+        return static_cast<foundation::float32>(mState->GraphViewOrNull->height());
+    }
     if (mState->Window != nullptr)
     {
         return static_cast<foundation::float32>(mState->Window->height());
@@ -1200,7 +1286,7 @@ uint64 PreviewViewport::PresentedFrames() const noexcept
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     return mState->BrowserOrNull->GetPresentedFrames();
 #else
-    return mState->Presented;
+    return mState->GraphViewOrNull != nullptr ? mState->GraphViewOrNull->GetPresentedFrames() : mState->Presented;
 #endif
 }
 } // namespace ludus::editor

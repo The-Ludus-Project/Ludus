@@ -277,14 +277,21 @@ TEST_CASE("New Graph builds and cooks with the project's SDK without manual shad
     preferences.setValue(QStringLiteral("renderGraph/helper"), QStringLiteral("/stale/other-project/helper"));
     preferences.setValue(QStringLiteral("renderGraph/compiler"), QStringLiteral("/stale/other-project/slangc"));
     RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    workspace.EnableWorldRendering();
+#endif
     workspace.SetProject(project, 1);
+    workspace.SetWorkerSocket({});
     // Stale preferences from another project are never overrides.
     CHECK(workspace.GetBuildSettings().ShouldOverrideTools == false);
     CHECK(workspace.GetBuildSettings().Tools.Compiler.isEmpty() == true);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
     REQUIRE(workspace.CreateGraph(QStringLiteral("Automatic")) == true);
     REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+#if !defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     REQUIRE(workspace.BuildAndPreview() == true);
+#endif
+    // Native World rendering builds the newly created graph and starts its own worker.
     REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
     const RenderGraphJobResult result = workspace.GetLastResult();
     INFO(result.Code.toStdString() + ": " + result.Message.toStdString());

@@ -1,5 +1,6 @@
 #include "internal/render_graph_defaults.h"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QUtf8StringView>
 
@@ -15,6 +16,30 @@ constexpr QUtf8StringView DEFAULT_RUNTIME;
 #endif
 } // namespace
 
+QString ResolveProjectRenderGraph(const QString& projectRoot)
+{
+    if (projectRoot.isEmpty() == true)
+    {
+        return {};
+    }
+    const QDir graphs(QDir(projectRoot).filePath(QStringLiteral("graphs")));
+    const QString main = graphs.filePath(QStringLiteral("Main/") + DEFAULT_RENDER_GRAPH_ROOT);
+    if (QFileInfo::exists(main) == true)
+    {
+        return main;
+    }
+    const QFileInfoList directories =
+        graphs.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name);
+    for (const QFileInfo& directory : directories)
+    {
+        const QString candidate = QDir(directory.absoluteFilePath()).filePath(DEFAULT_RENDER_GRAPH_ROOT);
+        if (QFileInfo::exists(candidate) == true)
+        {
+            return candidate;
+        }
+    }
+    return {};
+}
 QString GetDefaultRenderGraphSource()
 {
     return QStringLiteral(":/render-graph/default");

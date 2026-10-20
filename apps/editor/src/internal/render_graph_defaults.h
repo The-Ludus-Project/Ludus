@@ -17,6 +17,10 @@ inline constexpr QLatin1String PROJECT_RENDER_GRAPH_DIRECTORY("graphs/Main");
 // embeds its authored sources and, in native preview builds, its prebuilt runtime
 // generation. Nothing here reads or writes project files.
 
+/// Existing project execution root: Main first, then other named packages in name order.
+/// Returns empty when none exists; does not load, repair or write sources.
+[[nodiscard]] QString ResolveProjectRenderGraph(const QString& projectRoot);
+
 /// Read-only Qt resource directory holding the default graph's authored sources.
 [[nodiscard]] QString GetDefaultRenderGraphSource();
 
