@@ -279,8 +279,11 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& input,
             {
                 if (materialIndex >= materials.GetSize() || materials[materialIndex].HasError == true)
                 {
-                    diagnostics.ErrorMaterial = materialIndex;
-                    diagnostics.ErrorSourceId = item.SourceId;
+                    if (diagnostics.ErrorSourceId == 0)
+                    {
+                        diagnostics.ErrorMaterial = materialIndex;
+                        diagnostics.ErrorSourceId = item.SourceId;
+                    }
                     if (input.AreErrorsAllowed == false)
                     {
                         diagnostics.ErrorBindings += 1;

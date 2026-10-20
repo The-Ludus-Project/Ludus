@@ -85,6 +85,9 @@ TEST_CASE("Missing materials use neutral default while broken bindings require e
           rhi::RasterStatus::InvalidDescription);
     CHECK(job.Get() == nullptr);
     fixture.Scene.AreErrorsAllowed = true;
+    fixture.Bindings[1] = 38;
+    renderer::SceneShaderDiagnostics diagnostics;
+    fixture.Scene.DiagnosticsOrNull = &diagnostics;
     REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
             rhi::RasterStatus::Ready);
     CHECK(job->FlatSurfaces[0].Bsdf.BaseColor.X == 1);
@@ -92,6 +95,9 @@ TEST_CASE("Missing materials use neutral default while broken bindings require e
     CHECK(job->FlatSurfaces[0].Bsdf.BaseColor.Z == 1);
     CHECK(job->FlatSurfaces[0].Emission.X == 0);
     CHECK(job->Scene.Triangles[0].ShaderMaterialKind == 2);
+    CHECK(diagnostics.ErrorBindings == 2);
+    CHECK(diagnostics.ErrorMaterial == 37);
+    CHECK(diagnostics.ErrorSourceId == fixture.Item.SourceId);
 }
 TEST_CASE("Scene materials retain texture bytes and analytic lights without geometry", "[scene-shader]")
 {
