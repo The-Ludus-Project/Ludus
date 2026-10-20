@@ -1076,14 +1076,22 @@ step; **Save** publishes the new file. Undoing a saved creation and saving again
 removes the created file if its disk contents still match the editor's saved copy.
 An external change reports a conflict and is preserved.
 
-Add nodes using Properties. Define the library's `inputs` and `outputs` in the
-in-app **Source** view and apply the text to the draft. The empty library has no
+Add nodes using Properties or **Create Node** in the right-click menu. Define the
+library's `inputs` and `outputs` in the in-app **Source** view and apply the text
+to the draft. The empty library has no
 ports or rendering work until authored. It does not add ray-tracing or compute
 support; the supported node kinds above still apply. The original root remains
 the execution root when editing the library.
 
 Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
 
+- **Create Node** lists Scene, Camera, Target, Raster, Subgraph Reference, Export
+  and Present. It is also available on empty canvas space and configuration/file
+  rows in Graph sources. Choose a type to add it to the displayed configuration
+  with a unique ID, selected and scrolled into view. This uses the same undoable
+  operation as Properties' **Add Node**. Creation is disabled while a job runs or
+  Source text needs applying/reverting. **Subgraph Reference** adds a reference
+  node; **Create Subgraph...** creates a new library source as well.
 - **Open Subgraph** opens the referenced configuration; a missing source disables
   this item. **Create Subgraph...** can supply a new source for that node.
 - **View Shaders** on other nodes lists the source files mapped by the root build

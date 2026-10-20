@@ -2181,6 +2181,20 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
             connect(open, &QAction::triggered, this, [this, source]() { openSourceLine(source, 1); });
         }
     }
+    QMenu* createNodes = menu.addMenu(QStringLiteral("Create Node"));
+    createNodes->setObjectName(QStringLiteral("renderGraphCreateNodeMenu"));
+    createNodes->setEnabled(CanCreateSubgraph());
+    for (int32 index = 0; index < mNewKind->count(); ++index)
+    {
+        const QString kind = mNewKind->itemText(index);
+        QAction* createNode =
+            createNodes->addAction(kind == QStringLiteral("Subgraph") ? QStringLiteral("Subgraph Reference") : kind);
+        createNode->setData(kind);
+        connect(createNode, &QAction::triggered, this, [this, index]() {
+            mNewKind->setCurrentIndex(index);
+            addNode();
+        });
+    }
     QAction* create = menu.addAction(QStringLiteral("Create Subgraph..."));
     create->setObjectName(QStringLiteral("renderGraphCreateSubgraphAction"));
     create->setEnabled(CanCreateSubgraph());
