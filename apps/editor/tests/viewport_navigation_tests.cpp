@@ -15,10 +15,14 @@
 #include <ludus/gameplay/camera/camera.hpp>
 
 #include <QApplication>
+#include <QColor>
 #include <QComboBox>
 #include <QFileInfo>
 #include <QFocusEvent>
+#include <QImage>
 #include <QJsonObject>
+#include <QLabel>
+#include <QPixmap>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QWheelEvent>
@@ -339,4 +343,121 @@ TEST_CASE("Lit viewport gives the render surface its available height without ba
         REQUIRE(viewport.grab().save(capture) == true);
     }
     preview.Stop();
+}
+
+TEST_CASE("An empty viewport draws a navigable coordinate grid without a renderer", "[editor][navigation][grid]")
+{
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(800, 600);
+    viewport.show();
+    QApplication::processEvents();
+    QLabel* gridOrNull = viewport.findChild<QLabel*>(QStringLiteral("emptyWorldView"));
+    REQUIRE(gridOrNull != nullptr);
+    REQUIRE(gridOrNull->isVisible() == true);
+    const QImage initial = gridOrNull->grab().toImage();
+    REQUIRE(initial.isNull() == false);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_EMPTY_VIEW_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(initial.save(capture) == true);
+    }
+    // Inspect the drawable center, excluding explanatory text at the edges.
+    const auto countLines = [](const QImage& image) {
+        usize count = 0;
+        for (int32 y = image.height() / 4; y < image.height() * 3 / 4; ++y)
+        {
+            for (int32 x = image.width() / 4; x < image.width() * 3 / 4; ++x)
+            {
+                if (image.pixelColor(x, y) != QColor(9, 12, 15))
+                {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    };
+    CHECK(countLines(initial) > 100);
+    preview.Orbit(60, 20);
+    CHECK(gridOrNull->grab().toImage() != initial);
+    const QImage orbited = gridOrNull->grab().toImage();
+    preview.Pan(30, 20, static_cast<float32>(gridOrNull->height()));
+    CHECK(gridOrNull->grab().toImage() != orbited);
+    const QImage panned = gridOrNull->grab().toImage();
+    preview.Zoom(2);
+    CHECK(gridOrNull->grab().toImage() != panned);
+    viewport.resize(400, 800);
+    QApplication::processEvents();
+    CHECK(countLines(gridOrNull->grab().toImage()) > 100);
+    CHECK(preview.Scene().Identity.isEmpty() == true);
+    CHECK(preview.Scene().Objects.isEmpty() == true);
+    CHECK(preview.Running() == false);
+    CHECK(preview.HasDevice() == false);
+    viewport.ClearFrame(QStringLiteral("No visible scene instances."));
+    CHECK(gridOrNull->isVisible() == true);
+    CHECK(countLines(gridOrNull->grab().toImage()) > 100);
+    REQUIRE(preview.SetScene(MakeNavigationScene()) == true);
+    viewport.ClearFrame(QStringLiteral("Preparing scene."));
+    CHECK(countLines(gridOrNull->grab().toImage()) == 0);
+    REQUIRE(preview.SetScene({}) == true);
+    viewport.ClearFrame(QStringLiteral("No visible scene instances."));
+    CHECK(countLines(gridOrNull->grab().toImage()) > 100);
+}
+
+TEST_CASE("Empty orthographic views draw the facing Cartesian plane", "[editor][navigation][grid]")
+{
+    constexpr usize DIRECTION_COUNT = 3;
+    const StaticArray<math::Vector3, DIRECTION_COUNT> eyes{{{0, 0, 5}, {5, 0, 0}, {0, 5, 0}}};
+    const StaticArray<math::Vector3, DIRECTION_COUNT> axes{{{0, 1, 0}, {0, 1, 0}, {1, 0, 0}}};
+    constexpr StaticArray<float32, DIRECTION_COUNT> angles{0, math::kHalfPiF, -math::kHalfPiF};
+    for (usize direction = 0; direction < DIRECTION_COUNT; ++direction)
+    {
+        RenderPreview preview;
+        QJsonObject navigation = preview.Navigation();
+        math::Quaternion rotation;
+        REQUIRE(math::TryFromAxisAngle(axes[direction], angles[direction], rotation) == math::MathStatus::Success);
+        navigation.insert(QStringLiteral("projection"),
+                          static_cast<int32>(camera::CameraProjection::OrthographicFinite));
+        navigation.insert(QStringLiteral("span"), 10);
+        navigation.insert(QStringLiteral("near"), 0.01);
+        navigation.insert(QStringLiteral("far"), 100);
+        navigation.insert(QStringLiteral("eyeX"), static_cast<float64>(eyes[direction].X));
+        navigation.insert(QStringLiteral("eyeY"), static_cast<float64>(eyes[direction].Y));
+        navigation.insert(QStringLiteral("eyeZ"), static_cast<float64>(eyes[direction].Z));
+        navigation.insert(QStringLiteral("rotationX"), static_cast<float64>(rotation.X));
+        navigation.insert(QStringLiteral("rotationY"), static_cast<float64>(rotation.Y));
+        navigation.insert(QStringLiteral("rotationZ"), static_cast<float64>(rotation.Z));
+        navigation.insert(QStringLiteral("rotationW"), static_cast<float64>(rotation.W));
+        preview.RestoreNavigation(navigation);
+        rr::ViewDescription view;
+        QString error;
+        REQUIRE(preview.DescribeView(400, 400, view, error) == true);
+        REQUIRE(view.OrthographicCamera == true);
+        PreviewViewport viewport(&preview);
+        viewport.resize(600, 600);
+        viewport.show();
+        QApplication::processEvents();
+        QLabel* gridOrNull = viewport.findChild<QLabel*>(QStringLiteral("emptyWorldView"));
+        REQUIRE(gridOrNull != nullptr);
+        const QImage image = gridOrNull->grab().toImage();
+        const QString capture = qEnvironmentVariable("LUDUS_EDITOR_EMPTY_VIEW_CAPTURE");
+        if (capture.isEmpty() == false)
+        {
+            REQUIRE(image.save(capture + QString::number(direction) + QStringLiteral(".png")) == true);
+        }
+        // Each facing plane must have both horizontal and vertical lines away from its axes.
+        usize horizontalChanges = 0;
+        usize verticalChanges = 0;
+        for (int32 i = 1; i < image.width() - 1; ++i)
+        {
+            horizontalChanges += image.pixel(i, image.height() / 3) != image.pixel(i - 1, image.height() / 3) ? 1 : 0;
+        }
+        for (int32 i = image.height() / 4; i < image.height() * 3 / 4; ++i)
+        {
+            verticalChanges += image.pixel(image.width() / 3, i) != image.pixel(image.width() / 3, i - 1) ? 1 : 0;
+        }
+        CHECK(horizontalChanges > 10);
+        CHECK(verticalChanges > 10);
+        CHECK(preview.HasDevice() == false);
+    }
 }

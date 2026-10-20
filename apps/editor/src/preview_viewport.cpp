@@ -1,4 +1,5 @@
 #include "internal/preview_viewport.h"
+#include "internal/empty_world_view.h"
 #include "internal/preview_shading.h"
 #include "internal/viewport_statistics.h"
 
@@ -945,8 +946,8 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         statistics->setChecked(preview->IsStatisticsVisible());
     });
     connect(preview, &RenderPreview::StatisticsChanged, this, [this]() { updateStatistics(); });
-    mState->Message = new QLabel(QStringLiteral("Open a World to render it here."), this);
-    mState->Message->setAlignment(Qt::AlignCenter);
+    mState->Message = new EmptyWorldView(*preview, this);
+    mState->Message->setText(QStringLiteral("Open or create a World to start authoring."));
     mState->Message->setWordWrap(true);
     mState->Layout->addWidget(mState->Message, 1);
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -1038,6 +1039,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     }
     Preview_->UseProjectGraph();
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
+    mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->Layout->addWidget(mState->GraphViewOrNull, 1);
     mState->ControlsOrNull->insertWidget(0, mState->GraphViewOrNull->TakeControls(this), 1);
@@ -1100,9 +1102,18 @@ void PreviewViewport::ClearFrame(const QString& text)
     if (mState->GraphViewOrNull != nullptr)
     {
         mState->GraphViewOrNull->ClearFrame();
+        if (Preview_->Scene().Identity.isEmpty() == true)
+        {
+            mState->GraphViewOrNull->hide();
+        }
     }
 #endif
     mState->Message->setText(text);
+    if (Preview_->Scene().Identity.isEmpty() == true)
+    {
+        mState->Message->show();
+        mState->Message->update();
+    }
 }
 QString PreviewViewport::GetStatisticsText() const
 {

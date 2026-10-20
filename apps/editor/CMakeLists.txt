@@ -48,6 +48,8 @@ set(editor_viewport_sources
     src/viewport_frame_source.cpp
     src/internal/render_graph_source_watch.h
     src/render_graph_source_watch.cpp
+    src/internal/empty_world_view.h
+    src/empty_world_view.cpp
     src/preview_viewport.cpp
     src/viewport_navigation.cpp
     src/internal/texture_inspection.h
