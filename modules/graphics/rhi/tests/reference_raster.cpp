@@ -620,3 +620,33 @@ void NativeTextureDestroy(usize) noexcept
 void NativeInteropDetachSurface() noexcept {}
 void NativeInteropReset() noexcept {}
 } // namespace ludus::graphics::rhi::backend
+
+#include "internal/gpu_pass_timing_buffer.h"
+#include "internal/gpu_scope_backend.h"
+namespace ludus::graphics::rhi::backend
+{
+namespace
+{
+internal::GpuPassTimingBuffer gReferenceScopes;
+}
+RasterStatus ArmPassTimings() noexcept
+{
+    return RasterStatus::Unsupported;
+}
+GpuPassTimings PollPassTimings() noexcept
+{
+    return { .State = GpuTimingState::Unavailable };
+}
+RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
+{
+    return gReferenceScopes.BeginScope(scope) == true ? RasterStatus::Ready : RasterStatus::InvalidState;
+}
+RasterStatus EndScope() noexcept
+{
+    return gReferenceScopes.EndScope() == true ? RasterStatus::Ready : RasterStatus::InvalidState;
+}
+void ResetPassTimings() noexcept
+{
+    gReferenceScopes.Reset();
+}
+} // namespace ludus::graphics::rhi::backend

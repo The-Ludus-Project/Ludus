@@ -77,7 +77,7 @@ capture, narrowing the reason to build engine code to *semantic context tools ca
 For current controls, fixed capture limits, export retry and supported targets,
 see [the native editor recording guide](../development/editor-workspace.md#recording-cpu-and-gpu-profiling).
 
-Delivery update, 2026-10-20: native local-editor P0/P1 now extend the CPU
+Delivery update, 2026-10-20: native local-editor P0/P1 and the local P2 pass-timing increment extend the CPU
 tracer with recording controls and GPU duration-counter export. The RHI already
 provides `EnableGpuTiming`, `ArmGpuTiming` and
 `GetGpuTiming` in `measurement.h`, and editor viewport Stats already polls and
@@ -162,23 +162,57 @@ then native storage retires through the existing completion owner even if the
 export is already finalized. Do not destroy in-flight queries to meet a UI
 deadline. Output failure retains the frozen recording for retry/discard.
 
-### Backend precision and later pass timing
+### Backend precision and pass timing
 
-Metal initially reuses completion-only command-buffer GPU duration; that is not
-per-pass timing. P2 investigates capability-checked counter sampling at legal
-encoder/pass boundaries before exposing named pass durations. Never split a
-command buffer or encoder just to obtain a prettier timing breakdown without
-measuring and declaring the resulting execution change.
+Metal retains completion-only command-buffer timing for the frame probe. Pass
+sampling separately requires timestamp counter sets and stage-boundary support.
+Render pass attachments sample the vertex and fragment stage boundaries; the
+minimum start and maximum end define one elapsed envelope, since stages can
+overlap. Compute attachments sample encoder start/end. Samples are resolved only
+after command-buffer completion. This does not split encoders or command buffers.
+Unavailable counters leave the frame probe and rendering operational.
 
 Vulkan reuses timestamp queries with the actual queue's support, valid bit count,
 tick period, wrap/discontinuity handling and availability/completion rules.
-P2 adds bounded query pairs around executed physical passes and documents the
-stage interval. Logical passes merged into one physical pass retain annotation
+P2 writes TOP_OF_PIPE/BOTTOM_OF_PIPE query pairs outside executed physical render
+passes and around compute dispatches. Query results are harvested after the
+captured submission fence signals and before that fence is reused. Logical passes merged into one physical pass retain annotation
 identity but share the physical timing; do not fabricate independent logical
 durations or sum nested/overlapping intervals as a frame total. Query pressure
 skips samples with coverage information instead of serializing work.
 
-WebGPU/WebGL timing retains backend feature/privacy/disjoint constraints and is
+`gpu_scope.h` owns copied UTF-8 names (128 bytes including zero), producer-local
+nonzero identities, physical-operation ordinals, and logical member counts.
+The same scope supplies native Metal command groups/encoder labels, optional
+Vulkan debug-utils command groups, and `GPU/Pass/<name> [identity:ordinal:kind]/DurationNanoseconds`
+counters. Scope admission is independent of recording. The initial scope API
+rejects nesting; failed annotations do not prevent rendering. Vulkan labels are
+optional and only called when the owned instance enables debug-utils. Borrowed
+Vulkan devices keep annotation calls disabled because extension admission is not
+part of their interop contract.
+
+One bounded batch holds up to 64 physical operations for the next acquired
+frame. Armed/pending storage cannot be overwritten; repeated terminal polls
+return the same copied results until rearmed. Additional operations still render
+and increment `queryDroppedPasses`. Culled graph operations have no sample;
+merged OrderedGraph raster operations share the first member's scope and report
+`LogicalPassCount`. Authored graph names survive compiled headers and version-3
+runtime packages; version-2 packages and unnamed hand-built plans use a generic
+label with ordinal identity. Built-in viewport scopes are `Viewport/Scene`,
+`Viewport/Composite`, and, when enabled, `Viewport/Present`.
+
+The editor shares 4,096 completed sample slots between frame and pass samples.
+Metadata distinguishes `frameSampleCount`, `passSampleCount`, native query
+pressure, invalid results, and unresolved pass batches. GPU/Both automatically
+include pass timing when supported; Stats visibility does not arm pass queries.
+CPU-only recording leaves the GPU recording gates disabled. Timing currently
+covers raster/compute operations in the acquired frame command buffer; separate
+ray-query batch command buffers are excluded. Do not interpret an image resolve
+pass as the duration of its ray computation. Hosted recording transport and
+calibrated GPU execution lanes remain separate follow-ups.
+
+WebGPU/WebGL **per-pass** sampling is explicitly unsupported in this increment.
+Their frame timing retains backend feature/privacy/disjoint constraints and is
 qualified separately. A CPU wall-clock timer around submission is never a GPU
 fallback. Multiple graphics/compute queues have separate measurement tracks.
 The existing benchmark timing and image checks remain independent controls.
@@ -607,7 +641,7 @@ struct TraceEvent            // POD, trivially copyable; target 16–24 B (gate 
 | **Perfetto/Chrome export** | ✅ (Phase 1) | | | | Universal; primary viewer path. **[FP+R]** |
 | **Tracy integration (live)** | | ✅ (Phase 3) | ✅ | | Best live UX; validate cost first (§5, [?meas]). **[FP+R]** |
 | **Flow events (job/async correlation)** | ✅ (primitive now) | ✅ (JobSystem dispatch flows, [threading T2](threading.md#task-identity-and-execution-traces)) | | | Cross-context truth is a DAG, not a spanning scope (C1, C5, D16). **[R→adopt]** |
-| **GPU profiling (timestamp queries)** | | P1 duration counters implemented; P2/P3 remain planned | RenderDoc/PIX/Nsight for capture | | Duration counters first, then pass timings and calibrated lanes; tools retain per-draw/pixel inspection (D14). **[FP+R]** |
+| **GPU profiling (timestamp queries)** | | P1 and local P2 duration counters implemented; hosted P2/P3 remain planned | RenderDoc/PIX/Nsight for capture | | Duration counters first, then pass timings and calibrated lanes; tools retain per-draw/pixel inspection (D14). **[FP+R]** |
 | **PIX / vendor debug markers** | | ✅ planned independently of recording mode | ✅ | | Annotates captures with pass names; enabled/disabled overhead must be measured. **[FP]** |
 | **Memory tracking (tag totals)** | ⏳ (needs allocator; always-on tier) | | | | Cheap atomics; keep in all builds (C4, §7). **[FP+R]** |
 | **Memory provenance / live-vs-churn / activity** | | ⏳ (memory-profiler module) | heaptrack for broad heap | | Provenance-at-free is L's core insight; own tags/domains (C4). **[R→adopt]** |

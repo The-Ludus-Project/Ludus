@@ -14,6 +14,8 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/memory/allocation_statistics.hpp>
 
+#include <ludus/foundation/strings/utf8.hpp>
+
 #include <cstdio>
 #include <string>
 
@@ -362,9 +364,26 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
     for (usize index = 0; index < samples.GetSize(); ++index)
     {
         const GpuTraceSample& sample = samples[index];
-        if (sample.FrameId == 0 || sample.DeviceSession == 0 || sample.CollectionTicks < sample.SubmissionTicks)
+        if (sample.FrameId == 0 || sample.DeviceSession == 0 || sample.CollectionTicks < sample.SubmissionTicks ||
+            sample.PassName.IsValid() == false || sample.LogicalPassCount == 0 ||
+            ((sample.ScopeIdentity == 0) != sample.PassName.IsEmpty()))
         {
             return false;
+        }
+    }
+    for (usize index = 0; index < samples.GetSize(); ++index)
+    {
+        const GpuTraceSample& sample = samples[index];
+        if (sample.PassName.IsEmpty() == false)
+        {
+            const std::string_view name(sample.PassName.GetDataOrNull(), sample.PassName.GetSize());
+            Utf8View validated;
+            usize errorOffset = 0;
+            if (ValidateUtf8(name, validated, errorOffset) != StringStatus::Ok ||
+                ValidateCString(name) != StringStatus::Ok)
+            {
+                return false;
+            }
         }
     }
     TraceRecorder& recorder = TraceRecorder::Instance();
@@ -543,6 +562,8 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
     // Thanks to Perfetto contributors, "Visualizing external trace formats", Chrome JSON:
     // https://perfetto.dev/docs/getting-started/other-formats
     // Counters carry durations at a submission attribution marker, not GPU execution slices.
+    usize frameSampleCount = 0;
+    usize passSampleCount = 0;
     if (samples.IsEmpty() == false)
     {
         if (first == false)
@@ -554,7 +575,24 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
         for (usize index = 0; index < samples.GetSize(); ++index)
         {
             const GpuTraceSample& sample = samples[index];
-            out += ",\n{\"pid\":2,\"tid\":1,\"ph\":\"C\",\"name\":\"GPU/FrameDurationNanoseconds\",\"ts\":";
+            out += ",\n{\"pid\":2,\"tid\":1,\"ph\":\"C\",\"name\":\"GPU/";
+            if (sample.PassName.IsEmpty() == true)
+            {
+                ++frameSampleCount;
+                out += "FrameDurationNanoseconds";
+            }
+            else
+            {
+                ++passSampleCount;
+                out += "Pass/";
+                AppendJsonEscaped(out, {sample.PassName.GetDataOrNull(), sample.PassName.GetSize()});
+                out += " [";
+                AppendUint(out, sample.ScopeIdentity);
+                out += ":";
+                AppendUint(out, sample.ScopePassIndex);
+                out += sample.IsCompute == true ? ":Compute]/DurationNanoseconds" : ":Raster]/DurationNanoseconds";
+            }
+            out += "\",\"ts\":";
             AppendMicros(out, sample.SubmissionTicks);
             out += ",\"args\":{\"value\":";
             AppendUint(out, sample.DurationNanoseconds);
@@ -564,6 +602,16 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
             AppendUint(out, sample.FrameId);
             out += ",\"deviceSession\":";
             AppendUint(out, sample.DeviceSession);
+            out += ",\"scopeIdentity\":";
+            AppendUint(out, sample.ScopeIdentity);
+            out += ",\"scopePassIndex\":";
+            AppendUint(out, sample.ScopePassIndex);
+            out += ",\"logicalPassCount\":";
+            AppendUint(out, sample.LogicalPassCount);
+            out += ",\"passName\":\"";
+            AppendJsonEscaped(out, {sample.PassName.GetDataOrNull(), sample.PassName.GetSize()});
+            out += "\",\"isCompute\":";
+            out += sample.IsCompute == true ? "true" : "false";
             out += ",\"collectionNanoseconds\":";
             AppendUint(out, sample.CollectionTicks);
             out += "}}";
@@ -575,8 +623,14 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
         AppendMemoryGaugeMetadata(out, seenDomains);
     }
     out += ",\"ludusGpuTiming\":{\"clockRelationship\":\"duration-only; ts attributes CPU submission, not GPU "
-           "execution\",\"method\":\"device frame probe\",\"sampleCount\":";
+           "execution\",\"method\":\"device frame probe; optional physical pass timestamps\",\"sampleCount\":";
     AppendUint(out, samples.GetSize());
+    out += ",\"frameSampleCount\":";
+    AppendUint(out, frameSampleCount);
+    out += ",\"passSampleCount\":";
+    AppendUint(out, passSampleCount);
+    out += ",\"passTimingSupported\":";
+    out += coverage.IsPassTimingSupported == true ? "true" : "false";
     out += ",\"cpuScopesIncluded\":";
     out += shouldIncludeCpu == true ? "true" : "false";
     out += ",\"gpuRequested\":";
@@ -589,6 +643,10 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
     AppendUint(out, coverage.DroppedSamples);
     out += ",\"unresolvedSamples\":";
     AppendUint(out, coverage.UnresolvedSamples);
+    out += ",\"queryDroppedPasses\":";
+    AppendUint(out, coverage.QueryDroppedPasses);
+    out += ",\"unresolvedPassBatches\":";
+    AppendUint(out, coverage.UnresolvedPassBatches);
     out += "},\"displayTimeUnit\":\"ns\"}\n";
 
     Array<uint8> bytes;

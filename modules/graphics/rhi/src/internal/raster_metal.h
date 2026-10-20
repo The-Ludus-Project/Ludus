@@ -362,7 +362,10 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
 }
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
-    auto encoder = [gCommand computeCommandEncoder];
+    MTLComputePassDescriptor* description = [MTLComputePassDescriptor computePassDescriptor];
+    ConfigurePassTiming(description);
+    id<MTLComputeCommandEncoder> encoder = [gCommand computeCommandEncoderWithDescriptor:description];
+    encoder.label = gPassLabelOrNull;
     if (encoder == nil)
     {
         return RasterStatus::OutOfMemory;
@@ -947,7 +950,9 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
                 state.StencilStore == RasterStore::Store ? MTLStoreActionStore : MTLStoreActionDontCare;
             pass.stencilAttachment.clearStencil = state.ClearStencil;
         }
+        ConfigurePassTiming(pass);
         gEncoder = [gCommand renderCommandEncoderWithDescriptor:pass];
+        gEncoder.label = gPassLabelOrNull;
         gRasterRegion = state;
         gRasterWidth = surface ? static_cast<uint32>(color.width) : info.Width;
         gRasterHeight = surface ? static_cast<uint32>(color.height) : info.Height;

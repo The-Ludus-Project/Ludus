@@ -66,4 +66,39 @@ TEST_CASE("invalid GPU export preserves bytes and unexported CPU events", "[prof
     CHECK(SerializePerfettoTrace(bytes, {}, {}, false) == false);
     CHECK(bytes.GetSize() > 1);
 }
+
+TEST_CASE("named GPU pass counters escape names and retain physical group identity", "[profiling][gpu-export]")
+{
+    constexpr char NAME[] = "Scene/\"Opaque\"\n";
+    GpuTraceSample sample
+    {
+        .SubmissionTicks = 1000,
+        .CollectionTicks = 2000,
+        .DurationNanoseconds = 123,
+        .FrameId = 1,
+        .DeviceSession = 2,
+        .PassName = {NAME, sizeof(NAME) - 1},
+        .ScopeIdentity = 3,
+        .ScopePassIndex = 1,
+        .LogicalPassCount = 2,
+    };
+    Array<uint8> bytes;
+    const GpuTraceCoverage coverage{ .IsGpuRequested = true, .IsPassTimingSupported = true, .QueryDroppedPasses = 4 };
+    REQUIRE(SerializePerfettoTrace(bytes, {&sample, 1}, coverage, false) == true);
+    const std::string json(reinterpret_cast<const char*>(bytes.GetData()), bytes.GetSize());
+    CHECK(json.find("GPU/Pass/Scene/\\\"Opaque\\\"\\n [3:1:Raster]/DurationNanoseconds") != std::string::npos);
+    CHECK(json.find("\"passSampleCount\":1") != std::string::npos);
+    CHECK(json.find("\"frameSampleCount\":0") != std::string::npos);
+    CHECK(json.find("\"logicalPassCount\":2") != std::string::npos);
+    CHECK(json.find("\"queryDroppedPasses\":4") != std::string::npos);
+    CHECK(json.find("\"ph\":\"X\"") == std::string::npos);
+    const usize originalSize = bytes.GetSize();
+    sample.ScopeIdentity = 0;
+    CHECK(SerializePerfettoTrace(bytes, {&sample, 1}, coverage, false) == false);
+    CHECK(bytes.GetSize() == originalSize);
+    sample.ScopeIdentity = 1;
+    sample.PassName = {nullptr, 1};
+    CHECK(SerializePerfettoTrace(bytes, {&sample, 1}, coverage, false) == false);
+    CHECK(bytes.GetSize() == originalSize);
+}
 #endif

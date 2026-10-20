@@ -126,7 +126,8 @@ STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 2
+PACKAGE_VERSION = 3
+MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
 MAX_ENTRY_BYTES = 63
@@ -349,6 +350,13 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
              f'inline constexpr foundation::usize UNIFORM_BINDING_COUNT = {len(contents["bindings"])};',
              f'inline constexpr foundation::usize UNIFORM_BLOCK_COUNT = {len(contents["blocks"])};',
              f'inline constexpr foundation::usize UNIFORM_FIELD_COUNT = {len(contents["fields"])};']
+    pass_names = [p['id'] for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
+    for label in pass_names:
+        build.require(0 < len(label.encode('utf-8')) <= MAX_PASS_NAME_BYTES and '\0' not in label,
+                      'Capacity', label, 'pass debug name exceeds the runtime UTF-8 bound')
+    lines += ['inline constexpr foundation::StaticArray<foundation::BorrowedView<const char>, PASS_COUNT> PASS_NAMES', '{', '    {']
+    lines += ['        {' + json.dumps(label, ensure_ascii=True) + ', ' + str(len(label.encode('utf-8'))) + '},' for label in pass_names]
+    lines += ['    },', '};']
     lines += _uniform_constants(contents)
     kinds = {'Kind': 'Aspect', 'Program': 'Technique', 'ColorLoad': 'Load', 'DepthLoad': 'Load', 'ColorStore': 'Store',
              'DepthStore': 'Store', 'Stages': 'Visibility', 'Target': 'ShaderTarget'}
@@ -383,7 +391,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '        {RESOURCES.GetData(), RESOURCES.GetSize()}, {CAMERAS.GetData(), CAMERAS.GetSize()}, {PASSES.GetData(), PASSES.GetSize()},',
               '        ' + ', '.join(view(label, values) for label, values in
                                     [('UNIFORM_BINDINGS', contents['bindings']), ('UNIFORM_BLOCKS', contents['blocks']),
-                                     ('UNIFORM_FIELDS', contents['fields'])]) + '};', '}']
+                                     ('UNIFORM_FIELDS', contents['fields'])]) + ', {PASS_NAMES.GetData(), PASS_NAMES.GetSize()}};', '}']
     identity = bytes.fromhex(contents['interface_identity'])
     lines += ['/// SHA-256 of the CPU-visible vertex/instance and uniform interface this host was compiled against (RG3).',
               '/// Runtime generations with another identity are rejected with RestartRequired.',
@@ -498,6 +506,13 @@ def encode_runtime_package(contents):
             data += u32(slot, len(encoded)) + encoded + bytes(-len(encoded) % 4)
         for blob in (entry, item['bytes']):
             data += blob + bytes(-len(blob) % 4)
+    for operation in contents['plan']['passes']:
+        if operation['kind'] not in ('Raster', 'RayTracing'):
+            continue
+        label = operation['id'].encode('utf-8')
+        build.require(0 < len(label) <= MAX_PASS_NAME_BYTES and b'\0' not in label,
+                      'Capacity', operation['id'], 'pass debug name exceeds the runtime UTF-8 bound')
+        data += u32(len(label)) + label + bytes(-len(label) % 4)
     build.require(len(data) <= MAX_RUNTIME_BYTES, 'Capacity', 'runtime package', 'runtime generation exceeds 16 MiB')
     return bytes(data)
 

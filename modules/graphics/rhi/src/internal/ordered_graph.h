@@ -2080,6 +2080,30 @@ RasterStatus DiscardOrderedGraph(DeviceHandle device, OrderedGraph& handle) noex
 }
 namespace
 {
+class GraphGpuScope final
+{
+public:
+    ~GraphGpuScope() noexcept
+    {
+        End();
+    }
+    void End() noexcept
+    {
+        if (mIsActive == true)
+        {
+            static_cast<void>(backend::EndScope());
+            mIsActive = false;
+        }
+    }
+    void Begin(const GpuScopeDescription& scope) noexcept
+    {
+        End();
+        mIsActive = backend::BeginScope(scope) == RasterStatus::Ready;
+    }
+
+private:
+    bool mIsActive = false;
+};
 RasterStatus ExecuteGraphCommands(DeviceHandle device,
                                   SurfaceHandle surface,
                                   OrderedGraph& inoutHandle,
@@ -2126,6 +2150,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
             return RasterStatus::InvalidState;
         }
     }
+    GraphGpuScope gpuScope;
     for (usize p = 0; p < graph->PassCount; ++p)
     {
         if (graph->Report.Passes[p].Culled)
@@ -2224,6 +2249,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
         if (continuation == false)
         {
             backend::RasterEndPass();
+            gpuScope.End();
             const auto currentEnd = Admission(device, false);
             if (currentEnd != RasterStatus::Ready)
             {
@@ -2263,6 +2289,25 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                 FrameRetain(RasterKind::Texture, resource.Slot);
                 At(RasterKind::Texture, resource.Slot).FrameTextureUse = sampled;
             }
+            const GraphPassDiagnostic& diagnostic = graph->Report.Passes[p];
+            usize nameLength = 0;
+            while (nameLength < sizeof(diagnostic.Name) && diagnostic.Name[nameLength] != '\0')
+            {
+                ++nameLength;
+            }
+            uint32 logicalPassCount = 1;
+            for (usize member = p + 1; member < graph->PassCount; ++member)
+            {
+                if (graph->Report.Passes[member].Culled == false && graph->Report.Passes[member].RasterGroup == p)
+                {
+                    ++logicalPassCount;
+                }
+            }
+            GpuScopeDescription description;
+            if (MakeGpuScope(p + 1, {diagnostic.Name, nameLength}, description, logicalPassCount) == true)
+            {
+                gpuScope.Begin(description);
+            }
             const auto started = pass.IsCompute ? EncodeCompute(pass.Dispatch) : backend::RasterBeginPass(pass.Info);
             if (started != RasterStatus::Ready)
             {
@@ -2299,6 +2344,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
         }
     }
     backend::RasterEndPass();
+    gpuScope.End();
     const auto currentEnd = Admission(device, false);
     if (currentEnd != RasterStatus::Ready)
     {

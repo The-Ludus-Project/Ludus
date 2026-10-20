@@ -14,6 +14,8 @@ target_sources(ludus_graphics_rhi
     PRIVATE
         src/rhi.cpp
         src/device.cpp
+        src/gpu_scope.cpp
+        src/gpu_pass_timing_buffer.cpp
         src/profile.cpp
         src/raster.cpp
         src/hosted_consumer.cpp
@@ -21,11 +23,11 @@ target_sources(ludus_graphics_rhi
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
-    PRIVATE Ludus::FoundationMath Ludus::FoundationTime
+    PRIVATE Ludus::FoundationStrings Ludus::FoundationMath Ludus::FoundationTime
     PUBLIC
         Ludus::FoundationBase
         Ludus::FoundationContainers
@@ -110,10 +112,10 @@ endif()
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/hosted_ring_tests.cpp tests/hosted_adapter_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/profile.cpp src/raster.cpp src/ray_unsupported.cpp)
+    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/gpu_scope_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/hosted_ring_tests.cpp tests/hosted_adapter_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/gpu_scope.cpp src/gpu_pass_timing_buffer.cpp src/profile.cpp src/raster.cpp src/ray_unsupported.cpp)
     target_compile_definitions(ludus_rhi_lifecycle_tests PRIVATE LUDUS_RHI_TEST_STORAGE=1)
     target_include_directories(ludus_rhi_lifecycle_tests PRIVATE include src)
-    target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE Ludus::Platform Ludus::FoundationContainers Catch2::Catch2WithMain)
+    target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE Ludus::Platform Ludus::FoundationContainers Ludus::FoundationStrings Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_rhi_lifecycle_tests)
     ludus_enable_test_exceptions(ludus_rhi_lifecycle_tests)
     add_test(NAME ludus_rhi_lifecycle_tests COMMAND ludus_rhi_lifecycle_tests)

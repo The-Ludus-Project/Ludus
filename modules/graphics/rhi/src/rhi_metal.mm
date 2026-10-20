@@ -1,12 +1,15 @@
 #include "internal/backend.h"
+#include "internal/gpu_scope_backend.h"
 #include "internal/hosted_metal.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
+
 #include "internal/native_interop.h"
 #include "internal/native_preparation.h"
 #include "internal/raster.h"
 #include "internal/ray_backend.h"
 #include "internal/resources.h"
+#include <climits>
 #if defined(LUDUS_RHI_TEST_READBACK)
 #    include "internal/readback.h"
 #endif
@@ -36,7 +39,9 @@
 #import <Metal/MTLCommandBuffer.h>
 #import <Metal/MTLCommandQueue.h>
 #import <Metal/MTLComputeCommandEncoder.h>
+#import <Metal/MTLComputePass.h>
 #import <Metal/MTLComputePipeline.h>
+#import <Metal/MTLCounters.h>
 #import <Metal/MTLDepthStencil.h>
 #import <Metal/MTLDevice.h>
 #import <Metal/MTLLibrary.h>
@@ -63,6 +68,8 @@ namespace ludus::graphics::rhi::backend
 void RasterFrameExtent() noexcept;
 void TimingBegin() noexcept;
 void TimingEnd() noexcept;
+void BeginPassTimingFrame() noexcept;
+void SubmitPassTimings() noexcept;
 namespace
 {
 using namespace foundation;
@@ -486,6 +493,7 @@ FrameStatus Begin() noexcept
             return FrameFailure();
         }
         gCommand = [gQueue commandBuffer];
+        BeginPassTimingFrame();
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.depthAttachment.texture = gDepth;
         pass.depthAttachment.loadAction = MTLLoadActionClear;
@@ -527,6 +535,7 @@ FrameStatus End() noexcept
             [gCommand presentDrawable:gDrawable];
         }
         TimingEnd();
+        SubmitPassTimings();
         [gCommand commit];
         if (gHosted.IsConnected() == true)
         {
@@ -734,6 +743,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 #endif
 } // namespace ludus::graphics::rhi::backend
 
+#include "internal/gpu_scope_metal.h"
 #include "internal/raster_metal.h"
 
 #include "internal/lifetime_metal.h"

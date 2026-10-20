@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/gpu_scope_backend.h"
 #include "internal/hosted_adapter.h"
 #include "internal/hosted_vulkan.h"
 #include "internal/lifecycle.h"
@@ -31,6 +32,10 @@ void WaitLifetimeSubmissions() noexcept;
 void TimingBegin() noexcept;
 void TimingEnd() noexcept;
 void TimingSubmitted() noexcept;
+void BeginPassTimingFrame() noexcept;
+void SubmitPassTimings() noexcept;
+void BeginPhysicalPassTiming(GpuPassKind kind) noexcept;
+void EndPhysicalPassTiming() noexcept;
 namespace
 {
 using namespace foundation;
@@ -124,6 +129,7 @@ VkFramebuffer gHostedFramebuffer = VK_NULL_HANDLE;
 /// Incremented whenever CreateTargets() recreates the depth attachment.
 uint64 gDepthEpoch = 0;
 bool gBorrowedDevice = false;
+bool hasDebugLabels = false;
 uint32 gNativeInstanceVersion = VK_API_VERSION_1_1;
 bool gEncoding = false;
 bool gResize = true;
@@ -666,7 +672,10 @@ bool Initialize(const ApplicationInfo& app) noexcept
     {
         return false;
     }
-    const char* extensions[4] = {VK_KHR_SURFACE_EXTENSION_NAME, "VK_KHR_wayland_surface"};
+    constexpr usize MAX_INSTANCE_EXTENSIONS = 5;
+    StaticArray<const char*, MAX_INSTANCE_EXTENSIONS> extensions;
+    extensions[0] = VK_KHR_SURFACE_EXTENSION_NAME;
+    extensions[1] = "VK_KHR_wayland_surface";
     uint32 extensionCount = 0;
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
     extensionCount = 2;
@@ -697,6 +706,26 @@ bool Initialize(const ApplicationInfo& app) noexcept
         extensions[extensionCount++] = VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME;
     }
 #endif
+    constexpr usize MAX_INSTANCE_EXTENSION_PROPERTIES = 128;
+    uint32 propertyCount = 0;
+    hasDebugLabels = false;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, nullptr) == VK_SUCCESS &&
+        propertyCount <= MAX_INSTANCE_EXTENSION_PROPERTIES)
+    {
+        StaticArray<VkExtensionProperties, MAX_INSTANCE_EXTENSION_PROPERTIES> properties;
+        if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, properties.GetData()) == VK_SUCCESS)
+        {
+            for (usize index = 0; index < propertyCount; ++index)
+            {
+                if (std::strcmp(properties[index].extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0)
+                {
+                    extensions[extensionCount++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+                    hasDebugLabels = true;
+                    break;
+                }
+            }
+        }
+    }
     VkApplicationInfo application{};
     application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     application.pApplicationName = app.Name.c_str();
@@ -716,7 +745,7 @@ bool Initialize(const ApplicationInfo& app) noexcept
     info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     info.pApplicationInfo = &application;
     info.enabledExtensionCount = extensionCount;
-    info.ppEnabledExtensionNames = extensions;
+    info.ppEnabledExtensionNames = extensions.GetData();
     if (Check(vkCreateInstance(&info, nullptr, &gInstance)) == false)
     {
         volkFinalize();
@@ -1246,6 +1275,7 @@ void Shutdown() noexcept
         volkFinalize();
     }
     gBorrowedDevice = false;
+    hasDebugLabels = false;
     gNativeInstanceVersion = VK_API_VERSION_1_1;
     gPhysical = VK_NULL_HANDLE;
     gRayEnabled = gRayApiAvailable = false;
@@ -1321,6 +1351,7 @@ FrameStatus Begin() noexcept
     gHostedProducer.MarkSignaled(frame.Fence);
     // Harvest the captured query before its frame fence can be reset for later work.
     (void)TimingPoll();
+    static_cast<void>(PollPassTimings());
     if (gDevice == VK_NULL_HANDLE)
     {
         return FrameStatus::Failed;
@@ -1394,6 +1425,7 @@ FrameStatus Begin() noexcept
         return Failure();
     }
     TimingBegin();
+    BeginPassTimingFrame();
     VkClearValue clears[2]{};
     auto& clear = clears[0];
     clears[1].depthStencil = {1, 0};
@@ -1459,6 +1491,7 @@ FrameStatus End() noexcept
         static_cast<void>(gHostedProducer.Poll());
     }
     TimingSubmitted();
+    SubmitPassTimings();
     gAcquiredWait = false;
     gFrame = (gFrame + 1) % FRAMES;
     if (gHeadless == false)
@@ -1882,6 +1915,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 
 #include "internal/ray_vulkan.h"
 
+#include "internal/gpu_scope_vulkan.h"
 #include "internal/measurement_vulkan.h"
 
 #include "internal/native_interop_vulkan.h"
