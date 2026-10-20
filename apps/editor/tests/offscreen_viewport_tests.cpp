@@ -115,6 +115,82 @@ QByteArray MakeMaskedQuadBundle(bool isMasked)
     stream << format::LIGHTING_PROFILE_REC709_PHOTOMETRIC << uint32{0} << uint32{0} << uint32{0} << 1.F << 1.F << 1.F;
     return bytes;
 }
+/// Terms of the LUSCN v6 surface-map quad.
+struct MappedQuad final
+{
+    /// Linear surface-map texel (RG tangent normal, B roughness, A metallic); all zero for none.
+    uint32 SurfaceTexel = 0;
+    /// Red emission of 2 nits, modulated by a half red, half black emission map when set.
+    bool IsEmissive = false;
+    bool HasEmissionMap = false;
+};
+/// Write one cooked LUSCN version 6 quad like MakeMaskedQuadBundle, with a white 1x1 base
+/// texture, an optional 1x1 surface map and optional emission (map), tangent +x.
+QByteArray MakeMappedQuadBundle(const MappedQuad& quad)
+{
+    namespace format = ludus::content::scene_format;
+    QByteArray bytes;
+    QDataStream stream(&bytes, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+    const auto writeIdentity = [&stream](uint64 value) {
+        stream << static_cast<uint32>(value) << static_cast<uint32>(value >> 32);
+    };
+    const bool hasSurface = quad.SurfaceTexel != 0;
+    const uint32 surfaceIndex = 1;
+    const uint32 emissionIndex = hasSurface == true ? 2 : 1;
+    const uint32 textureCount = 1 + (hasSurface == true ? 1 : 0) + (quad.HasEmissionMap == true ? 1 : 0);
+    stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
+    stream << format::VERSION_6 << uint32{1} << uint32{1} << textureCount << uint32{1};
+    for (const float32 value : {0.F, 0.F, 3.F, 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 1.F})
+    {
+        stream << value;
+    }
+    stream << uint32{1} << uint32{1} << uint32{format::TEXEL_BYTES} << uint32{0xffffffffU};
+    if (hasSurface == true)
+    {
+        stream << uint32{1} << uint32{1} << uint32{format::TEXEL_BYTES} << quad.SurfaceTexel;
+    }
+    if (quad.HasEmissionMap == true)
+    {
+        stream << uint32{2} << uint32{1} << uint32{2 * format::TEXEL_BYTES} << uint32{0xff0000ffU}
+               << uint32{0xff000000U};
+    }
+    stream << uint32{0} << format::ADDRESS_CLAMP << 0.F << 1.F << (quad.IsEmissive == true ? 2.F : 0.F) << 0.F << 0.F
+           << format::EMISSION_TWO_SIDED;
+    writeIdentity(quad.IsEmissive == true ? 1 : 0);
+    stream << 0.F << format::ALPHA_OPAQUE << 0.F << (hasSurface == true ? surfaceIndex : format::NO_TEXTURE)
+           << (quad.HasEmissionMap == true ? emissionIndex : format::NO_TEXTURE) << (hasSurface == true ? 1.F : 0.F);
+    // Emitters stay single-sided geometry: area-light proxies reject coincident opposite faces.
+    const uint32 indexCount = quad.IsEmissive == true ? 6 : 12;
+    stream << uint32{4} << indexCount;
+    struct Corner final
+    {
+        float32 X = 0;
+        float32 Y = 0;
+    };
+    const Corner corners[] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    for (const Corner& corner : corners)
+    {
+        stream << corner.X << corner.Y << 0.F << 0.F << 0.F << 1.F << (corner.X + 1) * .5F << (1 - corner.Y) * .5F
+               << 1.F << 0.F << 0.F << 1.F;
+    }
+    const uint32 indices[] = {0U, 1U, 2U, 0U, 2U, 3U, 0U, 2U, 1U, 0U, 3U, 2U};
+    for (uint32 i = 0; i < indexCount; ++i)
+    {
+        stream << indices[i];
+    }
+    stream << uint32{0} << uint32{0};
+    for (const float32 value : {1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F})
+    {
+        stream << value;
+    }
+    writeIdentity(1);
+    const float32 environment = quad.IsEmissive == true ? 0.F : .5F;
+    stream << format::LIGHTING_PROFILE_REC709_PHOTOMETRIC << uint32{0} << uint32{0} << uint32{0} << environment
+           << environment << environment;
+    return bytes;
+}
 /// Count the clearly red surface pixels of a capture.
 qsizetype CountSurfacePixels(const QImage& image)
 {
@@ -492,6 +568,65 @@ TEST_CASE("LUSCN v5 alpha masks cut out cooked surfaces in Albedo and Lit shadin
         CHECK(counts[1] > 0);
         CHECK(counts[1] * 4 < counts[0] * 3);
     }
+#else
+    SKIP("Offscreen Vulkan presentation is Linux-only");
+#endif
+}
+
+TEST_CASE("LUSCN v6 surface and emission maps shade cooked surfaces on the offscreen Vulkan device",
+          "[editor][viewport][offscreen][gpu][surface-maps]")
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    const QJsonObject level{
+        {QStringLiteral("id"), QStringLiteral("5b0c6c3e-6a43-4d8e-9a55-0f1f8d3c2a10")},
+        {QStringLiteral("objects"),
+         QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("quad")},
+                                {QStringLiteral("name"), QStringLiteral("Quad")},
+                                {QStringLiteral("mesh"), QStringLiteral("mesh/quad")},
+                                {QStringLiteral("material"), QStringLiteral("material/quad")}}}},
+    };
+    const auto render = [&level](const MappedQuad& quad, PreviewShading shading) {
+        RenderScene scene;
+        QString error;
+        REQUIRE(RenderScene::LoadCooked(MakeMappedQuadBundle(quad), level, scene, error, {}) == true);
+        RenderPreview preview;
+        REQUIRE(preview.SetScene(scene) == true);
+        preview.SetShading(shading);
+        preview.Resize(MASK_FRAME_SIZE, MASK_FRAME_SIZE);
+        REQUIRE(preview.Start() == true);
+        if (preview.AdmitOffscreenDevice() == false)
+        {
+            SKIP("No Vulkan device (install lavapipe for this smoke test)");
+        }
+        QImage image = CaptureFrame(preview);
+        INFO(preview.Status().toStdString());
+        REQUIRE(image.isNull() == false);
+        preview.Stop();
+        return image;
+    };
+    // Little-endian RGBA texels: a flat normal and a tilted one, full and quarter roughness.
+    constexpr uint32 FLAT_ROUGH = 0xffff8080U;
+    constexpr uint32 TILTED_ROUGH = 0xffffa0e0U;
+    constexpr uint32 FLAT_SMOOTH = 0xff408080U;
+    CHECK(render({ .SurfaceTexel = FLAT_ROUGH }, PreviewShading::Normal) !=
+          render({ .SurfaceTexel = TILTED_ROUGH }, PreviewShading::Normal));
+    CHECK(render({ .SurfaceTexel = FLAT_ROUGH }, PreviewShading::Roughness) !=
+          render({ .SurfaceTexel = FLAT_SMOOTH }, PreviewShading::Roughness));
+    // The emission map's black half emits nothing.
+    const qsizetype uniform = CountSurfacePixels(render({ .IsEmissive = true }, PreviewShading::Lit));
+    const qsizetype mapped =
+        CountSurfacePixels(render({ .IsEmissive = true, .HasEmissionMap = true }, PreviewShading::Lit));
+    CHECK(uniform > 0);
+    CHECK(mapped > 0);
+    CHECK(mapped * 4 < uniform * 3);
 #else
     SKIP("Offscreen Vulkan presentation is Linux-only");
 #endif

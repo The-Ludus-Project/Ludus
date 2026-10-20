@@ -43,6 +43,8 @@ struct PreviewTexture final
 {
     QString Id;
     QImage Pixels;
+    /// Linear data (a cooked v6 surface map), uploaded as RGBA8 unorm rather than sRGB.
+    bool IsLinear = false;
 };
 struct PreviewSurface final
 {
@@ -62,6 +64,15 @@ struct PreviewSurface final
     /// opaque surfaces ignore texture alpha.
     bool IsAlphaMasked = false;
     foundation::float32 AlphaCutoff = 0;
+    /// Cooked v6 linear surface map (RG tangent normal, B roughness, A metallic), or -1.
+    foundation::int32 SurfaceTexture = -1;
+    /// Cooked v6 sRGB emission colour map multiplying Emission, or -1.
+    foundation::int32 EmissionTexture = -1;
+    /// Tangent-normal strength of SurfaceTexture; zero without a normal map.
+    foundation::float32 NormalScale = 0;
+    /// Linear mean RGB of EmissionTexture (one without a map): scales the area-light proxy
+    /// of a texture-modulated emitter, which emits that mean on average.
+    foundation::math::Vector3 EmissionMapMean{1, 1, 1};
 };
 struct PreviewObject final
 {

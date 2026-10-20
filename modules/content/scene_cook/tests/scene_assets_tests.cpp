@@ -766,11 +766,14 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
         std::string_view Entry;
         std::string_view Profile;
         usize MaskedMaterials = 0;
+        usize SurfaceMaps = 0;
+        usize EmissionMaps = 0;
     };
     const Fixture fixtures[] = {
-        {"gltf/instanced", "scene.gltf", "gltf-best-effort-v1"},
-        {"gltf/embedded", "scene.glb", "gltf-best-effort-v1"},
-        {"obj/room", "room.obj", "obj-best-effort-v1"},
+        {"gltf/instanced", "scene.gltf", "gltf-best-effort-v1", 0, 1},
+        {"gltf/embedded", "scene.glb", "gltf-best-effort-v1", 0, 1},
+        {"gltf/maps", "scene.gltf", "gltf-best-effort-v1", 0, 1, 1},
+        {"obj/room", "room.obj", "obj-best-effort-v1", 0, 1},
         {"obj/cutout", "cutout.obj", "obj-best-effort-v1", 2},
     };
     for (const Fixture& fixture : fixtures)
@@ -823,24 +826,44 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
         EditorSceneResult assembled;
         REQUIRE(OperateEditorScene(request, options, assembled, error));
         REQUIRE(assembled.Scene.IsEmpty() == false);
-        // Best-effort imports are LUSCN v5: indexed meshes with implicit bake charts, and
-        // material alpha masks that survive the catalog's material descriptions.
+        // Best-effort imports are LUSCN v6: indexed tangent-framed meshes with implicit bake
+        // charts, and material alpha masks and maps that survive the catalog's descriptions.
         uint32 version = 0;
         REQUIRE(assembled.Scene.GetSize() > ludus::content::scene_format::MAGIC.size() + sizeof(uint32));
         REQUIRE(core::TryReadLittleEndian<uint32>(
                     {assembled.Scene.GetData() + ludus::content::scene_format::MAGIC.size(), sizeof(uint32)},
                     version) == true);
-        CHECK(version == ludus::content::scene_format::VERSION_5);
+        CHECK(version == ludus::content::scene_format::VERSION_6);
         ludus::resources::SceneDefinition decoded;
         REQUIRE(ludus::resources::SceneDefinition::Decode(assembled.Scene.GetData(),
                                                           assembled.Scene.GetSize(),
                                                           decoded) == ludus::resources::Status::Ok);
         usize maskedCount = 0;
+        usize surfaceCount = 0;
+        usize emissionCount = 0;
         for (const ludus::resources::SceneMaterial& material : decoded.Materials)
         {
             maskedCount += material.IsAlphaMasked == true ? 1 : 0;
+            if (material.SurfaceTexture != ludus::content::scene_format::NO_TEXTURE)
+            {
+                ++surfaceCount;
+                CHECK(decoded.Textures[material.SurfaceTexture].IsLinear == true);
+            }
+            emissionCount += material.EmissionTexture != ludus::content::scene_format::NO_TEXTURE ? 1 : 0;
         }
         CHECK(maskedCount == fixture.MaskedMaterials);
+        CHECK(surfaceCount == fixture.SurfaceMaps);
+        CHECK(emissionCount == fixture.EmissionMaps);
+        bool hasTangent = false;
+        for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+        {
+            REQUIRE(mesh.Tangents.GetSize() == mesh.Positions.GetSize());
+            for (const ludus::foundation::math::Vector4& tangent : mesh.Tangents)
+            {
+                hasTangent = hasTangent == true || tangent.W != 0;
+            }
+        }
+        CHECK(hasTangent == (fixture.SurfaceMaps != 0));
         bool hasSharedVertices = false;
         for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
         {
@@ -1177,7 +1200,21 @@ bool CookLightingFixture(std::string_view source,
         writer.AppendUint32(static_cast<uint32>(TEST_AREA_SOURCE));
         writer.AppendUint32(static_cast<uint32>(TEST_AREA_SOURCE >> 32));
         writer.AppendFloat32(9);
-        writer.AppendUint32(0);
+        if (format::HasMaterialAlpha(profile.Version) == true)
+        {
+            writer.AppendUint32(format::ALPHA_OPAQUE);
+            writer.AppendFloat32(0);
+        }
+        if (format::HasSurfaceMaps(profile.Version) == true)
+        {
+            writer.AppendUint32(format::NO_TEXTURE);
+            writer.AppendUint32(format::NO_TEXTURE);
+            writer.AppendFloat32(0);
+        }
+        else
+        {
+            writer.AppendUint32(0);
+        }
     }
     writer.AppendUint32(TRIANGLE_VERTICES);
     writer.AppendUint32(TRIANGLE_VERTICES);
@@ -1192,6 +1229,14 @@ bool CookLightingFixture(std::string_view source,
         for (usize i = 0; i < components; ++i)
         {
             writer.AppendFloat32(vertex[i]);
+        }
+        if (format::HasSurfaceMaps(profile.Version) == true)
+        {
+            // Tangent +x with positive handedness.
+            for (const float64 component : {1.0, 0.0, 0.0, 1.0})
+            {
+                writer.AppendFloat32(component);
+            }
         }
     }
     writer.AppendUint32(0);
@@ -1253,6 +1298,13 @@ bool CookV4(std::string_view source,
             const Cancellation* cancelOrNull) noexcept
 {
     return CookLightingFixture(source, outResult, outError, cancelOrNull, { .Version = format::VERSION_4 });
+}
+bool CookV6(std::string_view source,
+            CookResult& outResult,
+            CookError& outError,
+            const Cancellation* cancelOrNull) noexcept
+{
+    return CookLightingFixture(source, outResult, outError, cancelOrNull, { .Version = format::VERSION_6 });
 }
 bool CookV2(std::string_view source,
             CookResult& outResult,
@@ -1489,6 +1541,55 @@ TEST_CASE("A version 4 import upgrades the assembled level and drops stored v3 b
                          published,
                          error));
     CHECK(ToText(bytes) == ReadWhole(golden.Work / "indexed-release/scene.luscn"));
+}
+
+TEST_CASE("A version 6 import gives older mesh parts absent tangents in the assembled level",
+          "[scene_assets][lighting]")
+{
+    GoldenProject golden;
+    const std::string root = golden.Project.string();
+    AssetOptions options = golden.Options;
+    options.CookOrNull = CookV3;
+    options.SourceOrigin = "/tangents/v3";
+    AssetError error;
+    Array<uint8> empty;
+    Array<uint8> first;
+    Array<uint8> second;
+    Array<uint8> third;
+    REQUIRE(CreateLevel("Tangents", options, empty, error));
+    INFO(Describe(error));
+    REQUIRE(ImportScene(root, golden.Source, ToSpan(empty), options, first, error));
+    options.CookOrNull = CookV2;
+    options.SourceOrigin = "/tangents/legacy";
+    REQUIRE(ImportScene(root, golden.Source, ToSpan(first), options, second, error));
+    options.CookOrNull = CookV6;
+    options.SourceOrigin = "/tangents/v6";
+    REQUIRE(ImportScene(root, golden.Source, ToSpan(second), options, third, error));
+    Array<uint8> bytes;
+    REQUIRE(AssembleLevel(root, ToSpan(third), {}, bytes, error));
+    uint32 version = 0;
+    REQUIRE(
+        ludus::foundation::core::TryReadLittleEndian<uint32>({bytes.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                                                             version) == true);
+    CHECK(version == format::VERSION_6);
+    const resources::SceneDefinition upgraded = DecodeAssembled(root, third);
+    REQUIRE(upgraded.Meshes.GetSize() == 3);
+    usize framed = 0;
+    for (const resources::SceneMesh& mesh : upgraded.Meshes)
+    {
+        CHECK(mesh.BakeTexcoords.IsEmpty() == true);
+        REQUIRE(mesh.Tangents.GetSize() == TRIANGLE_VERTICES);
+        CHECK(mesh.Normals[0].Z == 1);
+        framed += mesh.Tangents[0].W == 1 && mesh.Tangents[0].X == 1 ? 1 : 0;
+        if (mesh.Tangents[0].W == 0)
+        {
+            CHECK(mesh.Tangents[0].X == 0);
+        }
+    }
+    CHECK(framed == 1);
+    Array<uint8> catalog;
+    REQUIRE(ReadCatalog(root, catalog, error));
+    CHECK(ToText(catalog).find("portable-rgba8-f32-le-v6") != std::string::npos);
 }
 
 TEST_CASE("Combined authored light and environment overflow rejects catalog publication", "[scene_assets][lighting]")

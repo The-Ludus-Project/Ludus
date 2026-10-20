@@ -459,3 +459,151 @@ TEST_CASE("Cooked v5 carries material alpha masks and admits the import profile'
         REQUIRE(scene.Materials[0].IsAlphaMasked == false);
     }
 }
+namespace
+{
+/// Version 6 material map terms and one vertex tangent of the surface-map fixture.
+struct SurfaceFixture final
+{
+    uint32 Texture = 0;
+    uint32 SurfaceTexture = 1;
+    uint32 EmissionTexture = 0;
+    float32 NormalScale = 2;
+    float32 TangentW = 1;
+    float32 TangentX = 1;
+    float32 TangentZ = 0;
+};
+/// Two 1x1 textures, one material using them and one tangent-framed triangle (version 6).
+Array<uint8> MakeSurfaceFixture(const SurfaceFixture& fixture = {})
+{
+    Array<uint8> bytes;
+    usize offset = 0;
+    auto writeInteger = [&](uint32 value) {
+        REQUIRE(bytes.TryResize(offset + sizeof(value)) == true);
+        REQUIRE(
+            ludus::foundation::core::TryWriteLittleEndian<uint32>(value, {bytes.GetData() + offset, sizeof(value)}) ==
+            true);
+        offset += sizeof(value);
+    };
+    auto writeNumber = [&](float32 value) {
+        uint32 bits = 0;
+        std::memcpy(&bits, &value, sizeof(value));
+        writeInteger(bits);
+    };
+    REQUIRE(bytes.TryResize(sceneFormat::MAGIC.size()) == true);
+    std::memcpy(bytes.GetData(), sceneFormat::MAGIC.data(), sceneFormat::MAGIC.size());
+    offset = sceneFormat::MAGIC.size();
+    for (uint32 value : {sceneFormat::VERSION_6, 1U, 1U, 2U, 1U})
+    {
+        writeInteger(value);
+    }
+    for (float32 value : {0.F, 0.F, 3.F, 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 1.F})
+    {
+        writeNumber(value);
+    }
+    for (uint32 texel : {0xff8040c0U, 0x80ff80ffU})
+    {
+        writeInteger(1);
+        writeInteger(1);
+        writeInteger(sceneFormat::TEXEL_BYTES);
+        writeInteger(texel);
+    }
+    writeInteger(fixture.Texture);
+    writeInteger(sceneFormat::ADDRESS_REPEAT);
+    for (float32 value : {.5F, .5F, 0.F, 0.F, 0.F})
+    {
+        writeNumber(value);
+    }
+    writeInteger(0);
+    writeInteger(0);
+    writeInteger(0);
+    writeNumber(0);
+    writeInteger(sceneFormat::ALPHA_OPAQUE);
+    writeNumber(0);
+    writeInteger(fixture.SurfaceTexture);
+    writeInteger(fixture.EmissionTexture);
+    writeNumber(fixture.NormalScale);
+    writeInteger(3);
+    writeInteger(3);
+    for (usize vertex = 0; vertex < 3; ++vertex)
+    {
+        for (float32 value : {vertex == 1 ? 1.F : 0.F, vertex == 2 ? 1.F : 0.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F})
+        {
+            writeNumber(value);
+        }
+        // The last vertex has no tangent (all zero); the others carry the fixture's frame.
+        const bool hasTangent = vertex != 2;
+        for (float32 value : {hasTangent == true ? fixture.TangentX : 0.F,
+                              0.F,
+                              hasTangent == true ? fixture.TangentZ : 0.F,
+                              hasTangent == true ? fixture.TangentW : 0.F})
+        {
+            writeNumber(value);
+        }
+    }
+    for (uint32 index : {0U, 1U, 2U})
+    {
+        writeInteger(index);
+    }
+    writeInteger(0);
+    writeInteger(0);
+    for (float32 value : {1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F})
+    {
+        writeNumber(value);
+    }
+    writeInteger(1);
+    writeInteger(0);
+    writeInteger(sceneFormat::LIGHTING_PROFILE_REC709_PHOTOMETRIC);
+    for (uint32 value : {0U, 0U, 0U})
+    {
+        writeInteger(value);
+    }
+    for (float32 value : {0.F, 0.F, 0.F})
+    {
+        writeNumber(value);
+    }
+    return bytes;
+}
+} // namespace
+TEST_CASE("Cooked v6 carries linear surface maps, emission maps and vertex tangents", "[resources][scene]")
+{
+    const Array<uint8> bytes = MakeSurfaceFixture();
+    r::SceneDefinition scene;
+    REQUIRE(r::SceneDefinition::Decode(bytes.GetData(), bytes.GetSize(), scene) == r::Status::Ok);
+    REQUIRE(scene.Textures.GetSize() == 2);
+    CHECK(scene.Textures[0].IsLinear == false);
+    CHECK(scene.Textures[1].IsLinear == true);
+    const r::SceneMaterial& material = scene.Materials[0];
+    CHECK(material.SurfaceTexture == 1);
+    CHECK(material.EmissionTexture == 0);
+    CHECK(material.NormalScale == 2);
+    const r::SceneMesh& mesh = scene.Meshes[0];
+    REQUIRE(mesh.Tangents.GetSize() == 3);
+    CHECK(mesh.Tangents[0].X == 1);
+    CHECK(mesh.Tangents[0].W == 1);
+    CHECK(mesh.Tangents[2].W == 0);
+    CHECK(mesh.BakeTexcoords.IsEmpty() == true);
+    for (usize count = 0; count < bytes.GetSize(); ++count)
+    {
+        REQUIRE(r::SceneDefinition::Decode(bytes.GetData(), count, scene) == r::Status::Failed);
+        REQUIRE(scene.Materials[0].NormalScale == 2);
+    }
+
+    // A surface map is linear data: no material may sample it as colour; maps must exist;
+    // the strength is bounded and needs a map; tangents need a sign and a direction.
+    for (const SurfaceFixture& invalid : {SurfaceFixture{ .Texture = 1 },
+                                          SurfaceFixture{ .EmissionTexture = 1 },
+                                          SurfaceFixture{ .SurfaceTexture = 2 },
+                                          SurfaceFixture{ .EmissionTexture = 2 },
+                                          SurfaceFixture{ .NormalScale = sceneFormat::MAX_NORMAL_SCALE + 1 },
+                                          SurfaceFixture{ .NormalScale = -1 },
+                                          SurfaceFixture{ .SurfaceTexture = sceneFormat::NO_TEXTURE },
+                                          SurfaceFixture{ .TangentW = .5F },
+                                          SurfaceFixture{ .TangentW = 0 },
+                                          SurfaceFixture{ .TangentX = 0 },
+                                          SurfaceFixture{ .TangentX = 0, .TangentZ = 1 }})
+    {
+        const Array<uint8> malformed = MakeSurfaceFixture(invalid);
+        REQUIRE(r::SceneDefinition::Decode(malformed.GetData(), malformed.GetSize(), scene) == r::Status::Failed);
+        REQUIRE(scene.Materials[0].SurfaceTexture == 1);
+    }
+}

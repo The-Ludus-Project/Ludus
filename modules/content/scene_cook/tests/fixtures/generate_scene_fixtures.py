@@ -309,6 +309,89 @@ def write_cutouts():
 
 
 # ---------------------------------------------------------------------------
+# Surface and emission maps (LUSCN v6): an emissive quad whose emissiveTexture is
+# half red, half black, with a tilted normal map at scale 0.5 and no TANGENT, so
+# the cook generates MikkTSpace tangents and repacks the normal map.
+
+
+def write_maps():
+    emissive_png = png_bytes(
+        2, 1, lambda x, y: (255, 0, 0, 255) if x == 0 else (0, 0, 0, 255)
+    )
+    normal_png = png_bytes(2, 2, lambda x, y: (200, 128, 230, 255))
+    payload = floats([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]) + floats(
+        [0, 1, 1, 1, 1, 0, 0, 0]
+    )
+    payload += floats([0, 0, 1] * 4)
+    payload += struct.pack("<6H", 0, 1, 2, 0, 2, 3)
+    document = {
+        "asset": {"version": "2.0"},
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [
+            {
+                "primitives": [
+                    {
+                        "attributes": {"POSITION": 0, "TEXCOORD_0": 1, "NORMAL": 2},
+                        "indices": 3,
+                        "material": 0,
+                    }
+                ]
+            }
+        ],
+        "materials": [
+            {
+                "name": "Sign",
+                "emissiveFactor": [1, 1, 1],
+                "emissiveTexture": {"index": 0},
+                "normalTexture": {"index": 1, "scale": 0.5},
+                "pbrMetallicRoughness": {"metallicFactor": 0, "roughnessFactor": 0.5},
+            }
+        ],
+        "textures": [{"source": 0}, {"source": 1}],
+        "images": [
+            {
+                "uri": "data:image/png;base64,"
+                + base64.b64encode(emissive_png).decode("ascii")
+            },
+            {
+                "uri": "data:image/png;base64,"
+                + base64.b64encode(normal_png).decode("ascii")
+            },
+        ],
+        "buffers": [
+            {
+                "byteLength": len(payload),
+                "uri": "data:application/octet-stream;base64,"
+                + base64.b64encode(payload).decode("ascii"),
+            }
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 48},
+            {"buffer": 0, "byteOffset": 48, "byteLength": 32},
+            {"buffer": 0, "byteOffset": 80, "byteLength": 48},
+            {"buffer": 0, "byteOffset": 128, "byteLength": 12},
+        ],
+        "accessors": [
+            {
+                "bufferView": 0,
+                "componentType": FLOAT,
+                "count": 4,
+                "type": "VEC3",
+                "min": [0, 0, 0],
+                "max": [1, 1, 0],
+            },
+            {"bufferView": 1, "componentType": FLOAT, "count": 4, "type": "VEC2"},
+            {"bufferView": 2, "componentType": FLOAT, "count": 4, "type": "VEC3"},
+            {"bufferView": 3, "componentType": USHORT, "count": 6, "type": "SCALAR"},
+        ],
+    }
+    root = HERE / "gltf" / "maps"
+    write(root / "scene.gltf", json.dumps(document, indent=1) + "\n")
+    write(root / "LICENSE.txt", LICENSE)
+
+
+# ---------------------------------------------------------------------------
 # glTF: hierarchy (matrix + TRS), an instanced cube (one placement mirrored),
 # interleaved attributes, uint8/uint16/no indices, a triangle strip, external
 # buffer and image, data-URI image, camera, KHR_lights_punctual, emissive
@@ -664,6 +747,7 @@ if __name__ == "__main__":
     write_obj()
     write_gltf()
     write_cutouts()
+    write_maps()
     for path in sorted(HERE.rglob("*")):
         if path.is_file() and path.suffix not in (".py",):
             print(path.relative_to(HERE), path.stat().st_size)

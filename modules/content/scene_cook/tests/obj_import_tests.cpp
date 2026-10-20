@@ -173,13 +173,38 @@ TEST_CASE("OBJ import cooks a deterministic, runtime-decodable bundle", "[scene_
     CHECK(first.Summary.SourceAreaLights == 1);
     CHECK(GetReport(first).find("\"importer\": \"obj-best-effort-v1\"") != std::string_view::npos);
     CHECK(ReportHasCode(first, codes::TANGENTS_GENERATED));
-    CHECK(ReportHasCode(first, codes::TEXTURE_APPROXIMATED)); // map_Pr averaged.
+    // map_Pr and the norm map repack into a LUSCN v6 surface map instead of averaging.
+    CHECK(ReportHasCode(first, codes::TEXTURE_APPROXIMATED) == false);
     usize emissive = 0;
+    usize surfaceMapped = 0;
     for (const ludus::resources::SceneMaterial& material : decoded.Materials)
     {
         emissive += material.Emission.X > 0.0F ? 1 : 0;
+        if (material.SurfaceTexture != ludus::content::scene_format::NO_TEXTURE)
+        {
+            ++surfaceMapped;
+            // BoxPbr: Pr 0.5 stays the multiplier of map_Pr's green 128 channel (-imfchan g).
+            CHECK(material.Roughness == .5F);
+            CHECK(material.NormalScale == 1.0F);
+            const ludus::resources::SceneTexture& surface = decoded.Textures[material.SurfaceTexture];
+            CHECK(surface.IsLinear == true);
+            CHECK(surface.Pixels[0] == 128); // Flat normal X from normal.png (128, 128, 255).
+            CHECK(surface.Pixels[2] == 128); // Roughness multiplier.
+            CHECK(surface.Pixels[3] == 255); // No metallic texture: multiplier one.
+        }
     }
     CHECK(emissive == 1);
+    CHECK(surfaceMapped == 1);
+    // The normal-mapped box carries MikkTSpace tangents in its vertices.
+    bool hasTangent = false;
+    for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+    {
+        for (const ludus::foundation::math::Vector4& tangent : mesh.Tangents)
+        {
+            hasTangent = hasTangent == true || tangent.W != 0.0F;
+        }
+    }
+    CHECK(hasTangent == true);
     // Inputs list the entry, the library, the textures and the licence.
     const auto contains = [&](std::string_view name) {
         for (const ludus::foundation::String& input : first.Inputs)
@@ -354,6 +379,48 @@ TEST_CASE("OBJ reading honours cancellation", "[scene_cook][obj]")
     SceneIr scene;
     DiagnosticLog log;
     CHECK(ReadWavefront(text, scene, log, {}, &cancel) == Status::Cancelled);
+}
+
+TEST_CASE("OBJ surface maps beyond the texture count are averaged into scalar terms", "[scene_cook][obj]")
+{
+    namespace format = ludus::content::scene_format;
+    // One base texture per slot leaves room for one surface map; the rest are averaged.
+    constexpr int32 MATERIAL_COUNT = static_cast<int32>(format::IMPORT_LIMITS.Textures) - 1;
+    ScratchDirectory scratch;
+    std::filesystem::create_directories(scratch.Path / "textures");
+    std::filesystem::copy_file(GetFixture("obj/room/textures/rough.png"), scratch.Path / "textures/rough.png");
+    std::string wavefrontText = "mtllib m.mtl\n";
+    std::string mtl;
+    for (int32 i = 0; i < MATERIAL_COUNT; ++i)
+    {
+        mtl += "newmtl M" + std::to_string(i) + "\nKd 0.5 0.5 0.5\nPr 0.5\nmap_Pr -imfchan g textures/rough.png\n";
+        const std::string x = std::to_string(i * 2);
+        wavefrontText +=
+            "v " + x + " 0 0\nv " + x + ".5 0 0\nv " + x + " 1 0\nusemtl M" + std::to_string(i) + "\nf -3 -2 -1\n";
+    }
+    WriteFile(scratch.Path / "scene.obj", wavefrontText);
+    WriteFile(scratch.Path / "m.mtl", mtl);
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportObjBestEffort((scratch.Path / "scene.obj").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    CHECK(decoded.Textures.GetSize() == format::IMPORT_LIMITS.Textures);
+    usize mapped = 0;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        if (material.SurfaceTexture != format::NO_TEXTURE)
+        {
+            ++mapped;
+            CHECK(material.Roughness == .5F);
+            continue;
+        }
+        // Averaged: Pr 0.5 times the green channel's mean 128/255.
+        CHECK(std::fabs(material.Roughness - .5F * 128.0F / 255.0F) < 1e-6F);
+    }
+    CHECK(mapped == 1);
+    CHECK(ReportHasCode(result, codes::TEXTURE_APPROXIMATED));
 }
 
 TEST_CASE("OBJ map_d cooks LUSCN v5 alpha masks into the base texture", "[scene_cook][obj]")

@@ -99,6 +99,9 @@ struct EmitterUse final
     /// Every member is decorative (IrShape::IsEmissionOptional); the group may be demoted.
     bool IsOptional = false;
     bool IsDemoted = false;
+    /// Source material of a decorative group, whose surface terms and maps the slot keeps;
+    /// IR_NONE for required (pbrt area-light) groups, which cook as white untextured emitters.
+    uint32 Material = IR_NONE;
     float64 PowerLumens = 0.0;
     float64 Area = 0.0;
     Array<uint32> Sources;
@@ -135,6 +138,27 @@ struct EmitterUse final
     }
     outEmission = {static_cast<float32>(r), static_cast<float32>(g), static_cast<float32>(b)};
     return true;
+}
+
+/// Copy a source material's surface terms (base colour and texture, metallic,
+/// roughness, alpha mask) into a slot it represents.
+void ApplyMaterialTerms(const SceneIr& scene, uint32 material, PlannedMaterial& inoutPlanned) noexcept
+{
+    const MaterialTerms terms = GetTerms(scene, material);
+    inoutPlanned.Representative = material;
+    for (usize k = 0; k < IR_RGB_CHANNEL_COUNT; ++k)
+    {
+        inoutPlanned.BaseColour[k] = terms.BaseColour[k];
+    }
+    inoutPlanned.Texture = terms.Texture;
+    inoutPlanned.IsTextureRepeated = terms.Texture == IR_NONE || scene.Textures[terms.Texture].IsRepeated == true;
+    inoutPlanned.Metallic = math::Clamp(terms.Metallic, 0.0, 1.0);
+    inoutPlanned.Roughness = math::Clamp(terms.Roughness, static_cast<float64>(format::MIN_ROUGHNESS), 1.0);
+    if (material != IR_NONE && scene.Materials[material].AlphaMode == IrAlphaMode::Mask)
+    {
+        inoutPlanned.IsAlphaMasked = true;
+        inoutPlanned.AlphaCutoff = math::Clamp(scene.Materials[material].AlphaCutoff, 0.0, 1.0);
+    }
 }
 
 struct MaterialUse final
@@ -245,11 +269,12 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
                                    "area-light normalization exceeds the finite RGB-nits profile");
                 return Status::Invalid;
             }
+            const uint32 emitterMaterial = shape.IsEmissionOptional == true ? shape.Material : IR_NONE;
             for (usize i = 0; i < emitters.GetSize(); ++i)
             {
                 if (emitters[i].Emission == emission && emitters[i].IsTwoSided == shape.IsEmissionTwoSided &&
                     emitters[i].HasPower == shape.HasEmissionPower &&
-                    emitters[i].IsOptional == shape.IsEmissionOptional)
+                    emitters[i].IsOptional == shape.IsEmissionOptional && emitters[i].Material == emitterMaterial)
                 {
                     placement.EmitterGroup = static_cast<uint32>(i);
                     break;
@@ -267,6 +292,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
                 emitterOrNull->IsTwoSided = shape.IsEmissionTwoSided;
                 emitterOrNull->HasPower = shape.HasEmissionPower;
                 emitterOrNull->IsOptional = shape.IsEmissionOptional;
+                emitterOrNull->Material = emitterMaterial;
             }
             EmitterUse& emitter = emitters[placement.EmitterGroup];
             emitter.Area += placement.Area;
@@ -416,21 +442,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         {
             return Status::OutOfMemory;
         }
-        const MaterialTerms terms = GetTerms(scene, use.Material);
-        planned->Representative = use.Material;
-        for (usize k = 0; k < 3; ++k)
-        {
-            planned->BaseColour[k] = terms.BaseColour[k];
-        }
-        planned->Texture = terms.Texture;
-        planned->IsTextureRepeated = terms.Texture == IR_NONE || scene.Textures[terms.Texture].IsRepeated == true;
-        planned->Metallic = math::Clamp(terms.Metallic, 0.0, 1.0);
-        planned->Roughness = math::Clamp(terms.Roughness, static_cast<float64>(format::MIN_ROUGHNESS), 1.0);
-        if (use.Material != IR_NONE && scene.Materials[use.Material].AlphaMode == IrAlphaMode::Mask)
-        {
-            planned->IsAlphaMasked = true;
-            planned->AlphaCutoff = math::Clamp(scene.Materials[use.Material].AlphaCutoff, 0.0, 1.0);
-        }
+        ApplyMaterialTerms(scene, use.Material, *planned);
         use.Slot = static_cast<uint32>(rank);
     }
     uint32 mergedCount = 0;
@@ -482,6 +494,11 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         plannedOrNull->EmitterSources = static_cast<Array<uint32>&&>(emitter.Sources);
         plannedOrNull->BaseColour[0] = plannedOrNull->BaseColour[1] = plannedOrNull->BaseColour[2] = 1.0;
         plannedOrNull->IsTextureRepeated = false;
+        if (emitter.Material != IR_NONE)
+        {
+            // A decorative group keeps its material's surface, alpha and maps.
+            ApplyMaterialTerms(scene, emitter.Material, *plannedOrNull);
+        }
         plannedOrNull->Area = emitter.Area;
         plannedOrNull->Emission[0] = static_cast<float64>(emitter.Emission.X);
         plannedOrNull->Emission[1] = static_cast<float64>(emitter.Emission.Y);
@@ -535,7 +552,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             }
         }
         PlannedMaterial& planned = plan.Materials[slot];
-        // LUSCN v5 meshes stay indexed; consumers expand corners for bake charts,
+        // LUSCN v6 meshes stay indexed; consumers expand corners for bake charts,
         // which the import profile's TotalIndices bounds across the bundle.
         const usize vertices = mesh.GetVertexCount();
         const usize indices = mesh.Indices.GetSize();

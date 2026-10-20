@@ -1,5 +1,5 @@
 // Best-effort scene import: a front-end (pbrt-v4, glTF 2.0/GLB or Wavefront
-// OBJ/MTL) builds SceneIR -> budget plan -> LUSCN v5 bundle and a deterministic
+// OBJ/MTL) builds SceneIR -> budget plan -> LUSCN v6 bundle and a deterministic
 // import report. See docs/development/best-effort-scene-import.md.
 
 #include <ludus/content/scene_cook/best_effort_import.h>
@@ -20,6 +20,7 @@
 #include "transform_utilities.h"
 
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 namespace ludus::content::scene_cook
 {
@@ -38,6 +39,11 @@ constexpr usize MAX_IMAGE_FILE_BYTES = MAX_SOURCE_IMAGE_BYTES;
 constexpr uint32 SWATCH_SIZE = 4;
 /// Texel channel holding coverage (straight alpha) in decoded RGBA8 images.
 constexpr usize ALPHA_CHANNEL = 3;
+/// Index of the bitangent sign in an IR tangent (xyz, w).
+constexpr usize TANGENT_HANDEDNESS = IR_TANGENT_COMPONENT_COUNT - 1;
+/// float32 components of one cooked vertex: a LUSCN v6 VertexRecordV6.
+constexpr usize VERTEX_FLOATS = sizeof(format::VertexRecordV6) / sizeof(float32);
+static_assert(VERTEX_FLOATS == format::VERTEX_COMPONENTS + format::TANGENT_COMPONENTS);
 
 bool FailWith(CookError& outError, Status status, std::string_view message) noexcept
 {
@@ -162,6 +168,8 @@ struct CookedTexture final
     uint32 SourceWidth = 0;
     uint32 SourceHeight = 0;
     bool IsFallback = false;
+    /// Linear data (a LUSCN v6 surface map) rather than sRGB colour.
+    bool IsLinear = false;
     /// IR texture whose image file was read (even if decoding failed), or IR_NONE.
     uint32 ReadSource = IR_NONE;
     /// SHA-256 of the image bytes read for ReadSource.
@@ -171,6 +179,7 @@ struct CookedTexture final
 /// One cooked world-space mesh.
 struct CookedMesh final
 {
+    /// VERTEX_FLOATS per vertex: world position, normal, uv and tangent (xyz, handedness).
     Array<float32> Vertices;
     Array<uint32> Indices;
 };
@@ -274,18 +283,16 @@ struct CookedMesh final
     return Status::Ok;
 }
 
-/// Fold metallic/roughness data textures of each slot's representative material into
-/// its scalar terms (LUSCN v5 materials carry scalars only).
-[[nodiscard]] Status
-ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inoutPlan, DiagnosticLog& inoutLog) noexcept
+/// Fold the metallic/roughness data textures of a slot's representative material into
+/// its scalar terms, for a slot whose surface map exceeds the texture count.
+[[nodiscard]] Status AverageScalarTextures(const SceneIr& scene,
+                                           std::string_view root,
+                                           PlannedMaterial& inoutPlanned,
+                                           DiagnosticLog& inoutLog) noexcept
 {
     constexpr usize SCALAR_TERMS = 2;
-    for (PlannedMaterial& planned : inoutPlan.Materials)
+    PlannedMaterial& planned = inoutPlanned;
     {
-        if (planned.IsEmissive == true || planned.Representative == IR_NONE)
-        {
-            continue;
-        }
         const IrMaterial& material = scene.Materials[planned.Representative];
         const foundation::StaticArray<uint32, SCALAR_TERMS> textures{material.MetallicTexture,
                                                                      material.RoughnessTexture};
@@ -324,9 +331,233 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
                                codes::TEXTURE_APPROXIMATED,
                                name,
                                0,
-                               "metallic/roughness texture averaged into the scalar material term");
+                               "metallic/roughness texture averaged into the scalar term (texture count exhausted)");
         }
     }
+    return Status::Ok;
+}
+
+/// A decoded data texture sampled nearest at another image's resolution.
+struct SampledImage final
+{
+    DecodedImage Image;
+    usize Channel = 0;
+    bool IsPresent = false;
+};
+
+/// Decode a slot material's data texture for repacking; an unreadable image is reported
+/// and left absent, so its multiplier stays one and the scalar term applies alone.
+[[nodiscard]] Status DecodeSurfaceSource(const SceneIr& scene,
+                                         std::string_view root,
+                                         uint32 texture,
+                                         usize channel,
+                                         DiagnosticLog& inoutLog,
+                                         SampledImage& outSource) noexcept
+{
+    if (texture == IR_NONE || HasImage(scene.Textures[texture]) == false)
+    {
+        return Status::Ok;
+    }
+    std::string_view message;
+    const Status decoded = DecodeDataTexture(scene, root, scene.Textures[texture], outSource.Image, message);
+    if (decoded == Status::OutOfMemory)
+    {
+        return decoded;
+    }
+    if (decoded != Status::Ok)
+    {
+        (void)inoutLog.Add(DiagnosticSeverity::Warning,
+                           codes::TEXTURE_UNREADABLE,
+                           GetImageName(scene, scene.Textures[texture]),
+                           0,
+                           message);
+        return Status::Ok;
+    }
+    outSource.Channel = math::Min(channel, ALPHA_CHANNEL);
+    outSource.IsPresent = true;
+    return Status::Ok;
+}
+
+/// Channel of a source texel at an output texel, sampled nearest; absent sources read fallback.
+[[nodiscard]] uint8 SampleChannel(const SampledImage& source,
+                                  usize channel,
+                                  uint32 x,
+                                  uint32 y,
+                                  uint32 width,
+                                  uint32 height,
+                                  uint8 fallback) noexcept
+{
+    if (source.IsPresent == false)
+    {
+        return fallback;
+    }
+    const usize sourceX = usize{x} * source.Image.Width / width;
+    const usize sourceY = usize{y} * source.Image.Height / height;
+    return source.Image.Texels[(sourceY * source.Image.Width + sourceX) * DECODED_IMAGE_CHANNEL_COUNT + channel];
+}
+
+/// Repack a slot's tangent-space normal map (RG) and roughness (B) and metallic (A)
+/// texture channels into one linear LUSCN v6 surface map at the normal map's resolution
+/// (otherwise the larger data texture's), sampling the others nearest. The scalar
+/// metallic/roughness terms stay as the multipliers they are in glTF and MTL. Without a
+/// free texture slot the roughness/metallic textures are averaged into the scalars.
+[[nodiscard]] Status CookSurfaceMap(const SceneIr& scene,
+                                    std::string_view root,
+                                    PlannedMaterial& inoutPlanned,
+                                    DiagnosticLog& inoutLog,
+                                    Array<CookedTexture>& inoutTextures) noexcept
+{
+    if (inoutPlanned.Representative == IR_NONE)
+    {
+        return Status::Ok;
+    }
+    const IrMaterial& material = scene.Materials[inoutPlanned.Representative];
+    const uint32 normalTexture =
+        material.NormalTextureKind == IrNormalTextureKind::TangentSpace ? material.NormalTexture : IR_NONE;
+    const bool hasSource =
+        (normalTexture != IR_NONE && HasImage(scene.Textures[normalTexture]) == true) ||
+        (material.RoughnessTexture != IR_NONE && HasImage(scene.Textures[material.RoughnessTexture]) == true) ||
+        (material.MetallicTexture != IR_NONE && HasImage(scene.Textures[material.MetallicTexture]) == true);
+    if (hasSource == false)
+    {
+        return Status::Ok;
+    }
+    if (inoutTextures.GetSize() >= format::IMPORT_LIMITS.Textures)
+    {
+        if (normalTexture != IR_NONE)
+        {
+            (void)inoutLog.Add(DiagnosticSeverity::Warning,
+                               codes::NORMALMAP_DROPPED,
+                               GetImageName(scene, scene.Textures[normalTexture]),
+                               0,
+                               "normal map dropped: the bundle's texture count is exhausted");
+        }
+        return AverageScalarTextures(scene, root, inoutPlanned, inoutLog);
+    }
+    SampledImage normal;
+    SampledImage roughness;
+    SampledImage metallic;
+    Status status = DecodeSurfaceSource(scene, root, normalTexture, 0, inoutLog, normal);
+    if (status == Status::Ok)
+    {
+        status =
+            DecodeSurfaceSource(scene, root, material.RoughnessTexture, material.RoughnessChannel, inoutLog, roughness);
+    }
+    if (status == Status::Ok)
+    {
+        status =
+            DecodeSurfaceSource(scene, root, material.MetallicTexture, material.MetallicChannel, inoutLog, metallic);
+    }
+    if (status != Status::Ok ||
+        (normal.IsPresent == false && roughness.IsPresent == false && metallic.IsPresent == false))
+    {
+        return status;
+    }
+    // The normal map sets the resolution; otherwise the larger roughness/metallic image.
+    const SampledImage& reference =
+        normal.IsPresent == true ? normal
+        : roughness.IsPresent == true &&
+                (metallic.IsPresent == false || usize{roughness.Image.Width} * roughness.Image.Height >=
+                                                    usize{metallic.Image.Width} * metallic.Image.Height)
+            ? roughness
+            : metallic;
+    CookedTexture* cookedOrNull = inoutTextures.TryAddInPlace();
+    if (cookedOrNull == nullptr)
+    {
+        return Status::OutOfMemory;
+    }
+    DecodedImage& image = cookedOrNull->Image;
+    image.Width = reference.Image.Width;
+    image.Height = reference.Image.Height;
+    if (image.Texels.TryResize(usize{image.Width} * image.Height * DECODED_IMAGE_CHANNEL_COUNT) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    // A flat tangent normal encodes as 0.5 (128); absent multipliers are one (255).
+    constexpr uint8 FLAT_NORMAL_CODE = 128;
+    constexpr uint8 UNIT_MULTIPLIER_CODE = 255;
+    constexpr usize ROUGHNESS_CHANNEL = 2;
+    for (uint32 y = 0; y < image.Height; ++y)
+    {
+        for (uint32 x = 0; x < image.Width; ++x)
+        {
+            uint8* texel = image.Texels.GetData() + (usize{y} * image.Width + x) * DECODED_IMAGE_CHANNEL_COUNT;
+            texel[0] = SampleChannel(normal, 0, x, y, image.Width, image.Height, FLAT_NORMAL_CODE);
+            texel[1] = SampleChannel(normal, 1, x, y, image.Width, image.Height, FLAT_NORMAL_CODE);
+            texel[ROUGHNESS_CHANNEL] =
+                SampleChannel(roughness, roughness.Channel, x, y, image.Width, image.Height, UNIT_MULTIPLIER_CODE);
+            texel[ALPHA_CHANNEL] =
+                SampleChannel(metallic, metallic.Channel, x, y, image.Width, image.Height, UNIT_MULTIPLIER_CODE);
+        }
+    }
+    cookedOrNull->Source = normal.IsPresent == true      ? normalTexture
+                           : roughness.IsPresent == true ? material.RoughnessTexture
+                                                         : material.MetallicTexture;
+    cookedOrNull->SourceWidth = image.Width;
+    cookedOrNull->SourceHeight = image.Height;
+    cookedOrNull->IsLinear = true;
+    inoutPlanned.CookedSurfaceTexture = static_cast<uint32>(inoutTextures.GetSize() - 1);
+    inoutPlanned.NormalScale =
+        normal.IsPresent == true
+            ? math::Clamp(material.NormalScale, 0.0, static_cast<float64>(format::MAX_NORMAL_SCALE))
+            : 0.0;
+    return Status::Ok;
+}
+
+/// Cook an emissive slot's emission colour texture (glTF emissiveTexture, MTL map_Ke)
+/// as an sRGB LUSCN v6 emission map multiplying its emission.
+[[nodiscard]] Status CookEmissionMap(const SceneIr& scene,
+                                     std::string_view root,
+                                     PlannedMaterial& inoutPlanned,
+                                     DiagnosticLog& inoutLog,
+                                     Array<CookedTexture>& inoutTextures) noexcept
+{
+    if (inoutPlanned.Representative == IR_NONE || inoutPlanned.IsEmissive == false)
+    {
+        return Status::Ok;
+    }
+    const uint32 source = scene.Materials[inoutPlanned.Representative].EmissionTexture;
+    if (source == IR_NONE || HasImage(scene.Textures[source]) == false)
+    {
+        return Status::Ok;
+    }
+    const IrTexture& texture = scene.Textures[source];
+    if (inoutTextures.GetSize() >= format::IMPORT_LIMITS.Textures)
+    {
+        (void)inoutLog.Add(DiagnosticSeverity::Warning,
+                           codes::EMISSION_APPROXIMATED,
+                           GetImageName(scene, texture),
+                           0,
+                           "emission map dropped: the bundle's texture count is exhausted");
+        return Status::Ok;
+    }
+    DecodedImage image;
+    std::string_view message;
+    const Status decoded = DecodeDataTexture(scene, root, texture, image, message);
+    if (decoded == Status::OutOfMemory)
+    {
+        return decoded;
+    }
+    if (decoded != Status::Ok)
+    {
+        (void)inoutLog.Add(DiagnosticSeverity::Warning,
+                           codes::TEXTURE_UNREADABLE,
+                           GetImageName(scene, texture),
+                           0,
+                           message);
+        return Status::Ok;
+    }
+    ConvertTexels(texture, image);
+    CookedTexture* cookedOrNull = inoutTextures.TryAddInPlace();
+    if (cookedOrNull == nullptr)
+    {
+        return Status::OutOfMemory;
+    }
+    cookedOrNull->Image = static_cast<DecodedImage&&>(image);
+    cookedOrNull->Source = source;
+    cookedOrNull->SourceWidth = cookedOrNull->Image.Width;
+    cookedOrNull->SourceHeight = cookedOrNull->Image.Height;
+    inoutPlanned.CookedEmissionTexture = static_cast<uint32>(inoutTextures.GetSize() - 1);
     return Status::Ok;
 }
 
@@ -366,7 +597,7 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
     return true;
 }
 
-/// Write a masked slot's coverage into its cooked texture's alpha channel (LUSCN v5
+/// Write a masked slot's coverage into its cooked texture's alpha channel (LUSCN v6
 /// ALPHA_MASKED): the base texture's own alpha (glTF) or the opacity map's channel
 /// (MTL map_d, sampled nearest at the base resolution), times the constant opacity.
 /// A mask that keeps every texel at its cutoff is cooked opaque; an unreadable
@@ -533,6 +764,20 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
         cooked->SourceWidth = cooked->Image.Width;
         cooked->SourceHeight = cooked->Image.Height;
     }
+    // Surface and emission maps follow the base textures, slot by slot, while the
+    // bundle's texture count allows.
+    for (PlannedMaterial& planned : inoutPlan.Materials)
+    {
+        Status status = CookSurfaceMap(scene, root, planned, inoutLog, outTextures);
+        if (status == Status::Ok)
+        {
+            status = CookEmissionMap(scene, root, planned, inoutLog, outTextures);
+        }
+        if (status != Status::Ok)
+        {
+            return status;
+        }
+    }
     // Halve the largest texture until each fits the per-texture limits and all fit the budget.
     while (true)
     {
@@ -582,6 +827,44 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
     return Status::Ok;
 }
 
+/// World-space LUSCN v6 tangent of an IR tangent (xyz, bitangent sign w): the direction
+/// transforms with the linear part, is orthogonalized against the unit world normal and
+/// normalized; the sign follows the transform's handedness. A tangent without a
+/// perpendicular part (degenerate, non-finite or parallel to the normal) becomes all
+/// zero, which consumers read as absent.
+[[nodiscard]] math::Vector4 TransformTangent(const math::Matrix4d& transform,
+                                             std::span<const float32> tangent,
+                                             const math::Vector3d& normalWorld,
+                                             float32 handedness) noexcept
+{
+    const math::Vector3d direction{static_cast<float64>(tangent[0]),
+                                   static_cast<float64>(tangent[1]),
+                                   static_cast<float64>(tangent[2])};
+    const math::Vector3d world = TransformDirection(transform, direction);
+    const math::Vector3d perpendicular = world - normalWorld * math::Dot(normalWorld, world);
+    const float64 length = math::Length(perpendicular);
+    if (math::IsFinite(length) == false || length <= static_cast<float64>(format::MIN_TANGENT_PERPENDICULAR) ||
+        tangent[TANGENT_HANDEDNESS] == 0.0F)
+    {
+        return {};
+    }
+    const math::Vector3d unit = perpendicular * (1.0 / length);
+    const math::Vector4 result{static_cast<float32>(unit.X),
+                               static_cast<float32>(unit.Y),
+                               static_cast<float32>(unit.Z),
+                               (tangent[TANGENT_HANDEDNESS] < 0.0F ? -1.0F : 1.0F) * handedness};
+    // Recheck after float32 rounding against the rounded normal, as the decoder does.
+    const math::Vector3 normal{static_cast<float32>(normalWorld.X),
+                               static_cast<float32>(normalWorld.Y),
+                               static_cast<float32>(normalWorld.Z)};
+    const math::Vector3 axis{result.X, result.Y, result.Z};
+    math::Vector3 unitNormal;
+    return math::TryNormalize(normal, unitNormal) == math::MathStatus::Success &&
+                   math::Length(axis - unitNormal * math::Dot(unitNormal, axis)) > format::MIN_TANGENT_PERPENDICULAR
+               ? result
+               : math::Vector4{};
+}
+
 /// Bake every kept placement of each slot into a world-space mesh.
 [[nodiscard]] Status BakeMeshes(const SceneIr& scene,
                                 const CookPlan& plan,
@@ -593,7 +876,8 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
     for (const PlannedMaterial& planned : plan.Materials)
     {
         CookedMesh* cooked = outMeshes.TryAddInPlace();
-        if (cooked == nullptr || cooked->Vertices.TryEnsureCapacity(usize{planned.VertexCount} * 8) == false ||
+        if (cooked == nullptr ||
+            cooked->Vertices.TryEnsureCapacity(usize{planned.VertexCount} * VERTEX_FLOATS) == false ||
             cooked->Indices.TryEnsureCapacity(planned.IndexCount) == false)
         {
             return Status::OutOfMemory;
@@ -644,7 +928,10 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
             }
             math::Matrix4d inverse = math::Matrix4d::Identity();
             (void)TryInvertAffine(placement.Transform, inverse);
-            const uint32 base = static_cast<uint32>(cooked->Vertices.GetSize() / 8);
+            const uint32 base = static_cast<uint32>(cooked->Vertices.GetSize() / VERTEX_FLOATS);
+            const bool hasTangents = mesh.Tangents.GetSize() == vertexCount * IR_TANGENT_COMPONENT_COUNT;
+            // Mirroring transforms reverse the bitangent, as the renderer does for object transforms.
+            const float32 handedness = ComputeLinearDeterminant(placement.Transform) < 0.0 ? -1.0F : 1.0F;
             for (usize v = 0; v < vertexCount; ++v)
             {
                 const float32* p = mesh.Positions.GetData() + v * 3;
@@ -666,7 +953,14 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
                 const float64 length = math::Length(transformed);
                 normal = length > 0.0 && math::IsFinite(length) == true ? transformed * (1.0 / length)
                                                                         : math::Vector3d{0.0, 1.0, 0.0};
-                const float32 values[8] = {
+                const math::Vector4 tangent =
+                    hasTangents == true ? TransformTangent(placement.Transform,
+                                                           {mesh.Tangents.GetData() + v * IR_TANGENT_COMPONENT_COUNT,
+                                                            IR_TANGENT_COMPONENT_COUNT},
+                                                           normal,
+                                                           handedness)
+                                        : math::Vector4{};
+                const float32 values[VERTEX_FLOATS] = {
                     static_cast<float32>(world.X),
                     static_cast<float32>(world.Y),
                     static_cast<float32>(world.Z),
@@ -675,8 +969,12 @@ ApplyScalarTextures(const SceneIr& scene, std::string_view root, CookPlan& inout
                     static_cast<float32>(normal.Z),
                     hasUvs == true ? mesh.Uvs[v * 2] : 0.0F,
                     hasUvs == true ? mesh.Uvs[v * 2 + 1] : 0.0F,
+                    tangent.X,
+                    tangent.Y,
+                    tangent.Z,
+                    tangent.W,
                 };
-                if (cooked->Vertices.TryAddRange(std::span<const float32>(values, 8)) == false)
+                if (cooked->Vertices.TryAddRange(std::span<const float32>(values, VERTEX_FLOATS)) == false)
                 {
                     return Status::OutOfMemory;
                 }
@@ -727,7 +1025,7 @@ void ResolveCamera(const SceneIr& scene,
     math::Vector3d high{-1e300, -1e300, -1e300};
     for (const CookedMesh& mesh : meshes)
     {
-        for (usize i = 0; i < mesh.Vertices.GetSize(); i += 8)
+        for (usize i = 0; i < mesh.Vertices.GetSize(); i += VERTEX_FLOATS)
         {
             const float64 p[3] = {static_cast<float64>(mesh.Vertices[i]),
                                   static_cast<float64>(mesh.Vertices[i + 1]),
@@ -753,7 +1051,7 @@ void PackBundle(const IrCamera& camera,
                 detail::ByteWriter& inoutBlob) noexcept
 {
     inoutBlob.Append(format::MAGIC);
-    inoutBlob.AppendUint32(format::VERSION_5);
+    inoutBlob.AppendUint32(format::VERSION_6);
     const uint32 count = static_cast<uint32>(plan.Materials.GetSize());
     inoutBlob.AppendUint32(count); // Meshes.
     inoutBlob.AppendUint32(count); // Materials.
@@ -791,18 +1089,19 @@ void PackBundle(const IrCamera& camera,
         inoutBlob.AppendFloat32(planned.EmissionPowerLumens);
         inoutBlob.AppendUint32(planned.IsAlphaMasked == true ? format::ALPHA_MASKED : format::ALPHA_OPAQUE);
         inoutBlob.AppendFloat32(planned.IsAlphaMasked == true ? planned.AlphaCutoff : 0.0);
-        inoutBlob.AppendUint32(0);
+        inoutBlob.AppendUint32(planned.CookedSurfaceTexture == IR_NONE ? format::NO_TEXTURE
+                                                                       : planned.CookedSurfaceTexture);
+        inoutBlob.AppendUint32(planned.CookedEmissionTexture == IR_NONE ? format::NO_TEXTURE
+                                                                        : planned.CookedEmissionTexture);
+        inoutBlob.AppendFloat32(planned.CookedSurfaceTexture == IR_NONE ? 0.0 : planned.NormalScale);
     }
     for (const CookedMesh& mesh : meshes)
     {
-        inoutBlob.AppendUint32(static_cast<uint32>(mesh.Vertices.GetSize() / 8));
+        inoutBlob.AppendUint32(static_cast<uint32>(mesh.Vertices.GetSize() / VERTEX_FLOATS));
         inoutBlob.AppendUint32(static_cast<uint32>(mesh.Indices.GetSize()));
-        for (usize i = 0; i < mesh.Vertices.GetSize() / format::VERTEX_COMPONENTS; ++i)
+        for (const float32 component : mesh.Vertices)
         {
-            for (usize component = 0; component < format::VERTEX_COMPONENTS; ++component)
-            {
-                inoutBlob.AppendFloat32(static_cast<float64>(mesh.Vertices[i * format::VERTEX_COMPONENTS + component]));
-            }
+            inoutBlob.AppendFloat32(static_cast<float64>(component));
         }
         for (const uint32 index : mesh.Indices)
         {
@@ -944,7 +1243,7 @@ void WriteReport(const SceneIr& scene,
     writeCount("objects", summary.CookedObjects);
     writeCount("vertices", summary.CookedVertices);
     writeCount("bundle_bytes", summary.BundleBytes);
-    writeCount("scene_format_version", format::VERSION_5);
+    writeCount("scene_format_version", format::VERSION_6);
     writeCount("analytic_lights", facts.LightingOrNull != nullptr ? facts.LightingOrNull->Lights.GetSize() : 0);
     writeCount("dropped_placements", plan.DroppedPlacements);
     writeCount("dropped_vertices", plan.DroppedVertices);
@@ -1330,10 +1629,13 @@ void ResetResult(BestEffortResult& outResult) noexcept
     const float64 lightRange = math::Min(extent * 100.0, 1000000.0);
     const usize lightingRecords =
         sizeof(format::LightingRecord) + scene.AnalyticLights.GetSize() * sizeof(format::LightRecord);
-    // Header plus one texture, material and object record per slot; mesh records are in geometryBytes.
-    const usize recordBytes = sizeof(format::Header) + plan.Materials.GetSize() * (sizeof(format::TextureRecord) +
-                                                                                   sizeof(format::MaterialRecordV5) +
-                                                                                   sizeof(format::ObjectRecordV3));
+    // Header plus a material and object record and up to three texture records (base,
+    // surface and emission maps) per slot; mesh records are in geometryBytes.
+    constexpr usize MAX_TEXTURES_PER_SLOT = 3;
+    const usize recordBytes =
+        sizeof(format::Header) +
+        plan.Materials.GetSize() * (MAX_TEXTURES_PER_SLOT * sizeof(format::TextureRecord) +
+                                    sizeof(format::MaterialRecordV6) + sizeof(format::ObjectRecordV3));
     const usize bundleLimit = format::IMPORT_LIMITS.BundleBytes;
     const usize fixedBytes = geometryBytes + recordBytes + lightingRecords;
     const usize lightingBudget = bundleLimit > fixedBytes ? bundleLimit - fixedBytes : 0;
@@ -1363,21 +1665,17 @@ void ResetResult(BestEffortResult& outResult) noexcept
         const usize reserved = geometryBytes + recordBytes + lightingBytes;
         const usize remaining = bundleLimit > reserved ? bundleLimit - reserved : 0;
         const usize budget = math::Min(remaining, format::IMPORT_LIMITS.TotalTextureBytes);
-        status = ApplyScalarTextures(scene, root.GetView(), plan, log);
-        if (status == Status::Ok)
-        {
-            status = CookTextures(scene, root.GetView(), plan, budget, log, textures);
-        }
+        status = CookTextures(scene, root.GetView(), plan, budget, log, textures);
     }
     if (status == Status::Ok)
     {
         summary.CookedMeshes = static_cast<uint32>(meshes.GetSize());
         summary.CookedMaterials = static_cast<uint32>(plan.Materials.GetSize());
-        summary.CookedTextures = static_cast<uint32>(plan.Materials.GetSize());
+        summary.CookedTextures = static_cast<uint32>(textures.GetSize());
         summary.CookedObjects = static_cast<uint32>(plan.Materials.GetSize());
         for (const CookedMesh& mesh : meshes)
         {
-            summary.CookedVertices += static_cast<uint32>(mesh.Vertices.GetSize() / 8);
+            summary.CookedVertices += static_cast<uint32>(mesh.Vertices.GetSize() / VERTEX_FLOATS);
         }
     }
     if (status == Status::Ok && options.IsDryRun == false)

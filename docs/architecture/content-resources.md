@@ -474,7 +474,7 @@ The best-effort importers cook alpha masks into the base texture's alpha (see
 [best-effort scene import](../development/best-effort-scene-import.md#budget-planner)).
 The Editor draws masked materials with the renderer's `MaterialAlpha::Masked`, in
 the lit, debug and unlit paths; Solid shading samples no texture and draws them
-covered. The Editor's World composition writes version 5, so composed Worlds use
+covered. The Editor's World composition writes version 5 or later, so composed Worlds use
 the import profile.
 
 The scene asset pipeline splits a version 5 bundle into parts with build target
@@ -489,3 +489,39 @@ scene and lighting part per import. The catalog's records carry the full source
 digest map of their import, so the catalog grows with parts times source files;
 a scene with hundreds of materials and hundreds of source files approaches the
 64 MiB catalog limit.
+
+### Surface maps, emission maps and tangents (LUSCN v6)
+
+Version 6 keeps the version 5 records and import profile, and adds the material
+detail the renderer's authored lit programs already sample:
+
+- `MaterialRecordV6` (64 bytes) replaces the version 5 reserved word by
+  `SurfaceTexture`, then `EmissionTexture` and `NormalScale`. The surface map is
+  **linear data**: RG encode the tangent-space normal XY as `2 * channel - 1`
+  (positive Z reconstructed), B multiplies `Roughness` (floored at 0.045) and A
+  multiplies `Metallic`. The emission map is sRGB colour whose RGB multiplies
+  `Emission`. Both share the base texture's coordinates and address mode.
+  `NormalScale` in [0, 8] is zero without a surface map. Textures carry no encoding
+  of their own: a texture referenced as a surface map must not also be a base or
+  emission texture, and the decoder marks it `SceneTexture::IsLinear`.
+- `VertexRecordV6` (48 bytes) appends `Tangent` (XYZ, handedness W). W is +1 or -1
+  with the bitangent `cross(Normal, Tangent.xyz) * W` (the MikkTSpace/glTF
+  convention), and the XYZ part perpendicular to the normalized normal must exceed
+  `MIN_TANGENT_PERPENDICULAR`; or the tangent is all zero, and consumers derive the
+  vertex's frame from its texture coordinates. The decoder exposes them as
+  `SceneMesh::Tangents`, laid out like `MeshDescription::Tangents`.
+
+The best-effort importers write version 6 (see
+[best-effort scene import](../development/best-effort-scene-import.md#budget-planner)).
+The Editor uploads surface maps as `Rgba8Unorm`, passes mesh tangents to
+`CreateMesh` and the maps to `LitMaterialDescription::SurfaceMap`, `NormalScale`
+and `EmissionMap` in Lit and the debug views; area-light proxies of
+texture-modulated emitters use the emission map's mean. Composed Worlds are
+version 6; authored schema meshes carry absent tangents.
+
+The scene asset pipeline splits version 6 bundles with build target
+`portable-rgba8-f32-le-v6`. Material descriptions add `surface_texture`,
+`emission_texture` (texture IDs or empty) and `normal_scale`, and depend on their
+base, surface and emission textures in that order. Assembly selects version 6 when
+any mesh part is version 6 or any material description has maps; older mesh parts
+then gain absent tangents, version 3 parts dropping their stored bake UVs.
