@@ -113,6 +113,8 @@ public:
                 mNativeWindowInfo.Scale = message.Scale;
                 mVisibility = message.Visibility;
                 mNonce = message.Nonce;
+                mHasConsumerAdapter = message.HasConsumerAdapter;
+                mConsumerAdapter = { .DeviceUuid = message.DeviceUuid, .DriverUuid = message.DriverUuid };
                 publishExtent();
                 return true;
             }
@@ -519,6 +521,16 @@ public:
         return isSurfaceUsable() == true ? HostedSurfaceStatus::Busy : HostedSurfaceStatus::Disconnected;
     }
 
+    bool TryGetConsumerAdapter(HostedAdapterIdentity& outAdapter) const noexcept override
+    {
+        if (mHasConsumerAdapter == false)
+        {
+            return false;
+        }
+        outAdapter = mConsumerAdapter;
+        return true;
+    }
+
 private:
     void applyReset(input::ResetReason reason, const input::FocusBaseline& baseline) noexcept
     {
@@ -610,6 +622,9 @@ private:
     /// Authenticates Mach rendezvous messages (macOS only).
     [[maybe_unused]] Token mToken = {};
     RendezvousNonce mNonce = {};
+    /// The consumer's adapter from the Welcome, when it announced one.
+    bool mHasConsumerAdapter = false;
+    HostedAdapterIdentity mConsumerAdapter = {};
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     RendezvousClient mRendezvous;
 #endif

@@ -23,6 +23,8 @@
 
 #include "hosted_ring.h"
 
+#include <cstring>
+
 #include <volk.h>
 
 namespace ludus::graphics::rhi::backend
@@ -63,6 +65,22 @@ inline void FillHostedImageInfo(foundation::uint32 width,
     outImage.usage = HOSTED_IMAGE_USAGE;
     outImage.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     outImage.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+/// @brief Read an adapter's `deviceUUID` and `driverUUID` through the session's instance dispatch.
+/// @pre The instance uses Vulkan 1.1 or later and so does `physicalDevice`.
+inline void ReadHostedAdapterIdentity(VkPhysicalDevice physicalDevice,
+                                      platform::HostedAdapterIdentity& outAdapter) noexcept
+{
+    VkPhysicalDeviceIDProperties identity{};
+    identity.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &identity;
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    static_assert(VK_UUID_SIZE == platform::HOSTED_ADAPTER_UUID_BYTES);
+    std::memcpy(outAdapter.DeviceUuid.GetData(), identity.deviceUUID, VK_UUID_SIZE);
+    std::memcpy(outAdapter.DriverUuid.GetData(), identity.driverUUID, VK_UUID_SIZE);
 }
 
 /// Outcome of HostedProducerVulkan::Acquire().

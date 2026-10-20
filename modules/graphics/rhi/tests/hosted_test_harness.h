@@ -171,6 +171,12 @@ public:
         info.ParentDirectory = "/tmp";
         info.Width = INITIAL_WIDTH;
         info.Height = INITIAL_HEIGHT;
+        // Announce the consumer's adapter as the editor does; Metal has none to announce.
+        platform::HostedAdapterIdentity adapter;
+        if (TryGetHostedConsumerAdapter(device, adapter) == true)
+        {
+            info.ConsumerAdapterOrNull = &adapter;
+        }
         REQUIRE(mEndpoint.Start(info) == platform::HostedEndpointStatus::Ok);
         REQUIRE(mConsumer.Start(mEndpoint, device) == HostedConsumerStatus::Ok);
         mProducer.Spawn(mode, mEndpoint.GetChannelAddress());

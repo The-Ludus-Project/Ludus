@@ -10,6 +10,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 
 #include <ludus/graphics/rhi/native_interop.h>
+#include <ludus/platform/hosted_surface.h>
 #include <ludus/platform/hosted_window.h>
 
 namespace ludus::graphics::rhi
@@ -82,6 +83,23 @@ struct HostedFrame final
     /// queue, so commands submitted there afterwards sample it with no barrier of their own.
     foundation::uint32 VulkanLayout = 0;
 };
+
+/// @brief Identify the adapter a HostedSurfaceConsumer started on `device` imports onto.
+///
+/// Pass the result as platform::HostedWindowEndpoint::StartInfo::ConsumerAdapterOrNull. The
+/// endpoint announces it in its Welcome, and a Vulkan game connected to the hosted window
+/// tries that adapter before any other, so a multi-GPU host renders where the editor can
+/// import. Without a matching adapter the game selects as usual and the consumer refuses
+/// its images with AdapterMismatch.
+/// @param device The consumer's device, as for HostedSurfaceConsumer::Start(). Vulkan needs
+/// `Instance` and `PhysicalDevice`; no other object is used.
+/// @param outAdapter Vulkan: the adapter's `deviceUUID` and `driverUUID`, queried through
+/// `Instance`. Unchanged unless true is returned.
+/// @return true on Vulkan. false on Metal, where IOSurfaces work across GPUs and the game
+/// needs no adapter; for another API, an incomplete identity, a build without hosted import,
+/// or when `vkGetPhysicalDeviceProperties2` cannot be loaded.
+[[nodiscard]] bool TryGetHostedConsumerAdapter(const NativeDeviceIdentity& device,
+                                               platform::HostedAdapterIdentity& outAdapter) noexcept;
 
 /// @brief Imports a hosted game's surface onto the editor's GPU device.
 ///

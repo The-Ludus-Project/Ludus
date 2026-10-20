@@ -656,8 +656,9 @@ Unavailable.
   message with the reason (WrongUser, BadToken, IncompatibleVersion,
   MalformedHello or HandshakeTimeout) and is disconnected. The endpoint keeps
   listening for the real window and counts each refusal.
-- **Protocol.** The protocol is version 2; version 1 had no hosted surface, and
-  either side refuses the other version as IncompatibleVersion. Each message is
+- **Protocol.** The protocol is version 3. Version 1 had no hosted surface and
+  version 2 no consumer adapter in the Welcome; either side refuses another
+  version as IncompatibleVersion. Each message is
   a little-endian 4-byte header (`uint16` kind, `uint16` payload size) followed
   by a fixed-size payload. A frame payload is at most 255 bytes, so a peer can
   read and refuse another version's Hello. The address keeps its own format
@@ -666,7 +667,7 @@ Unavailable.
 | Message | Direction | Payload |
 | --- | --- | --- |
 | Hello | window → endpoint | magic `LHWN`, version, key count, 32-byte token |
-| Welcome | endpoint → window | version, visibility, width, height, scale, 16-byte Mach rendezvous nonce (zero on Linux) |
+| Welcome | endpoint → window | version, visibility, flags, width, height, scale, 16-byte Mach rendezvous nonce (zero on Linux), and the consumer adapter's `deviceUUID` and `driverUUID` (zero unless the consumer-adapter flag is set) |
 | Refused | endpoint → window | refusal reason |
 | Resize | endpoint → window | width and height in backing pixels (each ≤ 32768), scale (finite, in (0, 16]) |
 | Visibility | endpoint → window | Visible, Occluded or Minimized |
@@ -865,6 +866,7 @@ does not use it until P6.
   - Metal draws surface pipelines in the session's surface format: RGBA8 when
     hosted, BGRA8 otherwise.
   - Vulkan enables `VK_KHR_external_memory_fd` and skips adapters without it.
+    It tries the consumer's adapter first; see the adapter hint below.
     After the last pass it releases the image from `TRANSFER_SRC_OPTIMAL` to
     `VK_QUEUE_FAMILY_EXTERNAL` in `SHADER_READ_ONLY_OPTIMAL`. A depth epoch
     replaces the generation whenever the shared depth attachment is recreated.
@@ -904,24 +906,43 @@ does not use it until P6.
   - IOSurfaces work across GPUs, so Metal has no adapter check.
   - Qt's Vulkan device must enable `VK_KHR_external_memory_fd`; the editor
     enables it whenever the adapter supports it (P8b).
-  - The game picks its adapter as usual. It has no adapter hint from the
-    editor, so a multi-GPU Linux host may be refused.
+  - **Adapter hint.** The editor ranks its Vulkan adapters by type (discrete
+    first), while the game would take the first adapter with
+    `VK_KHR_external_memory_fd`. On a multi-GPU Linux host the two can differ,
+    so the editor announces its adapter. `rhi::TryGetHostedConsumerAdapter`
+    reads the consumer device's `deviceUUID` and `driverUUID`, the editor passes
+    them as `HostedWindowEndpoint::StartInfo::ConsumerAdapterOrNull`, and the
+    Welcome carries them. The hosted window reports them from
+    `HostedSurfaceChannel::TryGetConsumerAdapter`. When Vulkan RHI connects a
+    device to the window, it tries the adapters whose two UUIDs both equal the
+    consumer's first, in enumeration order, then the rest. The same GPU on
+    another driver is not preferred, because its memory cannot be imported.
+  - The hint is a preference. When no adapter matches, or the matching one
+    lacks a required feature, the game selects as before and logs a warning;
+    the consumer then refuses its images with `AdapterMismatch` and the editor
+    states why. Metal announces no adapter, because IOSurfaces work across
+    GPUs.
 - **Evidence.**
-  - `ludus_platform_hosted_tests` covers the version-2 codec, descriptor and
+  - `ludus_platform_hosted_tests` covers the version-3 codec, descriptor and
     Mach transport over socketpairs, release extraction, backpressure, deferred
-    releases and violations.
+    releases and violations. It checks the Welcome's consumer adapter from
+    `StartInfo` to `TryGetConsumerAdapter`, and refuses version-1 and version-2
+    windows.
   - `ludus_platform_hosted_mach_tests` is the Mach probe.
-  - `ludus_rhi_lifecycle_tests` pins `HostedRing` transitions.
+  - `ludus_rhi_lifecycle_tests` pins `HostedRing` transitions and the hosted
+    adapter order: the consumer's adapter first, the same GPU on another driver
+    not preferred, and enumeration order without a match.
   - `ludus_rhi_hosted_surface_tests` runs `ludus_rhi_hosted_producer`, an
     ordinary RHI application, in a hosted window. It covers: the known colour,
     no reuse of a held image, Skipped while every image is held (each call
     returns in under 100 ms), recovery on release, five resizes that need
     retirement, and refusal of forged images. On Linux it opens with the
-    device-UUID probe and refuses forged adapter UUIDs. Its Linux cases sample
-    acquired frames with no barrier of their own, check that frames released
-    after the queue come back only once the fence behind their unwaited
-    sampling has signalled, and that a Vulkan identity without its queue is
-    refused.
+    device-UUID probe, checks the UUIDs `TryGetHostedConsumerAdapter` announces,
+    and refuses forged adapter UUIDs. Every session announces the consumer's
+    adapter, as the editor does. Its Linux cases sample acquired frames with no
+    barrier of their own, check that frames released after the queue come back
+    only once the fence behind their unwaited sampling has signalled, and that a
+    Vulkan identity without its queue is refused.
 
 ### Input, focus and capture
 

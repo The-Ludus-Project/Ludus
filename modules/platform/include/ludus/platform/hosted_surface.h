@@ -105,6 +105,21 @@ private:
     foundation::int32 mFileDescriptor = -1;
 };
 
+/// @brief Identity of the GPU adapter and driver that import a hosted surface.
+///
+/// Vulkan: the consumer's `VkPhysicalDeviceIDProperties::deviceUUID` and
+/// `driverUUID`. Opaque memory handles import only on an adapter whose two UUIDs
+/// both equal the exporter's, so a producer that renders on this adapter can
+/// share its images with the consumer. Metal shares IOSurfaces across GPUs and
+/// has no adapter identity.
+struct HostedAdapterIdentity final
+{
+    /// `deviceUUID`: the physical device.
+    foundation::StaticArray<foundation::uint8, HOSTED_ADAPTER_UUID_BYTES> DeviceUuid{};
+    /// `driverUUID`: the driver that exposes it.
+    foundation::StaticArray<foundation::uint8, HOSTED_ADAPTER_UUID_BYTES> DriverUuid{};
+};
+
 /// @brief The images of one hosted surface generation.
 ///
 /// A generation is a fixed extent and format. The producer allocates a new
@@ -222,6 +237,17 @@ public:
     /// @param outRelease The release; unchanged unless Ok.
     /// @return Ok, Busy when none is pending, or Disconnected.
     [[nodiscard]] virtual HostedSurfaceStatus TakeRelease(HostedImageRelease& outRelease) noexcept = 0;
+
+    /// @brief The adapter the consumer imports onto, when the endpoint announced one.
+    ///
+    /// The endpoint sends it in the Welcome (HostedWindowEndpoint::StartInfo::ConsumerAdapterOrNull),
+    /// so it is known as soon as the window exists and never changes. Vulkan RHI prefers the
+    /// adapter with these UUIDs when it connects a device to the window. It is a preference,
+    /// not a guarantee: without a matching adapter, RHI selects as usual and the consumer
+    /// refuses the images.
+    /// @param outAdapter The consumer's adapter; unchanged unless true is returned.
+    /// @return true when the endpoint announced an adapter.
+    [[nodiscard]] virtual bool TryGetConsumerAdapter(HostedAdapterIdentity& outAdapter) const noexcept = 0;
 
 protected:
     /// Constructed only as part of a hosted window.

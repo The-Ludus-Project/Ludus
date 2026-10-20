@@ -1,4 +1,4 @@
-// Hosted surface channel tests (protocol version 2). An EndpointSession and a
+// Hosted surface channel tests (protocol version 3). An EndpointSession and a
 // hosted window are connected over a socketpair, as in hosted_window_tests.cpp,
 // and exchange Images, Present and Release through the production codec. The
 // file-descriptor transport runs on every host (Linux uses it in production); on
@@ -34,6 +34,7 @@
 #include <unistd.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 using ludus::foundation::int32;
 using ludus::foundation::uint32;
@@ -42,7 +43,9 @@ using ludus::foundation::uint8;
 using ludus::foundation::UniquePtr;
 using ludus::foundation::usize;
 using ludus::foundation::time::Timestamp;
+using ludus::platform::HOSTED_ADAPTER_UUID_BYTES;
 using ludus::platform::HOSTED_SURFACE_IMAGE_COUNT;
+using ludus::platform::HostedAdapterIdentity;
 using ludus::platform::HostedEndpointStatus;
 using ludus::platform::HostedHandleKind;
 using ludus::platform::HostedImageFormat;
@@ -120,9 +123,27 @@ struct SurfacePair final
     }
 };
 
-void Connect(SurfacePair& outPair, bool shouldStartRendezvous)
+/// A consumer adapter whose UUID bytes are all distinct.
+HostedAdapterIdentity MakeConsumerAdapter()
+{
+    HostedAdapterIdentity adapter;
+    for (usize i = 0; i < HOSTED_ADAPTER_UUID_BYTES; ++i)
+    {
+        adapter.DeviceUuid[i] = static_cast<uint8>(0x40 + i);
+        adapter.DriverUuid[i] = static_cast<uint8>(0x80 + i);
+    }
+    return adapter;
+}
+
+void Connect(SurfacePair& outPair,
+             bool shouldStartRendezvous,
+             const HostedAdapterIdentity* consumerAdapterOrNull = nullptr)
 {
     outPair.Session.Configure(outPair.SessionToken, hosted::GetCurrentUserId(), MakeInitialState());
+    if (consumerAdapterOrNull != nullptr)
+    {
+        outPair.Session.SetConsumerAdapter(*consumerAdapterOrNull);
+    }
 #if defined(__APPLE__)
     if (shouldStartRendezvous == true)
     {
@@ -214,7 +235,7 @@ void PublishDescriptorGeneration(SurfacePair& inoutPair, uint32 generation)
 }
 } // namespace
 
-TEST_CASE("Hosted surface messages round-trip through the version-2 codec", "[platform][hosted][surface]")
+TEST_CASE("Hosted surface messages round-trip through the version-3 codec", "[platform][hosted][surface]")
 {
     ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};
     usize size = 0;
@@ -279,6 +300,84 @@ TEST_CASE("Hosted surface messages round-trip through the version-2 codec", "[pl
     CHECK(decoded.Nonce[15] == 0xA5);
 }
 
+TEST_CASE("The version-3 Welcome carries the consumer's adapter", "[platform][hosted][surface]")
+{
+    ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};
+    usize size = 0;
+    hosted::Message decoded;
+    usize consumed = 0;
+    const HostedAdapterIdentity adapter = MakeConsumerAdapter();
+
+    hosted::Message welcome;
+    welcome.Kind = hosted::MessageKind::Welcome;
+    welcome.Width = 8;
+    welcome.Height = 8;
+    welcome.HasConsumerAdapter = true;
+    welcome.DeviceUuid = adapter.DeviceUuid;
+    welcome.DriverUuid = adapter.DriverUuid;
+    REQUIRE(hosted::TryEncodeMessage(welcome, {bytes.GetData(), bytes.GetSize()}, size));
+    CHECK(size == hosted::HEADER_BYTES + hosted::WELCOME_PAYLOAD_BYTES);
+    REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Ok);
+    CHECK(decoded.HasConsumerAdapter == true);
+    CHECK(std::memcmp(decoded.DeviceUuid.GetData(), adapter.DeviceUuid.GetData(), HOSTED_ADAPTER_UUID_BYTES) == 0);
+    CHECK(std::memcmp(decoded.DriverUuid.GetData(), adapter.DriverUuid.GetData(), HOSTED_ADAPTER_UUID_BYTES) == 0);
+
+    // The flags byte follows the version and visibility; the UUIDs end the payload.
+    constexpr usize FLAGS_OFFSET = hosted::HEADER_BYTES + 3;
+    constexpr usize LAST_UUID_OFFSET = hosted::HEADER_BYTES + hosted::WELCOME_PAYLOAD_BYTES - 1;
+    CHECK(bytes[FLAGS_OFFSET] == hosted::WELCOME_FLAG_CONSUMER_ADAPTER);
+    CHECK(bytes[LAST_UUID_OFFSET] == adapter.DriverUuid[HOSTED_ADAPTER_UUID_BYTES - 1]);
+    bytes[FLAGS_OFFSET] = static_cast<uint8>(hosted::WELCOME_FLAG_CONSUMER_ADAPTER | 0x02U);
+    CHECK(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Malformed);
+
+    // Without an adapter the UUID bytes are reserved and must be zero, whatever the message holds.
+    welcome.HasConsumerAdapter = false;
+    REQUIRE(hosted::TryEncodeMessage(welcome, {bytes.GetData(), bytes.GetSize()}, size));
+    CHECK(size == hosted::HEADER_BYTES + hosted::WELCOME_PAYLOAD_BYTES);
+    CHECK(bytes[FLAGS_OFFSET] == 0);
+    CHECK(bytes[LAST_UUID_OFFSET] == 0);
+    hosted::Message plain;
+    REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, plain, consumed) == hosted::DecodeStatus::Ok);
+    CHECK(plain.HasConsumerAdapter == false);
+    CHECK(plain.DeviceUuid[0] == 0);
+    bytes[LAST_UUID_OFFSET] = 1;
+    CHECK(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Malformed);
+
+    // A version-2 Welcome is shorter; a version-3 window cannot read it as its own.
+    hosted::Message shorter;
+    REQUIRE(hosted::TryEncodeMessage(welcome, {bytes.GetData(), bytes.GetSize()}, size));
+    const ludus::foundation::uint16 version2PayloadBytes =
+        static_cast<ludus::foundation::uint16>(hosted::WELCOME_PAYLOAD_BYTES - (2 * HOSTED_ADAPTER_UUID_BYTES));
+    bytes[2] = static_cast<uint8>(version2PayloadBytes & 0xFFU);
+    bytes[3] = static_cast<uint8>(version2PayloadBytes >> 8U);
+    CHECK(hosted::TryDecodeMessage({bytes.GetData(), hosted::HEADER_BYTES + version2PayloadBytes}, shorter, consumed) ==
+          hosted::DecodeStatus::Malformed);
+}
+
+TEST_CASE("A hosted window reports the consumer adapter announced in its Welcome", "[platform][hosted][surface]")
+{
+    const HostedAdapterIdentity adapter = MakeConsumerAdapter();
+    SurfacePair announced;
+    Connect(announced, false, &adapter);
+    HostedAdapterIdentity reported;
+    REQUIRE(announced.GetChannel().TryGetConsumerAdapter(reported));
+    CHECK(std::memcmp(reported.DeviceUuid.GetData(), adapter.DeviceUuid.GetData(), HOSTED_ADAPTER_UUID_BYTES) == 0);
+    CHECK(std::memcmp(reported.DriverUuid.GetData(), adapter.DriverUuid.GetData(), HOSTED_ADAPTER_UUID_BYTES) == 0);
+
+    // Without an announcement there is no preference, and the output is untouched.
+    SurfacePair silent;
+    Connect(silent, false);
+    HostedAdapterIdentity untouched = adapter;
+    CHECK_FALSE(silent.GetChannel().TryGetConsumerAdapter(untouched));
+    CHECK(untouched.DeviceUuid[0] == adapter.DeviceUuid[0]);
+
+    // Configure() forgets an adapter from an earlier session.
+    SurfacePair reused;
+    reused.Session.SetConsumerAdapter(adapter);
+    Connect(reused, false);
+    CHECK_FALSE(reused.GetChannel().TryGetConsumerAdapter(untouched));
+}
+
 TEST_CASE("The hosted codec rejects invalid surface references and generations", "[platform][hosted][surface]")
 {
     ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};
@@ -306,8 +405,9 @@ TEST_CASE("The hosted codec rejects invalid surface references and generations",
     CHECK_FALSE(hosted::TryEncodeMessage(images, {bytes.GetData(), bytes.GetSize()}, size));
 }
 
-TEST_CASE("A version-1 window is refused as incompatible", "[platform][hosted][surface]")
+TEST_CASE("A version-1 or version-2 window is refused as incompatible", "[platform][hosted][surface]")
 {
+    const ludus::foundation::uint16 version = GENERATE(ludus::foundation::uint16{1}, ludus::foundation::uint16{2});
     const hosted::Token token = MakeToken(2);
     hosted::EndpointSession session;
     session.Configure(token, hosted::GetCurrentUserId(), MakeInitialState());
@@ -317,7 +417,7 @@ TEST_CASE("A version-1 window is refused as incompatible", "[platform][hosted][s
     hosted::SocketDescriptor windowSide(descriptors[1]);
     hosted::Message hello;
     hello.Kind = hosted::MessageKind::Hello;
-    hello.Version = 1;
+    hello.Version = version;
     hello.KeyCount = static_cast<ludus::foundation::uint16>(ludus::input::KEY_COUNT);
     hello.SessionToken = token;
     ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};

@@ -65,6 +65,11 @@ public:
     /// @pre The state is valid for the protocol (extent, scale, visibility).
     void Configure(const Token& token, uint32 expectedUserId, const MirroredWindowState& state) noexcept;
 
+    /// @brief Announce the consumer's adapter in the Welcome.
+    ///
+    /// Call after Configure() and before a window is admitted; Configure() forgets it.
+    void SetConsumerAdapter(const HostedAdapterIdentity& adapter) noexcept;
+
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     /// @brief Register the session's Mach rendezvous for IOSurface send rights.
     ///
@@ -147,6 +152,8 @@ private:
     uint32 mRefusalCount = 0;
 
     RendezvousNonce mNonce = {};
+    bool mHasConsumerAdapter = false;
+    HostedAdapterIdentity mConsumerAdapter = {};
     int32 mPeerProcessId = -1;
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     RendezvousServer mRendezvous;
