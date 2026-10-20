@@ -1,14 +1,17 @@
 # Graphics debugging architecture and implementation plan
 
 Status: proposed implementation contract, 2026-10-20. The phases below are not
-implemented or qualified by this document. The first delivery is shared GPU
-names/scopes followed by native Metal and RenderDoc capture control.
+implemented or qualified by this document. The first deliveries are shared GPU
+names/scopes, basic Perfetto GPU timing with editor recording controls, and
+native Metal/RenderDoc capture control.
 
 Shader and renderer developers should be able to run the selected project in
 Ludus, capture the GPU work responsible for its image, and inspect that capture
 in an external graphics debugger. Ludus supplies meaningful names, correct
 capture boundaries, process selection and reproducible artifacts. External tools
 own resource inspection, pixel history, shader stepping and hardware analysis.
+The editor also starts and stops CPU, GPU or combined Perfetto recordings so
+developers can investigate frame costs without launching a vendor capture tool.
 
 ## Existing owners and baseline
 
@@ -19,8 +22,9 @@ Metal on macOS; browsers use WebGPU or WebGL 2. Windows/D3D12 and mobile capture
 integration require their platform backends and qualification first.
 
 The [reconciled profiling architecture](profiling-final.md) owns CPU traces,
-counters and proposed GPU timestamp collection. This design owns external
-graphics-debugger integration. GPU annotation must work without CPU trace
+counters and the [GPU timing data contract](profiling-final.md#basic-gpu-timing-for-perfetto).
+This design owns external graphics-debugger integration and the editor recording
+workflow. GPU annotation must work without CPU trace
 recording or timestamp queries; a CPU scope around a draw does not measure GPU
 execution time. Existing reference-image capture is a rendering product, not an
 external debugger capture.
@@ -35,6 +39,10 @@ At this baseline, graph pass descriptions already carry authored diagnostic
 names. Broad native object naming, nested GPU annotations, a graphics-capture
 request service and editor capture controls remain work in this plan. Finding an
 installed tool or a single existing Metal label does not establish support.
+The RHI already exposes an optional single-sample, nonblocking frame-duration
+probe, and viewport Stats already consumes it. Those durations are device-local;
+they are not yet exported as Perfetto GPU samples or controlled by an editor
+recording session. New recording must share the existing sampler owner.
 
 ## Decisions and initial scope
 
@@ -46,12 +54,15 @@ installed tool or a single existing Metal label does not establish support.
   Missing injection or capture configuration can require restarting the target.
 - Keep frame capture, timing traces and GPU crash dumps separate capabilities.
   No universal capture-file format or universal begin/end API is assumed.
+- Deliver basic Perfetto GPU duration counters and CPU/GPU/Both editor recording
+  independently of vendor-tool installation. Add timed pass scopes and calibrated
+  GPU execution lanes incrementally; coarse timing must remain honestly labeled.
 - Keep tool installation optional. Opening projects, running doctor and normal
   builds must not install debuggers, elevate privileges or launch viewers.
 - Preserve rendering when tooling is unavailable or capture fails. Capture does
   not change the selected backend or enable a different renderer silently.
 
-The first release covers a single submitted raster frame, including its uploads
+The first external-debugger release covers a single submitted raster frame, including its uploads
 and compute work where supported by the selected backend. Shader source display
 is a qualification target; original Slang source stepping, ray-tracing debugging,
 multi-frame traces and hosted shared-image replay are separately qualified.
@@ -65,7 +76,8 @@ multi-frame traces and hosted shared-image replay are separately qualified.
 | Graphics capture service | Bounded requests, session identity, state transitions, adapter selection and artifact metadata; no draw/resource lifetime ownership. |
 | Tooling and editor launch services | Tool discovery, startup environment/injection, target process selection, local preferences and opening a completed artifact. |
 | Existing editor/game transport | Versioned capture requests and replies to the rendering process; no native GPU handles crossing IPC. |
-| FoundationProfiling | Optional correlation IDs and GPU timestamps under its existing design; no vendor capture dependency. |
+| FoundationProfiling | CPU trace recording, transport-neutral measurement records, correlation metadata and Perfetto export; RHI retains native GPU query ownership. |
+| Editor profiling controller | Recording mode/target, start/stop coordination, bounded finalization, summaries and Perfetto export; reuses existing tracer and GPU sampler owners. |
 
 Implement the capture service initially as a narrow responsibility beside the
 RHI session, with private platform translation units. Do not create a new module
@@ -279,6 +291,77 @@ defect there; validate performance conclusions on representative optimized runs
 with appropriate timing/profiling tools. Shared names connect those workflows
 without conflating their data or completion conditions.
 
+## Perfetto recording in the editor
+
+Provide a small Profiling tool window and a Record/Stop action available from
+the Tools menu and shared command catalogue. This is capture control plus a
+summary; detailed timelines remain in Perfetto. The
+[profiling architecture](profiling-final.md#basic-gpu-timing-for-perfetto) owns
+sample semantics, clocks, buffering and export. It is independent of the vendor
+capture state machine above and works without RenderDoc or Xcode running.
+
+| Control | Contract |
+| --- | --- |
+| Mode | CPU, GPU or Both; show effective build/device capability and reasons for unavailable choices. Freeze selection during recording/finalization. |
+| Target | Editor process, editor scene viewport or hosted game producer, with explicit process/device scope. Start with the local editor and its scene viewport. |
+| Record and Stop | One shared action whose label, enabled state and checked state agree in menu, toolbar, tool window and shortcut. Stop ends admission and starts bounded finalization. |
+| Automatic stop | Optional duration or submitted-frame limit, with a finite configured memory budget. Skipped viewport frames do not count as submitted GPU frames. |
+| Status | Idle, Arming, Recording, Finalizing, Complete, Cancelled or Failed; elapsed recording time, requested/effective sources, sample coverage and export errors. |
+| Summary | Available GPU sample count and clearly scoped frame-duration statistics; CPU trace health. Missing/pending timings are unavailable, never zero. |
+| Result | Save/reveal the trace, open in Perfetto explicitly, and retain the previous successful result if another recording fails. |
+
+Propose F9 for the shared Record/Stop action, subject to the existing shortcut
+catalogue and platform conflict checks at implementation. Show its native key
+label in the existing Keyboard Shortcuts UI; permit an override through the
+editor's shortcut policy. The shortcut uses the last configured mode and target
+and never starts a second recording while Arming or Finalizing. Opening the tool
+window exposes configuration before the first recording. Menu access remains
+available on Macs whose function keys require Fn, and typing/IME/viewport input
+behavior must pass the existing interaction acceptance.
+
+CPU means instrumented thread scopes in the target process, not statistical CPU
+sampling or a viewport-only filter. GPU means the selected device/queue workload,
+not all graphics work on the machine. Both combines those sources in one trace
+with frame IDs and the declared clock relationship. Do not label the editor
+compositor or a command-buffer total as time for one scene pass.
+
+CPU-only recording does not request new GPU timing samples. GPU-only recording
+does not enable ordinary CPU scope collection; it retains only GPU data and the
+minimal frame/session metadata needed to interpret it. Existing viewport Stats
+can independently request timing, but one sampler fans completed results to its
+consumers. Hiding Stats must not stop an active recording, and opening Stats must
+not steal its pending probe. Repeated polls of a terminal result emit it once.
+
+Arming checks every requested source and reserves buffers before collection.
+Both fails explicitly if either requested source is unavailable, with an action
+to choose a supported mode; it never silently produces a CPU-only trace. A
+disabled profiling build reports the build remedy without rebuilding/restarting
+automatically. Existing active application/CLI recording returns Busy rather
+than being stopped or having its unexported data overwritten.
+
+Stopping closes the recorded interval and disarms new probes. Resolve already
+submitted samples without waiting on the GPU in the UI thread, under a bounded
+finalization deadline; record any unresolved samples as incomplete. CPU
+`EndCapture` joins event writers, so schedule lifecycle/export through one
+serialized coordinator without promising an instant UI-thread call. Preserve
+the frozen CPU/GPU export snapshot until the write succeeds or the user discards
+it; a new recording must not erase it after an export failure. Heavy serialization
+and file I/O run outside UI painting and frame recording. Save into ignored local
+output and make file/viewer errors recoverable without losing World edits.
+
+Hosted recording uses the producer's profiler and versioned transport with
+session/request IDs. Start/stop acknowledgements report effective frame/time
+boundaries; an editor recording cannot stand in for game CPU/GPU work. Initially
+export a separate trace per process with shared session/frame identity. Combine
+process traces on one time axis only after explicit clock-offset/error validation
+and unique process/track identities; identical synthetic process IDs or nearby
+timestamps are not evidence of alignment. Report disconnect and partial results.
+
+Vendor capture and Perfetto recording initially exclude one another per target
+with a clear Busy reason. Simultaneous operation is a later qualified option
+whose additional instrumentation is recorded in the manifest. The ordinary
+Perfetto workflow does not depend on the vendor capture adapter milestones.
+
 ## Mac developer setup
 
 Install a compatible full [Xcode distribution](https://developer.apple.com/xcode/)
@@ -309,6 +392,16 @@ native Metal backend. PIX GPU capture requires Windows/D3D12.
 Every phase is pending. Implement in isolated reviewable changes targeting
 `develop`, following [CI qualification](../development/continuous-integration.md).
 Acceptance into `develop` is distinct from full batch/platform qualification.
+
+The Perfetto track below can ship alongside GPU annotations and native capture
+adapters. It does not wait for G2/G3 or for a full pass-timing implementation.
+
+| Phase | Deliverable and dependency | Exit gate |
+| --- | --- | --- |
+| P0 Editor CPU recording | Shared profiling controller, tool window, CPU mode, Record/Stop action and proposed F9 shortcut; reuse the current CPU tracer/exporter. | Menu/toolbar/shortcut share availability; bounded capture exports and opens in Perfetto; Busy, disabled build and export-retry behavior preserve data and editor responsiveness. |
+| P1 Coarse GPU Perfetto recording | GPU and Both modes; shared viewport probe ownership, typed frame-duration samples, coverage and single-trace export. Reuse existing RHI measurement support; no vendor debugger prerequisite. | Metal and Vulkan recordings show validated duration counters and CPU scope filtering; delayed/skipped/disjoint samples, Stats on/off, cancellation and finalization produce honest coverage without GPU waits. |
+| P2 Pass durations and hosted recording | Bounded native query slots/counters, physical pass names from G0 and producer-side recording transport. | Named pass counters survive pass merging, query pressure and restart; unsupported precision remains explicit; hosted traces identify their producer and preserve image leases. |
+| P3 Correlated GPU execution lanes | Backend CPU/GPU clock mapping with uncertainty, queue tracks and submission correlation. | Actual GPU slices align within the stated measured error, nest legally in Perfetto, preserve overlap on separate queues and degrade to duration-only data if calibration fails. |
 
 | Phase | Deliverable and dependency | Exit gate |
 | --- | --- | --- |

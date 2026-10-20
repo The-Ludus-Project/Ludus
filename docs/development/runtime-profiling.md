@@ -339,6 +339,12 @@ group's `samples` metric shows how many were. A run with no available GPU timing
 sample fails, because it did not measure GPU duration. Durations are not correlated with
 the CPU clock or the display.
 
+The proposed [editor recording workflow](../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
+adds interactive CPU/GPU/Both capture, separately from this scheduled benchmark
+runner. The [GPU Perfetto contract](../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
+starts with duration counters and explicit sampling coverage; benchmark output
+does not yet establish GPU execution lanes or an implemented editor recorder.
+
 ### Add a scenario
 
 Add an entry with every field:

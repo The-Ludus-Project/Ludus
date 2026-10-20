@@ -48,8 +48,10 @@ single-precision seconds, shared current-node, draw-time reset) was adopted.
 
 The [graphics debugging architecture](graphics-debugging.md) owns the proposed
 GPU annotation and external capture integration. Annotation enablement is
-independent of CPU trace recording and deferred GPU timestamp collection; the
-external debugger still owns capture visualization and shader/resource analysis.
+independent of CPU trace recording and GPU timestamp collection. The
+[basic GPU timing contract](#basic-gpu-timing-for-perfetto) below stages frame
+duration export before pass timing and correlated GPU lanes. The external
+debugger still owns capture visualization and shader/resource analysis.
 
 Baseline goals stand **[FP]**. Sharpened by the references:
 
@@ -70,6 +72,155 @@ capture, narrowing the reason to build engine code to *semantic context tools ca
 
 ---
 
+## Basic GPU timing for Perfetto
+
+Delivery update, 2026-10-20: this is a proposed extension to the implemented CPU
+tracer. The RHI already provides `EnableGpuTiming`, `ArmGpuTiming` and
+`GetGpuTiming` in `measurement.h`, and editor viewport Stats already polls and
+re-arms its single frame probe. The probe reports elapsed device-clock duration
+without CPU/display clock correlation. CPU tracing, viewport Stats and benchmark
+timing do not yet establish a combined editor Perfetto recording.
+
+Start with coarse frame-duration samples in the existing Chrome/Perfetto JSON
+export, then add timed physical passes, then calibrated execution tracks. Reuse
+the existing probe and measurement semantics instead of building a second GPU
+timer. The [editor workflow and P0–P3 plan](graphics-debugging.md#perfetto-recording-in-the-editor)
+own recording controls, modes and delivery order. No vendor capture tool is
+required for this path.
+
+### Duration samples before execution slices
+
+P1 exports a named `GPU/FrameDurationNanoseconds` counter on a clearly named GPU
+measurement track, with device/queue and capture identity. Its value measures
+the native probe interval, including applicable GPU stalls/idle gaps; it is
+not utilization, display latency or a sum of busy cycles. If the selected native
+probe covers one command buffer, identify that scope rather than claiming it
+covers independent uploads or other queues.
+
+Each sample retains device-session generation, submitted frame sequence, queue,
+sampling method, validity/precision, duration and CPU submission/collection
+timestamps. Associate the counter with the recorded CPU submission marker and
+label that timestamp as attribution, not GPU execution start. Collection time
+is separate. A numeric duration alone must never be drawn as an execution slice
+beginning at submission or ending when a later poll returns. Keep current
+`GpuTiming` compatibility; add the missing frame association in the owning
+sampler/session boundary before exporting samples.
+
+Use a transport-neutral bounded sample record accepted by the compiled exporter;
+FoundationProfiling must not include RHI/native types or borrow query storage.
+The existing `SampleCounter` stamps emission time and accepts only an unsigned
+value, so polling it later is insufficient for originating-frame attribution.
+Extend the export/sample interface explicitly for stored timestamps, identity,
+units and validity. Validate finite/nonnegative durations and checked conversion
+to the encoded unit; preserve a valid quantized zero. Round once with a stated
+policy rather than silently truncating or overflowing a backend floating value.
+
+CPU scopes and GPU measurements have separate recording gates and storage.
+CPU-only mode enables the existing CPU recorder; GPU-only mode records typed GPU
+samples plus minimal frame/session metadata without admitting ordinary CPU
+scopes. Both admits both sources. The exporter composes their immutable snapshots
+into one trace, including a valid GPU-only trace with no CPU events. Preserve
+the existing no-data result for a truly empty capture. Gate the new Perfetto
+recording path with the profiling build policy and report unavailable sources
+explicitly; do not silently fall back from a requested GPU source to CPU timing.
+
+### Bounded sampling and deferred results
+
+Begin P1 with at most the current probe's single outstanding sample per device
+session. Poll completion without waiting and arm the next eligible submission
+after the previous sample is consumed. This intentionally samples some frames;
+it does not promise a measurement for every presented frame. Share one owner
+between viewport Stats and capture, fan out each result once, and exclude a
+Stats sample submitted before the recording's admission boundary. Independent
+consumers must not race to re-arm or replace the same terminal result.
+
+Count eligible, sampled, unavailable, disjoint/failed, capacity-skipped and
+unresolved frames over the recording interval. Include finalization outcomes
+separately. Never turn Pending/Unavailable/Disjoint into a zero measurement,
+duplicate a result across polls, or retain a stale duration after device restart.
+Report the actual sample window and count beside any mean/percentile; perform
+aggregation off the recording path. Quantization and sparse sampling limit
+interpretation even when the displayed number has many digits.
+
+RHI owns query/command-buffer lifetime and completion checks. A query slot cannot
+be reset/reused before its submission completes and its result is consumed or
+explicitly discarded under the request-generation contract. Existing probes
+have narrow allocation behavior, including deferred native allocation: audit it
+before promising a zero-allocation recording path. Move reservation/preparation
+before Recording where needed, and separately bound setup cost. Reuse rather
+than re-create native query resources per sample. No wait-for-idle, blocking
+query flags or synchronous readback may be added for profiling.
+
+Stopping closes admission while already submitted results drain under a finite
+deadline. Freeze CPU events and resolved GPU samples under one coordinator;
+late results cannot enter a new capture. Timed-out results are marked incomplete,
+then native storage retires through the existing completion owner even if the
+export is already finalized. Do not destroy in-flight queries to meet a UI
+deadline. Output failure retains the frozen recording for retry/discard.
+
+### Backend precision and later pass timing
+
+Metal initially reuses completion-only command-buffer GPU duration; that is not
+per-pass timing. P2 investigates capability-checked counter sampling at legal
+encoder/pass boundaries before exposing named pass durations. Never split a
+command buffer or encoder just to obtain a prettier timing breakdown without
+measuring and declaring the resulting execution change.
+
+Vulkan reuses timestamp queries with the actual queue's support, valid bit count,
+tick period, wrap/discontinuity handling and availability/completion rules.
+P2 adds bounded query pairs around executed physical passes and documents the
+stage interval. Logical passes merged into one physical pass retain annotation
+identity but share the physical timing; do not fabricate independent logical
+durations or sum nested/overlapping intervals as a frame total. Query pressure
+skips samples with coverage information instead of serializing work.
+
+WebGPU/WebGL timing retains backend feature/privacy/disjoint constraints and is
+qualified separately. A CPU wall-clock timer around submission is never a GPU
+fallback. Multiple graphics/compute queues have separate measurement tracks.
+The existing benchmark timing and image checks remain independent controls.
+
+P3 adds real execution slices only when a backend clock mapping to the CPU trace
+domain is validated and its uncertainty/drift recorded. Vulkan calibrated
+timestamps are one capability-dependent route; Metal needs its own documented
+mapping. Recalibrate at bounded intervals and invalidate the mapping after a
+clock/session discontinuity. If unavailable or too uncertain, retain duration
+counters. Hosted-process clocks need a separate offset/error contract.
+
+Use distinct process/track identities and legal nesting for Chrome `B`/`E` or
+`X` slices. Queue overlap belongs on separate tracks; collection-thread order
+must not invent parentage or serialize overlapping GPU work. Submission/frame
+IDs enable correlation even in duration-only recordings, without implying
+cross-clock execution alignment. Keep native Perfetto protobuf export a later
+format decision rather than a prerequisite for the coarse feature.
+
+### Timing and editor acceptance
+
+Validate CPU, GPU and Both modes in the real editor and installed-SDK path.
+Check exported units, originating-frame association, explicit source filtering,
+GPU-only nonempty export, repeated start/stop, unexported snapshot protection,
+Stats visibility changes, Busy and profiling-disabled builds. Force delayed,
+skipped, quantized-zero, disjoint, device-lost and exhausted-query outcomes; check
+coverage and finalization without GPU waits or stale samples. Verify viewport
+navigation, edits and resize remain interactive throughout recording/export.
+
+Compare an optimized control against each recording mode on the same machine,
+scene, compiler and settings; report CPU recording cost, query cost, result lag
+and coverage separately. Inspect a real exported trace in Perfetto and compare
+durations against the existing RHI probe/benchmark for a controlled workload.
+Counters need no invented clock alignment; execution slices require a separate
+measured calibration and overlap/nesting acceptance. A Linux pass does not
+qualify Metal and a Mac pass does not qualify browsers or hosted processes.
+
+Thanks to Khronos Group, [Timestamp queries](https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html)
+and [Queries](https://docs.vulkan.org/spec/latest/chapters/queries.html), for the
+query support, units and availability contract; to Apple, [GPUStartTime](https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpustarttime)
+and [GPUEndTime](https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpuendtime),
+for completion-only command-buffer timing; and to Perfetto contributors,
+[Visualizing external trace formats](https://perfetto.dev/docs/getting-started/other-formats),
+for JSON counter/duration conventions and slice nesting. Duration-only placement,
+coverage policy and the staged delivery are Ludus decisions. Retain relevant
+reference comments beside future sampler/exporter changes.
+
 ## 2. Step 1 — Re-evaluation of every major baseline decision
 
 | # | Baseline decision (profiling.md) | Verdict | Reasoning |
@@ -87,15 +238,16 @@ capture, narrowing the reason to build engine code to *semantic context tools ca
 | D11 | Statistics as off-line derivation (§1, §11, §16) | **Refine (C6)** **[R→adopt]** | Add hard rule: every statistic names its window + denominator; smoothed UI is separate from exact hitch evidence; no decaying extrema masquerading as min/max. |
 | D12 | Clock = `steady_clock` ns now; `rdtscp` later behind an abstraction (§5) | **Keep, elevate to gate (C7)** **[FP+R]** | Review §3.4/§4.2 dismantles raw-tick+MHz calibration. Correctness (ordering, frequency contract, migration) is a *precondition* for any TSC backend, not an optimization detail. |
 | D13 | Same-thread scope pairing "enforced by RAII lexical scope" (§4) | **Replace (C5)** **[R→adopt]** | Factually wrong for coroutines/migration (review §7.2). Replace with an explicit contract + flow events for cross-context work. |
-| D14 | GPU trace design, build later (§9) | **Keep / Postpone** **[FP+R]** | GPU timestamp integration is not delivered by the CPU trace module. Review §4.4 adds: a CPU scope around a graphics call measures CPU elapsed incl. waits, *not* GPU execution — reinforces that GPU needs its own timestamp path. Keep design; still postponed. |
+| D14 | GPU trace design, build later (§9) | **Keep / Stage** **[FP+R]** | CPU scopes do not measure GPU execution. Existing RHI frame probes enable the proposed P1 Perfetto duration export; P2 pass queries and P3 calibrated execution lanes remain separate gates in the basic GPU timing contract above. |
 | D15 | Memory profiling deferred, tiered, allocator-owned (§10) | **Refine (C4)** **[R→adopt]** | Keep deferral and tiers; **correct** the "feeds the same capture infrastructure" wording — memory needs provenance-at-free and its own loss/snapshot contract, not Trace's drop policy. |
 | D16 | `JobId` field reserved now, correlation logic later (§7) | **Keep** **[FP+R]** | Review §7.2 confirms cross-thread/task correlation "must be modeled separately"; a reserved field + flow events is the right seam. |
 | D17 | Dynamic-name runtime interner, opt-in, bounded (§14) | **Keep** **[FP]** | Uncontroversial; the references' dynamic naming needs are covered. |
 | D18 | Fixed-size POD `TraceEvent`, side-channel for variable payloads (§13) | **Keep, add counts (C2)** **[FP+R]** | Add per-event fields/derivation for invocation counting; keep the record small. |
 
 Nothing is classified **Remove** outright — the baseline contained no dead weight. The only
-**Replace** is the incorrect same-thread claim (D13). Two **Postpone** (GPU D14, Memory
-D15) were already deferred and remain so.
+**Replace** is the incorrect same-thread claim (D13). GPU delivery (D14) now has a
+coarse-to-correlated plan using existing RHI probes; memory tiers (D15) retain
+their own staged implementation and ownership.
 
 ---
 
@@ -187,7 +339,8 @@ tools, a serial frame loop, a text renderer at hand). Modern workflows invalidat
 | Option | Pros | Cons | Verdict |
 | --- | --- | --- | --- |
 | **In-game overlay** | Zero context switch; works on devkit; good for QA/designers (R's insight). | Requires the renderer/UI under test; limited screen area; high maintenance for rich views; can perturb the very frame it measures (R's own text-render-in-graphics-interval pitfall). | **Tiny only**: counters + top-N scopes as text/HUD. No interactive timeline. |
-| **Editor-integrated profiler** | Rich, contextual. | No editor exists (and none planned soon); large surface; duplicates Perfetto. | **Reject for now**; likely never. |
+| **Editor recording controls and summary** | Capture while editing, choose CPU/GPU/Both and inspect coverage without switching applications. | Must preserve responsiveness, process ownership and data after export failure. | **Adopt** in P0/P1; detailed timelines remain in Perfetto. |
+| **Editor timeline/flame-chart implementation** | Contextual inspection. | Duplicates a mature viewer and enlarges the renderer-dependent UI surface. | **Defer**; recording controls do not require an embedded viewer. |
 | **Standalone profiler app** | Full control. | We'd rebuild Perfetto/Tracy; huge cost. | **Reject** (build-vs-buy, review §7.5). |
 | **External trace viewer (Perfetto)** | Free, powerful, universal, multi-monitor, remote-friendly, no engine UI code; opens exported captures anywhere. | Post-hoc (unless Tracy-live); needs a schema/export. | **Primary.** |
 | **Live external (Tracy)** | Real-time, purpose-built for this instrumentation style, remote, low integration. | External dependency; must validate cost. | **Adopt as optional live backend** (Phase 3). |
@@ -365,7 +518,7 @@ LUDUS_PROFILE_MARK(LevelStreamedIn);
 uint64 f = LUDUS_PROFILE_FLOW_OUT(AnimJob);   // at dispatch
 LUDUS_PROFILE_FLOW_IN(f);                      // on the worker that runs it
 
-// (later) GPU scope — RAII over a command buffer; deferred until an RHI (D14)
+// (later) GPU pass scope; P1 starts with the existing frame-duration probe (D14)
 LUDUS_PROFILE_GPU_SCOPE(cmd, ShadowPass);
 ```
 
@@ -450,8 +603,8 @@ struct TraceEvent            // POD, trivially copyable; target 16–24 B (gate 
 | **Perfetto/Chrome export** | ✅ (Phase 1) | | | | Universal; primary viewer path. **[FP+R]** |
 | **Tracy integration (live)** | | ✅ (Phase 3) | ✅ | | Best live UX; validate cost first (§5, [?meas]). **[FP+R]** |
 | **Flow events (job/async correlation)** | ✅ (primitive now) | ✅ (JobSystem dispatch flows, [threading T2](threading.md#task-identity-and-execution-traces)) | | | Cross-context truth is a DAG, not a spanning scope (C1, C5, D16). **[R→adopt]** |
-| **GPU profiling (timestamp queries)** | | ⏳ (needs RHI) | RenderDoc/PIX/Nsight for capture | | Engine does pass *timing*; tools do per-draw/pixel (D14). **[FP+R]** |
-| **PIX / vendor debug markers** | | ✅ (with GPU scope) | ✅ | | Near-free; annotates vendor captures with our pass names. **[FP]** |
+| **GPU profiling (timestamp queries)** | | ⏳ P1–P3 Perfetto integration; RHI frame probe exists | RenderDoc/PIX/Nsight for capture | | Duration counters first, then pass timings and calibrated lanes; tools retain per-draw/pixel inspection (D14). **[FP+R]** |
+| **PIX / vendor debug markers** | | ✅ planned independently of recording mode | ✅ | | Annotates captures with pass names; enabled/disabled overhead must be measured. **[FP]** |
 | **Memory tracking (tag totals)** | ⏳ (needs allocator; always-on tier) | | | | Cheap atomics; keep in all builds (C4, §7). **[FP+R]** |
 | **Memory provenance / live-vs-churn / activity** | | ⏳ (memory-profiler module) | heaptrack for broad heap | | Provenance-at-free is L's core insight; own tags/domains (C4). **[R→adopt]** |
 | **Allocation call stacks** | | ⏳ (opt-in capture-only, off-line symbolized) | heaptrack | | Expensive; never hot-path symbolization (§7). **[R→adopt bounded]** |
@@ -477,7 +630,7 @@ inclusive/exclusive, honest stats) land *with* the first CPU trace, not after.
 | **2. Counters + tiny overlay** | `COUNT/GAUGE/MARK`, per-frame snapshot, named windows, text HUD | Phase 1 | High — cheap always-on trends | Low–Med | Low | Counter contention; **every stat names window+denominator (C6)**; snapshot correctness under overlapping frame flip |
 | **3. Hitch capture (+ optional Tracy)** | Rolling ring, trigger policy, auto-export; optional Tracy live backend | Phase 1 | High — catch unexpected spikes | Med | Low (off hot path) | Pre-trigger survives overload; **export doesn't induce a second hitch**; Tracy cost measured before adoption ([?meas]) |
 | **4. Flow correlation** | Scheduler stamps `flow_id`; job/async DAG view | **Job system ([threading T2](threading.md#task-identity-and-execution-traces) stamps dispatch flows)** | High once jobs exist | Med | Low | Flow linkage correctness across migration; no hot-path cost added |
-| **5. GPU Trace** | `GPU_SCOPE`, query pools, deferred readback, vendor labels | **RHI (Milestone 2+)** | High once GPU exists | High | Med (no stalls) | No GPU stall; N-in-flight readback correctness; CPU-vs-GPU time not conflated |
+| **5. GPU Trace** | P1 frame-duration counters, P2 pass queries, P3 calibrated queue lanes; share G0 identities without requiring vendor capture | Existing RHI probes and P0 editor recording | High | Incremental | Measured per mode | Basic GPU timing contract: coverage, units/frame identity, no GPU wait, CPU/GPU/Both filtering and real Perfetto acceptance |
 | **6. Memory profiler** | Allocator provenance + tag totals (all builds); activity/live/lifetime (dev); per-alloc capture (opt-in, off-line symbols) | **Allocator (Milestone ?)** | High for mem bugs | High | Med (capture mode) | Lossless-or-marked semantics (C4); cross-thread free accounting; capture-mode overhead bounded |
 
 Ship **0→1** first: that alone makes the engine meaningfully easier to optimize (semantic

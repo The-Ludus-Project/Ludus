@@ -65,6 +65,11 @@ ExportPerfettoTrace("trace.json");
 
 For scheduled captures of engine applications and benchmark harnesses, see
 [Runtime profiling](../../development/runtime-profiling.md).
+The proposed [editor recording workflow](../../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
+adds CPU/GPU/Both selection and shared Record/Stop controls. Its
+[GPU timing contract](../../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
+starts with existing RHI frame-duration samples in Perfetto; these editor/export
+features are planned, not part of the current module API.
 
 ## Integration emission API
 
@@ -118,7 +123,7 @@ code (gate G1).
   future analysis pass), never stored on the hot path.
 - Visualization is external (Perfetto now, Tracy later). No in-engine timeline.
 - Counters/gauges (Phase 2), hitch capture (Phase 3), flow correlation logic
-  (Phase 4), GPU trace (Phase 5, needs an RHI) and allocation recording beyond
+  (Phase 4), GPU Perfetto export (Phase 5; RHI probes already exist) and allocation recording beyond
   the domain gauges above are **not** in this module yet, by design.
 
 The proposed [memory profiling architecture](../../architecture/memory-profiling.md)
