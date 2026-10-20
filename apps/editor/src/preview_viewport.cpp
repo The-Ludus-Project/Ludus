@@ -1411,8 +1411,10 @@ uint64 PreviewViewport::PresentedFrames() const noexcept
 {
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     return mState->BrowserOrNull->GetPresentedFrames();
-#else
+#elif defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     return mState->GraphViewOrNull != nullptr ? mState->GraphViewOrNull->GetPresentedFrames() : mState->Presented;
+#else
+    return mState->Presented;
 #endif
 }
 } // namespace ludus::editor

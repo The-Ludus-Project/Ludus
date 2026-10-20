@@ -49,7 +49,8 @@ struct WatchPollResult final
     Result Outcome;         ///< InvalidArgument for an uninitialized watcher; Conflict for wrong rescan phase.
     bool Available = false; ///< Whether output was replaced with a hint.
 };
-/// Bounded polling adapter for explicitly registered final cooked paths on Linux/macOS.
+/// Bounded polling adapter for registered final cooked paths on Linux/macOS or Emscripten MEMFS.
+/// Browser observations stay in session memory and do not watch host filesystem changes.
 /// All methods and destruction require one host owner thread. No background jobs/callbacks.
 /// Metadata polling can miss transient or metadata-preserving edits and discovers no new paths.
 /// Producers should atomically publish cooked output; debounce does not validate completeness.

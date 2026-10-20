@@ -72,7 +72,8 @@ struct ReadResult final
 // pp. 109-114: their prepare/rebind boundary informs revision ownership here.
 // Active file readers retain old bytes; Content owns asset rebinding. Design
 // inspiration only, no article code copied. See docs/architecture/filesystem.md.
-/// Owns an opened regular-file revision on Linux and macOS; other targets return Unsupported.
+/// Owns an opened regular-file revision on Linux, macOS or Emscripten MEMFS.
+/// Other targets return Unsupported. Browser reads address session memory, not host files.
 /// Concurrent const operations require disjoint destinations and stable owner lifetime.
 /// Closing, moving and replacing an owner require exclusive access.
 class File final
@@ -111,7 +112,8 @@ private:
     Impl* mImpl = nullptr;
 };
 
-/// Pins a host-selected trusted root on Linux and macOS; other targets return Unsupported.
+/// Pins a host-selected trusted root on Linux, macOS or Emscripten MEMFS.
+/// Other targets return Unsupported. Browser roots belong to the session filesystem.
 /// Child symlinks are rejected at every component. This is not a sandbox against
 /// hostile renames, hard links or mount changes. Const operations require a stable lifetime.
 class Directory final

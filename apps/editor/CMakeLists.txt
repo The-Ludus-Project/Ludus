@@ -397,6 +397,25 @@ endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+    # Replay the content suite through the browser's single-owner scheduler as
+    # well as the normal native worker. No Qt/Wasm-private APIs enter this target.
+    add_executable(ludus_editor_browser_content_tests
+        tests/main.cpp tests/content_browser_tests.cpp
+        src/internal/content_browser.h src/content_catalog_model.cpp
+        src/content_import.cpp src/content_jobs.cpp src/content_workspace.cpp
+        src/editor_files.cpp src/scene_archive.cpp)
+    set_target_properties(ludus_editor_browser_content_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_editor_browser_content_tests PRIVATE src
+        "${PROJECT_SOURCE_DIR}/modules/audio/tests")
+    target_compile_definitions(ludus_editor_browser_content_tests PRIVATE
+        QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII LUDUS_EDITOR_COOPERATIVE_CONTENT_JOBS=1)
+    target_link_libraries(ludus_editor_browser_content_tests PRIVATE
+        Qt6::Core Qt6::Widgets Qt6::Test Ludus::AudioContent Ludus::FoundationMath ludus_stb_image Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_editor_browser_content_tests)
+    ludus_enable_test_exceptions(ludus_editor_browser_content_tests)
+    add_test(NAME ludus_editor_browser_content_tests COMMAND ludus_editor_browser_content_tests)
+    set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
+        LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(ludus_editor_tests
         ${editor_profiling_sources}
         tests/profiling_tests.cpp

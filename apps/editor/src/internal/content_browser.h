@@ -73,6 +73,8 @@ struct ContentResult final
 // One bounded request at a time. Each worker owns its copied state. Polling
 // runs only during an operation; destruction cancels without joining a thread.
 // Finished acknowledges owned work before normal window shutdown completes.
+// Browser requests yield once before synchronous bounded work on the UI owner;
+// cancellation is available before that work begins, not during decode/publication.
 class ContentJobs final : public QObject
 {
     Q_OBJECT

@@ -26,6 +26,7 @@
 
 #if defined(Q_OS_WASM)
 #    include <QtCore/private/qstdweb_p.h>
+#    include <ludus/audio/audio_types.h>
 #endif
 
 namespace ludus::editor
@@ -82,6 +83,7 @@ struct BrowserImport
     emscripten::val Files = emscripten::val::undefined();
     foundation::uint32 Index = 0;
     bool Folder = false;
+    bool IsAudioSource = false;
     bool Admitted = false;
     foundation::int64 ChargedBytes = 0;
     emscripten::val Input = emscripten::val::undefined();
@@ -121,6 +123,7 @@ void OpenEditorDocument(QWidget* owner,
     PendingImport = state;
     state->Owner = owner;
     state->Folder = dialog.ProjectFolder;
+    state->IsAudioSource = dialog.IsAudioSource;
     state->Completed = loaded;
     const QWeakPointer<BrowserImport> weak(state);
     // Thanks to Qt Group, qstdweb::EventCallback/FileReader (Qt 6.10.3): these
@@ -144,7 +147,8 @@ void OpenEditorDocument(QWidget* owner,
     }
     else
     {
-        state->Input.set("accept", emscripten::val(".json,application/json"));
+        state->Input.set("accept",
+                         emscripten::val(state->IsAudioSource == true ? ".wav,.flac" : ".json,application/json"));
     }
     state->Input.set("hidden", true);
     auto finish = [weak]() {
@@ -194,15 +198,25 @@ void OpenEditorDocument(QWidget* owner,
                 const auto path = state->Folder
                                       ? QString::fromStdString(files[index]["webkitRelativePath"].as<std::string>())
                                       : QFileInfo(QString::fromStdString(file.name())).fileName();
+                const bool isAudioName = path.endsWith(QStringLiteral(".wav"), Qt::CaseInsensitive) == true ||
+                                         path.endsWith(QStringLiteral(".flac"), Qt::CaseInsensitive) == true;
+                if (state->IsAudioSource == true && isAudioName == false)
+                {
+                    Report(state->Owner, QStringLiteral("Choose a WAV or FLAC source."));
+                    finish();
+                    return;
+                }
                 if (state->Folder && IsGeneratedProjectPath(path.section(QLatin1Char('/'), 1)))
                 {
                     continue;
                 }
                 total += file.size();
+                const foundation::uint64 maximumFileBytes = state->IsAudioSource == true
+                                                                ? audio::BROWSER_ENCODED_CAP_BYTES
+                                                                : static_cast<foundation::uint64>(MAX_DOCUMENT_BYTES);
                 if (file.size() > static_cast<foundation::uint64>(MAX_IMPORT_BYTES) ||
                     total > static_cast<foundation::uint64>(MAX_IMPORT_BYTES - ImportedBytes) ||
-                    (state->Folder == false &&
-                     (file.size() == 0 || file.size() > static_cast<foundation::uint64>(MAX_DOCUMENT_BYTES))))
+                    (state->Folder == false && (file.size() == 0 || file.size() > maximumFileBytes)))
                 {
                     Report(state->Owner,
                            QStringLiteral("Import refused: invalid paths or the 32 MiB session limit exceeded."));

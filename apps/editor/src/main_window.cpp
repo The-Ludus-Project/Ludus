@@ -292,20 +292,7 @@ void MainWindow::BuildMenus()
 #if defined(Q_OS_WASM)
     SaveAction_->setText(QStringLiteral("Save and &Download Project Folder"));
     ExportProjectAction_ = fileMenu->addAction(QStringLiteral("Download Project Folder..."));
-    connect(ExportProjectAction_, &QAction::triggered, this, [this]() {
-        if ((Scripts_->Dirty() && Scripts_->Save() == false))
-        {
-            return;
-        }
-        if (Controller_->Caps().CanSave)
-        {
-            Controller_->Save();
-        }
-        if (Controller_->State().Dirty() == false)
-        {
-            (void)DownloadEditorProject(this, Controller_->State().DescriptorPath);
-        }
-    });
+    connect(ExportProjectAction_, &QAction::triggered, this, [this]() { static_cast<void>(SaveProjectSettings()); });
 #endif
     QMenu* buildMenu = menuBar()->addMenu(QStringLiteral("&Build"));
     ConfigureAction_ = buildMenu->addAction(QStringLiteral("&Configure / Refresh Targets"));
@@ -800,7 +787,7 @@ bool MainWindow::SaveProjectSettings()
 #if defined(Q_OS_WASM)
     if (Controller_->State().Dirty() == false)
     {
-        (void)DownloadEditorProject(this, Controller_->State().DescriptorPath);
+        return downloadBrowserProject();
     }
 #endif
     return Controller_->State().Dirty() == false;
@@ -875,13 +862,8 @@ void MainWindow::OnStateChanged()
         static_cast<void>(mDocuments->OpenDocument(World_));
         World_->setFocus();
     }
-#if defined(Q_OS_WASM)
-    Audio_->setEnabled(false);
-    Audio_->setToolTip(QStringLiteral("Audio authoring and preview require the desktop editor."));
-#else
     Audio_->setEnabled(state.Document == DocumentState::ProjectLoaded && AudioClosing_ == false &&
                        AudioLaunchPending_ == false);
-#endif
     if (state.Document == DocumentState::ProjectLoaded)
     {
         const auto root = QDir(QFileInfo(state.DescriptorPath).absolutePath()).absoluteFilePath(state.Saved.SourceDir);

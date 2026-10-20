@@ -86,10 +86,17 @@ int ExerciseInstalledPersistence() noexcept
     stamp.Size = 19;
     WatchHint hint;
     hint.Tag = 13;
+#    if defined(LUDUS_PLATFORM_WEB)
+    constexpr Status UNOPENED_READ_STATUS = Status::InvalidArgument;
+    constexpr Status MISSING_WATCH_ROOT_STATUS = Status::NotFound;
+#    else
+    constexpr Status UNOPENED_READ_STATUS = Status::Unsupported;
+    constexpr Status MISSING_WATCH_ROOT_STATUS = Status::Unsupported;
+#    endif
     return writer.Open("root").Code == Status::Unsupported &&
                    writer.Publish("data", byte).Outcome.Code == Status::Unsupported && writer.IsOpen() == false &&
-                   reads.Observe("data", stamp).Code == Status::Unsupported && stamp.Size == 19 &&
-                   watcher.Init("root").Code == Status::Unsupported && watcher.Poll(hint).Available == false &&
+                   reads.Observe("data", stamp).Code == UNOPENED_READ_STATUS && stamp.Size == 19 &&
+                   watcher.Init("root").Code == MISSING_WATCH_ROOT_STATUS && watcher.Poll(hint).Available == false &&
                    hint.Tag == 13
                ? 0
                : 13;

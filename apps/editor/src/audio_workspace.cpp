@@ -1,4 +1,5 @@
 #include "internal/audio_workspace.h"
+#include "internal/editor_files.h"
 #include "internal/item_selection.h"
 
 #include <QCheckBox>
@@ -176,6 +177,12 @@ AudioWorkspace::AudioWorkspace(QWidget* parent) : QWidget(parent)
     layout->addLayout(playback);
     auto* play = new QPushButton(QStringLiteral("Play draft"), this);
     auto* stop = new QPushButton(QStringLiteral("Stop"), this);
+#if defined(Q_OS_WASM)
+    play->setEnabled(false);
+    stop->setEnabled(false);
+    play->setToolTip(
+        QStringLiteral("Audio playback requires a browser audio-device backend. Download to preview on desktop."));
+#endif
     playback->addWidget(play);
     playback->addWidget(stop);
     Message_ = new QLabel(QStringLiteral("Open a project to browse its content/catalog.json."), this);
@@ -558,6 +565,10 @@ void AudioWorkspace::Save()
     Digest_ = ludus::content::Hash(bytes.Data());
     Dirty_ = false;
     Message_->setText(QStringLiteral("Audio saved."));
+#if defined(Q_OS_WASM)
+    MarkBrowserEdited();
+#endif
+    Q_EMIT DocumentChanged();
 }
 void AudioWorkspace::Play()
 {
@@ -687,6 +698,9 @@ void ludus::editor::AudioWorkspace::Create(bool music)
     Dirty_ = false;
     Path_ = path;
     Digest_ = ludus::content::Hash(bytes.Data());
+#if defined(Q_OS_WASM)
+    MarkBrowserEdited();
+#endif
     Reload();
     Render();
 }

@@ -7,6 +7,16 @@ target_link_libraries(ludus_content PUBLIC Ludus::FoundationBase Ludus::Foundati
 ludus_apply_project_defaults(ludus_content)
 install(TARGETS ludus_content EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+if(EMSCRIPTEN AND LUDUS_BUILD_WEB_PROBES)
+    add_executable(ludus_content_web_smoke tests/browser_smoke.cpp)
+    target_link_libraries(ludus_content_web_smoke PRIVATE Ludus::Content Ludus::FoundationFilesystem)
+    ludus_apply_project_defaults(ludus_content_web_smoke)
+    # Keep assertions active in the release-profile browser probe.
+    target_compile_options(ludus_content_web_smoke PRIVATE -UNDEBUG)
+    target_link_options(ludus_content_web_smoke PRIVATE -sEXIT_RUNTIME=1)
+    add_test(NAME ludus_content_web_smoke COMMAND ludus_content_web_smoke)
+    set_tests_properties(ludus_content_web_smoke PROPERTIES LABELS "browser;content;filesystem" TIMEOUT 30)
+endif()
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_content_tests tests/content_tests.cpp)

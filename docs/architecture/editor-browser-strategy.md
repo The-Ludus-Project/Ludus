@@ -2,8 +2,10 @@
 
 The current increment ports the existing Qt Widgets editor to WebAssembly and
 includes it in GitHub Pages. This is a bounded workspace preview: project and
-configuration documents can be edited, imported and downloaded. Native tools,
-game execution/debugging and audio authoring remain desktop workflows. See the
+configuration documents can be edited, imported and downloaded. Content catalog
+browsing, WAV/FLAC import and sound/music definition authoring share the desktop
+document paths. Native tools, game execution/debugging and audio playback remain
+desktop workflows. See the
 [browser editor guide](../wiki/guides/browser-editor.md) and
 [reproducible build instructions](../development/browser-editor.md).
 
@@ -17,6 +19,22 @@ viewports. [ADR 0023](../decisions/0023-editor-presentation-and-document-core.md
 records this conditional choice; native macOS editor support remains future work.
 
 ## Existing footing and missing pieces
+
+Browser parity is evaluated per operation, not by enabling every desktop button:
+
+| Operation | Current browser state | Remaining boundary |
+| --- | --- | --- |
+| Project/configuration, World, script and render-graph documents | Shared authoring models and formats; explicit import/download | Frontend accessibility, large-model and narrow-window qualification remains separate |
+| Content catalogs and audio definitions | Browse, import/reimport WAV/FLAC, create/edit/save sound and music | Playback device and waveform-preview service are still missing browser implementations; editing itself needs no native audio device |
+| Ordinary raster viewport | Scene/camera/navigation and direct lighting | [Offscreen shadow preparation follow-up](https://github.com/The-Ludus-Project/Ludus/pull/462) preserves the last displayed image; raster shadows require no ray-tracing feature |
+| GPU ray queries | Browser backend reports unavailable | Require the selected API/device capability; compute support alone does not admit rays. An API-level ray flag is not itself evidence of dedicated hardware acceleration |
+| Builds, debugger, native Play, external editors | Unavailable in the static browser host; shipped web sample players remain usable | Local processes require a separate authorized host transport or build service |
+| Durable project storage and recovery | Session memory plus explicit download | Quota-aware persistent storage, recovery and tested import/export round trips remain work; a download request cannot certify that a file was saved |
+
+The Content WebAssembly smoke target exercises real MEMFS publication and reads.
+The editor's content suite also runs through the browser's cooperative scheduler
+on native Qt to check cancellation, stale identities and teardown. Neither test
+qualifies the whole Qt/Wasm frontend or browser audio playback.
 
 Ludus already has a pinned Emscripten/WebGPU toolchain, browser Foundation,
 canvas Platform and RHI lifecycle/frame-clear targets, an isolated triangle probe,

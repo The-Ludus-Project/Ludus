@@ -28,7 +28,7 @@ than opening a guide.
   Escape. Live Edit Game and Scripted Game support Pause/Resume and Restart;
   Scripted Game opens its encounter after two Space presses on the focused canvas.
 - Use **Save and Download Project Folder** or **Download Project Folder** to
-  export a `.tar` archive. The latter saves open script and scene edits before
+  export a `.tar` archive. Both save open project-document drafts before
   exporting. Extract the archive into a folder on your computer, then reopen
   that folder to continue. Save configuration preferences separately using their
   download action. Build outputs and `.ludus` machine settings are excluded.
@@ -39,6 +39,17 @@ than opening a guide.
   and focus. The viewport requires WebGPU over HTTPS or localhost; the rest of the
   workspace requires WebGL. See the [viewport profile and limits](../../development/browser-editor.md#scene-import-and-viewport).
 - Arrange the existing panels and inspect output and workflow status.
+- Browse and filter `content/catalog.json` in **Content**, import or reimport
+  WAV/FLAC sources with stable IDs, then create and edit sound/music definitions
+  in **Audio**. Saves use the desktop format and expected-digest conflict checks.
+  Browser audio playback remains unavailable; **Play draft** is disabled with an
+  explanation. Download and open the project on desktop to audition it.
+
+Project downloads save open Audio, World, Scripts and Renderer drafts first.
+An invalid draft, pending import or failed save stops the download; fix that
+document and retry. Content imports yield before beginning bounded validation,
+then run on the browser's single filesystem owner. Input pauses during decoding;
+cancellation can revoke a request before this work begins.
 
 Project imports admit at most 4096 files and 32 MiB per session; individual
 configuration documents remain limited to 1 MiB. Generated `out`, `build`,
@@ -67,7 +78,7 @@ projects need their own web build; the console-only SDK example has no game
 player. The browser does not compile C++ or cook edited Luau scripts.
 
 Local project creation/setup, CMake builds, native Run/Play, code reload, RAD
-debugging, release packaging, and audio import/preview require the desktop
+debugging, release packaging, and audio playback require the desktop
 editor in this increment. Their tool adapters cannot start native processes in
 a browser. The browser preview does not include a remote build service.
 

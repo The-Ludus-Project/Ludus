@@ -137,6 +137,9 @@ private:
     [[nodiscard]] QWidget* getActiveWorkspaceOrNull() const;
     void CommitProjectFields();
     [[nodiscard]] bool SaveProjectSettings();
+#if defined(Q_OS_WASM)
+    [[nodiscard]] bool downloadBrowserProject();
+#endif
     void RenderStatus();
     void RenderProperties();
     void RenderRecentProjects();

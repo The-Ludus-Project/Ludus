@@ -18,6 +18,9 @@ struct EditorDocumentDialog
     QString Directory;
     QString Filter;
     bool ProjectFolder = false;
+    // Audio imports share the session budget but admit WAV/FLAC up to the audio
+    // source limit rather than the smaller configuration-document limit.
+    bool IsAudioSource = false;
 };
 
 // Native dialogs retain the existing filesystem behavior. Browser imports copy

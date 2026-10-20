@@ -1,8 +1,8 @@
 #include "internal/content_browser.h"
+#include "internal/editor_files.h"
 #include "internal/item_selection.h"
 
 #include <QAbstractItemView>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -196,32 +196,39 @@ void ContentWorkspace::ChooseImport(bool reimport)
         return;
     }
     const auto identity = Epoch_;
+    const QString root = Root_;
     const auto selected = SelectedId();
-    const auto file =
-        QFileDialog::getOpenFileName(this,
-                                     reimport ? QStringLiteral("Reimport source") : QStringLiteral("Import source"),
-                                     {},
-                                     QStringLiteral("Audio (*.wav *.flac)"));
-    if (file.isEmpty() || identity != Epoch_)
-    {
-        return;
-    }
-    QString id = selected;
-    if (reimport == false)
-    {
-        bool accepted = false;
-        id = QInputDialog::getText(this,
-                                   QStringLiteral("Stable resource ID"),
-                                   QStringLiteral("Lowercase resource ID (not a file path)"),
-                                   QLineEdit::Normal,
-                                   QStringLiteral("source/") + QFileInfo(file).completeBaseName().toLower(),
-                                   &accepted);
-        if (accepted == false || identity != Epoch_)
-        {
-            return;
-        }
-    }
-    (void)Import(file, id);
+    OpenEditorDocument(this,
+                       {
+                           .Title = reimport ? QStringLiteral("Reimport source") : QStringLiteral("Import source"),
+                           .Directory = {},
+                           .Filter = QStringLiteral("Audio (*.wav *.flac)"),
+                           .ProjectFolder = false,
+                           .IsAudioSource = true,
+                       },
+                       [this, identity, root, selected, reimport](const QString& file) {
+                           if (identity != Epoch_ || root != Root_ || Closing_ == true || Busy() == true)
+                           {
+                               return;
+                           }
+                           QString id = selected;
+                           if (reimport == false)
+                           {
+                               bool isAccepted = false;
+                               id = QInputDialog::getText(this,
+                                                          QStringLiteral("Stable resource ID"),
+                                                          QStringLiteral("Lowercase resource ID (not a file path)"),
+                                                          QLineEdit::Normal,
+                                                          QStringLiteral("source/") +
+                                                              QFileInfo(file).completeBaseName().toLower(),
+                                                          &isAccepted);
+                               if (isAccepted == false || identity != Epoch_ || root != Root_)
+                               {
+                                   return;
+                               }
+                           }
+                           (void)Import(file, id);
+                       });
 }
 void ContentWorkspace::Accept(const ContentResult& result)
 {
@@ -237,6 +244,9 @@ void ContentWorkspace::Accept(const ContentResult& result)
     }
     if (result.Request.Id.isEmpty() == false)
     {
+#if defined(Q_OS_WASM)
+        MarkBrowserEdited();
+#endif
         SelectedId_ = result.Request.Id;
         mSelectedIds = {SelectedId_};
         // Retain the explicit import result while refreshing its new catalog.
@@ -281,12 +291,6 @@ void ContentWorkspace::RenderActions()
     const auto* row = Model_->Row(Proxy_->mapToSource(Table_->currentIndex()));
     Reimport_->setEnabled(available && row != nullptr && row->Kind == content::Kind::AudioSource);
     Cancel_->setEnabled(Busy() && Closing_ == false);
-#if defined(Q_OS_WASM)
-    Refresh_->setEnabled(false);
-    Import_->setEnabled(false);
-    Reimport_->setEnabled(false);
-    Status_->setText(QStringLiteral("Content browsing and audio import require the desktop editor."));
-#endif
 }
 void ContentWorkspace::Cancel()
 {

@@ -117,11 +117,12 @@ int main(int argc, char** argv)
     const std::string_view mode = argc > 1 ? argv[1] : "normal";
     filesystem::Directory directory;
     filesystem::File file;
-    if (filesystem::ValidPath("audio/音.wav") == false || filesystem::ValidPath("../escape") ||
-        directory.Open("assets").Code != filesystem::Status::Unsupported ||
-        directory.OpenRead("asset", file).Code != filesystem::Status::Unsupported ||
-        file.ReadAt(0, {}).Outcome.Code != filesystem::Status::Unsupported ||
-        file.Clone(file).Code != filesystem::Status::Unsupported || file.IsOpen() || directory.IsOpen())
+    if (filesystem::ValidPath("audio/音.wav") == false || filesystem::ValidPath("../escape") == true ||
+        directory.Open("assets").Code != filesystem::Status::NotFound ||
+        directory.OpenRead("asset", file).Code != filesystem::Status::InvalidArgument ||
+        file.ReadAt(0, {}).Outcome.Code != filesystem::Status::InvalidArgument ||
+        file.Clone(file).Code != filesystem::Status::InvalidArgument || file.IsOpen() == true ||
+        directory.IsOpen() == true)
     {
         return 8;
     }

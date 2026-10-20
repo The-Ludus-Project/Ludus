@@ -1,4 +1,6 @@
 #pragma once
+#include <ludus/foundation/base/compiler.h>
+
 #include "internal/audio_preview.h"
 #include <ludus/content/content.h>
 
@@ -26,6 +28,10 @@ public:
     [[nodiscard]] bool PreviewFinished() const noexcept;
     [[nodiscard]] bool ConfirmDiscard();
     void Save();
+    [[nodiscard]] LUDUS_INLINE bool IsDirty() const noexcept
+    {
+        return Dirty_;
+    }
     void RefreshCatalog();
     [[nodiscard]] bool OpenResource(const QString& id);
     [[nodiscard]] bool CanSave() const noexcept
