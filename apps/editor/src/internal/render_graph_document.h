@@ -6,6 +6,7 @@
 #include "internal/document_history.h"
 
 #include <QByteArray>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMap>
@@ -114,10 +115,24 @@ public:
     /// Failure preserves the draft. GUI thread only; package limits still apply.
     [[nodiscard]] RenderGraphDocumentStatus
     CreateSubgraph(const QString& file, const QString& configuration, const QString& node, const QString& name);
+    /// Replace a configuration's interface as one undoable edit. Rejects invalid names,
+    /// types, sources and changes that strand internal or containing-subgraph links.
+    /// Empty output sources are incomplete drafts. Failure preserves history and bytes
+    /// and describes the reason in outError. Save publishes; GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus ReplaceConfigurationInterface(const QString& file,
+                                                                          const QString& configuration,
+                                                                          const QJsonArray& inputs,
+                                                                          const QJsonArray& outputs,
+                                                                          QString& outError);
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveNode(const QString& file, const QString& configuration, const QString& node);
+    /// Add an edge, or set the declared configuration output's source for a #outputs.port
+    /// destination. Existing output sources must be disconnected first. One undoable edit;
+    /// the canvas checks endpoint types before requesting it. Save publishes the draft.
     [[nodiscard]] RenderGraphDocumentStatus
     Connect(const QString& file, const QString& configuration, const QString& from, const QString& to);
+    /// Remove the exact edge, or clear a matching #outputs.port source while preserving
+    /// the output declaration. Failure preserves the draft; success is one undoable edit.
     [[nodiscard]] RenderGraphDocumentStatus
     Disconnect(const QString& file, const QString& configuration, const QString& from, const QString& to);
     /// Layout-only edit. Consecutive moves of the same node coalesce into one undo step.

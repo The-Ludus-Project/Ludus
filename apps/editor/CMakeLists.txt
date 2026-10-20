@@ -245,6 +245,9 @@ qt_add_executable(ludus_editor
     src/render_graph_job.cpp
     src/internal/render_graph_creation.h
     src/render_graph_creation.cpp
+    src/internal/render_graph_configuration_editor.h
+    src/render_graph_configuration_editor.cpp
+    src/render_graph_configuration_interface.cpp
     src/internal/render_graph_canvas.h
     src/render_graph_canvas.cpp
     src/internal/external_code_editor.h
@@ -440,6 +443,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_job.cpp
         src/internal/render_graph_creation.h
         src/render_graph_creation.cpp
+        src/internal/render_graph_configuration_editor.h
+        src/render_graph_configuration_editor.cpp
+        src/render_graph_configuration_interface.cpp
         src/internal/render_graph_canvas.h
         src/render_graph_canvas.cpp
         src/internal/external_code_editor.h
@@ -638,7 +644,9 @@ endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp
         src/render_graph_document.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
-        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp)
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp
+        src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
+        src/render_graph_configuration_interface.cpp)
     set_target_properties(ludus_render_graph_pipeline_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_pipeline_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_pipeline_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
@@ -649,6 +657,40 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_render_graph_pipeline_tests)
     add_test(NAME ludus_render_graph_pipeline_tests COMMAND ludus_render_graph_pipeline_tests)
     set_tests_properties(ludus_render_graph_pipeline_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Authoring uses the real workspace/document without requiring a viewport device.
+    add_executable(ludus_render_graph_configuration_tests
+        tests/main.cpp tests/render_graph_configuration_tests.cpp
+        src/internal/renderer_workspace.h src/renderer_workspace.cpp
+        src/render_graph_document.cpp src/render_graph_pipeline_node.cpp
+        src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
+        src/render_graph_configuration_interface.cpp
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp
+        src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
+        src/internal/render_graph_job.h src/render_graph_job.cpp
+        src/internal/render_graph_creation.h src/render_graph_creation.cpp
+        src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
+        src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
+        src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp)
+    set_target_properties(ludus_render_graph_configuration_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_render_graph_configuration_tests PRIVATE src)
+    target_compile_definitions(ludus_render_graph_configuration_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
+        LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
+    # The workspace borrows viewport types, but this test never creates a device or
+    # calls their compiled implementations. Keep those dependencies at the header boundary.
+    # Thanks to Kitware, "cmake-generator-expressions(7)", COMPILE_ONLY, for the
+    # compile-usage-only dependency mechanism:
+    # https://cmake.org/cmake/help/v3.29/manual/cmake-generator-expressions.7.html#genex:COMPILE_ONLY
+    target_link_libraries(ludus_render_graph_configuration_tests PRIVATE ludus_editor_core
+        Qt6::Widgets Qt6::Test Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2
+        "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
+        "$<COMPILE_ONLY:Ludus::Resources>")
+    ludus_editor_add_default_render_graph(ludus_render_graph_configuration_tests)
+    ludus_apply_project_defaults(ludus_render_graph_configuration_tests)
+    ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
+    add_test(NAME ludus_render_graph_configuration_tests COMMAND ludus_render_graph_configuration_tests)
+    set_tests_properties(ludus_render_graph_configuration_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp

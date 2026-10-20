@@ -1139,10 +1139,10 @@ step; **Save** publishes the new file. Undoing a saved creation and saving again
 removes the created file if its disk contents still match the editor's saved copy.
 An external change reports a conflict and is preserved.
 
-Add nodes using Properties or **Create Node** in the right-click menu. Define the
-library's `inputs` and `outputs` in the in-app **Source** view and apply the text
-to the draft. The empty library has no
-ports or rendering work until authored. It does not add ray-tracing or compute
+Add nodes using Properties or **Create Node** in the right-click menu. Choose
+**Edit Inputs / Outputs...** above the canvas or in its right-click menu to define
+the library interface. The empty library has no ports or rendering work until
+authored. It does not add ray-tracing or compute
 support; the supported node kinds above still apply. The original root remains
 the execution root when editing the library.
 
@@ -1201,8 +1201,40 @@ orange execution (Raster, Present), green resource (Target, Export), purple
 Subgraph and grey for a configuration's `input` ports and outputs. Port colours
 show the value type. Nodes without a `layout` position are arranged by
 dependency order for display only; nothing is written until you move them.
-Configuration outputs appear as dashed, read-only links; edit them in the
-Source view.
+Configuration output links can be selected and deleted, just like pass connections.
+They edit the configuration output's source rather than adding an ordinary edge.
+
+### Edit configuration inputs and outputs
+
+Choose **Edit Inputs / Outputs...** above the canvas or in the source-tree/canvas
+right-click menu. It edits the configuration currently displayed on the canvas,
+including a selected file's default. Double-click an existing grey interface box
+to open the same dialog.
+
+- On **Inputs**, choose **Add Input**, enter a unique name and select its type.
+- On **Outputs**, choose **Add Output**, enter a unique name and select its resource
+  type. Choose a compatible **Source** from the dropdown, or leave it **Unconnected**
+  and wire it on the canvas after applying. **Requires consumer** means every
+  containing Subgraph instance must consume that output.
+- Select rows and choose **Remove Selected** to remove ports. Names must begin
+  with an ASCII letter and contain at most 63 letters, digits, `_` or `-`.
+  Each direction supports up to eight ports. Types follow the graph's version.
+- Choose **Apply** to commit both tables as one undoable draft edit; **Cancel**
+  discards the dialog's edits. **Save** publishes the draft. Rejected edits keep
+  the dialog open with an explanation and preserve the document.
+
+The grey input/output boxes appear as soon as their first ports are applied.
+Drag configuration input ports to pass inputs; drag pass outputs to configuration
+output ports. Compatible resource inputs can also pass directly to configuration
+outputs. Select a link and press Delete to disconnect it. An output can have one
+source; disconnect it before reconnecting. Unconnected outputs are incomplete
+drafts and must be connected before validation/build succeeds.
+
+Disconnect affected internal and containing-subgraph links before removing,
+renaming or changing the type of a connected port. The dialog checks those
+references across the loaded package. Removing a producing node retains its
+configuration output declarations as unconnected ports. Editing interfaces does
+not change which GPU pipeline kinds the runtime profile can execute.
 
 Before a link reaches the draft, the canvas checks it against the configuration
 and rejects it with the shared validator's error name and a reason in the status

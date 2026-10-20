@@ -1,3 +1,4 @@
+#include "internal/render_graph_configuration_editor.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/render_graph_worker.h"
 #endif
@@ -318,6 +319,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     header->addWidget(mPath, 1);
     header->addWidget(new QLabel(QStringLiteral("Configuration"), this));
     header->addWidget(mConfiguration);
+    QPushButton* editInterface = new QPushButton(QStringLiteral("Edit Inputs / Outputs..."), this);
+    editInterface->setObjectName(QStringLiteral("renderGraphEditInterface"));
+    header->addWidget(editInterface);
+    connect(editInterface, &QPushButton::clicked, this, &RendererWorkspace::editConfigurationInterface);
+    connect(this, &RendererWorkspace::CommandsChanged, editInterface, [this, editInterface]() {
+        editInterface->setEnabled(CanCreateSubgraph());
+    });
     QPushButton* createSubgraph = new QPushButton(QStringLiteral("Create Subgraph..."), this);
     createSubgraph->setObjectName(QStringLiteral("renderGraphCreateSubgraph"));
     header->addWidget(createSubgraph);
@@ -590,6 +598,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         updateActions();
     });
     connect(mTree, &QTreeWidget::itemDoubleClicked, this, [this]() { activateSelectedNode(); });
+    connect(mCanvas, &RenderGraphCanvas::InterfaceEditRequested, this, &RendererWorkspace::editConfigurationInterface);
     connect(mCanvas, &RenderGraphCanvas::ShaderSourcesRequested, this, [this](const QString& node) {
         static_cast<void>(SelectNode(mCanvas->GetFile(), mCanvas->GetConfiguration(), node));
         activateSelectedNode();
@@ -2109,9 +2118,10 @@ bool RendererWorkspace::CreateSubgraph(const QString& name)
     documentEdited(status);
     mSourceFile->setCurrentText(asset);
     mViews->setCurrentIndex(CANVAS_VIEW);
-    mStatus->setText(QStringLiteral("Created %1 as an empty draft. Add nodes on the canvas; edit inputs and outputs "
-                                    "in Source. Save publishes the file.")
-                         .arg(asset));
+    mStatus->setText(
+        QStringLiteral("Created %1 as an empty draft. Add nodes on the canvas; choose Edit Inputs / Outputs "
+                       "to define its interface. Save publishes the file.")
+            .arg(asset));
     return true;
 }
 
@@ -2232,6 +2242,10 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
             connect(open, &QAction::triggered, this, [this, source]() { openSourceLine(source, 1); });
         }
     }
+    QAction* editInterface = menu.addAction(QStringLiteral("Edit Inputs / Outputs..."));
+    editInterface->setObjectName(QStringLiteral("renderGraphEditInterfaceAction"));
+    editInterface->setEnabled(CanCreateSubgraph());
+    connect(editInterface, &QAction::triggered, this, &RendererWorkspace::editConfigurationInterface);
     QMenu* createNodes = menu.addMenu(QStringLiteral("Create Node"));
     createNodes->setObjectName(QStringLiteral("renderGraphCreateNodeMenu"));
     createNodes->setEnabled(CanCreateSubgraph());
@@ -2272,6 +2286,64 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         menu.addAction(mCustomize);
     }
     menu.exec(globalPosition);
+}
+
+void RendererWorkspace::editConfigurationInterface()
+{
+    if (CanCreateSubgraph() == false)
+    {
+        mStatus->setText(QStringLiteral("Apply or revert pending Source text before editing configuration ports."));
+        return;
+    }
+    const QString file = mCanvas->GetFile();
+    const QString configuration = mCanvas->GetConfiguration();
+    QJsonObject graph;
+    if (mDocument.GetGraph(file, graph) == false)
+    {
+        return;
+    }
+    const QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    for (const QJsonValueConstRef value : configurations)
+    {
+        const QJsonObject record = value.toObject();
+        if (record.value(QStringLiteral("id")).toString() != configuration)
+        {
+            continue;
+        }
+        const uint64 revision = mDocument.GetRevision();
+        const uint64 epoch = mEpoch;
+        const QString packageRoot = mDocument.GetPackageRoot();
+        RenderGraphConfigurationEditor editor(mDocument, file, record, this);
+        connect(
+            &editor,
+            &RenderGraphConfigurationEditor::ApplyRequested,
+            this,
+            [this, &editor, file, configuration, revision, epoch, packageRoot]() {
+                if (mDocument.GetRevision() != revision || mEpoch != epoch || mDocument.GetPackageRoot() != packageRoot)
+                {
+                    editor.ShowError(QStringLiteral("The graph changed while this dialog was open. Cancel and "
+                                                    "reopen it to edit the current interface."));
+                    return;
+                }
+                QString error;
+                const RenderGraphDocumentStatus status = mDocument.ReplaceConfigurationInterface(file,
+                                                                                                 configuration,
+                                                                                                 editor.GetInputs(),
+                                                                                                 editor.GetOutputs(),
+                                                                                                 error);
+                if (status != RenderGraphDocumentStatus::Ok)
+                {
+                    editor.ShowError(error.isEmpty() == true ? DescribeStatus(status) : error);
+                    return;
+                }
+                editor.accept();
+            });
+        if (editor.exec() == QDialog::Accepted && mDocument.GetRevision() != revision)
+        {
+            documentEdited(RenderGraphDocumentStatus::Ok);
+        }
+        return;
+    }
 }
 
 void RendererWorkspace::addNode()
