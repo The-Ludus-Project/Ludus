@@ -130,6 +130,17 @@ void RequirePresentation(PreviewViewport& inoutViewport, uint64 previous, const 
 }
 } // namespace
 
+namespace ludus::editor::tests
+{
+/// Bring the pacing fixture to the foreground, as an actual viewport drag does.
+void ActivateViewportForPacing(PreviewViewport& inoutViewport)
+{
+    [NSApp activateIgnoringOtherApps:YES];
+    inoutViewport.raise();
+    inoutViewport.activateWindow();
+}
+} // namespace ludus::editor::tests
+
 TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases capture",
           "[.render-native][viewport-native-input]")
 {
@@ -170,7 +181,7 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     REQUIRE(preview.SetScene(scene) == true);
     preview.Navigate(0, {0, 0}, 3, false);
     REQUIRE(preview.Start() == true);
-    RequirePresentation(viewport, 0);
+    RequirePresentation(viewport, 0, &preview);
     QQuickWindow* surfaceOrNull = nullptr;
     for (QWindow* window : QGuiApplication::allWindows())
     {
@@ -197,7 +208,7 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     SendNativeMouse(surface, NSEventTypeLeftMouseDragged, moved, NSEventModifierFlagOption);
     SendNativeMouse(surface, NSEventTypeLeftMouseUp, moved, NSEventModifierFlagOption);
     REQUIRE(preview.Navigation() != beforeOrbit);
-    RequirePresentation(viewport, presented);
+    RequirePresentation(viewport, presented, &preview);
     REQUIRE(QTest::qWaitFor([&surface, &originalImage]() { return surface.grabWindow() != originalImage; }, 5000) ==
             true);
 
@@ -244,7 +255,7 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     SendNativeKey(surface, 3, @"f", true);
     SendNativeKey(surface, 3, @"f", false);
     CHECK(preview.Navigation() != stopped);
-    RequirePresentation(viewport, presented);
+    RequirePresentation(viewport, presented, &preview);
     // macOS users can produce a secondary click with Control + the primary
     // button even when their trackpad has no configured two-finger click.
     SendNativeMouse(surface, NSEventTypeLeftMouseDown, start, NSEventModifierFlagControl);

@@ -801,6 +801,15 @@ generation alive until its last lease is released, as `PreviewGpuGeneration`
 does. Play frames are shown 1:1 at the full viewport pixel size. The 1024-pixel
 cap and the stretch mapping apply only to edit previews.
 
+Edit-preview scheduling stays on the GUI/device owner thread. Submitted producer
+work is polled every 1 ms only until completion, and pending consumer reads use
+the same retry interval after Qt submits its frame. Returning an image queues a
+coalesced producer wake; it never submits recursively from Qt's frame-end
+callback. A 16 ms fallback services previews without a returning consumer.
+Navigation preserves the existing service deadline, so continuous input cannot
+starve rendering. Stop cancels completion polling and queued wakes. Nested event
+loops defer producer servicing, and cannot retire a read while Qt is recording.
+
 ### Hosted surface channel
 
 P5 implements the hosted surface on macOS Metal and Linux Vulkan. The editor

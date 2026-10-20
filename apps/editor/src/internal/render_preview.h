@@ -17,13 +17,13 @@
 #include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/viewport_frame_pump.h"
 #include "internal/viewport_frame_source.h"
 #include "internal/viewport_statistics.h"
 
 #include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
-#include <QTimer>
 
 namespace ludus::editor
 {
@@ -271,7 +271,7 @@ private:
     bool OwnsDevice_ = false;
     bool mIsStarting = false;
     foundation::uint64 mDeviceSerial = 0;
-    QTimer Timer_;
+    ViewportFramePump mFramePump;
     QString Status_;
     /// Reason recorded by the preparation stage that rejected the current generation, if any.
     QString mPreparationFailure;
