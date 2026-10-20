@@ -1045,6 +1045,44 @@ the current draft is retained and the job does not start. Undo local edits or
 reopen the graph to resolve the conflict. Apply or revert unapplied text before
 reloading; source refresh never silently replaces that text.
 
+### Create a subgraph without leaving the editor
+
+Select the containing configuration in **Graph sources**, then choose **Create
+Subgraph...** above the canvas or from the source-tree/canvas right-click menu.
+Enter a unique name starting with an ASCII letter, followed by letters, digits,
+`_` or `-` (up to 63 characters). The action creates `<name>.lurender.json` in
+this graph package as an unsaved draft, adds a Subgraph reference to the selected
+configuration and opens the new library's empty `Default` configuration.
+
+When a Subgraph node is selected, **Create Subgraph...** instead points that node
+to the new library. Its previous source remains intact; connections are retained
+for explicit interface editing. Existing files and asset IDs are never replaced.
+Cancel leaves the draft unchanged. Creation and reference changes are one undo
+step; **Save** publishes the new file. Undoing a saved creation and saving again
+removes the created file if its disk contents still match the editor's saved copy.
+An external change reports a conflict and is preserved.
+
+Add nodes using Properties. Define the library's `inputs` and `outputs` in the
+in-app **Source** view and apply the text to the draft. The empty library has no
+ports or rendering work until authored. It does not add ray-tracing or compute
+support; the supported node kinds above still apply. The original root remains
+the execution root when editing the library.
+
+Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
+
+- **Open Subgraph** opens the referenced configuration; a missing source disables
+  this item. **Create Subgraph...** can supply a new source for that node.
+- **View Shaders** on other nodes lists the source files mapped by the root build
+  manifest to the Raster pass's material/mode technique. Choose a file to open it
+  in the in-app Source editor. Scene, camera, target and output nodes have no
+  shader sources, so this item is disabled for them.
+- **Remove Node** removes that node and its connections as one undoable edit.
+  Referenced subgraph files are retained.
+
+Double-click a Subgraph to open it, or a Raster node to open its first mapped
+shader source. The source selector and **View Shaders** menu give access to the
+other stage. Apply or revert pending Source text before navigating or creating.
+
 ### Edit on the canvas
 
 The **Canvas** view sits beside the source tree and shows the selected
@@ -1068,6 +1106,7 @@ undoable edit; **Save** writes it to the project.
 | Select a link and press Delete | `Disconnect` |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
+| Double-click a Raster node | Opens its first mapped shader source; choose other stages with View Shaders or the Source selector |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
 | Wheel or vertical two-finger scroll | Zoom around the pointer, including smooth pixel scrolling |
 | Drag empty space | Pan the view only |
