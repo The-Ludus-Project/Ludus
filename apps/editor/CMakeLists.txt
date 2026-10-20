@@ -237,6 +237,8 @@ qt_add_executable(ludus_editor
     src/script_workspace.cpp
     src/internal/render_graph_document.h
     src/render_graph_document.cpp
+    src/internal/render_graph_shader_creation.h
+    src/render_graph_shader_creation.cpp
     src/internal/render_graph_pipeline.h
     src/render_graph_pipeline.cpp
     src/internal/render_graph_pipeline_node.h
@@ -432,6 +434,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/script_workspace.cpp
         src/internal/render_graph_document.h
         src/render_graph_document.cpp
+        src/internal/render_graph_shader_creation.h
+        src/render_graph_shader_creation.cpp
         src/internal/render_graph_pipeline.h
         src/render_graph_pipeline.cpp
         src/internal/render_graph_pipeline_node.h
@@ -637,7 +641,10 @@ endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp
-        src/render_graph_document.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
+        src/render_graph_document.cpp
+        src/internal/render_graph_shader_creation.h
+        src/render_graph_shader_creation.cpp
+        src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp)
     set_target_properties(ludus_render_graph_pipeline_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_pipeline_tests PRIVATE src)
@@ -652,7 +659,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp
-        src/render_graph_document.cpp src/render_graph_pipeline_node.cpp
+        src/render_graph_document.cpp
+        src/internal/render_graph_shader_creation.h
+        src/render_graph_shader_creation.cpp src/render_graph_pipeline_node.cpp
         src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_live_build_tests PRIVATE src)

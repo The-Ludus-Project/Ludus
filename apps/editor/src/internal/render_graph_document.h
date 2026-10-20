@@ -106,6 +106,12 @@ public:
 
     [[nodiscard]] RenderGraphDocumentStatus
     ReplaceNode(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// Apply a pipeline and create missing shader programs and source templates as one
+    /// undoable draft edit. Program placeholders receive generated names. Existing
+    /// programs must match stage and source. Failure preserves all draft files; Save
+    /// publishes new files without replacement. Non-raster stages remain authoring drafts.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ApplyPipeline(const QString& file, const QString& configuration, const QJsonObject& node);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
     /// Create name.lurender.json with an empty Default configuration and bind the named

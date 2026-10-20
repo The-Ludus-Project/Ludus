@@ -82,24 +82,7 @@ QStringList GetCellChoices(const QString& field, const QString& kind, const QStr
     }
     if (field == QStringLiteral("stage"))
     {
-        if (kind == QStringLiteral("GraphicsPipeline"))
-        {
-            return {QStringLiteral("vertex"),
-                    QStringLiteral("fragment"),
-                    QStringLiteral("geometry"),
-                    QStringLiteral("hull"),
-                    QStringLiteral("domain")};
-        }
-        if (kind == QStringLiteral("ComputePipeline"))
-        {
-            return {QStringLiteral("compute")};
-        }
-        return {QStringLiteral("ray_generation"),
-                QStringLiteral("miss"),
-                QStringLiteral("closest_hit"),
-                QStringLiteral("any_hit"),
-                QStringLiteral("intersection"),
-                QStringLiteral("callable")};
+        return GetPipelineShaderStages(kind);
     }
     return {};
 }
@@ -183,6 +166,12 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     applyButton->setObjectName(QStringLiteral("renderGraphApplyPipeline"));
     connect(applyButton, &QPushButton::clicked, this, &RenderGraphPipelineEditor::apply);
     layout->addWidget(applyButton);
+    QLabel* hint = new QLabel(QStringLiteral("Apply Pipeline creates source files for new program names. "
+                                             "Program receives a name based on the node and shader ID. "
+                                             "Sources appear in Source; Save writes them to the project."),
+                              this);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
 }
 
 QTableWidget*

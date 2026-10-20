@@ -11,6 +11,32 @@ bool IsPipelineNode(const QString& kind) noexcept
            kind == QStringLiteral("RayTracingPipeline");
 }
 
+QStringList GetPipelineShaderStages(const QString& kind)
+{
+    if (kind == QStringLiteral("GraphicsPipeline"))
+    {
+        return {QStringLiteral("vertex"),
+                QStringLiteral("fragment"),
+                QStringLiteral("geometry"),
+                QStringLiteral("hull"),
+                QStringLiteral("domain")};
+    }
+    if (kind == QStringLiteral("ComputePipeline"))
+    {
+        return {QStringLiteral("compute")};
+    }
+    if (kind == QStringLiteral("RayTracingPipeline"))
+    {
+        return {QStringLiteral("ray_generation"),
+                QStringLiteral("miss"),
+                QStringLiteral("closest_hit"),
+                QStringLiteral("any_hit"),
+                QStringLiteral("intersection"),
+                QStringLiteral("callable")};
+    }
+    return {};
+}
+
 QJsonObject MakePipelineNode(const QString& kind, const QString& identity)
 {
     QJsonObject state{{QStringLiteral("group_size"), QJsonArray{1, 1, 1}}};

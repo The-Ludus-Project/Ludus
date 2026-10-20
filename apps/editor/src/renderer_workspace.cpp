@@ -1792,11 +1792,20 @@ void RendererWorkspace::renderInspector()
     {
         RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, mInspector);
         connect(editor, &RenderGraphPipelineEditor::Applied, this, [this](const QJsonObject& candidate) {
+            if (CanCreateSubgraph() == false)
+            {
+                mStatus->setText(QStringLiteral("Apply or revert pending Source text and resolve source conflicts "
+                                                "before applying a pipeline. Wait for active jobs to finish."));
+                return;
+            }
             const RenderGraphDocumentStatus status =
-                mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate);
+                mDocument.ApplyPipeline(mSelectedFile, mSelectedConfiguration, candidate);
             if (status != RenderGraphDocumentStatus::Ok)
             {
-                mStatus->setText(QStringLiteral("Disconnect affected ports before removing or changing their type."));
+                mStatus->setText(
+                    QStringLiteral("Cannot apply pipeline: check shader IDs, program stages, source name "
+                                   "conflicts and manifest schemas. Disconnect ports before changing their type. %1")
+                        .arg(DescribeStatus(status)));
                 return;
             }
             documentEdited(status);

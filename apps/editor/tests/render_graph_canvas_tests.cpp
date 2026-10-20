@@ -520,3 +520,60 @@ TEST_CASE("pipeline inspector applies typed ports as one draft edit", "[editor][
     workspace.Undo();
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("computepipeline.history"), false).isNull() == true);
 }
+
+TEST_CASE("adding shader rows publishes new programs into the Source selector on apply",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    REQUIRE(kinds != nullptr);
+    kinds->setCurrentText(QStringLiteral("RayTracingPipeline"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(add != nullptr);
+    add->click();
+    RenderGraphPipelineEditor* editor = workspace.findChild<RenderGraphPipelineEditor*>();
+    REQUIRE(editor != nullptr);
+    QPushButton* addShader = editor->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
+    REQUIRE(addShader != nullptr);
+    QTableWidget* shaders = editor->findChild<QTableWidget*>(QStringLiteral("shaders"));
+    REQUIRE(shaders != nullptr);
+    const QStringList before = workspace.GetDocument().GetFiles();
+    addShader->click();
+    shaders->item(0, 0)->setText(QStringLiteral("raygen"));
+    addShader->click();
+    shaders->item(1, 0)->setText(QStringLiteral("closestHit"));
+    QComboBox* stage = qobject_cast<QComboBox*>(shaders->cellWidget(1, 1));
+    REQUIRE(stage != nullptr);
+    stage->setCurrentText(QStringLiteral("closest_hit"));
+    CHECK(workspace.GetDocument().GetFiles() == before);
+    QPushButton* apply = editor->findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
+    REQUIRE(apply != nullptr);
+    apply->click();
+    const QStringList sources = workspace.GetSelectedShaderSources();
+    REQUIRE(sources.size() == 2);
+    QComboBox* selector = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    REQUIRE(selector != nullptr);
+    for (const QString& source : sources)
+    {
+        CHECK(selector->findText(source) >= 0);
+        CHECK(workspace.GetDocument().GetDraft(source).contains("ShaderMain") == true);
+    }
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetFiles() == before);
+    for (const QString& source : sources)
+    {
+        CHECK(selector->findText(source) < 0);
+    }
+    workspace.Redo();
+    CHECK(workspace.GetSelectedShaderSources() == sources);
+    REQUIRE(workspace.Save() == true);
+    for (const QString& source : sources)
+    {
+        CHECK(QFileInfo::exists(QDir(package).filePath(source)) == true);
+    }
+}
