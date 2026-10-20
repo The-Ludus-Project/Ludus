@@ -31,6 +31,7 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     mTargets->setAccessibleName(QStringLiteral("Render graph output"));
     mTargets->setToolTip(QStringLiteral("Final output and every render-graph attachment. Special debug views use "
                                         "configurations authored in the project's graph."));
+    mStatus->setObjectName(QStringLiteral("worldGraphStatus"));
     mStatus->setTextFormat(Qt::PlainText);
     mStatus->setWordWrap(true);
     mStatus->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -43,11 +44,9 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     connect(&mPreview, &RenderGraphPreview::TargetsChanged, this, [this]() { refreshTargets(); });
     connect(&mPreview, &RenderGraphPreview::FramePresented, this, [this]() { refreshFrame(); });
     connect(&mPreview, &RenderGraphPreview::Changed, this, [this]() { refreshStatus(); });
-    connect(&mWorkspace, &RendererWorkspace::JobFinished, this, [this]() {
-        mStatus->setText(mWorkspace.GetStatusText());
-        mStatus->setVisible(mStatus->text().isEmpty() == false);
-    });
+    connect(&mWorkspace, &RendererWorkspace::JobFinished, this, [this]() { refreshStatus(); });
     connect(&mWorkspace, &RendererWorkspace::DocumentChanged, this, [this]() { refreshStatus(); });
+    connect(&mWorkspace, &RendererWorkspace::RenderProblemChanged, this, [this]() { refreshStatus(); });
     connect(&mWorkspace, &RendererWorkspace::CommandsChanged, this, [this]() { refreshStatus(); });
     connect(mTargets, &QComboBox::currentIndexChanged, this, [this]() {
         mPreview.SetOutputTarget(mTargets->currentData().toString());
@@ -140,7 +139,11 @@ void WorldGraphView::refreshFrame()
 void WorldGraphView::refreshStatus()
 {
     QString text;
-    if (mWorkspace.GetDocument().IsLoaded() == false)
+    if (mWorkspace.GetRenderProblem().isEmpty() == false)
+    {
+        text = mWorkspace.GetRenderProblem();
+    }
+    else if (mWorkspace.GetDocument().IsLoaded() == false)
     {
         text = mWorkspace.GetStatusText();
     }

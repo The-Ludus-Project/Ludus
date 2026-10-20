@@ -100,6 +100,8 @@ public:
     /// Choose the World display attachment by expanded name; empty selects the exported output.
     /// Missing targets retain the last image and report a diagnostic. Applies after producer completion.
     void SetOutputTarget(const QString& name);
+    /// True while a completed graph attachment is being copied for display.
+    [[nodiscard]] bool IsCopyingOutput() const noexcept;
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
     void SetExtraction(const RenderGraphExtraction& extraction);
     /// Export extent of the generation the next frame will show (candidate first), or 0x0.

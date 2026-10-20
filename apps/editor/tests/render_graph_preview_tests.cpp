@@ -50,6 +50,7 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QSaveFile>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
@@ -1009,6 +1010,20 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     }
     const QImage lastGood = graphView->GetImage();
     const uint64 generation = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    const QString graphPath =
+        QDir(workspace.GetDocument().GetPackageRoot()).filePath(workspace.GetDocument().GetRootGraph());
+    const QByteArray graphBytes = workspace.GetDocument().GetSaved(workspace.GetDocument().GetRootGraph());
+    QFile graphFile(graphPath);
+    REQUIRE(graphFile.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+    const QByteArray oversizedGraph(RenderGraphDocument::MAX_FILE_BYTES + 1, ' ');
+    REQUIRE(graphFile.write(oversizedGraph) == oversizedGraph.size());
+    graphFile.close();
+    REQUIRE(waitFor([&]() { return workspace.GetRenderProblem().isEmpty() == false; }) == true);
+    CHECK(graphView->GetImage() == lastGood);
+    REQUIRE(graphFile.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+    REQUIRE(graphFile.write(graphBytes) == graphBytes.size());
+    graphFile.close();
+    REQUIRE(waitFor([&]() { return workspace.GetRenderProblem().isEmpty() == true; }) == true);
     saveShader(QByteArrayLiteral("float4 PSMain(RasterVarying value) { return brokenIdentifier; }"));
     REQUIRE(waitFor([&]() {
                 return workspace.IsJobActive() == false && workspace.GetLastResult().IsSuccessful == false &&
@@ -1173,4 +1188,36 @@ TEST_CASE("World graph frames wait for import publication without erasing the la
     source.Stop();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
+}
+
+TEST_CASE("Changing graph output during readback never publishes the superseded attachment",
+          "[editor][render-graph][world-graph]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("no headless GPU adapter");
+    }
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    preview.SetExtraction(MakeExtraction({1, 0, 0, 1}, 1));
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() != 0; }) == true);
+    const QImage color = preview.GetImage();
+    QString depth;
+    for (const RenderGraphTarget& target : preview.GetTargetCatalogue().Targets)
+    {
+        if (target.IsDepth == true)
+        {
+            depth = target.Name;
+        }
+    }
+    REQUIRE(depth.isEmpty() == false);
+    preview.SetOutputTarget(depth);
+    REQUIRE(TickUntil(preview, [&]() { return preview.IsCopyingOutput() == true; }) == true);
+    QSignalSpy presented(&preview, &RenderGraphPreview::FramePresented);
+    preview.SetOutputTarget({});
+    REQUIRE(TickUntil(preview, [&]() { return presented.isEmpty() == false; }) == true);
+    CHECK(preview.GetImage() == color);
+    preview.Detach();
 }

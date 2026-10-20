@@ -197,6 +197,8 @@ public:
     /// unedited default is shown (when this build has one), otherwise GetRuntimePackagePath().
     [[nodiscard]] QString GetPreviewPackagePath() const;
     [[nodiscard]] QString GetStatusText() const;
+    /// Source refresh, preflight or extraction failure preventing a new World frame; empty after recovery.
+    [[nodiscard]] QString GetRenderProblem() const;
 
     /// Node canvas over the selected configuration (RG3b).
     [[nodiscard]] RenderGraphCanvas& GetCanvas() noexcept
@@ -241,6 +243,8 @@ Q_SIGNALS:
     void CommandsChanged();
     /// Live Preview was turned on or off (SetLivePreview, CancelJob or a project change).
     void LivePreviewChanged(bool isEnabled);
+    /// A source/setup/extraction diagnostic changed independently of a compiler job.
+    void RenderProblemChanged();
 
 private:
     [[nodiscard]] bool startJob(const QString& action,
@@ -257,6 +261,7 @@ private:
     void scheduleLiveBuild();
     void refreshWatchedSources();
     void applySourceEdit();
+    void setProblem(QString& inoutProblem, const QString& text);
     void renderTree();
     void renderInspector();
     void renderEdges();
@@ -325,6 +330,9 @@ private:
     bool mShouldPreviewAfterWorker = false;
     bool mIsWorldRenderingEnabled = false;
     bool mHasPendingSourceChange = false;
+    QString mBuildProblem;
+    QString mSourceProblem;
+    QString mExtractionProblem;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;
     QWidget* mPreviewPage;

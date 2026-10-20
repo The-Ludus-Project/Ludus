@@ -191,6 +191,8 @@ struct RenderGraphPreview::State final
     renderer::RenderGraphActivation Activation;
     RenderTargetReader Reader;
     QString OutputName;
+    uint64 OutputRevision = 0;
+    uint64 ReadingOutputRevision = 0;
     uint64 FailedOutputGeneration = 0;
     uint64 FailedOutputRevision = 0;
     rhi::DeviceHandle Device{};
@@ -413,11 +415,16 @@ void RenderGraphPreview::SetOutputTarget(const QString& name)
     if (mState->OutputName != name)
     {
         mState->OutputName = name;
+        ++mState->OutputRevision;
         mState->FailedOutputGeneration = 0;
         mState->FailedOutputRevision = 0;
         // Redraw the current extraction; keep the last complete image during the new read.
         mPresentedSession = 0;
     }
+}
+bool RenderGraphPreview::IsCopyingOutput() const noexcept
+{
+    return mState->Reader.IsBusy();
 }
 void RenderGraphPreview::SetExtraction(const RenderGraphExtraction& extraction)
 {
@@ -489,6 +496,7 @@ void RenderGraphPreview::Tick()
                           .arg(DescribeRasterStatus(exported)));
             return;
         }
+        state.ReadingOutputRevision = state.OutputRevision;
         const RenderTargetReadStatus started =
             state.Reader.Begin(state.Device, state.Surface, texture, aspect, width, height);
         if (started != RenderTargetReadStatus::Pending && started != RenderTargetReadStatus::Complete)
@@ -518,6 +526,12 @@ void RenderGraphPreview::finishCopy()
 {
     State& state = *mState;
     const RenderTargetReadStatus status = state.Reader.Poll();
+    if (status != RenderTargetReadStatus::Pending && state.ReadingOutputRevision != state.OutputRevision)
+    {
+        // A superseded read cannot consume the new selection's pending publication marker.
+        state.Reader.Cancel();
+        return;
+    }
     if (status == RenderTargetReadStatus::Complete)
     {
         const InspectedTexture texture = state.Reader.TakeTexture();
