@@ -9,12 +9,14 @@
 
 QT_BEGIN_NAMESPACE
 class QFormLayout;
+class QLabel;
 class QTableWidget;
 QT_END_NAMESPACE
 
 namespace ludus::editor
 {
-/// Edits one pipeline's interface, program references, state and invocation.
+/// Edits read inputs and paired writable resources, program references, state and invocation.
+/// Each writable row creates both ports and serializes their target association automatically.
 /// Apply emits a complete candidate; the document owns undo/save and acceptance.
 /// Unapplied controls do not mutate the document. GUI thread only.
 class RenderGraphPipelineEditor final : public QWidget
@@ -35,5 +37,6 @@ private:
     QTableWidget* mInputs;
     QTableWidget* mOutputs;
     QTableWidget* mShaders;
+    QLabel* mError;
 };
 } // namespace ludus::editor

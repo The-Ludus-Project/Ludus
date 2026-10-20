@@ -2,17 +2,21 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_configuration_editor.h"
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_pipeline_node.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLabel>
+#include <QPushButton>
 #include <QTableWidget>
 #include <QTemporaryDir>
 
@@ -90,7 +94,11 @@ TEST_CASE("pipeline nodes edit custom interfaces with connection-safe undo and s
     QJsonObject removed = node;
     removed.insert(QStringLiteral("inputs"), QJsonArray{});
     const uint64 revision = document.GetRevision();
-    CHECK(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, removed) == RenderGraphDocumentStatus::InvalidEdit);
+    QString replacementError;
+    CHECK(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, removed, &replacementError) ==
+          RenderGraphDocumentStatus::InvalidEdit);
+    CHECK(replacementError.contains(QStringLiteral("work.image")) == true);
+    CHECK(replacementError.contains(QStringLiteral("Disconnect")) == true);
     CHECK(document.GetRevision() == revision);
     REQUIRE(document.Disconnect(ROOT_GRAPH,
                                 DEFAULT_CONFIGURATION,
@@ -258,4 +266,167 @@ TEST_CASE("configuration interfaces enforce graph version types and bounded uniq
           RenderGraphDocumentStatus::InvalidEdit);
     CHECK(document.GetRevision() == revision);
     CHECK(document.GetDraft(library) == previous);
+}
+
+TEST_CASE("writable resources create paired ports and automatic target associations",
+          "[editor][render-graph][pipeline]")
+{
+    for (const QString& kind :
+         {QStringLiteral("GraphicsPipeline"), QStringLiteral("ComputePipeline"), QStringLiteral("RayTracingPipeline")})
+    {
+        RenderGraphPipelineEditor editor(MakePipelineNode(kind, QStringLiteral("work")));
+        QJsonObject applied;
+        QObject::connect(&editor, &RenderGraphPipelineEditor::Applied, &editor, [&applied](const QJsonObject& node) {
+            applied = node;
+        });
+        QPushButton* add = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
+        QPushButton* apply = editor.findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
+        QTableWidget* resources = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
+        REQUIRE(add != nullptr);
+        REQUIRE(apply != nullptr);
+        REQUIRE(resources != nullptr);
+        CHECK(resources->property("fields").toStringList().contains(QStringLiteral("target")) == false);
+        add->click();
+        resources->item(0, 0)->setText(QStringLiteral("color"));
+        apply->click();
+        REQUIRE(applied.isEmpty() == false);
+        const QJsonObject input = applied.value(QStringLiteral("inputs")).toArray().at(0).toObject();
+        const QJsonObject output = applied.value(QStringLiteral("outputs")).toArray().at(0).toObject();
+        CHECK(input.value(QStringLiteral("id")).toString() == QStringLiteral("color"));
+        CHECK(output.value(QStringLiteral("target")) == input.value(QStringLiteral("id")));
+        CHECK(output.value(QStringLiteral("type")) == input.value(QStringLiteral("type")));
+        QTemporaryDir project;
+        RenderGraphDocument document;
+        REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, MakePipelineNode(kind, QStringLiteral("work"))) ==
+                RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, applied) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.Undo() == true);
+        REQUIRE(document.Redo() == true);
+        QStringList saved;
+        REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+        RenderGraphDocument reloaded;
+        REQUIRE(reloaded.Load(QDir(project.path()).filePath(QStringLiteral("graphs")), ROOT_GRAPH) ==
+                RenderGraphDocumentStatus::Ok);
+        CHECK(reloaded.GetDraft(ROOT_GRAPH) == document.GetDraft(ROOT_GRAPH));
+        QComboBox* type = qobject_cast<QComboBox*>(resources->cellWidget(0, 1));
+        REQUIRE(type != nullptr);
+        type->setCurrentText(QStringLiteral("DepthTexture"));
+        apply->click();
+        CHECK(applied.value(QStringLiteral("outputs")).toArray().at(0).toObject().value(QStringLiteral("format")) ==
+              QStringLiteral("Depth32Float"));
+        CHECK(applied.value(QStringLiteral("inputs")).toArray().at(0).toObject().value(QStringLiteral("type")) ==
+              QStringLiteral("DepthTexture"));
+        QPushButton* remove = editor.findChild<QPushButton*>(QStringLiteral("renderGraphRemove_outputs"));
+        REQUIRE(remove != nullptr);
+        remove->click();
+        apply->click();
+        CHECK(applied.value(QStringLiteral("inputs")).toArray().isEmpty() == true);
+        CHECK(applied.value(QStringLiteral("outputs")).toArray().isEmpty() == true);
+    }
+}
+
+TEST_CASE("paired resources preserve legacy endpoint names and align on the canvas", "[editor][render-graph][pipeline]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString configuration = QStringLiteral("ColorAndDepth");
+    const QJsonObject original =
+        GetConfiguration(document, LIBRARY, configuration).value(QStringLiteral("nodes")).toArray().at(0).toObject();
+    QJsonObject node;
+    const QJsonObject manifest =
+        QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    REQUIRE(MigrateRasterNode(original, manifest, node) == true);
+    QJsonArray outputs = node.value(QStringLiteral("outputs")).toArray();
+    QJsonObject output = outputs.at(0).toObject();
+    output.insert(QStringLiteral("id"), QStringLiteral("depthResult"));
+    outputs.replace(0, output);
+    node.insert(QStringLiteral("outputs"), outputs);
+    RenderGraphPipelineEditor editor(node);
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Applied, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    QPushButton* apply = editor.findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
+    REQUIRE(apply != nullptr);
+    apply->click();
+    CHECK(applied == node);
+    QTableWidget* resources = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
+    REQUIRE(resources != nullptr);
+    CHECK(resources->item(0, 0)->toolTip().contains(QStringLiteral("Input port: depth")) == true);
+    REQUIRE(document.RemoveNode(LIBRARY, configuration, QStringLiteral("draw")) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.AddNode(LIBRARY, configuration, applied) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.ShowConfiguration(LIBRARY, configuration);
+    CHECK(canvas.GetPortPosition(QStringLiteral("draw.depth"), false).y() ==
+          canvas.GetPortPosition(QStringLiteral("draw.depthResult"), true).y());
+    CHECK(canvas.GetPortPosition(QStringLiteral("draw.color"), false).y() ==
+          canvas.GetPortPosition(QStringLiteral("draw.color"), true).y());
+}
+
+TEST_CASE("paired resource validation identifies duplicate ports and preserves drafts",
+          "[editor][render-graph][pipeline]")
+{
+    RenderGraphPipelineEditor editor(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work")));
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Applied, &editor, [&applied](const QJsonObject& node) {
+        applied = node;
+    });
+    QPushButton* add = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
+    QPushButton* apply = editor.findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
+    QTableWidget* resources = editor.findChild<QTableWidget*>(QStringLiteral("outputs"));
+    QLabel* error = editor.findChild<QLabel*>(QStringLiteral("renderGraphPipelineError"));
+    REQUIRE(add != nullptr);
+    REQUIRE(apply != nullptr);
+    REQUIRE(resources != nullptr);
+    REQUIRE(error != nullptr);
+    add->click();
+    add->click();
+    resources->item(1, 0)->setText(QStringLiteral("resource"));
+    apply->click();
+    CHECK(applied.isEmpty() == true);
+    CHECK(error->text().contains(QStringLiteral("resource")) == true);
+    CHECK(error->text().contains(QStringLiteral("unique name")) == true);
+    resources->item(1, 0)->setText(QStringLiteral("invalid name"));
+    apply->click();
+    CHECK(applied.isEmpty() == true);
+    CHECK(error->text().contains(QStringLiteral("starting with a letter")) == true);
+    resources->item(1, 0)->setText(QString());
+    apply->click();
+    CHECK(applied.isEmpty() == true);
+    resources->item(1, 0)->setText(QStringLiteral("other"));
+    apply->click();
+    CHECK(applied.isEmpty() == false);
+    CHECK(error->text().isEmpty() == true);
+}
+
+TEST_CASE("same-name writable ports repair a stale target only when applied", "[editor][render-graph][pipeline]")
+{
+    QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    node.insert(QStringLiteral("inputs"),
+                QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("color")},
+                                       {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+                                       {QStringLiteral("required"), true}}});
+    node.insert(QStringLiteral("outputs"),
+                QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("color")},
+                                       {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+                                       {QStringLiteral("target"), QStringLiteral("input")},
+                                       {QStringLiteral("format"), QStringLiteral("RGBA8Unorm")},
+                                       {QStringLiteral("load"), QStringLiteral("Clear")},
+                                       {QStringLiteral("store"), QStringLiteral("Store")}}});
+    const QJsonObject original = node;
+    RenderGraphPipelineEditor editor(node);
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Applied, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    CHECK(node == original);
+    CHECK(applied.isEmpty() == true);
+    QPushButton* apply = editor.findChild<QPushButton*>(QStringLiteral("renderGraphApplyPipeline"));
+    REQUIRE(apply != nullptr);
+    apply->click();
+    CHECK(applied.value(QStringLiteral("inputs")) == node.value(QStringLiteral("inputs")));
+    CHECK(applied.value(QStringLiteral("outputs")).toArray().at(0).toObject().value(QStringLiteral("target")) ==
+          QStringLiteral("color"));
 }
