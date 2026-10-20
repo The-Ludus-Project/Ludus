@@ -319,7 +319,14 @@ enum class RasterCallbacks : foundation::uint8
     Three = 3
 };
 void RasterExpect(foundation::uint32 request, RasterCallbacks callbacks) noexcept;
-bool IsRasterRequestCurrent(RasterKind kind, foundation::usize slot, foundation::uint32 request) noexcept;
+// Captured identity of one preparation request in a resource table.
+struct RasterRequestIdentity final
+{
+    RasterKind Kind = RasterKind::Shader;
+    foundation::usize ResourceSlot = 0;
+    foundation::uint32 Request = 0;
+};
+bool IsRasterRequestCurrent(RasterRequestIdentity identity) noexcept;
 void RasterComplete(foundation::uint32 request, RasterStatus status) noexcept;
 void RasterFail(foundation::uint32 request, RasterStatus status) noexcept;
 void ResetLifetimeRecords() noexcept;

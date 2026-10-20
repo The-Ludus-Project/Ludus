@@ -226,7 +226,7 @@ Wide MultiplyWide(uint64 left, uint64 right) noexcept
     const uint64 leftHigh = left >> WORD_BITS;
     const uint64 rightLow = right & LOW_HALF;
     const uint64 rightHigh = right >> WORD_BITS;
-    const uint64 lowLow = leftLow * rightLow;
+    const uint64 lowLow = (left & LOW_HALF) * (right & LOW_HALF);
     const uint64 lowHigh = leftLow * rightHigh;
     const uint64 highLow = leftHigh * rightLow;
     const uint64 highHigh = leftHigh * rightHigh;
@@ -326,16 +326,19 @@ bool TryRoundToBinary32(Wide value, bool hasFraction, int32 scale, uint32& outBi
         (static_cast<uint32>(biasedExponent) << FRACTION_BITS) | (static_cast<uint32>(significand) & FRACTION_MASK);
     return true;
 }
+/// Significand bounds and decimal scaling captured by the validated syntax scan.
+struct FastDecimalDescription final
+{
+    usize IntegerStart = 0;
+    usize FractionEnd = 0;
+    int32 Exponent = 0;
+};
 /// @return false when the input needs the general conversion; outBits is then unchanged.
-bool TryParseFast(const char* text,
-                  usize integerStart,
-                  usize fractionEnd,
-                  int32 decimalExponent,
-                  uint32& outBits) noexcept
+bool TryParseFast(const char* text, FastDecimalDescription description, uint32& outBits) noexcept
 {
     constexpr uint64 MAX_BEFORE_DIGIT = (~0ULL - (DECIMAL_BASE - 1)) / DECIMAL_BASE;
     uint64 digits = 0;
-    for (usize index = integerStart; index < fractionEnd; ++index)
+    for (usize index = description.IntegerStart; index < description.FractionEnd; ++index)
     {
         if (Digit(text[index]) == false)
         {
@@ -352,16 +355,16 @@ bool TryParseFast(const char* text,
         outBits = 0;
         return true;
     }
-    if (decimalExponent >= 0)
+    if (description.Exponent >= 0)
     {
-        if (decimalExponent > MAX_FAST_POSITIVE_EXPONENT)
+        if (description.Exponent > MAX_FAST_POSITIVE_EXPONENT)
         {
             return false;
         }
-        const Wide product = MultiplyWide(digits, POWERS_OF_TEN[static_cast<usize>(decimalExponent)]);
+        const Wide product = MultiplyWide(digits, POWERS_OF_TEN[static_cast<usize>(description.Exponent)]);
         return TryRoundToBinary32(product, false, 0, outBits);
     }
-    const int32 negativeExponent = -decimalExponent;
+    const int32 negativeExponent = -description.Exponent;
     if (negativeExponent > MAX_FAST_NEGATIVE_EXPONENT)
     {
         return false;
@@ -505,7 +508,9 @@ NumberParseStatus ParseFloat32(const char* text, usize size, float32& output) no
     }
     const int32 fastExponent = decimalExponent - static_cast<int32>(fractionEnd - fractionStart);
     uint32 fastBits = 0;
-    if (TryParseFast(text, integerStart, fractionEnd, fastExponent, fastBits) == true)
+    if (TryParseFast(text,
+                     { .IntegerStart = integerStart, .FractionEnd = fractionEnd, .Exponent = fastExponent },
+                     fastBits) == true)
     {
         WriteBinary32(negative == true ? fastBits | SIGN_BIT : fastBits, output);
         return NumberParseStatus::Success;
