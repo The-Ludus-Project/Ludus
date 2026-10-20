@@ -309,6 +309,8 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
                 description.IndexCount = source.Indices.GetSize();
                 description.Texcoords = source.Texcoords.GetData();
                 description.Normals = source.Normals.GetData();
+                // Cooked v6 tangent frames; vertices without one (W = 0) use the UV-derived frame.
+                description.Tangents = {source.Tangents.GetData(), source.Tangents.GetSize()};
             }
             // CreateMesh copies the normals, so derived storage only lives for this call.
             QVector<math::Vector3> derivedNormals;
@@ -334,11 +336,14 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
         for (int32 i = 0; i < Source.Textures.size(); ++i)
         {
             const QImage& image = Source.Textures[i].Pixels;
+            // Surface maps are linear data; colour textures decode sRGB.
+            const rhi::RasterFormat format =
+                Source.Textures[i].IsLinear == true ? rhi::RasterFormat::Rgba8Unorm : rhi::RasterFormat::Rgba8Srgb;
             if (IsAccepted(rhi::CreateTexture(Device,
                                               {
                                                   .Width = static_cast<uint32>(image.width()),
                                                   .Height = static_cast<uint32>(image.height()),
-                                                  .Format = rhi::RasterFormat::Rgba8Srgb,
+                                                  .Format = format,
                                                   .RetainCpuContent = false,
                                               },
                                               {
@@ -562,6 +567,18 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
     material.Roughness = surface.Roughness;
     material.Emission = surface.Emission;
     material.IsEmissionTwoSided = surface.IsEmissionTwoSided;
+    // Cooked v6 maps share the base texture's coordinates and sampler.
+    const PreviewSurface& maps =
+        resources.Source.Surfaces[resources.Source.Objects[static_cast<int32>(objectIndex)].Surface];
+    if (maps.SurfaceTexture >= 0)
+    {
+        material.SurfaceMap = resources.Textures[maps.SurfaceTexture];
+        material.NormalScale = maps.NormalScale;
+    }
+    if (maps.EmissionTexture >= 0)
+    {
+        material.EmissionMap = resources.Textures[maps.EmissionTexture];
+    }
     material.AreAuthoredInputsEnabled = true;
     material.Clusters = &resources.Lighting.Clusters;
     material.Lights = resources.Lighting.Lights.Lights;

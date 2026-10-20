@@ -10,6 +10,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/strings/string.hpp>
 
 #include <bit>
@@ -62,6 +63,14 @@ constexpr usize MATERIAL_RECORD_BYTES = 24;
 constexpr usize MATERIAL_RECORD_V2_BYTES = 28;
 constexpr usize MATERIAL_RECORD_V3_BYTES = sizeof(format::MaterialRecordV3);
 constexpr usize MATERIAL_RECORD_V5_BYTES = sizeof(format::MaterialRecordV5);
+constexpr usize MATERIAL_RECORD_V6_BYTES = sizeof(format::MaterialRecordV6);
+/// Offsets of the version 6 map fields after the version 3 fields.
+constexpr usize MATERIAL_V6_SURFACE_OFFSET =
+    offsetof(format::MaterialRecordV6, SurfaceTexture) - MATERIAL_RECORD_V3_BYTES;
+constexpr usize MATERIAL_V6_EMISSION_OFFSET =
+    offsetof(format::MaterialRecordV6, EmissionTexture) - MATERIAL_RECORD_V3_BYTES;
+constexpr usize MATERIAL_V6_NORMAL_SCALE_OFFSET =
+    offsetof(format::MaterialRecordV6, NormalScale) - MATERIAL_RECORD_V3_BYTES;
 /// Offset of the version 3 reserved word (the version 5 alpha mode) after the version 2 fields.
 constexpr usize MATERIAL_V3_RESERVED_OFFSET = offsetof(format::MaterialRecordV3, Reserved) - MATERIAL_RECORD_V2_BYTES;
 constexpr std::string_view LIGHTING_BUILD_TARGET = "portable-rgba8-f32-le-v3";
@@ -71,6 +80,9 @@ constexpr std::string_view INDEXED_LIGHTING_BUILD_TARGET = "portable-rgba8-f32-l
 /// Parts split from a LUSCN version 5 bundle: version 4 records with alpha-masked
 /// materials, within the import profile's limits.
 constexpr std::string_view IMPORT_PROFILE_BUILD_TARGET = "portable-rgba8-f32-le-v5";
+/// Parts split from a LUSCN version 6 bundle: tangent-framed meshes and materials with
+/// surface and emission maps, within the import profile.
+constexpr std::string_view SURFACE_MAP_BUILD_TARGET = "portable-rgba8-f32-le-v6";
 constexpr float64 MAX_AUTHORED_MAGNITUDE = 1e12;
 constexpr float64 MAX_WORLD_MAGNITUDE = 3e38;
 constexpr float64 MIN_DIRECTION_SQUARED = 1e-12;
@@ -1339,6 +1351,9 @@ struct BundleMaterial final
 {
     std::span<const uint8> Bytes;
     uint32 Texture = 0;
+    /// Version 6 surface and emission map indices, or NO_TEXTURE.
+    uint32 SurfaceTexture = format::NO_TEXTURE;
+    uint32 EmissionTexture = format::NO_TEXTURE;
 };
 
 struct BundleObject final
@@ -1441,6 +1456,8 @@ struct BundleParts final
         {
             return inoutFailure.FailInvalid("Invalid cooked material");
         }
+        uint32 surfaceTexture = format::NO_TEXTURE;
+        uint32 emissionTexture = format::NO_TEXTURE;
         if (format::HasLightingRecords(version) == true)
         {
             std::span<const uint8> extra;
@@ -1453,18 +1470,23 @@ struct BundleParts final
                 uint64{DecodeUint32(extra.data() + 4)} | (uint64{DecodeUint32(extra.data() + 8)} << 32);
             const float64 power = DecodeFloat(extra.data() + 12);
             // Version 5 stores the alpha mode in the version 3 reserved word, then the
-            // cutoff and a new reserved word.
+            // cutoff and a new reserved word; version 6 replaces that word by its maps.
+            const bool hasSurfaceMaps = format::HasSurfaceMaps(version);
             std::span<const uint8> alpha;
             if (format::HasMaterialAlpha(version) == true &&
-                inoutReader.Take(MATERIAL_RECORD_V5_BYTES - MATERIAL_RECORD_V3_BYTES, alpha, inoutFailure) == false)
+                inoutReader.Take((hasSurfaceMaps == true ? MATERIAL_RECORD_V6_BYTES : MATERIAL_RECORD_V5_BYTES) -
+                                     MATERIAL_RECORD_V3_BYTES,
+                                 alpha,
+                                 inoutFailure) == false)
             {
                 return false;
             }
-            const uint8* reserved =
-                alpha.empty() == true ? extra.data() + MATERIAL_V3_RESERVED_OFFSET : alpha.data() + sizeof(float32);
-            if ((flags & ~format::EMISSION_FLAGS) != 0 || DecodeUint32(reserved) != 0 ||
-                math::IsFinite(power) == false || power < 0 ||
-                power > static_cast<float64>(format::MAX_LIGHT_INTENSITY) ||
+            const uint8* reservedOrNull = alpha.empty() == true     ? extra.data() + MATERIAL_V3_RESERVED_OFFSET
+                                          : hasSurfaceMaps == false ? alpha.data() + sizeof(float32)
+                                                                    : nullptr;
+            if ((flags & ~format::EMISSION_FLAGS) != 0 ||
+                (reservedOrNull != nullptr && DecodeUint32(reservedOrNull) != 0) || math::IsFinite(power) == false ||
+                power < 0 || power > static_cast<float64>(format::MAX_LIGHT_INTENSITY) ||
                 ((flags & format::EMISSION_HAS_POWER) == 0 && power != 0) || (emissionMaximum > 0 && sourceId == 0))
             {
                 return inoutFailure.FailInvalid("Invalid authored emitter flags, identity or power");
@@ -1479,16 +1501,63 @@ struct BundleParts final
                     return inoutFailure.FailInvalid("Invalid cooked material alpha");
                 }
             }
+            if (hasSurfaceMaps == true)
+            {
+                surfaceTexture = DecodeUint32(alpha.data() + MATERIAL_V6_SURFACE_OFFSET);
+                emissionTexture = DecodeUint32(alpha.data() + MATERIAL_V6_EMISSION_OFFSET);
+                const float64 normalScale = DecodeFloat(alpha.data() + MATERIAL_V6_NORMAL_SCALE_OFFSET);
+                if ((surfaceTexture != format::NO_TEXTURE && surfaceTexture >= textureCount) ||
+                    (emissionTexture != format::NO_TEXTURE && emissionTexture >= textureCount) ||
+                    math::IsFinite(normalScale) == false || normalScale < 0 ||
+                    normalScale > static_cast<float64>(format::MAX_NORMAL_SCALE) ||
+                    (surfaceTexture == format::NO_TEXTURE && normalScale != 0))
+                {
+                    return inoutFailure.FailInvalid("Invalid cooked material maps");
+                }
+            }
         }
         BundleMaterial material;
         material.Bytes = data.subspan(start, inoutReader.GetOffset() - start);
         material.Texture = texture[0];
+        material.SurfaceTexture = surfaceTexture;
+        material.EmissionTexture = emissionTexture;
         if (outParts.Materials.TryAdd(material) == false)
         {
             return inoutFailure.FailOutOfMemory();
         }
     }
     return true;
+}
+
+/// A version 6 vertex tangent: handedness +1/-1 with a finite direction whose part
+/// perpendicular to the vertex normal exceeds MIN_TANGENT_PERPENDICULAR, or all zero.
+[[nodiscard]] bool IsValidTangent(const uint8* vertex) noexcept
+{
+    const auto decodeVector = [vertex](usize offset) {
+        return math::Vector3d{DecodeFloat(vertex + offset),
+                              DecodeFloat(vertex + offset + sizeof(float32)),
+                              DecodeFloat(vertex + offset + 2 * sizeof(float32))};
+    };
+    const math::Vector3d normal = decodeVector(offsetof(format::VertexRecordV6, Normal));
+    const math::Vector3d direction = decodeVector(offsetof(format::VertexRecordV6, Tangent));
+    const float64 handedness = DecodeFloat(vertex + offsetof(format::VertexRecordV6, Tangent) +
+                                           (format::TANGENT_COMPONENTS - 1) * sizeof(float32));
+    if (math::IsFinite(direction) == false || math::IsFinite(handedness) == false)
+    {
+        return false;
+    }
+    if (handedness == 0)
+    {
+        return direction.X == 0 && direction.Y == 0 && direction.Z == 0;
+    }
+    const float64 normalLength = math::Length(normal);
+    if ((handedness == 1 || handedness == -1) == false || normalLength <= 0)
+    {
+        return false;
+    }
+    const math::Vector3d unitNormal = normal * (1.0 / normalLength);
+    return math::Length(direction - unitNormal * math::Dot(unitNormal, direction)) >
+           static_cast<float64>(format::MIN_TANGENT_PERPENDICULAR);
 }
 
 [[nodiscard]] bool ReadMeshes(BundleReader& inoutReader,
@@ -1546,6 +1615,10 @@ struct BundleParts final
                 const float64 v = DecodeFloat(base + sizeof(format::VertexRecord) + sizeof(float32));
                 isValid = isValid == true && math::IsFinite(u) == true && math::IsFinite(v) == true && u >= 0 &&
                           u <= 1 && v >= 0 && v <= 1;
+            }
+            if (format::HasSurfaceMaps(version) == true)
+            {
+                isValid = isValid == true && IsValidTangent(base) == true;
             }
             if (isValid == false || length.GetResult().Float <= MIN_DIRECTION_SQUARED)
             {
@@ -1623,6 +1696,18 @@ struct BundleParts final
         ReadMeshes(reader, data, meshCount, outParts, inoutFailure) == false)
     {
         return false;
+    }
+    // A version 6 surface map is linear data; no material may sample it as colour.
+    for (const BundleMaterial& surface : outParts.Materials)
+    {
+        for (const BundleMaterial& colour : outParts.Materials)
+        {
+            if (surface.SurfaceTexture != format::NO_TEXTURE &&
+                (colour.Texture == surface.SurfaceTexture || colour.EmissionTexture == surface.SurfaceTexture))
+            {
+                return inoutFailure.FailInvalid("Cooked surface map also sampled as colour");
+            }
+        }
     }
     for (uint32 i = 0; i < objectCount; ++i)
     {
@@ -1781,6 +1866,24 @@ void ComposeWorld(const JsonTree& tree, JsonIndex objects, JsonIndex item, Trans
     }
 }
 
+/// Append a texture a material description depends on: the base texture, then the
+/// version 6 surface and emission maps, each once. Empty identities are skipped.
+[[nodiscard]] bool AddMaterialDependency(Array<std::string_view>& inoutDependencies, std::string_view texture) noexcept
+{
+    if (texture.empty() == true)
+    {
+        return true;
+    }
+    for (const std::string_view dependency : inoutDependencies)
+    {
+        if (dependency == texture)
+        {
+            return true;
+        }
+    }
+    return inoutDependencies.TryAdd(texture);
+}
+
 /// assemble()'s per-material description checks.
 [[nodiscard]] bool IsValidMaterialDescription(const Document& description,
                                               const JsonTree& closureTree,
@@ -1808,11 +1911,26 @@ void ComposeWorld(const JsonTree& tree, JsonIndex objects, JsonIndex item, Trans
                                                       "emission_power",
                                                       "alpha_mode",
                                                       "alpha_cutoff"};
+    static constexpr std::string_view SURFACE_KEYS[] = {"texture",
+                                                        "metallic",
+                                                        "roughness",
+                                                        "emission",
+                                                        "address",
+                                                        "emission_flags",
+                                                        "area_source_id",
+                                                        "emission_power",
+                                                        "alpha_mode",
+                                                        "alpha_cutoff",
+                                                        "surface_texture",
+                                                        "emission_texture",
+                                                        "normal_scale"};
     const bool hasLighting = tree.GetMember(root, "emission_flags") != NO_JSON_NODE;
     const bool hasAlpha = tree.GetMember(root, "alpha_mode") != NO_JSON_NODE;
-    const bool hasExactKeys = hasAlpha == true      ? tree.HasExactKeys(root, ALPHA_KEYS)
-                              : hasLighting == true ? tree.HasExactKeys(root, LIGHTING_KEYS)
-                                                    : tree.HasExactKeys(root, KEYS);
+    const bool hasSurfaceMaps = tree.GetMember(root, "surface_texture") != NO_JSON_NODE;
+    const bool hasExactKeys = hasSurfaceMaps == true ? tree.HasExactKeys(root, SURFACE_KEYS)
+                              : hasAlpha == true     ? tree.HasExactKeys(root, ALPHA_KEYS)
+                              : hasLighting == true  ? tree.HasExactKeys(root, LIGHTING_KEYS)
+                                                     : tree.HasExactKeys(root, KEYS);
     if (hasExactKeys == false)
     {
         return inoutFailure.FailInvalid("Invalid cooked material fields");
@@ -1867,11 +1985,43 @@ void ComposeWorld(const JsonTree& tree, JsonIndex objects, JsonIndex item, Trans
     {
         return inoutFailure.FailInvalid("Cooked material dependency mismatch");
     }
+    Array<std::string_view> dependencies;
+    if (AddMaterialDependency(dependencies, tree.GetText(texture)) == false)
+    {
+        return inoutFailure.FailOutOfMemory();
+    }
+    if (hasSurfaceMaps == true)
+    {
+        PythonNumber normalScale;
+        const JsonIndex surface = tree.GetMember(root, "surface_texture");
+        const JsonIndex emissionMap = tree.GetMember(root, "emission_texture");
+        for (const JsonIndex map : {surface, emissionMap})
+        {
+            if (tree.GetKind(map) != JsonKind::String ||
+                (tree.GetText(map).empty() == false && IsResourceId(tree, map, "texture") == false))
+            {
+                return inoutFailure.FailInvalid("Cooked material dependency mismatch");
+            }
+        }
+        if (IsAuthoredNumber(tree, tree.GetMember(root, "normal_scale"), normalScale) == false ||
+            normalScale.ToFloat() < 0 || normalScale.ToFloat() > static_cast<float64>(format::MAX_NORMAL_SCALE) ||
+            (tree.GetText(surface).empty() == true && normalScale.ToFloat() != 0) ||
+            (tree.GetText(surface).empty() == false &&
+             (tree.GetText(surface) == tree.GetText(texture) || tree.GetText(surface) == tree.GetText(emissionMap))))
+        {
+            return inoutFailure.FailInvalid("Invalid cooked material maps");
+        }
+        if (AddMaterialDependency(dependencies, tree.GetText(surface)) == false ||
+            AddMaterialDependency(dependencies, tree.GetText(emissionMap)) == false)
+        {
+            return inoutFailure.FailOutOfMemory();
+        }
+    }
     JsonTree expected;
     const JsonIndex expectedList = expected.AddArray();
-    if (tree.GetText(texture).empty() == false)
+    for (const std::string_view dependency : dependencies)
     {
-        expected.Append(expectedList, expected.AddString(tree.GetText(texture)));
+        expected.Append(expectedList, expected.AddString(dependency));
     }
     if (expected.IsOk() == false)
     {
@@ -1933,6 +2083,8 @@ enum class PartLayout : uint8
     StoredBakeCoordinates,
     /// Version 4 and 5 records: indexed VertexRecord meshes with implicit bake charts.
     Indexed,
+    /// Version 6 records: indexed VertexRecordV6 meshes with tangents.
+    Tangents,
 };
 
 [[nodiscard]] PartLayout GetPartLayout(const Document& closure, std::string_view identity) noexcept
@@ -1948,19 +2100,24 @@ enum class PartLayout : uint8
     {
         return PartLayout::StoredBakeCoordinates;
     }
+    if (closure.Tree.IsString(target, SURFACE_MAP_BUILD_TARGET) == true)
+    {
+        return PartLayout::Tangents;
+    }
     return closure.Tree.IsString(target, INDEXED_LIGHTING_BUILD_TARGET) == true ||
                    closure.Tree.IsString(target, IMPORT_PROFILE_BUILD_TARGET) == true
                ? PartLayout::Indexed
                : PartLayout::Legacy;
 }
 
-/// True for parts split from a version 5 bundle, which assemble within the import profile.
+/// True for parts split from a version 5 or 6 bundle, which assemble within the import profile.
 [[nodiscard]] bool IsImportProfileBuild(const Document& closure, std::string_view identity) noexcept
 {
     const JsonIndex record = closure.Tree.GetMember(closure.Root, identity);
     const JsonIndex build = closure.Tree.GetMember(record, "build");
-    return build != NO_JSON_NODE &&
-           closure.Tree.IsString(closure.Tree.GetMember(build, "target"), IMPORT_PROFILE_BUILD_TARGET) == true;
+    const JsonIndex target = build != NO_JSON_NODE ? closure.Tree.GetMember(build, "target") : NO_JSON_NODE;
+    return build != NO_JSON_NODE && (closure.Tree.IsString(target, IMPORT_PROFILE_BUILD_TARGET) == true ||
+                                     closure.Tree.IsString(target, SURFACE_MAP_BUILD_TARGET) == true);
 }
 
 /// True for parts that carry version 3 lighting fields (versions 3 to 5).
@@ -2197,17 +2354,32 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     for (const Document& description : descriptions)
     {
-        const std::string_view texture =
-            description.Tree.GetText(description.Tree.GetMember(description.Root, "texture"));
-        if (texture.empty() == false && AddSortedUnique(textures, texture) == false)
+        for (const std::string_view key : {"texture", "surface_texture", "emission_texture"})
         {
-            return inoutFailure.FailOutOfMemory();
+            const JsonIndex member = description.Tree.GetMember(description.Root, key);
+            const std::string_view texture = member != NO_JSON_NODE ? description.Tree.GetText(member) : "";
+            if (texture.empty() == false && AddSortedUnique(textures, texture) == false)
+            {
+                return inoutFailure.FailOutOfMemory();
+            }
         }
+    }
+    // Version 6 assembles tangent-framed mesh parts or materials with surface/emission
+    // maps; older mesh parts then gain absent (zero) tangents.
+    bool isVersion6 = false;
+    for (const std::string_view identity : meshes)
+    {
+        isVersion6 = isVersion6 == true || GetPartLayout(closure, identity) == PartLayout::Tangents;
+    }
+    for (const Document& description : descriptions)
+    {
+        isVersion6 =
+            isVersion6 == true || description.Tree.GetMember(description.Root, "surface_texture") != NO_JSON_NODE;
     }
     // Version 5 assembles parts split from a version 5 bundle, alpha-masked materials,
     // or more meshes, materials, textures or objects than the resident reference
     // profile admits. It implies the version 4 indexed meshes and lighting records.
-    bool isVersion5 = meshes.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Meshes ||
+    bool isVersion5 = isVersion6 == true || meshes.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Meshes ||
                       materials.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Materials ||
                       textures.GetSize() > format::RESIDENT_REFERENCE_LIMITS.Textures ||
                       objectCount > format::RESIDENT_REFERENCE_LIMITS.Objects;
@@ -2219,8 +2391,9 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     {
         isVersion5 = isVersion5 == true || description.Tree.GetMember(description.Root, "alpha_mode") != NO_JSON_NODE;
     }
-    const format::BundleLimits& limits =
-        format::GetBundleLimits(isVersion5 == true ? format::VERSION_5 : format::VERSION_4);
+    const format::BundleLimits& limits = format::GetBundleLimits(isVersion6 == true   ? format::VERSION_6
+                                                                 : isVersion5 == true ? format::VERSION_5
+                                                                                      : format::VERSION_4);
     if (meshes.GetSize() > limits.Meshes || materials.GetSize() > limits.Materials ||
         textures.GetSize() > limits.Textures || objectCount > limits.Objects)
     {
@@ -2239,7 +2412,8 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     for (const std::string_view identity : meshes)
     {
         isVersion3 = isVersion3 == true || IsLightingBuild(closure, identity) == true;
-        isVersion4 = isVersion4 == true || GetPartLayout(closure, identity) == PartLayout::Indexed;
+        isVersion4 = isVersion4 == true || GetPartLayout(closure, identity) == PartLayout::Indexed ||
+                     GetPartLayout(closure, identity) == PartLayout::Tangents;
     }
     for (const Document& description : descriptions)
     {
@@ -2248,7 +2422,8 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     uint64 bundleBytes =
         sizeof(format::Header) +
-        materials.GetSize() * (isVersion5 == true   ? sizeof(format::MaterialRecordV5)
+        materials.GetSize() * (isVersion6 == true   ? sizeof(format::MaterialRecordV6)
+                               : isVersion5 == true ? sizeof(format::MaterialRecordV5)
                                : isVersion3 == true ? sizeof(format::MaterialRecordV3)
                                                     : sizeof(format::MaterialRecordV2)) +
         objectCount * (isVersion3 == true ? sizeof(format::ObjectRecordV3) : sizeof(format::ObjectRecord)) +
@@ -2285,6 +2460,10 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
                 return inoutFailure.FailInvalid("Invalid mesh conversion vertex count");
             }
             const uint64 bakeBytes = uint64{vertices} * (sizeof(format::VertexRecordV3) - sizeof(format::VertexRecord));
+            if (isVersion6 == true && layout != PartLayout::Tangents)
+            {
+                bundleBytes += uint64{vertices} * (sizeof(format::VertexRecordV6) - sizeof(format::VertexRecord));
+            }
             if (isAddingBakeCoordinates == true)
             {
                 bundleBytes += bakeBytes;
@@ -2306,7 +2485,8 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     ByteWriter writer(outBundle);
     writer.Append(format::MAGIC);
-    const uint32 version = isVersion5 == true   ? format::VERSION_5
+    const uint32 version = isVersion6 == true   ? format::VERSION_6
+                           : isVersion5 == true ? format::VERSION_5
                            : isVersion4 == true ? format::VERSION_4
                            : isVersion3 == true ? format::VERSION_3
                                                 : format::VERSION_2;
@@ -2388,7 +2568,23 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
                 writer.AppendFloat32(
                     isMasked == true ? GetNumberMember(tree, description.Root, "alpha_cutoff").ToFloat() : 0.0);
             }
-            writer.AppendUint32(0);
+            if (isVersion6 == true)
+            {
+                const auto findMap = [&](std::string_view key) {
+                    const JsonIndex member = tree.GetMember(description.Root, key);
+                    const std::string_view map = member != NO_JSON_NODE ? tree.GetText(member) : "";
+                    return map.empty() == true ? format::NO_TEXTURE : FindIndex(textures, map);
+                };
+                const bool hasScale = tree.GetMember(description.Root, "normal_scale") != NO_JSON_NODE;
+                writer.AppendUint32(findMap("surface_texture"));
+                writer.AppendUint32(findMap("emission_texture"));
+                writer.AppendFloat32(
+                    hasScale == true ? GetNumberMember(tree, description.Root, "normal_scale").ToFloat() : 0.0);
+            }
+            else
+            {
+                writer.AppendUint32(0);
+            }
         }
     }
     for (const std::string_view identity : meshes)
@@ -2399,7 +2595,32 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             return false;
         }
         const PartLayout layout = GetPartLayout(closure, identity);
-        if (format::HasImplicitBakeCoordinates(version) == true && layout == PartLayout::StoredBakeCoordinates)
+        if (isVersion6 == true && layout != PartLayout::Tangents)
+        {
+            // Older parts gain absent tangents; version 3 parts drop their stored bake coordinates.
+            const usize sourceBytes = layout == PartLayout::StoredBakeCoordinates ? sizeof(format::VertexRecordV3)
+                                                                                  : sizeof(format::VertexRecord);
+            const uint32 vertexCount = data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData()) : 0;
+            const uint32 indexCount =
+                data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData() + sizeof(uint32)) : 0;
+            const usize expected =
+                sizeof(format::MeshRecord) + usize{vertexCount} * sourceBytes + usize{indexCount} * sizeof(uint32);
+            if (data.GetSize() != expected || vertexCount > limits.Vertices)
+            {
+                return inoutFailure.FailInvalid("Invalid tangent mesh conversion length");
+            }
+            constexpr uint8 ABSENT_TANGENT[sizeof(format::VertexRecordV6) - sizeof(format::VertexRecord)]{};
+            writer.AppendBytes({data.GetData(), sizeof(format::MeshRecord)});
+            for (usize vertex = 0; vertex < vertexCount; ++vertex)
+            {
+                writer.AppendBytes(
+                    {data.GetData() + sizeof(format::MeshRecord) + vertex * sourceBytes, sizeof(format::VertexRecord)});
+                writer.AppendBytes({ABSENT_TANGENT, sizeof(ABSENT_TANGENT)});
+            }
+            writer.AppendBytes({data.GetData() + sizeof(format::MeshRecord) + usize{vertexCount} * sourceBytes,
+                                usize{indexCount} * sizeof(uint32)});
+        }
+        else if (format::HasImplicitBakeCoordinates(version) == true && layout == PartLayout::StoredBakeCoordinates)
         {
             const uint32 vertexCount = data.GetSize() >= sizeof(format::MeshRecord) ? DecodeUint32(data.GetData()) : 0;
             const uint32 indexCount =
@@ -2894,7 +3115,8 @@ struct PreparedImport final
 {
     // Version 1 records (24 bytes) imply the sampler address; version 2 records
     // (pbrt-best-effort-v1) carry it explicitly after the texture index.
-    const bool isVersion5 = material.Bytes.size() == MATERIAL_RECORD_V5_BYTES;
+    const bool isVersion6 = material.Bytes.size() == MATERIAL_RECORD_V6_BYTES;
+    const bool isVersion5 = material.Bytes.size() == MATERIAL_RECORD_V5_BYTES || isVersion6 == true;
     const bool isVersion3 = material.Bytes.size() == MATERIAL_RECORD_V3_BYTES || isVersion5 == true;
     const bool isVersion2 = material.Bytes.size() == MATERIAL_RECORD_V2_BYTES || isVersion3 == true;
     if (material.Bytes.size() != MATERIAL_RECORD_BYTES && isVersion2 == false)
@@ -2934,6 +3156,21 @@ struct PreparedImport final
                        "alpha_mode",
                        tree.AddString(DecodeUint32(alpha) == format::ALPHA_MASKED ? "masked" : "opaque"));
         tree.SetMember(root, "alpha_cutoff", tree.AddFloat(DecodeFloat(alpha + sizeof(uint32))));
+    }
+    if (isVersion6 == true)
+    {
+        const uint32 surface = material.SurfaceTexture;
+        const uint32 emissionMap = material.EmissionTexture;
+        tree.SetMember(root,
+                       "surface_texture",
+                       tree.AddString(surface != format::NO_TEXTURE ? textures[surface].GetView() : ""));
+        tree.SetMember(root,
+                       "emission_texture",
+                       tree.AddString(emissionMap != format::NO_TEXTURE ? textures[emissionMap].GetView() : ""));
+        tree.SetMember(
+            root,
+            "normal_scale",
+            tree.AddFloat(DecodeFloat(material.Bytes.data() + offsetof(format::MaterialRecordV6, NormalScale))));
     }
     return WriteCanonical(tree, root, outBytes, inoutFailure);
 }
@@ -2996,16 +3233,21 @@ struct StoredParts final
         {
             return inoutFailure.FailOutOfMemory();
         }
-        const std::string_view dependency[1] = {texture != format::NO_TEXTURE ? outStored.Textures[texture].GetView()
-                                                                              : std::string_view()};
-        const std::span<const std::string_view> dependencies = texture != format::NO_TEXTURE
-                                                                   ? std::span<const std::string_view>(dependency)
-                                                                   : std::span<const std::string_view>();
+        const auto getTexture = [&outStored](uint32 index) {
+            return index != format::NO_TEXTURE ? outStored.Textures[index].GetView() : std::string_view();
+        };
+        Array<std::string_view> dependencies;
+        if (AddMaterialDependency(dependencies, getTexture(texture)) == false ||
+            AddMaterialDependency(dependencies, getTexture(parts.Materials[i].SurfaceTexture)) == false ||
+            AddMaterialDependency(dependencies, getTexture(parts.Materials[i].EmissionTexture)) == false)
+        {
+            return inoutFailure.FailOutOfMemory();
+        }
         if (StoreArtifact(root,
                           inoutCatalog,
                           "material",
                           GetSpan(bytes),
-                          dependencies,
+                          {dependencies.GetData(), dependencies.GetSize()},
                           build,
                           identity.GetView(),
                           inoutFailure) == false)
@@ -3429,7 +3671,8 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
     buildTree.SetMember(build.Root, "schema", buildTree.AddInteger(1));
     buildTree.SetMember(build.Root,
                         "target",
-                        buildTree.AddString(parts.Version == format::VERSION_5   ? IMPORT_PROFILE_BUILD_TARGET
+                        buildTree.AddString(parts.Version == format::VERSION_6   ? SURFACE_MAP_BUILD_TARGET
+                                            : parts.Version == format::VERSION_5 ? IMPORT_PROFILE_BUILD_TARGET
                                             : parts.Version == format::VERSION_4 ? INDEXED_LIGHTING_BUILD_TARGET
                                             : parts.Version == format::VERSION_3 ? LIGHTING_BUILD_TARGET
                                                                                  : BUILD_TARGET));

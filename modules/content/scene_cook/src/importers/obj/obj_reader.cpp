@@ -1014,17 +1014,13 @@ Status WavefrontReader::finishMaterial(const MtlTerms& terms, uint32 line) noexc
     {
         warn(codes::TRANSMISSION_DROPPED, line, "MTL refraction/glass illumination model cooked as opaque");
     }
-    if (material.NormalTexture != IR_NONE)
+    if (material.NormalTexture != IR_NONE && material.NormalTextureKind == IrNormalTextureKind::Height)
     {
-        warn(codes::NORMALMAP_DROPPED, line, "MTL bump/normal map not stored by LUSCN v5");
+        warn(codes::NORMALMAP_DROPPED, line, "MTL bump (height) map not stored by LUSCN v6; norm maps are");
     }
     if (material.SpecularTexture != IR_NONE || material.SpecularExponentTexture != IR_NONE)
     {
         inform(codes::TEXTURE_DROPPED, line, "MTL map_Ks/map_Ns ignored by the metallic-roughness mapping");
-    }
-    if (material.EmissionTexture != IR_NONE)
-    {
-        warn(codes::EMISSION_APPROXIMATED, line, "MTL map_Ke dropped; Ke is used as uniform emission");
     }
     if (ComputeRec709Luminance(material.Emission) > 0.0)
     {

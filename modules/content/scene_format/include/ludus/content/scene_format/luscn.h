@@ -29,7 +29,10 @@
 /// indexed instead of storing one vertex per triangle corner. Version 5 keeps
 /// every version 4 record except the materials, which are MaterialRecordV5 with
 /// an alpha mode and cutoff, and admits the larger import profile (IMPORT_LIMITS)
-/// instead of the resident reference profile (see GetBundleLimits).
+/// instead of the resident reference profile (see GetBundleLimits). Version 6
+/// keeps the version 5 records except the materials (MaterialRecordV6 adds a
+/// linear surface map, an emission map and a normal-map strength) and the
+/// vertices (VertexRecordV6 adds a tangent frame), within the same import profile.
 ///
 /// The record structs document the exact wire layout and are checked with
 /// static_asserts; serialise them field by field in little-endian order rather
@@ -55,6 +58,9 @@ inline constexpr uint32 VERSION_4 = 4;
 /// Version 5: version 4 records with alpha-masked materials (MaterialRecordV5) and
 /// the import profile's admission limits.
 inline constexpr uint32 VERSION_5 = 5;
+/// Version 6: version 5 records with surface/emission maps (MaterialRecordV6) and
+/// per-vertex tangents (VertexRecordV6).
+inline constexpr uint32 VERSION_6 = 6;
 /// Linear Rec.709 RGB photometric proxy; not a spectral PBRT representation.
 inline constexpr uint32 LIGHTING_PROFILE_REC709_PHOTOMETRIC = 1;
 /// Largest analytic light list; selection must never silently discard sources.
@@ -101,7 +107,7 @@ inline constexpr float32 MAX_EMISSION = 10000.0F;
 struct Header final
 {
     char Magic[8];        ///< MAGIC.
-    uint32 Version;       ///< VERSION_1 through VERSION_5.
+    uint32 Version;       ///< VERSION_1 through VERSION_6.
     uint32 MeshCount;     ///< 1..BundleLimits::Meshes of the version.
     uint32 MaterialCount; ///< 1..BundleLimits::Materials of the version.
     uint32 TextureCount;  ///< 0..BundleLimits::Textures of the version.
@@ -170,6 +176,31 @@ struct MaterialRecordV5 final
     float32 AlphaCutoff;            ///< Masked threshold in [0, 1]; zero for ALPHA_OPAQUE.
     uint32 Reserved;                ///< Must be zero.
 };
+/// Largest MaterialRecordV6::NormalScale, the renderer's tangent-normal strength limit.
+inline constexpr float32 MAX_NORMAL_SCALE = 8.0F;
+/// Version 6 material: version 5 terms plus texture-modulated surface detail.
+/// SurfaceTexture is linear data, never colour: RG encode the tangent-space normal
+/// XY as 2 * channel - 1 (positive Z reconstructed, +Y along the vertex bitangent
+/// cross(Normal, Tangent.xyz) * Tangent.w), B multiplies Roughness (floored at
+/// MIN_ROUGHNESS) and A multiplies Metallic. EmissionTexture is sRGB colour whose
+/// RGB multiplies Emission. Both share Texture's coordinates and address mode. A
+/// texture referenced as a surface map must not also be a base or emission texture.
+struct MaterialRecordV6 final
+{
+    uint32 Texture;                 ///< sRGB base colour texture index or NO_TEXTURE.
+    uint32 AddressMode;             ///< ADDRESS_CLAMP or ADDRESS_REPEAT.
+    float32 Metallic;               ///< [0, 1].
+    float32 Roughness;              ///< [MIN_ROUGHNESS, 1].
+    float32 Emission[RGB_CHANNELS]; ///< Nonnegative linear Rec.709 RGB, at most MAX_EMISSION.
+    uint32 EmissionFlags;           ///< EMISSION_TWO_SIDED and/or EMISSION_HAS_POWER.
+    uint64 AreaSourceId;            ///< Nonzero for emissive surfaces; zero for nonemitters.
+    float32 EmissionPower;          ///< Lumens after authoring scale; zero without HAS_POWER.
+    uint32 AlphaMode;               ///< ALPHA_OPAQUE or ALPHA_MASKED.
+    float32 AlphaCutoff;            ///< Masked threshold in [0, 1]; zero for ALPHA_OPAQUE.
+    uint32 SurfaceTexture;          ///< Linear surface map index or NO_TEXTURE.
+    uint32 EmissionTexture;         ///< sRGB emission colour index or NO_TEXTURE.
+    float32 NormalScale;            ///< Tangent-normal strength in [0, MAX_NORMAL_SCALE]; zero without a surface map.
+};
 /// Indices per triangle in a mesh's triangle list; MeshRecord::IndexCount is a multiple.
 inline constexpr uint32 TRIANGLE_CORNERS = 3;
 /// Per-mesh header, followed by its vertices and uint32 triangle-list indices.
@@ -196,6 +227,25 @@ struct VertexRecordV3 final
 };
 /// Number of float32 components in a VertexRecord.
 inline constexpr usize VERTEX_COMPONENTS = 8;
+/// Components of a position, normal or direction (X, Y, Z).
+inline constexpr usize SPATIAL_COMPONENTS = 3;
+/// Tangent components of a VertexRecordV6: direction XYZ and handedness W.
+inline constexpr usize TANGENT_COMPONENTS = 4;
+/// Smallest length of the part of a present VertexRecordV6 tangent perpendicular to the
+/// unit vertex normal, so every consumer can build a tangent frame from it.
+inline constexpr float32 MIN_TANGENT_PERPENDICULAR = 1e-4F;
+/// Version 6 vertex: a VertexRecord plus a mesh-local tangent frame. Tangent.w is
+/// +1 or -1 (bitangent = cross(Normal, Tangent.xyz) * w, MikkTSpace/glTF
+/// convention) with an XYZ whose component perpendicular to the normalized Normal is
+/// longer than MIN_TANGENT_PERPENDICULAR, or 0 with zero XYZ when the vertex has no
+/// tangent and consumers derive a frame from texture coordinates.
+struct VertexRecordV6 final
+{
+    float32 Position[SPATIAL_COMPONENTS]; ///< Mesh-local position.
+    float32 Normal[SPATIAL_COMPONENTS];   ///< Nonzero shading normal.
+    float32 Uv[2];                        ///< Mip-zero texture coordinate.
+    float32 Tangent[TANGENT_COMPONENTS];  ///< Tangent XYZ and handedness, or all zero.
+};
 /// Placed mesh instance.
 struct ObjectRecord final
 {
@@ -204,7 +254,7 @@ struct ObjectRecord final
     float32 Linear[9];      ///< Column-major 3x3 linear part (X, Y, Z columns).
     float32 Translation[3]; ///< World translation.
 };
-/// Version 3 to 5 placed instance, adding a stable nonzero scene-local identity.
+/// Version 3 to 6 placed instance, adding a stable nonzero scene-local identity.
 struct ObjectRecordV3 final
 {
     uint32 Mesh;            ///< Mesh index.
@@ -213,7 +263,7 @@ struct ObjectRecordV3 final
     float32 Translation[3]; ///< World translation.
     uint64 SourceId;        ///< Unique among placed objects; stable across recooking.
 };
-/// Version 3 to 5 trailer followed by LightCount LightRecords, then optional HDR RGB.
+/// Version 3 to 6 trailer followed by LightCount LightRecords, then optional HDR RGB.
 /// Environment pixels are equirectangular, rows north to south, with linear RGB
 /// radiance in nits multiplied by EnvironmentRgb. Zero dimensions select the
 /// constant EnvironmentRgb radiance; zero RGB means no authored environment.
@@ -225,7 +275,7 @@ struct LightingRecord final
     uint32 EnvironmentHeight;  ///< Same dimension contract as EnvironmentWidth.
     float32 EnvironmentRgb[3]; ///< Nonnegative finite RGB scale or constant nits.
 };
-/// Version 3 to 5 analytic light. Scene world distances are metres.
+/// Version 3 to 6 analytic light. Scene world distances are metres.
 /// RGB values are a fixed Rec.709 luminance-normalized proxy, rather than PBRT
 /// spectral power. Spot inner cosine is strictly greater than outer cosine.
 struct LightRecord final
@@ -333,6 +383,16 @@ static_assert(offsetof(MaterialRecordV5, AreaSourceId) == offsetof(MaterialRecor
               offsetof(MaterialRecordV5, AlphaCutoff) == offsetof(MaterialRecordV5, AlphaMode) + sizeof(uint32) &&
               offsetof(MaterialRecordV5, Reserved) == offsetof(MaterialRecordV5, AlphaCutoff) + sizeof(float32) &&
               sizeof(MaterialRecordV5) == sizeof(MaterialRecordV3) + sizeof(float32) + sizeof(uint32));
+// Version 6 replaces the version 5 reserved word by the surface map, then adds the
+// emission map and normal strength; its vertex appends a tangent to VertexRecord.
+static_assert(offsetof(MaterialRecordV6, AlphaCutoff) == offsetof(MaterialRecordV5, AlphaCutoff) &&
+              offsetof(MaterialRecordV6, SurfaceTexture) == offsetof(MaterialRecordV5, Reserved) &&
+              offsetof(MaterialRecordV6, EmissionTexture) ==
+                  offsetof(MaterialRecordV6, SurfaceTexture) + sizeof(uint32) &&
+              offsetof(MaterialRecordV6, NormalScale) == offsetof(MaterialRecordV6, EmissionTexture) + sizeof(uint32) &&
+              sizeof(MaterialRecordV6) == offsetof(MaterialRecordV6, NormalScale) + sizeof(float32));
+static_assert(offsetof(VertexRecordV6, Tangent) == sizeof(VertexRecord) &&
+              sizeof(VertexRecordV6) == sizeof(VertexRecord) + TANGENT_COMPONENTS * sizeof(float32));
 static_assert(sizeof(VertexRecordV3) == 40 && offsetof(VertexRecordV3, BakeUv) == 32);
 static_assert(sizeof(ObjectRecordV3) == 64 && offsetof(ObjectRecordV3, SourceId) == 56);
 static_assert(sizeof(LightingRecord) == 28 && offsetof(LightingRecord, EnvironmentRgb) == 16);
@@ -344,10 +404,10 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 /// True for a version this header describes.
 [[nodiscard]] constexpr bool IsSupportedVersion(uint32 version) noexcept
 {
-    return version >= VERSION_1 && version <= VERSION_5;
+    return version >= VERSION_1 && version <= VERSION_6;
 }
 /// True when the version carries version 3 material emission terms, object source
-/// IDs and the lighting trailer (versions 3 to 5).
+/// IDs and the lighting trailer (versions 3 to 6).
 [[nodiscard]] constexpr bool HasLightingRecords(uint32 version) noexcept
 {
     return version >= VERSION_3;
@@ -357,20 +417,26 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 {
     return version == VERSION_3;
 }
-/// True when each material carries an alpha mode and cutoff (MaterialRecordV5).
+/// True when each material carries an alpha mode and cutoff (MaterialRecordV5 and V6).
 [[nodiscard]] constexpr bool HasMaterialAlpha(uint32 version) noexcept
 {
     return version >= VERSION_5;
 }
 /// True when the combined index count of all meshes is bounded by
 /// BundleLimits::TotalIndices: consumers expand implicit bake chart corners
-/// (versions 4 and 5), rather than reading stored ones bounded by the vertex limit.
+/// (versions 4 to 6), rather than reading stored ones bounded by the vertex limit.
 [[nodiscard]] constexpr bool HasImplicitBakeCoordinates(uint32 version) noexcept
 {
     return version >= VERSION_4;
 }
-/// Admission ceilings for a supported version: the import profile for version 5,
-/// otherwise the resident reference profile.
+/// True when materials carry surface and emission maps (MaterialRecordV6) and each
+/// vertex stores a tangent (VertexRecordV6).
+[[nodiscard]] constexpr bool HasSurfaceMaps(uint32 version) noexcept
+{
+    return version >= VERSION_6;
+}
+/// Admission ceilings for a supported version: the import profile for versions 5
+/// and 6, otherwise the resident reference profile.
 [[nodiscard]] constexpr const BundleLimits& GetBundleLimits(uint32 version) noexcept
 {
     return version >= VERSION_5 ? IMPORT_LIMITS : RESIDENT_REFERENCE_LIMITS;
@@ -378,6 +444,8 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 /// Bytes of one serialized vertex for a supported version.
 [[nodiscard]] constexpr usize GetVertexRecordBytes(uint32 version) noexcept
 {
-    return HasStoredBakeCoordinates(version) == true ? sizeof(VertexRecordV3) : sizeof(VertexRecord);
+    return HasSurfaceMaps(version) == true             ? sizeof(VertexRecordV6)
+           : HasStoredBakeCoordinates(version) == true ? sizeof(VertexRecordV3)
+                                                       : sizeof(VertexRecord);
 }
 } // namespace ludus::content::scene_format

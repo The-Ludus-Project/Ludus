@@ -33,6 +33,12 @@ struct PlannedMaterial final
     bool IsAlphaMasked = false;
     /// Mask threshold in [0, 1]; zero for opaque slots.
     float64 AlphaCutoff = 0.0;
+    /// Cooked texture indices of the slot's LUSCN v6 linear surface map and sRGB emission
+    /// map, or IR_NONE; set by the texture cook, not the planner.
+    uint32 CookedSurfaceTexture = IR_NONE;
+    uint32 CookedEmissionTexture = IR_NONE;
+    /// Tangent-normal strength of the surface map; zero without a normal map.
+    float64 NormalScale = 0.0;
     float64 Emission[3] = {0.0, 0.0, 0.0};
     bool IsEmissive = false;
     bool IsEmissionTwoSided = false;

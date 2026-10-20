@@ -131,12 +131,14 @@ uint64 ComputeSourceId(const QString& id)
     }
     return value == 0 ? 1 : value;
 }
-// LUSCN v5 mesh: indexed VertexRecords; consumers derive the per-triangle bake charts.
+// LUSCN v6 mesh: indexed VertexRecordV6s; consumers derive the per-triangle bake charts.
 // Meshes without normals are expanded per corner so each triangle keeps its face normal.
+// Tangents are copied when supplied (one per vertex); otherwise vertices carry none.
 bool WriteSceneMesh(QDataStream& inoutStream,
                     foundation::BorrowedView<const math::Vector3> positions,
                     foundation::BorrowedView<const math::Vector3> normals,
                     foundation::BorrowedView<const math::Vector2> texcoords,
+                    foundation::BorrowedView<const math::Vector4> tangents,
                     foundation::BorrowedView<const uint32> indices,
                     usize& inoutVertexCount,
                     usize& inoutIndexCount,
@@ -148,6 +150,7 @@ bool WriteSceneMesh(QDataStream& inoutStream,
     if (positions.IsValid() == false || normals.IsValid() == false || texcoords.IsValid() == false ||
         indices.IsValid() == false || positions.IsEmpty() == true || indices.IsEmpty() == true ||
         indices.GetSize() % format::TRIANGLE_CORNERS != 0 || texcoords.GetSize() != positions.GetSize() ||
+        tangents.IsValid() == false || (tangents.IsEmpty() == false && tangents.GetSize() != positions.GetSize()) ||
         (isExpanded == false && normals.GetSize() != positions.GetSize()) ||
         vertexCount > format::IMPORT_LIMITS.Vertices - inoutVertexCount ||
         indices.GetSize() > format::IMPORT_LIMITS.TotalIndices - inoutIndexCount ||
@@ -172,7 +175,9 @@ bool WriteSceneMesh(QDataStream& inoutStream,
             const math::Vector3 position = positions[vertex];
             const math::Vector3 normal = normals[vertex];
             const math::Vector2 uv = texcoords[vertex];
-            inoutStream << position.X << position.Y << position.Z << normal.X << normal.Y << normal.Z << uv.X << uv.Y;
+            const math::Vector4 tangent = tangents.IsEmpty() == true ? math::Vector4{} : tangents[vertex];
+            inoutStream << position.X << position.Y << position.Z << normal.X << normal.Y << normal.Z << uv.X << uv.Y
+                        << tangent.X << tangent.Y << tangent.Z << tangent.W;
         }
         for (usize i = 0; i < indices.GetSize(); ++i)
         {
@@ -202,8 +207,9 @@ bool WriteSceneMesh(QDataStream& inoutStream,
             const uint32 index = indices[triangle * 3 + corner];
             const math::Vector3 position = positions[index];
             const math::Vector2 uv = texcoords[index];
+            // Expanded faces have no authored frame: absent tangents.
             inoutStream << position.X << position.Y << position.Z << faceNormal.X << faceNormal.Y << faceNormal.Z
-                        << uv.X << uv.Y;
+                        << uv.X << uv.Y << 0.F << 0.F << 0.F << 0.F;
         }
     }
     for (usize i = 0; i < indices.GetSize(); ++i)
@@ -1099,7 +1105,7 @@ bool RenderScene::Merge(const RenderScene& authored,
     const usize materialCount = imported.Materials.GetSize() + static_cast<usize>(authored.Objects.size());
     const usize textureCount = imported.Textures.GetSize() + static_cast<usize>(authored.Objects.size());
     const usize objectCount = imported.Objects.GetSize() + static_cast<usize>(authored.Objects.size());
-    // The composed World is a version 5 bundle: the import profile's limits apply.
+    // The composed World is a version 6 bundle: the import profile's limits apply.
     const format::BundleLimits& limits = format::IMPORT_LIMITS;
     if (meshCount > limits.Meshes || materialCount > limits.Materials || textureCount > limits.Textures ||
         objectCount > limits.Objects)
@@ -1113,7 +1119,7 @@ bool RenderScene::Merge(const RenderScene& authored,
     stream.setByteOrder(QDataStream::LittleEndian);
     stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
     stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
-    stream << format::VERSION_5 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
+    stream << format::VERSION_6 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
            << static_cast<uint32>(textureCount) << static_cast<uint32>(objectCount);
     const auto camera = level.value(QStringLiteral("camera")).toObject();
     for (const auto& key : {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up")})
@@ -1176,14 +1182,16 @@ bool RenderScene::Merge(const RenderScene& authored,
         WriteLittleEndianUint64(stream, material.AreaSourceId);
         stream << material.EmissionPower
                << (material.IsAlphaMasked == true ? format::ALPHA_MASKED : format::ALPHA_OPAQUE)
-               << (material.IsAlphaMasked == true ? material.AlphaCutoff : float32{0}) << uint32{0};
+               << (material.IsAlphaMasked == true ? material.AlphaCutoff : float32{0}) << material.SurfaceTexture
+               << material.EmissionTexture << material.NormalScale;
     }
     for (int32 i = 0; i < authored.Objects.size(); ++i)
     {
         stream << static_cast<uint32>(imported.Textures.GetSize() + static_cast<usize>(i)) << uint32{0} << float32{0}
                << float32{.5F} << float32{0} << float32{0} << float32{0} << uint32{0};
         WriteLittleEndianUint64(stream, 0);
-        stream << float32{0} << format::ALPHA_OPAQUE << float32{0} << uint32{0};
+        stream << float32{0} << format::ALPHA_OPAQUE << float32{0} << format::NO_TEXTURE << format::NO_TEXTURE
+               << float32{0};
     }
     usize vertexCount = 0;
     usize indexCount = 0;
@@ -1193,6 +1201,7 @@ bool RenderScene::Merge(const RenderScene& authored,
                            {mesh.Positions.GetData(), mesh.Positions.GetSize()},
                            {mesh.Normals.GetData(), mesh.Normals.GetSize()},
                            {mesh.Texcoords.GetData(), mesh.Texcoords.GetSize()},
+                           {mesh.Tangents.GetData(), mesh.Tangents.GetSize()},
                            {mesh.Indices.GetData(), mesh.Indices.GetSize()},
                            vertexCount,
                            indexCount,
@@ -1209,6 +1218,7 @@ bool RenderScene::Merge(const RenderScene& authored,
                                {mesh.Positions.constData(), static_cast<usize>(mesh.Positions.size())},
                                {mesh.Normals.constData(), static_cast<usize>(mesh.Normals.size())},
                                {mesh.Uvs.constData(), static_cast<usize>(mesh.Uvs.size())},
+                               {},
                                {mesh.Indices.constData(), static_cast<usize>(mesh.Indices.size())},
                                vertexCount,
                                indexCount,
@@ -1334,6 +1344,7 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
     {
         textureMeans.append(ComputeLinearMeanRgb(source));
         PreviewTexture texture;
+        texture.IsLinear = source.IsLinear;
         texture.Pixels = QImage(source.Pixels.GetData(),
                                 static_cast<int32>(source.Width),
                                 static_cast<int32>(source.Height),
@@ -1365,6 +1376,16 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         surface.Emission = source.Emission;
         surface.IsAlphaMasked = source.IsAlphaMasked;
         surface.AlphaCutoff = source.AlphaCutoff;
+        // The decoder validated both map indices against the texture list.
+        surface.SurfaceTexture =
+            source.SurfaceTexture == format::NO_TEXTURE ? -1 : static_cast<int32>(source.SurfaceTexture);
+        surface.EmissionTexture =
+            source.EmissionTexture == format::NO_TEXTURE ? -1 : static_cast<int32>(source.EmissionTexture);
+        surface.NormalScale = source.NormalScale;
+        if (surface.EmissionTexture >= 0)
+        {
+            surface.EmissionMapMean = textureMeans[surface.EmissionTexture];
+        }
         candidate.Surfaces.append(surface);
     }
     const auto objects = level.value(QStringLiteral("objects")).toArray();

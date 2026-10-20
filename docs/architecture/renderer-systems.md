@@ -2208,7 +2208,7 @@ Ready charts are per placement and contain linear RGBA8 irradiance plus a
 per-channel scale, fully replicated four-texel triangle tiles, stable SourceId,
 exact scene/dependency revisions and mesh-to-world transform. GPU upload occurs
 on the RHI owner after worker completion. Assign the SceneFormat helper UVs to
-deindexed vertices (LUSCN v4 and v5 meshes are indexed and store no chart UVs, so
+deindexed vertices (LUSCN v4 to v6 meshes are indexed and store no chart UVs, so
 expand their corners first), keep source UVs separate, select no mipmaps, and enable
 `BakedLighting::AreTriangleChartsEnabled` with the returned identity UV transform.
 `HasStaticAreaDirect` suppresses the area proxy's diffuse term only when that

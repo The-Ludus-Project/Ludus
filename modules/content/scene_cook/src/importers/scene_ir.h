@@ -8,9 +8,9 @@
 // whether to expand it. Materials are already mapped to the engine's PBR terms.
 //
 // The IR keeps the complete source data that a front-end can express, without
-// the LUSCN v5 capacities: the planner, not the parsers, fits a scene to the
-// cooked format. Fields marked "not stored by LUSCN v5" (tangents, secondary
-// material textures, alpha, sidedness, camera clip planes, light range) are
+// the LUSCN v6 capacities: the planner, not the parsers, fits a scene to the
+// cooked format. Fields marked "not stored by LUSCN v6" (occlusion, specular and
+// height textures, blended alpha, sidedness, camera clip planes, light range) are
 // reported as dropped by the cook and kept for a later format revision.
 
 #include <ludus/content/content.h>
@@ -136,14 +136,15 @@ struct IrMaterial final
     /// KHR_materials_emissive_strength, MTL Ke); zero for non-emitters. Front-ends copy
     /// it to the shapes that use the material as optional emission.
     float64 Emission[IR_RGB_CHANNEL_COUNT] = {0.0, 0.0, 0.0};
-    /// Emission texture multiplying Emission; not stored by LUSCN v5.
+    /// Emission texture multiplying Emission; the cook stores it as a LUSCN v6 emission map.
     uint32 EmissionTexture = IR_NONE;
-    /// Normal or height detail texture; not stored by LUSCN v5.
+    /// Normal or height detail texture; tangent-space maps enter the LUSCN v6 surface map,
+    /// height maps are not stored.
     uint32 NormalTexture = IR_NONE;
     IrNormalTextureKind NormalTextureKind = IrNormalTextureKind::TangentSpace;
     /// glTF normalTexture.scale or MTL -bm multiplier.
     float64 NormalScale = 1.0;
-    /// Ambient occlusion texture (red channel) and strength; not stored by LUSCN v5.
+    /// Ambient occlusion texture (red channel) and strength; not stored by LUSCN v6.
     uint32 OcclusionTexture = IR_NONE;
     float64 OcclusionStrength = 1.0;
     /// Specular colour or exponent textures of Phong-style sources (MTL map_Ks,
@@ -151,7 +152,7 @@ struct IrMaterial final
     uint32 SpecularTexture = IR_NONE;
     uint32 SpecularExponentTexture = IR_NONE;
     /// Base-colour alpha factor in [0, 1] (glTF baseColorFactor[3], MTL d) and its
-    /// separate opacity texture (MTL map_d). LUSCN v5 stores Mask materials: the cook
+    /// separate opacity texture (MTL map_d). LUSCN v5 and later store Mask materials: the cook
     /// writes Opacity times the opacity source into the cooked base texture's alpha.
     float64 Opacity = 1.0;
     uint32 OpacityTexture = IR_NONE;
@@ -160,7 +161,7 @@ struct IrMaterial final
     uint8 OpacityChannel = IR_DETECT_OPACITY_CHANNEL;
     IrAlphaMode AlphaMode = IrAlphaMode::Opaque;
     float64 AlphaCutoff = 0.5;
-    /// Both faces are shaded (glTF doubleSided); not stored by LUSCN v5.
+    /// Both faces are shaded (glTF doubleSided); not stored by LUSCN v6.
     bool IsDoubleSided = false;
     /// True when the source material had no faithful mapping.
     bool IsApproximated = false;
@@ -177,7 +178,7 @@ struct IrMesh final
     Array<float32> Normals;
     /// uv pairs with v already flipped to the LUSCN top-down convention, or empty.
     Array<float32> Uvs;
-    /// Tangent xyzw quadruples (w = bitangent sign), or empty; not stored by LUSCN v5.
+    /// Tangent xyzw quadruples (w = bitangent sign), or empty; stored in LUSCN v6 vertices.
     Array<float32> Tangents;
     /// Triangle list.
     Array<uint32> Indices;
@@ -243,9 +244,9 @@ struct IrCamera final
     /// Vertical field of view in radians.
     float64 VerticalFov = IR_DEFAULT_VERTICAL_FOV_RADIANS;
     /// Declared width / height, or zero when the source leaves it to the viewport;
-    /// not stored by LUSCN v5.
+    /// not stored by LUSCN v6.
     float64 AspectRatio = 0.0;
-    /// Declared clip distances in source units (zero far = infinite); not stored by LUSCN v5.
+    /// Declared clip distances in source units (zero far = infinite); not stored by LUSCN v6.
     float64 NearClip = 0.0;
     float64 FarClip = 0.0;
 };
@@ -285,7 +286,7 @@ struct IrAnalyticLight final
     float64 InnerAngleDegrees = IR_DEFAULT_SPOT_INNER_DEGREES;
     float64 OuterAngleDegrees = IR_DEFAULT_SPOT_OUTER_DEGREES;
     /// Declared attenuation range in metres (glTF range); zero means unbounded.
-    /// Not stored by LUSCN v5, whose cook derives one range from the scene extent.
+    /// Not stored by LUSCN v6, whose cook derives one range from the scene extent.
     float64 RangeMetres = 0.0;
     /// Optional source photometric normalization: lumens for point/spot, lux for directional.
     bool HasPhotometricNormalization = false;

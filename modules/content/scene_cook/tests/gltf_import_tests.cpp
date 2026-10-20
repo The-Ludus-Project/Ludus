@@ -104,6 +104,46 @@ TEST_CASE("glTF alphaMode MASK cooks a LUSCN v5 mask; BLEND stays opaque", "[sce
     CHECK(maskedCount == 1);
 }
 
+TEST_CASE("glTF normal, roughness and emissive maps cook into LUSCN v6 maps with tangents", "[scene_cook][gltf]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportGltfBestEffort(GetFixture("gltf/maps/scene.gltf").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    const ludus::resources::SceneMaterial& material = decoded.Materials[0];
+    // The decorative emitter keeps its material's terms and maps.
+    CHECK(material.Emission.X > 0.0F);
+    CHECK(material.Roughness == .5F);
+    REQUIRE(material.EmissionTexture != format::NO_TEXTURE);
+    const ludus::resources::SceneTexture& emission = decoded.Textures[material.EmissionTexture];
+    CHECK(emission.IsLinear == false);
+    REQUIRE(emission.Pixels.GetSize() == 2 * format::TEXEL_BYTES);
+    CHECK(emission.Pixels[0] == 255);
+    CHECK(emission.Pixels[format::TEXEL_BYTES] == 0);
+    REQUIRE(material.SurfaceTexture != format::NO_TEXTURE);
+    CHECK(material.NormalScale == .5F);
+    const ludus::resources::SceneTexture& surface = decoded.Textures[material.SurfaceTexture];
+    CHECK(surface.IsLinear == true);
+    CHECK(surface.Pixels[0] == 200); // Normal X and Y from the normal map.
+    CHECK(surface.Pixels[1] == 128);
+    CHECK(surface.Pixels[2] == 255); // No roughness or metallic texture: multipliers one.
+    CHECK(surface.Pixels[3] == 255);
+    // No TANGENT attribute: MikkTSpace tangents are generated and stored per vertex.
+    REQUIRE(decoded.Meshes[0].Tangents.GetSize() == decoded.Meshes[0].Positions.GetSize());
+    for (const ludus::foundation::math::Vector4& tangent : decoded.Meshes[0].Tangents)
+    {
+        CHECK(std::fabs(tangent.W) == 1.0F);
+        CHECK(std::fabs(tangent.X) > .99F); // u increases along +x.
+    }
+    const std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
+    CHECK(report.find("NORMALMAP_DROPPED") == std::string_view::npos);
+    CHECK(report.find("TANGENTS_GENERATED") != std::string_view::npos);
+}
+
 TEST_CASE("glTF fixture keeps hierarchy, instancing, cameras and punctual lights", "[scene_cook][gltf]")
 {
     const fs::path root = fs::canonical(GetFixture("gltf/instanced"));
@@ -209,7 +249,7 @@ TEST_CASE("glTF fixture keeps hierarchy, instancing, cameras and punctual lights
     CHECK(hasGlow);
     CHECK(hasDefault);
     CHECK(HasCode(log, codes::EXTENSION_IGNORED));
-    CHECK(HasCode(log, codes::NORMALMAP_DROPPED));
+    CHECK(HasCode(log, codes::NORMALMAP_DROPPED) == false); // Tangent-space maps are stored (LUSCN v6).
     CHECK(HasCode(log, codes::SIDEDNESS_IGNORED));
 }
 
@@ -236,13 +276,26 @@ TEST_CASE("glTF JSON with external files and the equivalent GLB cook identical b
     bool hasMetal = false;
     for (const ludus::resources::SceneMaterial& material : decoded.Materials)
     {
-        // Metal: metallicFactor 1 x blue 255 and roughnessFactor 1 x green 128/255.
-        if (material.Metallic == 1.0F && std::fabs(material.Roughness - 128.0F / 255.0F) < 1e-6F)
+        // Metal: factors 1 stay the multipliers of the surface map, which carries the normal map
+        // (RG), metallicRoughnessTexture green 128 (B, roughness) and blue 255 (A, metallic).
+        if (material.Metallic == 1.0F && material.Roughness == 1.0F &&
+            material.SurfaceTexture != ludus::content::scene_format::NO_TEXTURE)
         {
-            hasMetal = true;
+            const ludus::resources::SceneTexture& surface = decoded.Textures[material.SurfaceTexture];
+            hasMetal = surface.IsLinear == true && surface.Pixels[2] == 128 && surface.Pixels[3] == 255 &&
+                       material.NormalScale == 1.0F;
         }
     }
     CHECK(hasMetal);
+    bool hasTangent = false;
+    for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+    {
+        for (const ludus::foundation::math::Vector4& tangent : mesh.Tangents)
+        {
+            hasTangent = hasTangent == true || tangent.W != 0.0F;
+        }
+    }
+    CHECK(hasTangent == true);
     const std::string_view report(reinterpret_cast<const char*>(separate.Report.GetData()), separate.Report.GetSize());
     CHECK(report.find("\"importer\": \"gltf-best-effort-v1\"") != std::string_view::npos);
     CHECK(report.find("\"source\": \"scene\"") != std::string_view::npos); // The authored camera.

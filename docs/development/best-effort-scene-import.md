@@ -9,7 +9,7 @@ schema `1`.
 byte-identical cooker for the recorded goldens; it rejects anything it does
 not model exactly. The best-effort importers accept general pbrt-v4, glTF 2.0
 (JSON or GLB) and Wavefront OBJ scenes, approximate what the runtime cannot
-represent, fit the result into the LUSCN01 v5 import profile and explain every
+represent, fit the result into the LUSCN01 v6 import profile and explain every
 compromise in a versioned JSON report. All of them are native C++; neither the
 cook nor its tests run Python.
 
@@ -19,7 +19,7 @@ format-neutral intermediate representation (SceneIR,
 shared budget planner, texture cook, bake and report writer. The IR keeps the
 complete source data a front-end can express, not the LUSCN capacities, so a
 later cooked-format revision can lift the limits without touching the parsers
-(see [what LUSCN v5 cannot carry](#what-luscn-v5-cannot-carry-yet)).
+(see [what LUSCN v6 cannot carry](#what-luscn-v6-cannot-carry-yet)).
 
 ## Running it
 
@@ -85,7 +85,7 @@ names only, because JSON values carry no line numbers.
 | Attributes | `POSITION`, `NORMAL`, `TEXCOORD_0`, `TANGENT`; others (`TEXCOORD_1+`, `COLOR_0`, joints, weights) reported (`ATTRIBUTE_IGNORED`). Without `NORMAL` every triangle corner gets its own vertex so generated normals are flat, as the specification requires |
 | Nodes | hierarchy of `matrix` or TRS (unit quaternion) transforms, default `scene` (or all root nodes without scenes); cycles, multiple parents and non-finite transforms fail |
 | Instancing | a mesh placed by several nodes stays one IR object with one instance per node; mirrored placements flip winding |
-| Materials | `baseColorFactor`/`baseColorTexture`, metallic/roughness factors and `metallicRoughnessTexture` (blue/green, averaged into scalars), `emissiveFactor` (+ `KHR_materials_emissive_strength`), `normalTexture`, `occlusionTexture`, `emissiveTexture`, `alphaMode`, `alphaCutoff`, `doubleSided`; the glTF default material (white, metallic 1, roughness 1) |
+| Materials | `baseColorFactor`/`baseColorTexture`, metallic/roughness factors and `metallicRoughnessTexture` (blue/green, repacked into the surface map), `emissiveFactor` (+ `KHR_materials_emissive_strength`), `normalTexture`, `occlusionTexture`, `emissiveTexture`, `alphaMode`, `alphaCutoff`, `doubleSided`; the glTF default material (white, metallic 1, roughness 1) |
 | Samplers | repeat or clamp; mirrored repeat and per-axis modes approximated (`TEXTURE_APPROXIMATED`) |
 | Images | PNG and JPEG by URI, data URI or buffer view |
 | Cameras | the first perspective camera in scene order (`yfov`, `aspectRatio`, `znear`, `zfar`); orthographic is approximated |
@@ -164,28 +164,36 @@ coordinates but no tangents, MikkTSpace tangents are generated with the
 reference implementation by Morten S. Mikkelsen (vendored, unmodified, in
 `third_party/mikktspace`), using the OpenGL texture convention (v up) that
 glTF and common bakers assume. Corners whose frames differ get their own
-vertices. LUSCN v5 does not store tangents yet, so the report says
-`TANGENTS_GENERATED … not stored`; meshes without texture coordinates are
-reported instead.
+vertices. LUSCN v6 vertices store them (and authored glTF `TANGENT`s), baked
+to world space, orthogonalized against the vertex normal and normalized; a
+tangent with no part perpendicular to its normal is stored as absent (all zero),
+and the renderer then derives that vertex's frame from its texture coordinates.
+The report counts generated tangents (`TANGENTS_GENERATED`); meshes without
+texture coordinates are reported instead.
 
 <a id="what-luscn-v3-cannot-carry-yet"></a>
 <a id="what-luscn-v4-cannot-carry-yet"></a>
+<a id="what-luscn-v5-cannot-carry-yet"></a>
 
-## What LUSCN v5 cannot carry yet
+## What LUSCN v6 cannot carry yet
 
-The planner fits the IR into the LUSCN v5 import profile (256 meshes, materials
+The planner fits the IR into the LUSCN v6 import profile (256 meshes, materials
 and textures, 1,024 objects, 2M unique vertices, 6M indices, 256 MiB of textures,
-base-colour materials with alpha masks, flattened instancing; see
-[the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)).
-Meshes stay indexed and every source material keeps its slot, so a scene such as
-Khronos Sponza (262k triangles over 192k vertices, 25 materials) fits whole with
-full-resolution base-colour textures. The IR already holds, and the cook reports
-dropping:
+flattened instancing; see
+[the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)
+and [surface maps](../architecture/content-resources.md#surface-maps-emission-maps-and-tangents-luscn-v6)).
+Materials carry a base colour texture with an alpha mask, a linear surface map
+(tangent-space normal, roughness and metallic) and an emission map; vertices carry
+tangents. Every source material keeps its slot, so Khronos Sponza (262k triangles,
+25 materials) cooks whole with full-resolution base-colour textures, normal maps
+and per-texel roughness. The IR already holds, and the cook reports dropping:
 
-- per-vertex tangents and normal/height maps (`NORMALMAP_DROPPED`);
-- occlusion, emissive, specular and opacity textures (`TEXTURE_DROPPED`,
-  `EMISSION_APPROXIMATED`); metallic/roughness textures are averaged into the
-  scalar terms (`TEXTURE_APPROXIMATED`);
+- height (bump) maps (`NORMALMAP_DROPPED`); tangent-space normal maps are stored;
+- occlusion and specular textures (`TEXTURE_DROPPED`);
+- surface and emission maps beyond the 256-texture count: roughness/metallic
+  textures are then averaged into the scalar terms (`TEXTURE_APPROXIMATED`), and
+  the normal map (`NORMALMAP_DROPPED`) or emission map (`EMISSION_APPROXIMATED`)
+  is dropped;
 - blended transparency (glTF `BLEND`, constant MTL dissolve) cooks opaque
   (`ALPHA_APPROXIMATED`), and double-sidedness is not stored (`SIDEDNESS_IGNORED`);
 - camera aspect ratio and clip planes, and glTF light ranges;
@@ -208,9 +216,10 @@ dropping:
 
 | glTF / OBJ | Ludus |
 | --- | --- |
-| glTF metallic-roughness | base colour factor x texture, metallic/roughness factors x averaged texture channels |
+| glTF metallic-roughness | base colour factor x texture; metallic/roughness factors stay scalars and multiply the surface map's metallic (blue) and roughness (green) channels |
+| glTF `normalTexture` / MTL `norm` | surface map RG at the normal map's resolution; `scale`/`-bm` is the normal strength, clamped to [0, 8] |
 | glTF `alphaMode` | `MASK`: LUSCN v5 alpha mask at `alphaCutoff`, coverage = texture alpha x `baseColorFactor` alpha; `BLEND`: opaque (`ALPHA_APPROXIMATED`) |
-| glTF / MTL emissive (`emissiveFactor` x strength, `Ke`) | linear RGB nits; *decorative* emission (see the budget planner); emissive textures dropped |
+| glTF / MTL emissive (`emissiveFactor` x strength, `Ke`) | linear RGB nits; *decorative* emission (see the budget planner); `emissiveTexture`/`map_Ke` become an sRGB emission map multiplying it |
 | MTL Phong terms | the deterministic conversion in the OBJ profile above |
 | `KHR_lights_punctual` | the analytic light path below: colour x intensity in candela or lux |
 
@@ -255,12 +264,14 @@ area-light, shadow and indirect-transport limits.
 
 ## Budget planner
 
-The cooked scene must fit the LUSCN v5 import profile: 256 meshes, materials and
+The cooked scene must fit the LUSCN v6 import profile: 256 meshes, materials and
 textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
 384 MiB bundle. Each cooked mesh carries one material, so the planner:
 
 1. reserves one slot per distinct emitter radiance, sidedness and power-normalization
-   group; groups record their source shapes and area-light directives in the report;
+   group; groups record their source shapes and area-light directives in the report.
+   Decorative groups are also split per source material and keep that material's
+   textures and maps; required (pbrt) emitters cook white and untextured;
 2. gives every other source material its own slot while they fit; beyond 256
    slots it ranks ordinary placements by world-space area and keeps the largest
    material groups;
@@ -276,7 +287,14 @@ textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
    base resolution, times the constant opacity. An untextured masked slot takes
    the opacity map's resolution. A mask that keeps every texel cooks opaque, and an
    unreadable opacity map leaves the slot opaque (`TEXTURE_UNREADABLE`);
-7. ranks textures and halves the largest until the byte budget is met
+7. repacks each slot's tangent-space normal map (RG), roughness channel (B) and
+   metallic channel (A) into one linear surface map at the normal map's resolution
+   (otherwise the larger data texture's), sampling the others nearest; an absent
+   normal is flat (0.5) and an absent multiplier one. Emissive slots cook their
+   emission texture as an sRGB emission map. These maps follow the base textures
+   while the bundle's 256 textures allow; beyond that a slot's roughness/metallic
+   textures are averaged into its scalars;
+8. ranks textures and halves the largest until the byte budget is met
    (`TEXTURE_DOWNSCALED`). Geometry and authored lighting bytes are reserved first.
    Untextured slots get a 4×4 sRGB swatch. Halving averages alpha too, which
    slightly erodes thin cut-outs.

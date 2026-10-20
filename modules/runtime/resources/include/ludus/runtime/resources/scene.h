@@ -9,12 +9,14 @@
 
 namespace ludus::resources
 {
-/// CPU-owned RGBA8 sRGB mip zero. Rows are tightly packed, top to bottom.
+/// CPU-owned RGBA8 mip zero. Rows are tightly packed, top to bottom.
 struct SceneTexture final
 {
     uint32 Width = 0;                ///< Positive width, at most 4096 texels.
     uint32 Height = 0;               ///< Positive height, at most 4096 texels.
     foundation::Array<uint8> Pixels; ///< Exactly Width*Height*4 bytes; at most 16 MiB.
+    /// Linear data (a v6 SceneMaterial::SurfaceTexture); false for sRGB colour textures.
+    bool IsLinear = false;
 };
 /// Frozen RGB metallic/roughness reflection and authored emission profile.
 struct SceneMaterial final
@@ -33,6 +35,12 @@ struct SceneMaterial final
     /// False before v5 and for opaque v5 materials, which ignore texture alpha.
     bool IsAlphaMasked = false;
     float32 AlphaCutoff = 0; ///< Masked threshold in [0,1]; zero when IsAlphaMasked is false.
+    /// v6 linear surface map index (RG tangent normal, B roughness and A metallic multipliers),
+    /// or all ones. It shares Texture's coordinates and addressing; see content::scene_format::MaterialRecordV6.
+    uint32 SurfaceTexture = ~uint32{0};
+    /// v6 sRGB emission colour map index whose RGB multiplies Emission, or all ones.
+    uint32 EmissionTexture = ~uint32{0};
+    float32 NormalScale = 0; ///< Tangent-normal strength in [0,8]; zero without a surface map.
 };
 /// Owned immutable CPU mesh arrays. Renderer installation copies these attributes.
 struct SceneMesh final
@@ -42,6 +50,9 @@ struct SceneMesh final
     foundation::Array<foundation::math::Vector2> Texcoords; ///< Finite mip-zero texture coordinates.
     foundation::Array<foundation::math::Vector2>
         BakeTexcoords; ///< Stored v3 bake UVs; empty in v1/v2/v4, whose charts are implicit (see TryGetBakeChartUv).
+    /// v6 mesh-local tangent XYZ and handedness W (+1/-1), or all zero where a vertex has none;
+    /// empty before v6. Layout matches graphics::renderer::MeshDescription::Tangents.
+    foundation::Array<foundation::math::Vector4> Tangents;
     foundation::Array<uint32> Indices; ///< Triangle list, bounded by Positions count.
 };
 /// Transient resolved binding; persist resource IDs in the level, never these indices.
@@ -97,8 +108,8 @@ struct SceneDefinition final
     foundation::math::Vector3 Target;           ///< Finite look-at target distinct from Eye.
     foundation::math::Vector3 Up;               ///< Camera up direction not parallel to its forward direction.
     float32 VerticalFov = 1;                    ///< Perspective vertical field of view in radians, in (0,pi).
-    /// Decode LUSCN01 versions one through five little-endian interchange, at most 64 MiB for versions one to
-    /// four and 384 MiB for version five (BundleLimits::BundleBytes). No file I/O or source
+    /// Decode LUSCN01 versions one through six little-endian interchange, at most 64 MiB for versions one to
+    /// four and 384 MiB for versions five and six (BundleLimits::BundleBytes). No file I/O or source
     /// import. Failure preserves output; allocation failures return OutOfMemory. The caller owns all resulting arrays
     /// and must keep them immutable while any adapter/lease references them.
     [[nodiscard]] static Status Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept;

@@ -28,8 +28,8 @@ namespace ludus::content::scene_cook::importers
 [[nodiscard]] Status GenerateTangents(IrMesh& inoutMesh) noexcept;
 
 /// Generate tangents for every mesh placed with a tangent-space normal texture that
-/// lacks them. Generated tangents stay in the IR: LUSCN v5 cannot store them yet,
-/// which the report states (TANGENTS_GENERATED); meshes without uvs are reported.
+/// lacks them. The cook stores them in LUSCN v6 vertices; the report counts them
+/// (TANGENTS_GENERATED), and meshes without uvs are reported.
 /// @return Ok, Cancelled or OutOfMemory.
 [[nodiscard]] Status
 GenerateMissingTangents(SceneIr& inoutScene, DiagnosticLog& inoutLog, const Cancellation* cancelOrNull) noexcept;

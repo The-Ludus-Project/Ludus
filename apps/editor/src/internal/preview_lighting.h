@@ -70,6 +70,7 @@ inline QByteArray MakeKey(const RenderScene& scene)
         stream << surface.Tint.X << surface.Tint.Y << surface.Tint.Z << surface.Tint.W;
         stream << surface.Emission.X << surface.Emission.Y << surface.Emission.Z;
         stream << surface.IsAlphaMasked << surface.AlphaCutoff;
+        stream << surface.SurfaceTexture << surface.EmissionTexture << surface.NormalScale;
     }
     if (scene.Definition != nullptr)
     {
@@ -253,10 +254,18 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
                                                         (static_cast<float64>(luminance) * math::kPi * area *
                                                          (material.IsEmissionTwoSided == true ? 2.0 : 1.0)));
         }
+        // A texture-modulated emitter emits its map's mean on average; the proxy uses that.
+        const math::Vector3 proxyEmission{overrideSurface.Emission.X * surface.EmissionMapMean.X,
+                                          overrideSurface.Emission.Y * surface.EmissionMapMean.Y,
+                                          overrideSurface.Emission.Z * surface.EmissionMapMean.Z};
+        if (proxyEmission.X == 0 && proxyEmission.Y == 0 && proxyEmission.Z == 0)
+        {
+            continue; // A black emission map emits nothing to approximate.
+        }
         uint32 added = 0;
         const rhi::RasterStatus status = AppendPreviewAreaLights(mesh,
                                                                  object.Transform,
-                                                                 overrideSurface.Emission,
+                                                                 proxyEmission,
                                                                  material.IsEmissionTwoSided,
                                                                  source.SourceId,
                                                                  math::Min(1000000.0F, math::Max(10.0F, radius * 8)),

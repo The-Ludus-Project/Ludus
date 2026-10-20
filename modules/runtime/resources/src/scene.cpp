@@ -5,6 +5,7 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
 
 #include <atomic>
 #include <cstring>
@@ -92,6 +93,35 @@ bool IsNonnegative(const math::Vector3& value, float32 maximum) noexcept
 bool IsNonzero(const math::Vector3& value) noexcept
 {
     return value.X != 0 || value.Y != 0 || value.Z != 0;
+}
+bool IsTextureReference(uint32 texture, uint32 textureCount) noexcept
+{
+    return texture == format::NO_TEXTURE || texture < textureCount;
+}
+/// Read a v6 vertex tangent: handedness +1/-1 with a direction not parallel to the
+/// vertex normal, or all zero.
+bool IsValidTangent(Reader& inoutReader, const math::Vector3& normal, math::Vector4& outTangent) noexcept
+{
+    math::Vector3 direction;
+    float32 handedness = 0;
+    if (inoutReader.Read(direction) == false || inoutReader.Read(handedness) == false)
+    {
+        return false;
+    }
+    const bool isPresent = handedness == 1 || handedness == -1;
+    math::Vector3 unitNormal;
+    if (isPresent == true &&
+        (math::TryNormalize(normal, unitNormal) != math::MathStatus::Success ||
+         math::Length(direction - unitNormal * math::Dot(unitNormal, direction)) <= format::MIN_TANGENT_PERPENDICULAR))
+    {
+        return false;
+    }
+    if (isPresent == false && (handedness != 0 || IsNonzero(direction) == true))
+    {
+        return false;
+    }
+    outTangent = {direction.X, direction.Y, direction.Z, handedness};
+    return true;
 }
 Status ReadLighting(Reader& inoutReader, SceneDefinition& inoutScene) noexcept
 {
@@ -260,13 +290,21 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             uint32 flags = 0;
             uint32 alphaMode = format::ALPHA_OPAQUE;
             uint32 reserved = 0;
+            const bool hasSurfaceMaps = format::HasSurfaceMaps(version);
             if (reader.Read(flags) == false || (flags & ~format::EMISSION_FLAGS) != 0 ||
                 reader.Read(material.AreaSourceId) == false || reader.Read(material.EmissionPower) == false ||
                 (format::HasMaterialAlpha(version) == true &&
                  (reader.Read(alphaMode) == false || reader.Read(material.AlphaCutoff) == false)) ||
-                reader.Read(reserved) == false || reserved != 0 || material.EmissionPower < 0 ||
-                material.EmissionPower > format::MAX_LIGHT_INTENSITY || alphaMode > format::ALPHA_MASKED ||
-                material.AlphaCutoff < 0 || material.AlphaCutoff > 1 ||
+                (hasSurfaceMaps == false && (reader.Read(reserved) == false || reserved != 0)) ||
+                (hasSurfaceMaps == true &&
+                 (reader.Read(material.SurfaceTexture) == false || reader.Read(material.EmissionTexture) == false ||
+                  reader.Read(material.NormalScale) == false ||
+                  IsTextureReference(material.SurfaceTexture, textures) == false ||
+                  IsTextureReference(material.EmissionTexture, textures) == false || material.NormalScale < 0 ||
+                  material.NormalScale > format::MAX_NORMAL_SCALE ||
+                  (material.SurfaceTexture == format::NO_TEXTURE && material.NormalScale != 0))) ||
+                material.EmissionPower < 0 || material.EmissionPower > format::MAX_LIGHT_INTENSITY ||
+                alphaMode > format::ALPHA_MASKED || material.AlphaCutoff < 0 || material.AlphaCutoff > 1 ||
                 (alphaMode == format::ALPHA_OPAQUE && material.AlphaCutoff != 0))
             {
                 return Status::Failed;
@@ -281,10 +319,28 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             }
         }
     }
+    // Surface maps are linear data; a texture cannot also be sampled as sRGB colour.
+    for (const SceneMaterial& material : scene.Materials)
+    {
+        if (material.SurfaceTexture != format::NO_TEXTURE)
+        {
+            scene.Textures[material.SurfaceTexture].IsLinear = true;
+        }
+    }
+    for (const SceneMaterial& material : scene.Materials)
+    {
+        if ((material.Texture != format::NO_TEXTURE && scene.Textures[material.Texture].IsLinear == true) ||
+            (material.EmissionTexture != format::NO_TEXTURE &&
+             scene.Textures[material.EmissionTexture].IsLinear == true))
+        {
+            return Status::Failed;
+        }
+    }
     usize vertexTotal = 0;
     usize indexTotal = 0;
     const usize vertexBytes = format::GetVertexRecordBytes(version);
     const bool hasBakeCoordinates = format::HasStoredBakeCoordinates(version);
+    const bool hasTangents = format::HasSurfaceMaps(version);
     for (SceneMesh& mesh : scene.Meshes)
     {
         uint32 vertices = 0;
@@ -300,7 +356,8 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
         }
         if (mesh.Positions.TryResize(vertices) == false || mesh.Normals.TryResize(vertices) == false ||
             mesh.Texcoords.TryResize(vertices) == false || mesh.Indices.TryResize(indices) == false ||
-            (hasBakeCoordinates == true && mesh.BakeTexcoords.TryResize(vertices) == false))
+            (hasBakeCoordinates == true && mesh.BakeTexcoords.TryResize(vertices) == false) ||
+            (hasTangents == true && mesh.Tangents.TryResize(vertices) == false))
         {
             return Status::OutOfMemory;
         }
@@ -314,6 +371,10 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             if (hasBakeCoordinates == true &&
                 (reader.Read(mesh.BakeTexcoords[i]) == false || mesh.BakeTexcoords[i].X < 0 ||
                  mesh.BakeTexcoords[i].X > 1 || mesh.BakeTexcoords[i].Y < 0 || mesh.BakeTexcoords[i].Y > 1))
+            {
+                return Status::Failed;
+            }
+            if (hasTangents == true && IsValidTangent(reader, mesh.Normals[i], mesh.Tangents[i]) == false)
             {
                 return Status::Failed;
             }
