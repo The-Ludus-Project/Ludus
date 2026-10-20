@@ -745,6 +745,14 @@ list and commands. **Import report**, beside the World path, opens the full stor
 report in the scrollable inspector; opening it does not reduce viewport height.
 The import confirmation preview remains visible before an import is accepted.
 
+Before a scene is created or imported, the viewport shows a navigable coordinate
+grid using the editor camera, without starting a GPU session or adding World
+objects. Perspective views show the XZ ground plane and red X, green Y and blue Z
+axes. Orthographic views use the closest XY, XZ or YZ plane. Grid spacing adapts
+to navigation distance; the caption reports that spacing in world units. The
+empty view supports the same orbit, pan, look, fly and dolly gestures below.
+A rendered scene replaces the empty view when it is presented.
+
 The editor owns a separate camera controller and publishes a validated C0
 pose/lens sample to the renderer. Navigation never changes an authored camera,
 World Save/Undo history, or simulation state. Starting navigation from an
