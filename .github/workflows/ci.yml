@@ -832,6 +832,13 @@ jobs:
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
       - name: Check the reference scene consumer with ASan and UBSan
+        env:
+          # Thanks to Khronos, "Vulkan Loader Interface Architecture", loader
+          # environment variables: retain driver modules for LeakSanitizer's
+          # process-exit reachability scan and symbolized allocation stacks.
+          # https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md#table-of-debug-environment-variables
+          VK_LOADER_DISABLE_DYNAMIC_LIBRARY_UNLOADING: '1'
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
         run: |
           out/host-tools/venv/bin/cmake -S examples/reference-scene -B out/reference-scene-sanitized -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLUDUS_SCENE_SANITIZERS=ON \
