@@ -467,6 +467,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp
         tests/renderer_workspace_tests.cpp
+        tests/render_graph_node_menu_tests.cpp
         tests/render_graph_default_tests.cpp
         tests/render_graph_canvas_tests.cpp
         tests/texture_inspection_tests.cpp
