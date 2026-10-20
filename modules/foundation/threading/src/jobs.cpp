@@ -757,6 +757,12 @@ JobStatus JobSystem::Cancel() noexcept
     return JobStatus::Ok;
 }
 
+uint32 JobSystem::GetWorkerCount() const noexcept
+{
+    // Written only by Initialize, before it returns to the owner; never changed afterwards.
+    return mStateOrNull == nullptr ? 0 : mStateOrNull->WorkerCount;
+}
+
 JobStatus JobSystem::Snapshot(JobSnapshot& outSnapshot) const noexcept
 {
     outSnapshot = {};

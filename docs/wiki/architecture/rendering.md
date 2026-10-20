@@ -8,6 +8,7 @@ shared by the wiki and offline readers.
 - [platform targets and compatibility](../guides/platform-targets.md)
 - [RHI module guide](../../modules/graphics/rhi.md)
 - [public rendering contract](../../development/fullscreen-rendering.md)
+- [graphics debugging architecture and phased plan](../../architecture/graphics-debugging.md)
 - [runtime UI design](../../architecture/ui.md)
 - [renderer systems proposal](../../architecture/renderer-systems.md)
 - [reference review](../../architecture/renderer-systems-gems-review.md)

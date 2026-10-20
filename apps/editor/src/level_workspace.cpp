@@ -35,9 +35,22 @@
 
 namespace ludus::editor
 {
+namespace
+{
+// Editor CPU budget for decoding scene import textures, excluding the operation thread,
+// which helps in Wait. The user waits on an import, but Qt, RHI submission and a preview
+// bake (STATIC_LIGHTING_WORKER_COUNT workers) keep running beside it.
+constexpr foundation::uint32 SCENE_IMPORT_WORKER_COUNT = 4;
+} // namespace
+
 LevelWorkspace::LevelWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent), Tooling_(tooling)
 {
     setObjectName(QStringLiteral("levelWorkspace"));
+#if !defined(Q_OS_WASM)
+    // Without workers (startup failure) imports decode their textures serially.
+    mHasImportJobs =
+        mImportJobs.Initialize({ .WorkerCount = SCENE_IMPORT_WORKER_COUNT }) == foundation::threading::JobStatus::Ok;
+#endif
     auto* layout = new QVBoxLayout(this);
     auto* actions = new QHBoxLayout;
     New_ = new QPushButton(QStringLiteral("New 3D scene"), this);
@@ -372,7 +385,7 @@ QWidget* LevelWorkspace::TakeViewport(QWidget* parent)
 }
 void LevelWorkspace::ShowSceneFailure(const QString& error)
 {
-    if (Preview_.FrameAvailable() == false)
+    if (Preview_.FrameAvailable() == false && Viewport_->HasRetainedGraphFrame() == false)
     {
         Viewport_->ClearFrame(QStringLiteral("Scene unavailable: ") + error);
     }
@@ -595,6 +608,7 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
         options.EntropyOrNull = &entropy;
         options.SourceEntry = ToView(entry);
         options.ExpectedSourceDigest = ToView(expectedSource);
+        options.JobsOrNull = mHasImportJobs == true ? &mImportJobs : nullptr;
         EditorSceneRequest request;
         request.Operation = kind;
         request.Root = ToView(root);
@@ -811,6 +825,7 @@ void LevelWorkspace::CommitCandidate()
 }
 void LevelWorkspace::Rollback(const QString& error)
 {
+    const bool hasPreviousFrame = Viewport_->HasRetainedGraphFrame();
     AwaitingViewport_ = false;
     PublishingCatalog_ = false;
     Preview_.Stop();
@@ -818,7 +833,7 @@ void LevelWorkspace::Rollback(const QString& error)
     {
         (void)Preview_.Start();
     }
-    if (Preview_.Running() == false)
+    if (Preview_.Running() == false && hasPreviousFrame == false)
     {
         // Show the refusal in the viewport, not only in the status line.
         Viewport_->ClearFrame(error);

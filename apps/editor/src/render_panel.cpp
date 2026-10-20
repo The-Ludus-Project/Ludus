@@ -160,6 +160,11 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
         Cameras_->setCurrentIndex(0);
     });
     connect(&Preview_, &RenderPreview::Changed, this, &RenderPanel::ShowStatus);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // The game's images are imported onto the viewport's device; a Vulkan import must be
+    // destroyed before that device, so Play ends before the device stops.
+    connect(&Preview_, &RenderPreview::DeviceStopping, this, [this]() { EndPlay(); });
+#endif
     connect(&Preview_, &RenderPreview::Stopped, this, [this]() {
         ++Generation_;
         Again_ = false;
@@ -198,16 +203,33 @@ const QString PLAY_SOCKET_PARENT = QStringLiteral("/tmp");
 bool RenderPanel::BeginPlay(QString& outAddress, QString& outReason)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mPlayUnavailableReason.clear();
     if (mIsPlaying == true)
     {
         outReason = QStringLiteral("A game is already playing in this viewport.");
+        return false;
+    }
+    // Game images are imported onto Qt's own device; the readback canvas cannot show them.
+    if (PreviewViewport::GetPresentation() != ViewportPresentation::SharedDevice)
+    {
+        outReason = QStringLiteral("Play in the viewport needs the on-screen GPU viewport; this editor shows the "
+                                   "World through an offscreen copy.");
+        return false;
+    }
+    // Linux: Qt's Vulkan device imports the game's memory only with VK_KHR_external_memory_fd,
+    // and a viewport that fell back to the readback canvas has no Qt device to import onto.
+    if (Viewport_->CanImportHostedImages() == false)
+    {
+        outReason = QStringLiteral("Play in the viewport needs a GPU viewport whose device can import the game's "
+                                   "images (Vulkan VK_KHR_external_memory_fd); this one cannot.");
         return false;
     }
     // The game's frames are imported onto the edit preview's device, the one Qt samples with.
     graphics::rhi::NativeDeviceLease lease;
     if (Preview_.PinDevice(lease) != graphics::rhi::RasterStatus::Ready)
     {
-        outReason = QStringLiteral("the World viewport has no GPU device yet");
+        outReason = QStringLiteral("Play in the viewport needs the World viewport's GPU device, which has not "
+                                   "started yet.");
         return false;
     }
     graphics::rhi::NativeDeviceInfo device;
@@ -215,7 +237,8 @@ bool RenderPanel::BeginPlay(QString& outAddress, QString& outReason)
     static_cast<void>(graphics::rhi::ReleaseNativeDevice(lease));
     if (described != graphics::rhi::RasterStatus::Ready)
     {
-        outReason = QStringLiteral("the World viewport's GPU device is shutting down");
+        outReason = QStringLiteral("Play in the viewport needs the World viewport's GPU device, which is shutting "
+                                   "down.");
         return false;
     }
     if (mPlayOrNull == nullptr)
@@ -245,7 +268,7 @@ bool RenderPanel::BeginPlay(QString& outAddress, QString& outReason)
     return true;
 #else
     static_cast<void>(outAddress);
-    outReason = QStringLiteral("Play in the viewport needs the native GPU preview");
+    outReason = QStringLiteral("Play in the viewport needs the native GPU preview.");
     return false;
 #endif
 }
@@ -279,6 +302,34 @@ bool RenderPanel::IsPlaying() const noexcept
 {
     return mIsPlaying;
 }
+QString RenderPanel::GetPlayUnavailableReason() const
+{
+    return mPlayUnavailableReason;
+}
+void RenderPanel::SetPlayingElsewhere(bool isPlayingElsewhere)
+{
+    if (isPlayingElsewhere == mIsPlayingElsewhere)
+    {
+        return;
+    }
+    mIsPlayingElsewhere = isPlayingElsewhere;
+    if (isPlayingElsewhere == true)
+    {
+        Status_->setText(QStringLiteral("Playing in a separate window. The viewport shows the World as edited and "
+                                        "resumes when the game exits."));
+        return;
+    }
+    if (Preview_.Running() == true)
+    {
+        ShowStatus();
+        return;
+    }
+    Status_->setText(QStringLiteral("Viewport paused. World data is preserved."));
+}
+bool RenderPanel::IsPlayingElsewhere() const noexcept
+{
+    return mIsPlayingElsewhere;
+}
 void RenderPanel::updatePlay()
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -301,9 +352,12 @@ void RenderPanel::updatePlay()
     }
     if (state == PlaySourceState::Disconnected || state == PlaySourceState::Unavailable)
     {
-        const QString reason = state == PlaySourceState::Unavailable
+        const bool isRefused = state == PlaySourceState::Unavailable;
+        const QString reason = isRefused == true
                                    ? mPlayOrNull->GetUnavailableReason()
                                    : QStringLiteral("The game closed its window. The World is shown as edited.");
+        // Set before EndPlay reports the end, so the workspace can offer a separate window.
+        mPlayUnavailableReason = isRefused == true ? reason : QString();
         EndPlay();
         Status_->setText(reason);
     }
@@ -553,7 +607,8 @@ void RenderPanel::ShowStatus()
 {
     Open_->setEnabled(World_ != nullptr && World_->Loaded() && Preview_.Running() == false);
     Stop_->setEnabled(Preview_.Running() || (Job_ != nullptr && Job_->Generation() == Generation_) || Again_);
-    if (Preview_.Status().isEmpty() == false)
+    // The playing-elsewhere label stays until the game exits.
+    if (Preview_.Status().isEmpty() == false && mIsPlayingElsewhere == false)
     {
         Status_->setText(
             Preview_.Status() +

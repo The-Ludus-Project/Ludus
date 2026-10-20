@@ -4,6 +4,11 @@
 // This specification citation identifies the algorithm; it does not establish
 // the implementation's original code provenance or imply FIPS validation.
 #include <ludus/content/content.h>
+#include <ludus/foundation/base/config.h>
+
+#if defined(LUDUS_ARCH_ARM64) && defined(__ARM_FEATURE_SHA2)
+#    include <arm_neon.h>
+#endif
 
 namespace ludus::content
 {
@@ -59,6 +64,69 @@ void Block(const uint8* input, uint32* state) noexcept
     state[6] += g;
     state[7] += h;
 }
+/// Bytes in one SHA-256 message block.
+constexpr usize BLOCK_BYTES = 64;
+#if defined(LUDUS_ARCH_ARM64) && defined(__ARM_FEATURE_SHA2)
+// Thanks to Arm, "Arm C Language Extensions" (ACLE), Cryptographic extensions
+// (SHA2 intrinsics): https://arm-software.github.io/acle/. Each SHA256H/SHA256H2
+// pair performs four rounds; SHA256SU0/SU1 extend the message schedule. The
+// four-round grouping follows Jeffrey Walton's public-domain SHA-Intrinsics
+// (https://github.com/noloader/SHA-Intrinsics); this is a separate implementation.
+// Selected at compile time only; other targets use the portable Block above.
+/// 32-bit words per vector register and per four-round group.
+constexpr usize LANE_WORDS = 4;
+/// Bytes per vector register.
+constexpr usize LANE_BYTES = LANE_WORDS * sizeof(uint32);
+/// Message vectors per block: BLOCK_BYTES / LANE_BYTES.
+constexpr usize MESSAGE_VECTORS = BLOCK_BYTES / LANE_BYTES;
+/// Four-round groups per block (64 rounds).
+constexpr usize ROUND_GROUPS = sizeof(K) / sizeof(K[0]) / LANE_WORDS;
+/// Groups whose message vector must still be extended for a later group.
+constexpr usize EXTENDED_GROUPS = ROUND_GROUPS - MESSAGE_VECTORS;
+void CompressBlocks(const uint8* input, usize blockCount, uint32* state) noexcept
+{
+    uint32x4_t abcd = vld1q_u32(state);
+    uint32x4_t efgh = vld1q_u32(state + LANE_WORDS);
+    for (usize block = 0; block < blockCount; ++block)
+    {
+        const uint8* bytes = input + block * BLOCK_BYTES;
+        const uint32x4_t savedAbcd = abcd;
+        const uint32x4_t savedEfgh = efgh;
+        uint32x4_t message[MESSAGE_VECTORS];
+        for (usize vector = 0; vector < MESSAGE_VECTORS; ++vector)
+        {
+            message[vector] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(bytes + vector * LANE_BYTES)));
+        }
+        for (usize group = 0; group < ROUND_GROUPS; ++group)
+        {
+            const usize current = group % MESSAGE_VECTORS;
+            const uint32x4_t scheduled = vaddq_u32(message[current], vld1q_u32(K + group * LANE_WORDS));
+            if (group < EXTENDED_GROUPS)
+            {
+                message[current] =
+                    vsha256su1q_u32(vsha256su0q_u32(message[current], message[(current + 1) % MESSAGE_VECTORS]),
+                                    message[(current + 2) % MESSAGE_VECTORS],
+                                    message[(current + MESSAGE_VECTORS - 1) % MESSAGE_VECTORS]);
+            }
+            const uint32x4_t previousAbcd = abcd;
+            abcd = vsha256hq_u32(abcd, efgh, scheduled);
+            efgh = vsha256h2q_u32(efgh, previousAbcd, scheduled);
+        }
+        abcd = vaddq_u32(abcd, savedAbcd);
+        efgh = vaddq_u32(efgh, savedEfgh);
+    }
+    vst1q_u32(state, abcd);
+    vst1q_u32(state + LANE_WORDS, efgh);
+}
+#else
+void CompressBlocks(const uint8* input, usize blockCount, uint32* state) noexcept
+{
+    for (usize block = 0; block < blockCount; ++block)
+    {
+        Block(input + block * BLOCK_BYTES, state);
+    }
+}
+#endif
 } // namespace
 bool Hasher::Add(std::span<const uint8> data) noexcept
 {
@@ -67,15 +135,36 @@ bool Hasher::Add(std::span<const uint8> data) noexcept
         return false;
     }
     mBytes += data.size();
-    for (const auto byte : data)
+    const uint8* input = data.data();
+    usize remaining = data.size();
+    // Complete a buffered partial block first, then compress whole blocks in place.
+    if (mCount != 0)
     {
-        mTail[mCount++] = byte;
-        if (mCount == 64)
+        const usize space = BLOCK_BYTES - mCount;
+        const usize take = remaining < space ? remaining : space;
+        for (usize i = 0; i < take; ++i)
         {
-            Block(mTail, mState);
-            mCount = 0;
+            mTail[mCount + i] = input[i];
         }
+        mCount += take;
+        input += take;
+        remaining -= take;
+        if (mCount < BLOCK_BYTES)
+        {
+            return true;
+        }
+        CompressBlocks(mTail, 1, mState);
+        mCount = 0;
     }
+    const usize blockCount = remaining / BLOCK_BYTES;
+    CompressBlocks(input, blockCount, mState);
+    input += blockCount * BLOCK_BYTES;
+    remaining -= blockCount * BLOCK_BYTES;
+    for (usize i = 0; i < remaining; ++i)
+    {
+        mTail[i] = input[i];
+    }
+    mCount = remaining;
     return true;
 }
 Digest Hasher::Finish() const noexcept

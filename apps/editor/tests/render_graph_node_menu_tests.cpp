@@ -8,6 +8,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QDir>
@@ -19,6 +20,7 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPoint>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeWidget>
@@ -41,6 +43,54 @@ QString MakePackage(const QTemporaryDir& project)
         REQUIRE(QFile::copy(source.filePath(file), QDir(package).filePath(file)) == true);
     }
     return package;
+}
+
+/// What the open Create Node submenu offered. Recorded inside the popup's event loop and
+/// asserted after it returns, so a failure reports instead of throwing through Qt.
+struct CreateMenuObservation
+{
+    bool HasMenu = false;
+    bool IsEnabled = false;
+    QStringList Kinds;
+    bool HasSelection = false;
+    bool IsSelectionEnabled = false;
+    QString SelectionText;
+};
+
+/// Record the active popup's Create Node submenu, close the popup, then trigger `kind` when offered.
+void ObserveCreateMenu(const QString& kind, CreateMenuObservation& outObservation)
+{
+    QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    if (menuOrNull == nullptr)
+    {
+        return;
+    }
+    QMenu* createOrNull = menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphCreateNodeMenu"));
+    if (createOrNull == nullptr)
+    {
+        menuOrNull->close();
+        return;
+    }
+    outObservation.HasMenu = true;
+    outObservation.IsEnabled = createOrNull->isEnabled();
+    QAction* selectedOrNull = nullptr;
+    for (QAction* action : createOrNull->actions())
+    {
+        const QString offered = action->data().toString();
+        outObservation.Kinds.append(offered);
+        if (kind.isEmpty() == false && offered == kind)
+        {
+            selectedOrNull = action;
+        }
+    }
+    menuOrNull->close();
+    if (selectedOrNull != nullptr)
+    {
+        outObservation.HasSelection = true;
+        outObservation.IsSelectionEnabled = selectedOrNull->isEnabled();
+        outObservation.SelectionText = selectedOrNull->text();
+        selectedOrNull->trigger();
+    }
 }
 } // namespace
 
@@ -65,42 +115,23 @@ TEST_CASE("Create Node menus author every supported type inside an empty library
     {
         shouldUseTree = true;
     }
-    const QStringList kinds{QStringLiteral("Scene"),
-                            QStringLiteral("Camera"),
-                            QStringLiteral("Target"),
-                            QStringLiteral("Raster"),
-                            QStringLiteral("Subgraph"),
-                            QStringLiteral("Export"),
-                            QStringLiteral("Present")};
+    // The Inspector's node-type list owns the Create Node entries; author each one it offers.
+    QComboBox* newKindOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    REQUIRE(newKindOrNull != nullptr);
+    QStringList kinds;
+    for (int32 index = 0; index < newKindOrNull->count(); ++index)
+    {
+        kinds.append(newKindOrNull->itemText(index));
+    }
+    REQUIRE(kinds.isEmpty() == false);
+    CHECK(kinds.contains(QStringLiteral("Subgraph")) == true);
     for (const QString& kind : kinds)
     {
         // A file row still resolves to its displayed default configuration.
         static_cast<void>(workspace.SelectNode(library, {}, {}));
         const QByteArray before = workspace.GetDocument().GetDraft(library);
-        QTimer::singleShot(0, &workspace, [kind, kinds]() {
-            QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-            REQUIRE(menuOrNull != nullptr);
-            QMenu* createOrNull = menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphCreateNodeMenu"));
-            REQUIRE(createOrNull != nullptr);
-            REQUIRE(createOrNull->isEnabled() == true);
-            CHECK(createOrNull->actions().size() == kinds.size());
-            QAction* selectedOrNull = nullptr;
-            for (QAction* action : createOrNull->actions())
-            {
-                if (action->data().toString() == kind)
-                {
-                    selectedOrNull = action;
-                }
-            }
-            REQUIRE(selectedOrNull != nullptr);
-            CHECK(selectedOrNull->isEnabled() == true);
-            if (kind == QStringLiteral("Subgraph"))
-            {
-                CHECK(selectedOrNull->text() == QStringLiteral("Subgraph Reference"));
-            }
-            menuOrNull->close();
-            selectedOrNull->trigger();
-        });
+        CreateMenuObservation observation;
+        QTimer::singleShot(0, &workspace, [&kind, &observation]() { ObserveCreateMenu(kind, observation); });
         if (shouldUseTree == true)
         {
             QTreeWidget* treeOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
@@ -117,6 +148,15 @@ TEST_CASE("Create Node menus author every supported type inside an empty library
             const QPoint position(1, 1);
             QContextMenuEvent context(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
             QCoreApplication::sendEvent(canvas.viewport(), &context);
+        }
+        REQUIRE(observation.HasMenu == true);
+        CHECK(observation.IsEnabled == true);
+        CHECK(observation.Kinds == kinds);
+        REQUIRE(observation.HasSelection == true);
+        CHECK(observation.IsSelectionEnabled == true);
+        if (kind == QStringLiteral("Subgraph"))
+        {
+            CHECK(observation.SelectionText == QStringLiteral("Subgraph Reference"));
         }
         const QString identity = kind.toLower();
         CHECK(workspace.GetSelection() == library + QStringLiteral("#Default/") + identity);
@@ -162,18 +202,15 @@ TEST_CASE("Create Node menu cancellation and pending text preserve the draft", "
     }
     const QByteArray before = workspace.GetDocument().GetDraft(ROOT_GRAPH);
     const uint64 revision = workspace.GetDocument().GetRevision();
-    QTimer::singleShot(0, &workspace, [hasPendingText]() {
-        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-        REQUIRE(menuOrNull != nullptr);
-        QMenu* createOrNull = menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphCreateNodeMenu"));
-        REQUIRE(createOrNull != nullptr);
-        CHECK(createOrNull->isEnabled() == (hasPendingText == false));
-        menuOrNull->close();
-    });
+    CreateMenuObservation observation;
+    QTimer::singleShot(0, &workspace, [&observation]() { ObserveCreateMenu({}, observation); });
     RenderGraphCanvas& canvas = workspace.GetCanvas();
     const QPoint position(1, 1);
     QContextMenuEvent context(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
     QCoreApplication::sendEvent(canvas.viewport(), &context);
+    REQUIRE(observation.HasMenu == true);
+    CHECK(observation.IsEnabled == (hasPendingText == false));
+    CHECK(observation.HasSelection == false);
     CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == before);
     CHECK(workspace.GetDocument().GetRevision() == revision);
 }

@@ -3,7 +3,6 @@
 #include <ludus/foundation/logging/log.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 
-#include <cstring>
 #include <unistd.h>
 
 namespace ludus::graphics::rhi::backend
@@ -20,15 +19,10 @@ void HostedProducerVulkan::Connect(const HostedVulkanDevice& device,
     Disconnect();
     mDevice = device;
     mChannelOrNull = &inoutChannel;
-    VkPhysicalDeviceIDProperties identity{};
-    identity.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
-    VkPhysicalDeviceProperties2 properties{};
-    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    properties.pNext = &identity;
-    vkGetPhysicalDeviceProperties2(device.PhysicalDevice, &properties);
-    static_assert(VK_UUID_SIZE == platform::HOSTED_ADAPTER_UUID_BYTES);
-    std::memcpy(mDeviceUuid.GetData(), identity.deviceUUID, VK_UUID_SIZE);
-    std::memcpy(mDriverUuid.GetData(), identity.driverUUID, VK_UUID_SIZE);
+    platform::HostedAdapterIdentity adapter;
+    ReadHostedAdapterIdentity(device.PhysicalDevice, adapter);
+    mDeviceUuid = adapter.DeviceUuid;
+    mDriverUuid = adapter.DriverUuid;
 }
 
 void HostedProducerVulkan::Disconnect() noexcept
@@ -335,8 +329,8 @@ void HostedProducerVulkan::RecordRelease(VkCommandBuffer command) const noexcept
     barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     // A release has no destination access in this queue; the consumer's acquire supplies it.
     barrier.dstAccessMask = 0;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.oldLayout = HOSTED_RENDERED_LAYOUT;
+    barrier.newLayout = HOSTED_PRESENTED_LAYOUT;
     barrier.srcQueueFamilyIndex = mDevice.QueueFamily;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
     barrier.image = mImages[mRing.GetCurrentSlot()][mAcquiredImage].Object;

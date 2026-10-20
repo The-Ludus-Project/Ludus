@@ -47,7 +47,7 @@ class PipelineDocumentTests(unittest.TestCase):
         for kind, stage in (('ComputePipeline', 'compute'), ('RayTracingPipeline', 'ray_generation')):
             node = pipeline.new_node(kind, 'work')
             node['shaders'] = [{'id': 'entry', 'stage': stage, 'program': 'Entry'}]
-            self.fails(node, 'Capability')
+            self.fails(node, 'Capability' if kind == 'ComputePipeline' else 'IncompletePipeline')
 
     def test_stage_legality_duplicate_ids_dimensions_and_unknown_state(self):
         node = pipeline.new_node('ComputePipeline', 'work')
@@ -84,6 +84,57 @@ class PipelineDocumentTests(unittest.TestCase):
         with self.assertRaises(ToolingError) as failure:
             self.write(node)
         self.assertEqual('RenderGraphTypeMismatch', failure.exception.code)
+
+    def test_output_pair_diagnostics_name_the_resource_and_repair(self):
+        node = pipeline.new_node('ComputePipeline', 'work')
+        node['inputs'] = [{'id': 'color', 'type': 'ColorTexture', 'required': True}]
+        node['outputs'] = [{'id': 'color', 'type': 'ColorTexture', 'target': 'input',
+                            'format': 'RGBA8Unorm', 'load': 'Clear', 'store': 'Store'}]
+        for target, kind, expected in [('input', 'ColorTexture', "input 'input' does not exist"),
+                                        ('color', 'DepthTexture', "input 'color' has type ColorTexture")]:
+            node['outputs'][0].update(target=target, type=kind)
+            with self.subTest(target=target, kind=kind), self.assertRaises(ToolingError) as failure:
+                self.write(node)
+            self.assertEqual('RenderGraphTypeMismatch', failure.exception.code)
+            self.assertIn("Output 'color'", str(failure.exception))
+            self.assertIn(expected, str(failure.exception))
+            self.assertIn('Pair it with' if target == 'input' else 'Add a writable', str(failure.exception))
+        node['outputs'][0].update(target='color', type='ColorTexture', format='Depth32Float')
+        with self.assertRaises(ToolingError) as failure:
+            self.write(node)
+        self.assertIn("Output 'color'", str(failure.exception))
+        self.assertIn('Set Format to RGBA8Unorm', str(failure.exception))
+
+    def test_writable_input_must_be_connected_even_if_optional_and_cleared(self):
+        node = pipeline.new_node('ComputePipeline', 'work')
+        node['inputs'] = [{'id': 'color', 'type': 'ColorTexture', 'required': False}]
+        node['outputs'] = [{'id': 'result', 'type': 'ColorTexture', 'target': 'color',
+                            'format': 'RGBA8Unorm', 'load': 'Clear', 'store': 'Store'}]
+        self.write(node)
+        before = self.path.read_bytes()
+        with self.assertRaises(ToolingError) as failure:
+            graph.load_library(self.path)
+        self.assertEqual('RenderGraphUnboundInput', failure.exception.code)
+        self.assertIn("'work.color' (ColorTexture)", str(failure.exception))
+        self.assertIn('Connect a matching output', str(failure.exception))
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_duplicate_resource_writes_and_field_errors_include_repairs(self):
+        node = pipeline.new_node('ComputePipeline', 'work')
+        node['inputs'] = [{'id': 'color', 'type': 'ColorTexture', 'required': True}]
+        node['outputs'] = [{'id': name, 'type': 'ColorTexture', 'target': 'color',
+                            'format': 'RGBA8Unorm', 'load': 'Clear', 'store': 'Store'} for name in ('first', 'second')]
+        with self.assertRaises(ToolingError) as failure:
+            self.write(node)
+        self.assertEqual('RenderGraphMultipleWriters', failure.exception.code)
+        self.assertIn("Outputs 'first' and 'second'", str(failure.exception))
+        self.assertIn('separate input', str(failure.exception))
+        node['outputs'] = []
+        node['state']['group_size'] = [1, 0, 1]
+        with self.assertRaises(ToolingError) as failure:
+            self.write(node)
+        self.assertIn('group_size.y', str(failure.exception))
+        self.assertIn('Fix Pipeline State', str(failure.exception))
 
 
 class PipelineBuildTests(unittest.TestCase):

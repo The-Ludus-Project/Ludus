@@ -2,6 +2,9 @@
 
 #include "internal/render_preview.h"
 #include "internal/viewport_frame_source.h"
+#if defined(Q_OS_MACOS)
+#    include "internal/viewport_relative_mouse.h"
+#endif
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/input/key.h>
@@ -61,6 +64,11 @@ public:
     void SetFrameSource(ViewportFrameSource* frameSourceOrNull);
     /// The source this viewport presents.
     [[nodiscard]] ViewportFrameSource& GetFrameSource() const noexcept;
+    /// @brief Whether a hosted game's images can be shown here.
+    ///
+    /// True while the viewport presents through its shared Qt device and that device can import
+    /// them (Metal, or Vulkan with `VK_KHR_external_memory_fd`); false for the readback canvas.
+    [[nodiscard]] bool CanImportHostedImages() const noexcept;
     /// @brief Make this viewport the window of a game playing in it, or return it to navigation.
     ///
     /// While set, the viewport acts as the game's window: keyboard focus becomes FocusEntered and
@@ -77,6 +85,9 @@ public:
     void HoldFrame();
     void ShowFrame();
     void ClearFrame(const QString& text);
+    /// Whether a delegated graph image remains displayed, including after its device stops.
+    /// GUI thread only. Native graph viewports only; false before the first image or after ClearFrame.
+    [[nodiscard]] bool HasRetainedGraphFrame() const noexcept;
     /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.
     [[nodiscard]] QString GetStatisticsText() const;
     /// Live shader status shown below the statistics (reload notices and errors); empty when none.
@@ -126,6 +137,10 @@ private:
     foundation::StaticArray<bool, input::KEY_COUNT> mPlayHeldKeys{};
     [[nodiscard]] bool handlePlayKey(QKeyEvent& inoutEvent, bool isPress);
     void sendPlayFocus(bool isFocused);
+#if defined(Q_OS_MACOS)
+    friend class ViewportRelativeMouse;
+    ViewportRelativeMouse mRelativeMouse;
+#endif
     static constexpr foundation::usize MOVEMENT_KEY_COUNT = 7;
     foundation::StaticArray<bool, MOVEMENT_KEY_COUNT> mHeldKeys{};
     QPointF mLastPositionGlobal;
@@ -139,6 +154,10 @@ private:
     void stopNavigation();
     void advanceNavigation();
     void recenterPointer();
+    [[nodiscard]] bool navigateMouse(foundation::float32 deltaX,
+                                     foundation::float32 deltaY,
+                                     Qt::MouseButtons buttons,
+                                     Qt::KeyboardModifiers modifiers);
     [[nodiscard]] foundation::float32 getDrawableHeight() const noexcept;
 };
 } // namespace ludus::editor

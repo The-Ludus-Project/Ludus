@@ -44,6 +44,8 @@ endif()
 # AUTOMOC is enabled per target below, not globally.
 
 set(editor_viewport_sources
+    src/internal/viewport_frame_pump.h
+    src/viewport_frame_pump.cpp
     src/internal/viewport_frame_source.h
     src/viewport_frame_source.cpp
     src/internal/render_graph_source_watch.h
@@ -55,6 +57,9 @@ set(editor_viewport_sources
     src/viewport_play_input.cpp
     src/internal/texture_inspection.h
     src/texture_inspection.cpp)
+if(APPLE)
+    list(APPEND editor_viewport_sources src/internal/viewport_relative_mouse.h src/viewport_relative_mouse_macos.mm)
+endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Quick)
     # The readback fallback is selected only on Linux, but the shared viewport code references it.
@@ -236,6 +241,7 @@ qt_add_executable(ludus_editor
     src/internal/script_workspace.h
     src/script_workspace.cpp
     src/internal/render_graph_document.h
+    src/internal/render_graph_source.h
     src/render_graph_document.cpp
     src/internal/render_graph_shader_creation.h
     src/render_graph_shader_creation.cpp
@@ -247,6 +253,9 @@ qt_add_executable(ludus_editor
     src/render_graph_job.cpp
     src/internal/render_graph_creation.h
     src/render_graph_creation.cpp
+    src/internal/render_graph_configuration_editor.h
+    src/render_graph_configuration_editor.cpp
+    src/render_graph_configuration_interface.cpp
     src/internal/render_graph_canvas.h
     src/render_graph_canvas.cpp
     src/internal/external_code_editor.h
@@ -309,6 +318,7 @@ qt_add_resources(ludus_editor ludus_samples
     PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
 ludus_editor_add_default_render_graph(ludus_editor)
 if(APPLE)
+    target_link_libraries(ludus_editor PRIVATE "-framework AppKit" "-framework CoreGraphics")
     target_sources(ludus_editor PRIVATE resources/ludus.icns)
     set_source_files_properties(resources/ludus.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     set_target_properties(ludus_editor PROPERTIES
@@ -343,7 +353,7 @@ ludus_apply_project_defaults(ludus_editor)
 target_link_libraries(ludus_editor PRIVATE Ludus::Platform)
 # Scene import, save and assembly run in process (no Python scene backend),
 # including the browser Editor's MEMFS copies.
-target_link_libraries(ludus_editor PRIVATE Ludus::SceneCook ludus_stb_image)
+target_link_libraries(ludus_editor PRIVATE Ludus::SceneCook Ludus::FoundationThreading ludus_stb_image)
 # World documents share the version-2 record constants with their owner (object handles stage 3).
 target_link_libraries(ludus_editor PRIVATE Ludus::ContentIdentity)
 if(EMSCRIPTEN)
@@ -417,6 +427,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
         tests/world_identity_tests.cpp
@@ -433,6 +444,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/script_workspace.h
         src/script_workspace.cpp
         src/internal/render_graph_document.h
+        src/internal/render_graph_source.h
         src/render_graph_document.cpp
         src/internal/render_graph_shader_creation.h
         src/render_graph_shader_creation.cpp
@@ -444,6 +456,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_job.cpp
         src/internal/render_graph_creation.h
         src/render_graph_creation.cpp
+        src/internal/render_graph_configuration_editor.h
+        src/render_graph_configuration_editor.cpp
+        src/render_graph_configuration_interface.cpp
         src/internal/render_graph_canvas.h
         src/render_graph_canvas.cpp
         src/internal/external_code_editor.h
@@ -561,7 +576,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Catch2::Catch2)
     ludus_apply_project_defaults(ludus_editor_tests)
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::Platform)
-    target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook ludus_stb_image)
+    target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook Ludus::FoundationThreading ludus_stb_image)
     # The tests also replay committed migration manifests to produce version-2 World fixtures.
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity)
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
@@ -609,6 +624,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/src")
         target_link_libraries(ludus_editor_tests PRIVATE "-framework Cocoa")
     endif()
+    if(APPLE)
+        target_sources(ludus_editor_tests PRIVATE tests/viewport_relative_mouse_tests.mm)
+        target_link_libraries(ludus_editor_tests PRIVATE "-framework AppKit" "-framework CoreGraphics")
+    endif()
     # Catch2 reports assertion failures by throwing; test targets (only) re-enable
     # exceptions. Engine/app targets above stay exception-free (-fno-exceptions).
     ludus_enable_test_exceptions(ludus_editor_tests)
@@ -641,11 +660,11 @@ endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp
-        src/render_graph_document.cpp
-        src/internal/render_graph_shader_creation.h
-        src/render_graph_shader_creation.cpp
-        src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
-        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp)
+        src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
+        src/render_graph_document.cpp src/render_graph_shader_creation.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp
+        src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
+        src/render_graph_configuration_interface.cpp)
     set_target_properties(ludus_render_graph_pipeline_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_pipeline_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_pipeline_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
@@ -656,6 +675,40 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_render_graph_pipeline_tests)
     add_test(NAME ludus_render_graph_pipeline_tests COMMAND ludus_render_graph_pipeline_tests)
     set_tests_properties(ludus_render_graph_pipeline_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Authoring uses the real workspace/document without requiring a viewport device.
+    add_executable(ludus_render_graph_configuration_tests
+        tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_canvas_tests.cpp
+        src/internal/renderer_workspace.h src/renderer_workspace.cpp
+        src/render_graph_document.cpp src/render_graph_shader_creation.cpp src/render_graph_pipeline_node.cpp
+        src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
+        src/render_graph_configuration_interface.cpp
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp
+        src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
+        src/internal/render_graph_job.h src/render_graph_job.cpp
+        src/internal/render_graph_creation.h src/render_graph_creation.cpp
+        src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
+        src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
+        src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp)
+    set_target_properties(ludus_render_graph_configuration_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_render_graph_configuration_tests PRIVATE src)
+    target_compile_definitions(ludus_render_graph_configuration_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
+        LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
+    # The workspace borrows viewport types, but this test never creates a device or
+    # calls their compiled implementations. Keep those dependencies at the header boundary.
+    # Thanks to Kitware, "cmake-generator-expressions(7)", COMPILE_ONLY, for the
+    # compile-usage-only dependency mechanism:
+    # https://cmake.org/cmake/help/v3.29/manual/cmake-generator-expressions.7.html#genex:COMPILE_ONLY
+    target_link_libraries(ludus_render_graph_configuration_tests PRIVATE ludus_editor_core
+        Qt6::Widgets Qt6::Test Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2
+        "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
+        "$<COMPILE_ONLY:Ludus::Resources>")
+    ludus_editor_add_default_render_graph(ludus_render_graph_configuration_tests)
+    ludus_apply_project_defaults(ludus_render_graph_configuration_tests)
+    ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
+    add_test(NAME ludus_render_graph_configuration_tests COMMAND ludus_render_graph_configuration_tests)
+    set_tests_properties(ludus_render_graph_configuration_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp

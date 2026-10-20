@@ -26,7 +26,7 @@ struct GpuPreviewUniform final
     math::Vector4 BoundsMaximumWorld;
     uint32 SurfaceLayout[4]{};
 };
-static_assert(sizeof(GpuPreviewUniform) == 224);
+static_assert(sizeof(GpuPreviewUniform) == LUDUS_GPU_PREVIEW_PARAMETERS_BYTES);
 struct GpuFrameRecord final
 {
     uint64 Generation = 1;
@@ -65,6 +65,7 @@ struct GpuPreviewRecord final
 struct GpuPreviewState final
 {
     GpuPreviewOptions Options;
+    bool IsGraphRayScene = false;
     uint32 Phase = 0;
     bool QuadCreated = false;
     bool IndicesCreated = false;

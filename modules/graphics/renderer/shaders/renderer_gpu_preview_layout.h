@@ -25,3 +25,10 @@
 // Dimension of addressed-random layout v1; host code static_asserts this.
 #define LUDUS_REFERENCE_MAX_DEPTH 64
 #define LUDUS_GPU_PREVIEW_MAX_DEPTH 8
+
+// Shared triangle traversal and linked graph-kernel representation constants.
+#define LUDUS_GPU_PREVIEW_GEOMETRIC_NORMAL_WORD 8
+#define LUDUS_GPU_PREVIEW_INVALID_TRIANGLE 0xffffffff
+#define LUDUS_GPU_PREVIEW_FAILED_TRIANGLE 0xfffffffe
+#define LUDUS_GPU_PREVIEW_GROUP_WIDTH 64
+#define LUDUS_GPU_PREVIEW_PARAMETERS_BYTES 224

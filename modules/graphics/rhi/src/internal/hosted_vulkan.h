@@ -23,6 +23,8 @@
 
 #include "hosted_ring.h"
 
+#include <cstring>
+
 #include <volk.h>
 
 namespace ludus::graphics::rhi::backend
@@ -31,6 +33,11 @@ namespace ludus::graphics::rhi::backend
 inline constexpr const char* HOSTED_MEMORY_EXTENSION_NAME = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
 /// Pixel format of hosted images.
 inline constexpr VkFormat HOSTED_IMAGE_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
+/// Layout of a hosted image after the game rendered it: its resting layout and the old
+/// layout of both halves of its queue family transfer to the editor.
+inline constexpr VkImageLayout HOSTED_RENDERED_LAYOUT = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+/// Layout of a hosted image while the editor holds it: the new layout of that transfer.
+inline constexpr VkImageLayout HOSTED_PRESENTED_LAYOUT = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 /// Usage of hosted images. Producer and consumer create them identically, as opaque
 /// memory import requires.
 inline constexpr VkImageUsageFlags HOSTED_IMAGE_USAGE =
@@ -58,6 +65,22 @@ inline void FillHostedImageInfo(foundation::uint32 width,
     outImage.usage = HOSTED_IMAGE_USAGE;
     outImage.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     outImage.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+/// @brief Read an adapter's `deviceUUID` and `driverUUID` through the session's instance dispatch.
+/// @pre The instance uses Vulkan 1.1 or later and so does `physicalDevice`.
+inline void ReadHostedAdapterIdentity(VkPhysicalDevice physicalDevice,
+                                      platform::HostedAdapterIdentity& outAdapter) noexcept
+{
+    VkPhysicalDeviceIDProperties identity{};
+    identity.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &identity;
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    static_assert(VK_UUID_SIZE == platform::HOSTED_ADAPTER_UUID_BYTES);
+    std::memcpy(outAdapter.DeviceUuid.GetData(), identity.deviceUUID, VK_UUID_SIZE);
+    std::memcpy(outAdapter.DriverUuid.GetData(), identity.driverUUID, VK_UUID_SIZE);
 }
 
 /// Outcome of HostedProducerVulkan::Acquire().

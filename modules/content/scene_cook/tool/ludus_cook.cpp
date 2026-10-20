@@ -2,14 +2,14 @@
 // `ludus scene` CLI commands.
 //
 //   ludus-cook cook SOURCE OUTPUT
-//   ludus-cook pbrt ENTRY.pbrt OUTPUT     (best-effort pbrt-v4 import)
+//   ludus-cook pbrt ENTRY.pbrt OUTPUT [--workers N]  (best-effort pbrt-v4 import)
 //   ludus-cook pbrt ENTRY.pbrt --dry-run
-//   ludus-cook gltf ENTRY.{gltf,glb} {OUTPUT|--dry-run}  (best-effort glTF 2.0)
-//   ludus-cook obj ENTRY.obj {OUTPUT|--dry-run}          (best-effort OBJ/MTL)
-//   ludus-cook import ENTRY {OUTPUT|--dry-run}  (format detected from content)
+//   ludus-cook gltf ENTRY.{gltf,glb} {OUTPUT|--dry-run} [--workers N]  (best-effort glTF 2.0)
+//   ludus-cook obj ENTRY.obj {OUTPUT|--dry-run} [--workers N]          (best-effort OBJ/MTL)
+//   ludus-cook import ENTRY {OUTPUT|--dry-run} [--workers N]  (format detected from content)
 //   ludus-cook scene new      PROJECT LEVEL [--name NAME] [--json]
 //   ludus-cook scene open     PROJECT LEVEL [--json]
-//   ludus-cook scene import   PROJECT LEVEL SOURCE [--json]
+//   ludus-cook scene import   PROJECT LEVEL SOURCE [--workers N] [--json]
 //   ludus-cook scene dump     PROJECT LEVEL [--json]
 //   ludus-cook scene assemble PROJECT LEVEL OUTPUT [--json]
 //   ludus-cook scene publish  PROJECT LEVEL OUTPUT [--json]
@@ -20,7 +20,9 @@
 // and prints the manifest. `pbrt`, `gltf`, `obj` and `import` write
 // OUTPUT/scene.luscn, OUTPUT/import-report.json and OUTPUT/LICENSE.txt and print
 // the report; --dry-run only parses and plans and prints the report. `import`
-// picks the importer from the entry's bytes, falling back to its extension. Every `scene` command prints the level's
+// picks the importer from the entry's bytes, falling back to its extension. --workers N
+// decodes texture images on N job workers plus the calling thread (default 0: serial);
+// the output bytes do not depend on N. Every `scene` command prints the level's
 // dump (the level, its exact resident closure and byte total); --json prints it on one line with "schema": 1, or the
 // error as {"schema": 1, "error": {...}}. `identity migrate` mints UUIDs once for version-1 World documents and
 // atomically creates MANIFEST; it never replaces an existing manifest or edits a World. `identity apply` replays
@@ -33,7 +35,9 @@
 #include <ludus/content/scene_cook/best_effort_import.h>
 #include <ludus/content/scene_cook/scene_assets.h>
 #include <ludus/content/scene_cook/scene_cook.h>
+#include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/platform/entropy.h>
 
 #include <string_view>
@@ -42,8 +46,11 @@
 namespace
 {
 using ludus::foundation::Array;
+using ludus::foundation::core::uint32;
+using ludus::foundation::core::uint64;
 using ludus::foundation::core::uint8;
 using ludus::foundation::core::usize;
+namespace threading = ludus::foundation::threading;
 using namespace ludus::content::scene_cook;
 
 constexpr int EXIT_OK = 0;
@@ -79,13 +86,13 @@ int PrintUsage() noexcept
 {
     WriteAll(2,
              "usage: ludus-cook cook SOURCE OUTPUT\n"
-             "       ludus-cook pbrt ENTRY.pbrt {OUTPUT|--dry-run}\n"
-             "       ludus-cook gltf ENTRY.{gltf,glb} {OUTPUT|--dry-run}\n"
-             "       ludus-cook obj ENTRY.obj {OUTPUT|--dry-run}\n"
-             "       ludus-cook import ENTRY {OUTPUT|--dry-run}\n"
+             "       ludus-cook pbrt ENTRY.pbrt {OUTPUT|--dry-run} [--workers N]\n"
+             "       ludus-cook gltf ENTRY.{gltf,glb} {OUTPUT|--dry-run} [--workers N]\n"
+             "       ludus-cook obj ENTRY.obj {OUTPUT|--dry-run} [--workers N]\n"
+             "       ludus-cook import ENTRY {OUTPUT|--dry-run} [--workers N]\n"
              "       ludus-cook scene new PROJECT LEVEL [--name NAME] [--json]\n"
              "       ludus-cook scene {open|dump} PROJECT LEVEL [--json]\n"
-             "       ludus-cook scene import PROJECT LEVEL SOURCE [--json]\n"
+             "       ludus-cook scene import PROJECT LEVEL SOURCE [--workers N] [--json]\n"
              "       ludus-cook scene {assemble|publish} PROJECT LEVEL OUTPUT [--json]\n"
              "       ludus-cook identity migrate ROOT MANIFEST WORLD...\n"
              "       ludus-cook identity apply ROOT MANIFEST SCHEMA WORLD OUTPUT\n");
@@ -162,6 +169,39 @@ int RunCook(int argc, char** argv) noexcept
     return EXIT_OK;
 }
 
+/// Largest `--workers` value: JobSystemConfig::WorkerCount's range.
+constexpr uint64 MAX_DECODE_WORKERS = 64;
+
+/// Parse the value of `--workers`.
+[[nodiscard]] bool ParseWorkers(std::string_view text, uint32& outWorkers) noexcept
+{
+    uint64 value = 0;
+    if (ludus::foundation::ParseUint64(text.data(), text.size(), value) !=
+            ludus::foundation::NumberParseStatus::Success ||
+        value > MAX_DECODE_WORKERS)
+    {
+        return false;
+    }
+    outWorkers = static_cast<uint32>(value);
+    return true;
+}
+
+/// Start the texture decode job system that `--workers` asks for; zero workers keeps it
+/// uninitialized so the importer decodes serially.
+[[nodiscard]] bool StartDecodeWorkers(uint32 workers, threading::JobSystem& outSystem) noexcept
+{
+    if (workers == 0)
+    {
+        return true;
+    }
+    if (outSystem.Initialize({ .WorkerCount = workers }) != threading::JobStatus::Ok)
+    {
+        WriteAll(2, "cannot start the texture decode workers\n");
+        return false;
+    }
+    return true;
+}
+
 /// Signature shared by the best-effort importers.
 using BestEffortImporter = bool (*)(std::string_view entryFile,
                                     const BestEffortOptions& options,
@@ -171,12 +211,27 @@ using BestEffortImporter = bool (*)(std::string_view entryFile,
 
 int RunBestEffort(int argc, char** argv, BestEffortImporter importer) noexcept
 {
-    if (argc != 4)
+    // ludus-cook FORMAT ENTRY {OUTPUT|--dry-run} [--workers N]
+    constexpr int ARGUMENT_COUNT = 4;
+    constexpr int WORKERS_FLAG_INDEX = ARGUMENT_COUNT;
+    constexpr int WORKERS_VALUE_INDEX = WORKERS_FLAG_INDEX + 1;
+    constexpr int ARGUMENT_COUNT_WITH_WORKERS = WORKERS_VALUE_INDEX + 1;
+    uint32 workers = 0;
+    const bool hasWorkers = argc == ARGUMENT_COUNT_WITH_WORKERS;
+    if ((argc != ARGUMENT_COUNT && hasWorkers == false) ||
+        (hasWorkers == true && (std::string_view(argv[WORKERS_FLAG_INDEX]) != "--workers" ||
+                                ParseWorkers(argv[WORKERS_VALUE_INDEX], workers) == false)))
     {
         return PrintUsage();
     }
+    threading::JobSystem decodeJobs;
+    if (StartDecodeWorkers(workers, decodeJobs) == false)
+    {
+        return EXIT_UNAVAILABLE;
+    }
     BestEffortOptions options;
     options.IsDryRun = std::string_view(argv[3]) == "--dry-run";
+    options.JobsOrNull = workers == 0 ? nullptr : &decodeJobs;
     BestEffortResult result;
     CookError error;
     const bool isImported = importer(argv[2], options, result, error, nullptr);
@@ -199,6 +254,7 @@ struct SceneCommand
     std::string_view Level;
     std::string_view Operand;
     std::string_view Name = "Scene";
+    uint32 Workers = 0;
     bool IsJson = false;
 };
 
@@ -216,6 +272,13 @@ struct SceneCommand
         else if (argument == "--name" && i + 1 < argc)
         {
             outCommand.Name = argv[++i];
+        }
+        else if (argument == "--workers" && i + 1 < argc)
+        {
+            if (ParseWorkers(argv[++i], outCommand.Workers) == false)
+            {
+                return false;
+            }
         }
         else if (count < 4 && argument.starts_with("--") == false)
         {
@@ -237,6 +300,10 @@ struct SceneCommand
     const std::string_view action = outCommand.Action;
     const bool hasOperand = action == "import" || action == "assemble" || action == "publish";
     const bool isKnown = hasOperand == true || action == "new" || action == "open" || action == "dump";
+    if (action != "import" && outCommand.Workers != 0)
+    {
+        return false;
+    }
     return isKnown == true && (count == 4) == hasOperand && (action == "new" || outCommand.Name == "Scene");
 }
 
@@ -247,9 +314,15 @@ int RunScene(int argc, char** argv) noexcept
     {
         return PrintUsage();
     }
+    threading::JobSystem decodeJobs;
+    if (StartDecodeWorkers(command.Workers, decodeJobs) == false)
+    {
+        return EXIT_UNAVAILABLE;
+    }
     const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
     AssetOptions options;
     options.EntropyOrNull = &entropy;
+    options.JobsOrNull = command.Workers == 0 ? nullptr : &decodeJobs;
     AssetError error;
     Array<uint8> level;
     bool isOk = true;

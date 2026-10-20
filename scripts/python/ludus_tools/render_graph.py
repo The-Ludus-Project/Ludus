@@ -23,6 +23,7 @@ import sys
 
 from .errors import ToolingError
 from . import render_graph_pipeline as pipeline
+from . import render_graph_ray as ray
 
 MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
@@ -416,31 +417,38 @@ class _Library:
         def source(endpoint):
             key, port = _endpoint(endpoint, where)
             _require(key in sources and port in sources[key], "Port", where,
-                     f"unknown output {endpoint}")
+                     f"Output '{endpoint}' does not exist. Reconnect from a declared output port or restore that port in Properties.")
             return sources[key][port]
 
         for edge in config["edges"]:
             kind = source(edge["from"])
             key, port = _endpoint(edge["to"], where)
             _require(key in ports and port in ports[key][0], "Port", where,
-                     f"unknown input {edge['to']}")
+                     f"Input '{edge['to']}' does not exist. Reconnect to a declared input port or restore that port in Properties.")
             _require(port not in incoming[key], "MultipleWriters", where,
-                     f"input {edge['to']} has multiple connections")
+                     f"Input '{edge['to']}' has multiple connections, including '{edge['from']}'. Disconnect all but one incoming wire.")
             _require(kind == ports[key][0][port], "TypeMismatch", where,
-                     f"{edge['from']} ({kind}) cannot connect to {edge['to']} ({ports[key][0][port]})")
+                     f"{edge['from']} ({kind}) cannot connect to {edge['to']} ({ports[key][0][port]}). "
+                     f"Connect a {ports[key][0][port]} output to this input, or change the input type in Properties.")
             incoming[key][port] = edge["from"]
             used.add(edge["from"])
         for output in config["outputs"]:
             _require(source(output["source"]) == output["type"], "TypeMismatch", where,
-                     f"output {output['id']} has the wrong source type")
+                     f"Configuration output '{output['id']}' expects {output['type']}, but source '{output['source']}' has a different type. "
+                     'Choose a matching source in Edit Inputs / Outputs, or change the output type.')
             used.add(output["source"])
         for key, node in nodes.items():
             required = ({p["id"] for p in node["inputs"] if p["required"]}
                         if node["kind"] in pipeline.KINDS else set(ports[key][0]))
             if node["kind"] == "Camera" and not node["active"]:
                 required.clear()
-            _require(required <= incoming[key].keys(), "UnboundInput", where + "/" + key,
-                     f"missing inputs {sorted(required - incoming[key].keys())}")
+            if node['kind'] in pipeline.KINDS:
+                required.update(port['target'] for port in node['outputs'])
+            missing = sorted(required - incoming[key].keys())
+            descriptions = ', '.join(f"'{key}.{port}' ({ports[key][0][port]})" for port in missing)
+            _require(not missing, "UnboundInput", where + "/" + key,
+                     f"Unconnected inputs: {descriptions}. Connect a matching output to each input; "
+                     'writable resource inputs must be connected even when Load is Clear or Discard.')
             if node["kind"] == "Subgraph":
                 child = self.assets[self.inside(node["asset"], where)]
                 selected = _configuration(child, node["configuration"], where)
@@ -453,7 +461,7 @@ class _Library:
         ordered, done = [], set()
         while len(done) < len(nodes):
             ready = next((key for key in nodes if key not in done and dependencies[key] <= done), None)
-            _require(ready is not None, "Cycle", where, "within-frame dependency cycle")
+            _require(ready is not None, "Cycle", where, "Within-frame dependency cycle. Remove a feedback wire and connect passes in forward execution order.")
             ordered.append(nodes[ready])
             done.add(ready)
         return ordered, incoming
@@ -495,7 +503,7 @@ class _Compiler:
     def write(self, value, node, aspect, where, camera):
         load, store = node[aspect + "_load"], node[aspect + "_store"]
         _require(load != "Load" or value.defined, "Initialization", where,
-                 f"{aspect} Load reads undefined {value.resource}@{value.version}")
+                 f"{aspect} Load reads undefined {value.resource}@{value.version}. Choose Clear, or connect a preceding pass that stores initialized contents.")
         key = (value.resource, value.version)
         _require(key not in self.writers, "MultipleWriters", where,
                  f"multiple writes branch from {value.resource}@{value.version}; connect the preceding version")
@@ -522,16 +530,18 @@ class _Compiler:
             output_mapping = None
             if kind in pipeline.KINDS:
                 authored_pipeline = node
-                if kind != 'GraphicsPipeline':
+                if kind == 'ComputePipeline':
                     required_stage = 'compute' if kind == 'ComputePipeline' else 'ray_generation'
                     _require(any(shader['stage'] == required_stage for shader in node['shaders']),
-                             'IncompletePipeline', where, f'{kind} requires an authored {required_stage} program')
-                    _fail('Capability', where, f'{kind} execution is not admitted by the current graph build profile')
-                node, input_mapping, output_mapping = pipeline.lower_graphics(node, where, sys.modules[__name__])
+                             'IncompletePipeline', where, f'{kind} is missing its {required_stage} shader. Add that stage in Shaders and assign a build-manifest program ID.')
+                    _fail('Capability', where, f'{kind} execution is not supported by the current graph build profile. '
+                             'Keep it as a saved draft, or use a GraphicsPipeline with supported vertex/fragment programs for preview.')
+                node, input_mapping, output_mapping = (ray.lower(node, where, sys.modules[__name__])
+                    if kind == 'RayTracingPipeline' else pipeline.lower_graphics(node, where, sys.modules[__name__]))
                 _require(set(input_mapping.values()) <= inputs.keys(), 'UnboundInput', where,
                          'the selected graphics invocation requires all mapped inputs')
                 inputs = {name: inputs[port] for name, port in input_mapping.items()}
-                kind = 'Raster'
+                kind = node['kind']
             if kind == "Scene":
                 outputs["scene"] = _Value("Scene", origin=where)
             elif kind == "Target":
@@ -548,6 +558,23 @@ class _Compiler:
                              "CameraTarget", where, "camera role does not match its designated target")
                 self.cameras.append(camera)
                 outputs["view"] = _Value("View", origin=where, cameras=(where,) if node["active"] else ())
+            elif kind == "RayTracing":
+                target = self.resources[inputs['color'].resource]
+                _require(inputs['view'].cameras, 'CameraTarget', where, 'ray pipeline requires an active camera')
+                _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
+                         'Capability', where, 'ray pipeline requires an offscreen single-sample RGBA8Unorm target')
+                _require(authored_pipeline['invocation']['dimensions'] == [*target['extent'], 1],
+                         'AttachmentMismatch', where, 'ray launch dimensions must match the output width, height and depth=1')
+                value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
+                self.techniques.add(ray.TECHNIQUE)
+                self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
+                    'technique': ray.TECHNIQUE, 'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
+                    'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
+                    'scene': inputs['scene'].origin, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
+                    'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
+                    'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
+                        'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
+                outputs = {output_mapping['color']: value}
             elif kind == "Raster":
                 _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera")
                 if node["mode"] == "ColorAndDepth":
@@ -573,7 +600,10 @@ class _Compiler:
                         resource = self.resources[inputs[next(aspect for aspect, name in output_mapping.items() if name == port['id'])].resource]
                         _require(resource['format'] == port['format'] and
                                  resource['samples'] == authored_pipeline['state']['samples'],
-                                 'AttachmentMismatch', where, 'output format/samples differ from connected target')
+                                 'AttachmentMismatch', where,
+                                 f"Output '{port['id']}' declares {port['format']}/{authored_pipeline['state']['samples']} samples, "
+                                 f"but input '{port['target']}' supplies {resource['format']}/{resource['samples']} samples. "
+                                 'Make the writable resource Format and Pipeline State samples match the connected target, or connect a matching target.')
                     entry['pipeline'] = authored_pipeline
                     outputs = {output_mapping[aspect]: value for aspect, value in outputs.items()}
                 self.add_pass(entry)

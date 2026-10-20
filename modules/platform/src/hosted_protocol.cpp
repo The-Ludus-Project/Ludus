@@ -254,11 +254,20 @@ bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexce
             }
             inoutWriter.Write<uint16>(PROTOCOL_VERSION);
             inoutWriter.Write<uint8>(static_cast<uint8>(message.Visibility));
-            inoutWriter.Write<uint8>(0);
+            inoutWriter.Write<uint8>(message.HasConsumerAdapter == true ? WELCOME_FLAG_CONSUMER_ADAPTER : 0);
             inoutWriter.Write<uint32>(message.Width);
             inoutWriter.Write<uint32>(message.Height);
             inoutWriter.Write<uint32>(GetScaleBits(message.Scale));
             inoutWriter.WriteBytes(message.Nonce.GetData(), message.Nonce.GetSize());
+            if (message.HasConsumerAdapter == true)
+            {
+                inoutWriter.WriteBytes(message.DeviceUuid.GetData(), message.DeviceUuid.GetSize());
+                inoutWriter.WriteBytes(message.DriverUuid.GetData(), message.DriverUuid.GetSize());
+            }
+            else
+            {
+                WriteReserved(2 * HOSTED_ADAPTER_UUID_BYTES, inoutWriter);
+            }
             return true;
         case MessageKind::Refused:
             if (IsValidRefusal(static_cast<uint8>(message.Refusal)) == false)
@@ -423,7 +432,7 @@ bool TryDecodePayload(MessageReader& inoutReader, usize payloadSize, Message& in
         case MessageKind::Welcome: {
             inoutMessage.Version = inoutReader.Read<uint16>();
             const uint8 visibility = inoutReader.Read<uint8>();
-            const uint8 reserved = inoutReader.Read<uint8>();
+            const uint8 flags = inoutReader.Read<uint8>();
             inoutMessage.Width = inoutReader.Read<uint32>();
             inoutMessage.Height = inoutReader.Read<uint32>();
             inoutMessage.Scale = GetScale(inoutReader.Read<uint32>());
@@ -434,7 +443,15 @@ bool TryDecodePayload(MessageReader& inoutReader, usize payloadSize, Message& in
                 return false;
             }
             std::memcpy(inoutMessage.Nonce.GetData(), nonceOrNull, RENDEZVOUS_NONCE_BYTES);
-            return inoutMessage.Version == PROTOCOL_VERSION && reserved == 0 && IsValidVisibility(visibility) == true &&
+            inoutMessage.HasConsumerAdapter = (flags & WELCOME_FLAG_CONSUMER_ADAPTER) != 0;
+            // Without the flag the UUID bytes are reserved.
+            const bool hasValidAdapter = inoutMessage.HasConsumerAdapter == true
+                                             ? TryReadUuid(inoutReader, inoutMessage.DeviceUuid) == true &&
+                                                   TryReadUuid(inoutReader, inoutMessage.DriverUuid) == true
+                                             : IsReservedZero(2 * HOSTED_ADAPTER_UUID_BYTES, inoutReader) == true;
+            return inoutMessage.Version == PROTOCOL_VERSION &&
+                   (flags | WELCOME_FLAG_CONSUMER_ADAPTER) == WELCOME_FLAG_CONSUMER_ADAPTER &&
+                   hasValidAdapter == true && IsValidVisibility(visibility) == true &&
                    IsValidExtent(inoutMessage.Width, inoutMessage.Height) == true &&
                    IsValidScale(inoutMessage.Scale) == true;
         }

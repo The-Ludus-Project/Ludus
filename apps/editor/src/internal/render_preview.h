@@ -17,13 +17,13 @@
 #include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene.h"
+#include "internal/viewport_frame_pump.h"
 #include "internal/viewport_frame_source.h"
 #include "internal/viewport_statistics.h"
 
 #include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
-#include <QTimer>
 
 namespace ludus::editor
 {
@@ -91,6 +91,18 @@ public:
     /// Suppress repeated GPU submissions for hidden browser surfaces; allow the first
     /// candidate frame so import validation can complete while its tab is hidden.
     void SetPresentationVisible(bool isVisible) noexcept;
+    /// Lowest admitted mouse rotation multiplier, relative to the default angular speed.
+    static constexpr foundation::float32 MINIMUM_LOOK_SENSITIVITY = 0.1F;
+    /// Highest admitted mouse rotation multiplier.
+    static constexpr foundation::float32 MAXIMUM_LOOK_SENSITIVITY = 4;
+    /// Set the multiplier for right-drag look and Alt/Option orbit. Invalid values preserve it.
+    /// GUI thread only; changing sensitivity preserves the camera pose and selected camera.
+    void SetLookSensitivity(foundation::float32 sensitivity);
+    /// Current mouse rotation multiplier; independent of keyboard fly speed.
+    [[nodiscard]] LUDUS_INLINE foundation::float32 GetLookSensitivity() const noexcept
+    {
+        return mLookSensitivity;
+    }
     void Orbit(foundation::float32 deltaX, foundation::float32 deltaY);
     void Pan(foundation::float32 deltaX, foundation::float32 deltaY, foundation::float32 heightLogical = 480);
     void Zoom(foundation::float32 steps);
@@ -114,6 +126,10 @@ public:
     /// Delegate GPU frame production to the project graph; this owner keeps scene/navigation
     /// and device lifetime, without preparing or drawing a second built-in scene.
     void UseProjectGraph() noexcept;
+    /// Set the current delegated renderer diagnostic on the GUI thread. A nonempty problem
+    /// refuses Start and fails pending scene preparation without destroying the last frame
+    /// or device. Clearing the problem permits an explicit retry.
+    void SetProjectGraphProblem(const QString& problem);
     /// Publish completion of the current World extraction from the delegated graph producer.
     void NotifyProjectFrame();
     void Tick();
@@ -196,6 +212,7 @@ private:
     [[nodiscard]] bool beginNavigation();
     void navigationChanged();
     EditorCameraController mCameraController;
+    foundation::float32 mLookSensitivity = 1;
     QString mSelectedId;
     [[nodiscard]] LUDUS_INLINE bool usesLitMaterials() const noexcept
     {
@@ -210,6 +227,7 @@ private:
     bool mIsStatisticsVisible = false;
     ViewportStatistics mStatistics;
     bool mIsProjectGraphEnabled = false;
+    QString mProjectGraphProblem;
     QElapsedTimer mStatisticsRefresh;
     foundation::UniquePtr<PreviewGpuGeneration> mResources;
     foundation::UniquePtr<PreviewGpuGeneration> mRetiredResources;
@@ -258,7 +276,7 @@ private:
     bool OwnsDevice_ = false;
     bool mIsStarting = false;
     foundation::uint64 mDeviceSerial = 0;
-    QTimer Timer_;
+    ViewportFramePump mFramePump;
     QString Status_;
     /// Reason recorded by the preparation stage that rejected the current generation, if any.
     QString mPreparationFailure;

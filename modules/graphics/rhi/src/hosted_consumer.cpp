@@ -10,19 +10,20 @@
 
 // Consumer bookkeeping of the hosted surface: one record per imported
 // generation, the newest completed frame not yet acquired, and the frames the
-// editor holds. See docs/architecture/editor-gui-systems.md, "The hosted surface
-// and frame ownership".
+// editor holds. Native objects live in the backend, addressed by generation slot
+// and image index. See docs/architecture/editor-gui-systems.md, "The hosted
+// surface and frame ownership".
 namespace ludus::graphics::rhi
 {
 namespace
 {
 using namespace foundation;
 constexpr logging::LogCategory LOG_RHI_HOSTED{"RHI"};
-/// Generations imported at once: the newest plus older ones whose frames are still held.
-/// The producer keeps at most three alive, so four leaves room for a late release.
-constexpr usize MAX_IMPORTED_GENERATIONS = 4;
-/// Releases waiting for their queue marker: at most every image of every imported generation.
+constexpr usize MAX_IMPORTED_GENERATIONS = internal::HOSTED_GENERATION_SLOTS;
+/// Releases waiting for the queue: at most every image of every imported generation.
 constexpr usize MAX_QUEUED_RELEASES = MAX_IMPORTED_GENERATIONS * platform::HOSTED_SURFACE_IMAGE_COUNT;
+/// Slot index of a generation that is not imported.
+constexpr usize NO_SLOT = MAX_IMPORTED_GENERATIONS;
 
 struct GenerationRecord final
 {
@@ -30,7 +31,6 @@ struct GenerationRecord final
     uint32 Generation = 0;
     uint32 Width = 0;
     uint32 Height = 0;
-    internal::HostedImport Import;
     StaticArray<bool, platform::HOSTED_SURFACE_IMAGE_COUNT> IsHeld{};
 };
 
@@ -40,7 +40,6 @@ struct QueuedRelease final
     bool IsValid = false;
     uint32 Generation = 0;
     uint32 Image = 0;
-    internal::HostedQueueMarker Marker;
 };
 
 struct PendingFrame final
@@ -73,7 +72,7 @@ const char* GetRefusalText(HostedConsumerRefusal refusal) noexcept
 struct HostedSurfaceConsumer::State final
 {
     platform::HostedWindowEndpoint* EndpointOrNull = nullptr;
-    NativeDeviceIdentity Device{};
+    internal::HostedConsumerBackendOwner Backend;
     StaticArray<GenerationRecord, MAX_IMPORTED_GENERATIONS> Generations{};
     uint32 Latest = 0;
     PendingFrame Pending;
@@ -82,35 +81,40 @@ struct HostedSurfaceConsumer::State final
 
     ~State() noexcept
     {
-        // The imports may still be sampled by work ahead of a queued marker; wait for it first.
+        if (Backend.Get() == nullptr)
+        {
+            return;
+        }
+        // The imports may still be sampled by work ahead of a queued release; wait for it first.
         for (QueuedRelease& queued : QueuedReleases)
         {
-            if (queued.IsValid == true)
+            const usize slot = FindSlot(queued.Generation);
+            if (queued.IsValid == true && slot != NO_SLOT)
             {
-                internal::WaitHostedQueueMarker(queued.Marker);
-                internal::DestroyHostedQueueMarker(queued.Marker);
-                queued = {};
+                internal::CompleteHostedRelease(*Backend, slot, queued.Image);
             }
+            queued = {};
         }
-        for (GenerationRecord& record : Generations)
+        for (usize slot = 0; slot < MAX_IMPORTED_GENERATIONS; ++slot)
         {
-            if (record.IsLive == true)
+            if (Generations[slot].IsLive == true)
             {
-                internal::DestroyHostedImport(Device, record.Import);
+                internal::DestroyHostedGeneration(*Backend, slot);
             }
         }
     }
 
-    [[nodiscard]] GenerationRecord* FindOrNull(uint32 generation) noexcept
+    /// Slot of an imported generation, or NO_SLOT.
+    [[nodiscard]] usize FindSlot(uint32 generation) const noexcept
     {
-        for (GenerationRecord& record : Generations)
+        for (usize slot = 0; slot < MAX_IMPORTED_GENERATIONS; ++slot)
         {
-            if (record.IsLive == true && record.Generation == generation)
+            if (Generations[slot].IsLive == true && Generations[slot].Generation == generation)
             {
-                return &record;
+                return slot;
             }
         }
-        return nullptr;
+        return NO_SLOT;
     }
 
     void Release(uint32 generation, uint32 image) noexcept
@@ -131,22 +135,41 @@ struct HostedSurfaceConsumer::State final
         return false;
     }
 
-    /// Return every queued frame whose marker has completed.
+    /// Slot of a held frame, or NO_SLOT when `frame` is not held or already queued for release.
+    [[nodiscard]] usize FindHeldSlot(const HostedFrame& frame) const noexcept
+    {
+        if (frame.Image >= platform::HOSTED_SURFACE_IMAGE_COUNT)
+        {
+            return NO_SLOT;
+        }
+        const usize slot = FindSlot(frame.Generation);
+        if (slot == NO_SLOT || Generations[slot].IsHeld[frame.Image] == false ||
+            IsQueued(frame.Generation, frame.Image) == true)
+        {
+            return NO_SLOT;
+        }
+        return slot;
+    }
+
+    /// Return every queued frame whose release the queue has completed.
     void CompleteQueuedReleases() noexcept
     {
         for (QueuedRelease& queued : QueuedReleases)
         {
-            if (queued.IsValid == false || internal::IsHostedQueueMarkerComplete(queued.Marker) == false)
+            if (queued.IsValid == false)
             {
                 continue;
             }
-            GenerationRecord* recordOrNull = FindOrNull(queued.Generation);
-            if (recordOrNull != nullptr)
+            const usize slot = FindSlot(queued.Generation);
+            if (slot != NO_SLOT)
             {
-                recordOrNull->IsHeld[queued.Image] = false;
+                if (internal::TryCompleteHostedRelease(*Backend, slot, queued.Image) == false)
+                {
+                    continue;
+                }
+                Generations[slot].IsHeld[queued.Image] = false;
                 Release(queued.Generation, queued.Image);
             }
-            internal::DestroyHostedQueueMarker(queued.Marker);
             queued = {};
         }
     }
@@ -154,8 +177,9 @@ struct HostedSurfaceConsumer::State final
     /// Destroy older generations of which nothing is held or pending.
     void RetireIdle() noexcept
     {
-        for (GenerationRecord& record : Generations)
+        for (usize slot = 0; slot < MAX_IMPORTED_GENERATIONS; ++slot)
         {
+            GenerationRecord& record = Generations[slot];
             if (record.IsLive == false || record.Generation == Latest ||
                 (Pending.IsValid == true && Pending.Generation == record.Generation))
             {
@@ -168,7 +192,7 @@ struct HostedSurfaceConsumer::State final
             }
             if (isHeld == false)
             {
-                internal::DestroyHostedImport(Device, record.Import);
+                internal::DestroyHostedGeneration(*Backend, slot);
                 record = {};
             }
         }
@@ -187,33 +211,32 @@ struct HostedSurfaceConsumer::State final
     void ImportGeneration(platform::HostedSurfaceImages& inoutImages) noexcept
     {
         RetireIdle();
-        GenerationRecord* freeOrNull = nullptr;
-        for (GenerationRecord& record : Generations)
+        usize freeSlot = NO_SLOT;
+        for (usize slot = 0; slot < MAX_IMPORTED_GENERATIONS; ++slot)
         {
-            if (record.IsLive == false)
+            if (Generations[slot].IsLive == false)
             {
-                freeOrNull = &record;
+                freeSlot = slot;
                 break;
             }
         }
-        if (freeOrNull == nullptr)
+        if (freeSlot == NO_SLOT)
         {
             Refuse(HostedConsumerRefusal::ProtocolViolation);
             return;
         }
-        internal::HostedImport imported;
-        const HostedConsumerRefusal refusal = internal::ImportHostedGeneration(Device, inoutImages, imported);
+        const HostedConsumerRefusal refusal = internal::ImportHostedGeneration(*Backend, freeSlot, inoutImages);
         if (refusal != HostedConsumerRefusal::None)
         {
             Refuse(refusal);
             return;
         }
-        freeOrNull->IsLive = true;
-        freeOrNull->Generation = inoutImages.Generation;
-        freeOrNull->Width = inoutImages.Width;
-        freeOrNull->Height = inoutImages.Height;
-        freeOrNull->Import = imported;
-        freeOrNull->IsHeld = {};
+        GenerationRecord& record = Generations[freeSlot];
+        record.IsLive = true;
+        record.Generation = inoutImages.Generation;
+        record.Width = inoutImages.Width;
+        record.Height = inoutImages.Height;
+        record.IsHeld = {};
         Latest = inoutImages.Generation;
         // A frame of the previous generation that was never acquired is no longer worth showing.
         if (Pending.IsValid == true)
@@ -225,14 +248,14 @@ struct HostedSurfaceConsumer::State final
 
     void RecordPresent(uint32 generation, uint32 image, uint64 sequence) noexcept
     {
-        GenerationRecord* recordOrNull = FindOrNull(generation);
-        if (recordOrNull == nullptr || generation != Latest)
+        const usize slot = FindSlot(generation);
+        if (slot == NO_SLOT || generation != Latest)
         {
             // A late frame of a replaced generation: return it unseen.
             Release(generation, image);
             return;
         }
-        if (recordOrNull->IsHeld[image] == true ||
+        if (Generations[slot].IsHeld[image] == true ||
             (Pending.IsValid == true && Pending.Generation == generation && Pending.Image == image))
         {
             Refuse(HostedConsumerRefusal::ProtocolViolation);
@@ -254,6 +277,23 @@ HostedSurfaceConsumer::~HostedSurfaceConsumer() noexcept
     Stop();
 }
 
+bool TryGetHostedConsumerAdapter(const NativeDeviceIdentity& device,
+                                 platform::HostedAdapterIdentity& outAdapter) noexcept
+{
+    if (device.Api != Backend::Vulkan || device.Instance.IsNull() == true || device.PhysicalDevice.IsNull() == true ||
+        internal::IsHostedImportAvailable(device.Api) == false)
+    {
+        return false;
+    }
+    platform::HostedAdapterIdentity adapter;
+    if (internal::TryReadHostedConsumerAdapter(device, adapter) == false)
+    {
+        return false;
+    }
+    outAdapter = adapter;
+    return true;
+}
+
 HostedConsumerStatus HostedSurfaceConsumer::Start(platform::HostedWindowEndpoint& inoutEndpoint,
                                                   const NativeDeviceIdentity& device) noexcept
 {
@@ -268,9 +308,11 @@ HostedConsumerStatus HostedSurfaceConsumer::Start(platform::HostedWindowEndpoint
                    ? HostedConsumerStatus::Unavailable
                    : HostedConsumerStatus::InvalidArgument;
     }
-    if (device.Api == Backend::Vulkan && (device.Instance.IsNull() == true || device.PhysicalDevice.IsNull() == true))
+    internal::HostedConsumerBackendOwner backend;
+    const HostedConsumerStatus created = internal::CreateHostedConsumerBackend(device, backend);
+    if (created != HostedConsumerStatus::Ok)
     {
-        return HostedConsumerStatus::InvalidArgument;
+        return created;
     }
     State* allocationOrNull = new (std::nothrow) State;
     if (allocationOrNull == nullptr)
@@ -279,7 +321,7 @@ HostedConsumerStatus HostedSurfaceConsumer::Start(platform::HostedWindowEndpoint
     }
     mState.Reset(allocationOrNull);
     mState->EndpointOrNull = &inoutEndpoint;
-    mState->Device = device;
+    mState->Backend = foundation::Move(backend);
     return HostedConsumerStatus::Ok;
 }
 
@@ -345,50 +387,45 @@ HostedConsumerStatus HostedSurfaceConsumer::AcquireFrame(HostedFrame& outFrame) 
     {
         return HostedConsumerStatus::Empty;
     }
-    GenerationRecord* recordOrNull = state.FindOrNull(state.Pending.Generation);
-    if (recordOrNull == nullptr)
+    const PendingFrame pending = state.Pending;
+    state.Pending = {};
+    const usize slot = state.FindSlot(pending.Generation);
+    if (slot == NO_SLOT)
     {
-        state.Pending = {};
         return HostedConsumerStatus::Empty;
     }
-    const uint32 image = state.Pending.Image;
-    recordOrNull->IsHeld[image] = true;
+    const GenerationRecord& record = state.Generations[slot];
     HostedFrame frame;
-    frame.Generation = state.Pending.Generation;
-    frame.Image = image;
-    frame.Sequence = state.Pending.Sequence;
-    frame.Width = recordOrNull->Width;
-    frame.Height = recordOrNull->Height;
+    frame.Generation = pending.Generation;
+    frame.Image = pending.Image;
+    frame.Sequence = pending.Sequence;
+    frame.Width = record.Width;
+    frame.Height = record.Height;
     frame.Format = platform::HostedImageFormat::Rgba8Unorm;
-    if (state.Device.Api == Backend::Metal)
+    if (internal::AcquireHostedImage(*state.Backend, slot, pending.Image, frame) == false)
     {
-        frame.MetalTexture = NativeMetalTexture(recordOrNull->Import.MetalTextures[image]);
+        // Never sampled: the game may render into it again.
+        state.Release(pending.Generation, pending.Image);
+        return HostedConsumerStatus::Unavailable;
     }
-    else
-    {
-        frame.VulkanImage = NativeVulkanImage(recordOrNull->Import.VulkanImages[image]);
-        frame.VulkanLayout = HOSTED_VULKAN_SHADER_READ_LAYOUT;
-        frame.VulkanSourceQueueFamily = HOSTED_VULKAN_QUEUE_FAMILY_EXTERNAL;
-    }
-    state.Pending = {};
+    state.Generations[slot].IsHeld[pending.Image] = true;
     outFrame = frame;
     return HostedConsumerStatus::Ok;
 }
 
 HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrame(const HostedFrame& frame) noexcept
 {
-    if (mState.Get() == nullptr || frame.Image >= platform::HOSTED_SURFACE_IMAGE_COUNT)
+    if (mState.Get() == nullptr)
     {
         return HostedConsumerStatus::InvalidState;
     }
     State& state = *mState;
-    GenerationRecord* recordOrNull = state.FindOrNull(frame.Generation);
-    if (recordOrNull == nullptr || recordOrNull->IsHeld[frame.Image] == false ||
-        state.IsQueued(frame.Generation, frame.Image) == true)
+    const usize slot = state.FindHeldSlot(frame);
+    if (slot == NO_SLOT)
     {
         return HostedConsumerStatus::InvalidState;
     }
-    recordOrNull->IsHeld[frame.Image] = false;
+    state.Generations[slot].IsHeld[frame.Image] = false;
     state.Release(frame.Generation, frame.Image);
     state.RetireIdle();
     return HostedConsumerStatus::Ok;
@@ -396,14 +433,13 @@ HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrame(const HostedFrame& fram
 
 HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrameAfterQueue(const HostedFrame& frame) noexcept
 {
-    if (mState.Get() == nullptr || frame.Image >= platform::HOSTED_SURFACE_IMAGE_COUNT)
+    if (mState.Get() == nullptr)
     {
         return HostedConsumerStatus::InvalidState;
     }
     State& state = *mState;
-    const GenerationRecord* recordOrNull = state.FindOrNull(frame.Generation);
-    if (recordOrNull == nullptr || recordOrNull->IsHeld[frame.Image] == false ||
-        state.IsQueued(frame.Generation, frame.Image) == true)
+    const usize slot = state.FindHeldSlot(frame);
+    if (slot == NO_SLOT)
     {
         return HostedConsumerStatus::InvalidState;
     }
@@ -418,19 +454,11 @@ HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrameAfterQueue(const HostedF
     }
     // Every held image fits: the table covers all images of all imported generations.
     LUDUS_REQUIRE(freeOrNull != nullptr);
-    internal::HostedQueueMarker marker;
-    if (internal::EnqueueHostedQueueMarker(state.Device, marker) == false)
+    if (internal::EnqueueHostedRelease(*state.Backend, slot, frame.Image) == false)
     {
         return HostedConsumerStatus::Unavailable;
     }
-    const QueuedRelease queued
-    {
-        .IsValid = true,
-        .Generation = frame.Generation,
-        .Image = frame.Image,
-        .Marker = marker,
-    };
-    *freeOrNull = queued;
+    *freeOrNull = { .IsValid = true, .Generation = frame.Generation, .Image = frame.Image };
     return HostedConsumerStatus::Ok;
 }
 

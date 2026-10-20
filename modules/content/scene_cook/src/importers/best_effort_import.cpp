@@ -14,9 +14,11 @@
 #include "gltf/gltf_reader.h"
 #include "image/image_reader.h"
 #include "obj/obj_reader.h"
+#include "parallel_tasks.h"
 #include "pbrt/pbrt_parser.h"
 #include "source_resolver.h"
 #include "tangent_generation.h"
+#include "texture_decode_queue.h"
 #include "transform_utilities.h"
 
 #include <ludus/foundation/math/scalar.hpp>
@@ -33,8 +35,6 @@ using namespace importers;
 namespace format = content::scene_format;
 namespace math = foundation::math;
 
-/// Largest image file read for a texture.
-constexpr usize MAX_IMAGE_FILE_BYTES = MAX_SOURCE_IMAGE_BYTES;
 /// Side of the solid-colour swatch cooked for untextured slots.
 constexpr uint32 SWATCH_SIZE = 4;
 /// Texel channel holding coverage (straight alpha) in decoded RGBA8 images.
@@ -76,30 +76,32 @@ bool FailWith(CookError& outError, Status status, std::string_view message) noex
 /// Halve an RGBA8 image with a 2x2 box filter (odd edges clamp).
 [[nodiscard]] bool HalveImage(DecodedImage& inoutImage) noexcept
 {
-    const uint32 width = inoutImage.Width > 1 ? inoutImage.Width / 2 : 1;
-    const uint32 height = inoutImage.Height > 1 ? inoutImage.Height / 2 : 1;
+    constexpr usize CHANNELS = DECODED_IMAGE_CHANNEL_COUNT;
+    constexpr uint32 BOX_TEXELS = 4;
+    const uint32 sourceWidth = inoutImage.Width;
+    const uint32 sourceHeight = inoutImage.Height;
+    const uint32 width = sourceWidth > 1 ? sourceWidth / 2 : 1;
+    const uint32 height = sourceHeight > 1 ? sourceHeight / 2 : 1;
     Array<uint8> texels;
-    if (texels.TryResize(usize{width} * height * 4) == false)
+    if (texels.TryResize(usize{width} * height * CHANNELS) == false)
     {
         return false;
     }
+    const uint8* source = inoutImage.Texels.GetData();
     for (uint32 y = 0; y < height; ++y)
     {
+        // The clamps select the same 2x2 box as clamping each texel coordinate.
+        const uint8* top = source + usize{math::Min(y * 2, sourceHeight - 1)} * sourceWidth * CHANNELS;
+        const uint8* bottom = source + usize{math::Min(y * 2 + 1, sourceHeight - 1)} * sourceWidth * CHANNELS;
+        uint8* destination = texels.GetData() + usize{y} * width * CHANNELS;
         for (uint32 x = 0; x < width; ++x)
         {
-            for (usize k = 0; k < 4; ++k)
+            const usize left = usize{math::Min(x * 2, sourceWidth - 1)} * CHANNELS;
+            const usize right = usize{math::Min(x * 2 + 1, sourceWidth - 1)} * CHANNELS;
+            for (usize k = 0; k < CHANNELS; ++k)
             {
-                uint32 sum = 0;
-                for (uint32 dy = 0; dy < 2; ++dy)
-                {
-                    for (uint32 dx = 0; dx < 2; ++dx)
-                    {
-                        const uint32 sx = math::Min(x * 2 + dx, inoutImage.Width - 1);
-                        const uint32 sy = math::Min(y * 2 + dy, inoutImage.Height - 1);
-                        sum += inoutImage.Texels[(usize{sy} * inoutImage.Width + sx) * 4 + k];
-                    }
-                }
-                texels[(usize{y} * width + x) * 4 + k] = static_cast<uint8>((sum + 2) / 4);
+                const uint32 sum = uint32{top[left + k]} + top[right + k] + bottom[left + k] + bottom[right + k];
+                destination[usize{x} * CHANNELS + k] = static_cast<uint8>((sum + BOX_TEXELS / 2) / BOX_TEXELS);
             }
         }
     }
@@ -170,10 +172,6 @@ struct CookedTexture final
     bool IsFallback = false;
     /// Linear data (a LUSCN v6 surface map) rather than sRGB colour.
     bool IsLinear = false;
-    /// IR texture whose image file was read (even if decoding failed), or IR_NONE.
-    uint32 ReadSource = IR_NONE;
-    /// SHA-256 of the image bytes read for ReadSource.
-    Digest ReadDigest;
 };
 
 /// One cooked world-space mesh.
@@ -197,80 +195,35 @@ struct CookedMesh final
                                             : texture.File.GetView();
 }
 
-/// Encoded bytes of an image texture: borrowed from the IR for embedded images,
-/// otherwise read from root into inoutStorage. outIsFileRead reports a file read.
-[[nodiscard]] Status LoadImageBytes(const SceneIr& scene,
-                                    std::string_view root,
-                                    const IrTexture& texture,
-                                    Array<uint8>& inoutStorage,
-                                    std::span<const uint8>& outBytes,
-                                    std::string_view& outDecoderName,
-                                    bool& outIsFileRead) noexcept
-{
-    outIsFileRead = false;
-    if (texture.EmbeddedImage != IR_NONE)
-    {
-        const IrEmbeddedImage& image = scene.EmbeddedImages[texture.EmbeddedImage];
-        outBytes = image.Bytes.AsSpan();
-        outDecoderName = image.DecoderName.GetView();
-        return Status::Ok;
-    }
-    String path;
-    const std::string_view parts[] = {root, std::string_view("/"), texture.File.GetView()};
-    if (path.TryAppendMany(parts) != StringStatus::Ok)
-    {
-        return Status::OutOfMemory;
-    }
-    const Status read = detail::ReadFileBounded(path.GetView(), MAX_IMAGE_FILE_BYTES, inoutStorage);
-    if (read == Status::Ok)
-    {
-        outIsFileRead = true;
-        outBytes = inoutStorage.AsSpan();
-        outDecoderName = texture.File.GetView();
-    }
-    return read;
-}
-
-/// Read and decode the image of a data texture (no colour conversion).
-/// @return Ok, Invalid with outMessage set, or OutOfMemory.
-[[nodiscard]] Status DecodeDataTexture(const SceneIr& scene,
-                                       std::string_view root,
-                                       const IrTexture& texture,
+/// Take the decoded image of a data texture (no colour conversion) from the queue.
+/// @return Ok; Invalid with outMessage set; OutOfMemory; or Cancelled.
+[[nodiscard]] Status DecodeDataTexture(TextureDecodeQueue& inoutDecodes,
+                                       uint32 texture,
                                        DecodedImage& outImage,
                                        std::string_view& outMessage) noexcept
 {
-    Array<uint8> storage;
-    std::span<const uint8> bytes;
-    std::string_view decoderName;
-    bool isFileRead = false;
-    const Status loaded = LoadImageBytes(scene, root, texture, storage, bytes, decoderName, isFileRead);
-    if (loaded != Status::Ok)
+    TextureDecode decode;
+    const Status taken = inoutDecodes.Take(texture, decode);
+    if (taken != Status::Ok)
     {
-        outMessage = "cannot read the image file";
-        return loaded == Status::OutOfMemory ? loaded : Status::Invalid;
+        return taken;
     }
-    const ImageResult decoded = DecodeImage(decoderName, bytes, outImage, outMessage);
-    if (decoded != ImageResult::Ok)
+    outImage = static_cast<DecodedImage&&>(decode.Image);
+    outMessage = decode.Message;
+    if (decode.Read != Status::Ok)
     {
-        return decoded == ImageResult::OutOfMemory ? Status::OutOfMemory : Status::Invalid;
+        return decode.Read == Status::OutOfMemory ? decode.Read : Status::Invalid;
+    }
+    if (decode.Decoded != ImageResult::Ok)
+    {
+        return decode.Decoded == ImageResult::OutOfMemory ? Status::OutOfMemory : Status::Invalid;
     }
     return Status::Ok;
 }
 
-/// Mean of one channel of a data texture in [0, 1] (alpha for channel 3).
-[[nodiscard]] Status AverageTextureChannel(const SceneIr& scene,
-                                           std::string_view root,
-                                           const IrTexture& texture,
-                                           uint8 channel,
-                                           float64& outMean,
-                                           std::string_view& outMessage) noexcept
+/// Mean of one channel of a decoded data texture in [0, 1] (alpha for channel 3).
+[[nodiscard]] float64 AverageImageChannel(const DecodedImage& image, uint8 channel) noexcept
 {
-    DecodedImage image;
-    const Status decoded = DecodeDataTexture(scene, root, texture, image, outMessage);
-    if (decoded != Status::Ok)
-    {
-        return decoded;
-    }
     const usize component = channel < DECODED_IMAGE_CHANNEL_COUNT ? channel : 0;
     uint64 sum = 0;
     for (usize i = component; i < image.Texels.GetSize(); i += DECODED_IMAGE_CHANNEL_COUNT)
@@ -278,15 +231,14 @@ struct CookedMesh final
         sum += image.Texels[i];
     }
     const usize count = image.Texels.GetSize() / DECODED_IMAGE_CHANNEL_COUNT;
-    outMean =
-        count != 0 ? static_cast<float64>(sum) / (DECODED_IMAGE_CHANNEL_MAXIMUM * static_cast<float64>(count)) : 1.0;
-    return Status::Ok;
+    return count != 0 ? static_cast<float64>(sum) / (DECODED_IMAGE_CHANNEL_MAXIMUM * static_cast<float64>(count)) : 1.0;
 }
 
 /// Fold the metallic/roughness data textures of a slot's representative material into
-/// its scalar terms, for a slot whose surface map exceeds the texture count.
+/// its scalar terms, for a slot whose surface map exceeds the texture count. One
+/// texture holding both terms (glTF metallicRoughness) is decoded once.
 [[nodiscard]] Status AverageScalarTextures(const SceneIr& scene,
-                                           std::string_view root,
+                                           TextureDecodeQueue& inoutDecodes,
                                            PlannedMaterial& inoutPlanned,
                                            DiagnosticLog& inoutLog) noexcept
 {
@@ -298,26 +250,33 @@ struct CookedMesh final
                                                                      material.RoughnessTexture};
         const foundation::StaticArray<uint8, SCALAR_TERMS> channels{material.MetallicChannel,
                                                                     material.RoughnessChannel};
+        DecodedImage image;
+        uint32 decodedTexture = IR_NONE;
+        Status decoded = Status::Ok;
+        std::string_view message;
         for (usize term = 0; term < SCALAR_TERMS; ++term)
         {
             if (textures[term] == IR_NONE || HasImage(scene.Textures[textures[term]]) == false)
             {
                 continue;
             }
-            float64 mean = 1.0;
-            std::string_view message;
-            const Status averaged =
-                AverageTextureChannel(scene, root, scene.Textures[textures[term]], channels[term], mean, message);
-            if (averaged == Status::OutOfMemory)
+            if (textures[term] != decodedTexture)
             {
-                return averaged;
+                decoded = DecodeDataTexture(inoutDecodes, textures[term], image, message);
+                decodedTexture = textures[term];
+            }
+            if (decoded != Status::Ok && decoded != Status::Invalid)
+            {
+                return decoded;
             }
             const std::string_view name = GetImageName(scene, scene.Textures[textures[term]]);
-            if (averaged != Status::Ok)
+            if (decoded != Status::Ok)
             {
+                // Reported once per term, as when each term decoded its own copy.
                 (void)inoutLog.Add(DiagnosticSeverity::Warning, codes::TEXTURE_UNREADABLE, name, 0, message);
                 continue;
             }
+            const float64 mean = AverageImageChannel(image, channels[term]);
             if (term == 0)
             {
                 planned.Metallic = math::Clamp(planned.Metallic * mean, 0.0, 1.0);
@@ -343,24 +302,32 @@ struct SampledImage final
     DecodedImage Image;
     usize Channel = 0;
     bool IsPresent = false;
+    /// Why an image texture could not be decoded; empty when it was or there was none.
+    std::string_view FailureMessage;
+};
+
+/// Texture slot and channel selected from the same authored surface source.
+struct SurfaceSourceSelection final
+{
+    uint32 Texture = IR_NONE;
+    usize Channel = 0;
 };
 
 /// Decode a slot material's data texture for repacking; an unreadable image is reported
 /// and left absent, so its multiplier stays one and the scalar term applies alone.
 [[nodiscard]] Status DecodeSurfaceSource(const SceneIr& scene,
-                                         std::string_view root,
-                                         uint32 texture,
-                                         usize channel,
+                                         TextureDecodeQueue& inoutDecodes,
+                                         SurfaceSourceSelection selection,
                                          DiagnosticLog& inoutLog,
                                          SampledImage& outSource) noexcept
 {
-    if (texture == IR_NONE || HasImage(scene.Textures[texture]) == false)
+    if (selection.Texture == IR_NONE || HasImage(scene.Textures[selection.Texture]) == false)
     {
         return Status::Ok;
     }
     std::string_view message;
-    const Status decoded = DecodeDataTexture(scene, root, scene.Textures[texture], outSource.Image, message);
-    if (decoded == Status::OutOfMemory)
+    const Status decoded = DecodeDataTexture(inoutDecodes, selection.Texture, outSource.Image, message);
+    if (decoded != Status::Ok && decoded != Status::Invalid)
     {
         return decoded;
     }
@@ -368,32 +335,126 @@ struct SampledImage final
     {
         (void)inoutLog.Add(DiagnosticSeverity::Warning,
                            codes::TEXTURE_UNREADABLE,
-                           GetImageName(scene, scene.Textures[texture]),
+                           GetImageName(scene, scene.Textures[selection.Texture]),
                            0,
                            message);
+        outSource.FailureMessage = message;
         return Status::Ok;
     }
-    outSource.Channel = math::Min(channel, ALPHA_CHANNEL);
+    outSource.Channel = math::Min(selection.Channel, ALPHA_CHANNEL);
     outSource.IsPresent = true;
     return Status::Ok;
 }
 
-/// Channel of a source texel at an output texel, sampled nearest; absent sources read fallback.
-[[nodiscard]] uint8 SampleChannel(const SampledImage& source,
-                                  usize channel,
-                                  uint32 x,
-                                  uint32 y,
-                                  uint32 width,
-                                  uint32 height,
-                                  uint8 fallback) noexcept
+/// Select another channel of a surface source already decoded for the same texture
+/// (glTF metallicRoughness holds both terms), repeating its report when unreadable.
+void ShareSurfaceSource(const SceneIr& scene,
+                        const SampledImage& decoded,
+                        SurfaceSourceSelection selection,
+                        DiagnosticLog& inoutLog,
+                        SampledImage& outSource) noexcept
 {
+    if (selection.Texture == IR_NONE || HasImage(scene.Textures[selection.Texture]) == false)
+    {
+        return;
+    }
+    if (decoded.IsPresent == false)
+    {
+        // Reported once per term, as when each term decoded its own copy.
+        (void)inoutLog.Add(DiagnosticSeverity::Warning,
+                           codes::TEXTURE_UNREADABLE,
+                           GetImageName(scene, scene.Textures[selection.Texture]),
+                           0,
+                           decoded.FailureMessage);
+        return;
+    }
+    outSource.Channel = math::Min(selection.Channel, ALPHA_CHANNEL);
+    outSource.IsPresent = true;
+}
+
+/// One output channel of a surface map: a source channel sampled nearest, or a constant.
+struct SurfaceChannel final
+{
+    /// Decoded source, or nullptr when absent: the channel then reads Fallback.
+    const DecodedImage* SourceOrNull = nullptr;
+    usize Channel = 0;
+    uint8 Fallback = 0;
+    /// Source column of each output column, x * source width / output width.
+    Array<uint32> Columns;
+};
+
+/// A surface map repacked by row bands, each band writing only its own rows.
+struct SurfaceRepack final
+{
+    DecodedImage& Output;
+    foundation::StaticArray<SurfaceChannel, DECODED_IMAGE_CHANNEL_COUNT> Channels;
+    usize BandCount = 1;
+};
+
+/// Which source channel a surface-map channel reads, and its value without a source.
+struct SurfaceChannelChoice final
+{
+    usize Channel = 0;
+    uint8 Fallback = 0;
+};
+
+/// Point a surface-map channel at a source channel, or at its fallback without a
+/// source, and tabulate the source's nearest column for each of width output columns.
+[[nodiscard]] bool SelectSurfaceChannel(const SampledImage& source,
+                                        SurfaceChannelChoice choice,
+                                        uint32 width,
+                                        SurfaceChannel& outChannel) noexcept
+{
+    outChannel.Fallback = choice.Fallback;
     if (source.IsPresent == false)
     {
-        return fallback;
+        return true;
     }
-    const usize sourceX = usize{x} * source.Image.Width / width;
-    const usize sourceY = usize{y} * source.Image.Height / height;
-    return source.Image.Texels[(sourceY * source.Image.Width + sourceX) * DECODED_IMAGE_CHANNEL_COUNT + channel];
+    outChannel.SourceOrNull = &source.Image;
+    outChannel.Channel = choice.Channel;
+    if (outChannel.Columns.TryResize(width) == false)
+    {
+        return false;
+    }
+    for (uint32 x = 0; x < width; ++x)
+    {
+        outChannel.Columns[x] = static_cast<uint32>(usize{x} * source.Image.Width / width);
+    }
+    return true;
+}
+
+/// Write one row band of a surface map: each channel samples its source nearest.
+void RepackSurfaceBand(void* context, usize band) noexcept
+{
+    const SurfaceRepack& repack = *static_cast<const SurfaceRepack*>(context);
+    DecodedImage& image = repack.Output;
+    const usize begin = usize{image.Height} * band / repack.BandCount;
+    const usize end = usize{image.Height} * (band + 1) / repack.BandCount;
+    for (usize y = begin; y < end; ++y)
+    {
+        uint8* row = image.Texels.GetData() + y * image.Width * DECODED_IMAGE_CHANNEL_COUNT;
+        for (usize k = 0; k < DECODED_IMAGE_CHANNEL_COUNT; ++k)
+        {
+            const SurfaceChannel& channel = repack.Channels[k];
+            if (channel.SourceOrNull == nullptr)
+            {
+                for (usize x = 0; x < image.Width; ++x)
+                {
+                    row[x * DECODED_IMAGE_CHANNEL_COUNT + k] = channel.Fallback;
+                }
+                continue;
+            }
+            const DecodedImage& source = *channel.SourceOrNull;
+            const usize sourceYPixel = y * source.Height / image.Height;
+            const uint8* sourceRow =
+                source.Texels.GetData() + sourceYPixel * source.Width * DECODED_IMAGE_CHANNEL_COUNT + channel.Channel;
+            for (usize x = 0; x < image.Width; ++x)
+            {
+                row[x * DECODED_IMAGE_CHANNEL_COUNT + k] =
+                    sourceRow[usize{channel.Columns[x]} * DECODED_IMAGE_CHANNEL_COUNT];
+            }
+        }
+    }
 }
 
 /// Repack a slot's tangent-space normal map (RG) and roughness (B) and metallic (A)
@@ -401,8 +462,12 @@ struct SampledImage final
 /// (otherwise the larger data texture's), sampling the others nearest. The scalar
 /// metallic/roughness terms stay as the multipliers they are in glTF and MTL. Without a
 /// free texture slot the roughness/metallic textures are averaged into the scalars.
+/// Rows are repacked in bands on jobsOrNull; one texture holding both roughness and
+/// metallic (glTF metallicRoughness) is decoded once.
 [[nodiscard]] Status CookSurfaceMap(const SceneIr& scene,
-                                    std::string_view root,
+                                    TextureDecodeQueue& inoutDecodes,
+                                    foundation::threading::JobSystem* jobsOrNull,
+                                    ParallelTasks& inoutTasks,
                                     PlannedMaterial& inoutPlanned,
                                     DiagnosticLog& inoutLog,
                                     Array<CookedTexture>& inoutTextures) noexcept
@@ -432,43 +497,57 @@ struct SampledImage final
                                0,
                                "normal map dropped: the bundle's texture count is exhausted");
         }
-        return AverageScalarTextures(scene, root, inoutPlanned, inoutLog);
+        return AverageScalarTextures(scene, inoutDecodes, inoutPlanned, inoutLog);
     }
     SampledImage normal;
     SampledImage roughness;
     SampledImage metallic;
-    Status status = DecodeSurfaceSource(scene, root, normalTexture, 0, inoutLog, normal);
+    const SurfaceSourceSelection metallicSelection
+    {
+        .Texture = material.MetallicTexture,
+        .Channel = material.MetallicChannel,
+    };
+    const bool isMetallicShared = material.MetallicTexture == material.RoughnessTexture;
+    Status status =
+        DecodeSurfaceSource(scene, inoutDecodes, { .Texture = normalTexture, .Channel = 0 }, inoutLog, normal);
     if (status == Status::Ok)
     {
-        status =
-            DecodeSurfaceSource(scene, root, material.RoughnessTexture, material.RoughnessChannel, inoutLog, roughness);
+        status = DecodeSurfaceSource(scene,
+                                     inoutDecodes,
+                                     { .Texture = material.RoughnessTexture, .Channel = material.RoughnessChannel },
+                                     inoutLog,
+                                     roughness);
     }
-    if (status == Status::Ok)
+    if (status == Status::Ok && isMetallicShared == true)
     {
-        status =
-            DecodeSurfaceSource(scene, root, material.MetallicTexture, material.MetallicChannel, inoutLog, metallic);
+        ShareSurfaceSource(scene, roughness, metallicSelection, inoutLog, metallic);
+    }
+    else if (status == Status::Ok)
+    {
+        status = DecodeSurfaceSource(scene, inoutDecodes, metallicSelection, inoutLog, metallic);
     }
     if (status != Status::Ok ||
         (normal.IsPresent == false && roughness.IsPresent == false && metallic.IsPresent == false))
     {
         return status;
     }
+    const SampledImage& metallicSource = isMetallicShared == true ? roughness : metallic;
     // The normal map sets the resolution; otherwise the larger roughness/metallic image.
-    const SampledImage& reference =
-        normal.IsPresent == true ? normal
+    const DecodedImage& reference =
+        normal.IsPresent == true ? normal.Image
         : roughness.IsPresent == true &&
                 (metallic.IsPresent == false || usize{roughness.Image.Width} * roughness.Image.Height >=
-                                                    usize{metallic.Image.Width} * metallic.Image.Height)
-            ? roughness
-            : metallic;
+                                                    usize{metallicSource.Image.Width} * metallicSource.Image.Height)
+            ? roughness.Image
+            : metallicSource.Image;
     CookedTexture* cookedOrNull = inoutTextures.TryAddInPlace();
     if (cookedOrNull == nullptr)
     {
         return Status::OutOfMemory;
     }
     DecodedImage& image = cookedOrNull->Image;
-    image.Width = reference.Image.Width;
-    image.Height = reference.Image.Height;
+    image.Width = reference.Width;
+    image.Height = reference.Height;
     if (image.Texels.TryResize(usize{image.Width} * image.Height * DECODED_IMAGE_CHANNEL_COUNT) == false)
     {
         return Status::OutOfMemory;
@@ -477,18 +556,27 @@ struct SampledImage final
     constexpr uint8 FLAT_NORMAL_CODE = 128;
     constexpr uint8 UNIT_MULTIPLIER_CODE = 255;
     constexpr usize ROUGHNESS_CHANNEL = 2;
-    for (uint32 y = 0; y < image.Height; ++y)
+    SurfaceRepack repack{ .Output = image, .Channels = {}, .BandCount = GetImageBandCount(jobsOrNull, image.Height) };
+    // A shared metallic channel samples the roughness decode; metallic.IsPresent says whether it applies.
+    SampledImage absent;
+    if (SelectSurfaceChannel(normal, { .Channel = 0, .Fallback = FLAT_NORMAL_CODE }, image.Width, repack.Channels[0]) ==
+            false ||
+        SelectSurfaceChannel(normal, { .Channel = 1, .Fallback = FLAT_NORMAL_CODE }, image.Width, repack.Channels[1]) ==
+            false ||
+        SelectSurfaceChannel(roughness,
+                             { .Channel = roughness.Channel, .Fallback = UNIT_MULTIPLIER_CODE },
+                             image.Width,
+                             repack.Channels[ROUGHNESS_CHANNEL]) == false ||
+        SelectSurfaceChannel(metallic.IsPresent == true ? metallicSource : absent,
+                             { .Channel = metallic.Channel, .Fallback = UNIT_MULTIPLIER_CODE },
+                             image.Width,
+                             repack.Channels[ALPHA_CHANNEL]) == false)
     {
-        for (uint32 x = 0; x < image.Width; ++x)
-        {
-            uint8* texel = image.Texels.GetData() + (usize{y} * image.Width + x) * DECODED_IMAGE_CHANNEL_COUNT;
-            texel[0] = SampleChannel(normal, 0, x, y, image.Width, image.Height, FLAT_NORMAL_CODE);
-            texel[1] = SampleChannel(normal, 1, x, y, image.Width, image.Height, FLAT_NORMAL_CODE);
-            texel[ROUGHNESS_CHANNEL] =
-                SampleChannel(roughness, roughness.Channel, x, y, image.Width, image.Height, UNIT_MULTIPLIER_CODE);
-            texel[ALPHA_CHANNEL] =
-                SampleChannel(metallic, metallic.Channel, x, y, image.Width, image.Height, UNIT_MULTIPLIER_CODE);
-        }
+        return Status::OutOfMemory;
+    }
+    if (inoutTasks.Run(jobsOrNull, repack.BandCount, RepackSurfaceBand, &repack, "SceneCook.RepackSurfaceMap") == false)
+    {
+        return Status::OutOfMemory;
     }
     cookedOrNull->Source = normal.IsPresent == true      ? normalTexture
                            : roughness.IsPresent == true ? material.RoughnessTexture
@@ -507,7 +595,7 @@ struct SampledImage final
 /// Cook an emissive slot's emission colour texture (glTF emissiveTexture, MTL map_Ke)
 /// as an sRGB LUSCN v6 emission map multiplying its emission.
 [[nodiscard]] Status CookEmissionMap(const SceneIr& scene,
-                                     std::string_view root,
+                                     TextureDecodeQueue& inoutDecodes,
                                      PlannedMaterial& inoutPlanned,
                                      DiagnosticLog& inoutLog,
                                      Array<CookedTexture>& inoutTextures) noexcept
@@ -533,8 +621,8 @@ struct SampledImage final
     }
     DecodedImage image;
     std::string_view message;
-    const Status decoded = DecodeDataTexture(scene, root, texture, image, message);
-    if (decoded == Status::OutOfMemory)
+    const Status decoded = DecodeDataTexture(inoutDecodes, source, image, message);
+    if (decoded != Status::Ok && decoded != Status::Invalid)
     {
         return decoded;
     }
@@ -603,7 +691,7 @@ struct SampledImage final
 /// A mask that keeps every texel at its cutoff is cooked opaque; an unreadable
 /// opacity map leaves the slot opaque with a warning.
 [[nodiscard]] Status ApplyAlphaMask(const SceneIr& scene,
-                                    std::string_view root,
+                                    TextureDecodeQueue& inoutDecodes,
                                     PlannedMaterial& inoutPlanned,
                                     CookedTexture& inoutTexture,
                                     DiagnosticLog& inoutLog) noexcept
@@ -619,8 +707,8 @@ struct SampledImage final
         const IrTexture& texture = scene.Textures[material.OpacityTexture];
         DecodedImage opacity;
         std::string_view message;
-        const Status decoded = DecodeDataTexture(scene, root, texture, opacity, message);
-        if (decoded == Status::OutOfMemory)
+        const Status decoded = DecodeDataTexture(inoutDecodes, material.OpacityTexture, opacity, message);
+        if (decoded != Status::Ok && decoded != Status::Invalid)
         {
             return decoded;
         }
@@ -673,15 +761,228 @@ struct SampledImage final
     return Status::Ok;
 }
 
+/// True when the texture names image bytes and is not IR_NONE.
+[[nodiscard]] bool HasImageTexture(const SceneIr& scene, uint32 texture) noexcept
+{
+    return texture != IR_NONE && HasImage(scene.Textures[texture]) == true;
+}
+
+/// Plan the image decodes of CookTextures in the order it takes them, assuming every
+/// decode succeeds when counting the surface and emission maps that still fit. A
+/// decode that the cook takes off this order (after a failure changed that count) is
+/// decoded inline instead, so the plan affects only how much decoding overlaps.
+[[nodiscard]] bool
+PlanTextureDecodes(const SceneIr& scene, const CookPlan& plan, TextureDecodeQueue& inoutDecodes) noexcept
+{
+    bool isPlanned = true;
+    for (const PlannedMaterial& planned : plan.Materials)
+    {
+        if (HasImageTexture(scene, planned.Texture) == true)
+        {
+            isPlanned = isPlanned == true && inoutDecodes.TryPlan(planned.Texture) == true;
+        }
+        if (planned.IsAlphaMasked == true && planned.Representative != IR_NONE)
+        {
+            const uint32 opacity = scene.Materials[planned.Representative].OpacityTexture;
+            if (HasImageTexture(scene, opacity) == true)
+            {
+                isPlanned = isPlanned == true && inoutDecodes.TryPlan(opacity) == true;
+            }
+        }
+    }
+    usize textureCount = plan.Materials.GetSize();
+    for (const PlannedMaterial& planned : plan.Materials)
+    {
+        if (planned.Representative == IR_NONE)
+        {
+            continue;
+        }
+        const IrMaterial& material = scene.Materials[planned.Representative];
+        const uint32 normal =
+            material.NormalTextureKind == IrNormalTextureKind::TangentSpace ? material.NormalTexture : IR_NONE;
+        const bool hasSurface = HasImageTexture(scene, normal) == true ||
+                                HasImageTexture(scene, material.RoughnessTexture) == true ||
+                                HasImageTexture(scene, material.MetallicTexture) == true;
+        if (hasSurface == true)
+        {
+            const bool doesFit = textureCount < format::IMPORT_LIMITS.Textures;
+            // CookSurfaceMap order, or AverageScalarTextures order without a free slot;
+            // a texture holding both roughness and metallic is decoded once.
+            constexpr usize SURFACE_SOURCES = 3;
+            const uint32 shared =
+                material.MetallicTexture == material.RoughnessTexture ? IR_NONE : material.MetallicTexture;
+            const foundation::StaticArray<uint32, SURFACE_SOURCES> sources =
+                doesFit == true
+                    ? foundation::StaticArray<uint32, SURFACE_SOURCES>{normal, material.RoughnessTexture, shared}
+                    : foundation::StaticArray<uint32, SURFACE_SOURCES>{material.MetallicTexture,
+                                                                       shared == IR_NONE ? IR_NONE
+                                                                                         : material.RoughnessTexture,
+                                                                       IR_NONE};
+            for (const uint32 source : sources)
+            {
+                if (HasImageTexture(scene, source) == true)
+                {
+                    isPlanned = isPlanned == true && inoutDecodes.TryPlan(source) == true;
+                }
+            }
+            textureCount += doesFit == true ? 1 : 0;
+        }
+        if (planned.IsEmissive == true && HasImageTexture(scene, material.EmissionTexture) == true &&
+            textureCount < format::IMPORT_LIMITS.Textures)
+        {
+            isPlanned = isPlanned == true && inoutDecodes.TryPlan(material.EmissionTexture) == true;
+            ++textureCount;
+        }
+    }
+    return isPlanned;
+}
+
+/// Halvings of each cooked texture by the budget rule: repeatedly halve the largest
+/// texture (oversize ones first, the lowest index among equal sizes) until every
+/// texture fits the per-texture limits and all fit the budget, or the one to halve is
+/// already 1 x 1. Planned from sizes alone, so the textures can then halve independently.
+[[nodiscard]] bool
+PlanTextureHalvings(const Array<CookedTexture>& textures, usize textureBudget, Array<uint32>& outHalvings) noexcept
+{
+    struct Extent final
+    {
+        uint32 Width = 0;
+        uint32 Height = 0;
+        usize Bytes = 0;
+    };
+    Array<Extent> extents;
+    if (extents.TryResize(textures.GetSize()) == false || outHalvings.TryResize(textures.GetSize()) == false)
+    {
+        return false;
+    }
+    for (usize i = 0; i < textures.GetSize(); ++i)
+    {
+        const DecodedImage& image = textures[i].Image;
+        extents[i] = { .Width = image.Width, .Height = image.Height, .Bytes = image.Texels.GetSize() };
+        outHalvings[i] = 0;
+    }
+    while (true)
+    {
+        usize total = 0;
+        usize largest = 0;
+        usize largestBytes = 0;
+        bool hasOversize = false;
+        for (usize i = 0; i < extents.GetSize(); ++i)
+        {
+            const Extent& extent = extents[i];
+            total += extent.Bytes;
+            const bool isOversize = extent.Bytes > format::MAX_TEXTURE_BYTES ||
+                                    extent.Width > format::MAX_TEXTURE_DIMENSION ||
+                                    extent.Height > format::MAX_TEXTURE_DIMENSION;
+            if ((isOversize == true && hasOversize == false) ||
+                (isOversize == hasOversize && extent.Bytes > largestBytes))
+            {
+                largest = i;
+                largestBytes = extent.Bytes;
+            }
+            hasOversize = hasOversize == true || isOversize == true;
+        }
+        if (extents.GetSize() == 0 || (hasOversize == false && total <= textureBudget))
+        {
+            return true;
+        }
+        Extent& extent = extents[largest];
+        if (extent.Width == 1 && extent.Height == 1)
+        {
+            return true;
+        }
+        // HalveImage's output extent.
+        extent.Width = extent.Width > 1 ? extent.Width / 2 : 1;
+        extent.Height = extent.Height > 1 ? extent.Height / 2 : 1;
+        extent.Bytes = usize{extent.Width} * extent.Height * DECODED_IMAGE_CHANNEL_COUNT;
+        ++outHalvings[largest];
+    }
+}
+
+/// Planned halvings of the cooked textures, one task per texture that halves.
+struct TextureHalvingRun final
+{
+    Array<CookedTexture>& Textures;
+    const Array<uint32>& Halvings;
+    /// Texture of each task.
+    Array<usize> Tasks;
+    /// Whether a task ran out of memory; each task writes only its own entry.
+    Array<bool> HasTaskFailed;
+};
+
+/// Halve one texture its planned number of times.
+void HalveTextureTask(void* context, usize task) noexcept
+{
+    TextureHalvingRun& run = *static_cast<TextureHalvingRun*>(context);
+    const usize texture = run.Tasks[task];
+    for (uint32 i = 0; i < run.Halvings[texture]; ++i)
+    {
+        if (HalveImage(run.Textures[texture].Image) == false)
+        {
+            run.HasTaskFailed[task] = true;
+            return;
+        }
+    }
+}
+
+/// Downscale the cooked textures to the per-texture limits and the byte budget, by
+/// the halvings PlanTextureHalvings chooses; textures halve in jobs on jobsOrNull.
+[[nodiscard]] Status HalveTexturesToBudget(foundation::threading::JobSystem* jobsOrNull,
+                                           ParallelTasks& inoutTasks,
+                                           usize textureBudget,
+                                           Array<CookedTexture>& inoutTextures) noexcept
+{
+    Array<uint32> halvings;
+    if (PlanTextureHalvings(inoutTextures, textureBudget, halvings) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    TextureHalvingRun run{ .Textures = inoutTextures, .Halvings = halvings, .Tasks = {}, .HasTaskFailed = {} };
+    for (usize i = 0; i < halvings.GetSize(); ++i)
+    {
+        if (halvings[i] != 0 && run.Tasks.TryAdd(i) == false)
+        {
+            return Status::OutOfMemory;
+        }
+    }
+    if (run.HasTaskFailed.TryResize(run.Tasks.GetSize(), false) == false ||
+        inoutTasks.Run(jobsOrNull, run.Tasks.GetSize(), HalveTextureTask, &run, "SceneCook.HalveTexture") == false)
+    {
+        return Status::OutOfMemory;
+    }
+    for (const bool hasFailed : run.HasTaskFailed)
+    {
+        if (hasFailed == true)
+        {
+            return Status::OutOfMemory;
+        }
+    }
+    return Status::Ok;
+}
+
 /// Decode or synthesise the texture of every slot, then downscale to the byte budget.
+/// Images are decoded on jobsOrNull when set (see TextureDecodeQueue), and surface maps
+/// repack and textures halve there too; every worker count, and none, gives the same
+/// textures and diagnostics.
+/// @param outFileReads Every image file read, with the digest of its bytes.
 [[nodiscard]] Status CookTextures(const SceneIr& scene,
                                   std::string_view root,
+                                  foundation::threading::JobSystem* jobsOrNull,
+                                  const Cancellation* cancelOrNull,
                                   CookPlan& inoutPlan,
                                   usize textureBudget,
                                   DiagnosticLog& inoutLog,
-                                  Array<CookedTexture>& outTextures) noexcept
+                                  Array<CookedTexture>& outTextures,
+                                  Array<TextureFileRead>& outFileReads) noexcept
 {
     outTextures.Clear();
+    outFileReads.Clear();
+    TextureDecodeQueue decodes(scene, root, jobsOrNull, cancelOrNull);
+    ParallelTasks tasks;
+    if (PlanTextureDecodes(scene, inoutPlan, decodes) == false)
+    {
+        return Status::OutOfMemory;
+    }
     for (PlannedMaterial& planned : inoutPlan.Materials)
     {
         CookedTexture* cooked = outTextures.TryAddInPlace();
@@ -693,26 +994,23 @@ struct SampledImage final
         if (planned.Texture != IR_NONE && HasImage(scene.Textures[planned.Texture]) == true)
         {
             const IrTexture& texture = scene.Textures[planned.Texture];
-            Array<uint8> storage;
-            std::span<const uint8> bytes;
-            std::string_view decoderName;
-            bool isFileRead = false;
-            std::string_view message = "cannot read the image file";
-            const Status read = LoadImageBytes(scene, root, texture, storage, bytes, decoderName, isFileRead);
-            if (read == Status::OutOfMemory)
+            TextureDecode decode;
+            const Status taken = decodes.Take(planned.Texture, decode);
+            if (taken != Status::Ok)
             {
-                return read;
+                return taken;
+            }
+            if (decode.Read == Status::OutOfMemory)
+            {
+                return decode.Read;
             }
             ImageResult decoded = ImageResult::Invalid;
-            if (read == Status::Ok)
+            if (decode.Read == Status::Ok)
             {
-                if (isFileRead == true)
-                {
-                    cooked->ReadSource = planned.Texture;
-                    cooked->ReadDigest = Hash(bytes);
-                }
-                decoded = DecodeImage(decoderName, bytes, cooked->Image, message);
+                decoded = decode.Decoded;
+                cooked->Image = static_cast<DecodedImage&&>(decode.Image);
             }
+            const std::string_view message = decode.Message;
             if (decoded == ImageResult::OutOfMemory)
             {
                 return Status::OutOfMemory;
@@ -756,7 +1054,7 @@ struct SampledImage final
             }
             planned.IsTextureRepeated = false;
         }
-        const Status masked = ApplyAlphaMask(scene, root, planned, *cooked, inoutLog);
+        const Status masked = ApplyAlphaMask(scene, decodes, planned, *cooked, inoutLog);
         if (masked != Status::Ok)
         {
             return masked;
@@ -768,50 +1066,24 @@ struct SampledImage final
     // bundle's texture count allows.
     for (PlannedMaterial& planned : inoutPlan.Materials)
     {
-        Status status = CookSurfaceMap(scene, root, planned, inoutLog, outTextures);
+        Status status = CookSurfaceMap(scene, decodes, jobsOrNull, tasks, planned, inoutLog, outTextures);
         if (status == Status::Ok)
         {
-            status = CookEmissionMap(scene, root, planned, inoutLog, outTextures);
+            status = CookEmissionMap(scene, decodes, planned, inoutLog, outTextures);
         }
         if (status != Status::Ok)
         {
             return status;
         }
     }
-    // Halve the largest texture until each fits the per-texture limits and all fit the budget.
-    while (true)
+    if (outFileReads.TryAddRange(decodes.GetFileReads()) == false)
     {
-        usize total = 0;
-        usize largest = 0;
-        usize largestBytes = 0;
-        bool hasOversize = false;
-        for (usize i = 0; i < outTextures.GetSize(); ++i)
-        {
-            const DecodedImage& image = outTextures[i].Image;
-            const usize bytes = image.Texels.GetSize();
-            total += bytes;
-            const bool isOversize = bytes > format::MAX_TEXTURE_BYTES || image.Width > format::MAX_TEXTURE_DIMENSION ||
-                                    image.Height > format::MAX_TEXTURE_DIMENSION;
-            if ((isOversize == true && hasOversize == false) || (isOversize == hasOversize && bytes > largestBytes))
-            {
-                largest = i;
-                largestBytes = bytes;
-            }
-            hasOversize = hasOversize == true || isOversize == true;
-        }
-        if (hasOversize == false && total <= textureBudget)
-        {
-            break;
-        }
-        DecodedImage& image = outTextures[largest].Image;
-        if (image.Width == 1 && image.Height == 1)
-        {
-            break;
-        }
-        if (HalveImage(image) == false)
-        {
-            return Status::OutOfMemory;
-        }
+        return Status::OutOfMemory;
+    }
+    const Status halved = HalveTexturesToBudget(jobsOrNull, tasks, textureBudget, outTextures);
+    if (halved != Status::Ok)
+    {
+        return halved;
     }
     for (const CookedTexture& cooked : outTextures)
     {
@@ -1456,11 +1728,11 @@ void CountDiagnostics(const DiagnosticLog& log, ImportSummary& inoutSummary) noe
 }
 
 /// Every file the import consulted with the digest of the exact bytes it read:
-/// sources, PLY files, existing images and the licence. Images the budget never
-/// read are hashed here, since their bytes did not reach the bundle.
+/// sources, PLY files, existing images and the licence. Images the cook decoded carry
+/// the digest computed with their decode; images it never read are hashed here.
 [[nodiscard]] Status CollectInputs(const SceneIr& scene,
                                    std::string_view root,
-                                   const Array<CookedTexture>& textures,
+                                   std::span<const TextureFileRead> fileReads,
                                    const CookedLighting& lighting,
                                    const Digest* licenseDigestOrNull,
                                    std::string_view licenseName,
@@ -1491,12 +1763,11 @@ void CountDiagnostics(const DiagnosticLog& log, ImportSummary& inoutSummary) noe
         }
         Digest digest;
         bool hasDigest = false;
-        for (const CookedTexture& cooked : textures)
+        for (const TextureFileRead& read : fileReads)
         {
-            if (cooked.ReadSource != IR_NONE &&
-                scene.Textures[cooked.ReadSource].File.GetView() == texture.File.GetView())
+            if (scene.Textures[read.Texture].File.GetView() == texture.File.GetView())
             {
-                digest = cooked.ReadDigest;
+                digest = read.FileDigest;
                 hasDigest = true;
                 break;
             }
@@ -1608,6 +1879,7 @@ void ResetResult(BestEffortResult& outResult) noexcept
     summary.SourceAreaLights = scene.Lights.Area;
     summary.DroppedPlacements = plan.DroppedPlacements;
     Array<CookedTexture> textures;
+    Array<TextureFileRead> textureFileReads;
     Array<CookedMesh> meshes;
     if (status == Status::Ok)
     {
@@ -1665,7 +1937,15 @@ void ResetResult(BestEffortResult& outResult) noexcept
         const usize reserved = geometryBytes + recordBytes + lightingBytes;
         const usize remaining = bundleLimit > reserved ? bundleLimit - reserved : 0;
         const usize budget = math::Min(remaining, format::IMPORT_LIMITS.TotalTextureBytes);
-        status = CookTextures(scene, root.GetView(), plan, budget, log, textures);
+        status = CookTextures(scene,
+                              root.GetView(),
+                              options.JobsOrNull,
+                              cancelOrNull,
+                              plan,
+                              budget,
+                              log,
+                              textures,
+                              textureFileReads);
     }
     if (status == Status::Ok)
     {
@@ -1741,7 +2021,7 @@ void ResetResult(BestEffortResult& outResult) noexcept
     const Digest licenseDigest = Hash(outResult.License.AsSpan());
     const Status collected = CollectInputs(scene,
                                            root.GetView(),
-                                           textures,
+                                           textureFileReads.AsSpan(),
                                            lighting,
                                            licenseName.empty() == true ? nullptr : &licenseDigest,
                                            licenseName,

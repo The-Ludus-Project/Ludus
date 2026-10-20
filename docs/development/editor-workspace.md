@@ -758,6 +758,15 @@ is excluded from saved Worlds, scene bounds and shadow-caster geometry. The empt
 view and rendered view share one grid layout. Render-graph attachment views show
 the grid only where their raster pass draws it; offline reference captures omit it.
 
+The viewport toolbar’s **Look** multiplier controls mouse sensitivity for right-drag
+look and Alt/Option orbit, from **0.1×** to **4×** (default **1×**). Lower it for
+finer aiming. It is saved with viewport navigation; changing it preserves the
+current camera pose and does not change pan, dolly or keyboard movement speed.
+On macOS, right-drag uses relative mouse/trackpad motion without repeatedly
+recentering the cursor. Releasing the button, pressing Escape, losing focus or
+hiding the viewport releases capture. If native capture is unavailable, dragging
+continues within the pointer's available screen area.
+
 The editor owns a separate camera controller and publishes a validated C0
 pose/lens sample to the renderer. Navigation never changes an authored camera,
 World Save/Undo history, or simulation state. Starting navigation from an
@@ -767,7 +776,7 @@ that preview. Zero-motion input leaves the selected camera unchanged.
 
 | Input, with the viewport focused | Action |
 | --- | --- |
-| Right-drag | Look around from the current eye |
+| Right-drag | Look around from the current eye: horizontal motion yaws about world up; vertical motion pitches about camera right |
 | Hold right mouse + WASD | Fly forward/backward and sideways |
 | Q / E while flying | Move down/up along world Y |
 | Shift while flying | Four-times movement speed |
@@ -911,6 +920,10 @@ World; they do not expose another object hierarchy or authoring document.
    text fields available and coalesces continued typing.
    **Cancel scene operation** retains the previous document. Reopen reads the
    project's cooked assets without needing the original source directory.
+   A project render-graph build or activation failure ends pending scene preparation
+   with its diagnostic instead of waiting indefinitely for a first frame. The last
+   presented viewport image is retained. Repair the graph and reopen the World to retry;
+   ordinary raster navigation requires a valid raster output, not a ray tracing pass.
 
 **Open World…** also accepts an existing `.lulevel` file. Successful conversion
 creates an unsaved sibling `<level-name>.world.json`; it preserves the original
@@ -1082,7 +1095,7 @@ On macOS this needs macOS 15. To use a worker you started yourself, set
 → Render Graph**. Without a worker the overlay explains how to get one. Live shaders
 are available in the native editor on macOS (Metal) and Linux (Vulkan). The
 browser editor has neither the worker nor a source tree, so it has no toggle.
-Project render-graph shaders reload through the Render Graph's **Live Preview**
+Saved project render-graph shaders reload through the Render Graph's **Live Preview**
 instead.
 
 Lit uses raster direct lighting and real-time shadows. HDR or constant authored
@@ -1123,7 +1136,10 @@ container stacking rules; widgets cannot overlay it arbitrarily.
 Metal sharing requires Qt 6.4+ with Qt Quick and the Cocoa display plugin. On
 Linux (X11 or Wayland) the editor creates the Vulkan device itself, on Qt's
 `QVulkanInstance`, choosing a graphics queue that can present to the viewport
-window and enabling `VK_KHR_swapchain`. Qt Quick adopts that device through
+window and enabling `VK_KHR_swapchain`. Where the adapter supports
+`VK_KHR_external_memory_fd`, the editor enables it too (with
+`VK_KHR_external_memory` where still listed), so Play in the viewport can import
+the game's images onto this device. Qt Quick adopts that device through
 `QQuickGraphicsDevice::fromDeviceObjects`, available in every Qt 6 release, and
 the RHI admits the same device and queue. Qt before 6.6 cannot report the queue of
 a device it created itself; with this ownership it never has to, so Ubuntu 24.04's
@@ -1303,7 +1319,7 @@ For this adapter's **Play saved World**, configure Project settings to build
 directory, or absolute). Save Project settings. The action saves the World, then
 uses the existing supervised Build/Run workflow.
 
-**Play in the viewport (macOS).** The game opens in the World viewport, which
+**Play in the viewport (macOS and Linux).** The game opens in the World viewport, which
 becomes its window; the World stays as edited until the game's first frame
 arrives. Click the viewport to give the game the keyboard. Keys go to the game by
 physical key, and editor shortcuts do not take them. **Shift+F1** gives the
@@ -1312,9 +1328,22 @@ closes the game's window, as its own close button would; the game's process is
 stopped if it has not exited after three seconds. Resizing or hiding the
 viewport resizes or hides the game's window. When the game exits, crashes or is
 stopped, the viewport edits the World again. The game receives no mouse input
-yet, because Platform has none. Where the viewport cannot host the game (on
-Linux, while the viewport is paused, or without a GPU device), the status bar
-says why and the game opens in its own window. See
+yet, because Platform has none. On Linux the viewport needs an X11 or Wayland
+display and a Vulkan adapter with `VK_KHR_external_memory_fd`, and the game must
+render on the same adapter and driver as the editor.
+
+**Play mode.** The **Play mode** box next to **Play saved World** chooses **In
+viewport** (the default) or **In separate window**. The choice is an editor
+preference, saved for later sessions and never written to the project, and it
+applies to the next Play; a running game does not move. In separate-window mode
+the game is launched without the hosted-window variable, so it opens its own
+native window, and the World viewport is labelled as playing in a separate
+window until the game exits. Where the viewport cannot host the game (on a
+Vulkan adapter without `VK_KHR_external_memory_fd`, in the offscreen readback
+viewport, under offscreen Qt, while the viewport is paused, or without a GPU
+device), Play starts nothing: the World view states why and offers **Play in
+a separate window** for this one run, leaving the preference unchanged. Play
+never switches modes silently. See
 [Play in the editor viewport](../architecture/editor-gui-systems.md#play-in-the-editor-viewport).
 
 The child independently reads and validates that saved file before activation;

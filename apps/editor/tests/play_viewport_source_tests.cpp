@@ -70,7 +70,7 @@ bool AwaitCondition(Condition condition)
     return condition();
 }
 
-/// A Metal-shaped identity that is never dereferenced: only an import would touch it.
+/// A device identity that is never dereferenced: only an import would touch it.
 rhi::NativeDeviceIdentity MakeUntouchedIdentity(rhi::Backend api)
 {
     static int32 device = 0;
@@ -83,14 +83,42 @@ rhi::NativeDeviceIdentity MakeUntouchedIdentity(rhi::Backend api)
     identity.PhysicalDevice = rhi::NativePhysicalDevice(&device);
     return identity;
 }
+#if defined(Q_OS_MACOS)
+/// The API the viewport shares with Qt on this target, and one this build cannot import onto.
+constexpr rhi::Backend NATIVE_API = rhi::Backend::Metal;
+constexpr rhi::Backend FOREIGN_API = rhi::Backend::Vulkan;
+#else
+constexpr rhi::Backend NATIVE_API = rhi::Backend::Vulkan;
+constexpr rhi::Backend FOREIGN_API = rhi::Backend::Metal;
+#endif
+/// Whether Qt presents on a desktop display through the shared GPU device on this target.
+[[maybe_unused]] bool IsSharedDisplay()
+{
+    const QString platform = QGuiApplication::platformName();
+#if defined(Q_OS_MACOS)
+    return platform == QStringLiteral("cocoa");
+#else
+    return (platform == QStringLiteral("xcb") || platform.startsWith(QStringLiteral("wayland")) == true) &&
+           qEnvironmentVariable("LUDUS_EDITOR_VIEWPORT") != QStringLiteral("offscreen");
+#endif
+}
 } // namespace
 
-TEST_CASE("Play in the viewport says why it is unavailable with Vulkan", "[editor][play][viewport]")
+TEST_CASE("Play in the viewport says why it cannot use a device", "[editor][play][viewport]")
 {
     PlayViewportSource source;
-    CHECK_FALSE(source.Start(SOCKET_PARENT, MakeUntouchedIdentity(rhi::Backend::Vulkan), 64, 48, 1));
+    // Browser APIs have no hosted surface.
+    CHECK_FALSE(source.Start(SOCKET_PARENT, MakeUntouchedIdentity(rhi::Backend::WebGPU), 64, 48, 1));
     CHECK(source.GetState() == PlaySourceState::Unavailable);
-    CHECK(source.GetUnavailableReason().contains(QStringLiteral("own window")));
+    CHECK(source.GetUnavailableReason() ==
+          QStringLiteral("Play in the viewport needs a Metal or Vulkan viewport device."));
+    CHECK(source.GetChannelAddress().isEmpty());
+    source.Stop();
+    // This build imports game images onto its own platform's API only.
+    CHECK_FALSE(source.Start(SOCKET_PARENT, MakeUntouchedIdentity(FOREIGN_API), 64, 48, 1));
+    CHECK(source.GetState() == PlaySourceState::Unavailable);
+    CHECK(source.GetUnavailableReason() ==
+          QStringLiteral("Play in the viewport cannot import game images on this GPU device."));
     CHECK(source.GetChannelAddress().isEmpty());
     // Game frames are not RHI images, so readback presentation is never offered.
     ludus::graphics::renderer::ViewportFrame frame;
@@ -100,19 +128,19 @@ TEST_CASE("Play in the viewport says why it is unavailable with Vulkan", "[edito
     CHECK(source.GetState() == PlaySourceState::Stopped);
 }
 
-#if defined(Q_OS_MACOS)
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
 TEST_CASE("A play source opens a private window channel and closes it on Stop", "[editor][play][viewport]")
 {
     PlayViewportSource source;
     int32 resets = 0;
     QObject::connect(&source, &ViewportFrameSource::ResettingFrames, &source, [&resets]() { ++resets; });
-    REQUIRE(source.Start(SOCKET_PARENT, MakeUntouchedIdentity(rhi::Backend::Metal), 64, 48, 2));
+    REQUIRE(source.Start(SOCKET_PARENT, MakeUntouchedIdentity(NATIVE_API), 64, 48, 2));
     CHECK(source.GetState() == PlaySourceState::Listening);
     CHECK(source.GetChannelAddress().startsWith(QStringLiteral("1:")));
     CHECK(source.GetEndpoint().GetState() == ludus::platform::HostedConnectionState::Listening);
     CHECK_FALSE(source.HasPendingFrame());
     // A second Start while a session is open is refused.
-    CHECK_FALSE(source.Start(SOCKET_PARENT, MakeUntouchedIdentity(rhi::Backend::Metal), 64, 48, 2));
+    CHECK_FALSE(source.Start(SOCKET_PARENT, MakeUntouchedIdentity(NATIVE_API), 64, 48, 2));
     source.Stop();
     CHECK(resets == 1);
     CHECK(source.GetState() == PlaySourceState::Stopped);
@@ -122,10 +150,11 @@ TEST_CASE("A play source opens a private window channel and closes it on Stop", 
 
 TEST_CASE("A hosted game's frames appear in the viewport and return to the game", "[editor][play][viewport][gpu]")
 {
-#if defined(LUDUS_HOSTED_PRODUCER) && defined(Q_OS_MACOS)
-    if (QGuiApplication::platformName() != QStringLiteral("cocoa"))
+#if defined(LUDUS_HOSTED_PRODUCER) && (defined(Q_OS_MACOS) || defined(Q_OS_LINUX))
+    if (IsSharedDisplay() == false)
     {
-        SKIP("Play in the viewport presents through the Metal-shared device (run with QT_QPA_PLATFORM=cocoa)");
+        SKIP("Play in the viewport presents through the shared GPU device (run with QT_QPA_PLATFORM=cocoa on macOS, "
+             "xcb or wayland on Linux)");
     }
     rhi::Shutdown();
     RenderPreview preview;
@@ -148,6 +177,10 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
         SKIP("No shared GPU device for the viewport: " << preview.Status().toStdString());
     }
     REQUIRE(AwaitCondition([&viewport]() { return viewport.PresentedFrames() >= 1; }));
+    if (viewport.CanImportHostedImages() == false)
+    {
+        SKIP("The viewport's device cannot import hosted images (no VK_KHR_external_memory_fd)");
+    }
 
     // The game's images live on the viewport's own device: the one Qt samples with.
     rhi::NativeDeviceLease lease;
@@ -209,15 +242,22 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
     CHECK(game.exitCode() == 0);
     preview.Stop();
 #else
-    SKIP("Needs macOS, the native GPU preview and the RHI hosted test producer");
+    SKIP("Needs macOS or Linux, the native GPU preview and the RHI hosted test producer");
 #endif
 }
 
-#if defined(LUDUS_WORLD_DEMO_PLAYER) && defined(Q_OS_MACOS)
+#if defined(LUDUS_WORLD_DEMO_PLAYER) && (defined(Q_OS_MACOS) || defined(Q_OS_LINUX))
 namespace
 {
-/// macOS kVK_ANSI_D: the World-demo player moves right while it is held.
-constexpr uint32 MAC_KEY_D = 0x02;
+#    if defined(Q_OS_MACOS)
+/// macOS kVK_ANSI_D, Qt's native virtual key: the World-demo player moves right while it is held.
+constexpr uint32 NATIVE_KEY_D = 0x02;
+#    else
+/// Linux evdev KEY_D as Qt's native scan code, an XKB key code (evdev plus eight).
+constexpr uint32 EVDEV_KEY_D = 32;
+constexpr uint32 XKB_KEYCODE_OFFSET = 8;
+constexpr uint32 NATIVE_KEY_D = EVDEV_KEY_D + XKB_KEYCODE_OFFSET;
+#    endif
 /// How long the journey holds D, so the player moves a visible distance.
 constexpr int32 HOLD_MILLISECONDS = 600;
 
@@ -254,9 +294,14 @@ float64 GetPlayerCentroid()
     }
     return -1;
 }
+/// Send a key as the platform reports it: macOS by virtual key, X11 and Wayland by scan code.
 void SendNativeKey(QWidget& inoutTarget, QEvent::Type type, int key, uint32 nativeKey, Qt::KeyboardModifiers modifiers)
 {
+#    if defined(Q_OS_MACOS)
     QKeyEvent event(type, key, modifiers, 0, nativeKey, 0);
+#    else
+    QKeyEvent event(type, key, modifiers, nativeKey, 0, 0);
+#    endif
     QCoreApplication::sendEvent(&inoutTarget, &event);
 }
 } // namespace
@@ -265,8 +310,9 @@ void SendNativeKey(QWidget& inoutTarget, QEvent::Type type, int key, uint32 nati
 TEST_CASE("Play runs the World-demo game in the World viewport, with keys, resize, Stop and a crash",
           "[editor][play][viewport][gpu][.play-native]")
 {
-#if defined(LUDUS_WORLD_DEMO_PLAYER) && defined(Q_OS_MACOS)
-    REQUIRE(QGuiApplication::platformName() == QStringLiteral("cocoa"));
+#if defined(LUDUS_WORLD_DEMO_PLAYER) && (defined(Q_OS_MACOS) || defined(Q_OS_LINUX))
+    // Run it on the native display: cocoa on macOS, xcb or wayland on Linux.
+    REQUIRE(IsSharedDisplay());
     QTemporaryDir directory;
     REQUIRE(directory.isValid());
     const QString path =
@@ -290,9 +336,10 @@ TEST_CASE("Play runs the World-demo game in the World viewport, with keys, resiz
     REQUIRE(viewport != nullptr);
     const auto startGame = [&](QProcess& inoutGame) {
         QString address;
-        QString reason;
-        REQUIRE(workspace.BeginPlayInViewport(address, reason));
-        INFO(reason.toStdString());
+        const PlayWindow window = workspace.PreparePlay(PlayMode::InViewport, address);
+        INFO(workspace.GetPlayUnavailableText().toStdString());
+        REQUIRE(window == PlayWindow::InViewport);
+        REQUIRE(address.isEmpty() == false);
         QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
         environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE), address);
         inoutGame.setProcessEnvironment(environment);
@@ -314,9 +361,9 @@ TEST_CASE("Play runs the World-demo game in the World viewport, with keys, resiz
     // The viewport is the game's window: focus, then a held physical D moves the player right.
     QFocusEvent focusIn(QEvent::FocusIn, Qt::MouseFocusReason);
     QCoreApplication::sendEvent(viewport, &focusIn);
-    SendNativeKey(*viewport, QEvent::KeyPress, Qt::Key_D, MAC_KEY_D, Qt::NoModifier);
+    SendNativeKey(*viewport, QEvent::KeyPress, Qt::Key_D, NATIVE_KEY_D, Qt::NoModifier);
     QTest::qWait(HOLD_MILLISECONDS);
-    SendNativeKey(*viewport, QEvent::KeyRelease, Qt::Key_D, MAC_KEY_D, Qt::NoModifier);
+    SendNativeKey(*viewport, QEvent::KeyRelease, Qt::Key_D, NATIVE_KEY_D, Qt::NoModifier);
     const uint64 moved = viewport->PresentedFrames();
     REQUIRE(AwaitCondition([&]() { return viewport->PresentedFrames() >= moved + PRESENTED_FRAMES; }));
     const float64 after = GetPlayerCentroid();
@@ -360,6 +407,6 @@ TEST_CASE("Play runs the World-demo game in the World viewport, with keys, resiz
     CHECK(AwaitCondition([&]() { return viewport->PresentedFrames() >= recovered + PRESENTED_FRAMES; }));
     workspace.StopPreview();
 #else
-    SKIP("Needs macOS, the native GPU preview and the World-demo player");
+    SKIP("Needs macOS or Linux, the native GPU preview and the World-demo player");
 #endif
 }

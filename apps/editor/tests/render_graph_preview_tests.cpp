@@ -1041,14 +1041,46 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     QByteArray blue = shader;
     blue.replace("return value.Color;", "return float4(0, 0, 1, 1);");
     sourceText->setPlainText(QString::fromUtf8(blue));
+    const uint64 beforeSave = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    QTest::qWait(600);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == beforeSave);
+    REQUIRE(workspace.Save() == true);
     REQUIRE(waitFor([&]() {
                 const QImage& image = graphView->GetImage();
                 const QColor pixel = image.pixelColor(image.width() / 2, image.height() / 2);
                 return pixel.blue() > GREEN_MINIMUM && pixel.red() < DARK_MAXIMUM;
             }) == true);
     REQUIRE(original.open(QIODevice::ReadOnly) == true);
-    CHECK(original.readAll() == shader);
+    CHECK(original.readAll() == blue);
     original.close();
+    const QImage savedImage = graphView->GetImage();
+    const uint64 savedGeneration = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    const QByteArray savedGraph = workspace.GetDocument().GetSaved(workspace.GetDocument().GetRootGraph());
+    const uint64 beforeInvalidGraph = workspace.GetLastResult().Request.Request;
+    REQUIRE(workspace.GetDocument().SetText(workspace.GetDocument().GetRootGraph(), QByteArrayLiteral("{}")) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(waitFor([&]() {
+                return workspace.IsJobActive() == false && workspace.GetLastResult().IsSuccessful == false &&
+                       workspace.GetLastResult().Request.Request > beforeInvalidGraph;
+            }) == true);
+    CHECK(graphView->GetImage() == savedImage);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == savedGeneration);
+    REQUIRE(workspace.GetDocument().SetText(workspace.GetDocument().GetRootGraph(), savedGraph) ==
+            RenderGraphDocumentStatus::Ok);
+    const uint64 beforeInvalidShader = workspace.GetLastResult().Request.Request;
+    sourceText->setPlainText(QStringLiteral("broken shader source"));
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(waitFor([&]() {
+                return workspace.IsJobActive() == false && workspace.GetLastResult().IsSuccessful == false &&
+                       workspace.GetLastResult().Request.Request > beforeInvalidShader;
+            }) == true);
+    CHECK(graphView->GetImage() == savedImage);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == savedGeneration);
+    sourceText->setPlainText(QString::fromUtf8(blue));
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(waitFor([&]() { return workspace.GetPreviewOrNull()->GetPresentedGeneration() > savedGeneration; }) ==
+            true);
     const uint64 revision = workspace.GetPreviewOrNull()->GetPresentedRevision();
     QTest::mousePress(&viewport, Qt::LeftButton, Qt::AltModifier, QPoint(100, 200));
     QMouseEvent movement(QEvent::MouseMove,
@@ -1139,6 +1171,67 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
+}
+
+TEST_CASE("Supplied staircase2 World opens through its project raster graph", "[.staircase2-project]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    const QString root = qEnvironmentVariable("LUDUS_EDITOR_STAIRCASE_PROJECT");
+    if (root.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_EDITOR_STAIRCASE_PROJECT to an isolated copy of the supplied project.");
+    }
+    const QString python = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    const ToolingPaths tooling{python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    RendererWorkspace renderer(tooling);
+    WorldWorkspace world(tooling, nullptr);
+    world.UseProjectGraph(renderer);
+    renderer.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &renderer, [&]() {
+        renderer.SetPreviewSource(&world.GetRenderPreview());
+    });
+    renderer.SetProject(root, 1);
+    renderer.SetBuildTools(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
+                               .filePath(QStringLiteral("helper")),
+                           compiler);
+    renderer.EnableWorldRendering();
+    world.SetProject(root, 1);
+    world.resize(1000, 700);
+    world.show();
+    QElapsedTimer timer;
+    timer.start();
+    REQUIRE(world.Open(QDir(root).filePath(QStringLiteral("assets/staircase2.world.json"))) == true);
+    while ((world.CanSave() == false || world.GetRenderPreview().Frames() == 0) &&
+           timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(1);
+        renderer.ServicePreview();
+    }
+    INFO(renderer.GetStatusText().toStdString());
+    INFO(renderer.GetRenderProblem().toStdString());
+    REQUIRE(world.CanSave() == true);
+    REQUIRE(world.GetRenderPreview().Frames() != 0);
+    CHECK(world.GetRenderPreview().Scene().Objects.size() == 17);
+    const QImage& image = renderer.GetPreviewOrNull()->GetImage();
+    REQUIRE(image.isNull() == false);
+    bool hasGeometry = false;
+    const QRgb background = image.pixel(0, 0);
+    for (int32 y = 0; y < image.height(); ++y)
+    {
+        for (int32 x = 0; x < image.width(); ++x)
+        {
+            hasGeometry = hasGeometry == true || image.pixel(x, y) != background;
+        }
+    }
+    CHECK(hasGeometry == true);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_WORLD_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(world.grab().save(capture) == true);
+    }
+    world.StopPreview();
+    renderer.SetPreviewSource(nullptr);
 }
 
 TEST_CASE("World graph frames wait for import publication without erasing the last view",

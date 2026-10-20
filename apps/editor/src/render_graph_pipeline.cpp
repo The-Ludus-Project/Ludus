@@ -11,6 +11,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -22,6 +24,7 @@ using namespace foundation;
 namespace
 {
 constexpr int32 MAX_PORTS = 8;
+constexpr int32 PAIRED_INPUT_ROLE = Qt::UserRole + 1;
 constexpr int32 MAX_SHADERS = 16;
 constexpr int32 TABLE_HEIGHT = 160;
 constexpr int32 MAX_PROPERTY_VALUE = 65535;
@@ -48,6 +51,82 @@ QJsonArray ReadRows(const QTableWidget& table, const QStringList& fields)
         rows.append(record);
     }
     return rows;
+}
+
+QString GetPairedInput(const QJsonObject& node, const QJsonObject& resource)
+{
+    const QString target = resource.value(QStringLiteral("target")).toString();
+    for (const QJsonValueConstRef input : node.value(QStringLiteral("inputs")).toArray())
+    {
+        if (input.toObject().value(QStringLiteral("id")).toString() == target &&
+            input.toObject().value(QStringLiteral("type")) == resource.value(QStringLiteral("type")))
+        {
+            return target;
+        }
+    }
+    // A stale/missing association becomes a same-name pair on Apply, preserving a matching existing wire.
+    return resource.value(QStringLiteral("id")).toString();
+}
+
+QJsonArray GetReadInputs(const QJsonObject& node)
+{
+    const QJsonArray resources = node.value(QStringLiteral("outputs")).toArray();
+    QJsonArray inputs;
+    for (const QJsonValueConstRef input : node.value(QStringLiteral("inputs")).toArray())
+    {
+        bool isPaired = false;
+        for (const QJsonValueConstRef resource : resources)
+        {
+            isPaired =
+                isPaired == true ||
+                (GetPairedInput(node, resource.toObject()) == input.toObject().value(QStringLiteral("id")).toString() &&
+                 resource.toObject().value(QStringLiteral("type")) == input.toObject().value(QStringLiteral("type")));
+        }
+        if (isPaired == false)
+        {
+            inputs.append(input);
+        }
+    }
+    return inputs;
+}
+
+QString GetResourceFormat(const QString& type)
+{
+    return type == QStringLiteral("ColorTexture")   ? QStringLiteral("RGBA8Unorm")
+           : type == QStringLiteral("DepthTexture") ? QStringLiteral("Depth32Float")
+                                                    : QStringLiteral("Bytes");
+}
+
+QString ValidatePorts(const QJsonArray& ports, const QString& direction)
+{
+    if (ports.size() > MAX_PORTS)
+    {
+        return QStringLiteral("Pipeline has %1 %2 ports; at most %3 are supported. Remove a read input or writable "
+                              "resource before continuing.")
+            .arg(ports.size())
+            .arg(direction)
+            .arg(MAX_PORTS);
+    }
+    QStringList identities;
+    const QRegularExpression identifier(QStringLiteral("^[A-Za-z][A-Za-z0-9_-]{0,62}\\z"));
+    for (const QJsonValueConstRef value : ports)
+    {
+        const QString identity = value.toObject().value(QStringLiteral("id")).toString();
+        if (identifier.match(identity).hasMatch() == false)
+        {
+            return QStringLiteral("%1 port '%2' has an invalid name. Use 1–63 ASCII letters, digits, '_' or '-', "
+                                  "starting with a letter.")
+                .arg(direction, identity);
+        }
+        if (identities.contains(identity) == true)
+        {
+            return QStringLiteral("%1 port '%2' is declared more than once. Give each port a unique name. If this "
+                                  "resource is in Writable Resources, remove its duplicate row from Read Inputs.")
+                .arg(direction, identity);
+        }
+        identities.append(identity);
+    }
+    return {};
 }
 
 QStringList GetCellChoices(const QString& field, const QString& kind, const QString& table)
@@ -126,13 +205,11 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
       mOutputs(createTable(QStringLiteral("outputs"),
                            {QStringLiteral("id"),
                             QStringLiteral("type"),
-                            QStringLiteral("target"),
                             QStringLiteral("format"),
                             QStringLiteral("load"),
                             QStringLiteral("store")},
-                           {QStringLiteral("output"),
+                           {QStringLiteral("resource"),
                             QStringLiteral("ColorTexture"),
-                            QStringLiteral("input"),
                             QStringLiteral("RGBA8Unorm"),
                             QStringLiteral("Clear"),
                             QStringLiteral("Store")})),
@@ -151,7 +228,15 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     for (QTableWidget* table : {mInputs, mOutputs, mShaders})
     {
         const QString name = table->objectName();
-        tabs->addTab(table->parentWidget(), name.left(1).toUpper() + name.mid(1));
+        tabs->addTab(table->parentWidget(),
+                     name == QStringLiteral("outputs")  ? QStringLiteral("Writable Resources")
+                     : name == QStringLiteral("inputs") ? QStringLiteral("Read Inputs")
+                                                        : QStringLiteral("Shaders"));
+        for (int32 row = 0; row < table->rowCount(); ++row)
+        {
+            connectChoices(*table, row);
+        }
+        connect(table, &QTableWidget::cellChanged, this, [this]() { publishEdit(); });
     }
     for (const QString& name : {QStringLiteral("state"), QStringLiteral("invocation")})
     {
@@ -161,14 +246,19 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
         tabs->addTab(panel,
                      name == QStringLiteral("state") ? QStringLiteral("Pipeline State") : QStringLiteral("Invocation"));
     }
+    QLabel* help = new QLabel(QStringLiteral("Each writable resource creates a paired input and output. Connect the "
+                                             "texture/buffer to its input and use its output for the updated resource. "
+                                             "Target associations are automatic."),
+                              this);
+    help->setWordWrap(true);
+    layout->addWidget(help);
     layout->addWidget(tabs);
-    QPushButton* applyButton = new QPushButton(QStringLiteral("Apply Pipeline"), this);
-    applyButton->setObjectName(QStringLiteral("renderGraphApplyPipeline"));
-    connect(applyButton, &QPushButton::clicked, this, &RenderGraphPipelineEditor::apply);
-    layout->addWidget(applyButton);
-    QLabel* hint = new QLabel(QStringLiteral("Apply Pipeline creates source files for new program names. "
-                                             "Program receives a name based on the node and shader ID. "
-                                             "Sources appear in Source; Save writes them to the project."),
+    mError = new QLabel(this);
+    mError->setObjectName(QStringLiteral("renderGraphPipelineError"));
+    mError->setWordWrap(true);
+    layout->addWidget(mError);
+    QLabel* hint = new QLabel(QStringLiteral("New program names create .slang sources automatically. "
+                                             "Program gets a unique name. Edit sources in Source; Save writes files."),
                               this);
     hint->setWordWrap(true);
     layout->addWidget(hint);
@@ -186,7 +276,30 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     table->setMinimumHeight(TABLE_HEIGHT);
     table->setProperty("fields", fields);
-    const QJsonArray rows = mNode.value(name).toArray();
+    if (name == QStringLiteral("outputs"))
+    {
+        connect(table, &QTableWidget::itemChanged, table, [table](QTableWidgetItem* item) {
+            if (item->column() != 0)
+            {
+                return;
+            }
+            const bool hasPreviousName = item->data(Qt::UserRole).isValid();
+            const QString previous = item->data(Qt::UserRole).toString();
+            if (previous == item->text())
+            {
+                return;
+            }
+            const QSignalBlocker blocker(table);
+            item->setData(Qt::UserRole, item->text());
+            if (item->data(PAIRED_INPUT_ROLE).toString() == previous && hasPreviousName == true)
+            {
+                item->setData(PAIRED_INPUT_ROLE, item->text());
+            }
+            item->setToolTip(QStringLiteral("Input port: %1\nOutput port: %2\nThe resource association is automatic.")
+                                 .arg(item->data(PAIRED_INPUT_ROLE).toString(), item->text()));
+        });
+    }
+    const QJsonArray rows = name == QStringLiteral("inputs") ? GetReadInputs(mNode) : mNode.value(name).toArray();
     table->setRowCount(static_cast<int32>(rows.size()));
     for (int32 row = 0; row < rows.size(); ++row)
     {
@@ -202,6 +315,45 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
                     mNode.value(QStringLiteral("kind")).toString());
         }
     }
+    if (name == QStringLiteral("outputs"))
+    {
+        table->setHorizontalHeaderLabels({QStringLiteral("Resource"),
+                                          QStringLiteral("Type"),
+                                          QStringLiteral("Format"),
+                                          QStringLiteral("Load"),
+                                          QStringLiteral("Store")});
+    }
+    const auto connectResourceType = [table, fields](int32 row) {
+        const int32 typeColumn = static_cast<int32>(fields.indexOf(QStringLiteral("type")));
+        const int32 formatColumn = static_cast<int32>(fields.indexOf(QStringLiteral("format")));
+        QComboBox* type = qobject_cast<QComboBox*>(table->cellWidget(row, typeColumn));
+        QComboBox* format = qobject_cast<QComboBox*>(table->cellWidget(row, formatColumn));
+        const QString previous = format->currentText();
+        format->clear();
+        format->addItem(GetResourceFormat(type->currentText()));
+        if (format->findText(previous) < 0)
+        {
+            format->addItem(previous);
+        }
+        format->setCurrentText(previous);
+        connect(type, &QComboBox::currentTextChanged, format, [format](const QString& value) {
+            const QSignalBlocker blocker(format);
+            format->clear();
+            format->addItem(GetResourceFormat(value));
+        });
+    };
+    if (name == QStringLiteral("outputs"))
+    {
+        for (int32 row = 0; row < table->rowCount(); ++row)
+        {
+            QTableWidgetItem* item = table->item(row, 0);
+            const QString input = GetPairedInput(mNode, rows.at(row).toObject());
+            item->setData(PAIRED_INPUT_ROLE, input);
+            item->setToolTip(QStringLiteral("Input port: %1\nOutput port: %2\nThe resource association is automatic.")
+                                 .arg(input, item->text()));
+            connectResourceType(row);
+        }
+    }
     layout->addWidget(table);
     QHBoxLayout* buttons = new QHBoxLayout;
     QPushButton* add = new QPushButton(QStringLiteral("Add"), panel);
@@ -209,12 +361,13 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     add->setObjectName(QStringLiteral("renderGraphAdd_") + name);
     remove->setObjectName(QStringLiteral("renderGraphRemove_") + name);
     const QString kind = mNode.value(QStringLiteral("kind")).toString();
-    connect(add, &QPushButton::clicked, this, [table, defaults, fields, name, kind]() {
+    connect(add, &QPushButton::clicked, this, [this, table, defaults, fields, name, kind, connectResourceType]() {
         const int32 maximum = name == QStringLiteral("shaders") ? MAX_SHADERS : MAX_PORTS;
         if (table->rowCount() >= maximum)
         {
             return;
         }
+        const QSignalBlocker blocker(table);
         const int32 row = table->rowCount();
         table->insertRow(row);
         for (int32 column = 0; column < defaults.size(); ++column)
@@ -238,12 +391,25 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
             }
             AddCell(*table, row, column, fields.at(column), value, kind);
         }
+        if (name == QStringLiteral("outputs"))
+        {
+            QTableWidgetItem* item = table->item(row, 0);
+            item->setData(Qt::UserRole, item->text());
+            item->setData(PAIRED_INPUT_ROLE, item->text());
+            item->setToolTip(QStringLiteral("Input port: %1\nOutput port: %1\nThe resource association is automatic.")
+                                 .arg(item->text()));
+            connectResourceType(row);
+        }
+        connectChoices(*table, row);
         table->setCurrentCell(row, 0);
+        publishEdit();
     });
-    connect(remove, &QPushButton::clicked, this, [table]() {
+    connect(remove, &QPushButton::clicked, this, [this, table]() {
         if (table->currentRow() >= 0)
         {
+            const QSignalBlocker blocker(table);
             table->removeRow(table->currentRow());
+            publishEdit();
         }
     });
     buttons->addWidget(add);
@@ -263,6 +429,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             QJsonObject record = mNode.value(name).toObject();
             record.insert(key, field);
             mNode.insert(name, record);
+            publishEdit();
         };
         if (value.isBool() == true)
         {
@@ -294,6 +461,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                     dimensions.replace(dimension, number);
                     record.insert(key, dimensions);
                     mNode.insert(name, record);
+                    publishEdit();
                 });
                 layout->addWidget(control);
             }
@@ -302,19 +470,106 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         else
         {
             QLineEdit* control = new QLineEdit(value.toString(), this);
-            connect(control, &QLineEdit::textChanged, this, [setProperty](const QString& text) { setProperty(text); });
+            connect(control, &QLineEdit::editingFinished, this, [setProperty, control]() {
+                setProperty(control->text());
+            });
             outForm.addRow(key, control);
         }
     }
 }
 
-void RenderGraphPipelineEditor::apply()
+void RenderGraphPipelineEditor::SetShaderAssignments(const QJsonArray& shaders)
+{
+    const QSignalBlocker blocker(mShaders);
+    mNode.insert(QStringLiteral("shaders"), shaders);
+    for (int32 row = 0; row < shaders.size() && row < mShaders->rowCount(); ++row)
+    {
+        mShaders->item(row, 2)->setText(shaders.at(row).toObject().value(QStringLiteral("program")).toString());
+    }
+}
+
+void RenderGraphPipelineEditor::connectChoices(QTableWidget& inoutTable, int32 row)
+{
+    for (int32 column = 0; column < inoutTable.columnCount(); ++column)
+    {
+        QComboBox* controlOrNull = qobject_cast<QComboBox*>(inoutTable.cellWidget(row, column));
+        if (controlOrNull != nullptr)
+        {
+            connect(controlOrNull, &QComboBox::currentTextChanged, this, [this, &inoutTable, controlOrNull, column]() {
+                if (&inoutTable == mShaders && column == 1)
+                {
+                    const QSignalBlocker blocker(mShaders);
+                    for (int32 shaderRow = 0; shaderRow < mShaders->rowCount(); ++shaderRow)
+                    {
+                        if (mShaders->cellWidget(shaderRow, 1) == controlOrNull)
+                        {
+                            mShaders->item(shaderRow, 2)->setText(QStringLiteral("Program"));
+                            break;
+                        }
+                    }
+                }
+                publishEdit();
+            });
+        }
+    }
+}
+
+void RenderGraphPipelineEditor::publishEdit()
 {
     QJsonObject candidate = mNode;
     for (const QTableWidget* table : {mInputs, mOutputs, mShaders})
     {
         candidate.insert(table->objectName(), ReadRows(*table, table->property("fields").toStringList()));
     }
-    Q_EMIT Applied(candidate);
+    QJsonArray inputs = candidate.value(QStringLiteral("inputs")).toArray();
+    QJsonArray outputs;
+    const QJsonArray resources = candidate.value(QStringLiteral("outputs")).toArray();
+    for (int32 row = 0; row < resources.size(); ++row)
+    {
+        QJsonObject resource = resources.at(row).toObject();
+        const QString input = mOutputs->item(row, 0)->data(PAIRED_INPUT_ROLE).toString();
+        QJsonValue required(true);
+        for (const QJsonValueConstRef previous : mNode.value(QStringLiteral("inputs")).toArray())
+        {
+            if (previous.toObject().value(QStringLiteral("id")).toString() == input)
+            {
+                required = previous.toObject().value(QStringLiteral("required"));
+            }
+        }
+        inputs.append(QJsonObject{{QStringLiteral("id"), input},
+                                  {QStringLiteral("type"), resource.value(QStringLiteral("type"))},
+                                  {QStringLiteral("required"), required}});
+        resource.insert(QStringLiteral("target"), input);
+        outputs.append(resource);
+    }
+    const QString inputError = ValidatePorts(inputs, QStringLiteral("Input"));
+    const QString outputError = ValidatePorts(outputs, QStringLiteral("Output"));
+    mError->setText(inputError.isEmpty() == false ? inputError : outputError);
+    if (mError->text().isEmpty() == false)
+    {
+        return;
+    }
+    // Preserve existing input order and all endpoint names when opening older graphs.
+    QJsonArray orderedInputs;
+    for (const QJsonValueConstRef previous : mNode.value(QStringLiteral("inputs")).toArray())
+    {
+        for (int32 index = 0; index < inputs.size(); ++index)
+        {
+            if (inputs.at(index).toObject().value(QStringLiteral("id")) ==
+                previous.toObject().value(QStringLiteral("id")))
+            {
+                orderedInputs.append(inputs.takeAt(index));
+                break;
+            }
+        }
+    }
+    for (const QJsonValueConstRef input : inputs)
+    {
+        orderedInputs.append(input);
+    }
+    candidate.insert(QStringLiteral("inputs"), orderedInputs);
+    candidate.insert(QStringLiteral("outputs"), outputs);
+    mNode = candidate;
+    Q_EMIT Edited(candidate);
 }
 } // namespace ludus::editor

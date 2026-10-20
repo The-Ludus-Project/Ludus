@@ -8,8 +8,8 @@
 /// field in little-endian order, never copy host struct bytes. No GPU ownership.
 namespace ludus::content::render_graph_format
 {
-/// Static instanced raster execution profile with opaque and authored masked
-/// techniques and per-draw scalar/vector uniform values.
+/// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
+/// and authored primary triangle ray functions with flat opaque World inputs.
 inline constexpr foundation::uint32 VERSION = 2;
 /// Maximum authored passes in one admitted configuration.
 inline constexpr foundation::usize MAX_PASSES = 16;
@@ -22,7 +22,11 @@ inline constexpr foundation::usize MAX_ITEMS = 128;
 /// Largest supported mesh table in one scene replacement.
 inline constexpr foundation::usize MAX_MESHES = 32;
 /// Explicit finite technique count; no output-connectivity specialization.
-inline constexpr foundation::usize TECHNIQUE_COUNT = 4;
+inline constexpr foundation::usize TECHNIQUE_COUNT = 5;
+/// Number of raster stage pairs; ray traversal uses separate compute/image roles.
+inline constexpr foundation::usize RASTER_TECHNIQUE_COUNT = 4;
+/// One ray invocation per configuration; current and pending scenes share four GPU job slots.
+inline constexpr foundation::usize MAX_RAY_PASSES = 1;
 /// Number of shader stages (vertex and fragment) of one technique.
 inline constexpr foundation::usize TECHNIQUE_STAGE_COUNT = 2;
 /// Number of artifact targets a generation may carry.
@@ -51,6 +55,7 @@ enum class Technique : foundation::uint32
     DepthOnly,           ///< Authored opaque void fragment plus identical static geometry path.
     MaskedColorAndDepth, ///< Authored masked color stage pair with its own coverage function.
     MaskedDepthOnly,     ///< Separately authored masked coverage function plus identical masked geometry path.
+    RayTracing,          ///< Authored triangle ray generation/miss/closest-hit functions, lowered to GPU BVH traversal.
 };
 /// Logical image aspect; physical depth is owned by its Backing allocation.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
@@ -106,13 +111,13 @@ struct Camera final
 {
     foundation::uint32 Target; ///< Logical surface color or exported color/depth resource.
 };
-/// One retained scene raster operation; all indices are checked before GPU setup.
+/// One retained scene raster or triangle ray operation; indices are checked before GPU setup.
 struct Pass final
 {
     Technique Program;         ///< Explicit authored shader choice.
     foundation::uint32 Camera; ///< Index into the current camera extraction.
     foundation::uint32 Color;  ///< Logical color resource, or ABSENT for a depth-only technique.
-    foundation::uint32 Depth;  ///< Logical depth resource.
+    foundation::uint32 Depth;  ///< Logical depth resource; ABSENT for ray passes, which produce only color.
     Load ColorLoad;            ///< For depth-only techniques, declares compatibility color initialization.
     Store ColorStore;          ///< For depth-only techniques, controls compatibility allocation color retention.
     Load DepthLoad;            ///< Depth initialization.
@@ -151,7 +156,7 @@ struct Header final
 {
     foundation::uint32 Version;             ///< VERSION.
     foundation::uint32 ResourceCount;       ///< Bounded resource table size.
-    foundation::uint32 PassCount;           ///< Bounded raster operation count.
+    foundation::uint32 PassCount;           ///< Bounded scene operation count.
     foundation::uint32 CameraCount;         ///< Required current camera input count.
     foundation::uint32 UniformValueCount;   ///< Logical float32 values each drawn item supplies; zero when unbound.
     foundation::uint32 UniformBindingCount; ///< Bounded uniform binding table size.

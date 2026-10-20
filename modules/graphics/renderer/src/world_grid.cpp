@@ -20,6 +20,12 @@ constexpr math::Vector4 MAJOR_COLOR{.06F, .07F, .085F, 1};
 constexpr math::Vector4 X_COLOR{.6F, .07F, .07F, 1};
 constexpr math::Vector4 Y_COLOR{.11F, .46F, .13F, 1};
 constexpr math::Vector4 Z_COLOR{.08F, .24F, .72F, 1};
+/// Caller-owned count and spacing, borrowed together only during grid generation.
+struct WorldGridOutputs final
+{
+    usize& Count;
+    float32& SpacingWorld;
+};
 math::Vector4 GetGridColor(float32 coordinate) noexcept
 {
     const float32 decade = static_cast<float32>(math::Floor(static_cast<float64>(coordinate / GRID_DECADE)));
@@ -31,14 +37,15 @@ bool BuildWorldGridLines(const ViewDescription& view,
                          usize& outCount,
                          float32& outSpacing) noexcept
 {
+    const WorldGridOutputs outputs{ .Count = outCount, .SpacingWorld = outSpacing };
     if (outLines.IsValid() == false || outLines.GetSize() < WORLD_GRID_LINE_CAPACITY)
     {
         return false;
     }
     if (view.WorldGrid.IsVisible == false || view.ShadowCasters == true)
     {
-        outCount = 0;
-        outSpacing = 0;
+        outputs.Count = 0;
+        outputs.SpacingWorld = 0;
         return true;
     }
     const WorldGridDescription& grid = view.WorldGrid;
@@ -129,8 +136,8 @@ bool BuildWorldGridLines(const ViewDescription& view,
     addAxis({1, 0, 0}, X_COLOR);
     addAxis({0, 1, 0}, Y_COLOR);
     addAxis({0, 0, 1}, Z_COLOR);
-    outCount = count;
-    outSpacing = spacing;
+    outputs.Count = count;
+    outputs.SpacingWorld = spacing;
     return true;
 }
 } // namespace ludus::graphics::renderer

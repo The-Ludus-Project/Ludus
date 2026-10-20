@@ -8,6 +8,10 @@
 #include "internal/render_graph_job.h"
 #include "internal/render_graph_shader_interface.h"
 #include "internal/renderer_workspace.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/preview_viewport.h"
+#    include "internal/render_preview.h"
+#endif
 #include "internal/workspace_style.h"
 
 #include <ludus/foundation/base/types.h>
@@ -18,6 +22,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -25,11 +30,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPoint>
+#include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
@@ -469,6 +476,69 @@ TEST_CASE("RG3 build outputs stay inside a project opened through a symlink", "[
     CHECK(workspace.GetRuntimePackagePath().isEmpty() == true);
     CHECK(workspace.Build() == false);
     CHECK(QFileInfo::exists(QDir(root).filePath(QStringLiteral("out"))) == false);
+}
+
+TEST_CASE("Preview build failures expose the current graph problem and ignore stale failures", "[editor][render-graph]")
+{
+    const QString python = FindPython();
+    REQUIRE(python.isEmpty() == false);
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString package = MakePackage(project);
+    const QString path = QDir(package).filePath(LIBRARY);
+    QJsonObject library = QJsonDocument::fromJson(ReadFile(path)).object();
+    QJsonArray configurations = library.value(QStringLiteral("configurations")).toArray();
+    QJsonObject configuration = configurations.at(0).toObject();
+    QJsonArray outputs = configuration.value(QStringLiteral("outputs")).toArray();
+    QJsonObject output = outputs.at(0).toObject();
+    output.remove(QStringLiteral("required"));
+    outputs[0] = output;
+    configuration.insert(QStringLiteral("outputs"), outputs);
+    configurations[0] = configuration;
+    library.insert(QStringLiteral("configurations"), configurations);
+    WriteFile(path, QJsonDocument(library).toJson());
+    RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    const QString helper = QDir(project.path()).filePath(QStringLiteral("shader-helper"));
+    MakeShaderHelper(helper);
+    // The malformed interface is rejected before compiler invocation. Use a known local
+    // executable for tool hashing so this regression needs no installed shader compiler.
+    workspace.SetBuildTools(helper, python);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.UseProjectGraph(workspace);
+#endif
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    const RenderGraphJobResult failure = workspace.GetLastResult();
+    INFO(failure.Message.toStdString());
+    REQUIRE(failure.IsSuccessful == false);
+    CHECK(failure.Code == QStringLiteral("RenderGraphSchema"));
+    CHECK(workspace.GetRenderProblem().contains(failure.Code) == true);
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("required")) == true);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    QCoreApplication::processEvents();
+    CHECK(source.Start() == false);
+    CHECK(source.Status().contains(failure.Code) == true);
+#endif
+    RenderGraphJobResult stale = failure;
+    stale.Request.InputIdentity = QByteArrayLiteral("superseded graph inputs");
+    stale.Message = QStringLiteral("stale failure must not replace the current problem");
+    workspace.AcceptResult(stale);
+    CHECK(workspace.GetRenderProblem().contains(stale.Message) == false);
+    QTemporaryDir nextProject;
+    REQUIRE(nextProject.isValid() == true);
+    workspace.SetProject(nextProject.path(), 2);
+    workspace.AcceptResult(failure);
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    QCoreApplication::processEvents();
+    CHECK(source.Start() == false);
+    CHECK(source.Status().contains(failure.Code) == false);
+#endif
 }
 
 TEST_CASE("RG3 Renderer workspace maps CLI errors and matches CLI plans", "[editor][render-graph]")
@@ -987,6 +1057,96 @@ TEST_CASE("Tree and canvas node menus navigate subgraphs and authored shaders", 
     CHECK(sourceOrNull->currentText() == QStringLiteral("main_shaders/geometry.slang"));
     Q_EMIT treeOrNull->itemDoubleClicked(treeOrNull->currentItem(), 0);
     CHECK(sourceOrNull->currentText() == QStringLiteral("main_shaders/geometry.slang"));
+}
+
+TEST_CASE("Subgraph references choose authored graphs and configurations from dropdowns",
+          "[editor][render-graph][subgraph]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    const QString otherFile = QStringLiteral("other.lurender.json");
+    REQUIRE(workspace.GetDocument().CreateSubgraph(ROOT_GRAPH,
+                                                   QStringLiteral("Default"),
+                                                   QStringLiteral("other"),
+                                                   QStringLiteral("other")) == RenderGraphDocumentStatus::Ok);
+    QJsonArray configurations;
+    configurations.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("DepthOnly")},
+                                      {QStringLiteral("inputs"), QJsonArray{}},
+                                      {QStringLiteral("outputs"), QJsonArray{}},
+                                      {QStringLiteral("nodes"), QJsonArray{}},
+                                      {QStringLiteral("edges"), QJsonArray{}}});
+    QJsonObject otherGraph = QJsonDocument::fromJson(workspace.GetDocument().GetDraft(otherFile)).object();
+    otherGraph.insert(QStringLiteral("configurations"), configurations);
+    otherGraph.insert(QStringLiteral("default"), QStringLiteral("DepthOnly"));
+    REQUIRE(workspace.GetDocument().SetText(otherFile, QJsonDocument(otherGraph).toJson()) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("raster")) == true);
+
+    QComboBox* assetOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphField_asset"));
+    REQUIRE(assetOrNull != nullptr);
+    QStringList assets;
+    for (int32 i = 0; i < assetOrNull->count(); ++i)
+    {
+        assets.append(assetOrNull->itemText(i));
+    }
+    // The referencing graph never offers itself.
+    CHECK(assets == QStringList{otherFile, LIBRARY});
+    CHECK(assetOrNull->currentText() == LIBRARY);
+    QComboBox* configurationOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphField_configuration"));
+    REQUIRE(configurationOrNull != nullptr);
+    REQUIRE(configurationOrNull->count() == 2);
+    CHECK(configurationOrNull->itemText(0) == QStringLiteral("ColorAndDepth"));
+    CHECK(configurationOrNull->itemText(1) == QStringLiteral("DepthOnly"));
+
+    // Choosing another asset re-renders the inspector from inside the combo's own signal;
+    // the old widgets survive until the event loop deletes them.
+    const QPointer<QComboBox> oldAsset(assetOrNull);
+    assetOrNull->setCurrentText(otherFile);
+    Q_EMIT assetOrNull->activated(assetOrNull->currentIndex());
+    QJsonObject raster =
+        FindNode(workspace.GetDocument(), ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("raster"));
+    CHECK(raster.value(QStringLiteral("asset")).toString() == otherFile);
+    // ColorAndDepth is not authored there, so the reference follows the asset's default.
+    CHECK(raster.value(QStringLiteral("configuration")).toString() == QStringLiteral("DepthOnly"));
+    CHECK(oldAsset.isNull() == false);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(oldAsset.isNull() == true);
+
+    // Losing focus commits a text field and re-renders the inspector from inside the field's
+    // focus-out handler, which still uses the field afterwards (the reported crash).
+    REQUIRE(workspace.GetDocument().AddNode(ROOT_GRAPH,
+                                            QStringLiteral("Default"),
+                                            QJsonObject{{QStringLiteral("id"), QStringLiteral("note")},
+                                                        {QStringLiteral("kind"), QStringLiteral("Scene")},
+                                                        {QStringLiteral("label"), QStringLiteral("before")}}) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("note")) == true);
+    workspace.show();
+    workspace.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&workspace) == true);
+    QLineEdit* labelOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("renderGraphField_label"));
+    REQUIRE(labelOrNull != nullptr);
+    QTreeWidget* treeOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+    REQUIRE(treeOrNull != nullptr);
+    const QPointer<QLineEdit> oldLabel(labelOrNull);
+    labelOrNull->setFocus(Qt::OtherFocusReason);
+    REQUIRE(labelOrNull->hasFocus() == true);
+    labelOrNull->selectAll();
+    QTest::keyClicks(labelOrNull, QStringLiteral("after"));
+    treeOrNull->setFocus(Qt::OtherFocusReason);
+    CHECK(FindNode(workspace.GetDocument(), ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("note"))
+              .value(QStringLiteral("label"))
+              .toString() == QStringLiteral("after"));
+    CHECK(oldLabel.isNull() == false);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(oldLabel.isNull() == true);
+    QLineEdit* renderedOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("renderGraphField_label"));
+    REQUIRE(renderedOrNull != nullptr);
+    CHECK(renderedOrNull->text() == QStringLiteral("after"));
 }
 
 TEST_CASE("New subgraphs respect the package file limit", "[editor][render-graph][subgraph]")

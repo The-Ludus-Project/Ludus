@@ -25,6 +25,11 @@
 /// thread for the same project root; upgrading a reader to a writer fails with
 /// AssetErrorCode::Busy. Every function performs synchronous file I/O and is
 /// intended for tool processes and Editor worker threads.
+namespace ludus::foundation::threading
+{
+class JobSystem;
+} // namespace ludus::foundation::threading
+
 namespace ludus::content::scene_cook
 {
 /// Profile identifier stored in every level document.
@@ -107,6 +112,13 @@ struct AssetOptions final
     /// fails with Conflict unless the sources still produce that digest, so a
     /// confirmed import cannot differ from the preview the user approved.
     std::string_view ExpectedSourceDigest;
+    /// Optional caller-owned job system for the best-effort importer's texture decoding;
+    /// see BestEffortOptions::JobsOrNull for the budget, memory and thread contract.
+    /// Imports and commits with workers also re-hash the source inputs on it, reading
+    /// them on the calling thread in batches of at most 256 MiB; results and messages
+    /// match the serial check. nullptr decodes and re-hashes serially. The
+    /// pbrt-reference-v1 cooker does not decode on it. Not owned.
+    foundation::threading::JobSystem* JobsOrNull = nullptr;
     /// Optional replacement for Cook, for tests that need a synthetic source;
     /// nullptr selects the pbrt-reference-v1 cooker.
     bool (*CookOrNull)(std::string_view source,

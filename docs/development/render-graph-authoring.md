@@ -28,14 +28,33 @@ The node type picker offers **GraphicsPipeline**, **ComputePipeline** and
 Present remain supporting nodes. A new pipeline has no inputs, outputs or shader
 assignments. It is an editable draft, not a ready rendering pass.
 
-Select the node in Properties. Its **Inputs**, **Outputs**, **Shaders**,
-**Pipeline State** and **Invocation** tabs edit that node's record. Add/remove
-rows in the interface or shader tables, then choose **Apply Pipeline** to commit
-all controls as one undoable edit. Save publishes the draft; edits in these
-controls are unapplied until Apply Pipeline. Disconnect affected links before
-removing a connected port or changing its identity/type. Undo restores the
-complete record and document version. Double-click the pipeline to open a mapped
-shader source through its explicit program reference in the build manifest.
+Select the node in Properties. **Read Inputs** declares resources and values the
+pass consumes. **Writable Resources** declares paired input/output ports: each
+row owns the input receiving the texture or buffer and the output exposing its
+updated contents. Add one row instead of declaring those ports separately. New
+pairs start with the same name; renaming the output also renames its input while
+the names match. Existing graphs with different port names retain both names, shown in the
+resource name tooltip. A missing or incompatible old target association is rebuilt
+as a same-name pair on the next completed edit; opening the inspector does not rewrite sources.
+The editor writes the serialized `target` association automatically; there is no
+editable target field. Connect a compatible resource to the pair's input, then
+connect its output to the next pass or configuration output. A writable input
+needs a connection even when its Load operation is Clear or Discard. Paired ports
+line up horizontally on the canvas. Changing the resource type changes both
+port types and selects its corresponding format.
+
+**Shaders**, **Pipeline State** and **Invocation** edit the rest of the node.
+Completed edits enter the undoable draft directly in Properties or the canvas node editor.
+There is no **Apply Pipeline** button. **Save** publishes the draft and updates Live Preview;
+unsaved edits do not build shaders. Removing a
+writable row removes both ports. Disconnect affected links before removing,
+renaming or changing the type of a connected port. A rejected edit preserves
+the draft and identifies the affected endpoint and repair. Duplicate or invalid
+port names are explained beside the controls; graph validation names missing
+connections and incompatible output/input pairs with concrete repair actions.
+Undo restores the complete record and document version. Double-click the pipeline
+to open a mapped shader source through its explicit program reference in the
+build manifest.
 
 Pipeline records use document `version: 2`; adding one upgrades the draft in the
 same undo step. Version-1 graphs remain readable and are never rewritten on load.
@@ -53,16 +72,18 @@ ludus render-graph migrate-pipelines graphs/Main/rasterize.lurender.json \
 The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
-In **Properties → Shaders**, add a row, choose its stage and set its shader ID.
-**Apply Pipeline** creates a `.slang` template and registers a program in the root
-`.lushader.json` for each new program name. Leaving the initial `Program` value
-creates a name from the node and shader IDs. To share a shader, enter an existing
+In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
+and set its shader ID. Completed edits automatically create a `.slang` template and registers a program in the root
+`.lushader.json` for each new program name. The initial `Program` value
+receives a unique name from the node and shader IDs. To share a shader, enter an existing
 program name with a matching stage. New sources appear immediately in **Source**;
 **Save** writes them beside the manifest. Creation, manifest registration and node
 assignments form one undo step. Name/file conflicts or incompatible references
 preserve the draft. Templates are starting points: vertex/fragment interfaces use
-the manifest schemas; other stages remain drafts subject to the execution limits
-below. Removing a shader row retains its program and source for reuse.
+the manifest schemas; ray-generation, miss and closest-hit functions use the
+renderer’s triangle ray interfaces. Other stages remain authoring drafts subject
+to the execution limits below. Changing stage creates a new matching program and
+retains the previous source for reuse. Removing a shader row retains its program and source for reuse.
 
 The version-2 node fields are:
 
@@ -88,12 +109,100 @@ its exact vertex/fragment assignments and complete state against the authored
 technique/recipe; settings are never silently ignored. Each admitted output's
 format/sample count must match its connected target. Additional resources,
 optional geometry/tessellation stages and unsupported state produce an explicit
-capability error. Compute and ray tracing settings can be authored and saved,
-but their execution is rejected by this graph build profile. Their presence in
-the picker does not establish GPU support. Missing required shader assignments
+capability error. Compute settings can be authored and saved, but compute-node execution remains
+outside this graph profile. Triangle ray pipelines execute through the
+[authored ray profile](#execute-a-triangle-ray-pipeline) below. Device capabilities
+and the complete authored interface are checked before activation. Missing required shader assignments
 produce IncompletePipeline; an invalid/pending candidate leaves the current
 viewport generation intact. Blending/rasterization remain fields inside the
 node; separate state blocks and stream output are deferred.
+
+## Execute a triangle ray pipeline
+
+A `RayTracingPipeline` can run authored ray-generation, miss and closest-hit
+functions over the selected World's static opaque triangles. The renderer freezes
+an immutable World extraction, builds its BVH during scene preparation, and uploads
+geometry and camera inputs. GPU compute performs traversal and shading; a
+renderer-owned image pass transfers GPU-produced colors to the graph's attachment.
+There is no CPU tracing or pixel readback in this path. The editor's World/camera
+updates create replacement inputs, retaining the last drawable view until they
+are ready, just as raster graph updates do.
+
+This is a portable GPU triangle profile, including Metal on macOS. It does not
+request dedicated Vulkan/DXR ray stages or hardware acceleration structures, and
+makes no claim of hardware ray-traversal acceleration. WebGPU compute artifacts
+can be carried by the same package. WebGL2/GLSL ES is unsupported. An unavailable
+compute/storage capability rejects activation while preserving the prior view.
+
+Author three manifest programs with these built-in function interfaces:
+
+| Stage | Manifest input / output | Authored function |
+| --- | --- | --- |
+| `ray_generation` | `RayLaunch` / `Ray` | `Ray GenerateRay(RayLaunch launch)` |
+| `miss` | `Ray` / `Color` | `float3 ShadeMiss(Ray ray)` |
+| `closest_hit` | `RayHit` / `Color` | `float3 ShadeClosest(RayHit hit)` |
+
+Each program still declares `id`, `stage`, package-relative `source`, `function`,
+`input`, `output` and an empty `bindings` array. The builder supplies these input
+types. `Ray` contains `OriginWorld`, `MinDistanceWorld`, `DirectionWorld` and
+`MaxDistanceWorld`, in world meters; directions must be finite unit vectors and
+distances finite, nonnegative and ordered. `RayLaunch` supplies `PositionPixel`,
+`ExtentPixel` and `CameraRay`, a center ray clipped to the current camera's near/far
+planes. Return that ray or author another one. `RayHit` supplies `IncomingRay`,
+`PositionWorld`, `DistanceWorld`, geometric `NormalWorld`, packed world triangle
+`Primitive`, vertex-one/two `Barycentric` weights and `Color` (RGB material tint;
+its W component is reserved). Hit/miss functions return linear RGB, clamped into
+RGBA8 with opaque alpha. Invalid/nonfinite/negative colors or invalid rays show
+magenta error pixels. This profile performs exactly one trace per pixel; it adds
+no lights or automatic transport model.
+
+Declare the linked technique alongside the manifest's existing static opaque
+setup technique:
+
+```json
+{
+  "id": "RendererTriangles.RayTracing",
+  "configuration": "RayTracing",
+  "ray_generation": "Generate",
+  "miss": "Miss",
+  "closest_hit": "Closest",
+  "recipes": [
+    {"id": "Triangles", "max_recursion": 1, "payload_bytes": 0, "attribute_bytes": 8}
+  ]
+}
+```
+
+Select those exact program IDs in the node's Shaders table. Its state must match
+the recipe above: the eight attribute bytes represent triangle barycentrics.
+Declare exactly one input each of type Scene, View and ColorTexture, and one
+RGBA8Unorm color output naming that color input as its `target`, with `Clear` and
+`Store`. In the editor, add the color through **Writable Resources**; its paired
+input and target association are automatic. Port names are authored, not fixed. Set invocation `dimensions` to the
+color target's exact `[width, height, 1]`. Feed Scene and Camera into those inputs,
+the target into both Camera's designated target and the ray node, and the ray
+color output into Export. Use a single-sample offscreen target. Raster and ray
+versions of a renderer can be separate configurations; do not branch physical
+writes from the same attachment version.
+
+The profile admits one ray invocation per configuration and the existing graph
+mesh/item limits. It rejects payloads, recursive tracing, additional hit groups,
+any-hit/intersection/callable stages, extra resources, masked/transparent or
+deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
+aspect; no ray depth output is inferred. Ray preparation has renderer-owned
+256 MiB CPU and 256 MiB GPU limits across retained jobs; device storage limits can
+be tighter. The existing static opaque setup technique remains in the manifest
+for shared mesh/snapshot ownership and is never used to rasterize ray scene
+geometry. A complete source example is the
+[SDK ray fixture](../../tests/sdk_consumer/rg2/raytracing/main.lurender.json) and its
+[manifest](../../tests/sdk_consumer/rg2/raytracing/main.lushader.json.in).
+
+Build, cook and activate it through the same graph commands as a raster package.
+SDK callers using `RenderGraph::Render` need no separate ray job. Callers composing
+an acquired frame call `PrepareEncoding()` between frames before `Encode()`, then
+`ConfirmSubmission()` with their actual `EndFrame` token. Preparation and failed
+candidates preserve the last drawable scene; an exported color is valid only
+after its tracked producer completes. Shader changes continue through immutable
+packages and atomic graph activation.
 
 ## Start customizing the renderer
 
@@ -129,14 +238,20 @@ the editor uses it for any project that has no graph of its own.
    already holds any of the package's files, nothing is written; open that graph with
    **File → Open Render Graph...** instead. A linked `graphs` folder is refused, as for
    New Render Graph.
-4. **Iterate.** In the native editor, shader text edits are applied to the draft after a
-   short pause, and saved external shader edits are watched automatically, including editors
-   that replace files when saving. Graph edits and configuration changes rebuild the draft
-   in the background. **Save** still controls publication of draft sources to the project;
-   live builds use immutable snapshots. A compile error keeps the last complete World frame
-   and reports the failing source in the Error List. No worker socket or shader paths need
-   to be entered when the project's SDK is configured. **Build & Preview** remains available
-   for an explicit rebuild; **Live Preview** pauses/resumes automatic builds.
+4. **Iterate.** Pipeline inspector edits go directly into the undoable draft; there is no
+   **Apply Pipeline** step. Finish a field with Enter, Tab or focus loss; dropdowns,
+   checkboxes and row additions/removals update the draft immediately. **Save** (Ctrl+S or
+   Command-S) finishes the active inspector field, writes the draft, then schedules a
+   background preview update when **Live Preview** is enabled. Unsaved edits, Undo and Redo
+   do not compile shaders. Layout-only saves do not rebuild. Several saves during a build
+   coalesce into the newest saved version; later unsaved edits stay out of that snapshot.
+   Saved external shader edits are watched too, including editors that replace files on save.
+   Validation or compilation failure keeps the last working World preview and reports the
+   failing source in the Error List; invalid drafts can still be saved and corrected.
+   No worker socket or shader paths need to be entered when the project's SDK is configured.
+   **Build & Preview** explicitly builds the current draft without saving; **Live Preview**
+   pauses/resumes automatic builds of saved sources. Changing the preview configuration
+   selects that configuration of the saved sources.
 
 **File → New Render Graph...** creates an editable barebone graph and its shaders in
 `graphs/<name>/`, then makes it active in the World viewport. **Customize in Project**
@@ -1150,10 +1265,10 @@ step; **Save** publishes the new file. Undoing a saved creation and saving again
 removes the created file if its disk contents still match the editor's saved copy.
 An external change reports a conflict and is preserved.
 
-Add nodes using Properties or **Create Node** in the right-click menu. Define the
-library's `inputs` and `outputs` in the in-app **Source** view and apply the text
-to the draft. The empty library has no
-ports or rendering work until authored. It does not add ray-tracing or compute
+Add nodes using Properties or **Create Node** in the right-click menu. Choose
+**Edit Inputs / Outputs...** above the canvas or in its right-click menu to define
+the library interface. The empty library has no ports or rendering work until
+authored. It does not add ray-tracing or compute
 support; the supported node kinds above still apply. The original root remains
 the execution root when editing the library.
 
@@ -1166,6 +1281,14 @@ Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
   operation as Properties' **Add Node**. Creation is disabled while a job runs or
   Source text needs applying/reverting. **Subgraph Reference** adds a reference
   node; **Create Subgraph...** creates a new library source as well.
+- A selected Subgraph node's **asset** and **configuration** are dropdowns in
+  Properties. **asset** lists the package's other `.lurender.json` graphs (never the
+  graph that contains the node). **configuration** lists the selected asset's
+  configurations. Choosing an asset that lacks the current configuration
+  switches to that asset's `default`, or to its first configuration if it has no
+  default. A missing asset or configuration is still listed, so you can see it
+  and replace it. Validation still decides whether the reference is legal,
+  including whether it creates a cycle.
 - **Open Subgraph** opens the referenced configuration; a missing source disables
   this item. **Create Subgraph...** can supply a new source for that node.
 - **View Shaders** on other nodes lists the source files mapped by the root build
@@ -1187,6 +1310,12 @@ node. It is another view of the same typed draft: every canvas edit is a
 `RenderGraphDocument` operation, so undo, explicit save, validation and Properties
 stay in step.
 
+Every graph-authoring operation in Properties also has a canvas gesture or
+context-menu entry. Right-click the background to create nodes and subgraphs or
+edit the configuration interface; right-click a node to edit its fields or remove
+it; right-click wires and ports to manage connections. Properties remains an
+additional way to perform those same document edits.
+
 Choose a node type in Properties and click **Add Node**. It uses the configuration
 currently shown on the canvas, including a selected file's default; selecting a
 configuration row or entering an ID is unnecessary. IDs are generated from the
@@ -1199,7 +1328,10 @@ undoable edit; **Save** writes it to the project.
 | --- | --- |
 | Drag nodes (Ctrl-click adds to the selection) | One `MoveNodes` edit per gesture, applied on release: one undo step however far the drag went. A drag that returns to its start commits nothing. |
 | Drag from an output port to an input port | `Connect`, after the pre-check below |
-| Select a link and press Delete | `Disconnect` |
+| Select a link and press Delete, or right-click a wire/port and choose Disconnect | `Disconnect` |
+| Drag an output onto an occupied input | Replace its source as one undoable edit; invalid links preserve the existing source. |
+| Right-click a port → Connect from / Connect to | Choose a compatible endpoint, replacing an occupied input in one undo step. |
+| Right-click a node → Edit Node... | Edit the same authored fields, pipeline controls and layout coordinates as Properties, without opening that panel. |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
 | Double-click a Raster node | Opens its first mapped shader source; choose other stages with View Shaders or the Source selector |
@@ -1212,8 +1344,42 @@ orange execution (Raster, Present), green resource (Target, Export), purple
 Subgraph and grey for a configuration's `input` ports and outputs. Port colours
 show the value type. Nodes without a `layout` position are arranged by
 dependency order for display only; nothing is written until you move them.
-Configuration outputs appear as dashed, read-only links; edit them in the
-Source view.
+Configuration output links can be selected and deleted, just like pass connections.
+They edit the configuration output's source rather than adding an ordinary edge.
+
+### Edit configuration inputs and outputs
+
+Choose **Edit Inputs / Outputs...** above the canvas or in the source-tree/canvas
+right-click menu. It edits the configuration currently displayed on the canvas,
+including a selected file's default. Double-click an existing grey interface box
+to open the same dialog.
+
+- On **Inputs**, choose **Add Input**, enter a unique name and select its type.
+- On **Outputs**, choose **Add Output**, enter a unique name and select its resource
+  type. Choose a compatible **Source** from the dropdown, or leave it **Unconnected**
+  and wire it on the canvas after applying. **Requires consumer** means every
+  containing Subgraph instance must consume that output.
+- Select rows and choose **Remove Selected** to remove ports. Names must begin
+  with an ASCII letter and contain at most 63 letters, digits, `_` or `-`.
+  Each direction supports up to eight ports. Types follow the graph's version.
+- Choose **Apply** to commit both tables as one undoable draft edit; **Cancel**
+  discards the dialog's edits. **Save** publishes the draft. Rejected edits keep
+  the dialog open with an explanation and preserve the document.
+
+The grey input/output boxes appear as soon as their first ports are applied.
+Drag configuration input ports to pass inputs; drag pass outputs to configuration
+output ports. Compatible resource inputs can also pass directly to configuration
+outputs. Select a link and press Delete, or use a wire/port's right-click menu,
+to disconnect it. Each input and configuration output has one source; dropping a
+new wire onto it replaces that source in one undo step. Type or cycle rejection
+preserves the previous source. Unconnected outputs are incomplete
+drafts and must be connected before validation/build succeeds.
+
+Disconnect affected internal and containing-subgraph links before removing,
+renaming or changing the type of a connected port. The dialog checks those
+references across the loaded package. Removing a producing node retains its
+configuration output declarations as unconnected ports. Editing interfaces does
+not change which GPU pipeline kinds the runtime profile can execute.
 
 Before a link reaches the draft, the canvas checks it against the configuration
 and rejects it with the shared validator's error name and a reason in the status
@@ -1246,9 +1412,10 @@ CLI backend, which owns legality and reports the same codes as
    the last cooked file when needed.
 
 Each accepted build reads the cooked file and stages it in a `RenderGraphActivation`
-beside the generation already shown. Live Preview rebuilds changed drafts and saved
-external shaders automatically; a result for older source content never replaces the
-current request. By default the viewport shows the configuration's first exported
+beside the generation already shown. Live Preview rebuilds saved graph/shader sources
+only; unsaved changes remain in the draft. A result for an older saved version never
+replaces the current request. Validation, compilation and activation failures preserve
+the last drawable view; successful replacements publish only after readiness. By default the viewport shows the configuration's first exported
 `ColorTexture`, using the World's current camera or orbit. Its output selector can
 instead show any attachment after producer completion. Each World object becomes one static
 item with its flat tint (object tint times the surface's flat tint); a
@@ -1789,7 +1956,7 @@ For an advanced shared-worker setup, optionally set **Native shader worker** in
 builds/cooks an immutable draft and previews a
 successful result only if its project/request and semantic source/configuration
 identity still match. Native World rendering enables **Live Preview** automatically for
-debounced background builds;
+background builds after graph/shader saves;
 layout-only moves do not schedule a build. Saving is independent. **Cancel Render
 Graph Job** disables live building; failures retain the last drawable preview. The existing preview's
 static-material/profile restrictions still apply.

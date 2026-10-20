@@ -60,6 +60,18 @@ QByteArray MakeSource(QJsonObject& inoutProgram, const QJsonArray& schemas)
             source += QStringLiteral("float4 ShaderMain(%1 input)\n{\n    return float4(1, 1, 1, 1);\n}\n").arg(input);
         }
     }
+    else if (stage == QStringLiteral("ray_generation"))
+    {
+        input = QStringLiteral("RayLaunch");
+        output = QStringLiteral("Ray");
+        source += QStringLiteral("Ray ShaderMain(RayLaunch launch)\n{\n    return launch.CameraRay;\n}\n");
+    }
+    else if (stage == QStringLiteral("miss") || stage == QStringLiteral("closest_hit"))
+    {
+        input = stage == QStringLiteral("miss") ? QStringLiteral("Ray") : QStringLiteral("RayHit");
+        output = QStringLiteral("Color");
+        source += QStringLiteral("float3 ShaderMain(%1 input)\n{\n    return float3(1, 1, 1);\n}\n").arg(input);
+    }
     else
     {
         source += QStringLiteral("// Authoring draft: the current graph build profile does not execute this stage.\n");

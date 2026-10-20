@@ -41,7 +41,8 @@ int main()
 ```
 
 The default worker budget is zero. Native consumers explicitly select their CPU
-budget. Browser builds reject a nonzero worker count. One graph remains admitted
+budget; a component lent a system reads that budget with `GetWorkerCount()` to size
+its graphs instead of taking a second configuration value. Browser builds reject a nonzero worker count. One graph remains admitted
 until Wait, even after callbacks finish. Submit of a sealed graph may be repeated;
 each job keeps the context pointer given to Add, so update the data it references
 between Wait and the next Submit. Reset invalidates its handles before rebuilding.

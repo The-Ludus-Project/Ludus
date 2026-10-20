@@ -125,8 +125,7 @@ struct RenderPreview::Residency final
 };
 RenderPreview::RenderPreview(QObject* parent) : ViewportFrameSource(parent)
 {
-    Timer_.setInterval(16);
-    connect(&Timer_, &QTimer::timeout, this, &RenderPreview::Tick);
+    connect(&mFramePump, &ViewportFramePump::WorkRequested, this, &RenderPreview::Tick);
 }
 RenderPreview::~RenderPreview()
 {
@@ -252,7 +251,7 @@ void RenderPreview::restartResources() noexcept
 {
     mNeedsResourceRestart = true;
     mHasPreparationFailed = false;
-    Timer_.start();
+    mFramePump.Start();
 }
 bool RenderPreview::beginResourceRestart() noexcept
 {
@@ -285,6 +284,7 @@ bool RenderPreview::beginResourceRestart() noexcept
     mHasPreparedView = false;
     mProducer = {};
     mIsAwaitingProducer = false;
+    mFramePump.SetProducerPending(false);
     mNeedsResourceRestart = false;
     mPreparationFailure.clear();
     Report_ = {};
@@ -317,16 +317,21 @@ bool RenderPreview::rejectShaders()
 bool RenderPreview::Start()
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (mIsProjectGraphEnabled == true && mProjectGraphProblem.isEmpty() == false)
+    {
+        Status_ = mProjectGraphProblem;
+        Q_EMIT Changed();
+        return false;
+    }
     if (Scene_.Identity.isEmpty())
     {
         Status_ = QStringLiteral("Load and validate a World preview first.");
         Q_EMIT Changed();
         return false;
     }
-    Timer_.setInterval(16);
     if (Running())
     {
-        Timer_.start();
+        mFramePump.Start();
         return true;
     }
     if (rhi::GetStartup().State != rhi::StartupState::Idle)
@@ -378,7 +383,7 @@ bool RenderPreview::AdmitDevice(const rhi::NativeDeviceDescription& native)
     Width_ = Height_ = 0;
     Frames_ = 0;
     restartResources();
-    Timer_.start();
+    mFramePump.Start();
     return true;
 #else
     static_cast<void>(native);
@@ -415,7 +420,7 @@ bool RenderPreview::AdmitOffscreenDevice()
     Width_ = Height_ = 0;
     Frames_ = 0;
     restartResources();
-    Timer_.start();
+    mFramePump.Start();
     return true;
 #else
     return false;
@@ -460,7 +465,7 @@ bool RenderPreview::AdmitBrowserDevice(const char* canvasSelector)
     Height_ = 0;
     Frames_ = 0;
     restartResources();
-    Timer_.start();
+    mFramePump.Start();
     return true;
 #else
     static_cast<void>(canvasSelector);
@@ -471,7 +476,7 @@ void RenderPreview::Stop() noexcept
 {
     const bool wasRunning = Running();
     mIsStarting = false;
-    Timer_.stop();
+    mFramePump.Stop();
     if (OwnsDevice_)
     {
         // Borrowers such as the render-graph preview release their resources first.
@@ -575,7 +580,7 @@ void RenderPreview::SetShading(PreviewShading shading)
     {
         restartResources();
         Frames_ = 0;
-        Timer_.start();
+        mFramePump.Start();
     }
     Q_EMIT NavigationChanged();
     Q_EMIT Changed();
@@ -606,9 +611,13 @@ void RenderPreview::navigationChanged()
     Zoom_ = mCameraController.GetDistance() / math::Max(OrbitRadius_, 0.000001F);
     RestoredOrbit_ = true;
     ViewDirty_ = true;
-    if (Running() == true)
+    // Thanks to The Qt Company, "QTimer Class", start() documentation:
+    // https://doc.qt.io/qt-6/qtimer.html#start
+    // QTimer::start restarts an active timer. Preserve its deadline so continuous
+    // mouse/fly input cannot postpone every frame until navigation stops.
+    if (Running() == true && mFramePump.IsActive() == false)
     {
-        Timer_.start();
+        mFramePump.Start();
     }
     Q_EMIT NavigationChanged();
 }
@@ -684,9 +693,9 @@ void RenderPreview::Resize(int32 width, int32 height)
     const float32 scale = math::Min(1.0F, 1024.0F / static_cast<float32>(math::Max(width, height)));
     RequestedWidth_ = math::Max(uint32{1}, static_cast<uint32>(static_cast<float32>(width) * scale));
     RequestedHeight_ = math::Max(uint32{1}, static_cast<uint32>(static_cast<float32>(height) * scale));
-    if (Running() == true)
+    if (Running() == true && mFramePump.IsActive() == false)
     {
-        Timer_.start();
+        mFramePump.Start();
     }
 }
 float32 RenderPreview::GetFocusDistance() const noexcept
@@ -717,13 +726,23 @@ float32 RenderPreview::GetFocusDistance() const noexcept
     }
     return mCameraController.GetDistance();
 }
+void RenderPreview::SetLookSensitivity(float32 sensitivity)
+{
+    if (math::IsFinite(sensitivity) == false || sensitivity < MINIMUM_LOOK_SENSITIVITY ||
+        sensitivity > MAXIMUM_LOOK_SENSITIVITY || sensitivity == mLookSensitivity)
+    {
+        return;
+    }
+    mLookSensitivity = sensitivity;
+    Q_EMIT NavigationChanged();
+}
 void RenderPreview::Orbit(float32 deltaX, float32 deltaY)
 {
     if ((deltaX == 0 && deltaY == 0) || beginNavigation() == false)
     {
         return;
     }
-    if (mCameraController.TryRotate(deltaX, deltaY, true) == true)
+    if (mCameraController.TryRotate(deltaX * mLookSensitivity, deltaY * mLookSensitivity, true) == true)
     {
         navigationChanged();
     }
@@ -734,7 +753,7 @@ void RenderPreview::Look(float32 deltaX, float32 deltaY)
     {
         return;
     }
-    if (mCameraController.TryRotate(deltaX, deltaY, false) == true)
+    if (mCameraController.TryRotate(deltaX * mLookSensitivity, deltaY * mLookSensitivity, false) == true)
     {
         navigationChanged();
     }
@@ -810,6 +829,7 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("z"), OrbitCenter_.Z},
             {QStringLiteral("radius"), OrbitRadius_},
             {QStringLiteral("navigationVersion"), NAVIGATION_STATE_VERSION},
+            {QStringLiteral("lookSensitivity"), mLookSensitivity},
             {QStringLiteral("distance"), mCameraController.GetDistance()},
             {QStringLiteral("eyeX"), mCameraController.GetSample().Pose.Position.X},
             {QStringLiteral("eyeY"), mCameraController.GetSample().Pose.Position.Y},
@@ -928,6 +948,7 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     static_cast<void>(TryParsePreviewShading(state.value(QStringLiteral("shading")).toString(), shading));
     SetShading(shading);
     SetStatisticsVisible(state.value(QStringLiteral("statistics")).toBool(false));
+    SetLookSensitivity(static_cast<float32>(number(QStringLiteral("lookSensitivity"), 1)));
     navigationChanged();
 }
 void RenderPreview::resetFrames() noexcept
@@ -950,6 +971,7 @@ void RenderPreview::resetFrames() noexcept
     mHasPreparedView = false;
     mProducer = {};
     mIsAwaitingProducer = false;
+    mFramePump.SetProducerPending(false);
 }
 bool RenderPreview::TakeFrame(rr::ViewportFrame& outFrame, rr::ViewportImage& outImage) noexcept
 {
@@ -971,12 +993,14 @@ void RenderPreview::ReleaseFrame(rr::ViewportFrame& inoutFrame) noexcept
     {
         LUDUS_REQUIRE(mResources->ExternalLeases != 0);
         --mResources->ExternalLeases;
+        mFramePump.Wake();
     }
     else if (mRetiredResources.Get() != nullptr &&
              mRetiredResources->Viewport.Release(inoutFrame) == rhi::RasterStatus::Ready)
     {
         LUDUS_REQUIRE(mRetiredResources->ExternalLeases != 0);
         --mRetiredResources->ExternalLeases;
+        mFramePump.Wake();
         if (mRetiredResources->ExternalLeases == 0)
         {
             mRetiredResources.Reset();
@@ -992,7 +1016,7 @@ void RenderPreview::fail(const QString& message)
     if ((mRetiredResources.Get() != nullptr && mRetiredResources->ExternalLeases != 0) ||
         (mResources.Get() != nullptr && mResources->ExternalLeases != 0))
     {
-        Timer_.stop();
+        mFramePump.Stop();
         mHasPreparationFailed = true;
         mNeedsResourceRestart = false;
     }
@@ -1067,6 +1091,23 @@ void RenderPreview::UseProjectGraph() noexcept
 {
     mIsProjectGraphEnabled = true;
 }
+void RenderPreview::SetProjectGraphProblem(const QString& problem)
+{
+    if (mIsProjectGraphEnabled == false || mProjectGraphProblem == problem)
+    {
+        return;
+    }
+    mProjectGraphProblem = problem;
+    if (problem.isEmpty() == false)
+    {
+        Status_ = problem;
+        Q_EMIT Changed();
+        if (Running() == true)
+        {
+            Q_EMIT Failed(problem);
+        }
+    }
+}
 void RenderPreview::NotifyProjectFrame()
 {
     if (mIsProjectGraphEnabled == true && OwnsDevice_ == true)
@@ -1134,6 +1175,7 @@ void RenderPreview::Tick()
             return;
         }
         mIsAwaitingProducer = true;
+        mFramePump.SetProducerPending(true);
         return;
     }
     if (ready != rhi::DeviceStatus::Ready || rhi::PollLifetime(Device_) != rhi::RasterStatus::Ready)
@@ -1166,6 +1208,7 @@ void RenderPreview::Tick()
         mHasPendingFrame = true;
         mHasFrame = true;
         mIsAwaitingProducer = false;
+        mFramePump.SetProducerPending(false);
         ++Frames_;
         const uint64 ownerFrame = Frames_;
         const bool hasNewShaders = mResources->Shaders.GetRevision() != mPresentedShaders.GetRevision();
@@ -1187,6 +1230,9 @@ void RenderPreview::Tick()
                 return;
             }
         }
+        // Completion polling only publishes this image. The consumer returns an old
+        // image to wake the next submission; an absent consumer stays on fallback cadence.
+        return;
     }
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     if (rhi::SetFrameTarget(Device_, Surface_, { .Width = RequestedWidth_, .Height = RequestedHeight_ }) !=
@@ -1277,6 +1323,7 @@ void RenderPreview::Tick()
         return;
     }
     mIsAwaitingProducer = true;
+    mFramePump.SetProducerPending(true);
     recordFrameStatistics(frameTimer);
     if (FreshReport_ == true || Frames_ % 60 == 0)
     {

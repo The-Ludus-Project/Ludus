@@ -1,6 +1,6 @@
 #pragma once
 
-// Hosted-window channel protocol, version 2 (private to Platform).
+// Hosted-window channel protocol, version 3 (private to Platform).
 //
 // The editor endpoint and the hosted window speak this bounded binary protocol
 // over one Unix stream socket. It is separate from the GameHost control protocol
@@ -13,7 +13,9 @@
 //
 // Version 2 adds the hosted surface: the Welcome carries the macOS Mach
 // rendezvous nonce, the window sends Images and Present, and the endpoint sends
-// Release. A version-1 peer is refused as IncompatibleVersion.
+// Release. Version 3 lets the Welcome announce the consumer's adapter
+// (deviceUUID and driverUUID), so a Vulkan game can render on the editor's GPU.
+// A peer of another version is refused as IncompatibleVersion.
 
 #include <ludus/foundation/base/core.h>
 
@@ -38,7 +40,7 @@ using foundation::uint8;
 using foundation::usize;
 
 /// Wire protocol version carried by Hello and Welcome.
-inline constexpr uint16 PROTOCOL_VERSION = 2;
+inline constexpr uint16 PROTOCOL_VERSION = 3;
 /// First field of every Hello payload: "LHWN" read as little-endian bytes.
 inline constexpr uint32 HELLO_MAGIC = 0x4E57484C;
 /// Random session token length; the environment carries it as lowercase hexadecimal.
@@ -106,7 +108,8 @@ enum class MessageKind : uint16
 
 /// Payload sizes; each kind has exactly one.
 inline constexpr usize HELLO_PAYLOAD_BYTES = 4 + 2 + 2 + TOKEN_BYTES;
-inline constexpr usize WELCOME_PAYLOAD_BYTES = 2 + 1 + 1 + 4 + 4 + 4 + RENDEZVOUS_NONCE_BYTES;
+inline constexpr usize WELCOME_PAYLOAD_BYTES =
+    2 + 1 + 1 + 4 + 4 + 4 + RENDEZVOUS_NONCE_BYTES + (2 * HOSTED_ADAPTER_UUID_BYTES);
 inline constexpr usize REFUSED_PAYLOAD_BYTES = 1;
 inline constexpr usize RESIZE_PAYLOAD_BYTES = 4 + 4 + 4;
 inline constexpr usize VISIBILITY_PAYLOAD_BYTES = 1;
@@ -117,9 +120,9 @@ inline constexpr usize IMAGES_PAYLOAD_BYTES =
     4 + 4 + 4 + 1 + 1 + 2 + (8 * HOSTED_SURFACE_IMAGE_COUNT) + 4 + (2 * HOSTED_ADAPTER_UUID_BYTES);
 inline constexpr usize PRESENT_PAYLOAD_BYTES = 4 + 1 + 3 + 8;
 inline constexpr usize RELEASE_PAYLOAD_BYTES = 4 + 1 + 3;
-/// Largest payload of any version-2 message.
+/// Largest payload of any version-3 message.
 inline constexpr usize MAX_PAYLOAD_BYTES = IMAGES_PAYLOAD_BYTES;
-/// Largest encoded version-2 message.
+/// Largest encoded version-3 message.
 inline constexpr usize MAX_MESSAGE_BYTES = HEADER_BYTES + MAX_PAYLOAD_BYTES;
 /// Largest payload any version may frame. A peer reading a longer frame stops at once; a
 /// shorter one, even of a future Hello, is framed so its version can be reported.
@@ -131,6 +134,8 @@ static_assert(RESET_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES && WELCOME_PAYLOAD_BYTES 
 
 /// Key payload flag: the transition is an operating-system auto-repeat.
 inline constexpr uint8 KEY_FLAG_REPEAT = 0x01;
+/// Welcome flag: the payload's UUIDs name the consumer's adapter. Without it they are zero.
+inline constexpr uint8 WELCOME_FLAG_CONSUMER_ADAPTER = 0x01;
 
 /// Decoded message. Only the fields of `Kind` are meaningful.
 struct Message final
@@ -164,6 +169,8 @@ struct Message final
     bool IsRepeat = false;
     /// Welcome: the endpoint's Mach rendezvous nonce, or zero.
     RendezvousNonce Nonce = {};
+    /// Welcome: DeviceUuid and DriverUuid name the consumer's adapter.
+    bool HasConsumerAdapter = false;
     /// Images, Present and Release: nonzero surface generation.
     uint32 Generation = 0;
     /// Present and Release: image index, below HOSTED_SURFACE_IMAGE_COUNT.
@@ -178,9 +185,9 @@ struct Message final
     foundation::StaticArray<uint64, HOSTED_SURFACE_IMAGE_COUNT> AllocationSizes = {};
     /// Images: memory type index (Vulkan).
     uint32 MemoryTypeIndex = 0;
-    /// Images: deviceUUID (Vulkan).
+    /// Images: the producer's deviceUUID (Vulkan). Welcome: the consumer's, when HasConsumerAdapter.
     AdapterUuid DeviceUuid = {};
-    /// Images: driverUUID (Vulkan).
+    /// Images: the producer's driverUUID (Vulkan). Welcome: the consumer's, when HasConsumerAdapter.
     AdapterUuid DriverUuid = {};
 };
 

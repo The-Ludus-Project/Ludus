@@ -9,6 +9,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QGuiApplication>
@@ -371,6 +372,8 @@ struct PreviewViewport::State final
     /// The window was shown before its parent had a surface; recreate it once the parent is visible.
     bool IsSurfaceRecreationPending = false;
     QTimer Service;
+    /// Retry only while a submitted Qt sampling read is awaiting its GPU completion marker.
+    QTimer RetirementRetry;
     static bool Retain(void* context) noexcept
     {
         State& state = *static_cast<State*>(context);
@@ -685,20 +688,44 @@ private:
     void releaseRetired()
     {
         LUDUS_REQUIRE(QThread::currentThread() == Widget->thread());
+        if (IsRecording == true)
+        {
+            // A nested event loop must not seal reads ahead of Qt's current submission.
+            // afterFrameEnd retries them once that submission is actually queued.
+            return;
+        }
+        bool hasPendingReads = false;
         for (Frame& frame : Frames)
         {
             if (frame.HasLease == false || frame.IsRetiring == false)
             {
                 continue;
             }
-            if (Source->EndFrameRead(frame.Read) == rhi::RasterStatus::Ready)
+            const rhi::RasterStatus retired = Source->EndFrameRead(frame.Read);
+            if (retired == rhi::RasterStatus::Ready)
             {
                 frame = {};
             }
+            else if (retired == rhi::RasterStatus::Pending)
+            {
+                hasPendingReads = true;
+            }
+        }
+        if (hasPendingReads == true)
+        {
+            if (RetirementRetry.isActive() == false)
+            {
+                RetirementRetry.start();
+            }
+        }
+        else
+        {
+            RetirementRetry.stop();
         }
     }
     void clearFrames()
     {
+        RetirementRetry.stop();
         CanShowFrames = IsAutomatic;
         if (GraphViewOrNull != nullptr)
         {
@@ -741,6 +768,7 @@ private:
     }
     void destroyWindow()
     {
+        RetirementRetry.stop();
         Service.stop();
         IsDestroyingWindow = true;
         // Source pins must already have been released by RHI shutdown. The
@@ -825,6 +853,10 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                                  QWidget* parentOrNull,
                                  bool isAutomatic)
     : QWidget(parentOrNull), Preview_(preview), mFrameSource(frameSource)
+#if defined(Q_OS_MACOS)
+      ,
+      mRelativeMouse(*this)
+#endif
 {
     LUDUS_REQUIRE(preview != nullptr);
     LUDUS_REQUIRE(frameSource != nullptr);
@@ -835,6 +867,14 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     mNavigationTimer.setInterval(16);
     connect(&mNavigationTimer, &QTimer::timeout, this, [this]() { advanceNavigation(); });
     connect(preview, &RenderPreview::Stopped, this, [this]() { stopNavigation(); });
+#if defined(Q_OS_MACOS)
+    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+        if (state != Qt::ApplicationActive)
+        {
+            stopNavigation();
+        }
+    });
+#endif
     setToolTip(
         QStringLiteral("Right-drag to look · hold right mouse + WASD/QE to fly · Alt/Option-left-drag to orbit · "
                        "Shift-Alt/Option-left-drag or middle-drag to pan · "
@@ -867,6 +907,26 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     QHBoxLayout* controls = new QHBoxLayout;
     mState->ControlsOrNull = controls;
     controls->addWidget(shading, 1);
+    QDoubleSpinBox* lookSensitivity = new QDoubleSpinBox(this);
+    lookSensitivity->setObjectName(QStringLiteral("viewportLookSensitivity"));
+    lookSensitivity->setAccessibleName(QStringLiteral("Mouse look sensitivity"));
+    lookSensitivity->setPrefix(QStringLiteral("Look "));
+    lookSensitivity->setSuffix(QStringLiteral("×"));
+    lookSensitivity->setRange(static_cast<float64>(RenderPreview::MINIMUM_LOOK_SENSITIVITY),
+                              static_cast<float64>(RenderPreview::MAXIMUM_LOOK_SENSITIVITY));
+    lookSensitivity->setSingleStep(static_cast<float64>(RenderPreview::MINIMUM_LOOK_SENSITIVITY));
+    lookSensitivity->setDecimals(1);
+    lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
+    lookSensitivity->setToolTip(QStringLiteral("Mouse sensitivity for right-drag look and Alt/Option orbit. "
+                                               "Lower values rotate more slowly; 1× is the default."));
+    controls->addWidget(lookSensitivity);
+    connect(lookSensitivity, &QDoubleSpinBox::valueChanged, preview, [preview](float64 sensitivity) {
+        preview->SetLookSensitivity(static_cast<float32>(sensitivity));
+    });
+    connect(preview, &RenderPreview::NavigationChanged, lookSensitivity, [preview, lookSensitivity]() {
+        const QSignalBlocker blocker(lookSensitivity);
+        lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
+    });
     QToolButton* frameAll = new QToolButton(this);
     frameAll->setObjectName(QStringLiteral("viewportFrameAll"));
     frameAll->setText(QStringLiteral("Frame all"));
@@ -991,6 +1051,10 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
             mState->showFrame();
         }
     });
+    mState->RetirementRetry.setInterval(ViewportFramePump::COMPLETION_POLL_MILLISECONDS);
+    mState->RetirementRetry.setTimerType(Qt::PreciseTimer);
+    mState->RetirementRetry.setSingleShot(true);
+    connect(&mState->RetirementRetry, &QTimer::timeout, this, [this]() { mState->releaseRetired(); });
 #endif
     mIsAutomatic = isAutomatic;
     connectFrameSource();
@@ -1037,6 +1101,14 @@ ViewportFrameSource& PreviewViewport::GetFrameSource() const noexcept
 {
     return *mFrameSource;
 }
+bool PreviewViewport::CanImportHostedImages() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    return mState->Window != nullptr && mState->Device.Get() != nullptr && mState->Device->CanImportHostedImages();
+#else
+    return false;
+#endif
+}
 PreviewViewport::~PreviewViewport()
 {
     stopNavigation();
@@ -1065,6 +1137,14 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         Preview_->Stop();
     }
     Preview_->UseProjectGraph();
+    const auto synchronizeProblem = [this, &inoutWorkspace]() {
+        Preview_->SetProjectGraphProblem(inoutWorkspace.GetRenderProblem());
+    };
+    // A failure can originate inside activation polling. Rollback may detach that activation,
+    // so deliver the current diagnostic only after the producer has left its stack.
+    connect(&inoutWorkspace, &RendererWorkspace::RenderProblemChanged, this, synchronizeProblem, Qt::QueuedConnection);
+    connect(&inoutWorkspace, &RendererWorkspace::DocumentChanged, this, synchronizeProblem);
+    synchronizeProblem();
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
@@ -1115,6 +1195,14 @@ void PreviewViewport::ShowFrame()
     {
         mState->GraphViewOrNull->SetCanPresent(true);
     }
+#endif
+}
+bool PreviewViewport::HasRetainedGraphFrame() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    return mState->GraphViewOrNull != nullptr && mState->GraphViewOrNull->GetImage().isNull() == false;
+#else
+    return false;
 #endif
 }
 void PreviewViewport::ClearFrame(const QString& text)

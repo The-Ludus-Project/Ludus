@@ -63,6 +63,19 @@ QString DescribeShaderInterface(const QByteArray& manifest, const QString& sourc
         }
         const QString stage = program.value(QStringLiteral("stage")).toString();
         const QString output = program.value(QStringLiteral("output")).toString();
+        const bool isRayStage = stage == QStringLiteral("ray_generation") || stage == QStringLiteral("miss") ||
+                                stage == QStringLiteral("closest_hit");
+        if (isRayStage == true)
+        {
+            descriptions.append(QStringLiteral("%1 — %2 (%3)\nInput: %4\nOutput: %5\n"
+                                               "The renderer supplies the triangle ray interface types.")
+                                    .arg(program.value(QStringLiteral("id")).toString(),
+                                         program.value(QStringLiteral("function")).toString(),
+                                         stage,
+                                         program.value(QStringLiteral("input")).toString(),
+                                         output));
+            continue;
+        }
         if (stage != QStringLiteral("vertex") && stage != QStringLiteral("fragment"))
         {
             descriptions.append(QStringLiteral("%1 — %2 (%3)\n"

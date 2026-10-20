@@ -125,6 +125,13 @@ public:
         foundation::float32 Scale = 1.0F;
         /// Initial visibility.
         WindowVisibility Visibility = WindowVisibility::Visible;
+        /// @brief The adapter that imports the window's hosted surface, or null when there is
+        /// none to announce (Metal, or a consumer without an adapter identity).
+        ///
+        /// Borrowed for the call; the endpoint copies it and sends it in the Welcome. The
+        /// window then reports it from HostedSurfaceChannel::TryGetConsumerAdapter(), and a
+        /// Vulkan game prefers the matching adapter.
+        const HostedAdapterIdentity* ConsumerAdapterOrNull = nullptr;
     };
 
 public:

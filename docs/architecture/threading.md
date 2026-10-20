@@ -3,7 +3,8 @@
 Status: the bounded graph kernel is implemented, and [milestone T0](#milestones)
 closed its documentation, contract-test and macOS validation gaps. Milestone T1
 moved the [first engine consumer](#first-engine-consumer-static-lighting-bake), the
-editor's static-lighting bake, onto an explicit worker budget. Milestone T2 added
+editor's static-lighting bake, onto an explicit worker budget, and scene import now
+[decodes textures](#scene-import-texture-decoding) on an injected system. Milestone T2 added
 [task identity and execution traces](#task-identity-and-execution-traces), and
 milestone T3 completed [platform validation](../development/threading-evidence.md#platform-completion-t3)
 on Windows and macOS. Work stealing is a later, measured milestone. This design builds on
@@ -248,6 +249,38 @@ graph at a time. Browser builds compile the same code and do not start this nati
 preview. [Bake measurements](../development/threading-evidence.md#static-lighting-bake-t1)
 report latency percentiles, critical path and dispatch overhead against the serial
 executor and the former single-thread `Step` loop.
+
+## Scene import texture decoding
+
+Scene import is the second consumer. Its best-effort cook decodes texture images
+on an optional, injected `JobSystem` (`BestEffortOptions::JobsOrNull`). The
+importer never creates a pool. The Editor's level workspace owns a separate
+import system of four workers, which its operation thread helps; it does not
+borrow the preview bake's system, which admits only one graph at a time.
+`ludus-cook --workers N` starts one with an explicit count. Browser builds and
+`nullptr` decode serially.
+
+The private `TextureDecodeQueue` follows this page's ownership rules. The cook
+plans its decodes in the order it consumes them. For each batch of
+`min(GetWorkerCount() + 1, 8)` images, the owner reads every file, so callbacks
+never do I/O. It then submits one job per image to a reusable graph and waits
+while helping. Each job writes only its own slot: the decoded RGBA8 image, a
+static message and the file's SHA-256, which the import's input digests reuse.
+After that lifetime fence the cook takes results in its original serial order. Diagnostics, digests
+and cooked bytes are therefore identical for every worker count, and the serial
+path is the test oracle. Decoding is a pure function of a texture, so a request
+taken off the plan is decoded inline instead of reordering any output. A busy or
+refusing system degrades the same way. Cancellation is polled on the owner
+before each image is read; a running decode finishes. The batch cap bounds the
+extra memory to eight decoded images. After decoding, the private `ParallelTasks`
+runs the independent texture work on the same system: surface-map row bands, and
+the budget's halvings, planned from sizes alone and then run one texture per job.
+Each task writes only its own rows or texture, a task the system does not run
+runs inline after `Wait`, and the cook merges in texture order. The scene asset
+operations' source recheck uses the same pattern: the owner reads the recorded
+inputs in order into a 256 MiB batch buffer, `ParallelTasks` hashes one file
+segment per job, and the owner reports the first failure in input order. The import guide
+records the [usage contract](../development/best-effort-scene-import.md#parallel-texture-decoding).
 
 ## Task identity and execution traces
 

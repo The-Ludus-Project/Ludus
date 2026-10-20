@@ -35,8 +35,8 @@ inline constexpr foundation::usize MAX_PACKAGE_BYTES = foundation::usize{16} * 1
 inline constexpr foundation::usize MAX_ARTIFACT_BYTES = foundation::usize{2} * 1024 * 1024;
 /// Largest stage entry-point or GLSL ES uniform block name.
 inline constexpr foundation::usize MAX_ENTRY_BYTES = 63;
-/// Number of explicit stage roles (two per technique).
-inline constexpr foundation::usize STAGE_ROLE_COUNT = TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT;
+/// Raster stage pairs plus the linked ray compute and two image stages.
+inline constexpr foundation::usize STAGE_ROLE_COUNT = RASTER_TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT + 3;
 /// Largest stage table: one artifact per role and target.
 inline constexpr foundation::usize MAX_STAGES = STAGE_ROLE_COUNT * SHADER_TARGET_COUNT;
 /// Renderer static vertex/instance interface: position plus four transform rows and color.
@@ -61,7 +61,7 @@ inline constexpr foundation::usize UNIFORM_FIELD_RECORD_BYTES = 5 * sizeof(found
 inline constexpr foundation::usize STAGE_FIELD_COUNT = 6;
 /// Serialized width of one (location, format) stage input pair.
 inline constexpr foundation::usize INPUT_RECORD_BYTES = 2 * sizeof(foundation::uint32);
-/// Explicit program role; two consecutive roles (vertex, fragment) per Technique value.
+/// Explicit program role: raster vertex/fragment pairs, followed by three linked ray roles.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
 enum class StageRole : foundation::uint32
 {
@@ -73,6 +73,9 @@ enum class StageRole : foundation::uint32
     MaskedColorFragment, ///< MaskedColorAndDepth color entry with authored coverage.
     MaskedDepthVertex,   ///< MaskedDepthOnly geometry entry.
     MaskedDepthFragment, ///< MaskedDepthOnly separately authored void coverage entry.
+    RayCompute,          ///< Linked authored ray functions and renderer-owned GPU BVH traversal.
+    RayImageVertex,      ///< Renderer-owned GPU color/index presentation vertex entry.
+    RayImageFragment,    ///< Renderer-owned color presentation fragment entry.
 };
 /// Float vertex input width of one stage input record.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.

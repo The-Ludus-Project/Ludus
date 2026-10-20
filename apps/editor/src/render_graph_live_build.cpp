@@ -14,16 +14,18 @@ namespace
 {
 constexpr foundation::int32 DEBOUNCE_MILLISECONDS = 250;
 }
-QByteArray ComputeRenderGraphBuildIdentity(const RenderGraphDocument& document, const QString& configuration)
+QByteArray ComputeRenderGraphBuildIdentity(const RenderGraphDocument& document,
+                                           const QString& configuration,
+                                           RenderGraphSource source)
 {
     QCryptographicHash identity(QCryptographicHash::Sha256);
     const QByteArray configurationText = configuration.toUtf8();
     identity.addData(QByteArray::number(configurationText.size()));
     identity.addData(QByteArrayLiteral(":"));
     identity.addData(configurationText);
-    for (const QString& file : document.GetFiles())
+    for (const QString& file : document.GetFiles(source))
     {
-        QByteArray bytes = document.GetDraft(file);
+        QByteArray bytes = source == RenderGraphSource::Saved ? document.GetSaved(file) : document.GetDraft(file);
         if (file.endsWith(QStringLiteral(".lurender.json")) == true)
         {
             const QJsonDocument parsed = QJsonDocument::fromJson(bytes);

@@ -59,6 +59,16 @@ public:
     void RequestPlayClose() noexcept;
     /// Whether a Play-in-the-viewport session is open.
     [[nodiscard]] bool IsPlaying() const noexcept;
+    /// Why the last Play-in-the-viewport session ended because the game's images were refused
+    /// after launch; empty otherwise. Cleared by the next BeginPlay.
+    [[nodiscard]] QString GetPlayUnavailableReason() const;
+    /// @brief Label the viewport while a game runs in its own window, or remove the label.
+    ///
+    /// The label replaces the preview status until it is removed; removing it shows the
+    /// preview's own status again, or that the viewport is paused.
+    void SetPlayingElsewhere(bool isPlayingElsewhere);
+    /// Whether the playing-elsewhere label is shown.
+    [[nodiscard]] bool IsPlayingElsewhere() const noexcept;
 Q_SIGNALS:
     /// The Play-in-the-viewport session changed state (started, showing the game, or ended).
     void PlayStateChanged();
@@ -88,6 +98,8 @@ private:
     void updatePlay();
     PlayViewportSource* mPlayOrNull = nullptr;
     bool mIsPlaying = false;
+    bool mIsPlayingElsewhere = false;
+    QString mPlayUnavailableReason;
     WorldDocument PreviewWorld_;
     QLabel* Status_;
     QLabel* Trace_;

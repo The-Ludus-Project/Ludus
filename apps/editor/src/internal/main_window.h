@@ -166,6 +166,8 @@ private:
     bool ResumeViewport_ = false;
     /// A Build and Run launched into the World viewport is active (Play in the viewport).
     bool mIsPlayRunInViewport = false;
+    /// A launch is running a game in its own window; the World viewport is labelled meanwhile.
+    bool mIsRunElsewhere = false;
     void SetProjectWorkspace(const QString& root, bool restore);
     void SaveProjectWorkspace() const;
     QByteArray DefaultLayout_;

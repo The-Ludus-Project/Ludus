@@ -4,8 +4,10 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/document_history.h"
+#include "internal/render_graph_source.h"
 
 #include <QByteArray>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMap>
@@ -91,27 +93,36 @@ public:
     {
         return mRootGraph;
     }
-    [[nodiscard]] QStringList GetFiles() const;
+    /// Package-relative files in the requested source version.
+    [[nodiscard]] QStringList GetFiles(RenderGraphSource source = RenderGraphSource::Draft) const;
     [[nodiscard]] QByteArray GetDraft(const QString& file) const;
     [[nodiscard]] QByteArray GetSaved(const QString& file) const;
     [[nodiscard]] bool IsFileDirty(const QString& file) const;
     [[nodiscard]] bool IsDirty() const;
-    /// Monotonic draft revision; increments on every committed edit, undo and redo.
-    [[nodiscard]] foundation::uint64 GetRevision() const noexcept
+    /// Revision of the selected source version. Draft revisions increase with edits,
+    /// undo and redo; Saved advances only after a complete save or external refresh.
+    [[nodiscard]] LUDUS_INLINE foundation::uint64
+    GetRevision(RenderGraphSource source = RenderGraphSource::Draft) const noexcept
     {
-        return mHistory.Revision();
+        return source == RenderGraphSource::Saved ? mSavedRevision : mHistory.Revision();
     }
     /// Parse a draft graph document; returns false for missing or non-object JSON.
     [[nodiscard]] bool GetGraph(const QString& file, QJsonObject& outGraph) const;
 
-    [[nodiscard]] RenderGraphDocumentStatus
-    ReplaceNode(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// Replace a node atomically, preserving connected port identities and types.
+    /// On failure the draft/history is preserved; optional error names the affected endpoint and repair.
+    [[nodiscard]] RenderGraphDocumentStatus ReplaceNode(const QString& file,
+                                                        const QString& configuration,
+                                                        const QJsonObject& node,
+                                                        QString* outErrorOrNull = nullptr);
     /// Apply a pipeline and create missing shader programs and source templates as one
     /// undoable draft edit. Program placeholders receive generated names. Existing
     /// programs must match stage and source. Failure preserves all draft files; Save
-    /// publishes new files without replacement. Non-raster stages remain authoring drafts.
-    [[nodiscard]] RenderGraphDocumentStatus
-    ApplyPipeline(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// publishes new files without replacement.
+    [[nodiscard]] RenderGraphDocumentStatus ApplyPipeline(const QString& file,
+                                                          const QString& configuration,
+                                                          const QJsonObject& node,
+                                                          QString* outErrorOrNull = nullptr);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
     /// Create name.lurender.json with an empty Default configuration and bind the named
@@ -120,10 +131,29 @@ public:
     /// Failure preserves the draft. GUI thread only; package limits still apply.
     [[nodiscard]] RenderGraphDocumentStatus
     CreateSubgraph(const QString& file, const QString& configuration, const QString& node, const QString& name);
+    /// Replace a configuration's interface as one undoable edit. Rejects invalid names,
+    /// types, sources and changes that strand internal or containing-subgraph links.
+    /// Empty output sources are incomplete drafts. Failure preserves history and bytes
+    /// and describes the reason in outError. Save publishes; GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus ReplaceConfigurationInterface(const QString& file,
+                                                                          const QString& configuration,
+                                                                          const QJsonArray& inputs,
+                                                                          const QJsonArray& outputs,
+                                                                          QString& outError);
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveNode(const QString& file, const QString& configuration, const QString& node);
+    /// Add an edge, or set the declared configuration output's source for a #outputs.port
+    /// destination. Existing output sources must be disconnected first. One undoable edit;
+    /// the canvas checks endpoint types before requesting it. Save publishes the draft.
     [[nodiscard]] RenderGraphDocumentStatus
     Connect(const QString& file, const QString& configuration, const QString& from, const QString& to);
+    /// Connect an input (including #outputs.port), replacing its previous source in one
+    /// undo step. The caller checks types/cycles first. Failure preserves draft/history;
+    /// Save publishes. GUI thread only, with the same package limits as Connect.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ReplaceConnection(const QString& file, const QString& configuration, const QString& from, const QString& to);
+    /// Remove the exact edge, or clear a matching #outputs.port source while preserving
+    /// the output declaration. Failure preserves the draft; success is one undoable edit.
     [[nodiscard]] RenderGraphDocumentStatus
     Disconnect(const QString& file, const QString& configuration, const QString& from, const QString& to);
     /// Layout-only edit. Consecutive moves of the same node coalesce into one undo step.
@@ -150,8 +180,11 @@ public:
     [[nodiscard]] bool Undo();
     [[nodiscard]] bool Redo();
 
-    /// Write the complete draft package into an empty directory for a validation or build job.
-    [[nodiscard]] RenderGraphDocumentStatus WriteSnapshot(const QString& directory) const;
+    /// Write the selected source version into an empty directory for a validation or build job.
+    /// Saved snapshots never include unsaved edits. Failure may leave a partial snapshot;
+    /// callers own its directory and must discard it on failure. GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus WriteSnapshot(const QString& directory,
+                                                          RenderGraphSource source = RenderGraphSource::Draft) const;
     /// Replace existing dirty files atomically, create new files without replacement, and
     /// remove saved files absent from the draft (Undo), after checking saved disk bytes.
     /// Conflict or Locked writes nothing. A write failure keeps remaining
@@ -179,6 +212,7 @@ private:
     QString mPackageRoot;
     QString mRootGraph;
     RenderGraphSnapshot mSaved;
+    foundation::uint64 mSavedRevision = 0;
     RenderGraphSnapshot mDraft;
     QString mLastMove;
     bool mIsBuiltIn = false;

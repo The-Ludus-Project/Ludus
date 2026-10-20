@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
 #include <ludus/content/content.h>
@@ -52,6 +53,41 @@ TEST_CASE("SHA256 matches published empty and abc vectors")
     {
         REQUIRE(digest.Data[i] == expected[i]);
     }
+}
+TEST_CASE("SHA256 matches multi-block published vectors for every split")
+{
+    // FIPS 180-4 examples: the 56-byte message needs a second padding block.
+    const std::string twoBlock = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    const uint8 twoBlockExpected[] = {0x24, 0x8d, 0x6a, 0x61, 0xd2, 0x06, 0x38, 0xb8, 0xe5, 0xc0, 0x26,
+                                      0x93, 0x0c, 0x3e, 0x60, 0x39, 0xa3, 0x3c, 0xe4, 0x59, 0x64, 0xff,
+                                      0x21, 0x67, 0xf6, 0xec, 0xed, 0xd4, 0x19, 0xdb, 0x06, 0xc1};
+    const std::span<const uint8> message(reinterpret_cast<const uint8*>(twoBlock.data()), twoBlock.size());
+    for (usize split = 0; split <= message.size(); ++split)
+    {
+        Hasher hasher;
+        REQUIRE(hasher.Add(message.first(split)) == true);
+        REQUIRE(hasher.Add(message.subspan(split)) == true);
+        const Digest digest = hasher.Finish();
+        CAPTURE(split);
+        REQUIRE(std::equal(digest.Data, digest.Data + 32, twoBlockExpected) == true);
+    }
+    const uint8 millionExpected[] = {0xcd, 0xc7, 0x6e, 0x5c, 0x99, 0x14, 0xfb, 0x92, 0x81, 0xa1, 0xc7,
+                                     0xe2, 0x84, 0xd7, 0x3e, 0x67, 0xf1, 0x80, 0x9a, 0x48, 0xa4, 0x97,
+                                     0x20, 0x0e, 0x04, 0x6d, 0x39, 0xcc, 0xc7, 0x11, 0x2c, 0xd0};
+    const std::string million(1000000, 'a');
+    const std::span<const uint8> bytes(reinterpret_cast<const uint8*>(million.data()), million.size());
+    const Digest oneShot = Hash(bytes);
+    REQUIRE(std::equal(oneShot.Data, oneShot.Data + 32, millionExpected) == true);
+    // Uneven chunk sizes exercise buffered partial blocks and in-place whole blocks.
+    Hasher chunked;
+    usize offset = 0;
+    for (usize chunk = 1; offset < bytes.size(); chunk = chunk * 7 % 1021 + 1)
+    {
+        const usize take = chunk < bytes.size() - offset ? chunk : bytes.size() - offset;
+        REQUIRE(chunked.Add(bytes.subspan(offset, take)) == true);
+        offset += take;
+    }
+    REQUIRE(chunked.Finish() == oneShot);
 }
 TEST_CASE("Root bounded saves preserve conflicts and reject symlink traversal")
 {

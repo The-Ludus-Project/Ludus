@@ -36,11 +36,19 @@ void EndpointSession::Configure(const Token& token, uint32 expectedUserId, const
     mLastRefusal = HostedRefusal::None;
     mRefusalCount = 0;
     mNonce = {};
+    mHasConsumerAdapter = false;
+    mConsumerAdapter = {};
     mPeerProcessId = -1;
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     mRendezvous.Stop();
 #endif
     clearSurfaceState();
+}
+
+void EndpointSession::SetConsumerAdapter(const HostedAdapterIdentity& adapter) noexcept
+{
+    mHasConsumerAdapter = true;
+    mConsumerAdapter = adapter;
 }
 
 #if LUDUS_TARGET_OS == LUDUS_OS_MACOS
@@ -433,6 +441,9 @@ bool EndpointSession::enqueueSynchronization(bool isOverflow) noexcept
         messages[count].Scale = mState.Scale;
         messages[count].Visibility = mState.Visibility;
         messages[count].Nonce = mNonce;
+        messages[count].HasConsumerAdapter = mHasConsumerAdapter;
+        messages[count].DeviceUuid = mConsumerAdapter.DeviceUuid;
+        messages[count].DriverUuid = mConsumerAdapter.DriverUuid;
         ++count;
     }
     if (mIsFocused == true)

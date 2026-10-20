@@ -65,12 +65,9 @@ bool PlayViewportSource::Start(const QString& parentDirectory,
         return false;
     }
     mUnavailableReason.clear();
-    if (device.Api != rhi::Backend::Metal)
+    if (device.Api != rhi::Backend::Metal && device.Api != rhi::Backend::Vulkan)
     {
-        // Vulkan needs VK_KHR_external_memory_fd on Qt's device, the external queue-family
-        // acquire and a fence on Qt's queue; until then Play opens in its own window.
-        makeUnavailable(QStringLiteral("Play in the viewport is not yet available with Vulkan; run the game in "
-                                       "its own window."));
+        makeUnavailable(QStringLiteral("Play in the viewport needs a Metal or Vulkan viewport device."));
         return false;
     }
     const QByteArray parent = parentDirectory.toUtf8();
@@ -79,6 +76,12 @@ bool PlayViewportSource::Start(const QString& parentDirectory,
     info.Width = width;
     info.Height = height;
     info.Scale = scale;
+    // A Vulkan game prefers this device's adapter, so a multi-GPU host renders where the editor imports.
+    platform::HostedAdapterIdentity adapter;
+    if (rhi::TryGetHostedConsumerAdapter(device, adapter) == true)
+    {
+        info.ConsumerAdapterOrNull = &adapter;
+    }
     const platform::HostedEndpointStatus started = mEndpoint.Start(info);
     if (started != platform::HostedEndpointStatus::Ok)
     {

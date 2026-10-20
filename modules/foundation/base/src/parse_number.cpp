@@ -139,6 +139,267 @@ int32 CompareBinary(Decimal decimal, Binary binary) noexcept
     }
     return Compare(left, right);
 }
+
+// Byte copy preserves the exact representation without aliasing or unions.
+void WriteBinary32(uint32 bits, float32& outValue) noexcept
+{
+    const uint8* source = reinterpret_cast<const uint8*>(&bits);
+    uint8* destination = reinterpret_cast<uint8*>(&outValue);
+    for (usize index = 0; index < sizeof(outValue); ++index)
+    {
+        destination[index] = source[index];
+    }
+}
+
+// Exact fast path. Most inputs have at most 19 significant digits and a small
+// decimal exponent, so the value is w * 10^e with w < 2^64. The quotient or
+// product is formed exactly in 128-bit integers; the rounding bit and a sticky
+// remainder then select the nearest binary32, ties to even. Results outside the
+// normal binary32 range return false and use the general conversion above.
+/// Bits in each half of a Wide value.
+constexpr uint32 HALF_BITS = 64;
+/// Binary32 precision, including the implicit leading bit.
+constexpr uint32 SIGNIFICAND_BITS = 24;
+/// Stored binary32 fraction bits and their mask.
+constexpr uint32 FRACTION_BITS = SIGNIFICAND_BITS - 1;
+constexpr uint32 FRACTION_MASK = (1U << FRACTION_BITS) - 1;
+/// Exponent bias for a value written as an integer significand times 2^exponent.
+constexpr int32 INTEGER_SIGNIFICAND_BIAS = 127 + static_cast<int32>(FRACTION_BITS);
+/// Largest biased exponent of a finite binary32 value.
+constexpr int32 MAX_FINITE_BIASED_EXPONENT = 254;
+/// Binary32 sign bit.
+constexpr uint32 SIGN_BIT = 0x80000000U;
+/// Decimal digit base.
+constexpr uint64 DECIMAL_BASE = 10;
+/// The scaled quotient lies below 2^QUOTIENT_BITS and at or above 2^(QUOTIENT_BITS - 2).
+constexpr uint32 QUOTIENT_BITS = 27;
+constexpr int32 MAX_FAST_POSITIVE_EXPONENT = 19;
+constexpr int32 MAX_FAST_NEGATIVE_EXPONENT = 27;
+constexpr uint64 POWERS_OF_TEN[] = {
+    1ULL,
+    10ULL,
+    100ULL,
+    1000ULL,
+    10000ULL,
+    100000ULL,
+    1000000ULL,
+    10000000ULL,
+    100000000ULL,
+    1000000000ULL,
+    10000000000ULL,
+    100000000000ULL,
+    1000000000000ULL,
+    10000000000000ULL,
+    100000000000000ULL,
+    1000000000000000ULL,
+    10000000000000000ULL,
+    100000000000000000ULL,
+    1000000000000000000ULL,
+    10000000000000000000ULL,
+};
+struct Wide final
+{
+    uint64 High = 0;
+    uint64 Low = 0;
+};
+uint32 GetBitLength(uint64 value) noexcept
+{
+    uint32 length = 0;
+    for (uint32 step = HALF_BITS / 2; step != 0; step /= 2)
+    {
+        if ((value >> step) != 0)
+        {
+            value >>= step;
+            length += step;
+        }
+    }
+    return length + static_cast<uint32>(value);
+}
+uint32 GetBitLength(Wide value) noexcept
+{
+    return value.High != 0 ? HALF_BITS + GetBitLength(value.High) : GetBitLength(value.Low);
+}
+Wide MultiplyWide(uint64 left, uint64 right) noexcept
+{
+    constexpr uint64 LOW_HALF = (1ULL << WORD_BITS) - 1;
+    const uint64 leftLow = left & LOW_HALF;
+    const uint64 leftHigh = left >> WORD_BITS;
+    const uint64 rightLow = right & LOW_HALF;
+    const uint64 rightHigh = right >> WORD_BITS;
+    const uint64 lowLow = (left & LOW_HALF) * (right & LOW_HALF);
+    const uint64 lowHigh = leftLow * rightHigh;
+    const uint64 highLow = leftHigh * rightLow;
+    const uint64 highHigh = leftHigh * rightHigh;
+    const uint64 middle = (lowLow >> WORD_BITS) + (lowHigh & LOW_HALF) + (highLow & LOW_HALF);
+    return
+    {
+        .High = highHigh + (lowHigh >> WORD_BITS) + (highLow >> WORD_BITS) + (middle >> WORD_BITS),
+        .Low = (lowLow & LOW_HALF) | (middle << WORD_BITS),
+    };
+}
+/// @pre count < 128 and the shifted value fits in 128 bits.
+Wide ShiftLeftWide(Wide value, uint32 count) noexcept
+{
+    if (count == 0)
+    {
+        return value;
+    }
+    if (count >= HALF_BITS)
+    {
+        return { .High = value.Low << (count - HALF_BITS), .Low = 0 };
+    }
+    return { .High = (value.High << count) | (value.Low >> (HALF_BITS - count)), .Low = value.Low << count };
+}
+/// @pre count < 128.
+Wide ShiftRightWide(Wide value, uint32 count) noexcept
+{
+    if (count == 0)
+    {
+        return value;
+    }
+    if (count >= HALF_BITS)
+    {
+        return { .High = 0, .Low = value.High >> (count - HALF_BITS) };
+    }
+    return { .High = value.High >> count, .Low = (value.Low >> count) | (value.High << (HALF_BITS - count)) };
+}
+bool IsLessWide(Wide left, Wide right) noexcept
+{
+    return left.High != right.High ? left.High < right.High : left.Low < right.Low;
+}
+Wide SubtractWide(Wide left, Wide right) noexcept
+{
+    const uint64 borrow = left.Low < right.Low ? 1U : 0U;
+    return { .High = left.High - right.High - borrow, .Low = left.Low - right.Low };
+}
+bool HasBitsBelow(Wide value, uint32 count) noexcept
+{
+    if (count == 0)
+    {
+        return false;
+    }
+    if (count >= HALF_BITS)
+    {
+        const uint32 highCount = count - HALF_BITS;
+        const uint64 highMask = highCount == 0 ? 0 : ~0ULL >> (HALF_BITS - highCount);
+        return value.Low != 0 || (value.High & highMask) != 0;
+    }
+    return (value.Low & (~0ULL >> (HALF_BITS - count))) != 0;
+}
+/// Round (value + fraction) * 2^-scale, where hasFraction marks a nonzero
+/// fraction below value's least significant bit, to binary32 bits.
+/// @return false when the result is not a normal binary32.
+bool TryRoundToBinary32(Wide value, bool hasFraction, int32 scale, uint32& outBits) noexcept
+{
+    const uint32 length = GetBitLength(value);
+    uint64 significand = 0;
+    int32 exponent = -scale;
+    if (length <= SIGNIFICAND_BITS)
+    {
+        // Exact unless a fraction remains; callers with a fraction supply >= 26 bits.
+        significand = value.Low << (SIGNIFICAND_BITS - length);
+        exponent -= static_cast<int32>(SIGNIFICAND_BITS - length);
+    }
+    else
+    {
+        const uint32 extra = length - SIGNIFICAND_BITS;
+        significand = ShiftRightWide(value, extra).Low;
+        const bool isRoundBitSet = (ShiftRightWide(value, extra - 1).Low & 1U) != 0;
+        const bool isAboveHalf = hasFraction == true || HasBitsBelow(value, extra - 1) == true;
+        if (isRoundBitSet == true && (isAboveHalf == true || (significand & 1U) != 0))
+        {
+            ++significand;
+            if (significand == (1ULL << SIGNIFICAND_BITS))
+            {
+                significand >>= 1;
+                ++exponent;
+            }
+        }
+        exponent += static_cast<int32>(extra);
+    }
+    const int32 biasedExponent = exponent + INTEGER_SIGNIFICAND_BIAS;
+    if (biasedExponent < 1 || biasedExponent > MAX_FINITE_BIASED_EXPONENT)
+    {
+        return false;
+    }
+    outBits =
+        (static_cast<uint32>(biasedExponent) << FRACTION_BITS) | (static_cast<uint32>(significand) & FRACTION_MASK);
+    return true;
+}
+/// Significand bounds and decimal scaling captured by the validated syntax scan.
+struct FastDecimalDescription final
+{
+    usize IntegerStart = 0;
+    usize FractionEnd = 0;
+    int32 Exponent = 0;
+};
+/// @return false when the input needs the general conversion; outBits is then unchanged.
+bool TryParseFast(const char* text, FastDecimalDescription description, uint32& outBits) noexcept
+{
+    constexpr uint64 MAX_BEFORE_DIGIT = (~0ULL - (DECIMAL_BASE - 1)) / DECIMAL_BASE;
+    uint64 digits = 0;
+    for (usize index = description.IntegerStart; index < description.FractionEnd; ++index)
+    {
+        if (Digit(text[index]) == false)
+        {
+            continue;
+        }
+        if (digits > MAX_BEFORE_DIGIT)
+        {
+            return false;
+        }
+        digits = digits * DECIMAL_BASE + static_cast<uint64>(text[index] - '0');
+    }
+    if (digits == 0)
+    {
+        outBits = 0;
+        return true;
+    }
+    if (description.Exponent >= 0)
+    {
+        if (description.Exponent > MAX_FAST_POSITIVE_EXPONENT)
+        {
+            return false;
+        }
+        const Wide product = MultiplyWide(digits, POWERS_OF_TEN[static_cast<usize>(description.Exponent)]);
+        return TryRoundToBinary32(product, false, 0, outBits);
+    }
+    const int32 negativeExponent = -description.Exponent;
+    if (negativeExponent > MAX_FAST_NEGATIVE_EXPONENT)
+    {
+        return false;
+    }
+    // 10^k for k > 19 exceeds 64 bits; form it as an exact 10^19 * 10^(k - 19) product.
+    Wide divisor = negativeExponent > MAX_FAST_POSITIVE_EXPONENT
+                       ? MultiplyWide(POWERS_OF_TEN[static_cast<usize>(MAX_FAST_POSITIVE_EXPONENT)],
+                                      POWERS_OF_TEN[static_cast<usize>(negativeExponent - MAX_FAST_POSITIVE_EXPONENT)])
+                       : Wide{ .High = 0, .Low = POWERS_OF_TEN[static_cast<usize>(negativeExponent)] };
+    // Scale so that the quotient lies in [2^25, 2^27): 24 result bits, a
+    // rounding bit and at least one more bit, with the remainder as sticky.
+    const int32 scale = static_cast<int32>(QUOTIENT_BITS - 1) + static_cast<int32>(GetBitLength(divisor)) -
+                        static_cast<int32>(GetBitLength(digits));
+    Wide remainder = { .High = 0, .Low = digits };
+    if (scale >= 0)
+    {
+        remainder = ShiftLeftWide(remainder, static_cast<uint32>(scale));
+    }
+    else
+    {
+        divisor = ShiftLeftWide(divisor, static_cast<uint32>(-scale));
+    }
+    uint64 quotient = 0;
+    for (uint32 bit = QUOTIENT_BITS; bit != 0; --bit)
+    {
+        const Wide shifted = ShiftLeftWide(divisor, bit - 1);
+        if (IsLessWide(remainder, shifted) == false)
+        {
+            remainder = SubtractWide(remainder, shifted);
+            quotient |= 1ULL << (bit - 1);
+        }
+    }
+    const bool hasFraction = remainder.High != 0 || remainder.Low != 0;
+    return TryRoundToBinary32({ .High = 0, .Low = quotient }, hasFraction, scale, outBits);
+}
 } // namespace
 NumberParseStatus ParseUint64(const char* text, usize size, uint64& output) noexcept
 {
@@ -245,6 +506,15 @@ NumberParseStatus ParseFloat32(const char* text, usize size, float32& output) no
     {
         return NumberParseStatus::InvalidSyntax;
     }
+    const int32 fastExponent = decimalExponent - static_cast<int32>(fractionEnd - fractionStart);
+    uint32 fastBits = 0;
+    if (TryParseFast(text,
+                     { .IntegerStart = integerStart, .FractionEnd = fractionEnd, .Exponent = fastExponent },
+                     fastBits) == true)
+    {
+        WriteBinary32(negative == true ? fastBits | SIGN_BIT : fastBits, output);
+        return NumberParseStatus::Success;
+    }
     Integer numerator;
     int32 significantDigits = 0;
     for (usize index = integerStart; index < fractionEnd; ++index)
@@ -310,13 +580,7 @@ NumberParseStatus ParseFloat32(const char* text, usize size, float32& output) no
     {
         bits |= 0x80000000U;
     }
-    // Byte copy preserves the exact representation without aliasing or unions.
-    const auto* source = reinterpret_cast<const uint8*>(&bits);
-    auto* destination = reinterpret_cast<uint8*>(&output);
-    for (usize index = 0; index < sizeof(output); ++index)
-    {
-        destination[index] = source[index];
-    }
+    WriteBinary32(bits, output);
     return NumberParseStatus::Success;
 }
 } // namespace ludus::foundation

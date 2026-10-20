@@ -17,14 +17,21 @@
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QFocusEvent>
 #include <QImage>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPixmap>
+#include <QPoint>
+#include <QPointF>
+#include <QScreen>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include <catch2/catch_approx.hpp>
@@ -35,6 +42,12 @@ using namespace ludus::editor;
 namespace math = ludus::foundation::math;
 namespace camera = ludus::gameplay::camera;
 namespace rr = ludus::graphics::renderer;
+#if defined(Q_OS_MACOS) && defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+namespace ludus::editor::tests
+{
+void ActivateViewportForPacing(PreviewViewport& inoutViewport);
+}
+#endif
 namespace
 {
 RenderScene MakeNavigationScene()
@@ -345,6 +358,67 @@ TEST_CASE("Lit viewport gives the render surface its available height without ba
     preview.Stop();
 }
 
+TEST_CASE("Continuous camera input does not postpone viewport frames",
+          "[.render-native][editor][viewport][navigation-cadence][gpu]")
+{
+    if (PreviewViewport::CanPresent() == false)
+    {
+        SKIP("A native display and GPU presentation path are required");
+    }
+    QTemporaryDir directory;
+    RenderScene scene;
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(800, 600);
+    viewport.show();
+#if defined(Q_OS_MACOS) && defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    tests::ActivateViewportForPacing(viewport);
+    REQUIRE(QTest::qWaitFor([]() { return QGuiApplication::applicationState() == Qt::ApplicationActive; }) == true);
+#endif
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetStatisticsVisible(true);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.PresentedFrames() > 0; }, 120000) == true);
+    constexpr int32 SAMPLE_MILLISECONDS = 1000;
+    const auto sampleFrames = []() {
+        QEventLoop loop;
+        QTimer::singleShot(SAMPLE_MILLISECONDS, &loop, &QEventLoop::quit);
+        loop.exec();
+    };
+    const uint64 beforeIdle = viewport.PresentedFrames();
+    sampleFrames();
+    const uint64 idleFrames = viewport.PresentedFrames() - beforeIdle;
+    const uint64 beforeInput = viewport.PresentedFrames();
+    uint32 inputCount = 0;
+    QTimer input;
+    input.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&input, &QTimer::timeout, &viewport, [&preview, &inputCount]() {
+        ++inputCount;
+        preview.Look(0, inputCount % 2 == 0 ? 1 : -1);
+    });
+    input.start(2);
+    sampleFrames();
+    input.stop();
+    const uint64 inputFrames = viewport.PresentedFrames() - beforeInput;
+    CAPTURE(idleFrames, inputFrames, inputCount, viewport.GetStatisticsText().toStdString());
+    CHECK(inputCount > 20);
+    CHECK(inputFrames > 2);
+#if defined(Q_OS_MACOS)
+    QScreen* screenOrNull = viewport.screen();
+    REQUIRE(screenOrNull != nullptr);
+    constexpr float64 MINIMUM_REFRESH_FRACTION = 0.75;
+    constexpr float64 MILLISECONDS_PER_SECOND = 1000;
+    const float64 refreshRate = screenOrNull->refreshRate();
+    const uint64 minimumFrames =
+        static_cast<uint64>(refreshRate * SAMPLE_MILLISECONDS / MILLISECONDS_PER_SECOND * MINIMUM_REFRESH_FRACTION);
+    CAPTURE(refreshRate, minimumFrames);
+    CHECK(idleFrames >= minimumFrames);
+    CHECK(inputFrames >= minimumFrames);
+#endif
+    preview.Stop();
+}
+
 TEST_CASE("An empty viewport draws a navigable coordinate grid without a renderer", "[editor][navigation][grid]")
 {
     RenderPreview preview;
@@ -481,4 +555,125 @@ TEST_CASE("Loaded editor cameras enable the world grid without adding scene obje
     CHECK(preview.Scene().Objects.size() == 1);
     CHECK(preview.Scene().Meshes.size() == 1);
     CHECK(preview.HasDevice() == false);
+}
+
+TEST_CASE("Vertical look pitches about camera right after yaw without rolling", "[editor][navigation]")
+{
+    constexpr usize YAW_COUNT = 4;
+    constexpr StaticArray<float32, YAW_COUNT> yawDegrees{0, 45, 90, -135};
+    for (const float32 yaw : yawDegrees)
+    {
+        EditorCameraController controller;
+        REQUIRE(controller.TrySetOrbit({}, {yaw, 20}, 3) == true);
+        const camera::CameraSample before = controller.GetSample();
+        const math::Vector3 rightWorld = math::Rotate(before.Pose.Orientation, {1, 0, 0});
+        const math::Vector3 forwardWorld = math::Rotate(before.Pose.Orientation, {0, 0, -1});
+        REQUIRE(controller.TryRotate(0, 40, false) == true);
+        const camera::CameraSample after = controller.GetSample();
+        CHECK(after.Pose.Position == before.Pose.Position);
+        CHECK(math::Distance(math::Rotate(after.Pose.Orientation, {1, 0, 0}), rightWorld) < 0.00001F);
+        CHECK(math::Distance(math::Rotate(after.Pose.Orientation, {0, 0, -1}), forwardWorld) > 0.1F);
+        CHECK(controller.GetPitchDegrees() == Catch::Approx(30).margin(0.0001));
+        const math::Vector3 upWorld = math::Rotate(after.Pose.Orientation, {0, 1, 0});
+        CHECK(math::Dot(rightWorld, math::Vector3{0, 1, 0}) == Catch::Approx(0).margin(0.00001));
+        CHECK(upWorld.Y > 0);
+    }
+}
+
+TEST_CASE("Viewport sensitivity scales look and orbit and persists without moving the camera", "[editor][navigation]")
+{
+    for (const bool isOrbit : {false, true})
+    {
+        RenderPreview first;
+        RenderPreview second;
+        REQUIRE(first.SetScene(MakeNavigationScene()) == true);
+        REQUIRE(second.SetScene(MakeNavigationScene()) == true);
+        const QJsonObject before = first.Navigation();
+        first.SetLookSensitivity(0.5F);
+        CHECK(first.Navigation().value(QStringLiteral("eyeX")) == before.value(QStringLiteral("eyeX")));
+        CHECK(first.Navigation().value(QStringLiteral("rotationX")) == before.value(QStringLiteral("rotationX")));
+        if (isOrbit == true)
+        {
+            first.Orbit(40, 20);
+            second.Orbit(20, 10);
+        }
+        else
+        {
+            first.Look(40, 20);
+            second.Look(20, 10);
+        }
+        QJsonObject scaled = first.Navigation();
+        scaled.remove(QStringLiteral("lookSensitivity"));
+        QJsonObject normal = second.Navigation();
+        normal.remove(QStringLiteral("lookSensitivity"));
+        CHECK(scaled == normal);
+        RenderPreview restored;
+        restored.RestoreNavigation(first.Navigation());
+        CHECK(restored.GetLookSensitivity() == 0.5F);
+        restored.SetLookSensitivity(0);
+        restored.SetLookSensitivity(RenderPreview::MAXIMUM_LOOK_SENSITIVITY + 1);
+        CHECK(restored.GetLookSensitivity() == 0.5F);
+        PreviewViewport viewport(&restored, nullptr, false);
+        QDoubleSpinBox* sensitivityOrNull =
+            viewport.findChild<QDoubleSpinBox*>(QStringLiteral("viewportLookSensitivity"));
+        REQUIRE(sensitivityOrNull != nullptr);
+        CHECK(sensitivityOrNull->value() == 0.5);
+        sensitivityOrNull->setValue(2);
+        CHECK(restored.GetLookSensitivity() == 2);
+        restored.SetLookSensitivity(1);
+        CHECK(sensitivityOrNull->value() == 1);
+    }
+}
+
+// Thanks to The Qt Company, "QCursor Class", setPos documentation:
+// https://doc.qt.io/qt-6/qcursor.html#setPos
+// Keep this fixture hidden: injected events must not mix with native cursor warps,
+// whose OS button state can differ. This checks Qt input mapping, not physical Cocoa input.
+TEST_CASE("Right drag vertical input preserves the rendered horizontal camera axis", "[editor][navigation]")
+{
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(MakeNavigationScene()) == true);
+    PreviewViewport viewport(&preview, nullptr, false);
+    viewport.resize(800, 600);
+    rr::ViewDescription before;
+    rr::ViewDescription after;
+    QString error;
+    REQUIRE(preview.DescribeView(800, 600, before, error) == true);
+    const QJsonObject initial = preview.Navigation();
+    const math::Quaternion orientation{static_cast<float32>(initial.value(QStringLiteral("rotationX")).toDouble()),
+                                       static_cast<float32>(initial.value(QStringLiteral("rotationY")).toDouble()),
+                                       static_cast<float32>(initial.value(QStringLiteral("rotationZ")).toDouble()),
+                                       static_cast<float32>(initial.value(QStringLiteral("rotationW")).toDouble())};
+    const math::Vector3 rightWorld = math::Rotate(orientation, {1, 0, 0});
+    const QPointF startLocal(200, 200);
+    const QPointF startGlobal = viewport.mapToGlobal(startLocal.toPoint());
+    QMouseEvent press(QEvent::MouseButtonPress,
+                      startLocal,
+                      startGlobal,
+                      Qt::RightButton,
+                      Qt::RightButton,
+                      Qt::NoModifier);
+    QApplication::sendEvent(&viewport, &press);
+    const QPointF movementLocal(0, 40);
+    QMouseEvent move(QEvent::MouseMove,
+                     startLocal + movementLocal,
+                     startGlobal + movementLocal,
+                     Qt::NoButton,
+                     Qt::RightButton,
+                     Qt::NoModifier);
+    QApplication::sendEvent(&viewport, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease,
+                        startLocal + movementLocal,
+                        startGlobal + movementLocal,
+                        Qt::RightButton,
+                        Qt::NoButton,
+                        Qt::NoModifier);
+    QApplication::sendEvent(&viewport, &release);
+    REQUIRE(preview.DescribeView(800, 600, after, error) == true);
+    CHECK(after.CameraPosition == before.CameraPosition);
+    CHECK(math::Distance(after.CameraForward, before.CameraForward) > 0.1F);
+    const math::Vector4 rightClip = after.WorldToClip * math::Vector4{rightWorld.X, rightWorld.Y, rightWorld.Z, 0};
+    CHECK(rightClip.X > 0);
+    CHECK(rightClip.Y == Catch::Approx(0).margin(0.00001));
+    CHECK(rightClip.W == Catch::Approx(0).margin(0.00001));
 }

@@ -173,6 +173,10 @@ HostedEndpointStatus HostedWindowEndpoint::Start(const StartInfo& info) noexcept
     initial.Scale = info.Scale;
     initial.Visibility = info.Visibility;
     state->Session.Configure(token, hosted::GetCurrentUserId(), initial);
+    if (info.ConsumerAdapterOrNull != nullptr)
+    {
+        state->Session.SetConsumerAdapter(*info.ConsumerAdapterOrNull);
+    }
 #    if LUDUS_TARGET_OS == LUDUS_OS_MACOS
     // IOSurface send rights reach the editor through a per-session Mach rendezvous.
     hosted::RendezvousNonce nonce{};
@@ -340,9 +344,8 @@ HostedEndpointStatus HostedWindowEndpoint::Pump() noexcept
 {
     return HostedEndpointStatus::InvalidState;
 }
-HostedEndpointStatus HostedWindowEndpoint::SendResize([[maybe_unused]] foundation::uint32 width,
-                                                      [[maybe_unused]] foundation::uint32 height,
-                                                      [[maybe_unused]] foundation::float32 scale) noexcept
+HostedEndpointStatus
+HostedWindowEndpoint::SendResize(foundation::uint32, foundation::uint32, foundation::float32) noexcept
 {
     return HostedEndpointStatus::InvalidState;
 }
@@ -373,8 +376,7 @@ bool HostedWindowEndpoint::TryTakeSurfaceEvent([[maybe_unused]] HostedSurfaceEve
 {
     return false;
 }
-HostedEndpointStatus HostedWindowEndpoint::SendRelease([[maybe_unused]] foundation::uint32 generation,
-                                                       [[maybe_unused]] foundation::uint32 image) noexcept
+HostedEndpointStatus HostedWindowEndpoint::SendRelease(foundation::uint32, foundation::uint32) noexcept
 {
     return HostedEndpointStatus::InvalidState;
 }

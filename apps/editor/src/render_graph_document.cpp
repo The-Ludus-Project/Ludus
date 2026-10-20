@@ -203,7 +203,7 @@ qsizetype FindNode(const QJsonArray& nodes, const QString& identity)
     return -1;
 }
 
-bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& arguments, QString* outErrorOrNull)
 {
     QJsonArray nodes = inoutConfiguration.value(QStringLiteral("nodes")).toArray();
     const QJsonObject node = QJsonDocument::fromJson(arguments.at(0).toUtf8()).object();
@@ -233,15 +233,27 @@ bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argumen
             return {};
         };
         const QString identity = node.value(QStringLiteral("id")).toString();
-        const auto isPreserved = [&node, &previous, &identity, &getType](const QString& endpoint,
-                                                                         const QString& direction) {
+        const auto isPreserved = [&node, &previous, &identity, &getType, outErrorOrNull](const QString& endpoint,
+                                                                                         const QString& direction) {
             if (endpoint.section(QLatin1Char('.'), 0, 0) != identity)
             {
                 return true;
             }
             const QString port = endpoint.section(QLatin1Char('.'), 1);
             const QString type = getType(node, direction, port);
-            return type.isEmpty() == false && type == getType(previous, direction, port);
+            const QString previousType = getType(previous, direction, port);
+            const bool hasCompatibleType = type.isEmpty() == false && type == previousType;
+            if (hasCompatibleType == false && outErrorOrNull != nullptr)
+            {
+                *outErrorOrNull = QStringLiteral("Cannot apply: connected %1 port '%2' (%3) would be removed, renamed "
+                                                 "or changed to '%4'. Disconnect its wire or configuration output "
+                                                 "before editing this port; then reconnect after applying.")
+                                      .arg(direction,
+                                           endpoint,
+                                           previousType,
+                                           type.isEmpty() == true ? QStringLiteral("missing") : type);
+            }
+            return hasCompatibleType;
         };
         const QJsonArray edges = inoutConfiguration.value(QStringLiteral("edges")).toArray();
         for (const QJsonValueConstRef edge : edges)
@@ -266,6 +278,11 @@ bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argumen
     nodes.replace(index, node);
     inoutConfiguration.insert(QStringLiteral("nodes"), nodes);
     return true;
+}
+
+bool ReplaceNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    return ReplaceNodeChecked(inoutConfiguration, arguments, nullptr);
 }
 
 bool AddNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
@@ -311,6 +328,17 @@ bool RemoveNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argument
         }
     }
     inoutConfiguration.insert(QStringLiteral("edges"), edges);
+    QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+    for (qsizetype i = 0; i < outputs.size(); ++i)
+    {
+        QJsonObject output = outputs.at(i).toObject();
+        if (IsEndpointOf(output.value(QStringLiteral("source")).toString(), identity) == true)
+        {
+            output.insert(QStringLiteral("source"), QString());
+            outputs.replace(i, output);
+        }
+    }
+    inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
     if (inoutConfiguration.contains(QStringLiteral("layout")) == true)
     {
         QJsonObject layout = inoutConfiguration.value(QStringLiteral("layout")).toObject();
@@ -331,6 +359,23 @@ bool RemoveNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argument
 
 bool ConnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 {
+    if (arguments.at(1).startsWith(QStringLiteral("#outputs.")) == true)
+    {
+        QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+        for (qsizetype i = 0; i < outputs.size(); ++i)
+        {
+            QJsonObject output = outputs.at(i).toObject();
+            if (output.value(QStringLiteral("id")).toString() == arguments.at(1).section(QLatin1Char('.'), 1) &&
+                output.value(QStringLiteral("source")).toString().isEmpty() == true)
+            {
+                output.insert(QStringLiteral("source"), arguments.at(0));
+                outputs.replace(i, output);
+                inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
+                return true;
+            }
+        }
+        return false;
+    }
     QJsonArray edges = inoutConfiguration.value(QStringLiteral("edges")).toArray();
     const QJsonArray existing = edges;
     for (const QJsonValueConstRef edge : existing)
@@ -351,6 +396,23 @@ bool ConnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 
 bool DisconnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 {
+    if (arguments.at(1).startsWith(QStringLiteral("#outputs.")) == true)
+    {
+        QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+        for (qsizetype i = 0; i < outputs.size(); ++i)
+        {
+            QJsonObject output = outputs.at(i).toObject();
+            if (output.value(QStringLiteral("id")).toString() == arguments.at(1).section(QLatin1Char('.'), 1) &&
+                output.value(QStringLiteral("source")).toString() == arguments.at(0))
+            {
+                output.insert(QStringLiteral("source"), QString());
+                outputs.replace(i, output);
+                inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
+                return true;
+            }
+        }
+        return false;
+    }
     QJsonArray edges = inoutConfiguration.value(QStringLiteral("edges")).toArray();
     for (qsizetype i = 0; i < edges.size(); ++i)
     {
@@ -364,6 +426,45 @@ bool DisconnectEdit(QJsonObject& inoutConfiguration, const QStringList& argument
         }
     }
     return false;
+}
+
+bool ReplaceConnectionEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    if (arguments.at(1).startsWith(QStringLiteral("#outputs.")) == true)
+    {
+        QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+        for (qsizetype i = 0; i < outputs.size(); ++i)
+        {
+            QJsonObject output = outputs.at(i).toObject();
+            if (output.value(QStringLiteral("id")).toString() == arguments.at(1).section(QLatin1Char('.'), 1))
+            {
+                output.insert(QStringLiteral("source"), arguments.at(0));
+                outputs.replace(i, output);
+                inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
+                return true;
+            }
+        }
+        return false;
+    }
+    QJsonArray edges;
+    bool hasReplaced = false;
+    const QJsonArray previous = inoutConfiguration.value(QStringLiteral("edges")).toArray();
+    for (const QJsonValueConstRef value : previous)
+    {
+        QJsonObject edge = value.toObject();
+        if (edge.value(QStringLiteral("to")).toString() == arguments.at(1))
+        {
+            if (hasReplaced == true)
+            {
+                continue;
+            }
+            edge.insert(QStringLiteral("from"), arguments.at(0));
+            hasReplaced = true;
+        }
+        edges.append(edge);
+    }
+    inoutConfiguration.insert(QStringLiteral("edges"), edges);
+    return hasReplaced == true || ConnectEdit(inoutConfiguration, arguments);
 }
 
 bool MoveNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
@@ -520,6 +621,7 @@ void RenderGraphDocument::adopt(const QString& packageRoot,
     mPackageRoot = packageRoot;
     mRootGraph = rootGraph;
     mSaved = snapshot;
+    mSavedRevision = 0;
     mDraft = snapshot;
     mIsBuiltIn = isBuiltIn;
     mLastMove.clear();
@@ -533,14 +635,15 @@ void RenderGraphDocument::Reset()
     mPackageRoot.clear();
     mRootGraph.clear();
     mSaved = {};
+    mSavedRevision = 0;
     mDraft = {};
     mLastMove.clear();
     mHistory.Reset();
 }
 
-QStringList RenderGraphDocument::GetFiles() const
+QStringList RenderGraphDocument::GetFiles(RenderGraphSource source) const
 {
-    return mDraft.Files.keys();
+    return (source == RenderGraphSource::Saved ? mSaved : mDraft).Files.keys();
 }
 
 QByteArray RenderGraphDocument::GetDraft(const QString& file) const
@@ -641,20 +744,61 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     return commit(candidate, shouldMerge);
 }
 
-RenderGraphDocumentStatus
-RenderGraphDocument::ReplaceNode(const QString& file, const QString& configuration, const QJsonObject& node)
+RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
+                                                           const QString& configuration,
+                                                           const QJsonObject& node,
+                                                           QString* outErrorOrNull)
 {
+    if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+    {
+        return ApplyPipeline(file, configuration, node, outErrorOrNull);
+    }
+    if (outErrorOrNull != nullptr)
+    {
+        *outErrorOrNull =
+            QStringLiteral("Cannot apply pipeline: the selected graph, configuration or node is no longer "
+                           "available, or its kind changed. Reselect the node and retry.");
+        QJsonObject graph;
+        if (GetGraph(file, graph) == true)
+        {
+            const QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+            const qsizetype index = FindConfiguration(configurations, configuration);
+            if (index >= 0)
+            {
+                QJsonObject candidate = configurations.at(index).toObject();
+                if (ReplaceNodeChecked(candidate,
+                                       {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
+                                       outErrorOrNull) == false)
+                {
+                    return RenderGraphDocumentStatus::InvalidEdit;
+                }
+            }
+        }
+    }
     mLastMove.clear();
-    return editConfiguration(file,
-                             configuration,
-                             {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
-                             &ReplaceNodeEdit,
-                             false);
+    const RenderGraphDocumentStatus status =
+        editConfiguration(file,
+                          configuration,
+                          {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
+                          &ReplaceNodeEdit,
+                          false);
+    if (status == RenderGraphDocumentStatus::Ok && outErrorOrNull != nullptr)
+    {
+        outErrorOrNull->clear();
+    }
+    return status;
 }
 
-RenderGraphDocumentStatus
-RenderGraphDocument::ApplyPipeline(const QString& file, const QString& configuration, const QJsonObject& node)
+RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file,
+                                                             const QString& configuration,
+                                                             const QJsonObject& node,
+                                                             QString* outErrorOrNull)
 {
+    if (outErrorOrNull != nullptr)
+    {
+        *outErrorOrNull = QStringLiteral("Cannot create shader sources: check program stages, names, file conflicts "
+                                         "and the manifest program budget. The draft was preserved.");
+    }
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == false)
     {
         return RenderGraphDocumentStatus::InvalidEdit;
@@ -681,7 +825,7 @@ RenderGraphDocument::ApplyPipeline(const QString& file, const QString& configura
         return status;
     }
     QJsonObject record = configurations.at(index).toObject();
-    if (ReplaceNodeEdit(record, {QString::fromUtf8(EncodeCanonicalJson(pipeline))}) == false)
+    if (ReplaceNodeChecked(record, {QString::fromUtf8(EncodeCanonicalJson(pipeline))}, outErrorOrNull) == false)
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
@@ -689,6 +833,10 @@ RenderGraphDocument::ApplyPipeline(const QString& file, const QString& configura
     graph.insert(QStringLiteral("configurations"), configurations);
     graph.insert(QStringLiteral("version"), 2);
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    if (outErrorOrNull != nullptr)
+    {
+        outErrorOrNull->clear();
+    }
     if (candidate == mDraft)
     {
         return RenderGraphDocumentStatus::Ok;
@@ -823,6 +971,15 @@ RenderGraphDocument::Connect(const QString& file, const QString& configuration, 
     return editConfiguration(file, configuration, {from, to}, &ConnectEdit, false);
 }
 
+RenderGraphDocumentStatus RenderGraphDocument::ReplaceConnection(const QString& file,
+                                                                 const QString& configuration,
+                                                                 const QString& from,
+                                                                 const QString& to)
+{
+    mLastMove.clear();
+    return editConfiguration(file, configuration, {from, to}, &ReplaceConnectionEdit, false);
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::Disconnect(const QString& file,
                                                           const QString& configuration,
                                                           const QString& from,
@@ -883,7 +1040,7 @@ bool RenderGraphDocument::Redo()
     return mHistory.Redo(mDraft);
 }
 
-RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& directory) const
+RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& directory, RenderGraphSource source) const
 {
     QDir target(directory);
     if (IsLoaded() == false || target.exists() == false ||
@@ -891,7 +1048,9 @@ RenderGraphDocumentStatus RenderGraphDocument::WriteSnapshot(const QString& dire
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
-    for (QMap<QString, QByteArray>::const_iterator file = mDraft.Files.constBegin(); file != mDraft.Files.constEnd();
+    const RenderGraphSnapshot& snapshot = source == RenderGraphSource::Saved ? mSaved : mDraft;
+    for (QMap<QString, QByteArray>::const_iterator file = snapshot.Files.constBegin();
+         file != snapshot.Files.constEnd();
          ++file)
     {
         const QString path = target.filePath(file.key());
@@ -934,6 +1093,7 @@ RenderGraphDocumentStatus RenderGraphDocument::RefreshFromDisk(bool& outHasChang
     if (committed == RenderGraphDocumentStatus::Ok)
     {
         mSaved = candidate;
+        mSavedRevision = mHistory.Revision();
         mLastMove.clear();
         outHasChanged = true;
     }
@@ -1037,6 +1197,7 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
         mSaved.Files.remove(file);
         outSavedFiles.append(file);
     }
+    mSavedRevision = mHistory.Revision();
     return RenderGraphDocumentStatus::Ok;
 }
 
@@ -1096,6 +1257,7 @@ RenderGraphDocumentStatus RenderGraphDocument::createPackage(QStringList& outSav
     }
     // The package root keeps the destination's spelling, so project-relative paths are unchanged.
     mSaved = mDraft;
+    mSavedRevision = mHistory.Revision();
     mIsBuiltIn = false;
     outSavedFiles = created;
     return RenderGraphDocumentStatus::Ok;
