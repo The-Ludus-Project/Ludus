@@ -59,6 +59,7 @@ target_sources(
             include/ludus/foundation/profiling/clock.hpp
             include/ludus/foundation/profiling/zone.hpp
             include/ludus/foundation/profiling/trace_system.hpp
+            include/ludus/foundation/profiling/perfetto_export.hpp
             include/ludus/foundation/profiling/integration.hpp
             include/ludus/foundation/profiling/memory_gauges.hpp
             "${LUDUS_FOUNDATION_PROFILING_GENERATED_INCLUDE_DIR}/ludus/foundation/profiling/profiling_config.hpp"
@@ -112,6 +113,7 @@ if(LUDUS_BUILD_TESTS)
             tests/clock_tests.cpp
             tests/scope_tests.cpp
             tests/export_tests.cpp
+            tests/gpu_export_tests.cpp
             tests/recorder_tests.cpp
             tests/disabled_tests.cpp
             tests/memory_gauge_tests.cpp

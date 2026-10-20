@@ -1,5 +1,6 @@
 #include <ludus/foundation/profiling/integration.hpp>
 #include <ludus/foundation/profiling/memory_gauges.hpp>
+#include <ludus/foundation/profiling/perfetto_export.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
 
@@ -48,6 +49,22 @@ TraceHealth GetTraceHealth() noexcept
     return {};
 }
 bool RecordMemoryGauges() noexcept
+{
+    return false;
+}
+} // namespace ludus::foundation::profiling
+
+namespace ludus::foundation::profiling
+{
+bool SerializePerfettoTrace(Array<uint8>&, BorrowedView<const GpuTraceSample>, const GpuTraceCoverage&, bool) noexcept
+{
+    return false;
+}
+} // namespace ludus::foundation::profiling
+
+namespace ludus::foundation::profiling
+{
+bool HasUnexportedTrace() noexcept
 {
     return false;
 }

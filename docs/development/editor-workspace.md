@@ -47,6 +47,7 @@ central document well, and **tool windows** dock around it (see
 | Render Preview | The World viewport rendered through the open render graph (Preview Runtime, status and image) |
 | Live Inspector | Copied runtime state and supported live property operations |
 | Timing | Runtime-reported frame pacing and interval statistics for the running session |
+| Profiling | Record editor CPU scopes, viewport GPU durations, or both into a Perfetto JSON trace |
 
 The Configuration workspace retains its explicitly loaded preview/draft across
 project changes. Quitting prompts for unsaved preferences. Project settings,
@@ -443,6 +444,58 @@ falling back to the engine default only when the project has none. Shader edits 
 that viewport automatically. Its selectors expose authored graph configurations and
 attachments. The current static graph profile does not provide the former Lit material
 preview; its input and presentation limits are documented with that workflow.
+
+## Recording CPU and GPU profiling
+
+In the native editor, choose **Tools > Profiling...** or **View > Profiling**.
+Select **CPU**, **GPU**, or **Both**, then use **Record Profiling** in the tool
+window's toolbar or Tools menu. **F9** uses the same Record/Stop action;
+some Mac keyboards require Fn. Press it again to stop. Mode and output cannot
+change during recording/finalization. Each recording has a 30-second automatic
+limit, bounded CPU trace storage and space for 4,096 completed GPU samples.
+
+CPU records instrumented scopes in the editor process, including viewport and
+render-graph ticks; it is not a statistical sampler or a viewport-only CPU
+filter. GPU requires an admitted scene viewport with timing support. Both
+requires both sources and never silently falls back to CPU. The first delivery
+targets the local editor and its viewport; hosted-game recording and browser
+editor recording remain separate work. Release builds with profiling disabled
+report that recording is unavailable.
+
+By default the trace is written to a unique file in the project's ignored
+`out/profiling/` folder (the current directory's `out/profiling/` without a
+project). An explicit output path must be new. Recording never replaces an
+existing capture. Stop finalizes asynchronously, polling submitted GPU results
+for up to two seconds without waiting on the GPU. Unresolved results are
+reported in coverage; a suspended CPU event writer can delay the CPU join while
+the editor remains responsive.
+
+Use **Reveal Last Trace**, then **Open Perfetto** and load the JSON file. The
+viewer is external; opening it does not upload the trace automatically. If
+writing fails, use **Retry Save...** with a new destination or explicitly
+**Discard Unsaved Recording**. A new recording cannot overwrite that retained
+snapshot. The previous successful trace remains available after a later failure.
+Closing during recording stops it and keeps the editor open until saving finishes.
+After a save failure, retry Save or discard the retained recording before quitting.
+
+GPU data appears as `GPU/FrameDurationNanoseconds` counters on a separate named
+track. Each counter is placed at its **CPU submission marker**, with frame and
+device-generation identity and collection time in a companion event. The value
+is an elapsed device interval, rounded to the nearest integer nanosecond; its
+encoded unit does not promise nanosecond accuracy. It is not a GPU execution
+slice aligned with CPU scopes, utilization, display latency or per-pass timing.
+
+Only completed samples count. The single probe may skip frames while a result
+is pending; coverage reports eligible frames, invalid samples, dropped samples
+and unresolved results. A legitimate quantized zero stays zero; missing data
+never becomes a fabricated zero. GPU recording continues when **Stats** is
+hidden, and both consumers share one sampler. An idle/hidden viewport may submit
+no frames: navigate or edit to exercise the scene; a completely empty recording
+reports no data instead of producing a misleading successful capture.
+
+See the [GPU timing contract](../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
+and [graphics-debugging plan](../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
+for pass timing, clock calibration and later process targets.
 
 ## Closing and shortcuts
 

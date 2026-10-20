@@ -460,6 +460,12 @@ TraceChunk* TraceRecorder::DrainFullChunks() noexcept
     return head;
 }
 
+bool TraceRecorder::HasPublishedChunks() const noexcept
+{
+    const std::lock_guard<std::mutex> lock(mMutex);
+    return mFullHeadOrNull != nullptr;
+}
+
 void TraceRecorder::RecycleChunk(TraceChunk* chunk) noexcept
 {
     const std::lock_guard<std::mutex> lock(mMutex);

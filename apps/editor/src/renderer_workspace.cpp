@@ -754,6 +754,18 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         shaders::renderer_composite::Fragment(),
         this);
     connect(mPreviewOrNull, &RenderGraphPreview::Changed, this, &RendererWorkspace::renderPreview);
+    connect(mPreviewOrNull, &RenderGraphPreview::PreparingSubmission, this, [this]() {
+        if (mPreviewSourceOrNull != nullptr)
+        {
+            mPreviewSourceOrNull->PrepareGpuProfileFrame();
+        }
+    });
+    connect(mPreviewOrNull, &RenderGraphPreview::SubmissionRecorded, this, [this]() {
+        if (mPreviewSourceOrNull != nullptr)
+        {
+            mPreviewSourceOrNull->NotifyGpuProfileSubmission();
+        }
+    });
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, &RendererWorkspace::renderPreview);
     mTextureViewerOrNull->SetPreview(mPreviewOrNull);
     mPreviewTimer.setInterval(PREVIEW_INTERVAL_MILLISECONDS);

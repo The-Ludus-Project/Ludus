@@ -65,11 +65,22 @@ ExportPerfettoTrace("trace.json");
 
 For scheduled captures of engine applications and benchmark harnesses, see
 [Runtime profiling](../../development/runtime-profiling.md).
-The proposed [editor recording workflow](../../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
-adds CPU/GPU/Both selection and shared Record/Stop controls. Its
+The native [editor recording workflow](../../development/editor-workspace.md#recording-cpu-and-gpu-profiling)
+provides CPU/GPU/Both selection and shared F9 Record/Stop controls. Its
 [GPU timing contract](../../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
-starts with existing RHI frame-duration samples in Perfetto; these editor/export
-features are planned, not part of the current module API.
+starts with existing RHI frame-duration samples in Perfetto. Pass timings and
+calibrated GPU execution lanes remain later work.
+
+`<ludus/foundation/profiling/perfetto_export.hpp>` provides
+`SerializePerfettoTrace`: stopped CPU events and optional borrowed completed
+`GpuTraceSample` records become owned JSON bytes. Setting `shouldIncludeCpu` to
+false leaves the CPU recorder untouched and supports GPU-only export without
+CPU instrumentation. Samples retain submission attribution, collection time,
+frame/device identity and integer duration. `GpuTraceCoverage` describes sampling
+gaps. Successful serialization can be retained for I/O retry; CPU events drained
+by a failed serialization are consumed, as documented by the API. All lifecycle
+and serialization calls require one coordinator. An entirely empty or disabled
+recording returns false and preserves the output bytes.
 
 ## Integration emission API
 

@@ -196,8 +196,14 @@ target_link_libraries(ludus_editor_core
 ludus_apply_project_defaults(ludus_editor_core)
 
 
+set(editor_profiling_sources
+    src/internal/profiling_controller.h src/profiling_controller.cpp
+    src/internal/profiling_panel.h src/profiling_panel.cpp
+    src/main_window_profiling.cpp)
+
 # --- Editor application ------------------------------------------------------
 qt_add_executable(ludus_editor
+    ${editor_profiling_sources}
     src/internal/render_load_job.h
     src/render_load_job.cpp
     src/internal/render_preview.h
@@ -340,6 +346,8 @@ target_link_libraries(ludus_editor
         Ludus::FoundationBase
         Ludus::FoundationMemory
         Ludus::FoundationLogging
+        Ludus::FoundationProfiling
+        Ludus::FoundationTime
         Ludus::AudioContent
         Ludus::FoundationConfigJson
         Ludus::RuntimeConfiguration
@@ -390,6 +398,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
     add_executable(ludus_editor_tests
+        ${editor_profiling_sources}
+        tests/profiling_tests.cpp
             src/internal/render_load_job.h
         src/render_load_job.cpp
         src/internal/render_preview.h
@@ -565,6 +575,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Ludus::FoundationBase
             Ludus::FoundationMemory
             Ludus::FoundationLogging
+            Ludus::FoundationProfiling
+            Ludus::FoundationTime
             Ludus::AudioContent
             Ludus::FoundationConfigJson
             Ludus::RuntimeConfiguration
