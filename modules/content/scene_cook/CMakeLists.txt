@@ -6,7 +6,8 @@ add_library(ludus_scene_cook STATIC
     src/importers/budget_planner.cpp src/importers/best_effort_import.cpp src/importers/authored_lighting.cpp
     src/importers/image/image_reader.cpp src/importers/image/exr_reader.cpp src/importers/source_resolver.cpp
     src/importers/front_end_support.cpp src/importers/obj/obj_reader.cpp src/importers/tangent_generation.cpp
-    src/importers/name_index.cpp src/importers/gltf/gltf_reader.cpp src/importers/texture_decode_queue.cpp)
+    src/importers/name_index.cpp src/importers/gltf/gltf_reader.cpp src/importers/texture_decode_queue.cpp
+    src/importers/parallel_tasks.cpp)
 add_library(Ludus::SceneCook ALIAS ludus_scene_cook)
 set_target_properties(ludus_scene_cook PROPERTIES EXPORT_NAME SceneCook)
 target_sources(ludus_scene_cook PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include

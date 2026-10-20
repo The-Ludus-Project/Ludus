@@ -9,7 +9,9 @@
 // batch in jobs that each write only their own slot, and hands results back in the
 // planned order. Decoding is a pure function of the texture, so every worker count
 // (and the inline path without a job system) yields the same images, messages and
-// digests; a request that leaves the plan's order is decoded inline instead.
+// digests; a request that leaves the plan's order is decoded inline instead. Each
+// job also hashes the file bytes it decodes, so the cook's input digests need no
+// second read of those files.
 
 #include "image/image_reader.h"
 #include "scene_ir.h"
@@ -37,7 +39,7 @@ struct TextureDecode final
     Status Read = Status::Ok;
     /// True when the bytes came from a file below the import root rather than an embedded image.
     bool IsFileRead = false;
-    /// SHA-256 of the file's bytes; set when IsFileRead and the request asked for a digest.
+    /// SHA-256 of the file's bytes; set when IsFileRead.
     Digest ReadDigest;
     /// Decoder outcome; Invalid when Read is not Ok.
     ImageResult Decoded = ImageResult::Invalid;
@@ -47,11 +49,13 @@ struct TextureDecode final
     DecodedImage Image;
 };
 
-/// One planned decode: a texture and whether its file digest is wanted.
-struct TextureDecodeRequest final
+/// The digest of an image file that a taken decode read below the import root.
+struct TextureFileRead final
 {
+    /// IR texture whose File was read.
     uint32 Texture = IR_NONE;
-    bool ShouldHash = false;
+    /// SHA-256 of the bytes read.
+    Digest FileDigest;
 };
 
 /// Decodes the cook's texture images in planned order, in batches on an optional job system.
@@ -76,20 +80,24 @@ public:
 
     /// Append a decode the cook expects to take next. Ignored without a job system.
     /// @return false when the plan cannot grow (out of memory).
-    [[nodiscard]] bool TryPlan(uint32 texture, bool shouldHash) noexcept;
+    [[nodiscard]] bool TryPlan(uint32 texture) noexcept;
 
     /// The decode of a texture with an image: the next planned result when it matches
-    /// (prefetching a batch as needed), otherwise an inline decode.
+    /// (prefetching a batch as needed), otherwise an inline decode. A file read is
+    /// also recorded for GetFileReads.
     /// @param outDecode Replaced on Ok; per-image read and decode failures are in its fields.
     /// @return Ok; OutOfMemory for queue storage; or Cancelled when the hook asked to stop
     ///         before more image bytes were read.
-    [[nodiscard]] Status Take(uint32 texture, bool shouldHash, TextureDecode& outDecode) noexcept;
+    [[nodiscard]] Status Take(uint32 texture, TextureDecode& outDecode) noexcept;
+
+    /// Every file a taken decode read, in the order taken (repeats included).
+    [[nodiscard]] std::span<const TextureFileRead> GetFileReads() const noexcept;
 
 private:
     /// One image of the current batch.
     struct Slot final
     {
-        TextureDecodeRequest Request;
+        uint32 Texture = IR_NONE;
         /// File bytes read on the calling thread; empty for embedded images.
         Array<uint8> Storage;
         std::span<const uint8> Bytes;
@@ -98,10 +106,11 @@ private:
         bool IsDecoded = false;
     };
 
+    [[nodiscard]] Status takeDecode(uint32 texture, TextureDecode& outDecode) noexcept;
     static foundation::threading::JobOutcome runDecodeJob(void* context) noexcept;
     static void decodeSlot(Slot& inoutSlot) noexcept;
-    void readSlot(TextureDecodeRequest request, Slot& outSlot) const noexcept;
-    void decodeInline(TextureDecodeRequest request, TextureDecode& outDecode) const noexcept;
+    void readSlot(uint32 texture, Slot& outSlot) const noexcept;
+    void decodeInline(uint32 texture, TextureDecode& outDecode) const noexcept;
     [[nodiscard]] Status fillBatch(usize first) noexcept;
     void decodeBatchInJobs(usize count) noexcept;
 
@@ -109,7 +118,9 @@ private:
     std::string_view mRoot;
     foundation::threading::JobSystem* mJobsOrNull = nullptr;
     const Cancellation* mCancelOrNull = nullptr;
-    Array<TextureDecodeRequest> mPlan;
+    /// Planned textures, in the order the cook takes them.
+    Array<uint32> mPlan;
+    Array<TextureFileRead> mFileReads;
     /// Planned requests before this index were taken or skipped.
     usize mCursor = 0;
     /// Plan index of mSlots[0], and the end of the decoded batch.

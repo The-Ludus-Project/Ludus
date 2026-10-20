@@ -41,23 +41,38 @@ TextureDecodeQueue::TextureDecodeQueue(const SceneIr& scene,
     }
 }
 
-bool TextureDecodeQueue::TryPlan(uint32 texture, bool shouldHash) noexcept
+bool TextureDecodeQueue::TryPlan(uint32 texture) noexcept
 {
-    return mJobsOrNull == nullptr || mPlan.TryAdd({ .Texture = texture, .ShouldHash = shouldHash });
+    return mJobsOrNull == nullptr || mPlan.TryAdd(texture);
 }
 
-Status TextureDecodeQueue::Take(uint32 texture, bool shouldHash, TextureDecode& outDecode) noexcept
+Status TextureDecodeQueue::Take(uint32 texture, TextureDecode& outDecode) noexcept
+{
+    const Status taken = takeDecode(texture, outDecode);
+    if (taken != Status::Ok || outDecode.IsFileRead == false || outDecode.Read != Status::Ok)
+    {
+        return taken;
+    }
+    return mFileReads.TryAdd({ .Texture = texture, .FileDigest = outDecode.ReadDigest }) == true ? Status::Ok
+                                                                                               : Status::OutOfMemory;
+}
+
+std::span<const TextureFileRead> TextureDecodeQueue::GetFileReads() const noexcept
+{
+    return mFileReads.AsSpan();
+}
+
+Status TextureDecodeQueue::takeDecode(uint32 texture, TextureDecode& outDecode) noexcept
 {
     if (IsCancelled(mCancelOrNull) == true)
     {
         return Status::Cancelled;
     }
-    const TextureDecodeRequest request{ .Texture = texture, .ShouldHash = shouldHash };
     const usize end = math::Min(mPlan.GetSize(), mCursor + RESYNC_LOOKAHEAD);
     usize found = mPlan.GetSize();
     for (usize i = mCursor; i < end; ++i)
     {
-        if (mPlan[i].Texture == texture && mPlan[i].ShouldHash == shouldHash)
+        if (mPlan[i] == texture)
         {
             found = i;
             break;
@@ -67,7 +82,7 @@ Status TextureDecodeQueue::Take(uint32 texture, bool shouldHash, TextureDecode& 
     {
         // Off the plan (for example a material slot whose maps no longer fit): the same
         // decode, without prefetching.
-        decodeInline(request, outDecode);
+        decodeInline(texture, outDecode);
         return Status::Ok;
     }
     // Release the results of skipped requests; they are decoded again if taken later.
@@ -103,7 +118,7 @@ void TextureDecodeQueue::decodeSlot(Slot& inoutSlot) noexcept
         return;
     }
     TextureDecode& decode = inoutSlot.Decode;
-    if (inoutSlot.Request.ShouldHash == true && decode.IsFileRead == true)
+    if (decode.IsFileRead == true)
     {
         decode.ReadDigest = Hash(inoutSlot.Bytes);
     }
@@ -111,22 +126,22 @@ void TextureDecodeQueue::decodeSlot(Slot& inoutSlot) noexcept
     inoutSlot.IsDecoded = true;
 }
 
-void TextureDecodeQueue::readSlot(TextureDecodeRequest request, Slot& outSlot) const noexcept
+void TextureDecodeQueue::readSlot(uint32 texture, Slot& outSlot) const noexcept
 {
     outSlot = Slot{};
-    outSlot.Request = request;
+    outSlot.Texture = texture;
     outSlot.Decode.Message = UNREADABLE_MESSAGE;
-    const IrTexture& texture = mScene.Textures[request.Texture];
-    if (texture.EmbeddedImage != IR_NONE)
+    const IrTexture& source = mScene.Textures[texture];
+    if (source.EmbeddedImage != IR_NONE)
     {
         // Embedded images are borrowed from the IR, which no job modifies.
-        const IrEmbeddedImage& image = mScene.EmbeddedImages[texture.EmbeddedImage];
+        const IrEmbeddedImage& image = mScene.EmbeddedImages[source.EmbeddedImage];
         outSlot.Bytes = image.Bytes.AsSpan();
         outSlot.DecoderName = image.DecoderName.GetView();
         return;
     }
     String path;
-    const std::string_view parts[] = {mRoot, std::string_view("/"), texture.File.GetView()};
+    const std::string_view parts[] = {mRoot, std::string_view("/"), source.File.GetView()};
     const Status read = path.TryAppendMany(parts) != StringStatus::Ok
                             ? Status::OutOfMemory
                             : detail::ReadFileBounded(path.GetView(), MAX_IMAGE_FILE_BYTES, outSlot.Storage);
@@ -138,13 +153,13 @@ void TextureDecodeQueue::readSlot(TextureDecodeRequest request, Slot& outSlot) c
     }
     outSlot.Decode.IsFileRead = true;
     outSlot.Bytes = outSlot.Storage.AsSpan();
-    outSlot.DecoderName = texture.File.GetView();
+    outSlot.DecoderName = source.File.GetView();
 }
 
-void TextureDecodeQueue::decodeInline(TextureDecodeRequest request, TextureDecode& outDecode) const noexcept
+void TextureDecodeQueue::decodeInline(uint32 texture, TextureDecode& outDecode) const noexcept
 {
     Slot slot;
-    readSlot(request, slot);
+    readSlot(texture, slot);
     decodeSlot(slot);
     outDecode = static_cast<TextureDecode&&>(slot.Decode);
 }
