@@ -144,6 +144,9 @@ RasterStatus ArmPassTimings() noexcept
     gPassTimings.Arm();
     return RasterStatus::Ready;
 }
+// Thanks to Khronos, Vulkan Guide, "VK_EXT_debug_utils", command-buffer labels:
+// https://docs.vulkan.org/guide/latest/extensions/VK_EXT_debug_utils.html
+// Optional labels share scope text; extension absence never changes rendering.
 RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 {
     if (gPassTimings.BeginScope(scope) == false)

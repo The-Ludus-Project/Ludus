@@ -130,6 +130,9 @@ RasterStatus ArmPassTimings() noexcept
     gPassTimings.Arm();
     return RasterStatus::Ready;
 }
+// Thanks to Apple, "pushDebugGroup(_:)" and "label", Metal command-buffer/encoder
+// documentation: https://developer.apple.com/documentation/metal/mtlcommandbuffer/pushdebuggroup(_:)
+// The command group and encoder labels share the copied timing identity's name.
 RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 {
     if (gPassTimings.BeginScope(scope) == false)
