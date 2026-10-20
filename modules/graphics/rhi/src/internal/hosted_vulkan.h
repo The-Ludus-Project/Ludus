@@ -31,6 +31,11 @@ namespace ludus::graphics::rhi::backend
 inline constexpr const char* HOSTED_MEMORY_EXTENSION_NAME = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
 /// Pixel format of hosted images.
 inline constexpr VkFormat HOSTED_IMAGE_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
+/// Layout of a hosted image after the game rendered it: its resting layout and the old
+/// layout of both halves of its queue family transfer to the editor.
+inline constexpr VkImageLayout HOSTED_RENDERED_LAYOUT = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+/// Layout of a hosted image while the editor holds it: the new layout of that transfer.
+inline constexpr VkImageLayout HOSTED_PRESENTED_LAYOUT = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 /// Usage of hosted images. Producer and consumer create them identically, as opaque
 /// memory import requires.
 inline constexpr VkImageUsageFlags HOSTED_IMAGE_USAGE =

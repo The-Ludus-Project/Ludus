@@ -178,6 +178,34 @@ private:
     ludus::foundation::uint64 mBits = 0;
 };
 
+/// Distinct borrowed Vulkan command buffer identity (`VkCommandBuffer`, a dispatchable
+/// handle converted to void*). No ownership or validation is added. Construct it from a
+/// primary command buffer that is recording on its owner thread, outside a render pass,
+/// and use it only while the framework that owns it keeps it recording.
+class NativeVulkanCommandBuffer final
+{
+public:
+    /// Construct an empty identity; no command buffer is borrowed.
+    constexpr NativeVulkanCommandBuffer() noexcept = default;
+    /// Wrap a recording VkCommandBuffer, or nullptr; never retain, begin, end or submit it.
+    explicit constexpr NativeVulkanCommandBuffer(void* object) noexcept : mObjectOrNull(object) {}
+    /// Return the borrowed VkCommandBuffer for an explicit framework/backend conversion.
+    [[nodiscard]] constexpr void* GetObject() const noexcept
+    {
+        return mObjectOrNull;
+    }
+    /// Whether this identity contains no command buffer.
+    [[nodiscard]] constexpr bool IsNull() const noexcept
+    {
+        return mObjectOrNull == nullptr;
+    }
+    /// Compare native object identities only.
+    [[nodiscard]] constexpr bool operator==(const NativeVulkanCommandBuffer& other) const noexcept = default;
+
+private:
+    void* mObjectOrNull = nullptr;
+};
+
 /// Exact native context for the single-queue sharing profile. These are borrowed
 /// objects, not resource owners. All objects must come from one live native context.
 /// Dispatchable Vulkan handles are converted to void*; do not pass pointers to handles.

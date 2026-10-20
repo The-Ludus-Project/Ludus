@@ -855,9 +855,19 @@ does not use it until P6.
     unseen.
   - `ReleaseFrame` goes after the editor's sampling has completed. A replaced
     generation's imports are destroyed once none of its frames is held.
-  - On Vulkan, the editor records the acquire barrier from
-    `VK_QUEUE_FAMILY_EXTERNAL` that `HostedFrame` describes. It needs no barrier
-    to return an image, because the game discards the contents.
+  - `ReleaseFrameAfterQueue` returns a frame once the consumer's queue has
+    finished the work already submitted to it, with no CPU wait. Metal commits
+    an empty command buffer behind the sampling. Vulkan submits a fence with no
+    batches, which signals once all earlier work on the queue has completed;
+    teardown waits for it before destroying the imports.
+  - On Vulkan, an image changes queue family ownership in both directions.
+    `RecordFrameAcquire` records the second half of the game's release: from
+    `VK_QUEUE_FAMILY_EXTERNAL` to the consumer's queue family, with the same
+    layouts (`TRANSFER_SRC_OPTIMAL` to `SHADER_READ_ONLY_OPTIMAL`), before the
+    first command that samples the frame. `RecordFrameRelease` returns it to
+    `VK_QUEUE_FAMILY_EXTERNAL` after the last one, before the queue marker.
+    Teardown may skip the release, because the game discards the contents
+    before it renders into the image again. Metal records nothing.
   - A refusal is terminal for the session and has a reason: `AdapterMismatch`
     (Vulkan UUIDs differ), `UnsupportedHandle`, `ImportFailed` or
     `ProtocolViolation`.
@@ -877,7 +887,10 @@ does not use it until P6.
     no reuse of a held image, Skipped while every image is held (each call
     returns in under 100 ms), recovery on release, five resizes that need
     retirement, and refusal of forged images. On Linux it opens with the
-    device-UUID probe and refuses forged adapter UUIDs.
+    device-UUID probe and refuses forged adapter UUIDs. Its Linux cases sample
+    through `RecordFrameAcquire` and `RecordFrameRelease`, and check that frames
+    released after the queue come back only once the fence behind their
+    sampling has signalled.
 
 ### Input, focus and capture
 
@@ -996,6 +1009,8 @@ AGENTS.md gates.
 | P6b | Play source over the hosted surface, with a queue-ordered release on Qt's queue (macOS Metal) | Two-process test presenting a producer's frames through `PreviewViewport`; releases follow Qt's completed sampling |
 | P6c | Launcher variable, edit and play transitions, input forwarding and reserved chords | Controller and viewport state tests; Cocoa journey playing World-demo in the viewport; return to edit after crash and Stop |
 | P7 | Separate-window preference and unavailable reasons | Preference persistence; launch without the variable; refusal-message tests |
+| P8 | Play in the viewport on Linux Vulkan, in two PRs | As below |
+| P8a | RHI consumer on Vulkan: queue family acquire and release recording, and a fence as the queue-ordered release marker | Linux two-process tests sampling through the recorded transfers; queued releases return only after the fence behind the sampling |
 
 P3's private `ViewportFrameSource` carries only frame
 production and leases: `HasPendingFrame`, `TakeFrame`, `ReleaseFrame`, `Resize`,

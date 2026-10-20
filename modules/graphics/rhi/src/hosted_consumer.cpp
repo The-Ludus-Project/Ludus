@@ -87,8 +87,8 @@ struct HostedSurfaceConsumer::State final
         {
             if (queued.IsValid == true)
             {
-                internal::WaitHostedQueueMarker(queued.Marker);
-                internal::DestroyHostedQueueMarker(queued.Marker);
+                internal::WaitHostedQueueMarker(Device, queued.Marker);
+                internal::DestroyHostedQueueMarker(Device, queued.Marker);
                 queued = {};
             }
         }
@@ -136,7 +136,7 @@ struct HostedSurfaceConsumer::State final
     {
         for (QueuedRelease& queued : QueuedReleases)
         {
-            if (queued.IsValid == false || internal::IsHostedQueueMarkerComplete(queued.Marker) == false)
+            if (queued.IsValid == false || internal::IsHostedQueueMarkerComplete(Device, queued.Marker) == false)
             {
                 continue;
             }
@@ -146,9 +146,41 @@ struct HostedSurfaceConsumer::State final
                 recordOrNull->IsHeld[queued.Image] = false;
                 Release(queued.Generation, queued.Image);
             }
-            internal::DestroyHostedQueueMarker(queued.Marker);
+            internal::DestroyHostedQueueMarker(Device, queued.Marker);
             queued = {};
         }
+    }
+
+    /// The record of a held frame, or null when `frame` is not held or already queued for release.
+    [[nodiscard]] GenerationRecord* FindHeldOrNull(const HostedFrame& frame) noexcept
+    {
+        if (frame.Image >= platform::HOSTED_SURFACE_IMAGE_COUNT)
+        {
+            return nullptr;
+        }
+        GenerationRecord* recordOrNull = FindOrNull(frame.Generation);
+        if (recordOrNull == nullptr || recordOrNull->IsHeld[frame.Image] == false ||
+            IsQueued(frame.Generation, frame.Image) == true)
+        {
+            return nullptr;
+        }
+        return recordOrNull;
+    }
+
+    [[nodiscard]] HostedConsumerStatus RecordTransfer(const HostedFrame& frame,
+                                                      NativeVulkanCommandBuffer commandBuffer,
+                                                      internal::HostedOwnershipTransfer transfer) noexcept
+    {
+        // Both transfers belong to a presented frame: a queued frame is already on its way back.
+        const GenerationRecord* recordOrNull = FindHeldOrNull(frame);
+        if (recordOrNull == nullptr)
+        {
+            return HostedConsumerStatus::InvalidState;
+        }
+        return internal::RecordHostedOwnershipTransfer(Device,
+                                                       recordOrNull->Import.VulkanImages[frame.Image],
+                                                       commandBuffer,
+                                                       transfer);
     }
 
     /// Destroy older generations of which nothing is held or pending.
@@ -377,14 +409,13 @@ HostedConsumerStatus HostedSurfaceConsumer::AcquireFrame(HostedFrame& outFrame) 
 
 HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrame(const HostedFrame& frame) noexcept
 {
-    if (mState.Get() == nullptr || frame.Image >= platform::HOSTED_SURFACE_IMAGE_COUNT)
+    if (mState.Get() == nullptr)
     {
         return HostedConsumerStatus::InvalidState;
     }
     State& state = *mState;
-    GenerationRecord* recordOrNull = state.FindOrNull(frame.Generation);
-    if (recordOrNull == nullptr || recordOrNull->IsHeld[frame.Image] == false ||
-        state.IsQueued(frame.Generation, frame.Image) == true)
+    GenerationRecord* recordOrNull = state.FindHeldOrNull(frame);
+    if (recordOrNull == nullptr)
     {
         return HostedConsumerStatus::InvalidState;
     }
@@ -396,14 +427,12 @@ HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrame(const HostedFrame& fram
 
 HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrameAfterQueue(const HostedFrame& frame) noexcept
 {
-    if (mState.Get() == nullptr || frame.Image >= platform::HOSTED_SURFACE_IMAGE_COUNT)
+    if (mState.Get() == nullptr)
     {
         return HostedConsumerStatus::InvalidState;
     }
     State& state = *mState;
-    const GenerationRecord* recordOrNull = state.FindOrNull(frame.Generation);
-    if (recordOrNull == nullptr || recordOrNull->IsHeld[frame.Image] == false ||
-        state.IsQueued(frame.Generation, frame.Image) == true)
+    if (state.FindHeldOrNull(frame) == nullptr)
     {
         return HostedConsumerStatus::InvalidState;
     }
@@ -432,6 +461,26 @@ HostedConsumerStatus HostedSurfaceConsumer::ReleaseFrameAfterQueue(const HostedF
     };
     *freeOrNull = queued;
     return HostedConsumerStatus::Ok;
+}
+
+HostedConsumerStatus HostedSurfaceConsumer::RecordFrameAcquire(const HostedFrame& frame,
+                                                               NativeVulkanCommandBuffer commandBuffer) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return HostedConsumerStatus::InvalidState;
+    }
+    return mState->RecordTransfer(frame, commandBuffer, internal::HostedOwnershipTransfer::Acquire);
+}
+
+HostedConsumerStatus HostedSurfaceConsumer::RecordFrameRelease(const HostedFrame& frame,
+                                                               NativeVulkanCommandBuffer commandBuffer) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return HostedConsumerStatus::InvalidState;
+    }
+    return mState->RecordTransfer(frame, commandBuffer, internal::HostedOwnershipTransfer::Release);
 }
 
 usize HostedSurfaceConsumer::GetQueuedReleaseCount() const noexcept

@@ -46,14 +46,35 @@ struct HostedQueueMarker final
 {
     /// Metal: retained `id<MTLCommandBuffer>` (CFBridgingRetain), released by DestroyHostedQueueMarker().
     void* MetalCommandBufferOrNull = nullptr;
+    /// Vulkan: `VkFence` bits, submitted alone to the queue and destroyed by DestroyHostedQueueMarker().
+    foundation::uint64 VulkanFence = 0;
 };
-/// @brief Commit an empty marker behind everything already submitted to `device.CommandQueue`.
-/// @return False when this backend has no queue marker (the caller cannot release after the queue).
+/// @brief Commit a marker behind everything already submitted to `device.CommandQueue`.
+///
+/// Call on the thread that submits to that queue.
+/// @return False when the marker could not be committed (the caller cannot release after the queue).
 [[nodiscard]] bool EnqueueHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMarker& outMarker) noexcept;
-/// True once the marker, and with it all earlier work on the queue, has finished (or the queue failed).
-[[nodiscard]] bool IsHostedQueueMarkerComplete(const HostedQueueMarker& marker) noexcept;
+/// True once the marker, and with it all earlier work on the queue, has finished (or the device was lost).
+[[nodiscard]] bool IsHostedQueueMarkerComplete(const NativeDeviceIdentity& device,
+                                               const HostedQueueMarker& marker) noexcept;
 /// Block until the marker completes; teardown only, never while presenting.
-void WaitHostedQueueMarker(const HostedQueueMarker& marker) noexcept;
+void WaitHostedQueueMarker(const NativeDeviceIdentity& device, const HostedQueueMarker& marker) noexcept;
 /// Release the marker's native object; leaves `inoutMarker` empty.
-void DestroyHostedQueueMarker(HostedQueueMarker& inoutMarker) noexcept;
+void DestroyHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMarker& inoutMarker) noexcept;
+
+/// Direction of a hosted image's queue family ownership transfer on the consumer's queue.
+enum class HostedOwnershipTransfer : foundation::uint8
+{
+    /// From the external queue family (the game) to the consumer's, before sampling.
+    Acquire,
+    /// From the consumer's queue family back to the external one, after sampling.
+    Release,
+};
+/// @brief Record one ownership transfer of `image` into `commandBuffer`.
+/// @return Ok; InvalidArgument for a null command buffer where one is needed; Unavailable when
+/// the backend cannot record it. Metal has no transfer and returns Ok.
+[[nodiscard]] HostedConsumerStatus RecordHostedOwnershipTransfer(const NativeDeviceIdentity& device,
+                                                                 foundation::uint64 image,
+                                                                 NativeVulkanCommandBuffer commandBuffer,
+                                                                 HostedOwnershipTransfer transfer) noexcept;
 } // namespace ludus::graphics::rhi::internal

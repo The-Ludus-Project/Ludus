@@ -123,7 +123,8 @@ bool EnqueueHostedQueueMarker(const NativeDeviceIdentity& device, HostedQueueMar
     }
 }
 
-bool IsHostedQueueMarkerComplete(const HostedQueueMarker& marker) noexcept
+bool IsHostedQueueMarkerComplete([[maybe_unused]] const NativeDeviceIdentity& device,
+                                 const HostedQueueMarker& marker) noexcept
 {
     if (marker.MetalCommandBufferOrNull == nullptr)
     {
@@ -134,7 +135,8 @@ bool IsHostedQueueMarkerComplete(const HostedQueueMarker& marker) noexcept
     return status == MTLCommandBufferStatusCompleted || status == MTLCommandBufferStatusError;
 }
 
-void WaitHostedQueueMarker(const HostedQueueMarker& marker) noexcept
+void WaitHostedQueueMarker([[maybe_unused]] const NativeDeviceIdentity& device,
+                           const HostedQueueMarker& marker) noexcept
 {
     if (marker.MetalCommandBufferOrNull != nullptr)
     {
@@ -142,12 +144,22 @@ void WaitHostedQueueMarker(const HostedQueueMarker& marker) noexcept
     }
 }
 
-void DestroyHostedQueueMarker(HostedQueueMarker& inoutMarker) noexcept
+void DestroyHostedQueueMarker([[maybe_unused]] const NativeDeviceIdentity& device,
+                              HostedQueueMarker& inoutMarker) noexcept
 {
     if (inoutMarker.MetalCommandBufferOrNull != nullptr)
     {
         CFRelease(inoutMarker.MetalCommandBufferOrNull);
     }
     inoutMarker = {};
+}
+
+// Metal tracks hazards of shared IOSurface textures itself and has no queue families to transfer between.
+HostedConsumerStatus RecordHostedOwnershipTransfer([[maybe_unused]] const NativeDeviceIdentity& device,
+                                                   [[maybe_unused]] foundation::uint64 image,
+                                                   [[maybe_unused]] NativeVulkanCommandBuffer commandBuffer,
+                                                   [[maybe_unused]] HostedOwnershipTransfer transfer) noexcept
+{
+    return HostedConsumerStatus::Ok;
 }
 } // namespace ludus::graphics::rhi::internal

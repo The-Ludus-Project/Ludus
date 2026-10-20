@@ -335,8 +335,8 @@ void HostedProducerVulkan::RecordRelease(VkCommandBuffer command) const noexcept
     barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     // A release has no destination access in this queue; the consumer's acquire supplies it.
     barrier.dstAccessMask = 0;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.oldLayout = HOSTED_RENDERED_LAYOUT;
+    barrier.newLayout = HOSTED_PRESENTED_LAYOUT;
     barrier.srcQueueFamilyIndex = mDevice.QueueFamily;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
     barrier.image = mImages[mRing.GetCurrentSlot()][mAcquiredImage].Object;
