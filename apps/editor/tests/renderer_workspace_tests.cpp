@@ -14,8 +14,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -23,6 +25,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPlainTextEdit>
@@ -745,6 +748,267 @@ TEST_CASE("Code editor handoff cancellation retains unapplied source text", "[ed
     CHECK(ReadFile(QDir(package).filePath(shader)) == original);
     CHECK(workspace.ReloadSourcesFromDisk() == false);
     CHECK(sourceOrNull->toPlainText() == pending);
+}
+
+TEST_CASE("Subgraph creation binds a new library in one undoable draft", "[editor][render-graph][subgraph]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const QString asset = QStringLiteral("Raytracing.lurender.json");
+    REQUIRE(document.CreateSubgraph(ROOT_GRAPH,
+                                    QStringLiteral("Default"),
+                                    QStringLiteral("raytracing"),
+                                    QStringLiteral("Raytracing")) == RenderGraphDocumentStatus::Ok);
+    CHECK(QFileInfo::exists(QDir(package).filePath(asset)) == false);
+    CHECK(FindNode(document, ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("raytracing"))
+              .value(QStringLiteral("asset"))
+              .toString() == asset);
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(asset, graph) == true);
+    CHECK(graph.value(QStringLiteral("default")).toString() == QStringLiteral("Default"));
+    CHECK(graph.value(QStringLiteral("configurations"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("nodes"))
+              .toArray()
+              .isEmpty() == true);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles().contains(asset) == false);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    CHECK(document.IsDirty() == false);
+    REQUIRE(document.Redo() == true);
+    QStringList written;
+    REQUIRE(document.Save(written) == RenderGraphDocumentStatus::Ok);
+    CHECK(ReadFile(QDir(package).filePath(asset)) == document.GetDraft(asset));
+    const QJsonObject report = QJsonDocument::fromJson(RunToolCli(FindPython(),
+                                                                  {QStringLiteral("render-graph"),
+                                                                   QStringLiteral("validate"),
+                                                                   QDir(package).filePath(asset),
+                                                                   QStringLiteral("--library")}))
+                                   .object();
+    CHECK(report.value(QStringLiteral("library")).toObject().value(QStringLiteral("validation")).toString() ==
+          QStringLiteral("InterfacesOnly"));
+    REQUIRE(document.Undo() == true);
+    REQUIRE(document.Save(written) == RenderGraphDocumentStatus::Ok);
+    CHECK(QFileInfo::exists(QDir(package).filePath(asset)) == false);
+    CHECK(ReadFile(QDir(package).filePath(ROOT_GRAPH)) == original);
+    REQUIRE(document.Redo() == true);
+    REQUIRE(document.Save(written) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(asset) == document.GetDraft(asset));
+}
+
+TEST_CASE("Subgraph creation preserves existing sources and rejects unsafe names", "[editor][render-graph][subgraph]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    for (const QString& name : {QString(),
+                                QStringLiteral("../escape"),
+                                QStringLiteral("/absolute"),
+                                QStringLiteral("sub/path"),
+                                QStringLiteral("3name"),
+                                QStringLiteral("bad.name"),
+                                QString(64, QLatin1Char('a')),
+                                QStringLiteral("RasterizeGraph")})
+    {
+        CHECK(document.CreateSubgraph(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("newNode"), name) ==
+              RenderGraphDocumentStatus::InvalidEdit);
+        CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    }
+    CHECK(document.CreateSubgraph(ROOT_GRAPH,
+                                  QStringLiteral("Default"),
+                                  QStringLiteral("raster"),
+                                  QStringLiteral("rasterize")) == RenderGraphDocumentStatus::Conflict);
+    CHECK(document.CreateSubgraph(ROOT_GRAPH,
+                                  QStringLiteral("Default"),
+                                  QStringLiteral("raster"),
+                                  QStringLiteral("RASTERIZE")) == RenderGraphDocumentStatus::Conflict);
+    CHECK(document.CreateSubgraph(ROOT_GRAPH,
+                                  QStringLiteral("Default"),
+                                  QStringLiteral("scene"),
+                                  QStringLiteral("NewLibrary")) == RenderGraphDocumentStatus::InvalidEdit);
+    REQUIRE(document.CreateSubgraph(ROOT_GRAPH,
+                                    QStringLiteral("Default"),
+                                    QStringLiteral("raster"),
+                                    QStringLiteral("NewLibrary")) == RenderGraphDocumentStatus::Ok);
+    // Rebinding retains the parent's authored connections for explicit interface editing.
+    CHECK(QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
+              .object()
+              .value(QStringLiteral("configurations"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("edges")) == QJsonDocument::fromJson(original)
+                                                     .object()
+                                                     .value(QStringLiteral("configurations"))
+                                                     .toArray()
+                                                     .at(0)
+                                                     .toObject()
+                                                     .value(QStringLiteral("edges")));
+    WriteFile(QDir(package).filePath(QStringLiteral("NewLibrary.lurender.json")), QByteArray("external"));
+    QStringList written;
+    CHECK(document.Save(written) == RenderGraphDocumentStatus::Conflict);
+    CHECK(written.isEmpty() == true);
+    CHECK(ReadFile(QDir(package).filePath(ROOT_GRAPH)) == original);
+    CHECK(ReadFile(QDir(package).filePath(QStringLiteral("NewLibrary.lurender.json"))) == QByteArray("external"));
+}
+
+TEST_CASE("Create Subgraph opens an editable draft and Undo restores the root", "[editor][render-graph][subgraph]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("raster")) == true);
+    QPushButton* createOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphCreateSubgraph"));
+    REQUIRE(createOrNull != nullptr);
+    const QString selection = workspace.GetSelection();
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    QTimer::singleShot(0, &workspace, []() {
+        QInputDialog* dialogOrNull = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        dialogOrNull->reject();
+    });
+    createOrNull->click();
+    CHECK(workspace.GetSelection() == selection);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    QTimer::singleShot(0, &workspace, []() {
+        QInputDialog* dialogOrNull = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        dialogOrNull->setTextValue(QStringLiteral("Raytracing"));
+        dialogOrNull->accept();
+    });
+    createOrNull->click();
+    RenderGraphCanvas* canvasOrNull = workspace.findChild<RenderGraphCanvas*>();
+    REQUIRE(canvasOrNull != nullptr);
+    CHECK(canvasOrNull->GetFile() == QStringLiteral("Raytracing.lurender.json"));
+    CHECK(canvasOrNull->GetConfiguration() == QStringLiteral("Default"));
+    CHECK(canvasOrNull->GetNodeCount() == 0);
+    QPushButton* addOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(addOrNull != nullptr);
+    addOrNull->click();
+    CHECK(canvasOrNull->GetFile() == QStringLiteral("Raytracing.lurender.json"));
+    CHECK(canvasOrNull->HasNode(QStringLiteral("scene")) == true);
+    workspace.Undo();
+    CHECK(canvasOrNull->GetNodeCount() == 0);
+    CHECK(QFileInfo::exists(QDir(package).filePath(canvasOrNull->GetFile())) == false);
+    workspace.Undo();
+    CHECK(canvasOrNull->GetFile() == ROOT_GRAPH);
+    workspace.Redo();
+    REQUIRE(workspace.Save() == true);
+    CHECK(QFileInfo::exists(QDir(package).filePath(QStringLiteral("Raytracing.lurender.json"))) == true);
+}
+
+TEST_CASE("Tree and canvas node menus navigate subgraphs and authored shaders", "[editor][render-graph][subgraph]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({FindPython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.resize(CREATION_WORKSPACE_WIDTH, CREATION_WORKSPACE_HEIGHT);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    QCoreApplication::processEvents();
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("raster")) == true);
+    RenderGraphCanvas* canvasOrNull = workspace.findChild<RenderGraphCanvas*>();
+    REQUIRE(canvasOrNull != nullptr);
+    QTimer::singleShot(0, &workspace, []() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* openOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphOpenSubgraph"));
+        REQUIRE(openOrNull != nullptr);
+        CHECK(openOrNull->isEnabled() == true);
+        CHECK(menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphCreateSubgraphAction")) != nullptr);
+        menuOrNull->close();
+        openOrNull->trigger();
+    });
+    const QPoint position =
+        canvasOrNull->mapFromScene(canvasOrNull->GetNodePosition(QStringLiteral("raster")) + QPointF(10, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, position, canvasOrNull->viewport()->mapToGlobal(position));
+    QCoreApplication::sendEvent(canvasOrNull->viewport(), &context);
+    CHECK(canvasOrNull->GetFile() == LIBRARY);
+    REQUIRE(workspace.SelectNode(LIBRARY, QStringLiteral("ColorAndDepth"), QStringLiteral("draw")) == true);
+    CHECK(workspace.GetSelectedShaderSources() ==
+          QStringList{QStringLiteral("main_shaders/geometry.slang"), QStringLiteral("main_shaders/color.slang")});
+    QTreeWidget* treeOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+    REQUIRE(treeOrNull != nullptr);
+    QTreeWidgetItem* drawOrNull = treeOrNull->currentItem();
+    REQUIRE(drawOrNull != nullptr);
+    // Right click the draw item while another node is selected: the menu must use the clicked item.
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("scene")) == true);
+    // SelectNode rebuilds the tree, so resolve the item again by identity.
+    const QList<QTreeWidgetItem*> matches =
+        treeOrNull->findItems(QStringLiteral("draw : Raster"), Qt::MatchExactly | Qt::MatchRecursive);
+    REQUIRE(matches.isEmpty() == false);
+    QTimer::singleShot(0, &workspace, []() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        CHECK(menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphOpenSubgraph")) == nullptr);
+        QMenu* shadersOrNull = menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphViewShaders"));
+        REQUIRE(shadersOrNull != nullptr);
+        REQUIRE(shadersOrNull->actions().size() == 2);
+        shadersOrNull->actions().at(0)->trigger();
+        menuOrNull->close();
+    });
+    treeOrNull->scrollToItem(matches.at(0));
+    Q_EMIT treeOrNull->customContextMenuRequested(treeOrNull->visualItemRect(matches.at(0)).center());
+    QComboBox* sourceOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    REQUIRE(sourceOrNull != nullptr);
+    CHECK(sourceOrNull->currentText() == QStringLiteral("main_shaders/geometry.slang"));
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("scene")) == true);
+    CHECK(workspace.GetSelectedShaderSources().isEmpty() == true);
+    QTimer::singleShot(0, &workspace, []() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* removeOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphRemoveNodeAction"));
+        REQUIRE(removeOrNull != nullptr);
+        menuOrNull->close();
+        removeOrNull->trigger();
+    });
+    Q_EMIT treeOrNull->customContextMenuRequested(treeOrNull->visualItemRect(treeOrNull->currentItem()).center());
+    CHECK(canvasOrNull->HasNode(QStringLiteral("scene")) == false);
+    workspace.Undo();
+    CHECK(canvasOrNull->HasNode(QStringLiteral("scene")) == true);
+    REQUIRE(workspace.SelectNode(LIBRARY, QStringLiteral("DepthOnly"), QStringLiteral("draw")) == true);
+    CHECK(workspace.GetSelectedShaderSources() ==
+          QStringList{QStringLiteral("main_shaders/geometry.slang"), QStringLiteral("main_shaders/depth.slang")});
+    REQUIRE(canvasOrNull->ActivateNode(QStringLiteral("draw")) == true);
+    CHECK(sourceOrNull->currentText() == QStringLiteral("main_shaders/geometry.slang"));
+    Q_EMIT treeOrNull->itemDoubleClicked(treeOrNull->currentItem(), 0);
+    CHECK(sourceOrNull->currentText() == QStringLiteral("main_shaders/geometry.slang"));
+}
+
+TEST_CASE("New subgraphs respect the package file limit", "[editor][render-graph][subgraph]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    while (static_cast<usize>(document.GetFiles().size()) < RenderGraphDocument::MAX_FILES)
+    {
+        const QString name = QStringLiteral("Library%1").arg(document.GetFiles().size());
+        REQUIRE(document.CreateSubgraph(ROOT_GRAPH, QStringLiteral("Default"), name, name) ==
+                RenderGraphDocumentStatus::Ok);
+    }
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const uint64 revision = document.GetRevision();
+    CHECK(document.CreateSubgraph(ROOT_GRAPH,
+                                  QStringLiteral("Default"),
+                                  QStringLiteral("overflow"),
+                                  QStringLiteral("Overflow")) == RenderGraphDocumentStatus::Capacity);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetFiles().contains(QStringLiteral("Overflow.lurender.json")) == false);
 }
 
 TEST_CASE("Add Node uses the displayed file default and generates collision-free IDs",
