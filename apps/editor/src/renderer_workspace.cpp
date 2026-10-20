@@ -22,6 +22,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -64,6 +66,8 @@ constexpr int NODE_ROLE = Qt::UserRole + 2;
 constexpr int32 MAX_EXTENT = 16384;
 constexpr int32 MAX_COORDINATE = 32768;
 constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
+constexpr int32 NODE_EDITOR_WIDTH = 720;
+constexpr int32 NODE_EDITOR_HEIGHT = 600;
 // The source tree stays wide enough for nested node names.
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
 // Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
@@ -278,6 +282,37 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
         node.insert(QStringLiteral("type"), QStringLiteral("ColorTexture"));
     }
     return node;
+}
+
+bool IsNodeFieldControl(const QWidget& workspace, const QWidget& inspector, QWidget* controlOrNull)
+{
+    if (controlOrNull == nullptr)
+    {
+        return false;
+    }
+    if (inspector.isAncestorOf(controlOrNull) == true)
+    {
+        return true;
+    }
+    for (QWidget* ancestorOrNull = controlOrNull; ancestorOrNull != nullptr;
+         ancestorOrNull = ancestorOrNull->parentWidget())
+    {
+        if (qobject_cast<RenderGraphPipelineEditor*>(ancestorOrNull) != nullptr)
+        {
+            // QWidget::isAncestorOf stops at a window boundary; the canvas dialog
+            // is a separate window owned by this workspace.
+            for (QWidget* ownerOrNull = ancestorOrNull; ownerOrNull != nullptr;
+                 ownerOrNull = ownerOrNull->parentWidget())
+            {
+                if (ownerOrNull == &workspace)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    return false;
 }
 
 QString DescribeStatus(RenderGraphDocumentStatus status)
@@ -679,6 +714,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mCanvas, &RenderGraphCanvas::ConnectRequested, this, [this](const QString& from, const QString& to) {
         documentEdited(mDocument.Connect(mCanvas->GetFile(), mCanvas->GetConfiguration(), from, to));
     });
+    connect(mCanvas,
+            &RenderGraphCanvas::ReplaceConnectionRequested,
+            this,
+            [this](const QString& from, const QString& to) {
+                documentEdited(mDocument.ReplaceConnection(mCanvas->GetFile(), mCanvas->GetConfiguration(), from, to));
+            });
     connect(mCanvas, &RenderGraphCanvas::DisconnectRequested, this, [this](const QString& from, const QString& to) {
         documentEdited(mDocument.Disconnect(mCanvas->GetFile(), mCanvas->GetConfiguration(), from, to));
     });
@@ -827,8 +868,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     // Save must be available while a table cell or property text editor still owns focus.
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* previousOrNull, QWidget* currentOrNull) {
-        if ((previousOrNull != nullptr && mInspector->isAncestorOf(previousOrNull) == true) ||
-            (currentOrNull != nullptr && mInspector->isAncestorOf(currentOrNull) == true))
+        if (IsNodeFieldControl(*this, *mInspector, previousOrNull) == true ||
+            IsNodeFieldControl(*this, *mInspector, currentOrNull) == true)
         {
             Q_EMIT DocumentChanged();
         }
@@ -1076,7 +1117,7 @@ bool RendererWorkspace::CanSave() const
 {
     return mDocument.IsLoaded() == true &&
            (mDocument.IsDirty() == true ||
-            (QApplication::focusWidget() != nullptr && mInspector->isAncestorOf(QApplication::focusWidget()) == true) ||
+            IsNodeFieldControl(*this, *mInspector, QApplication::focusWidget()) == true ||
             mSourceEditDebounce.isActive() == true);
 }
 
@@ -1084,7 +1125,7 @@ bool RendererWorkspace::Save()
 {
     // Keyboard Save does not move focus. Finish the active delegate/property edit first.
     QWidget* focusedControlOrNull = QApplication::focusWidget();
-    if (focusedControlOrNull != nullptr && mInspector->isAncestorOf(focusedControlOrNull) == true)
+    if (IsNodeFieldControl(*this, *mInspector, focusedControlOrNull) == true)
     {
         focusedControlOrNull->clearFocus();
     }
@@ -1733,7 +1774,9 @@ void RendererWorkspace::scheduleLiveBuild()
     }
 }
 
-void RendererWorkspace::documentEdited(RenderGraphDocumentStatus status, bool shouldRefreshInspector)
+void RendererWorkspace::documentEdited(RenderGraphDocumentStatus status,
+                                       bool shouldRefreshInspector,
+                                       QWidget* editOriginOrNull)
 {
     if (status != RenderGraphDocumentStatus::Ok)
     {
@@ -1748,7 +1791,7 @@ void RendererWorkspace::documentEdited(RenderGraphDocumentStatus status, bool sh
         mSelectedConfiguration = graph.value(QStringLiteral("default")).toString();
         mSelectedNode.clear();
     }
-    renderTree(shouldRefreshInspector);
+    renderTree(shouldRefreshInspector, editOriginOrNull);
     renderSource();
     renderStatus();
     Q_EMIT DocumentChanged();
@@ -1785,7 +1828,7 @@ QJsonObject RendererWorkspace::selectedNode() const
     return {};
 }
 
-void RendererWorkspace::renderTree(bool shouldRefreshInspector)
+void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOriginOrNull)
 {
     mIsRendering = true;
     mTree->clear();
@@ -1863,6 +1906,7 @@ void RendererWorkspace::renderTree(bool shouldRefreshInspector)
     }
     renderEdges();
     renderCanvas();
+    Q_EMIT NodeFieldsChanged(editOriginOrNull);
 }
 
 void RendererWorkspace::renderInspector()
@@ -1898,119 +1942,7 @@ void RendererWorkspace::renderInspector()
         mFields->addRow(new QLabel(QStringLiteral("Select a node to inspect its authored fields."), mInspector));
         return;
     }
-    mFields->addRow(QStringLiteral("Node"),
-                    new QLabel(mSelectedNode + QStringLiteral(" (") + node.value(QStringLiteral("kind")).toString() +
-                                   QLatin1Char(')'),
-                               mInspector));
-    if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
-    {
-        RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, mInspector);
-        connect(editor, &RenderGraphPipelineEditor::Edited, this, [this](const QJsonObject& candidate) {
-            const RenderGraphDocumentStatus status =
-                mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate);
-            if (status != RenderGraphDocumentStatus::Ok)
-            {
-                mStatus->setText(QStringLiteral("Disconnect affected ports before removing or changing their type."));
-                renderInspector();
-                return;
-            }
-            // Keep the active controls and focus while refreshing the draft's tree and canvas.
-            documentEdited(status, false);
-        });
-        mFields->addRow(editor);
-    }
-    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster"))
-    {
-        QPushButton* migrate = new QPushButton(QStringLiteral("Convert to Graphics Pipeline"), mInspector);
-        migrate->setObjectName(QStringLiteral("renderGraphMigratePipeline"));
-        connect(migrate, &QPushButton::clicked, this, [this]() {
-            QJsonObject candidate;
-            const QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object();
-            if (MigrateRasterNode(selectedNode(), manifest, candidate) == false)
-            {
-                mStatus->setText(QStringLiteral("Conversion requires one explicit technique and one complete recipe. "
-                                                "The draft was preserved."));
-                return;
-            }
-            documentEdited(mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate));
-        });
-        mFields->addRow(migrate);
-    }
-    for (QJsonObject::const_iterator field = node.constBegin(); field != node.constEnd(); ++field)
-    {
-        const QString name = field.key();
-        if (name == QStringLiteral("id") || name == QStringLiteral("kind") ||
-            IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
-        {
-            continue;
-        }
-        QStringList choices = GetChoices(name);
-        if (choices.isEmpty() == true)
-        {
-            choices = GetSubgraphChoices(mDocument, mSelectedFile, node, name);
-        }
-        if (choices.isEmpty() == false)
-        {
-            QComboBox* combo = new QComboBox(mInspector);
-            combo->setObjectName(QStringLiteral("renderGraphField_") + name);
-            combo->addItems(choices);
-            combo->setCurrentText(field.value().toString());
-            connect(combo, &QComboBox::activated, this, [this, name, combo]() {
-                replaceSelectedField(name, combo->currentText());
-            });
-            mFields->addRow(name, combo);
-        }
-        else if (field.value().isBool() == true)
-        {
-            QCheckBox* check = new QCheckBox(mInspector);
-            check->setObjectName(QStringLiteral("renderGraphField_") + name);
-            check->setChecked(field.value().toBool());
-            connect(check, &QCheckBox::toggled, this, [this, name](bool isChecked) {
-                replaceSelectedField(name, isChecked);
-            });
-            mFields->addRow(name, check);
-        }
-        else if (name == QStringLiteral("extent"))
-        {
-            QWidget* row = new QWidget(mInspector);
-            QHBoxLayout* rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 0, 0, 0);
-            QSpinBox* width = new QSpinBox(row);
-            QSpinBox* height = new QSpinBox(row);
-            for (QSpinBox* spin : {width, height})
-            {
-                spin->setRange(1, MAX_EXTENT);
-                rowLayout->addWidget(spin);
-            }
-            width->setValue(field.value().toArray().at(0).toInt());
-            height->setValue(field.value().toArray().at(1).toInt());
-            const auto commitExtent = [this, width, height]() {
-                replaceSelectedField(QStringLiteral("extent"), QJsonArray{width->value(), height->value()});
-            };
-            connect(width, &QSpinBox::editingFinished, this, commitExtent);
-            connect(height, &QSpinBox::editingFinished, this, commitExtent);
-            mFields->addRow(name, row);
-        }
-        else if (field.value().isDouble() == true)
-        {
-            QSpinBox* spin = new QSpinBox(mInspector);
-            spin->setRange(1, MAX_EXTENT);
-            spin->setValue(field.value().toInt());
-            connect(spin, &QSpinBox::editingFinished, this, [this, name, spin]() {
-                replaceSelectedField(name, spin->value());
-            });
-            mFields->addRow(name, spin);
-        }
-        else
-        {
-            QLineEdit* line = new QLineEdit(field.value().toString(), mInspector);
-            line->setObjectName(QStringLiteral("renderGraphField_") + name);
-            connect(line, &QLineEdit::editingFinished, this, [this, name, line]() {
-                replaceSelectedField(name, line->text());
-            });
-            mFields->addRow(name, line);
-        }
-    }
+    populateNodeFields(*mFields, *mInspector);
     int32 x = 0;
     int32 y = 0;
     const QJsonObject layout = selectedConfiguration().value(QStringLiteral("layout")).toObject();
@@ -2029,6 +1961,187 @@ void RendererWorkspace::renderInspector()
     mLayoutY->setValue(y);
     mLayoutX->blockSignals(false);
     mLayoutY->blockSignals(false);
+}
+
+void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inoutParent)
+{
+    const QJsonObject node = selectedNode();
+    outFields.addRow(QStringLiteral("Node"),
+                     new QLabel(mSelectedNode + QStringLiteral(" (") + node.value(QStringLiteral("kind")).toString() +
+                                    QLatin1Char(')'),
+                                &inoutParent));
+    if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+    {
+        RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, &inoutParent);
+        connect(editor, &RenderGraphPipelineEditor::Edited, this, [this, editor](const QJsonObject& candidate) {
+            const RenderGraphDocumentStatus status =
+                mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate);
+            if (status != RenderGraphDocumentStatus::Ok)
+            {
+                mStatus->setText(QStringLiteral("Disconnect affected ports before removing or changing their type."));
+                renderInspector();
+                Q_EMIT NodeFieldsChanged(nullptr);
+                return;
+            }
+            // Refresh the other surface while retaining the controls that submitted this edit.
+            documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
+        });
+        outFields.addRow(editor);
+    }
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster"))
+    {
+        QPushButton* migrate = new QPushButton(QStringLiteral("Convert to Graphics Pipeline"), &inoutParent);
+        migrate->setObjectName(QStringLiteral("renderGraphMigratePipeline"));
+        connect(migrate, &QPushButton::clicked, this, [this]() {
+            QJsonObject candidate;
+            const QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object();
+            if (MigrateRasterNode(selectedNode(), manifest, candidate) == false)
+            {
+                mStatus->setText(QStringLiteral("Conversion requires one explicit technique and one complete recipe. "
+                                                "The draft was preserved."));
+                return;
+            }
+            documentEdited(mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate));
+        });
+        outFields.addRow(migrate);
+    }
+    for (QJsonObject::const_iterator field = node.constBegin(); field != node.constEnd(); ++field)
+    {
+        const QString name = field.key();
+        if (name == QStringLiteral("id") || name == QStringLiteral("kind") ||
+            IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+        {
+            continue;
+        }
+        QStringList choices = GetChoices(name);
+        if (choices.isEmpty() == true)
+        {
+            choices = GetSubgraphChoices(mDocument, mSelectedFile, node, name);
+        }
+        if (choices.isEmpty() == false)
+        {
+            QComboBox* combo = new QComboBox(&inoutParent);
+            combo->setObjectName(QStringLiteral("renderGraphField_") + name);
+            combo->addItems(choices);
+            combo->setCurrentText(field.value().toString());
+            connect(combo, &QComboBox::activated, this, [this, name, combo]() {
+                replaceSelectedField(name, combo->currentText());
+            });
+            outFields.addRow(name, combo);
+        }
+        else if (field.value().isBool() == true)
+        {
+            QCheckBox* check = new QCheckBox(&inoutParent);
+            check->setObjectName(QStringLiteral("renderGraphField_") + name);
+            check->setChecked(field.value().toBool());
+            connect(check, &QCheckBox::toggled, this, [this, name](bool isChecked) {
+                replaceSelectedField(name, isChecked);
+            });
+            outFields.addRow(name, check);
+        }
+        else if (name == QStringLiteral("extent"))
+        {
+            QWidget* row = new QWidget(&inoutParent);
+            QHBoxLayout* rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 0, 0, 0);
+            QSpinBox* width = new QSpinBox(row);
+            QSpinBox* height = new QSpinBox(row);
+            for (QSpinBox* spin : {width, height})
+            {
+                spin->setRange(1, MAX_EXTENT);
+                rowLayout->addWidget(spin);
+            }
+            width->setValue(field.value().toArray().at(0).toInt());
+            height->setValue(field.value().toArray().at(1).toInt());
+            const auto commitExtent = [this, width, height]() {
+                replaceSelectedField(QStringLiteral("extent"), QJsonArray{width->value(), height->value()});
+            };
+            connect(width, &QSpinBox::editingFinished, this, commitExtent);
+            connect(height, &QSpinBox::editingFinished, this, commitExtent);
+            outFields.addRow(name, row);
+        }
+        else if (field.value().isDouble() == true)
+        {
+            QSpinBox* spin = new QSpinBox(&inoutParent);
+            spin->setRange(1, MAX_EXTENT);
+            spin->setValue(field.value().toInt());
+            connect(spin, &QSpinBox::editingFinished, this, [this, name, spin]() {
+                replaceSelectedField(name, spin->value());
+            });
+            outFields.addRow(name, spin);
+        }
+        else
+        {
+            QLineEdit* line = new QLineEdit(field.value().toString(), &inoutParent);
+            line->setObjectName(QStringLiteral("renderGraphField_") + name);
+            connect(line, &QLineEdit::editingFinished, this, [this, name, line]() {
+                replaceSelectedField(name, line->text());
+            });
+            outFields.addRow(name, line);
+        }
+    }
+}
+
+void RendererWorkspace::editNodeOnCanvas()
+{
+    if (selectedNode().isEmpty() == true || CanCreateSubgraph() == false)
+    {
+        return;
+    }
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("renderGraphNodeEditor"));
+    dialog.setWindowTitle(QStringLiteral("Edit %1").arg(mSelectedNode));
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    QScrollArea* scroll = new QScrollArea(&dialog);
+    scroll->setWidgetResizable(true);
+    layout->addWidget(scroll);
+    const auto refresh = [this, scroll]() {
+        QWidget* previousOrNull = scroll->takeWidget();
+        if (previousOrNull != nullptr)
+        {
+            for (QObject* control : previousOrNull->findChildren<QObject*>())
+            {
+                disconnect(control, nullptr, this, nullptr);
+            }
+            previousOrNull->hide();
+            previousOrNull->deleteLater();
+        }
+        QWidget* fields = new QWidget(scroll);
+        QFormLayout* form = new QFormLayout(fields);
+        populateNodeFields(*form, *fields);
+        for (const bool isX : {true, false})
+        {
+            QSpinBox* coordinate = new QSpinBox(fields);
+            coordinate->setObjectName(isX == true ? QStringLiteral("canvasLayoutX") : QStringLiteral("canvasLayoutY"));
+            coordinate->setRange(-MAX_COORDINATE, MAX_COORDINATE);
+            coordinate->setValue(isX == true ? mLayoutX->value() : mLayoutY->value());
+            form->addRow(isX == true ? QStringLiteral("Layout x") : QStringLiteral("Layout y"), coordinate);
+            connect(coordinate, &QSpinBox::editingFinished, this, [this, coordinate, isX]() {
+                if (coordinate->value() == (isX == true ? mLayoutX->value() : mLayoutY->value()))
+                {
+                    return;
+                }
+                documentEdited(mDocument.MoveNode(mSelectedFile,
+                                                  mSelectedConfiguration,
+                                                  mSelectedNode,
+                                                  isX == true ? coordinate->value() : mLayoutX->value(),
+                                                  isX == true ? mLayoutY->value() : coordinate->value()));
+            });
+        }
+        scroll->setWidget(fields);
+    };
+    refresh();
+    connect(this, &RendererWorkspace::NodeFieldsChanged, &dialog, [scroll, refresh](QWidget* editOriginOrNull) {
+        if (editOriginOrNull == nullptr || scroll->isAncestorOf(editOriginOrNull) == false)
+        {
+            refresh();
+        }
+    });
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.resize(NODE_EDITOR_WIDTH, NODE_EDITOR_HEIGHT);
+    dialog.exec();
 }
 
 void RendererWorkspace::renderEdges()
@@ -2373,6 +2486,13 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
             QAction* open = shaders->addAction(source);
             connect(open, &QAction::triggered, this, [this, source]() { openSourceLine(source, 1); });
         }
+    }
+    if (node.isEmpty() == false)
+    {
+        QAction* edit = menu.addAction(QStringLiteral("Edit Node..."));
+        edit->setObjectName(QStringLiteral("renderGraphEditNodeAction"));
+        edit->setEnabled(CanCreateSubgraph());
+        connect(edit, &QAction::triggered, this, &RendererWorkspace::editNodeOnCanvas);
     }
     QAction* editInterface = menu.addAction(QStringLiteral("Edit Inputs / Outputs..."));
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterfaceAction"));

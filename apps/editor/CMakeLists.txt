@@ -674,7 +674,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
-        tests/main.cpp tests/render_graph_configuration_tests.cpp
+        tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_canvas_tests.cpp
         src/internal/renderer_workspace.h src/renderer_workspace.cpp
         src/render_graph_document.cpp src/render_graph_pipeline_node.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp

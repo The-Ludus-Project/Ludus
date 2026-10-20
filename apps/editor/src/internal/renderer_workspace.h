@@ -255,6 +255,9 @@ public:
 
 Q_SIGNALS:
     void DocumentChanged();
+    /// Node fields changed; the originating surface may retain its active controls.
+    /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.
+    void NodeFieldsChanged(QWidget* editOriginOrNull);
     void JobFinished();
     /// What CanBuild, CanCreateGraph, IsJobActive or IsDirty report may have changed.
     void CommandsChanged();
@@ -281,13 +284,17 @@ private:
     void refreshWatchedSources();
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);
-    void renderTree(bool shouldRefreshInspector = true);
+    void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
+    void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
+    void editNodeOnCanvas();
     void renderEdges();
     void renderSource();
     void renderStatus();
     void updateActions();
-    void documentEdited(RenderGraphDocumentStatus status, bool shouldRefreshInspector = true);
+    void documentEdited(RenderGraphDocumentStatus status,
+                        bool shouldRefreshInspector = true,
+                        QWidget* editOriginOrNull = nullptr);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
     void editConfigurationInterface();
     void addNode();

@@ -135,6 +135,11 @@ public:
     /// the canvas checks endpoint types before requesting it. Save publishes the draft.
     [[nodiscard]] RenderGraphDocumentStatus
     Connect(const QString& file, const QString& configuration, const QString& from, const QString& to);
+    /// Connect an input (including #outputs.port), replacing its previous source in one
+    /// undo step. The caller checks types/cycles first. Failure preserves draft/history;
+    /// Save publishes. GUI thread only, with the same package limits as Connect.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ReplaceConnection(const QString& file, const QString& configuration, const QString& from, const QString& to);
     /// Remove the exact edge, or clear a matching #outputs.port source while preserving
     /// the output declaration. Failure preserves the draft; success is one undoable edit.
     [[nodiscard]] RenderGraphDocumentStatus

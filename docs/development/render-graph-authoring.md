@@ -1190,6 +1190,12 @@ node. It is another view of the same typed draft: every canvas edit is a
 `RenderGraphDocument` operation, so undo, explicit save, validation and Properties
 stay in step.
 
+Every graph-authoring operation in Properties also has a canvas gesture or
+context-menu entry. Right-click the background to create nodes and subgraphs or
+edit the configuration interface; right-click a node to edit its fields or remove
+it; right-click wires and ports to manage connections. Properties remains an
+additional way to perform those same document edits.
+
 Choose a node type in Properties and click **Add Node**. It uses the configuration
 currently shown on the canvas, including a selected file's default; selecting a
 configuration row or entering an ID is unnecessary. IDs are generated from the
@@ -1202,7 +1208,10 @@ undoable edit; **Save** writes it to the project.
 | --- | --- |
 | Drag nodes (Ctrl-click adds to the selection) | One `MoveNodes` edit per gesture, applied on release: one undo step however far the drag went. A drag that returns to its start commits nothing. |
 | Drag from an output port to an input port | `Connect`, after the pre-check below |
-| Select a link and press Delete | `Disconnect` |
+| Select a link and press Delete, or right-click a wire/port and choose Disconnect | `Disconnect` |
+| Drag an output onto an occupied input | Replace its source as one undoable edit; invalid links preserve the existing source. |
+| Right-click a port → Connect from / Connect to | Choose a compatible endpoint, replacing an occupied input in one undo step. |
+| Right-click a node → Edit Node... | Edit the same authored fields, pipeline controls and layout coordinates as Properties, without opening that panel. |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
 | Double-click a Raster node | Opens its first mapped shader source; choose other stages with View Shaders or the Source selector |
@@ -1240,8 +1249,10 @@ to open the same dialog.
 The grey input/output boxes appear as soon as their first ports are applied.
 Drag configuration input ports to pass inputs; drag pass outputs to configuration
 output ports. Compatible resource inputs can also pass directly to configuration
-outputs. Select a link and press Delete to disconnect it. An output can have one
-source; disconnect it before reconnecting. Unconnected outputs are incomplete
+outputs. Select a link and press Delete, or use a wire/port's right-click menu,
+to disconnect it. Each input and configuration output has one source; dropping a
+new wire onto it replaces that source in one undo step. Type or cycle rejection
+preserves the previous source. Unconnected outputs are incomplete
 drafts and must be connected before validation/build succeeds.
 
 Disconnect affected internal and containing-subgraph links before removing,

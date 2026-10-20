@@ -410,6 +410,45 @@ bool DisconnectEdit(QJsonObject& inoutConfiguration, const QStringList& argument
     return false;
 }
 
+bool ReplaceConnectionEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    if (arguments.at(1).startsWith(QStringLiteral("#outputs.")) == true)
+    {
+        QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+        for (qsizetype i = 0; i < outputs.size(); ++i)
+        {
+            QJsonObject output = outputs.at(i).toObject();
+            if (output.value(QStringLiteral("id")).toString() == arguments.at(1).section(QLatin1Char('.'), 1))
+            {
+                output.insert(QStringLiteral("source"), arguments.at(0));
+                outputs.replace(i, output);
+                inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
+                return true;
+            }
+        }
+        return false;
+    }
+    QJsonArray edges;
+    bool hasReplaced = false;
+    const QJsonArray previous = inoutConfiguration.value(QStringLiteral("edges")).toArray();
+    for (const QJsonValueConstRef value : previous)
+    {
+        QJsonObject edge = value.toObject();
+        if (edge.value(QStringLiteral("to")).toString() == arguments.at(1))
+        {
+            if (hasReplaced == true)
+            {
+                continue;
+            }
+            edge.insert(QStringLiteral("from"), arguments.at(0));
+            hasReplaced = true;
+        }
+        edges.append(edge);
+    }
+    inoutConfiguration.insert(QStringLiteral("edges"), edges);
+    return hasReplaced == true || ConnectEdit(inoutConfiguration, arguments);
+}
+
 bool MoveNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 {
     if (FindNode(inoutConfiguration.value(QStringLiteral("nodes")).toArray(), arguments.at(0)) < 0)
@@ -822,6 +861,15 @@ RenderGraphDocument::Connect(const QString& file, const QString& configuration, 
 {
     mLastMove.clear();
     return editConfiguration(file, configuration, {from, to}, &ConnectEdit, false);
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::ReplaceConnection(const QString& file,
+                                                                 const QString& configuration,
+                                                                 const QString& from,
+                                                                 const QString& to)
+{
+    mLastMove.clear();
+    return editConfiguration(file, configuration, {from, to}, &ReplaceConnectionEdit, false);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::Disconnect(const QString& file,
