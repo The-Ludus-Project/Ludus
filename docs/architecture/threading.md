@@ -276,7 +276,10 @@ extra memory to eight decoded images. After decoding, the private `ParallelTasks
 runs the independent texture work on the same system: surface-map row bands, and
 the budget's halvings, planned from sizes alone and then run one texture per job.
 Each task writes only its own rows or texture, a task the system does not run
-runs inline after `Wait`, and the cook merges in texture order. The import guide
+runs inline after `Wait`, and the cook merges in texture order. The scene asset
+operations' source recheck uses the same pattern: the owner reads the recorded
+inputs in order into a 256 MiB batch buffer, `ParallelTasks` hashes one file
+segment per job, and the owner reports the first failure in input order. The import guide
 records the [usage contract](../development/best-effort-scene-import.md#parallel-texture-decoding).
 
 ## Task identity and execution traces

@@ -191,6 +191,16 @@ alone, in the order of the serial rule, so each texture is then halved its plann
 number of times in its own job. These tasks have disjoint outputs and the cook
 merges them in texture order, so they keep every worker count byte-identical too.
 
+The scene asset operations then check that no source changed while it was
+converted: after the cook, and again before the catalog is published, every
+recorded input is hashed again (about 2.2 GB for Main Sponza). With workers in
+`AssetOptions::JobsOrNull`, the calling thread reads the inputs in order into a
+buffer of at most 256 MiB and the system hashes the batch, one job per file; a
+file larger than the buffer continues in the next batch. The first failure in
+input order is reported, so the result and its message (for example "Source
+changed during conversion") are the same for every worker count. Without
+workers each input is streamed on the calling thread.
+
 `ludus-cook ... --workers N` (0 to 64; the default 0 decodes serially) and the
 Editor, which keeps its own four-worker import system, use this option. Browser
 builds decode serially.
