@@ -171,14 +171,25 @@ The cook first lists its decodes in the order it consumes them, that is the
 base textures and opacity maps slot by slot, then the surface and emission maps.
 Each batch of up to `min(workers + 1, 8)` images is read on the calling thread,
 because job callbacks do no I/O. The batch is then decoded in jobs that each
-write only their own slot, with the caller helping in `Wait`. The cook consumes
-the results in the same order as before, so diagnostics, the base textures'
-recorded file digests and the cooked bytes are identical for every worker count,
-zero and none. A decode taken out of that order, for example after a failed map
-changes how many maps fit the texture count, is decoded inline. Cancellation is
-polled before each image is read. The batch bounds the extra memory to that
-many decoded images (64 MiB each at 4096 × 4096). A system that is busy with
-another graph makes the import decode serially.
+write only their own slot, with the caller helping in `Wait`. Each job also
+hashes the file bytes it decodes; the import's input digests reuse those
+digests, so a decoded image file is read once (only images the cook never decodes
+are hashed separately). The cook consumes the results in the same order as
+before, so diagnostics, input digests and the cooked bytes are identical for
+every worker count, zero and none. A decode taken out of that order, for example
+after a failed map changes how many maps fit the texture count, is decoded
+inline. Cancellation is polled before each image is read. The batch bounds the
+extra memory to that many decoded images (64 MiB each at 4096 × 4096). A system
+that is busy with another graph makes the import decode serially. One glTF
+`metallicRoughnessTexture` (or an MTL file named by both `map_Pr` and `map_Pm`)
+is decoded once for both terms.
+
+The same system runs the texture work that follows decoding. Each surface map is
+repacked in row bands, `4 × (workers + 1)` of them, and each band writes only its
+own rows. The budget's halvings (step 8 below) are planned from the texture sizes
+alone, in the order of the serial rule, so each texture is then halved its planned
+number of times in its own job. These tasks have disjoint outputs and the cook
+merges them in texture order, so they keep every worker count byte-identical too.
 
 `ludus-cook ... --workers N` (0 to 64; the default 0 decodes serially) and the
 Editor, which keeps its own four-worker import system, use this option. Browser
@@ -321,8 +332,9 @@ textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
    emission texture as an sRGB emission map. These maps follow the base textures
    while the bundle's 256 textures allow; beyond that a slot's roughness/metallic
    textures are averaged into its scalars;
-8. ranks textures and halves the largest until the byte budget is met
-   (`TEXTURE_DOWNSCALED`). Geometry and authored lighting bytes are reserved first.
+8. halves the largest texture, oversized ones first, until every texture fits
+   4096 texels and 16 MiB and all fit the byte budget (`TEXTURE_DOWNSCALED`).
+   Geometry and authored lighting bytes are reserved first.
    Untextured slots get a 4×4 sRGB swatch. Halving averages alpha too, which
    slightly erodes thin cut-outs.
 
@@ -393,8 +405,11 @@ fixtures through the editor's preview, import, commit and assemble path.
 `texture_decode_tests.cpp` (part of `ludus_scene_import_tests`) treats a cook
 without a job system as the oracle. It requires byte-identical bundles, reports
 and input digests from systems with 0, 1, 3 and 7 workers. The scenes cover every
-map kind, unreadable and undecodable images, and failures at the texture-count
-limit. It also tests out-of-order takes, a busy system and cancellation.
+map kind, unreadable and undecodable images, failures at the texture-count limit,
+odd-sized textures halved once or more, and surface maps sampled across
+resolutions; the serial halved and repacked textures are also compared with
+references built texel by texel. It also tests a shared metallicRoughness image,
+out-of-order takes, a busy system and cancellation.
 
 Configure with `-DLUDUS_BUILD_SCENE_COOK_FUZZERS=ON` (native Clang) to build
 `ludus_scene_cook_pbrt_fuzzer`, a libFuzzer target over the pbrt reader, PLY

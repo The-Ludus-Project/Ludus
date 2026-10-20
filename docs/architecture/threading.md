@@ -265,15 +265,19 @@ plans its decodes in the order it consumes them. For each batch of
 `min(GetWorkerCount() + 1, 8)` images, the owner reads every file, so callbacks
 never do I/O. It then submits one job per image to a reusable graph and waits
 while helping. Each job writes only its own slot: the decoded RGBA8 image, a
-static message and, for base textures, the file's SHA-256. After that lifetime
-fence the cook takes results in its original serial order. Diagnostics, digests
+static message and the file's SHA-256, which the import's input digests reuse.
+After that lifetime fence the cook takes results in its original serial order. Diagnostics, digests
 and cooked bytes are therefore identical for every worker count, and the serial
 path is the test oracle. Decoding is a pure function of a texture, so a request
 taken off the plan is decoded inline instead of reordering any output. A busy or
 refusing system degrades the same way. Cancellation is polled on the owner
 before each image is read; a running decode finishes. The batch cap bounds the
-extra memory to eight decoded images. The import guide records the
-[usage contract](../development/best-effort-scene-import.md#parallel-texture-decoding).
+extra memory to eight decoded images. After decoding, the private `ParallelTasks`
+runs the independent texture work on the same system: surface-map row bands, and
+the budget's halvings, planned from sizes alone and then run one texture per job.
+Each task writes only its own rows or texture, a task the system does not run
+runs inline after `Wait`, and the cook merges in texture order. The import guide
+records the [usage contract](../development/best-effort-scene-import.md#parallel-texture-decoding).
 
 ## Task identity and execution traces
 
