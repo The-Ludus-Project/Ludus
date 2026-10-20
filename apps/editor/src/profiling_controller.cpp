@@ -29,7 +29,7 @@ constexpr uint64 STATUS_REFRESH_NANOSECONDS = 250'000'000;
 class ProfilingExportJob final : public QThread
 {
 public:
-    Array<profile::GpuTraceSample> Samples;
+    Array<RecordedGpuSample> Samples;
     Array<uint8> Bytes;
     profile::GpuTraceCoverage Coverage;
     QString Destination;
@@ -41,8 +41,28 @@ public:
 protected:
     void run() override
     {
+        Array<profile::GpuTraceSample> traceSamples;
+        if (ShouldSerialize == true && traceSamples.TryResize(Samples.GetSize()) == false)
+        {
+            Error = QStringLiteral("Cannot allocate GPU export views.");
+            return;
+        }
+        for (usize index = 0; index < traceSamples.GetSize(); ++index)
+        {
+            traceSamples[index] = Samples[index].Sample;
+            const graphics::rhi::GpuScopeDescription& scope = Samples[index].Scope;
+            if (scope.Identity != 0)
+            {
+                usize length = 0;
+                while (scope.Name[length] != '\0')
+                {
+                    ++length;
+                }
+                traceSamples[index].PassName = {scope.Name.GetData(), length};
+            }
+        }
         if (ShouldSerialize == true && profile::SerializePerfettoTrace(Bytes,
-                                                                       {Samples.GetData(), Samples.GetSize()},
+                                                                       {traceSamples.GetData(), traceSamples.GetSize()},
                                                                        Coverage,
                                                                        ShouldIncludeCpu) == false)
         {
@@ -78,6 +98,11 @@ ProfilingController::ProfilingController(RenderPreview* preview, QObject* parent
         Stop();
     });
     connect(preview, &RenderPreview::GpuProfileSample, this, &ProfilingController::acceptSample);
+    connect(preview,
+            &RenderPreview::GpuPassProfileBatch,
+            this,
+            &ProfilingController::acceptPassBatch,
+            Qt::DirectConnection);
     connect(preview, &RenderPreview::GpuProfileSubmission, this, [this]() {
         if (mState == ProfilingState::Recording && mIsStopping == false && mMode != ProfilingMode::Cpu)
         {
@@ -89,7 +114,14 @@ ProfilingController::ProfilingController(RenderPreview* preview, QObject* parent
         {
             if (mPreviewOrNull->HasGpuProfilingPending() == true)
             {
-                ++mCoverage.UnresolvedSamples;
+                if (mPreviewOrNull->HasGpuPassProfilingPending() == true)
+                {
+                    ++mCoverage.UnresolvedPassBatches;
+                }
+                if (mPreviewOrNull->HasGpuFrameProfilingPending() == true)
+                {
+                    ++mCoverage.UnresolvedSamples;
+                }
             }
             Stop();
         }
@@ -171,7 +203,11 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
         return false;
     }
     mMode = mode;
-    mCoverage = { .IsGpuRequested = mode != ProfilingMode::Cpu };
+    mCoverage =
+    {
+        .IsGpuRequested = mode != ProfilingMode::Cpu,
+        .IsPassTimingSupported = mode != ProfilingMode::Cpu && mPreviewOrNull->CanProfileGpuPasses() == true,
+    };
     mStartedTicks = time::NowTicks();
     mLastStatusTicks = mStartedTicks;
     mDeviceSession = mPreviewOrNull != nullptr ? mPreviewOrNull->GetDeviceSerial() : 0;
@@ -179,6 +215,10 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
     mIsStopping = false;
     mState = ProfilingState::Recording;
     mStatus = QStringLiteral("Recording (30 second limit). GPU durations use submission attribution.");
+    if (mode != ProfilingMode::Cpu && mCoverage.IsPassTimingSupported == false)
+    {
+        mStatus += QStringLiteral(" Per-pass counters unavailable; frame timing only.");
+    }
     if (mode != ProfilingMode::Gpu)
     {
         profile::RegisterThreadForTrace("Editor GUI");
@@ -239,7 +279,14 @@ void ProfilingController::poll()
         if (mMode != ProfilingMode::Cpu &&
             (mPreviewOrNull == nullptr || mPreviewOrNull->HasGpuProfilingPending(mStoppedTicks) == true))
         {
-            ++mCoverage.UnresolvedSamples;
+            if (mPreviewOrNull == nullptr || mPreviewOrNull->HasGpuFrameProfilingPending(mStoppedTicks) == true)
+            {
+                ++mCoverage.UnresolvedSamples;
+            }
+            if (mPreviewOrNull != nullptr && mPreviewOrNull->HasGpuPassProfilingPending(mStoppedTicks) == true)
+            {
+                ++mCoverage.UnresolvedPassBatches;
+            }
         }
         beginExport();
     }
@@ -274,9 +321,52 @@ void ProfilingController::acceptSample(uint64 frameId,
         .FrameId = frameId,
         .DeviceSession = deviceSession,
     };
-    if (mSamples.TryAdd(sample) == false)
+    if (mSamples.TryAdd(RecordedGpuSample{ .Sample = sample }) == false)
     {
         ++mCoverage.DroppedSamples;
+    }
+}
+
+void ProfilingController::acceptPassBatch(uint64 frameId,
+                                          uint64 deviceSession,
+                                          uint64 submissionTicks,
+                                          const graphics::rhi::GpuPassTimings& batch)
+{
+    if (mState != ProfilingState::Recording || mMode == ProfilingMode::Cpu || deviceSession != mDeviceSession ||
+        submissionTicks < mStartedTicks || (mIsStopping == true && submissionTicks > mStoppedTicks))
+    {
+        return;
+    }
+    mCoverage.QueryDroppedPasses += batch.DroppedPasses;
+    constexpr float64 MAX_DURATION_NANOSECONDS = 60'000'000'000;
+    for (usize index = 0; index < batch.Count; ++index)
+    {
+        const graphics::rhi::GpuPassTiming& pass = batch.Passes[index];
+        const float64 duration = pass.Timing.DurationNanoseconds;
+        if (pass.Timing.State != graphics::rhi::GpuTimingState::Available ||
+            (duration >= 0 && duration < MAX_DURATION_NANOSECONDS) == false)
+        {
+            ++mCoverage.InvalidSamples;
+            continue;
+        }
+        RecordedGpuSample recorded;
+        recorded.Scope = pass.Scope;
+        recorded.Sample =
+        {
+            .SubmissionTicks = submissionTicks,
+            .CollectionTicks = time::NowTicks(),
+            .DurationNanoseconds = static_cast<uint64>(duration + 0.5),
+            .FrameId = frameId,
+            .DeviceSession = deviceSession,
+            .ScopeIdentity = pass.Scope.Identity,
+            .ScopePassIndex = pass.ScopePassIndex,
+            .LogicalPassCount = pass.Scope.LogicalPassCount,
+            .IsCompute = pass.Kind == graphics::rhi::GpuPassKind::Compute,
+        };
+        if (mSamples.GetSize() >= MAX_GPU_SAMPLES || mSamples.TryAdd(recorded) == false)
+        {
+            ++mCoverage.DroppedSamples;
+        }
     }
 }
 
@@ -309,12 +399,19 @@ void ProfilingController::finishExport()
     {
         mLastPath = mJobOrNull->Destination;
         mSnapshot.Clear();
-        mStatus = QStringLiteral("Saved %1 GPU samples from %2 eligible frames; invalid %3, dropped %4, unresolved %5.")
+        mStatus = QStringLiteral("Saved %1 GPU samples from %2 eligible frames; invalid %3, dropped %4, unresolved %5; "
+                                 "query-dropped passes %6, unfinished pass batches %7.")
                       .arg(mCompletedSampleCount)
                       .arg(mCoverage.EligibleFrames)
                       .arg(mCoverage.InvalidSamples)
                       .arg(mCoverage.DroppedSamples)
-                      .arg(mCoverage.UnresolvedSamples);
+                      .arg(mCoverage.UnresolvedSamples)
+                      .arg(mCoverage.QueryDroppedPasses)
+                      .arg(mCoverage.UnresolvedPassBatches);
+        if (mMode != ProfilingMode::Cpu && mCoverage.IsPassTimingSupported == false)
+        {
+            mStatus += QStringLiteral(" Per-pass counters unavailable; frame timing only.");
+        }
         if (mMode == ProfilingMode::Cpu)
         {
             mStatus = QStringLiteral("Saved CPU recording.");
@@ -371,7 +468,7 @@ QString ProfilingController::GetStatus() const
         const profile::TraceHealth health =
             mMode == ProfilingMode::Gpu ? profile::TraceHealth{} : profile::GetTraceHealth();
         return mStatus +
-               QStringLiteral(" Elapsed %1 s. CPU events %2, dropped %3; GPU samples %4 / %5 submitted frames.")
+               QStringLiteral(" Elapsed %1 s. CPU events %2, dropped %3; GPU samples %4 across %5 submitted frames.")
                    .arg((time::NowTicks() - mStartedTicks) / time::NANOSECONDS_PER_SECOND)
                    .arg(health.EventsRecorded)
                    .arg(health.EventsDropped)

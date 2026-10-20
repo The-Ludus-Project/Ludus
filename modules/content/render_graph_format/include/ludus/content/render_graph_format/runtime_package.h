@@ -20,13 +20,20 @@
 /// (role, target, input count, entry bytes, artifact bytes, block name count), its
 /// input pairs, its GLSL ES uniform block names (slot, byte count, zero-padded
 /// name), the entry name and the artifact bytes, with every byte string zero-padded
-/// to a four-byte boundary. No trailing bytes are permitted.
+/// to a four-byte boundary. Version 3 appends PassCount names, each a uint32 byte
+/// count and that many UTF-8 bytes zero-padded to four bytes. Names are nonempty,
+/// contain no zero, and have at most MAX_PASS_NAME_BYTES bytes. No trailing bytes
+/// are permitted. Version 2 has no name table.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 2;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 3;
+/// Previous numeric-only runtime generation, accepted with fallback debug names.
+inline constexpr foundation::uint32 LEGACY_PACKAGE_VERSION = 2;
+/// Maximum encoded UTF-8 bytes of an authored pass name (excludes terminating zero).
+inline constexpr foundation::usize MAX_PASS_NAME_BYTES = 127;
 /// SHA-256 digest width of interface and generation identities.
 inline constexpr foundation::usize IDENTITY_BYTES = 32;
 /// Largest accepted runtime generation.

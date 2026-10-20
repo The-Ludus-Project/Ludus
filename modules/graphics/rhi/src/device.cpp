@@ -2,6 +2,7 @@
 
 #include "internal/backend.h"
 #include "internal/device.h"
+#include "internal/gpu_scope_backend.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
@@ -386,6 +387,24 @@ namespace internal
 namespace
 {
 bool gGpuTimingRequested = false;
+}
+RasterStatus ValidateMeasurementDevice(DeviceHandle device) noexcept
+{
+    if (Valid(device) == false)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    switch (State())
+    {
+        case DeviceStatus::Ready:
+            return RasterStatus::Ready;
+        case DeviceStatus::DeviceLost:
+            return RasterStatus::DeviceLost;
+        case DeviceStatus::Failed:
+            return RasterStatus::Failed;
+        default:
+            return RasterStatus::NotReady;
+    }
 }
 void SetGpuTimingRequest(bool requested) noexcept
 {

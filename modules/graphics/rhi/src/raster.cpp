@@ -1,6 +1,7 @@
 #include "internal/backend.h"
 #include <ludus/foundation/base/checked_integer.hpp>
 
+#include "internal/gpu_scope_backend.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
 
@@ -2318,6 +2319,7 @@ void ReleaseRasterResources() noexcept
     backend::RayDrain();
     backend::RasterReset();
     backend::TimingReset();
+    backend::ResetPassTimings();
     backend::LifetimeReset();
     ResetLifetimeRecords();
     ResetGraphRecords();

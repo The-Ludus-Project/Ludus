@@ -4,6 +4,7 @@
 #include <cstring>
 #include <ludus/foundation/base/types.h>
 #include <ludus/graphics/rhi/compute.h>
+#include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
 #include <thread>
@@ -323,6 +324,11 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                         const auto armed =
                             description.EnableGpuTiming ? rhi::ArmGpuTiming(device) : rhi::RasterStatus::Unsupported;
                         REQUIRE((armed == rhi::RasterStatus::Ready || armed == rhi::RasterStatus::Unsupported));
+                        const rhi::RasterStatus passesArmed = description.EnableGpuTiming == true
+                                                                  ? rhi::ArmGpuPassTimings(device)
+                                                                  : rhi::RasterStatus::Unsupported;
+                        REQUIRE(
+                            (passesArmed == rhi::RasterStatus::Ready || passesArmed == rhi::RasterStatus::Unsupported));
                         const auto executeStart = std::chrono::steady_clock::now();
                         completion = {};
                         REQUIRE(rhi::ExecuteOrderedGraph(device, surface, graph, completion) ==
@@ -351,6 +357,21 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                             REQUIRE(timing.State == rhi::GpuTimingState::Available);
                         }
                         const auto pollEnd = std::chrono::steady_clock::now();
+                        if (passesArmed == rhi::RasterStatus::Ready)
+                        {
+                            rhi::GpuPassTimings passes;
+                            REQUIRE(rhi::GetGpuPassTimings(device, passes) == rhi::RasterStatus::Ready);
+                            REQUIRE(passes.State == rhi::GpuTimingState::Available);
+                            CHECK(passes.Count == report.RasterPasses);
+                            uint32 logicalPassCount = 0;
+                            for (usize passIndex = 0; passIndex < passes.Count; ++passIndex)
+                            {
+                                const rhi::GpuPassTiming& passTiming = passes.Passes[passIndex];
+                                CHECK(passTiming.Timing.State == rhi::GpuTimingState::Available);
+                                logicalPassCount += passTiming.Scope.LogicalPassCount;
+                            }
+                            CHECK(logicalPassCount == report.RasterPasses + report.MergedPasses);
+                        }
                         CHECK(report.RasterPasses == (merge ? 2 : layers + 1));
                         CHECK(report.MergedPasses == (merge ? layers - 1 : 0));
                         CHECK(report.DrawCount == layers + 2);
@@ -416,7 +437,29 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
             REQUIRE(rhi::Destroy(device, unused) == rhi::RasterStatus::Ready);
         }
         REQUIRE(rhi::Destroy(device, offscreenView) == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus passesArmed =
+            description.EnableGpuTiming == true ? rhi::ArmGpuPassTimings(device) : rhi::RasterStatus::Unsupported;
+        REQUIRE((passesArmed == rhi::RasterStatus::Ready || passesArmed == rhi::RasterStatus::Unsupported));
         REQUIRE(rhi::ExecuteOrderedGraph(device, surface, graph, completion) == rhi::RasterStatus::Ready);
+        if (passesArmed == rhi::RasterStatus::Ready)
+        {
+            REQUIRE(rhi::backend::ReadHeadlessPixels(computePixels));
+            rhi::GpuPassTimings passes;
+            REQUIRE(rhi::GetGpuPassTimings(device, passes) == rhi::RasterStatus::Ready);
+            REQUIRE(passes.State == rhi::GpuTimingState::Available);
+            CHECK(passes.Count == report.RasterPasses + report.ComputePasses);
+            uint32 computePassCount = 0;
+            for (usize passIndex = 0; passIndex < passes.Count; ++passIndex)
+            {
+                const rhi::GpuPassTiming& passTiming = passes.Passes[passIndex];
+                CHECK(passTiming.Timing.State == rhi::GpuTimingState::Available);
+                if (passTiming.Kind == rhi::GpuPassKind::Compute)
+                {
+                    ++computePassCount;
+                }
+            }
+            CHECK(computePassCount == report.ComputePasses);
+        }
         if (computeMode)
         {
             rhi::ReadbackTicket ticket;

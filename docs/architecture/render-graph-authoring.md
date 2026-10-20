@@ -775,6 +775,11 @@ remains a separate obligation. Parameter migration keeps values only for equal
 field identity and type, requires explicit defaults for added or changed fields
 and reports dropped values; it never writes sources. See
 [RG3 usage and evidence](../development/render-graph-authoring.md#edit-and-reload-graphs-rg3).
+Version 3 appends a bounded UTF-8 name for each executable authored pass, shared
+by native GPU annotations and Perfetto counters. Version 2 remains readable with
+fallback labels. Names are debug metadata, not source expressions; they are
+validated and copied without invoking a runtime graph parser. The byte layout
+and limits are owned by `render_graph_format/runtime_package.h`.
 
 RG3b is delivered in the editor's Render Graph document, with its node inspector in
 the Properties tool window and its preview in the Render Preview tool window. The

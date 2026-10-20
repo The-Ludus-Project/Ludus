@@ -337,7 +337,8 @@ Status ValidateTargetUniforms(const RenderGraphPlan& plan, format::ShaderTarget 
 Status ValidatePlan(const RenderGraphPlan& plan) noexcept
 {
     if (plan.Description.Version != format::VERSION || plan.Resources.IsValid() == false ||
-        plan.Passes.IsValid() == false || plan.Cameras.IsValid() == false ||
+        plan.Passes.IsValid() == false || plan.Cameras.IsValid() == false || plan.PassNames.IsValid() == false ||
+        (plan.PassNames.IsEmpty() == false && plan.PassNames.GetSize() != plan.Passes.GetSize()) ||
         plan.Description.ResourceCount != plan.Resources.GetSize() ||
         plan.Description.PassCount != plan.Passes.GetSize() || plan.Resources.IsEmpty() == true ||
         plan.Passes.IsEmpty() == true || plan.Resources.GetSize() > format::MAX_RESOURCES ||
@@ -515,6 +516,7 @@ struct RenderGraph::State final
     format::ShaderTarget Target = format::ShaderTarget::Spirv;
     StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
+    StaticArray<rhi::GpuScopeDescription, format::MAX_PASSES> PassScopes{};
     // Only the validated active prefix is copied and read; unused capacity has no stage.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -748,6 +750,7 @@ struct RenderGraph::State final
         }
         for (usize pass = 0; pass < Header.PassCount && RecordingStatus == Status::Ready; ++pass)
         {
+            const rhi::GpuScope scope(Device, PassScopes[pass]);
             const format::Pass& operation = Passes[pass];
             if (operation.Program == format::Technique::RayTracing)
             {
@@ -911,6 +914,15 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     for (usize i = 0; i < plan.Passes.GetSize(); ++i)
     {
         candidate->Passes[i] = plan.Passes[i];
+
+        const BorrowedView<const char> name =
+            plan.PassNames.IsEmpty() == true
+                ? BorrowedView<const char>{"RenderGraph/Pass", sizeof("RenderGraph/Pass") - 1}
+                : plan.PassNames[i];
+        if (rhi::MakeGpuScope(i + 1, name, candidate->PassScopes[i]) == false)
+        {
+            return Status::InvalidDescription;
+        }
     }
     for (usize i = 0; i < plan.UniformBindings.GetSize(); ++i)
     {

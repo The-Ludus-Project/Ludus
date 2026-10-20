@@ -85,6 +85,7 @@ target_link_libraries(
         Ludus::FoundationBase
         Ludus::FoundationContainers
     PRIVATE
+        Ludus::FoundationStrings
         Ludus::FoundationMemory
         Ludus::FoundationTime
 )

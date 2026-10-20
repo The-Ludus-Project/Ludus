@@ -1112,7 +1112,9 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
                             &gRasterSets[packet.Set].Object,
                             packet.DynamicOffsetCount,
                             packet.DynamicOffsets);
+    BeginPhysicalPassTiming(GpuPassKind::Compute);
     vkCmdDispatch(command, packet.Groups[0], packet.Groups[1], packet.Groups[2]);
+    EndPhysicalPassTiming();
     return RasterStatus::Ready;
 }
 // Thanks to Khronos, "Synchronization Examples", compute-to-compute and
@@ -2150,6 +2152,7 @@ void RasterEndPass() noexcept
         return;
     }
     vkCmdEndRenderPass(gFrames[gFrame].Command);
+    EndPhysicalPassTiming();
     gEncoding = false;
     if (gRasterNativePass.ColorCount != 0)
     {
@@ -2372,6 +2375,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     begin.renderArea.extent = gRasterExtent;
     begin.clearValueCount = info.ColorCount == 0 ? 2 : static_cast<uint32>(info.ColorCount + 1);
     begin.pClearValues = info.ColorCount == 0 ? clear : advancedClear;
+    BeginPhysicalPassTiming(GpuPassKind::Raster);
     vkCmdBeginRenderPass(gFrames[gFrame].Command, &begin, VK_SUBPASS_CONTENTS_INLINE);
     gEncoding = true;
     return RasterStatus::Ready;

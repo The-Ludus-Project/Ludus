@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/foundation/profiling/perfetto_export.hpp>
+#include <ludus/graphics/rhi/gpu_scope.h>
 
 #include <QObject>
 #include <QString>
@@ -12,6 +13,12 @@ namespace ludus::editor
 {
 class RenderPreview;
 class ProfilingExportJob;
+/// Own names until export completes; borrowed sample views are rebuilt after storage moves.
+struct RecordedGpuSample final
+{
+    foundation::profiling::GpuTraceSample Sample{};
+    graphics::rhi::GpuScopeDescription Scope{};
+};
 enum class ProfilingMode : foundation::uint8
 {
     Cpu,
@@ -54,6 +61,10 @@ private:
     void poll();
     void beginExport();
     void finishExport();
+    void acceptPassBatch(foundation::uint64 frameId,
+                         foundation::uint64 deviceSession,
+                         foundation::uint64 submissionTicks,
+                         const graphics::rhi::GpuPassTimings& batch);
     void acceptSample(foundation::uint64 frameId,
                       foundation::uint64 deviceSession,
                       foundation::uint64 submissionTicks,
@@ -65,7 +76,7 @@ private:
     QTimer mTimer;
     ProfilingMode mMode = ProfilingMode::Cpu;
     ProfilingState mState = ProfilingState::Idle;
-    foundation::Array<foundation::profiling::GpuTraceSample> mSamples;
+    foundation::Array<RecordedGpuSample> mSamples;
     foundation::Array<foundation::uint8> mSnapshot;
     foundation::profiling::GpuTraceCoverage mCoverage;
     foundation::usize mCompletedSampleCount = 0;

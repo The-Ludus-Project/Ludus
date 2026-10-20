@@ -7,6 +7,7 @@
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/scene_shader.hpp>
+#include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
 
 namespace ludus::graphics::renderer
@@ -25,6 +26,9 @@ struct RenderGraphPlan final
     foundation::BorrowedView<const content::render_graph_format::UniformBlock> UniformBlocks;
     /// Target byte offset of each schema field of each binding.
     foundation::BorrowedView<const content::render_graph_format::UniformField> UniformFields;
+    /// Optional authored names, one per Passes entry, copied during Initialize. Nonempty UTF-8,
+    /// shorter than rhi::GPU_SCOPE_NAME_BYTES. Empty table uses a generic label with a stable ordinal identity.
+    foundation::BorrowedView<const foundation::BorrowedView<const char>> PassNames{};
 };
 /// Cooked static raster stage pairs and linked triangle ray compute/image stages.
 /// No compiler or shader-source discovery. Ray plans also carry ColorVertex/ColorFragment

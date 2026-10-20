@@ -485,6 +485,8 @@ void RenderPreview::Stop() noexcept
         Q_EMIT DeviceStopping();
         mHasTimingAssociation = false;
         mIsTimingArmed = false;
+        mHasPassTimingAssociation = false;
+        mIsPassTimingArmed = false;
         resetFrames();
         mResources.Reset();
         mRetiredResources.Reset();
@@ -548,7 +550,7 @@ bool RenderPreview::SetGpuProfilingEnabled(bool isEnabled) noexcept
 }
 bool RenderPreview::HasGpuProfilingPending(uint64 throughTicks) const noexcept
 {
-    return mHasTimingAssociation == true && mTimingSubmissionTicks <= throughTicks;
+    return HasGpuFrameProfilingPending(throughTicks) == true || HasGpuPassProfilingPending(throughTicks) == true;
 }
 void RenderPreview::PollGpuProfiling() noexcept
 {
@@ -557,6 +559,7 @@ void RenderPreview::PollGpuProfiling() noexcept
 void RenderPreview::PrepareGpuProfileFrame() noexcept
 {
     serviceGpuTiming(true);
+    mPassTimingCandidateTicks = mIsPassTimingArmed == true ? foundation::time::NowTicks() : 0;
     mTimingCandidateTicks = mIsTimingArmed == true ? foundation::time::NowTicks() : 0;
 }
 void RenderPreview::NotifyGpuProfileSubmission() noexcept
@@ -567,6 +570,18 @@ void RenderPreview::NotifyGpuProfileSubmission() noexcept
         Q_EMIT GpuProfileSubmission();
     }
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    rhi::GpuPassTimings passes;
+    if (mIsPassTimingArmed == true && rhi::GetGpuPassTimings(Device_, passes) == rhi::RasterStatus::Ready &&
+        passes.State != rhi::GpuTimingState::Armed && passes.State != rhi::GpuTimingState::Empty &&
+        passes.State != rhi::GpuTimingState::Unavailable)
+    {
+        mPassTimingFrameId = mSubmittedFrameSequence;
+        mPassTimingSubmissionTicks = mPassTimingCandidateTicks;
+        mPassTimingDeviceSession = mDeviceSerial;
+        mHasPassTimingAssociation = true;
+        mIsPassTimingArmed = false;
+        serviceGpuPassTimings(false);
+    }
     rhi::GpuTiming timing;
     if (mIsTimingArmed == true && rhi::GetGpuTiming(Device_, timing) == rhi::RasterStatus::Ready &&
         timing.State != rhi::GpuTimingState::Armed && timing.State != rhi::GpuTimingState::Empty &&
@@ -581,8 +596,50 @@ void RenderPreview::NotifyGpuProfileSubmission() noexcept
     }
 #endif
 }
+bool RenderPreview::CanProfileGpuPasses() const noexcept
+{
+    return mIsPassTimingSupported;
+}
+bool RenderPreview::HasGpuFrameProfilingPending(uint64 throughTicks) const noexcept
+{
+    return mHasTimingAssociation == true && mTimingSubmissionTicks <= throughTicks;
+}
+bool RenderPreview::HasGpuPassProfilingPending(uint64 throughTicks) const noexcept
+{
+    return mHasPassTimingAssociation == true && mPassTimingSubmissionTicks <= throughTicks;
+}
+void RenderPreview::serviceGpuPassTimings(bool shouldArm) noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (OwnsDevice_ == false ||
+        (mIsGpuProfilingEnabled == false && mHasPassTimingAssociation == false && mIsPassTimingArmed == false))
+    {
+        return;
+    }
+    rhi::GpuPassTimings batch;
+    if (rhi::GetGpuPassTimings(Device_, batch) != rhi::RasterStatus::Ready ||
+        batch.State == rhi::GpuTimingState::Pending || batch.State == rhi::GpuTimingState::Armed)
+    {
+        return;
+    }
+    if (mHasPassTimingAssociation == true)
+    {
+        mHasPassTimingAssociation = false;
+        Q_EMIT GpuPassProfileBatch(mPassTimingFrameId, mPassTimingDeviceSession, mPassTimingSubmissionTicks, batch);
+    }
+    if (shouldArm == true && mIsGpuProfilingEnabled == true)
+    {
+        const rhi::RasterStatus status = rhi::ArmGpuPassTimings(Device_);
+        mIsPassTimingArmed = status == rhi::RasterStatus::Ready;
+        mIsPassTimingSupported = mIsPassTimingArmed;
+    }
+#else
+    static_cast<void>(shouldArm);
+#endif
+}
 void RenderPreview::serviceGpuTiming(bool shouldArm) noexcept
 {
+    serviceGpuPassTimings(shouldArm);
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     if (mIsStatisticsVisible == false && mIsGpuProfilingEnabled == false && mHasTimingAssociation == false &&
         mIsTimingArmed == false)
@@ -593,6 +650,8 @@ void RenderPreview::serviceGpuTiming(bool shouldArm) noexcept
     {
         mHasTimingAssociation = false;
         mIsTimingArmed = false;
+        mHasPassTimingAssociation = false;
+        mIsPassTimingArmed = false;
         return;
     }
     rhi::GpuTiming timing;
