@@ -130,6 +130,8 @@ public:
     [[nodiscard]] bool ActivateNode(const QString& node);
 
 Q_SIGNALS:
+    /// Open the displayed configuration interface editor (double-click an interface box).
+    void InterfaceEditRequested();
     void NodeSelected(const QString& node);
     /// Context target is empty on the background or configuration interface.
     void ContextMenuRequested(const QString& node, const QPoint& globalPosition);

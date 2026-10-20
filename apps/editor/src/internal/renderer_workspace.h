@@ -282,6 +282,7 @@ private:
     void updateActions();
     void documentEdited(RenderGraphDocumentStatus status);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
+    void editConfigurationInterface();
     void addNode();
     void showNodeContextMenu(const QPoint& globalPosition);
     void activateSelectedNode();

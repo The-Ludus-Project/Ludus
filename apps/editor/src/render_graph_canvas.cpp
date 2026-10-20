@@ -319,6 +319,31 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
     {
         return {QStringLiteral("Port"), QStringLiteral("unknown output %1").arg(from)};
     }
+    if (sink == OUTPUTS_NODE)
+    {
+        const QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
+        const QString sinkType = FindType(ReadInterface(outputs), GetEndpointPort(to));
+        if (sinkType.isEmpty() == true)
+        {
+            return {QStringLiteral("Port"), QStringLiteral("unknown configuration output %1").arg(to)};
+        }
+        if (sinkType != sourceType)
+        {
+            return {QStringLiteral("TypeMismatch"),
+                    QStringLiteral("%1 (%2) cannot connect to %3 (%4)").arg(from, sourceType, to, sinkType)};
+        }
+        for (const QJsonValueConstRef value : outputs)
+        {
+            const QJsonObject output = value.toObject();
+            if (output.value(QStringLiteral("id")).toString() == GetEndpointPort(to) &&
+                output.value(QStringLiteral("source")).toString().isEmpty() == false)
+            {
+                return {QStringLiteral("MultipleWriters"),
+                        QStringLiteral("Configuration output %1 is connected; disconnect it first.").arg(to)};
+            }
+        }
+        return {};
+    }
     RenderGraphNodePorts sinkPorts;
     const QJsonObject sinkNode = FindNode(record, sink);
     if (sinkNode.isEmpty() == true || GetRenderGraphNodePorts(document, sinkNode, sinkPorts) == false)
@@ -640,9 +665,14 @@ void RenderGraphCanvas::Rebuild()
         view->IsMovable = false;
         for (const QJsonValueConstRef output : outputs)
         {
-            links.append({output.toObject().value(QStringLiteral("source")).toString(),
-                          OUTPUTS_NODE + QLatin1Char('.') + output.toObject().value(QStringLiteral("id")).toString(),
-                          false});
+            const QString source = output.toObject().value(QStringLiteral("source")).toString();
+            if (source.isEmpty() == false)
+            {
+                links.append(
+                    {source,
+                     OUTPUTS_NODE + QLatin1Char('.') + output.toObject().value(QStringLiteral("id")).toString(),
+                     true});
+            }
         }
     }
     for (const QJsonValueConstRef value : edges)
@@ -662,8 +692,7 @@ void RenderGraphCanvas::Rebuild()
         if (edge->IsEditable == false)
         {
             edge->Path->setPen(QPen(QColor(150, 150, 150), 1.5, Qt::DashLine));
-            edge->Path->setToolTip(QStringLiteral("Configuration output %1 (edit outputs in the Source tab)")
-                                       .arg(GetEndpointPort(edge->To)));
+            edge->Path->setToolTip(QStringLiteral("Configuration output %1").arg(GetEndpointPort(edge->To)));
         }
         else
         {
@@ -865,6 +894,11 @@ bool RenderGraphCanvas::RequestLink(const QString& from, const QString& to)
 
 bool RenderGraphCanvas::ActivateNode(const QString& node)
 {
+    if (node == INPUT_NODE || node == OUTPUTS_NODE)
+    {
+        Q_EMIT InterfaceEditRequested();
+        return true;
+    }
     const QJsonObject record = FindNode(configuration(), node);
     if (record.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster"))
     {

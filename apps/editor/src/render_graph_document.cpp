@@ -310,6 +310,17 @@ bool RemoveNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argument
         }
     }
     inoutConfiguration.insert(QStringLiteral("edges"), edges);
+    QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+    for (qsizetype i = 0; i < outputs.size(); ++i)
+    {
+        QJsonObject output = outputs.at(i).toObject();
+        if (IsEndpointOf(output.value(QStringLiteral("source")).toString(), identity) == true)
+        {
+            output.insert(QStringLiteral("source"), QString());
+            outputs.replace(i, output);
+        }
+    }
+    inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
     if (inoutConfiguration.contains(QStringLiteral("layout")) == true)
     {
         QJsonObject layout = inoutConfiguration.value(QStringLiteral("layout")).toObject();
@@ -330,6 +341,23 @@ bool RemoveNodeEdit(QJsonObject& inoutConfiguration, const QStringList& argument
 
 bool ConnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 {
+    if (arguments.at(1).startsWith(QStringLiteral("#outputs.")) == true)
+    {
+        QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+        for (qsizetype i = 0; i < outputs.size(); ++i)
+        {
+            QJsonObject output = outputs.at(i).toObject();
+            if (output.value(QStringLiteral("id")).toString() == arguments.at(1).section(QLatin1Char('.'), 1) &&
+                output.value(QStringLiteral("source")).toString().isEmpty() == true)
+            {
+                output.insert(QStringLiteral("source"), arguments.at(0));
+                outputs.replace(i, output);
+                inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
+                return true;
+            }
+        }
+        return false;
+    }
     QJsonArray edges = inoutConfiguration.value(QStringLiteral("edges")).toArray();
     const QJsonArray existing = edges;
     for (const QJsonValueConstRef edge : existing)
@@ -350,6 +378,23 @@ bool ConnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 
 bool DisconnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 {
+    if (arguments.at(1).startsWith(QStringLiteral("#outputs.")) == true)
+    {
+        QJsonArray outputs = inoutConfiguration.value(QStringLiteral("outputs")).toArray();
+        for (qsizetype i = 0; i < outputs.size(); ++i)
+        {
+            QJsonObject output = outputs.at(i).toObject();
+            if (output.value(QStringLiteral("id")).toString() == arguments.at(1).section(QLatin1Char('.'), 1) &&
+                output.value(QStringLiteral("source")).toString() == arguments.at(0))
+            {
+                output.insert(QStringLiteral("source"), QString());
+                outputs.replace(i, output);
+                inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
+                return true;
+            }
+        }
+        return false;
+    }
     QJsonArray edges = inoutConfiguration.value(QStringLiteral("edges")).toArray();
     for (qsizetype i = 0; i < edges.size(); ++i)
     {
