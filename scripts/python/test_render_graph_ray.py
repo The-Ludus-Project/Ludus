@@ -360,9 +360,10 @@ class RayCompilerAcceptance(unittest.TestCase):
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     ScenePayload payload = (ScenePayload)0;
+    uint half = SampleSceneRandom(queries, 0, 2);
     float u = SampleSceneRandom(queries);
     float v = SampleSceneRandom(queries);
-    float2 jitterPixel = float2(u, v);
+    float2 jitterPixel = float2((float(half) + u) * 0.5, v);
     TraceAndShade(scene, queries, MakeCameraRay(launch, jitterPixel), payload);
     return payload.Radiance;
 }
@@ -373,13 +374,15 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     SelectedLight selected = SelectLight(scene, queries);
     float u = SampleSceneRandom(queries);
     float v = SampleSceneRandom(queries);
-    payload.Radiance = float3(u, v, selected.SelectionPmf);
+    uint index = SampleSceneRandom(queries, 0, 7);
+    payload.Radiance = float3(u, v, float(index) * selected.SelectionPmf);
 }
 ''')
             (shaders / 'miss.slang').write_text('''
 void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)
 {
-    payload.Radiance = float3(SampleSceneRandom(queries), 0, 0);
+    uint index = SampleSceneRandom(queries, 1, 3);
+    payload.Radiance = float3(SampleSceneRandom(queries), float(index), 0);
 }
 ''')
             result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],

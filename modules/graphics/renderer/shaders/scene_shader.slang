@@ -597,6 +597,32 @@ float SampleSceneRandom(inout RayQueryContext queries)
     return SampleRandomFloat01(queries.RandomSeed,
                                PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension));
 }
+/// Draw an unbiased uint in [minimumInclusive, maximumExclusive), consuming one stream dimension.
+/// Uses FoundationMath's bounded integer mapper, without float conversion or modulo bias.
+/// Empty/reversed ranges latch HasFailed without consuming a dimension and return zero.
+/// Stream or bounded-mapping exhaustion also latches HasFailed and returns zero.
+/// Zero on failure is not a valid sample; the renderer rejects the invocation's result.
+uint SampleSceneRandom(inout RayQueryContext queries, uint minimumInclusive, uint maximumExclusive)
+{
+    if (minimumInclusive >= maximumExclusive)
+    {
+        queries.HasFailed = true;
+        return 0;
+    }
+    uint dimension;
+    if (TryAdvanceSceneRandomDimension(queries, dimension) == false)
+        return 0;
+    uint offset;
+    if (TrySampleRandomBounded(queries.RandomSeed,
+                               PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension),
+                               maximumExclusive - minimumInclusive,
+                               offset) == false)
+    {
+        queries.HasFailed = true;
+        return 0;
+    }
+    return minimumInclusive + offset;
+}
 void EvaluateStandardBsdf(MaterialSample material,
                           float3 viewDirectionWorld,
                           float3 lightDirectionWorld,
