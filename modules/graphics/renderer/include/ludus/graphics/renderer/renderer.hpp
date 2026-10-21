@@ -356,9 +356,10 @@ public:
     /// Copy bounded progress and profile evidence. Failure preserves output; valid
     /// failed captures still report their diagnostic counters. Owner-thread only.
     [[nodiscard]] rhi::RasterStatus GetReferenceCaptureInfo(ReferenceCapture, ReferenceCaptureInfo&) const noexcept;
-    /// Enable GPU-compute preview before creating meshes/materials. Shader artifacts
-    /// must be the installed preview kernels. Requires Compute/StorageVertex and
-    /// Ready renderer; unsupported devices reject, with no CPU rendering fallback.
+    /// Enable hardware-accelerated preview before creating meshes/materials. Shader
+    /// artifacts must be the installed native-query preview kernels. Requires enabled
+    /// native rays, Compute/StorageVertex and a Ready renderer. Unsupported devices
+    /// reject; no software traversal or CPU rendering fallback is selected.
     /// Copies options; positive budgets and finite exposure are required. Owner-thread,
     /// between frames. Failure preserves the previous disabled state. Pending owns
     /// setup and requires PollGpuPreview; Reset releases it. CPU input retention

@@ -684,6 +684,19 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
+        set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
+        set(editor_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/render-graph-host/raytracing")
+        file(COPY "${editor_ray_source}/" DESTINATION "${editor_ray_staged}" PATTERN "*.in" EXCLUDE)
+        set(RG2_TEST_PROFILES "[\"spirv\", \"wgsl\"]")
+        if(APPLE)
+            set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
+        endif()
+        configure_file("${editor_ray_source}/main.lushader.json.in"
+            "${editor_ray_staged}/main.lushader.json" @ONLY)
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_renderer_ray
+            MANIFEST "${editor_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_RAY_GRAPH_FIXTURE=\"${editor_renderer_ray_RUNTIME_PACKAGE}\"")
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)

@@ -935,6 +935,20 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     frameAll->setToolTip(QStringLiteral("Fit all visible geometry in the viewport (Home)."));
     controls->addWidget(frameAll);
     connect(frameAll, &QToolButton::clicked, preview, &RenderPreview::FrameAll);
+    QToolButton* forceRaster = new QToolButton(this);
+    forceRaster->setObjectName(QStringLiteral("viewportForceRaster"));
+    forceRaster->setText(QStringLiteral("Force raster"));
+    forceRaster->setCheckable(true);
+    forceRaster->setChecked(preview->ShouldForceRaster());
+    forceRaster->setAccessibleName(QStringLiteral("Force raster renderer"));
+    forceRaster->setToolTip(QStringLiteral("Use raster even when hardware raytracing is available. "
+                                           "Unchecked selects automatically from the current GPU and API."));
+    controls->addWidget(forceRaster);
+    connect(forceRaster, &QToolButton::toggled, preview, &RenderPreview::SetForceRaster);
+    connect(preview, &RenderPreview::RendererPreferenceChanged, forceRaster, [forceRaster](bool shouldForceRaster) {
+        const QSignalBlocker blocker(forceRaster);
+        forceRaster->setChecked(shouldForceRaster);
+    });
     QToolButton* statistics = new QToolButton(this);
     statistics->setObjectName(QStringLiteral("viewportStatistics"));
     statistics->setText(QStringLiteral("Stats"));

@@ -1891,57 +1891,20 @@ TEST_CASE("Reference surface admission rejects retained narrow-channel texels", 
     REQUIRE(session.Renderer.Release(program) == rhi::RasterStatus::Ready);
 }
 
-TEST_CASE("Cancelled GPU producers retain budget until completion", "[renderer][gpu-preview]")
+TEST_CASE("Compute without native ray support cannot activate GPU tracing", "[renderer][gpu-preview]")
 {
     Session session;
     rr::Renderer renderer;
     session.Initialize(renderer);
-    const rhi::RasterBinding bindings[]{
-        {0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Compute, 224},
-        {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, 16},
-        {2, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, 16},
-        {3, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, 16},
-        {4, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, 16}};
-    const rhi::RasterBinding uniform{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Vertex, 16};
-    const rhi::RasterShaderInput inputs[]{{0, rhi::RasterVertexFormat::Float2}, {1, rhi::RasterVertexFormat::Float4}};
-    rhi::RasterShaderDescription compute, vertex, fragment;
-    compute.Artifact.Stage = rhi::ShaderStage::Compute;
-    compute.Artifact.Wgsl = "compute registry fixture";
-    compute.Artifact.WgslEntry = "computeMain";
-    compute.Bindings = bindings;
-    compute.WorkgroupSize[0] = 64;
-    vertex.Artifact.Stage = rhi::ShaderStage::Vertex;
-    vertex.Artifact.Wgsl = "image vertex registry fixture";
-    vertex.Artifact.WgslEntry = "vertexMain";
-    vertex.Inputs = inputs;
-    vertex.Bindings = {&uniform, 1};
-    fragment.Artifact.Stage = rhi::ShaderStage::Fragment;
-    fragment.Artifact.Wgsl = "image fragment registry fixture";
-    fragment.Artifact.WgslEntry = "fragmentMain";
-    // The deterministic backend controls completion; native pixels use cooked shaders.
-    // Budget admits one tiny job but not two concurrently retained jobs.
-    REQUIRE(renderer.EnableGpuPreview(compute, vertex, fragment, {usize{1024} * 1024, 600, 1}) ==
-            rhi::RasterStatus::Ready);
+    rhi::RayCapabilities capabilities;
+    CHECK(rhi::GetRayCapabilities(session.Device, capabilities) == rhi::RasterStatus::Unsupported);
+    CHECK(capabilities.InlineQueries == false);
+    CHECK(renderer.EnableGpuPreview({}, {}, {}, {usize{1024} * 1024, usize{1024} * 1024, 1}) ==
+          rhi::RasterStatus::Unsupported);
+    CHECK(renderer.PollGpuPreview() == rhi::RasterStatus::NotReady);
     rr::Snapshot snapshot;
-    REQUIRE(renderer.CreateSnapshot(nullptr, 0, snapshot) == rhi::RasterStatus::Ready);
-    rr::ReferenceCaptureDescription description;
-    description.OrthographicCamera = true;
-    description.Width = description.Height = 2;
-    description.TargetSamples = 1;
-    rr::GpuPreview preview;
-    REQUIRE(renderer.BeginGpuPreview(snapshot, description, preview) == rhi::RasterStatus::Ready);
-    rhi::SubmissionToken producer;
-    REQUIRE(renderer.AdvanceGpuPreview(preview, session.Surface, producer) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::GetStatus(session.Device, producer) == rhi::RasterStatus::Pending);
-    REQUIRE(renderer.Release(preview) == rhi::RasterStatus::Ready);
-    CHECK(renderer.BeginGpuPreview(snapshot, description, preview) == rhi::RasterStatus::CapacityExceeded);
-    CHECK(renderer.PollGpuPreview() == rhi::RasterStatus::Ready);
-    CHECK(renderer.BeginGpuPreview(snapshot, description, preview) == rhi::RasterStatus::CapacityExceeded);
-    rhi::reference::Completed = rhi::reference::Submitted;
-    REQUIRE(renderer.PollGpuPreview() == rhi::RasterStatus::Ready);
-    REQUIRE(renderer.BeginGpuPreview(snapshot, description, preview) == rhi::RasterStatus::Ready);
-    REQUIRE(renderer.Release(preview) == rhi::RasterStatus::Ready);
-    REQUIRE(renderer.Release(snapshot) == rhi::RasterStatus::Ready);
+    CHECK(renderer.CreateSnapshot(nullptr, 0, snapshot) == rhi::RasterStatus::Ready);
+    CHECK(renderer.Release(snapshot) == rhi::RasterStatus::Ready);
     renderer.Reset();
 }
 

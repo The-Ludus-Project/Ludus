@@ -265,18 +265,89 @@ those remain rejected rather than retaining incompatible history across resize.
 
 A `RayTracingPipeline` can run authored ray-generation, miss and closest-hit
 functions over the selected World's static opaque triangles. The renderer freezes
-an immutable World extraction, builds its BVH during scene preparation, and uploads
-geometry and camera inputs. GPU compute performs traversal and shading; a
+an immutable World extraction, builds native triangle BLAS/TLAS structures during
+scene preparation, and uploads geometry and camera inputs. A GPU shader uses native
+ray queries for accelerated traversal and invokes the authored shading functions; a
 renderer-owned image pass transfers GPU-produced colors to the graph's attachment.
 There is no CPU tracing or pixel readback in this path. The editor's World/camera
 updates create replacement inputs, retaining the last drawable view until they
 are ready, just as raster graph updates do.
 
-This is a portable GPU triangle profile, including Metal on macOS. It does not
-request dedicated Vulkan/DXR ray stages or hardware acceleration structures, and
-makes no claim of hardware ray-traversal acceleration. WebGPU compute artifacts
-can be carried by the same package. WebGL2/GLSL ES is unsupported. An unavailable
-compute/storage capability rejects activation while preserving the prior view.
+This profile requires native ray support: Vulkan acceleration structures and
+`VK_KHR_ray_query`, or Metal acceleration structures/intersection queries on Apple
+GPU family 9 or newer. Metal API availability alone does not admit older GPUs
+without dedicated ray hardware. Software/CPU Vulkan adapters are excluded. The
+shader uses native traversal inside a compute invocation; dedicated ray stages or
+shader tables are not required for hardware acceleration. It contains no manual
+BVH traversal or software ray fallback. WebGPU and WebGL2 do not execute this
+profile. Packages can retain browser raster targets alongside native targets;
+their `capability_profiles.ray_tracing` lists only `metal` and/or `spirv`, and no
+browser RT recipe or ray shader artifact is emitted. A browser-only RT manifest
+is rejected and needs an authored raster configuration. Metal cooking
+requires the SDK-pinned SPIRV-Cross translator (`LUDUS_SPIRV_CROSS` in CMake or
+`--spirv-cross` for the package builder).
+
+Request `DeviceDescription.Preferred.RayQueries = true` when creating a device
+for a renderer with optional RT, then inspect `GetRayCapabilities` on that actual
+device/API. A capable physical GPU is insufficient when its logical device has
+not enabled the ray profile. In particular, the currently adopted Vulkan editor
+device does not expose ray queries; engine-owned Vulkan device negotiation is a
+separate path. Use `Required.RayQueries` for an RT-only application. An unavailable
+profile returns `Unsupported` before scene retention or ray dispatch; a failed
+replacement preserves the prior drawable view. Old software-ray runtime packages
+must be rebuilt; they are rejected rather than reinterpreted as accelerated graphs.
+
+### Support developers and players without RT hardware
+
+The World viewport selects its renderer automatically. An authored project graph
+with raytracing passes runs only when the current logical device has enabled native
+triangle acceleration structures, inline ray queries and the required compute
+profile. Otherwise the viewport uses the engine's authored raster graph and keeps
+rendering the current World and camera. A raster project graph continues to run as
+a raster graph. The preview status identifies the selected renderer and explains
+when hardware raytracing is unavailable on the current GPU/API.
+
+Turn on **Force raster** in the viewport toolbar to exercise the raster path on RT
+hardware. This is a local saved viewport preference, restored with navigation
+settings; it does not edit the project's graph or shader manifest. Turn it off to
+return to Automatic and re-evaluate the requested project graph. Device restarts
+also re-evaluate selection against the new device's enabled capabilities. Pending
+or failed replacements keep the last completed image until the new renderer
+presents. No selection invokes CPU raytracing or shader-based software traversal.
+
+Runtime applications ship an authored raster package alongside an optional native
+RT package and use `RenderGraphActivation::StageSelected`. After initializing the
+activation and setting its drawable reference size, pass ownership of both decoded
+packages:
+
+```cpp
+const ludus::graphics::rhi::RasterStatus status = activation.StageSelected(
+    ludus::foundation::core::Move(rasterPackage),
+    ludus::foundation::core::Move(rayPackageOrNull),
+    shouldForceRaster == true
+        ? ludus::graphics::renderer::RenderGraphPreference::ForceRaster
+        : ludus::graphics::renderer::RenderGraphPreference::Automatic);
+```
+
+The raster package is mandatory and must contain no raytracing pass. An omitted
+RT package selects raster even on RT hardware. Selection queries enabled native
+capabilities before preparing any ray shader or acceleration structure, releases
+the unselected package and then follows normal asynchronous activation. Use
+`GetReport().ActiveRenderer` to identify the drawing renderer and
+`CandidateRenderer` for a staged selection. Re-stage fresh packages to change the
+runtime preference. `SelectRenderGraphRenderer` exposes the same capability policy
+for hosts that manage their own package loading. Packages still need artifacts for
+the selected backend and the host's compiled CPU interface. Malformed packages,
+shader/scene errors and allocation failures remain explicit errors; selection does
+not hide them by rewriting a graph.
+
+Keep World, gameplay and material inputs shared; only renderer-specific effects
+and quality settings should depend on RT. Raster can use authored shadow maps,
+probes, baked lighting and reflection approximations. Validate both renderer
+selections and the explicit unsupported-RT case in CI; native ray pixel tests
+require a qualified physical GPU. An RT-only host can instead use `Stage` and
+report the unsupported-hardware error as its minimum requirement. Browser backends
+select raster and perform no raytracing.
 
 Author three manifest programs with these built-in function interfaces:
 
@@ -1543,10 +1614,11 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h` (layout version 5, with
-per-pass Scene data masks, view-relative size policies, pass names, uniform
-binding/block/field records and GLSL ES block names; versions 2, 3 and 4 remain
-readable and imply full Scene data). `emit-runtime`
+`ludus/content/render_graph_format/runtime_package.h` (layout version 6, with
+native-only ray roles, per-pass Scene data masks, view-relative size policies, pass
+names, uniform binding/block/field records and GLSL ES block names; raster packages
+from versions 2 through 5 remain readable, with versions 2 through 4 implying full
+Scene data. Older software-ray packages require recooking). `emit-runtime`
 headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
 interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to
 `ludus_compile_render_graph`; it sets `<NAME>_RUNTIME_PACKAGE` to the cooked file.

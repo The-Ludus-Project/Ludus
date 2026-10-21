@@ -32,6 +32,20 @@ namespace rr = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace shaders = ludus::shaders;
 using S = rhi::RasterStatus;
+S BeginPreview(rr::Renderer& inoutRenderer,
+               rr::Snapshot snapshot,
+               const rr::ReferenceCaptureDescription& description,
+               rr::GpuPreview& outPreview)
+{
+    S status = inoutRenderer.BeginGpuPreview(snapshot, description, outPreview);
+    const uint64 start = time::NowTicks();
+    while (status == S::Pending && time::NowTicks() - start < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+        rr::GpuPreviewInfo information;
+        status = inoutRenderer.GetGpuPreviewInfo(outPreview, information);
+    }
+    return status;
+}
 void WaitPreview(rr::Renderer& renderer, rr::GpuPreview preview, uint32 samples)
 {
     rr::GpuPreviewInfo info;
@@ -84,6 +98,7 @@ TEST_CASE("GPU preview transports emissive RGB on GPU and preserves leased outpu
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
     description.Required.Compute = true;
+    description.Preferred.RayQueries = true;
     const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
 #if defined(LUDUS_TEST_METAL)
     if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
@@ -95,8 +110,18 @@ TEST_CASE("GPU preview transports emissive RGB on GPU and preserves leased outpu
     rr::Renderer renderer;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
             S::Ready);
+    rhi::RayCapabilities rayCapabilities;
+    if (rhi::GetRayCapabilities(device, rayCapabilities) == S::Unsupported)
+    {
+        CHECK(renderer.EnableGpuPreview(shaders::renderer_gpu_preview::Compute(),
+                                        shaders::renderer_gpu_preview_image::Vertex(),
+                                        shaders::renderer_gpu_preview_image::Fragment(),
+                                        {usize{32} * 1024 * 1024, usize{32} * 1024 * 1024, 1}) == S::Unsupported);
+        CHECK(renderer.PollGpuPreview() == S::NotReady);
+        SKIP("Hardware raytracing unavailable; raster remains independently testable");
+    }
     rhi::RasterShaderDescription oldKernel = shaders::renderer_gpu_preview::Compute();
-    constexpr usize COMPUTE_BINDING_COUNT = 5;
+    constexpr usize COMPUTE_BINDING_COUNT = 6;
     rhi::RasterBinding oldBindings[COMPUTE_BINDING_COUNT];
     for (usize index = 0; index < COMPUTE_BINDING_COUNT; ++index)
     {
@@ -174,7 +199,7 @@ TEST_CASE("GPU preview transports emissive RGB on GPU and preserves leased outpu
     rejected = capture;
     rejected.Width = rejected.Height = 4096;
     CHECK(renderer.BeginGpuPreview(snapshot, rejected, preview) == S::CapacityExceeded);
-    REQUIRE(renderer.BeginGpuPreview(snapshot, capture, preview) == S::Ready);
+    REQUIRE(BeginPreview(renderer, snapshot, capture, preview) == S::Ready);
     REQUIRE(renderer.Release(snapshot) == S::Ready);
     REQUIRE(renderer.Release(program) == S::Ready);
     rr::GpuPreviewFrame frames[2];
@@ -334,6 +359,7 @@ TEST_CASE("Surface maps and authored punctual/area lights agree across raster an
     rhi::DeviceDescription deviceDescription;
     deviceDescription.Required.PortableRaster = true;
     deviceDescription.Required.Compute = true;
+    deviceDescription.Preferred.RayQueries = true;
     deviceDescription.Storage.ResourcesPerKind = 128;
     const rhi::DeviceStatus started =
         rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, deviceDescription, device, surface);
@@ -349,6 +375,16 @@ TEST_CASE("Surface maps and authored punctual/area lights agree across raster an
     limits.Materials = 16;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment(), limits) ==
             S::Ready);
+    rhi::RayCapabilities rayCapabilities;
+    if (rhi::GetRayCapabilities(device, rayCapabilities) == S::Unsupported)
+    {
+        CHECK(renderer.EnableGpuPreview(shaders::renderer_gpu_preview::Compute(),
+                                        shaders::renderer_gpu_preview_image::Vertex(),
+                                        shaders::renderer_gpu_preview_image::Fragment(),
+                                        {usize{32} * 1024 * 1024, usize{32} * 1024 * 1024, 1}) == S::Unsupported);
+        CHECK(renderer.PollGpuPreview() == S::NotReady);
+        SKIP("Hardware raytracing unavailable; raster remains independently testable");
+    }
     REQUIRE(renderer.EnableGpuPreview(shaders::renderer_gpu_preview::Compute(),
                                       shaders::renderer_gpu_preview_image::Vertex(),
                                       shaders::renderer_gpu_preview_image::Fragment(),
@@ -533,7 +569,7 @@ TEST_CASE("Surface maps and authored punctual/area lights agree across raster an
         }
 
         rr::GpuPreview preview;
-        REQUIRE(renderer.BeginGpuPreview(snapshot, capture, preview) == S::Ready);
+        REQUIRE(BeginPreview(renderer, snapshot, capture, preview) == S::Ready);
         rhi::SubmissionToken token;
         REQUIRE(renderer.AdvanceGpuPreview(preview, surface, token) == S::Ready);
         WaitPreview(renderer, preview, 1);
@@ -578,6 +614,7 @@ TEST_CASE("CPU and GPU reference transport retained HDR source radiance and auth
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
     description.Required.Compute = true;
+    description.Preferred.RayQueries = true;
     REQUIRE(rhi::CreateDevice({},
                               {
                                   .Width = 8,
@@ -589,6 +626,16 @@ TEST_CASE("CPU and GPU reference transport retained HDR source radiance and auth
     rr::Renderer renderer;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
             S::Ready);
+    rhi::RayCapabilities rayCapabilities;
+    if (rhi::GetRayCapabilities(device, rayCapabilities) == S::Unsupported)
+    {
+        CHECK(renderer.EnableGpuPreview(shaders::renderer_gpu_preview::Compute(),
+                                        shaders::renderer_gpu_preview_image::Vertex(),
+                                        shaders::renderer_gpu_preview_image::Fragment(),
+                                        {usize{32} * 1024 * 1024, usize{32} * 1024 * 1024, 1}) == S::Unsupported);
+        CHECK(renderer.PollGpuPreview() == S::NotReady);
+        SKIP("Hardware raytracing unavailable; raster remains independently testable");
+    }
     REQUIRE(renderer.EnableGpuPreview(shaders::renderer_gpu_preview::Compute(),
                                       shaders::renderer_gpu_preview_image::Vertex(),
                                       shaders::renderer_gpu_preview_image::Fragment(),
@@ -664,7 +711,7 @@ TEST_CASE("CPU and GPU reference transport retained HDR source radiance and auth
     rr::ReferenceCapture oracle;
     REQUIRE(renderer.BeginReferenceCapture(snapshot, capture, oracle) == S::Ready);
     rr::GpuPreview preview;
-    REQUIRE(renderer.BeginGpuPreview(snapshot, capture, preview) == S::Ready);
+    REQUIRE(BeginPreview(renderer, snapshot, capture, preview) == S::Ready);
     environment.Reset(); // Accepted captures own the source, not the public wrapper.
     const uint64 oracleStart = time::NowTicks();
     status = S::Pending;

@@ -5,6 +5,11 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
+#include <ludus/graphics/rhi/compute.h>
+#include <ludus/graphics/rhi/ray.h>
+
+#include "../shaders/renderer_gpu_preview_layout.h"
+
 #include <new>
 #include <span>
 #include <string_view>
@@ -449,13 +454,14 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
-    candidate->HasSceneData = version >= format::PACKAGE_VERSION;
+    candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
     candidate->Header.Version = format::VERSION;
     candidate->Header.ResourceCount = reader.ReadWord();
     candidate->Header.PassCount = reader.ReadWord();
@@ -526,6 +532,16 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     for (uint32 i = 0; i < format::STATIC_INPUT_COUNT; ++i)
     {
         candidate->Inputs[i] = {i, i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4};
+    }
+    if (version < format::PACKAGE_VERSION)
+    {
+        for (uint32 pass = 0; pass < candidate->Header.PassCount; ++pass)
+        {
+            if (candidate->Passes[pass].Program == format::Technique::RayTracing)
+            {
+                return RenderGraphPackageStatus::UnsupportedVersion;
+            }
+        }
     }
     candidate->DeriveBindings();
     mState.Swap(candidate);
@@ -692,6 +708,52 @@ bool AreIdentitiesEqual(BorrowedView<const uint8> left,
 }
 } // namespace
 
+bool RequiresHardwareRayTracing(const RenderGraphPlan& plan) noexcept
+{
+    for (usize i = 0; i < plan.Passes.GetSize(); ++i)
+    {
+        if (plan.Passes[i].Program == format::Technique::RayTracing)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+Status SelectRenderGraphRenderer(rhi::DeviceHandle device,
+                                 RenderGraphPreference preference,
+                                 RenderGraphRenderer& outRenderer) noexcept
+{
+    if (preference != RenderGraphPreference::Automatic && preference != RenderGraphPreference::ForceRaster)
+    {
+        return Status::InvalidDescription;
+    }
+    rhi::RayCapabilities rayCapabilities;
+    Status status = rhi::GetRayCapabilities(device, rayCapabilities);
+    if (status != Status::Ready && status != Status::Unsupported)
+    {
+        return status;
+    }
+    RenderGraphRenderer selected = RenderGraphRenderer::Raster;
+    if (preference == RenderGraphPreference::Automatic && status == Status::Ready &&
+        rayCapabilities.StaticTriangles == true && rayCapabilities.InlineQueries == true)
+    {
+        rhi::ComputeCapabilities computeCapabilities;
+        status = rhi::GetComputeCapabilities(device, computeCapabilities);
+        if (status != Status::Ready && status != Status::Unsupported)
+        {
+            return status;
+        }
+        if (status == Status::Ready && computeCapabilities.MaxWorkgroupSize[0] >= LUDUS_GPU_PREVIEW_GROUP_WIDTH &&
+            computeCapabilities.MaxWorkgroupInvocations >= LUDUS_GPU_PREVIEW_GROUP_WIDTH &&
+            computeCapabilities.MaxStorageBindings >= LUDUS_GPU_PREVIEW_STORAGE_BINDING_COUNT)
+        {
+            selected = RenderGraphRenderer::HardwareRayTracing;
+        }
+    }
+    outRenderer = selected;
+    return Status::Ready;
+}
+
 struct RenderGraphActivation::State final
 {
     rhi::DeviceHandle Device{};
@@ -721,6 +783,7 @@ struct RenderGraphActivation::State final
         retired.Swap(Active);
         Active.Swap(Candidate);
         Report.ActiveGeneration = Active->Serial;
+        Report.ActiveRenderer = Report.CandidateRenderer;
         Report.Candidate = RenderGraphCandidateState::None;
         retired.Reset();
     }
@@ -784,6 +847,9 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     // A newer request supersedes any unactivated candidate, whatever its outcome.
     state.Candidate.Reset();
     state.Report.CandidateGeneration = ++state.NextSerial;
+    state.Report.CandidateRenderer = RequiresHardwareRayTracing(package->GetPlan()) == true
+                                         ? RenderGraphRenderer::HardwareRayTracing
+                                         : RenderGraphRenderer::Raster;
     if (AreIdentitiesEqual(package->GetInterfaceIdentity(), state.Interface) == false)
     {
         state.Report.Candidate = RenderGraphCandidateState::RestartRequired;
@@ -814,6 +880,31 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     state.Candidate.Swap(generation);
     state.Report.Candidate = RenderGraphCandidateState::Preparing;
     return status;
+}
+Status RenderGraphActivation::StageSelected(core::UniquePtr<RenderGraphPackage> rasterPackage,
+                                            core::UniquePtr<RenderGraphPackage> rayPackageOrNull,
+                                            RenderGraphPreference preference) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    if (rasterPackage.Get() == nullptr || rasterPackage->IsLoaded() == false ||
+        RequiresHardwareRayTracing(rasterPackage->GetPlan()) == true ||
+        (rayPackageOrNull.Get() != nullptr &&
+         (rayPackageOrNull->IsLoaded() == false || RequiresHardwareRayTracing(rayPackageOrNull->GetPlan()) == false)))
+    {
+        return Status::InvalidDescription;
+    }
+    RenderGraphRenderer selected;
+    const Status status = SelectRenderGraphRenderer(mState->Device, preference, selected);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    return selected == RenderGraphRenderer::HardwareRayTracing && rayPackageOrNull.Get() != nullptr
+               ? Stage(core::Move(rayPackageOrNull))
+               : Stage(core::Move(rasterPackage));
 }
 Status RenderGraphActivation::Resize(uint32 referenceWidth, uint32 referenceHeight) noexcept
 {

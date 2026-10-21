@@ -100,7 +100,10 @@ RasterStatus EncodeCompute(const ComputePacket& packet) noexcept
     const RasterLayout& layout = set.Description;
     for (usize i = 0; i < layout.DescriptorCount; ++i)
     {
-        FrameRetain(RasterKind::Buffer, set.Slots[i]);
+        const RasterKind kind = layout.GetDescriptorBinding(i).Kind == RasterBindingKind::RayScene
+                                    ? RasterKind::RayScene
+                                    : RasterKind::Buffer;
+        FrameRetain(kind, set.Slots[i]);
         if (layout.GetDescriptorBinding(i).Kind == RasterBindingKind::StorageReadWrite)
         {
             At(RasterKind::Buffer, set.Slots[i]).FrameBufferWritten = true;
@@ -148,7 +151,8 @@ RasterStatus CreateComputePipeline(DeviceHandle device,
     for (usize i = 0; i < layout->Layout.Count; ++i)
     {
         if (layout->Layout.Entries[i].Visibility != RasterVisibility::Compute ||
-            BufferBinding(layout->Layout.Entries[i].Kind) == false)
+            (BufferBinding(layout->Layout.Entries[i].Kind) == false &&
+             layout->Layout.Entries[i].Kind != RasterBindingKind::RayScene))
         {
             return RasterStatus::InvalidDescription;
         }

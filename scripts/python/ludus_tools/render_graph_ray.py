@@ -1,6 +1,6 @@
-"""Portable triangle ray pipelines lowered to GPU traversal and authored functions.
+"""Hardware triangle ray pipelines using native queries and authored functions.
 
-The renderer owns the packed BVH and its shader implementation. The graph owns
+The renderer owns native acceleration structures and the packed shading tables. The graph owns
 stage assignment, launch extent and publication. No CPU transport is selected.
 """
 from copy import deepcopy
@@ -10,7 +10,7 @@ TECHNIQUE = 'RendererTriangles.RayTracing'
 STAGES = ('ray_generation', 'miss', 'closest_hit')
 # Thanks to Microsoft, DirectX Raytracing Functional Spec, “Intersection Attributes”:
 # https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html#intersection-attributes
-# Triangle intersections supply float2 barycentrics. This portable compute profile
+# Triangle intersections supply float2 barycentrics. This native-query profile
 # retains that contract, but uses shader-local ScenePayload rather than a DXR payload.
 STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
 MAX_LOCAL_PAYLOAD_BYTES = 4096
@@ -148,14 +148,14 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe)
     result = {identity: deepcopy(program) for identity, program in programs.items() if program['stage'] not in STAGES}
     result[COMPUTE_ID] = {'id': COMPUTE_ID, 'stage': 'compute', 'source': selected['ray_generation']['source'],
-                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper}
+                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True}
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
         # Use the same renderer-owned image recipe; its interface is validated by the runtime.
         source = '#include "_ludus_ray/' + image_recipe['source'] + '"\n'
         suffix = 'VertexOutput rgEntry(VertexInput value) { return ' + function + '(value); }' if stage == 'vertex' else 'float4 rgEntry(VertexOutput value) : SV_Target0 { return ' + function + '(value); }'
         source += '[shader("' + stage + '")]\n' + suffix + '\n'
         result[identity] = {'id': identity, 'stage': stage, 'source': selected['ray_generation']['source'],
-                            'function': function, 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': source}
+                            'function': function, 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': source, 'native_ray_profile': True}
     build.require(not set(result) & {program['id'] for program in selected.values()}, 'Schema', 'ray programs', 'reserved linked program identity')
     build.require(snapshot.total <= build.MAX_BYTES and len(snapshot.files) <= build.MAX_FILES, 'Capacity', 'ray sources', 'source snapshot limits exceeded')
     return result
@@ -169,8 +169,8 @@ def check_interface(program, result, build):
         build.require(interface.get('workgroup') == [64, 1, 1] and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries] ==
                       [(0, 'UniformBuffer', 224), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
-                       (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16)],
-                      'ShaderInterface', program['id'], 'ray compute reflection differs from renderer BVH ABI')
+                       (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)],
+                      'ShaderInterface', program['id'], 'ray query reflection differs from the native renderer ABI')
     elif program['id'] == IMAGE_VERTEX_ID:
         build.require([(entry['binding'], entry['kind'], entry['size']) for entry in entries] == [(0, 'UniformBuffer', 16)]
                       and [(value['location'], value['format']) for value in interface['inputs']] == [(0, 'Float2'), (1, 'Float4')],

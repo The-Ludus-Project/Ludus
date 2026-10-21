@@ -293,6 +293,13 @@ RayCapabilities RayLimits() noexcept
     {
         return {};
     }
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(gPhysical, &properties);
+    if (properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+        properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+    {
+        return {};
+    }
     const auto bufferLimit = ComputeLimits().MaxStorageRange;
     const auto requested = internal::CurrentStorageLimits().RayInstances;
     const auto supported =
@@ -306,6 +313,10 @@ RayCapabilities RayLimits() noexcept
         .MaxRays = 4096,
         .MaxBufferBytes = bufferLimit < usize{64} * 1024 * 1024 ? bufferLimit : usize{64} * 1024 * 1024,
     };
+}
+VkAccelerationStructureKHR GetRayVulkanScene(usize slot) noexcept
+{
+    return gRayVulkanScene[slot].Object;
 }
 RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) noexcept
 {
@@ -441,8 +452,8 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
     const auto* opacity = description.Opacity;
     const auto count = description.Count, scalarCount = description.ScalarCount, budget = description.ByteBudget;
 
-    const usize instanceBytes = count * sizeof(VkAccelerationStructureInstanceKHR),
-                opacityBytes = scalarCount * sizeof(float32);
+    const usize instanceBytes = (count == 0 ? usize{1} : count) * sizeof(VkAccelerationStructureInstanceKHR);
+    const usize opacityBytes = scalarCount * sizeof(float32);
     if (instanceBytes > budget || opacityBytes > budget - instanceBytes)
     {
         return RasterStatus::CapacityExceeded;

@@ -84,6 +84,31 @@ enum class RenderGraphAllocation : foundation::uint8
     /// exactly as before RG4. Encodes the same commands as ExactPool.
     SerialControl,
 };
+/// Application renderer preference; never enables emulated ray traversal.
+enum class RenderGraphPreference : foundation::uint8
+{
+    Automatic,   ///< Prefer an available authored ray graph on a device with enabled native traversal.
+    ForceRaster, ///< Use the authored raster graph even on a hardware ray device.
+};
+/// Execution model selected for one complete authored graph.
+enum class RenderGraphRenderer : foundation::uint8
+{
+    Raster,             ///< Raster passes; no raytracing is dispatched.
+    HardwareRayTracing, ///< Native acceleration structures and hardware ray queries.
+};
+/// Whether a validated plan contains any raytracing pass. No allocation or GPU work.
+[[nodiscard]] bool RequiresHardwareRayTracing(const RenderGraphPlan& plan) noexcept;
+/// Select using the current logical device's enabled native ray and compute capabilities.
+/// Unsupported ray/compute APIs select Raster with Ready, including browser backends.
+/// ForceRaster also selects Raster; it never enables ray features or submits GPU work.
+/// @param device Live RHI device; call on its owner thread between frames.
+/// @param preference Automatic or ForceRaster; an unknown value is InvalidDescription.
+/// @param outRenderer Written only on Ready; invalid/lost devices preserve it.
+/// @return Ready after selection, or the device/capability query's operational failure.
+/// This selects capability, not artifact availability; StageSelected also requires an authored ray graph.
+[[nodiscard]] rhi::RasterStatus SelectRenderGraphRenderer(rhi::DeviceHandle device,
+                                                          RenderGraphPreference preference,
+                                                          RenderGraphRenderer& outRenderer) noexcept;
 /// Copied activation status, independent of the active graph's scene reports.
 struct RenderGraphActivationReport final
 {
@@ -92,6 +117,10 @@ struct RenderGraphActivationReport final
     RenderGraphCandidateState Candidate = RenderGraphCandidateState::None; ///< Candidate lifecycle.
     rhi::RasterStatus LastFailure = rhi::RasterStatus::Ready;              ///< Status that failed the last candidate.
     foundation::uint64 LatestSceneRevision = 0; ///< Revision of the last accepted Update call.
+    RenderGraphRenderer ActiveRenderer =
+        RenderGraphRenderer::Raster; ///< Drawing model; meaningful with ActiveGeneration.
+    RenderGraphRenderer CandidateRenderer =
+        RenderGraphRenderer::Raster; ///< Last staged model; meaningful with CandidateGeneration.
 };
 /// Stage a complete graph + shader + plan generation and publish it atomically
 /// between frames. The active generation keeps rendering while a candidate
@@ -132,6 +161,20 @@ public:
     /// returns Unsupported with RestartRequired; setup failure returns its status
     /// with Failed. Neither changes the active generation. Pending/Ready is accepted.
     [[nodiscard]] rhi::RasterStatus Stage(foundation::core::UniquePtr<RenderGraphPackage> package) noexcept;
+    /// Select and stage an authored renderer, taking ownership of both packages.
+    /// @param rasterPackage Loaded raster-only graph; mandatory on every device.
+    /// @param rayPackageOrNull Optional loaded graph containing a hardware ray pass.
+    /// @param preference Automatic prefers the ray package only when native traversal and
+    /// compute are enabled on this device. ForceRaster always stages rasterPackage.
+    /// @return Stage's result for the selected package. Invalid packages/preferences or device
+    /// query failures preserve both active and candidate generations. An unsupported ray API
+    /// selects raster before preparing shaders or acceleration structures. Unselected packages
+    /// are released. Shader, scene or allocation failures are reported through normal activation;
+    /// they never invoke software raytracing. Re-stage fresh packages to change the preference.
+    [[nodiscard]] rhi::RasterStatus
+    StageSelected(foundation::core::UniquePtr<RenderGraphPackage> rasterPackage,
+                  foundation::core::UniquePtr<RenderGraphPackage> rayPackageOrNull,
+                  RenderGraphPreference preference = RenderGraphPreference::Automatic) noexcept;
     /// Set this activation's drawable reference size, including before Stage. Relative packages
     /// require a positive reference before staging; fixed packages ignore it. For an active or
     /// staged graph, follows RenderGraph::Resize's consumer, Update and publication contract.

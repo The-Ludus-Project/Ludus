@@ -268,8 +268,9 @@ def validate_manifest(value):
             expected_outputs = ('Radiance', 'ScenePayload', 'ScenePayload') if is_scene else ('Ray', 'Color', 'Color')
             require(tuple(programs[technique[stage]]['output'] for stage in ray.STAGES) == expected_outputs,
                     'ShaderInterface', ray.TECHNIQUE, 'callback signatures must match the selected scene/legacy profile')
-            require(ray.TECHNIQUE not in techniques and 'glsl' not in value['profiles'], 'Capability', ray.TECHNIQUE,
-                    'duplicate ray technique or unsupported GLSL ES compute target')
+            require(ray.TECHNIQUE not in techniques and any(target in ('metal', 'spirv') for target in value['profiles']),
+                    'Capability', ray.TECHNIQUE,
+                    'Hardware raytracing requires native Metal or Vulkan; unsupported APIs need an authored raster configuration')
             techniques[ray.TECHNIQUE] = technique
             continue
         keys(technique, ('id', 'configuration', 'vertex', 'fragment', 'recipes'), 'technique')
@@ -608,11 +609,13 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     command = [sys.executable, str(helper / 'compile_shader.py'), '--source', str(source / 'wrapper.slang'),
                '--output', str(output), '--name', 'rgEntry', '--compiler', str(tools['tool/slangc']),
                '--lock', str(helper / 'shader_toolchain.json'), '--graph-stage', program['stage'], '--graph-target', target]
+    if program.get('native_ray_queries'):
+        command += ['--native-ray-queries']
     if worker_socket:
         command += ['--worker-socket', worker_socket, '--worker-identity', worker_identity]
     if 'tool/spirv-val' in tools:
         command += ['--validator', str(tools['tool/spirv-val'])]
-    if target == 'glsl':
+    if target == 'glsl' or (target == 'metal' and program.get('native_ray_queries')):
         command += ['--spirv-cross', str(tools['tool/spirv-cross']), '--spirv-cross-lock', str(helper / 'spirv_cross_toolchain.json')]
     try:
         run_stage(command, cancel)
@@ -696,6 +699,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                          for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))}
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     if ray.TECHNIQUE in techniques:
+        require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
+                'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
+        require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
+                'Metal hardware raytracing requires the pinned --spirv-cross translator')
         original_programs = programs
         programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__])
         ray_closure = sorted(set(p for program in original_programs.values() if program['stage'] in ray.STAGES
@@ -752,6 +759,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             compiled, entries, hits, misses = {}, {}, 0, 0
             for pid, program in sorted(programs.items()):
                 for target in sorted(value['profiles']):
+                    if program.get('native_ray_profile') and target not in ('metal', 'spirv'):
+                        continue
                     checkpoint(cancel)
                     closure = closures[pid]
                     used = {program['input'], *(b['schema'] for b in program['bindings'])}
@@ -763,7 +772,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'tools': {k: h for k, h in tool_hashes.items()
                                           if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py', 'generator/render_graph_diagnostics.py')
                                           and not (target in ('metal', 'wgsl') and k == 'tool/spirv-val')
-                                          and not (target != 'glsl' and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
+                                          and not (target != 'glsl' and not program.get('native_ray_queries') and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
                     key = identity(key_data)
                     saved = cache / key
                     result = checked_cache(saved, key_data)
@@ -788,6 +797,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             for tid, technique in sorted(techniques.items()):
                 for target in sorted(value['profiles']):
                     if tid == ray.TECHNIQUE:
+                        if target not in ('metal', 'spirv'):
+                            continue
                         record = {'technique': tid, 'profile': target, 'state': ray.resolve_state(technique['recipes'][0]),
                             'compute': entries[(ray.COMPUTE_ID, target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
                             'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
@@ -838,6 +849,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                        'programs': [{'id': pid, 'profile': target, 'key': key, 'descriptor': compiled[(pid, target)]}
                                     for (pid, target), key in sorted(entries.items())], 'recipes': recipes, 'routes': routes,
                        'schemas': value['schemas'], 'checks_pending': ['DeviceCapabilities', 'SceneCoverage', 'GpuExecution', 'PipelineReadiness']}
+            if ray.TECHNIQUE in techniques:
+                payload['capability_profiles'] = {'ray_tracing': sorted(
+                    target for target in value['profiles'] if target in ('metal', 'spirv'))}
             # Manifest/graph source hashes are provenance, separate from semantic
             # generation identity so moving graph nodes does not rebuild shaders.
             payload['provenance'] = {p: digest(data) for p, data in sorted(snapshot.files.items())}

@@ -116,6 +116,8 @@ QString GetBindingKindName(rhi::RasterBindingKind kind)
             return QStringLiteral("stencil texture");
         case rhi::RasterBindingKind::Sampler:
             return QStringLiteral("sampler");
+        case rhi::RasterBindingKind::RayScene:
+            return QStringLiteral("native ray scene");
         case rhi::RasterBindingKind::StorageRead:
         case rhi::RasterBindingKind::StorageReadWrite:
             return QStringLiteral("storage buffer");

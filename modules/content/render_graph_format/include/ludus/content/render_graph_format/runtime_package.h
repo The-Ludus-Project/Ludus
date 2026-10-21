@@ -31,7 +31,9 @@ namespace ludus::content::render_graph_format
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 5;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 6;
+/// Last package version carrying explicit scene inputs with portable software ray traversal.
+inline constexpr foundation::uint32 SCENE_PACKAGE_VERSION = 5;
 /// Version with view-relative resources and implicit full-scene pass inputs.
 inline constexpr foundation::uint32 VIEW_PACKAGE_VERSION = 4;
 /// Version with pass names and fixed resource extents.

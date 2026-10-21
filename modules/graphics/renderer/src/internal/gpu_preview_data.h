@@ -40,6 +40,10 @@ struct GpuPreviewRecord final
     uint64 Generation = 1;
     bool Used = false;
     bool Owned = false;
+    rhi::RayGeometryHandle NativeGeometry{};
+    rhi::RaySceneHandle NativeScene{};
+    bool HasNativeGeometry = false;
+    bool IsNativeSceneCreated = false;
     rhi::BufferHandle Data{};
     rhi::BufferHandle Texels{};
     rhi::BufferHandle Parameters{};

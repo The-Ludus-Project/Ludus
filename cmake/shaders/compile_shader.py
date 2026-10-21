@@ -260,6 +260,7 @@ def main():
     parser.add_argument('--worker-identity')
     parser.add_argument('--metal', action='store_true')
     parser.add_argument('--raster', action='store_true')
+    parser.add_argument('--native-ray-queries', action='store_true')
     parser.add_argument('--native-binding-arrays', action='store_true')
     parser.add_argument('--runtime-binding-arrays', action='store_true')
     parser.add_argument('--include', action='append', default=[])
@@ -272,7 +273,7 @@ def main():
     parser.add_argument("--graph-target", choices=("spirv", "wgsl", "metal", "glsl"))
     args = parser.parse_args()
     lock = json.loads(Path(args.lock).read_text())
-    if not args.worker_socket and run([args.compiler, '-version']).strip() != lock['slang']['version']:
+    if (not args.worker_socket or args.native_ray_queries) and run([args.compiler, '-version']).strip() != lock['slang']['version']:
         raise RuntimeError('Slang version differs from SDK pin')
     if not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', args.name):
         raise RuntimeError('Invalid shader name')
