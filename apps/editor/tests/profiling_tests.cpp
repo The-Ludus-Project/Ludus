@@ -290,7 +290,7 @@ TEST_CASE("real viewport GPU timing exports GPU-only and combined traces with St
     }
     preview.Stop();
 }
-TEST_CASE("delegated project graph GPU recording uses the shared viewport sampler", "[.profiling-gpu]")
+TEST_CASE("delegated project graph Stats and GPU recording share the viewport sampler", "[.profiling-gpu]")
 {
     QTemporaryDir directory;
     RendererWorkspace workspace({});
@@ -300,6 +300,7 @@ TEST_CASE("delegated project graph GPU recording uses the shared viewport sample
     workspace.EnableWorldRendering();
     workspace.SetProject(directory.path(), 1);
     REQUIRE(preview.SetScene(MakeProfilingScene()) == true);
+    preview.SetStatisticsVisible(true);
     REQUIRE(preview.Start() == true);
     REQUIRE(preview.AdmitOffscreenDevice() == true);
     ProfilingController controller(&preview);
@@ -334,6 +335,10 @@ TEST_CASE("delegated project graph GPU recording uses the shared viewport sample
     }
     REQUIRE(workspace.GetPreviewOrNull() != nullptr);
     CHECK(workspace.GetPreviewOrNull()->GetImage().isNull() == false);
+    CHECK(preview.GetStatistics().GpuState == ViewportGpuTimeState::Available);
+    CHECK(preview.GetStatistics().GpuMilliseconds.GetCount() > 0);
+    CHECK(workspace.GetPreviewOrNull()->GetStatistics().GetCpuMilliseconds().GetCount() > 0);
+    CHECK(workspace.GetPreviewOrNull()->GetStatistics().GetReadbackMilliseconds().GetCount() > 0);
     preview.Stop();
     workspace.SetPreviewSource(nullptr);
 }

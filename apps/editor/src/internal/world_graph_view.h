@@ -3,6 +3,8 @@
 #include <ludus/foundation/base/types.h>
 
 #include <QImage>
+#include <QString>
+#include <QTimer>
 #include <QWidget>
 
 class QComboBox;
@@ -26,6 +28,10 @@ public:
     void SetCanPresent(bool canPresent);
     /// Explicitly clear this view, as when closing its World.
     void ClearFrame();
+    /// Show live output statistics. The owning viewport persists this choice with navigation.
+    void SetStatisticsVisible(bool isVisible);
+    /// Text currently painted over the graph; empty when the overlay is disabled.
+    [[nodiscard]] QString GetStatisticsText() const;
     /// Last complete graph frame, retained during rebuilding and errors.
     [[nodiscard]] const QImage& GetImage() const noexcept;
     /// Number of complete images received by this display.
@@ -38,10 +44,14 @@ private:
     void refreshTargets();
     void refreshFrame();
     void refreshStatus();
+    void refreshStatistics();
     RendererWorkspace& mWorkspace;
     RenderGraphPreview& mPreview;
     QComboBox* mTargets;
     QLabel* mStatus;
+    QLabel* mStatistics;
+    QTimer mStatisticsTimer;
+    bool mIsStatisticsVisible = false;
     QImage mImage;
     foundation::uint64 mPresentedFrames = 0;
     bool mCanPresent = true;

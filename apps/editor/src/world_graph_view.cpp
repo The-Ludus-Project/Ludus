@@ -1,7 +1,9 @@
 #include "internal/world_graph_view.h"
 
 #include "internal/render_graph_preview.h"
+#include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include <ludus/foundation/time/time.hpp>
 
 #include <QComboBox>
 #include <QHBoxLayout>
@@ -15,10 +17,12 @@ namespace ludus::editor
 namespace
 {
 constexpr foundation::int32 MINIMUM_TARGET_TEXT_CHARACTERS = 4;
-}
+constexpr foundation::int32 STATISTICS_REFRESH_MILLISECONDS = 250;
+constexpr foundation::int32 STATISTICS_MARGIN_PIXEL = 8;
+} // namespace
 WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* parent)
     : QWidget(parent), mWorkspace(inoutWorkspace), mPreview(*inoutWorkspace.GetPreviewOrNull()),
-      mTargets(new QComboBox(this)), mStatus(new QLabel(this))
+      mTargets(new QComboBox(this)), mStatus(new QLabel(this)), mStatistics(new QLabel(this))
 {
     setObjectName(QStringLiteral("worldGraphView"));
     setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -31,6 +35,15 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     mTargets->setAccessibleName(QStringLiteral("Render graph output"));
     mTargets->setToolTip(QStringLiteral("Final output and every render-graph attachment. Special debug views use "
                                         "configurations authored in the project's graph."));
+    mStatistics->setObjectName(QStringLiteral("worldGraphStatisticsOverlay"));
+    mStatistics->setTextFormat(Qt::PlainText);
+    mStatistics->setAttribute(Qt::WA_TransparentForMouseEvents);
+    mStatistics->setStyleSheet(QStringLiteral("QLabel { color: white; background: rgba(0, 0, 0, 190); "
+                                              "padding: 6px; border-radius: 4px; }"));
+    mStatistics->move(STATISTICS_MARGIN_PIXEL, STATISTICS_MARGIN_PIXEL);
+    mStatistics->hide();
+    mStatisticsTimer.setInterval(STATISTICS_REFRESH_MILLISECONDS);
+    connect(&mStatisticsTimer, &QTimer::timeout, this, &WorldGraphView::refreshStatistics);
     mStatus->setObjectName(QStringLiteral("worldGraphStatus"));
     mStatus->setTextFormat(Qt::PlainText);
     mStatus->setWordWrap(true);
@@ -88,6 +101,39 @@ void WorldGraphView::SetCanPresent(bool canPresent)
     {
         refreshFrame();
     }
+}
+void WorldGraphView::SetStatisticsVisible(bool isVisible)
+{
+    mIsStatisticsVisible = isVisible;
+    mStatistics->setVisible(isVisible);
+    if (isVisible == true)
+    {
+        mStatisticsTimer.start();
+        refreshStatistics();
+    }
+    else
+    {
+        mStatisticsTimer.stop();
+        mStatistics->clear();
+    }
+}
+QString WorldGraphView::GetStatisticsText() const
+{
+    return mStatistics->text();
+}
+void WorldGraphView::refreshStatistics()
+{
+    if (mIsStatisticsVisible == false)
+    {
+        return;
+    }
+    const RenderPreview* sourceOrNull = mWorkspace.GetPreviewSourceOrNull();
+    const ViewportStatistics deviceStatistics =
+        sourceOrNull != nullptr ? sourceOrNull->GetStatistics() : ViewportStatistics{};
+    mStatistics->setText(
+        FormatGraphViewportStatistics(mPreview.GetStatistics(), deviceStatistics, foundation::time::Now().Nanoseconds));
+    mStatistics->adjustSize();
+    mStatistics->raise();
 }
 void WorldGraphView::ClearFrame()
 {

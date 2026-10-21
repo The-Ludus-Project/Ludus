@@ -1,5 +1,6 @@
 #include "internal/render_graph_preview.h"
 #include <ludus/foundation/profiling/profiling.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -9,6 +10,7 @@
 #include "internal/render_graph_resources.h"
 #include "internal/render_target_reader.h"
 
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QSize>
@@ -25,6 +27,7 @@ namespace
 {
 /// Ticks (about 16 ms each) to wait for the producer of one frame before reporting a stall.
 constexpr uint32 MAX_PRODUCER_TICKS = 600;
+constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
 /// Straight alpha below one cannot use the opaque static profile.
 constexpr float32 OPAQUE_ALPHA = 1.0F;
 
@@ -307,6 +310,9 @@ struct RenderGraphPreview::State final
     rhi::RasterShaderDescription CompositeFragment{};
     renderer::RenderGraphActivation Activation;
     RenderTargetReader Reader;
+    GraphViewportStatistics Statistics;
+    QElapsedTimer ReadbackTimer;
+    bool HasCompletedStatisticsFrame = false;
     QString OutputName;
     uint64 OutputRevision = 0;
     uint64 ReadingOutputRevision = 0;
@@ -441,6 +447,8 @@ void RenderGraphPreview::Detach() noexcept
     }
     // Drop the export and inspection consumers before the generations that own their textures.
     state.Reader.Release();
+    state.Statistics.Reset();
+    state.ReadbackTimer.invalidate();
     state.Inspector.Release();
     state.Activation.Reset();
     state.Device = {};
@@ -607,7 +615,36 @@ QSize RenderGraphPreview::GetTargetSize() const noexcept
     return {static_cast<int32>(target.Width), static_cast<int32>(target.Height)};
 }
 
-void RenderGraphPreview::Tick()
+const GraphViewportStatistics& RenderGraphPreview::GetStatistics() const noexcept
+{
+    return mState->Statistics;
+}
+void RenderGraphPreview::Tick(float64 preparationMilliseconds)
+{
+    State& state = *mState;
+    const bool hasActiveWork =
+        state.IsAttached == true &&
+        (state.Reader.IsBusy() == true || state.IsAwaitingProducer == true || state.Candidate.Serial != 0 ||
+         (state.HasExtraction == true &&
+          (state.Extraction.Revision != mPresentedRevision || state.Session != mPresentedSession)));
+    QElapsedTimer timer;
+    timer.start();
+    state.HasCompletedStatisticsFrame = false;
+    tick();
+    if (hasActiveWork == true || state.HasCompletedStatisticsFrame == true)
+    {
+        state.Statistics.AddCpuWork(preparationMilliseconds +
+                                    static_cast<float64>(timer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND);
+    }
+    if (state.HasCompletedStatisticsFrame == true)
+    {
+        state.Statistics.CompleteFrame(time::Now().Nanoseconds,
+                                       static_cast<float64>(state.ReadbackTimer.nsecsElapsed()) /
+                                           NANOSECONDS_PER_MILLISECOND);
+        Q_EMIT FramePresented();
+    }
+}
+void RenderGraphPreview::tick()
 {
     LUDUS_PROFILE_SCOPE(EditorRenderGraphTick);
     State& state = *mState;
@@ -664,6 +701,7 @@ void RenderGraphPreview::Tick()
             return;
         }
         state.ReadingOutputRevision = state.OutputRevision;
+        state.ReadbackTimer.start();
         const RenderTargetReadStatus started =
             state.Reader.Begin(state.Device, state.Surface, texture, aspect, width, height);
         if (started != RenderTargetReadStatus::Pending && started != RenderTargetReadStatus::Complete)
@@ -715,7 +753,7 @@ void RenderGraphPreview::finishCopy()
         setStatus(mPresentedRevision == state.MaterialStatusRevision ? state.MaterialStatus : QString{});
         // Live refresh: the viewed texture follows every presented frame.
         state.IsInspectionRequested = state.InspectedName.isEmpty() == false;
-        Q_EMIT FramePresented();
+        state.HasCompletedStatisticsFrame = true;
     }
     else if (status == RenderTargetReadStatus::Failed || status == RenderTargetReadStatus::Undefined)
     {

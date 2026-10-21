@@ -442,7 +442,8 @@ below its shading, framing and navigation controls, including after resize.
 Native World viewports now use the [project render graph](render-graph-authoring.md#start-customizing-the-renderer),
 falling back to the engine default only when the project has none. Shader edits update
 that viewport automatically. Its selectors expose authored graph configurations and
-attachments. The current static graph profile does not provide the former Lit material
+attachments. The **Stats** toggle shows live update FPS, CPU/GPU time and readback
+latency; see the [graph viewport measurement definitions](render-graph-authoring.md#start-customizing-the-renderer). The current static graph profile does not provide the former Lit material
 preview; its input and presentation limits are documented with that workflow.
 
 ## Recording CPU and GPU profiling
