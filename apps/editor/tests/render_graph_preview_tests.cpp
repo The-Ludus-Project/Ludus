@@ -600,9 +600,18 @@ TEST_CASE("Ray preview advances stochastic samples without a scene edit and rast
     preview.SetExtraction(extraction);
     QSignalSpy presented(&preview, &RenderGraphPreview::FramePresented);
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE)) == RenderGraphPreviewLoad::Staged);
-    const bool hasFirstFrame = TickUntil(preview, [&]() { return presented.count() >= 1; });
-    INFO(preview.GetDisplayStatus().toStdString());
-    REQUIRE(hasFirstFrame == true);
+    // A cold native ray pipeline can outlast the short polling window used by raster fixtures.
+    constexpr int64 PIPELINE_PREPARATION_TIMEOUT_MILLISECONDS = 10000;
+    constexpr uint32 PREPARATION_POLL_MICROSECONDS = 200;
+    QElapsedTimer preparation;
+    preparation.start();
+    while (presented.count() == 0 && preparation.elapsed() < PIPELINE_PREPARATION_TIMEOUT_MILLISECONDS)
+    {
+        preview.Tick();
+        QThread::usleep(PREPARATION_POLL_MICROSECONDS);
+    }
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(presented.count() >= 1);
     const QImage first = preview.GetImage();
     const uint64 rayGeneration = preview.GetPresentedGeneration();
     REQUIRE(TickUntil(preview, [&]() { return presented.count() >= 2; }) == true);
