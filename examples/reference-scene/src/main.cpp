@@ -551,7 +551,7 @@ int Run(int argc, char** argv) noexcept
     }
     rhi::DeviceDescription request;
     request.Required.PortableRaster = true;
-    request.Required.RayQueries = native;
+    request.Required.RayQueries = native == true || gpu == true;
     request.Required.Compute = gpu;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;

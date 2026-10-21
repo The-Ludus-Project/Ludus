@@ -337,6 +337,7 @@ struct RenderGraphPreview::State final
         uint32 Cameras = 0;
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
+        QString RendererStatus;
         StaticArray<format::Resource, format::MAX_RESOURCES> Descriptions{};
     };
     StaticArray<uint8, format::IDENTITY_BYTES> Interface{};
@@ -382,6 +383,9 @@ struct RenderGraphPreview::State final
     /// Incremented per Attach; activation serials restart with every device session.
     uint64 Session = 0;
     QString RequestedPath;
+    QString RasterFallbackPath;
+    bool ShouldForceRaster = false;
+    bool ShouldReselectRenderer = false;
     UniquePtr<renderer::RenderGraphPackage> WaitingOrNull;
     Target Waiting;
     Target Candidate;
@@ -459,14 +463,10 @@ bool RenderGraphPreview::Attach(rhi::DeviceHandle device, rhi::SurfaceHandle sur
     }
     ++state.Session;
     mStatus.clear();
-    // An explicit preview request survives a viewport device restart.
-    if (state.WaitingOrNull.Get() == nullptr && state.RequestedPath.isEmpty() == false)
+    // Re-evaluate the enabled logical device, including a change of API or adapter.
+    if (state.RequestedPath.isEmpty() == false)
     {
-        static_cast<void>(Load(state.RequestedPath));
-    }
-    else if (state.WaitingOrNull.Get() != nullptr)
-    {
-        static_cast<void>(stage());
+        static_cast<void>(Load(state.RequestedPath, state.RasterFallbackPath));
     }
     Q_EMIT Changed();
     return true;
@@ -501,43 +501,113 @@ bool RenderGraphPreview::IsAttached() const noexcept
     return mState->IsAttached;
 }
 
-RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePath)
+void RenderGraphPreview::SetForceRaster(bool shouldForceRaster)
+{
+    State& state = *mState;
+    if (state.ShouldForceRaster != shouldForceRaster)
+    {
+        state.ShouldForceRaster = shouldForceRaster;
+        state.ShouldReselectRenderer = state.RequestedPath.isEmpty() == false;
+        Q_EMIT Changed();
+    }
+}
+bool RenderGraphPreview::ShouldForceRaster() const noexcept
+{
+    return mState->ShouldForceRaster;
+}
+RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePath, const QString& rasterFallbackPath)
 {
     State& state = *mState;
     state.RequestedPath = runtimePackagePath;
+    state.RasterFallbackPath = rasterFallbackPath;
+    state.ShouldReselectRenderer = false;
     state.WaitingOrNull.Reset();
-    QFile file(runtimePackagePath);
-    if (QFileInfo(runtimePackagePath).isFile() == false || QFileInfo(runtimePackagePath).size() > MAX_PACKAGE_BYTES ||
-        file.open(QIODevice::ReadOnly) == false)
+    UniquePtr<renderer::RenderGraphPackage> package;
+    const auto readPackage = [this, &package](const QString& path) {
+        QFile file(path);
+        if (QFileInfo(path).isFile() == false || QFileInfo(path).size() > MAX_PACKAGE_BYTES ||
+            file.open(QIODevice::ReadOnly) == false)
+        {
+            setStatus(QStringLiteral("No readable runtime generation at %1; cook the runtime first.")
+                          .arg(QFileInfo(path).fileName()));
+            return RenderGraphPreviewLoad::Unreadable;
+        }
+        const QByteArray bytes = file.read(MAX_PACKAGE_BYTES + 1);
+        if (bytes.size() > MAX_PACKAGE_BYTES)
+        {
+            setStatus(QStringLiteral("The runtime generation exceeds the 16 MiB runtime bound."));
+            return RenderGraphPreviewLoad::Unreadable;
+        }
+        package.Reset(new (std::nothrow) renderer::RenderGraphPackage);
+        if (package.Get() == nullptr)
+        {
+            setStatus(QStringLiteral("The runtime generation could not be allocated."));
+            return RenderGraphPreviewLoad::Failed;
+        }
+        const renderer::RenderGraphPackageStatus decoded =
+            package->Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())});
+        if (decoded != renderer::RenderGraphPackageStatus::Ready)
+        {
+            setStatus(QStringLiteral("The runtime generation was rejected (%1); the shown frame is kept.")
+                          .arg(DescribePackageStatus(decoded)));
+            return RenderGraphPreviewLoad::Malformed;
+        }
+        return RenderGraphPreviewLoad::Staged;
+    };
+    RenderGraphPreviewLoad loaded = readPackage(runtimePackagePath);
+    if (loaded != RenderGraphPreviewLoad::Staged)
     {
-        setStatus(QStringLiteral("No readable runtime generation at %1; cook the runtime first.")
-                      .arg(QFileInfo(runtimePackagePath).fileName()));
-        return RenderGraphPreviewLoad::Unreadable;
+        return loaded;
     }
-    const QByteArray bytes = file.read(MAX_PACKAGE_BYTES + 1);
-    if (bytes.size() > MAX_PACKAGE_BYTES)
+    QString selectedPath = runtimePackagePath;
+    QString rendererStatus = QStringLiteral("Raster renderer.");
+    if (renderer::RequiresHardwareRayTracing(package->GetPlan()) == true)
     {
-        setStatus(QStringLiteral("The runtime generation exceeds the 16 MiB runtime bound."));
-        return RenderGraphPreviewLoad::Unreadable;
-    }
-    renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
-    UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
-    if (package.Get() == nullptr)
-    {
-        setStatus(QStringLiteral("The runtime generation could not be allocated."));
-        return RenderGraphPreviewLoad::Failed;
-    }
-    const renderer::RenderGraphPackageStatus decoded =
-        package->Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())});
-    if (decoded != renderer::RenderGraphPackageStatus::Ready)
-    {
-        setStatus(QStringLiteral("The runtime generation was rejected (%1); the shown frame is kept.")
-                      .arg(DescribePackageStatus(decoded)));
-        return RenderGraphPreviewLoad::Malformed;
+        renderer::RenderGraphRenderer selected = renderer::RenderGraphRenderer::HardwareRayTracing;
+        const renderer::RenderGraphPreference preference = state.ShouldForceRaster == true
+                                                               ? renderer::RenderGraphPreference::ForceRaster
+                                                               : renderer::RenderGraphPreference::Automatic;
+        if (state.IsAttached == true)
+        {
+            const rhi::RasterStatus status = renderer::SelectRenderGraphRenderer(state.Device, preference, selected);
+            if (status != rhi::RasterStatus::Ready)
+            {
+                setStatus(QStringLiteral("Renderer selection failed (%1); the shown frame is kept.")
+                              .arg(DescribeRasterStatus(status)));
+                return RenderGraphPreviewLoad::Failed;
+            }
+        }
+        if (state.ShouldForceRaster == true || selected == renderer::RenderGraphRenderer::Raster)
+        {
+            if (rasterFallbackPath.isEmpty() == true)
+            {
+                setStatus(QStringLiteral("A raster runtime package is required for this renderer selection."));
+                return RenderGraphPreviewLoad::Unsupported;
+            }
+            loaded = readPackage(rasterFallbackPath);
+            if (loaded != RenderGraphPreviewLoad::Staged)
+            {
+                return loaded;
+            }
+            if (renderer::RequiresHardwareRayTracing(package->GetPlan()) == true)
+            {
+                setStatus(QStringLiteral("The raster fallback contains a raytracing pass; it was rejected."));
+                return RenderGraphPreviewLoad::Unsupported;
+            }
+            selectedPath = rasterFallbackPath;
+            rendererStatus = state.ShouldForceRaster == true
+                                 ? QStringLiteral("Raster renderer (Force raster).")
+                                 : QStringLiteral("Raster renderer (hardware raytracing unavailable on this GPU/API).");
+        }
+        else
+        {
+            rendererStatus = QStringLiteral("Hardware raytracing renderer.");
+        }
     }
     // The editor shows an exported color result; presentation surfaces belong to the game host.
     const renderer::RenderGraphPlan plan = package->GetPlan();
     State::Target target;
+    target.RendererStatus = rendererStatus;
     bool hasTarget = false;
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
@@ -564,7 +634,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     }
     target.Cameras = static_cast<uint32>(plan.Description.CameraCount);
     // Names are optional: a missing or stale sidecar only leaves numeric texture names.
-    QFile names(GetTargetNamesPath(runtimePackagePath));
+    QFile names(GetTargetNamesPath(selectedPath));
     const QByteArray namesDocument =
         names.open(QIODevice::ReadOnly) == true ? names.read(MAX_PACKAGE_BYTES) : QByteArray();
     target.Catalogue = MakeTargetCatalogue(plan, package->GetGenerationIdentity(), namesDocument);
@@ -576,6 +646,10 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         setStatus(QStringLiteral("Runtime generation decoded; start the World viewport to provide the preview "
                                  "device."));
         return RenderGraphPreviewLoad::Waiting;
+    }
+    if (state.Reader.IsBusy() == true || state.Inspector.IsBusy() == true || state.IsAwaitingProducer == true)
+    {
+        return RenderGraphPreviewLoad::Staged;
     }
     return stage();
 }
@@ -757,6 +831,14 @@ void RenderGraphPreview::tick()
     if (state.IsInspectionRequested == true && beginInspection() == true)
     {
         return;
+    }
+    if (state.ShouldReselectRenderer == true)
+    {
+        static_cast<void>(Load(state.RequestedPath, state.RasterFallbackPath));
+    }
+    else if (state.WaitingOrNull.Get() != nullptr)
+    {
+        static_cast<void>(stage());
     }
     advance();
 }
@@ -1095,6 +1177,14 @@ QString RenderGraphPreview::GetStatus() const
         parts.append(QStringLiteral("Showing generation %1 at World revision %2.")
                          .arg(mPresentedGeneration)
                          .arg(mPresentedRevision));
+    }
+    if (state.Active.Serial != 0 && mPresentedGeneration == state.Active.Serial && mPresentedSession == state.Session)
+    {
+        parts.append(state.Active.RendererStatus);
+    }
+    if (state.Candidate.Serial != 0)
+    {
+        parts.append(QStringLiteral("Selected: %1").arg(state.Candidate.RendererStatus));
     }
     if (state.IsAttached == false)
     {

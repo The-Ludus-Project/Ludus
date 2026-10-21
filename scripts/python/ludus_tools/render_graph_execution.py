@@ -128,7 +128,7 @@ STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 5
+PACKAGE_VERSION = 6
 MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024

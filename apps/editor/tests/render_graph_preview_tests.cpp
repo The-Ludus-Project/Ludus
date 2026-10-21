@@ -35,6 +35,7 @@
 
 #include <cstring>
 #include <initializer_list>
+#include <new>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -110,11 +111,12 @@ struct DeviceFixture final
     rhi::DeviceHandle Device{};
     rhi::SurfaceHandle Surface{};
     bool IsAvailable = false;
-    explicit DeviceFixture(const rhi::StorageLimits& storage = {})
+    explicit DeviceFixture(const rhi::StorageLimits& storage = {}, bool shouldRequestRay = false)
     {
         rhi::Shutdown();
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
+        description.Preferred.RayQueries = shouldRequestRay;
         description.Storage = storage;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
@@ -1843,4 +1845,142 @@ TEST_CASE("drawable reference pixels are retained before the edit preview cap", 
     CHECK(viewport.WindowInfo().Width < 3840);
     viewport.Resize(0, 0);
     CHECK(viewport.GetDrawableSize().isEmpty() == true);
+}
+
+TEST_CASE("Viewport forces authored raster before attaching a device", "[editor][render-graph][selection]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderGraphPreview preview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment());
+    preview.SetForceRaster(true);
+    const QString ray = QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE);
+    const QString raster = GetDefaultRenderGraphRuntime();
+    REQUIRE(preview.Load(ray, raster) == RenderGraphPreviewLoad::Waiting);
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({.25F, .5F, .75F, 1}, 1));
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() != 0; }) == true);
+    CHECK(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Force raster")) == true);
+    const QColor center =
+        preview.GetImage().pixelColor(preview.GetImage().width() / 2, preview.GetImage().height() / 2);
+    CHECK(qAbs(center.red() - 64) <= COLOR_TOLERANCE);
+    CHECK(qAbs(center.green() - 128) <= COLOR_TOLERANCE);
+    CHECK(qAbs(center.blue() - 191) <= COLOR_TOLERANCE);
+    const QImage last = preview.GetImage();
+    CHECK(preview.Load(ray, ray) == RenderGraphPreviewLoad::Unsupported);
+    CHECK(preview.GetImage().cacheKey() == last.cacheKey());
+    CHECK(preview.Load(ray) == RenderGraphPreviewLoad::Unsupported);
+    CHECK(preview.GetImage().cacheKey() == last.cacheKey());
+    preview.Detach();
+}
+TEST_CASE("Force raster switches the live hardware renderer and restores automatic selection",
+          "[editor][render-graph][selection]")
+{
+    DeviceFixture device({}, true);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    RenderGraphPreview preview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment());
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    RenderGraphExtraction extraction = MakeExtraction({1, 0, 0, 1}, 1);
+    // Identity WorldToClip describes an orthographic camera for native camera-ray generation.
+    extraction.View.OrthographicCamera = true;
+    preview.SetExtraction(extraction);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE), GetDefaultRenderGraphRuntime()) ==
+            RenderGraphPreviewLoad::Staged);
+    const bool hasFirstFrame = TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasFirstFrame == true);
+    CHECK(preview.GetReport().ActiveRenderer == automatic);
+    const QImage initial = preview.GetImage();
+    preview.SetForceRaster(true);
+    CHECK(preview.GetImage().cacheKey() == initial.cacheKey());
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 2; }) == true);
+    CHECK(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Force raster")) == true);
+    const QImage raster = preview.GetImage();
+    preview.SetForceRaster(false);
+    CHECK(preview.GetImage().cacheKey() == raster.cacheKey());
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 3; }) == true);
+    CHECK(preview.GetReport().ActiveRenderer == automatic);
+    CHECK(preview.GetPresentedRevision() == 1);
+    preview.Detach();
+}
+
+TEST_CASE("Runtime activation selects the authored hardware or raster package", "[editor][render-graph][selection]")
+{
+    bool shouldRequestRay = false;
+    SECTION("Default device features") {}
+    SECTION("Native ray features preferred")
+    {
+        shouldRequestRay = true;
+    }
+    DeviceFixture device({}, shouldRequestRay);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    const auto loadPackage = [](const QString& path) {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::ReadOnly) == true);
+        const QByteArray bytes = file.readAll();
+        renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        ludus::foundation::UniquePtr<renderer::RenderGraphPackage> package(allocationOrNull);
+        REQUIRE(package.Get() != nullptr);
+        REQUIRE(package->Decode({reinterpret_cast<const uint8*>(bytes.constData()),
+                                 static_cast<usize>(bytes.size())}) == renderer::RenderGraphPackageStatus::Ready);
+        return package;
+    };
+    renderer::RenderGraphActivation activation;
+    REQUIRE(activation.Initialize(
+                device.Device,
+                {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+                shaders::renderer_composite::Vertex(),
+                shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    REQUIRE(activation.Resize(WIDTH, HEIGHT) == rhi::RasterStatus::Ready);
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    rhi::RasterStatus staged = activation.StageSelected(loadPackage(GetDefaultRenderGraphRuntime()),
+                                                        loadPackage(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE)));
+    REQUIRE((staged == rhi::RasterStatus::Ready || staged == rhi::RasterStatus::Pending));
+    CHECK(activation.GetReport().CandidateRenderer == automatic);
+    staged = activation.StageSelected(loadPackage(GetDefaultRenderGraphRuntime()),
+                                      loadPackage(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE)),
+                                      renderer::RenderGraphPreference::ForceRaster);
+    REQUIRE((staged == rhi::RasterStatus::Ready || staged == rhi::RasterStatus::Pending));
+    CHECK(activation.GetReport().CandidateRenderer == renderer::RenderGraphRenderer::Raster);
+    staged = activation.StageSelected(loadPackage(GetDefaultRenderGraphRuntime()), {});
+    REQUIRE((staged == rhi::RasterStatus::Ready || staged == rhi::RasterStatus::Pending));
+    CHECK(activation.GetReport().CandidateRenderer == renderer::RenderGraphRenderer::Raster);
+    activation.Reset();
+}
+
+TEST_CASE("World renderer follows the viewport Force raster preference", "[editor][render-graph][selection]")
+{
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    source.SetForceRaster(true);
+    workspace.SetPreviewSource(&source);
+    RenderGraphPreview* previewOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(previewOrNull != nullptr);
+    CHECK(previewOrNull->ShouldForceRaster() == true);
+    source.SetForceRaster(false);
+    CHECK(previewOrNull->ShouldForceRaster() == false);
+    source.SetForceRaster(true);
+    CHECK(previewOrNull->ShouldForceRaster() == true);
+    workspace.SetPreviewSource(nullptr);
 }

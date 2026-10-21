@@ -1520,7 +1520,7 @@ void RendererWorkspace::prepareDefaultPreview()
     // A failed project build leaves this generation rendering the latest World extraction.
     mIsDefaultPreview = true;
     mPreviewInputIdentity.clear();
-    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime);
+    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime, GetDefaultRenderGraphRuntime());
     if (loaded != RenderGraphPreviewLoad::Waiting && loaded != RenderGraphPreviewLoad::Staged)
     {
         mIsDefaultPreview = false;
@@ -3284,6 +3284,14 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mPreviewSourceOrNull != nullptr && mPreviewOrNull != nullptr)
     {
+        mPreviewOrNull->SetForceRaster(mPreviewSourceOrNull->ShouldForceRaster());
+        connect(mPreviewSourceOrNull, &RenderPreview::RendererPreferenceChanged, this, [this](bool shouldForceRaster) {
+            mPreviewOrNull->SetForceRaster(shouldForceRaster);
+            if (mPreviewSourceOrNull->HasDevice() == true)
+            {
+                mPreviewTimer.start();
+            }
+        });
         // Release generations before RenderPreview destroys the shared device.
         connect(mPreviewSourceOrNull, &RenderPreview::DeviceStopping, this, [this]() {
             mPreviewTimer.stop();
@@ -3347,7 +3355,7 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
     }
     const bool isPreviousPreviewDefault = mIsDefaultPreview;
     mIsDefaultPreview = runtime == GetDefaultRenderGraphRuntime();
-    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime);
+    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime, GetDefaultRenderGraphRuntime());
     if (loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting)
     {
         mPreviewInputIdentity = getBuildIdentity(source);

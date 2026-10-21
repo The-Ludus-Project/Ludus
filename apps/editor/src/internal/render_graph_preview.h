@@ -106,7 +106,14 @@ public:
     void Detach() noexcept;
     [[nodiscard]] bool IsAttached() const noexcept;
     /// Explicitly preview one cooked runtime generation; the previous request is superseded.
-    [[nodiscard]] RenderGraphPreviewLoad Load(const QString& runtimePackagePath);
+    /// An RT request automatically selects rasterFallbackPath when native traversal is unavailable
+    /// or Force raster is selected. The fallback must be an authored raster-only package.
+    /// No fallback is needed for a raster request. Selection is repeated on device attachment.
+    [[nodiscard]] RenderGraphPreviewLoad Load(const QString& runtimePackagePath,
+                                              const QString& rasterFallbackPath = {});
+    /// Queue selection between frames; retain the last drawable image while preparing.
+    void SetForceRaster(bool shouldForceRaster);
+    [[nodiscard]] bool ShouldForceRaster() const noexcept;
     /// Choose the World display attachment by expanded name; empty selects the exported output.
     /// Missing targets retain the last image and report a diagnostic. Applies after producer completion.
     void SetOutputTarget(const QString& name);

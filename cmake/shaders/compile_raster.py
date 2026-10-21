@@ -106,6 +106,10 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
                 raise RuntimeError('Unsupported compute storage access')
             kind = 'StorageReadWrite' if resource_type.get('access') == 'readWrite' else 'StorageRead'
             size = 4 * width
+        elif stage == 'compute' and kind == 'resource' and resource_type.get('baseShape') == 'accelerationStructure':
+            if count != 1 or is_runtime:
+                raise RuntimeError('Native ray scenes require scalar bindings')
+            kind = 'RayScene'
         elif kind == 'samplerState':
             if resource_type.get('isComparison', False) or 'comparison' in str(resource_type.get('flavor', '')).lower():
                 raise RuntimeError('Comparison samplers are outside the raster profile')
@@ -129,7 +133,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
                 kind = 'TextureDepth2D' if scalar == 'float32' else 'TextureStencil2D'
         else:
             raise RuntimeError('Unsupported raster resource shape: ' + kind)
-        if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite'):
+        if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'RayScene'):
             raise RuntimeError('Compute profile accepts buffer bindings only')
         if metal:
             native_kind = {'StorageRead': 'constantBuffer', 'StorageReadWrite': 'constantBuffer', 'UniformBuffer': 'constantBuffer', 'Texture2D': 'shaderResource', 'Texture2DArray': 'shaderResource', 'TextureCube': 'shaderResource', 'Texture3D': 'shaderResource', 'TextureDepth2D': 'shaderResource', 'TextureStencil2D': 'shaderResource', 'Sampler': 'samplerState'}[kind]
@@ -592,6 +596,9 @@ def compile_raster(args, lock):
     native_compilations = []
     stages = [('compute', args.compute)] if getattr(args, 'compute', None) else [('vertex', args.vertex), ('fragment', args.fragment)]
     compute = stages[0][0] == 'compute'
+    native_rays = getattr(args, 'native_ray_queries', False)
+    if native_rays and not compute:
+        raise RuntimeError('Native ray queries require compute stages')
     native_arrays = getattr(args, 'native_binding_arrays', False)
     runtime_arrays = getattr(args, 'runtime_binding_arrays', False)
     if runtime_arrays and (not native_arrays or args.metal or compute):
@@ -604,19 +611,23 @@ def compile_raster(args, lock):
     if not args.metal:
         if not args.validator or hashlib.sha256(Path(args.validator).read_bytes()).hexdigest() != lock['spirv_tools']['val_sha256']:
             raise RuntimeError('Raster SPIR-V validator differs from SDK pin')
-    if args.spirv_cross and not compute:
+    if native_rays and args.metal and not args.spirv_cross:
+        raise RuntimeError('Metal native ray queries require the pinned SPIRV-Cross tool')
+    if args.spirv_cross and (not compute or native_rays):
         pin = json.loads(Path(args.spirv_cross_lock).read_text())['spirv_cross']
         tool = Path(args.spirv_cross).resolve()
         build = json.loads(Path(str(tool) + '.build.json').read_text())
         if any(build.get(key) != pin[key] for key in ('tag', 'commit', 'source_sha256')) or build.get('binary_sha256') != hashlib.sha256(tool.read_bytes()).hexdigest():
             raise RuntimeError('Raster SPIRV-Cross identity differs from verified pin')
-    target = 'metal' if args.metal and not native_arrays else 'spirv'
+    target = 'metal' if args.metal and not native_arrays and not native_rays else 'spirv'
     for stage, name in stages:
         artifact = output / f'{args.name}.{stage}.{"metal" if target == "metal" else "spv"}'
         reflection, depfile = output / f'{stage}.reflection.json', output / f'{stage}.d'
-        command = [args.compiler, args.source, '-target', target, '-profile', 'sm_6_0' if target == 'metal' else 'spirv_1_3',
+        command = [args.compiler, args.source, '-target', target, '-profile', 'sm_6_0' if target == 'metal' else 'spirv_1_5' if native_rays else 'spirv_1_3',
                    '-entry', name, '-stage', stage, '-o', str(artifact), '-reflection-json', str(reflection), '-depfile', str(depfile), *extra]
-        if getattr(args, 'worker_socket', None):
+        if native_rays:
+            command += ['-capability', 'spvRayQueryKHR']
+        if getattr(args, 'worker_socket', None) and not native_rays:
             from native_worker import compile_raster_stage
             native_compilations.append(compile_raster_stage(args.worker_socket, args, lock, stage, name, target, artifact, reflection, depfile, extra))
         else:
@@ -629,7 +640,18 @@ def compile_raster(args, lock):
             for binding in interfaces[(target, stage)]['entries']:
                 if binding.get('kind') in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'Sampler') and binding.get('indexing', 'Constant') != 'Constant':
                     raise RuntimeError('Buffer and sampler descriptor arrays require constant selection')
-        if args.metal and native_arrays:
+        if args.metal and native_rays:
+            emitted = output / f'{args.name}.{stage}.metal'
+            command = [args.spirv_cross, str(artifact), '--msl', '--msl-version', '20400', '--msl-decoration-binding', '--output', str(emitted)]
+            commands.append(command); run(command)
+            code = relative_line_directives(emitted.read_text(), roots)
+            from compile_graph_stage import verify_native_ray_metal
+            interface = interfaces[(target, stage)]
+            emitted_name = verify_native_ray_metal(code, interface)
+            emitted.write_text(code)
+            artifacts[('metal', stage)] = (code, emitted_name)
+            interfaces[('metal', stage)] = interface
+        elif args.metal and native_arrays:
             emitted = output / f'{args.name}.{stage}.metal'
             command = [args.spirv_cross, str(artifact), '--msl', '--msl-version', '24000', '--msl-decoration-binding', '--output', str(emitted)]
             commands.append(command); run(command)
@@ -657,7 +679,7 @@ def compile_raster(args, lock):
                 raise RuntimeError('Expected one emitted Metal raster entry')
             artifacts[(target, stage)] = (code, names[0])
         else:
-            run([args.validator, '--target-env', 'vulkan1.1', str(artifact)])
+            run([args.validator, '--target-env', 'vulkan1.2' if native_rays else 'vulkan1.1', str(artifact)])
             artifacts[(target, stage)] = (artifact.read_bytes(), entry(artifact))
             if args.spirv_cross and not compute and not native_arrays:
                 essl = output / f'{args.name}.{stage}.essl'
@@ -672,7 +694,7 @@ def compile_raster(args, lock):
                 interface['blocks'], interface['textures'] = names, textures
                 interfaces[('glsl', stage)] = interface
                 artifacts[('glsl', stage)] = (essl.read_text(), 'main')
-    if not args.metal and not native_arrays:
+    if not args.metal and not native_arrays and not native_rays:
         for stage, source_entry in stages:
             artifact = output / f'{args.name}.{stage}.wgsl'
             reflection, depfile = output / f'{stage}.wgsl.reflection.json', output / f'{stage}.wgsl.d'
@@ -770,7 +792,7 @@ def compile_raster(args, lock):
     for stage, _ in stages:
         if args.metal:
             header += f'inline auto {stage.title()}() noexcept {{ return Metal{stage.title()}(); }}\n'
-        elif native_arrays:
+        elif native_arrays or native_rays:
             header += f'inline graphics::rhi::RasterShaderDescription {stage.title()}() noexcept {{ return Spirv{stage.title()}(); }}\n'
         else:
             header += f'inline auto {stage.title()}() noexcept {{\n#if defined(LUDUS_PLATFORM_WEB)\n auto result = Wgsl{stage.title()}();\n'

@@ -9,16 +9,19 @@ namespace ludus::graphics::renderer
 {
 /// Optional progressive GPU path-tracing settings. No CPU transport or readback fallback.
 /// Static RGB reflection/emission uses RT1's admitted surface profile; this is a
-/// progressive, finite-depth reference mode without denoising or native ray queries.
+/// progressive, finite-depth reference mode using native ray queries, without denoising.
 /// Use RasterViewport for ordinary interactive World navigation; this mode freezes
-/// scene/camera input, and requires compute plus retained reference inputs.
+/// scene/camera input, and requires native hardware ray support, compute and retained
+/// reference inputs. Unsupported devices/APIs return Unsupported; no software traversal
+/// or CPU transport fallback is selected.
 struct GpuPreviewOptions final
 {
     /// Setup/retained geometry budget, including BVH construction and packing/upload scratch. Positive.
     /// Excludes RHI-retained input texels/registries and driver staging.
     ludus::foundation::usize CpuByteBudget = 0;
     /// Known preview buffers and two RGBA8/private-depth output images across live
-    /// previews, including cancelled jobs with pending producers/acquired frames.
+    /// previews, including native BLAS/TLAS inputs, structures and build scratch, and
+    /// cancelled jobs with pending producers/acquired frames.
     /// Excludes renderer/RHI registries, upload staging and opaque driver allocations.
     ludus::foundation::usize GpuByteBudget = 0;
     /// Positive finite display exposure. Output applies Reinhard then sRGB encoding.

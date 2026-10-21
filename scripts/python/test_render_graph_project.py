@@ -100,6 +100,18 @@ class ProjectGraphToolsTests(unittest.TestCase):
         find.assert_called_once_with(digest)
         self.assertEqual('locked release in the shared store', result['sdk_source'])
 
+    def test_metal_ray_profile_resolves_translator_without_a_glsl_target(self):
+        source = fixtures.ROOT / 'tests/sdk_consumer/rg2/raytracing/main.lushader.json.in'
+        value = json.loads(source.read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+        self.builder.manifest.write_text(json.dumps(value))
+        cross = self.tools / 'out/shader-tools/spirv-cross/bin/spirv-cross'
+        cross.parent.mkdir(parents=True)
+        cross.write_text('#!/bin/sh\nexit 0\n')
+        cross.chmod(0o755)
+        options, _ = self.resolve()
+        self.assertEqual(cross, options['spirv_cross'])
+        self.assertNotIn('validator', options)
+
     def test_project_preset_tools_and_only_required_profile_dependencies_are_selected(self):
         value = self.builder.value()
         value['profiles'] = ['spirv', 'glsl']

@@ -86,7 +86,9 @@ def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compile
                 return managed_tool("spirv-tools/spirv-val")
             return spirv_validator(tooling_root)
         options["validator"] = prepared_executable(Path(validator) if validator else configured_tool("LUDUS_SPIRV_VALIDATOR", managed_validator))
-    if spirv_cross or "glsl" in profiles:
+    from .render_graph_ray import TECHNIQUE as RAY_TECHNIQUE
+    has_native_rays = any(technique.get("id") == RAY_TECHNIQUE for technique in value["techniques"])
+    if spirv_cross or "glsl" in profiles or ("metal" in profiles and has_native_rays):
         options["spirv_cross"] = prepared_executable(Path(spirv_cross) if spirv_cross else configured_tool(
             "LUDUS_SPIRV_CROSS", lambda: managed_tool("spirv-cross/bin/spirv-cross")))
 

@@ -163,7 +163,7 @@ class RayPipelineTests(unittest.TestCase):
     def test_automatic_manifest_state_preserves_authored_recipe(self):
         for fixture in ('raytracing', 'scene_ray'):
             value = json.loads((ROOT / 'tests/sdk_consumer/rg2' / fixture / 'main.lushader.json.in')
-                               .read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+                               .read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
             technique = next(t for t in value['techniques'] if t['id'] == ray.TECHNIQUE)
             technique['recipes'] = [{'id': 'Triangles'}]
             before = deepcopy(value)
@@ -303,13 +303,20 @@ class RayPipelineTests(unittest.TestCase):
         self.assertEqual(child, json.loads(child_path.read_text()))
 
     def test_manifest_accepts_exact_ray_functions_and_rejects_shader_stage_mismatch(self):
-        value = json.loads((FIXTURE / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+        value = json.loads((FIXTURE / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
         _, programs, techniques, _ = build.validate_manifest(value)
         self.assertEqual('RayLaunch', programs['Generate']['input'])
         self.assertIn(ray.TECHNIQUE, techniques)
         techniques[ray.TECHNIQUE]['miss'] = 'Closest'
         with self.assertRaises(ToolingError):
             build.validate_manifest(value)
+
+    def test_ray_packages_reject_browser_targets_without_software_fallback(self):
+        fixture = (FIXTURE / 'main.lushader.json.in').read_text()
+        for profiles in ('["wgsl"]', '["glsl"]', '["wgsl","glsl"]'):
+            with self.subTest(profiles=profiles), self.assertRaises(ToolingError) as raised:
+                build.validate_manifest(json.loads(fixture.replace('@RG2_TEST_PROFILES@', profiles)))
+            self.assertIn('Hardware raytracing requires native Metal or Vulkan', str(raised.exception))
 
     def test_glsl_profile_and_additional_ray_functions_are_not_silently_ignored(self):
         value = json.loads((FIXTURE / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["glsl"]'))
@@ -321,7 +328,7 @@ class RayPipelineTests(unittest.TestCase):
 
     def test_scene_callbacks_require_matching_program_interfaces_and_bounded_queries(self):
         fixture = ROOT / 'tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in'
-        value = json.loads(fixture.read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+        value = json.loads(fixture.read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
         _, programs, techniques, _ = build.validate_manifest(value)
         self.assertEqual('Radiance', programs['Generate']['output'])
         self.assertEqual(2, techniques[ray.TECHNIQUE]['scene_interface']['surface_queries'])
@@ -343,8 +350,8 @@ class RayPipelineTests(unittest.TestCase):
             ray.validate_payload(b'struct ScenePayload { float Values[9999999999999999]; };', 1024, build)
 
 
-@unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER'),
-                     'set LUDUS_RG1_SLANG and LUDUS_RG1_HELPER for real ray compiler acceptance')
+@unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
+                     'set LUDUS_RG1_SLANG, LUDUS_RG1_HELPER and LUDUS_RG1_CROSS for native ray compiler acceptance')
 class RayCompilerAcceptance(unittest.TestCase):
     def test_sampling_in_every_callback_needs_only_a_radiance_payload(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -386,10 +393,13 @@ void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout
 }
 ''')
             result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
-                                         compiler=os.environ['LUDUS_RG1_SLANG'])
+                                         compiler=os.environ['LUDUS_RG1_SLANG'],
+                                         spirv_cross=os.environ['LUDUS_RG1_CROSS'])
             package = build.verify_package(Path(result['package']))
-            self.assertEqual({'metal', 'wgsl'}, {r['profile'] for r in package['recipes']
-                                               if r['technique'] == ray.TECHNIQUE})
+            self.assertEqual({'metal'}, {r['profile'] for r in package['recipes']
+                                        if r['technique'] == ray.TECHNIQUE})
+            self.assertEqual({'metal', 'wgsl'}, set(package['profiles']))
+            self.assertEqual({'ray_tracing': ['metal']}, package['capability_profiles'])
 
     def test_automatic_limits_compile_to_concrete_state_and_retain_prior_package_on_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -406,12 +416,17 @@ void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout
                         # The compiler sees an authored struct larger than the old implicit cap.
                         payload.write_text(payload.read_text().replace('float3 Radiance;',
                                            'float3 Radiance;\n    float4 CustomValues[128];'))
-                    options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'])
+                    options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                                   spirv_cross=os.environ['LUDUS_RG1_CROSS'])
                     output = root / (fixture + '-build')
                     result = build.build_package(manifest, output, **options)
                     package = build.verify_package(Path(result['package']))
                     ray_recipes = [r for r in package['recipes'] if r['technique'] == ray.TECHNIQUE]
-                    self.assertEqual({'metal', 'wgsl'}, {r['profile'] for r in ray_recipes})
+                    self.assertEqual({'metal'}, {r['profile'] for r in ray_recipes})
+                    self.assertEqual({'metal', 'wgsl'}, set(package['profiles']))
+                    self.assertEqual({'ray_tracing': ['metal']}, package['capability_profiles'])
+                    self.assertEqual({'metal'}, {program['profile'] for program in package['programs']
+                                                if program['id'] in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID)})
                     self.assertTrue(all(r['state'] == {'id': 'Triangles', **ray.STATE} for r in ray_recipes))
                     # Explicit older sources and automatic sources can be mixed independently.
                     graph_file = source / 'main.lurender.json'

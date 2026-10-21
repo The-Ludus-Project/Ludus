@@ -76,7 +76,8 @@
   },
   "renderer_gpu_preview": {
     "source": "renderer_gpu_preview.slang",
-    "compute": "ComputeMain"
+    "compute": "ComputeMain",
+    "native_ray_queries": true
   },
   "renderer_authored": {
     "source": "renderer_authored.slang",

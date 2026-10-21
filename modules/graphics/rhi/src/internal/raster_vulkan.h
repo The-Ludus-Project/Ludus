@@ -12,6 +12,7 @@
 // Submitted raster resource release uses the existing ordered queue's fences.
 namespace ludus::graphics::rhi::backend
 {
+VkAccelerationStructureKHR GetRayVulkanScene(usize slot) noexcept;
 namespace
 {
 struct RasterVulkanBuffer final
@@ -50,7 +51,7 @@ struct RasterVulkanShader final
     VkShaderModule Object = VK_NULL_HANDLE;
     char Entry[64]{};
 };
-inline constexpr usize DESCRIPTOR_KINDS = 6;
+inline constexpr usize DESCRIPTOR_KINDS = 7;
 inline constexpr uint32 DESCRIPTOR_SETS_PER_ARENA = 16;
 struct RasterDescriptorArena final
 {
@@ -496,8 +497,9 @@ VkDescriptorType RasterDescriptor(RasterBindingKind kind, bool hasDynamicOffset 
            : kind == RasterBindingKind::StorageRead || kind == RasterBindingKind::StorageReadWrite
                ? (hasDynamicOffset == true ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
                                            : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-           : internal::TextureBinding(kind) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-                                            : VK_DESCRIPTOR_TYPE_SAMPLER;
+           : kind == RasterBindingKind::RayScene ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+           : internal::TextureBinding(kind)      ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                                                 : VK_DESCRIPTOR_TYPE_SAMPLER;
 }
 VkFormat RasterPixelFormat(RasterFormat format) noexcept
 {
@@ -1629,6 +1631,7 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+            VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
         },
     };
     foundation::StaticArray<uint32, DESCRIPTOR_KINDS> counts{};
@@ -1753,8 +1756,11 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
     internal::StorageArray<VkWriteDescriptorSet> writes;
     internal::StorageArray<VkDescriptorBufferInfo> buffers;
     internal::StorageArray<VkDescriptorImageInfo> images;
+    internal::StorageArray<VkAccelerationStructureKHR> scenes;
+    internal::StorageArray<VkWriteDescriptorSetAccelerationStructureKHR> structures;
     if (writes.TryResize(layout.DescriptorCount) == false || buffers.TryResize(layout.DescriptorCount) == false ||
-        images.TryResize(layout.DescriptorCount) == false)
+        images.TryResize(layout.DescriptorCount) == false || scenes.TryResize(layout.DescriptorCount) == false ||
+        structures.TryResize(layout.DescriptorCount) == false)
     {
         return internal::StorageFailure();
     }
@@ -1764,7 +1770,18 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
         const bool isBuffer = entry.Kind == RasterBindingKind::UniformBuffer ||
                               entry.Kind == RasterBindingKind::StorageRead ||
                               entry.Kind == RasterBindingKind::StorageReadWrite;
-        if (isBuffer == true)
+        const bool isScene = entry.Kind == RasterBindingKind::RayScene;
+        if (isScene == true)
+        {
+            scenes[index] = GetRayVulkanScene(info.Slots[index]);
+            structures[index] =
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                .accelerationStructureCount = 1,
+                .pAccelerationStructures = &scenes[index],
+            };
+        }
+        else if (isBuffer == true)
         {
             buffers[index] =
             {
@@ -1786,12 +1803,13 @@ RasterCreateSet(usize slot, const internal::RasterLayout& layout, const internal
         writes[index] =
         {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = isScene == true ? &structures[index] : nullptr,
             .dstSet = set.Object,
             .dstBinding = entry.Binding,
             .dstArrayElement = layout.GetArrayElement(index),
             .descriptorCount = 1,
             .descriptorType = RasterDescriptor(entry.Kind, entry.HasDynamicOffset),
-            .pImageInfo = isBuffer == false ? &images[index] : nullptr,
+            .pImageInfo = isBuffer == false && isScene == false ? &images[index] : nullptr,
             .pBufferInfo = isBuffer == true ? &buffers[index] : nullptr,
         };
     }

@@ -243,7 +243,7 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
     {
         return RasterStatus::Unsupported;
     }
-    if (description.Instances == nullptr || description.Count == 0 || description.Count > limits.MaxInstances ||
+    if ((description.Instances == nullptr && description.Count != 0) || description.Count > limits.MaxInstances ||
         description.ByteBudget == 0)
     {
         return RasterStatus::InvalidDescription;
@@ -254,11 +254,16 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
     const usize maxScalars =
         (description.ByteBudget < limits.MaxBufferBytes ? description.ByteBudget : limits.MaxBufferBytes) /
         sizeof(float32);
-    if (description.Count * 12 > maxScalars)
+    constexpr usize EMPTY_SCENE_OPACITY_SCALARS = 4;
+    constexpr usize INSTANCE_OPACITY_SCALARS = 12;
+    if ((description.Count == 0 ? EMPTY_SCENE_OPACITY_SCALARS : description.Count * INSTANCE_OPACITY_SCALARS) >
+        maxScalars)
     {
         return RasterStatus::CapacityExceeded;
     }
-    if (instances.TryResize(description.Count) == false || opacity.TryResize(description.Count * 12) == false)
+    const usize opacityScalars =
+        description.Count == 0 ? EMPTY_SCENE_OPACITY_SCALARS : description.Count * INSTANCE_OPACITY_SCALARS;
+    if (instances.TryResize(description.Count) == false || opacity.TryResize(opacityScalars) == false)
     {
         return StorageFailure();
     }

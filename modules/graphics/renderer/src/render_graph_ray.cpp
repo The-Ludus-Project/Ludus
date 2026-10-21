@@ -13,11 +13,11 @@ namespace ludus::graphics::renderer
 void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, rhi::ShaderStage stage) noexcept
 {
     using namespace foundation;
-    constexpr usize COMPUTE_BINDING_COUNT = 5;
+    constexpr usize COMPUTE_BINDING_COUNT = LUDUS_GPU_PREVIEW_BINDING_COUNT;
     constexpr usize IMAGE_INPUT_COUNT = 2;
     constexpr usize IMAGE_BINDING_COUNT = 1;
     constexpr usize PARAMETERS_BYTES = LUDUS_GPU_PREVIEW_PARAMETERS_BYTES;
-    constexpr usize VECTOR_BYTES = 16;
+    constexpr usize VECTOR_BYTES = LUDUS_GPU_PREVIEW_VECTOR_BYTES;
     constexpr uint32 WORKGROUP_WIDTH = LUDUS_GPU_PREVIEW_GROUP_WIDTH;
     static constexpr StaticArray<rhi::RasterBinding, COMPUTE_BINDING_COUNT> COMPUTE_BINDINGS{
         {
@@ -26,6 +26,7 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, 
             {2, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, VECTOR_BYTES},
             {3, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, VECTOR_BYTES},
             {4, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+            {LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, rhi::RasterBindingKind::RayScene, rhi::RasterVisibility::Compute, 0},
         },
     };
     static constexpr StaticArray<rhi::RasterBinding, IMAGE_BINDING_COUNT> IMAGE_BINDINGS{
