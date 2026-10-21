@@ -82,6 +82,7 @@ QStringList GetConfigurationPortTypes(int32 version, bool isOutput)
     if (version == 2)
     {
         types.append(QStringLiteral("Buffer"));
+        types.append(QStringLiteral("RenderSize"));
     }
     if (isOutput == false)
     {

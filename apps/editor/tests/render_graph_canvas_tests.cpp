@@ -145,6 +145,127 @@ QPoint ToViewport(const RenderGraphCanvas& canvas, QPointF scenePosition)
 }
 } // namespace
 
+TEST_CASE("shared size policies edit through Properties and canvas with undo", "[editor][render-graph][render-size]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(kinds != nullptr);
+    REQUIRE(add != nullptr);
+    kinds->setCurrentText(QStringLiteral("RenderSize"));
+    add->click();
+    QString identity = QStringLiteral("rendersize");
+    bool shouldUseCanvas = false;
+    SECTION("size in Properties") {}
+    SECTION("target in Properties")
+    {
+        identity = QStringLiteral("color");
+    }
+    SECTION("size on canvas")
+    {
+        shouldUseCanvas = true;
+    }
+    SECTION("target on canvas")
+    {
+        identity = QStringLiteral("color");
+        shouldUseCanvas = true;
+    }
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, identity) == true);
+    INFO(identity.toUtf8().constData());
+    INFO(shouldUseCanvas);
+    const bool isSizeNode = identity == QStringLiteral("rendersize");
+    const QString source = isSizeNode == true ? QStringLiteral("Texture") : QStringLiteral("RenderSize");
+    const QString port = identity + (isSizeNode == true ? QStringLiteral(".texture") : QStringLiteral(".size"));
+    const auto exercise = [&workspace, &identity, &source, &port](QWidget& inoutFields) {
+        QSpinBox* width = inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphExtentWidth"));
+        REQUIRE(width != nullptr);
+        width->setValue(97);
+        Q_EMIT width->editingFinished();
+        QSpinBox* height = inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphExtentHeight"));
+        REQUIRE(height != nullptr);
+        height->setValue(65);
+        Q_EMIT height->editingFinished();
+        const QJsonArray nodes = GetConfiguration(workspace.GetDocument(), ROOT_GRAPH, DEFAULT_CONFIGURATION)
+                                     .value(QStringLiteral("nodes"))
+                                     .toArray();
+        for (const QJsonValueConstRef node : nodes)
+        {
+            if (node.toObject().value(QStringLiteral("id")).toString() == identity)
+            {
+                CHECK(node.toObject().value(QStringLiteral("extent")).toArray() == QJsonArray{97, 65});
+            }
+        }
+        QComboBox* mode = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphExtentMode"));
+        REQUIRE(mode != nullptr);
+        const uint64 revision = workspace.GetDocument().GetRevision();
+        mode->setCurrentIndex(1);
+        Q_EMIT mode->activated(1);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+        CHECK(workspace.GetCanvas().GetPortPosition(port, false).isNull() == false);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains(source.toUtf8()) == true);
+        if (identity == QStringLiteral("rendersize"))
+        {
+            REQUIRE(workspace.GetCanvas().RequestLink(QStringLiteral("color.texture"), port) == true);
+            const uint64 connectedRevision = workspace.GetDocument().GetRevision();
+            QComboBox* connectedMode = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphExtentMode"));
+            REQUIRE(connectedMode != nullptr);
+            connectedMode->setCurrentIndex(0);
+            Q_EMIT connectedMode->activated(0);
+            CHECK(workspace.GetDocument().GetRevision() == connectedRevision);
+            QComboBox* preservedMode = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphExtentMode"));
+            REQUIRE(preservedMode != nullptr);
+            CHECK(preservedMode->currentIndex() == 1);
+            workspace.Undo();
+        }
+        workspace.Undo();
+        CHECK(workspace.GetCanvas().GetPortPosition(port, false).isNull() == true);
+        workspace.Redo();
+        CHECK(workspace.GetCanvas().GetPortPosition(port, false).isNull() == false);
+        REQUIRE(workspace.Save() == true);
+    };
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    if (shouldUseCanvas == false)
+    {
+        exercise(*properties);
+    }
+    else
+    {
+        workspace.resize(1200, 800);
+        workspace.show();
+        properties->hide();
+        QCoreApplication::processEvents();
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        canvas.Rebuild();
+        QTimer::singleShot(0, &canvas, [&canvas, &exercise, properties]() {
+            QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menu != nullptr);
+            QAction* edit = menu->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+            REQUIRE(edit != nullptr);
+            QTimer::singleShot(0, &canvas, [&exercise, properties]() {
+                QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                REQUIRE(dialog != nullptr);
+                CHECK(properties->isVisible() == false);
+                exercise(*dialog);
+                dialog->reject();
+            });
+            menu->close();
+            edit->trigger();
+        });
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(identity) + QPointF(20, 10));
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+    }
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+}
+
 TEST_CASE("RG3b canvas shows a configuration by domain with typed ports", "[editor][render-graph][canvas]")
 {
     QTemporaryDir project;

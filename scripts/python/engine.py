@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 from formatting import FormattingError, format_source
+import init_progress
 from analysis_inventory import compilation_entries, inventory, request_codemodel, SOURCE_ROOTS
 from quality_process import ANALYSIS_SECONDS, LANE_BYTES, LOG_BYTES, LogBudget, run_bounded
 
@@ -231,6 +232,7 @@ def run(
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
+    init_progress.announce_privileged_command(argv)
     print(f"+ {command_line(argv)}", flush=True)
     try:
         return subprocess.run(
@@ -1269,10 +1271,12 @@ def prepare_conan_artifacts(
     # toolchain is unavailable (especially with --no-system-install).
     configure_system_tool_shims(root, versions)
     validate_required_system_tools(root, versions)
+    init_progress.begin("host_tools")
     create_or_update_venv(root)
     install_managed_tools(root, versions)
     validate_managed_tools(root, versions)
     profile_path = install_conan_profile(root)
+    init_progress.begin("conan")
     # Exporting makes this checkout's recipe revisions the latest in the cache,
     # so a shared cache must not interleave another checkout's export before
     # this one resolves its lock and installs.
@@ -1285,8 +1289,10 @@ def prepare_conan_artifacts(
         export_local_recipes(root, locked=locked)
         if not locked:
             create_conan_lock(root, profile_path)
-        for preset in presets:
+        for index, preset in enumerate(presets):
+            init_progress.detail(index, len(presets), "conan install " + preset)
             conan_install_for_preset(root, profile_path, preset, locked=locked)
+        init_progress.detail(len(presets), len(presets), "Conan dependencies ready")
 
 
 def cmake_cache_value(cache_path: Path, name: str) -> str | None:
@@ -1531,10 +1537,20 @@ def command_init(args: argparse.Namespace) -> int:
     if args.ci:
         os.environ["CI"] = "true"
 
+    init_progress.start(init_progress.native_plan(args))
+    try:
+        return run_init_steps(args, root, versions, preset, run_validation)
+    finally:
+        init_progress.stop()
+
+
+def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dict[str, str]], preset: str,
+                   run_validation: bool) -> int:
     print("Ludus one-command onboarding")
     print(f"Repository: {root}")
     print(f"Preset: {preset}")
 
+    init_progress.begin("system")
     check_current_python(root, versions["minimum"]["python"])
     if args.no_system_install:
         print("Skipping automatic system package installation because --no-system-install was supplied.")
@@ -1561,14 +1577,20 @@ def command_init(args: argparse.Namespace) -> int:
     save_options(root, presets, args)
     prepare_conan_artifacts(root, versions, presets, locked=args.locked)
     from init_editor import prepare_editor_preview
+    if args.with_editor and args.with_editor_preview:
+        init_progress.begin("preview_tools")
     prepare_editor_preview(args, sys.modules[__name__])
+    init_progress.begin("cmake_caches")
     repair_existing_cmake_caches(root, presets)
     if args.with_rad_debugger:
+        init_progress.begin("rad")
         command_setup_rad_debugger(args)
+    init_progress.begin("doctor")
     if command_doctor(argparse.Namespace()) != 0:
         raise EngineError("doctor reported an invalid required tool or project state")
 
     if not args.ci and not os.environ.get("CI"):
+        init_progress.begin("hooks")
         command_install_hooks(argparse.Namespace())
 
     if getattr(args, "with_editor", False):
@@ -1576,13 +1598,17 @@ def command_init(args: argparse.Namespace) -> int:
         setup_editor(args, sys.modules[__name__])
 
     if getattr(args, "run_tests", False) and not run_validation:
+        init_progress.begin("tests")
         command_test(argparse.Namespace(preset=preset, label=None))
 
     if run_validation:
+        init_progress.begin("validate_build")
         command_build(argparse.Namespace(preset=preset, extra=[]))
+        init_progress.begin("validate_test")
         command_test(argparse.Namespace(preset=preset, label=None))
 
         if not args.skip_checks:
+            init_progress.begin("checks")
             command_check(
                 argparse.Namespace(
                     preset=preset, format=False, tidy=False, include_cleaner=False, all=True, fix=False
@@ -1590,10 +1616,12 @@ def command_init(args: argparse.Namespace) -> int:
             )
 
         if not args.skip_sanitizers:
+            init_progress.begin("sanitizers")
             command_build(argparse.Namespace(preset=NATIVE_PRESET_PREFIX + "-asan-ubsan", extra=[]))
             command_test(argparse.Namespace(preset=NATIVE_PRESET_PREFIX + "-asan-ubsan", label=None))
 
         if not args.skip_sdk:
+            init_progress.begin("sdk")
             command_install_sdk(argparse.Namespace(preset=preset))
 
     print("")
@@ -1794,6 +1822,37 @@ def run_tidy(root: Path, preset: str, *, analyzer: bool = False) -> None:
     run_analysis_commands(root, commands, directory=directory)
 
 
+def run_tidy_sources(root: Path, preset: str, sources: Sequence[str]) -> None:
+    """Analyze explicitly listed compiled sources with bounded concurrency.
+
+    Each source retains clang-tidy's ordinary compilation-database lookup and
+    project policy. Validate the complete list before starting any analysis.
+    """
+    versions = load_tool_versions(root)
+    clang_tidy = find_system_tool(root, "clang-tidy", versions)
+    actual_version = executable_version(clang_tidy, ("--version",), root)
+    if not version_tuple(actual_version) or version_tuple(actual_version)[0] != llvm_major_version(versions):
+        raise EngineError(f"Static analysis requires reference clang-tidy {llvm_major_version(versions)}")
+    if not sources:
+        raise EngineError("Analysis requires at least one listed source")
+    build_dir = build_dir_for_preset(root, preset)
+    if not (build_dir / "compile_commands.json").is_file():
+        raise EngineError(f"Missing compilation database for preset {preset}; build analysis inputs first")
+    compiled = compile_database_files(build_dir)
+    commands = []
+    seen: set[Path] = set()
+    for source in sources:
+        path = (root / source).resolve()
+        if path in seen:
+            raise EngineError(f"Analysis source listed twice: {source}")
+        seen.add(path)
+        if path not in compiled:
+            raise EngineError(f"Analysis source is not compiled by preset {preset}: {source}")
+        commands.append([clang_tidy, "-p", build_dir, "--warnings-as-errors=*", str(path)])
+    print(f"Analysis sources: {len(commands)} listed sources from {build_dir}", flush=True)
+    run_analysis_commands(root, commands)
+
+
 def analysis_directory(root: Path) -> Path:
     parent = root / "out/quality/analysis"
     parent.mkdir(parents=True, exist_ok=True)
@@ -1980,7 +2039,9 @@ def command_check(args: argparse.Namespace) -> int:
     tooling = getattr(args, "tooling", False)
     inventory_only = getattr(args, "inventory", False)
     tidy_changed = getattr(args, "tidy_changed", False)
-    explicit = args.format or args.tidy or include_cleaner or analyzer or tooling or inventory_only or tidy_changed
+    tidy_sources = getattr(args, "tidy_sources", None) or []
+    explicit = (args.format or args.tidy or include_cleaner or analyzer or tooling or inventory_only
+                or tidy_changed or bool(tidy_sources))
     run_all = args.all or not explicit
 
     if args.format or run_all:
@@ -1991,7 +2052,7 @@ def command_check(args: argparse.Namespace) -> int:
         run_foundational_includes(root)
         run_naming_check(root)
         run_container_policy(root)
-    if args.tidy or run_all or include_cleaner or analyzer or inventory_only:
+    if args.tidy or run_all or include_cleaner or analyzer or inventory_only or tidy_sources:
         ensure_bootstrap_for_preset(root, args.preset)
     if inventory_only:
         try:
@@ -2006,6 +2067,8 @@ def command_check(args: argparse.Namespace) -> int:
         run_tidy(root, args.preset)
     if analyzer:
         run_tidy(root, args.preset, analyzer=True)
+    if tidy_sources:
+        run_tidy_sources(root, args.preset, tidy_sources)
     if tidy_changed:
         ensure_bootstrap_for_preset(root, args.preset)
         run_tidy_changed(root, args.preset, getattr(args, "base", None) or "origin/develop")
@@ -2685,6 +2748,8 @@ def make_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--analyzer", action="store_true", help="run advisory stable LLVM analyzer rules on the complete configured inventory")
     check_parser.add_argument("--tooling", action="store_true", help="check Python and workflows with prepared pinned Ruff/actionlint")
     check_parser.add_argument("--inventory", action="store_true", help="validate complete configured source inventory without running analyzers")
+    check_parser.add_argument("--tidy-sources", nargs="+", metavar="SOURCE", dest="tidy_sources",
+                              help="run clang-tidy on listed compiled sources with LUDUS_TIDY_JOBS concurrency")
     check_parser.add_argument(
         "--include-cleaner",
         action="store_true",
@@ -2760,6 +2825,9 @@ def main(argv: Sequence[str]) -> int:
             if args is None:
                 print("Initialization cancelled. No setup actions were run.")
                 return 0
+            if getattr(args, "show_progress_window", False):
+                from init_window import run_setup
+                return run_setup(args, sys.modules[__name__], geometry=getattr(args, "window_geometry", None))
         if args.command != "debug" and str(getattr(args, "preset", "")).startswith("web-emscripten-"):
             from web_build import command
             return command(args, sys.modules[__name__])

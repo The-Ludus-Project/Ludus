@@ -24,7 +24,7 @@ compatibility is never inferred from those labels.
 ## Author pipeline nodes
 
 The node type picker offers **GraphicsPipeline**, **ComputePipeline** and
-**RayTracingPipeline** for GPU work. Scene, Camera, Target, Subgraph, Export and
+**RayTracingPipeline** for GPU work. Scene, Camera, Target, RenderSize, Subgraph, Export and
 Present remain supporting nodes. A new pipeline has no inputs, outputs or shader
 assignments. It is an editable draft, not a ready rendering pass.
 
@@ -121,6 +121,67 @@ and the complete authored interface are checked before activation. Missing requi
 produce IncompletePipeline; an invalid/pending candidate leaves the current
 viewport generation intact. Blending/rasterization remain fields inside the
 node; separate state blocks and stream output are deferred.
+
+## Share render sizes
+
+Use a **RenderSize** node when targets should share a resolution. Its default
+**Fixed dimensions** policy owns one width/height pair in pixels. Select each
+Target's **extent > From size input**, then connect the size output to its new
+`size` input. For example, this size node can drive both `color.size` and
+`depth.size`:
+
+```json
+{"id": "scene_size", "kind": "RenderSize", "extent": [1280, 720]}
+```
+
+```json
+[
+  {"from": "scene_size.size", "to": "color.size"},
+  {"from": "scene_size.size", "to": "depth.size"}
+]
+```
+
+Targets using that input store `"extent": "RenderSize"`. Existing targets with
+`"extent": [width, height]` keep their fixed dimensions and source representation.
+Adding a RenderSize node or selecting **From size input** upgrades that graph's
+draft to version 2. These edits, including size-mode changes, support undo/save.
+Disconnect an existing size/texture input before switching its owner back to fixed
+dimensions; a rejected edit preserves the connected policy. All controls and node
+creation are also available from the canvas context menu with Properties hidden.
+
+To derive a size from another texture, select the RenderSize node's
+**extent > Match texture** policy (`"extent": "Texture"`). Connect a color or
+depth texture output to its `texture` input. This reads dimensions rather than
+pixel contents, so a Target's uninitialized `texture` output is sufficient. A
+target consulted only for size metadata does not enter the GPU resource table.
+Using a rendered texture output retains its producer dependency; connect the
+underlying Target's output when only its declared dimensions are needed. Size
+dependencies are explicit graph edges and cannot form within-frame cycles.
+
+`RenderSize` is a graph value type available on version-2 subgraph inputs and
+outputs. It is distinct from GPU textures/buffers and shader parameters, and it
+cannot be an Export/Present or root configuration output. Subgraphs resolve sizes
+through each caller's bindings. No size node allocates a GPU resource or creates
+a shader program; the compiled Plan and generated SDK resources contain concrete
+numeric extents.
+
+Texture compatibility belongs to the operation using the texture. The current
+color/depth raster operation requires equal attachment extents and sample counts;
+GraphicsPipeline writable resources must match their declared format and pipeline
+samples. The triangle ray profile requires a single-sample offscreen RGBA8Unorm
+color target, with target-derived launch sizing or matching explicit dimensions.
+The canvas and Properties connection controls reject newly provable mismatches,
+including ones resolved through nested subgraphs. The message names the operation,
+dimensions or format/samples, and the repair. A size alone does not imply that two
+textures have compatible formats, sample counts or usages.
+
+Unbound subgraph inputs and incomplete drafts may not yet have a known size.
+Bounded editor inference defers unknown contracts to build validation, which checks
+the selected concrete graph instance. Existing unrelated draft problems do not
+block an otherwise compatible new connection. This is not a universal same-size
+rule for sampled textures; future resize/composite operations need their own
+declared relationships. View-relative full/half presets, adaptive resolution and
+runtime resizing remain separate work.
 
 ## Execute a triangle ray pipeline
 
@@ -233,10 +294,10 @@ consumer checks apply to retained subgraphs and live consumers. Library inspecti
 can report an incomplete draft's interface without requiring execution-ready inputs.
 Compilation never removes or rewrites unused authored nodes, ports or wires.
 
-This target-derived launch mode uses the existing fixed target extents. Shared
-size expressions, view-relative full/half resolution presets, runtime resize and
-adaptive resolution are not implemented by this mode; the World viewport still
-follows the target/resize limitations documented below.
+The target-derived launch mode uses each target's resolved extent, including
+[shared render sizes](#share-render-sizes). View-relative full/half resolution
+presets, runtime resize and adaptive resolution are not implemented by this mode;
+the World viewport still follows the target/resize limitations documented below.
 
 The profile admits one ray invocation per configuration and the existing graph
 mesh/item limits. It rejects native ray payloads, recursive tracing, additional hit groups,

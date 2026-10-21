@@ -34,6 +34,7 @@ MAX_NODES = 128
 MAX_EDGES = 512
 MAX_EXPANDED_NODES = 1024
 MAX_PASSES = 256
+MAX_TARGET_EXTENT = 16384
 TYPES = ("Scene", "View", "ColorTexture", "DepthTexture")
 TEXTURES = TYPES[2:]
 MODES = ("ColorAndDepth", "DepthOnly")
@@ -109,11 +110,18 @@ def _ports(values, where, outputs=False, version=1):
         _identifier(port["id"], where)
         _require(port["id"] not in claimed, "DuplicateIdentity", where, port["id"])
         claimed.add(port["id"])
-        _enum(port["type"], (pipeline.RESOURCE_TYPES if outputs else pipeline.INPUT_TYPES)
+        _enum(port["type"], ((*pipeline.RESOURCE_TYPES, 'RenderSize') if outputs else (*pipeline.INPUT_TYPES, 'RenderSize'))
               if version == 2 else (TEXTURES if outputs else TYPES), where)
         if outputs:
             _endpoint(port["source"], where)
             _boolean(port["required"], where)
+
+
+def _validate_extent(extent, where):
+    _require(type(extent) is list and len(extent) == 2,
+             'Schema', where, 'extent must contain width and height in pixels')
+    for size in extent:
+        _integer(size, 1, MAX_TARGET_EXTENT, where)
 
 
 def _validate_node(node, where):
@@ -122,12 +130,14 @@ def _validate_node(node, where):
     if kind in pipeline.KINDS:
         pipeline.validate(node, where, sys.modules[__name__])
         return
-    _enum(kind, ("Scene", "Camera", "Target", "Raster", "Subgraph", "Export", "Present"), where)
+    _enum(kind, ("Scene", "Camera", "Target", "RenderSize", "Raster", "Subgraph", "Export", "Present"), where)
     fields = {"id", "kind"}
     if kind == "Camera":
         fields |= {"active", "role", "target_type"}
     elif kind == "Target":
         fields |= {"type", "format", "extent", "samples", "imported", "initialized", "presentation"}
+    elif kind == 'RenderSize':
+        fields.add('extent')
     elif kind == "Raster":
         fields |= {"mode", "vertex_layout", "material", "depth_load", "depth_store"}
         if node.get("mode") == "ColorAndDepth":
@@ -148,10 +158,8 @@ def _validate_node(node, where):
     elif kind == "Target":
         _enum(node["type"], TEXTURES, where)
         _enum(node["format"], FORMATS[node["type"]], where)
-        _require(type(node["extent"]) is list and len(node["extent"]) == 2,
-                 "Schema", where, "extent must contain width and height in pixels")
-        for size in node["extent"]:
-            _integer(size, 1, 16384, where)
+        if node['extent'] != 'RenderSize':
+            _validate_extent(node['extent'], where)
         _integer(node["samples"], 1, 1, where)
         for flag in ("imported", "initialized", "presentation"):
             _boolean(node[flag], where)
@@ -160,6 +168,9 @@ def _validate_node(node, where):
         _require(not node["presentation"] or
                  (node["imported"] and node["type"] == "ColorTexture"),
                  "TypeMismatch", where, "presentation requires an imported color target")
+    elif kind == 'RenderSize':
+        if node['extent'] != 'Texture':
+            _validate_extent(node['extent'], where)
     elif kind == "Raster":
         _enum(node["mode"], MODES, where)
         _enum(node["vertex_layout"], ("RendererStatic",), where)
@@ -198,8 +209,10 @@ def _validate_document(value, where):
             _require(type(node) is dict, "Schema", location, "node object required")
             _require(value["version"] == 2 or node.get("kind") not in pipeline.KINDS,
                      "Version", location, "pipeline nodes require document version 2")
+            _require(value['version'] == 2 or (node.get('kind') != 'RenderSize' and node.get('extent') != 'RenderSize'),
+                     'Version', location, 'shared render sizes require document version 2')
             _validate_node(node, location + "/" + str(node.get("id", "node"))
-                           if node.get("kind") in pipeline.KINDS else location)
+                           if node.get("kind") in (*pipeline.KINDS, 'RenderSize') else location)
             _require(node["id"] not in nodes, "DuplicateIdentity", location, node["id"])
             nodes.add(node["id"])
         for edge in config["edges"]:
@@ -390,7 +403,9 @@ class _Library:
         if kind == "Camera":
             return {"target": node["target_type"]}, {"view": "View"}
         if kind == "Target":
-            return {}, {"texture": node["type"]}
+            return ({'size': 'RenderSize'} if node['extent'] == 'RenderSize' else {}), {"texture": node["type"]}
+        if kind == 'RenderSize':
+            return ({'texture': 'Texture'} if node['extent'] == 'Texture' else {}), {'size': 'RenderSize'}
         if kind == "Raster":
             inputs = {"scene": "Scene", "view": "View", "depth": "DepthTexture"}
             outputs = {"depth": "DepthTexture"}
@@ -427,7 +442,7 @@ class _Library:
                      f"Input '{edge['to']}' does not exist. Reconnect to a declared input port or restore that port in Properties.")
             _require(port not in incoming[key], "MultipleWriters", where,
                      f"Input '{edge['to']}' has multiple connections, including '{edge['from']}'. Disconnect all but one incoming wire.")
-            _require(kind == ports[key][0][port], "TypeMismatch", where,
+            _require(kind == ports[key][0][port] or (ports[key][0][port] == 'Texture' and kind in TEXTURES), "TypeMismatch", where,
                      f"{edge['from']} ({kind}) cannot connect to {edge['to']} ({ports[key][0][port]}). "
                      f"Connect a {ports[key][0][port]} output to this input, or change the input type in Properties.")
             incoming[key][port] = edge["from"]
@@ -518,6 +533,7 @@ class _Value:
     defined: bool = False
     producer: str | None = None
     cameras: tuple[str, ...] = ()
+    extent: tuple[int, ...] = ()
 
 
 class _Compiler:
@@ -586,8 +602,14 @@ class _Compiler:
             elif kind == "Target":
                 self.resources[where] = {key: node[key] for key in
                     ("type", "format", "extent", "samples", "imported", "initialized", "presentation")}
+                if node['extent'] == 'RenderSize':
+                    self.resources[where]['extent'] = list(inputs['size'].extent)
                 self.latest[where] = 0
                 outputs["texture"] = _Value(node["type"], origin=where, resource=where, defined=node["initialized"])
+            elif kind == 'RenderSize':
+                extent = (self.resources[inputs['texture'].resource]['extent']
+                          if node['extent'] == 'Texture' else node['extent'])
+                outputs['size'] = _Value('RenderSize', origin=where, extent=tuple(extent))
             elif kind == "Camera":
                 camera = {"id": where, "active": node["active"], "role": node["role"],
                           "target": inputs["target"].resource if "target" in inputs else None}
@@ -624,7 +646,10 @@ class _Compiler:
                 if node["mode"] == "ColorAndDepth":
                     color, depth_target = (self.resources[inputs[aspect].resource] for aspect in ("color", "depth"))
                     _require((color["extent"], color["samples"]) == (depth_target["extent"], depth_target["samples"]),
-                             "AttachmentMismatch", where, "color/depth extent and samples must agree")
+                             "AttachmentMismatch", where,
+                             f"Color target '{inputs['color'].resource}' has extent {color['extent']} and {color['samples']} samples; "
+                             f"depth target '{inputs['depth'].resource}' has extent {depth_target['extent']} and {depth_target['samples']} samples. "
+                             'This raster operation requires equal attachment extents and samples. Connect both targets to the same RenderSize, or use matching fixed sizes.')
                 for aspect in ("depth", "color") if node["mode"] == "ColorAndDepth" else ("depth",):
                     outputs[aspect] = self.write(inputs[aspect], node, aspect, where, inputs["view"].cameras)
                 technique = MATERIALS[node["material"]] + "." + node["mode"]
@@ -668,6 +693,8 @@ class _Compiler:
         return {p["id"]: values[p["source"]] for p in config["outputs"] if p['id'] in requested_outputs}
 
     def root(self, where, kind, value):
+        _require(value.type in TEXTURES, 'TypeMismatch', where,
+                 f'{kind} requires a texture; {value.type} is a graph value. Expose RenderSize through a subgraph interface and export a rendered texture.')
         _require(value.defined, "Initialization", where,
                  f"{kind} reads undefined {value.resource}@{value.version}")
         if kind == "Present":
@@ -690,6 +717,11 @@ class _Compiler:
                          "CameraRouteMissing", camera["id"],
                          f"active camera has no rendered route to {kind} on {camera['target']}")
         _require(self.roots, "UnboundOutput", "root graph", "an execution graph needs an Export or Present root")
+        # A target consulted only for sizing supplies metadata, not a GPU allocation.
+        used_resources = {root['resource'] for root in self.roots}
+        used_resources.update(attachment['resource'] for operation in self.passes
+                              for attachment in operation.get('attachments', {}).values())
+        self.resources = {identity: resource for identity, resource in self.resources.items() if identity in used_resources}
 
 
 def _library(path, root):
