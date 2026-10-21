@@ -465,6 +465,15 @@ Run:
 
 Bootstrap is the exhaustive dependency-preparation step. It uses the system Python to create `out/host-tools/venv/`, then installs the pinned CMake, Ninja, and Conan versions from `config/tool_versions.json`. This is intentional network access.
 
+`out/host-tools/venv/` is reused only while it still belongs to the Python running init. Init compares the `version` (or
+`version_info`) and `home` recorded in its `pyvenv.cfg` with the current interpreter, then runs the environment's own
+`python` to import `encodings` and find pip. When any check fails, for example after Ubuntu or Homebrew replaces Python
+3.12 with 3.14, init prints `Recreating stale virtual environment (<reason>)`, shows the same notice in the setup
+window, deletes only that directory and rebuilds it before reinstalling the pinned packages. Rebuilding in place is not
+enough: `venv` keeps an existing `bin/python` copied from the removed interpreter. `./scripts/doctor` lists the reason
+on the "Project-managed virtual environment" row, and the `scripts/clangd`, `editor-task`, `setup-editor` and
+`setup-quality-tools` wrappers fall back to the system `python3` while the environment cannot start.
+
 After tool validation, bootstrap installs the committed Conan profile into `out/conan/profiles/`, creates `conan.lock`, populates the Conan cache, writes Conan generator files under `out/conan/<preset>/`, and runs a minimal CMake configure smoke test.
 
 ## Conan
