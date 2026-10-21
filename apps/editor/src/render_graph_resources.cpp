@@ -361,6 +361,81 @@ void CollectProblems(const ResourceContext& context,
 }
 } // namespace
 
+RenderGraphResourceFeedback DescribeRenderGraphResource(const RenderGraphDocument& document,
+                                                        const QString& file,
+                                                        const QString& configuration,
+                                                        const QString& endpoint,
+                                                        const QSize& referenceSize)
+{
+    QJsonObject graph;
+    if (document.GetGraph(file, graph) == false)
+    {
+        return {QStringLiteral("Size unresolved"), QStringLiteral("The graph source is unavailable or malformed.")};
+    }
+    const ResourceContext context{document,
+                                  FindRecord(graph.value(QStringLiteral("configurations")).toArray(), configuration),
+                                  nullptr,
+                                  {}};
+    int32 remainingSteps = MAX_INFERENCE_STEPS;
+    const ResourceDescription resource = ResolveResource(context, endpoint, remainingSteps);
+    QString size;
+    QString detail;
+    if (HasViewPolicy(resource) == true)
+    {
+        const QJsonArray scale = resource.ViewPolicy.value(QStringLiteral("scale")).toArray();
+        const int64 numerator = scale.at(0).toInteger();
+        const int64 denominator = scale.at(1).toInteger();
+        const QString policy = QStringLiteral("View %1/%2").arg(numerator).arg(denominator);
+        if (referenceSize.isEmpty() == true)
+        {
+            size = policy + QStringLiteral(" (awaiting viewport)");
+            detail = QStringLiteral("View-relative policy; no current World drawable reference is available. No "
+                                    "nominal size is presented as a resolved size.");
+        }
+        else
+        {
+            // Match ResolveRenderGraphResource's bounded integer ceil in the runtime.
+            const int64 width = (int64{referenceSize.width()} * numerator + denominator - 1) / denominator;
+            const int64 height = (int64{referenceSize.height()} * numerator + denominator - 1) / denominator;
+            if (width > content::render_graph_format::MAX_TARGET_EXTENT ||
+                height > content::render_graph_format::MAX_TARGET_EXTENT)
+            {
+                size = policy + QStringLiteral(" (extent exceeds limit)");
+            }
+            else
+            {
+                size = policy + QStringLiteral(" → %1 × %2 px").arg(width).arg(height);
+            }
+            detail = QStringLiteral("Current drawable reference: %1 × %2 physical pixels; ceil(reference × %3/%4), "
+                                    "maximum dimension %5. This describes the draft, not the last presented image.")
+                         .arg(referenceSize.width())
+                         .arg(referenceSize.height())
+                         .arg(numerator)
+                         .arg(denominator)
+                         .arg(content::render_graph_format::MAX_TARGET_EXTENT);
+        }
+    }
+    else if (HasKnownExtent(resource.Extent) == true &&
+             resource.Extent.at(0).toInteger() <= content::render_graph_format::MAX_TARGET_EXTENT &&
+             resource.Extent.at(1).toInteger() <= content::render_graph_format::MAX_TARGET_EXTENT)
+    {
+        size =
+            QStringLiteral("%1 × %2 px").arg(resource.Extent.at(0).toInteger()).arg(resource.Extent.at(1).toInteger());
+        detail = QStringLiteral("Resolved from authored fixed/shared size or connected texture metadata.");
+    }
+    else
+    {
+        size = QStringLiteral("Size unresolved");
+        detail = QStringLiteral("Missing, invalid or cyclic size/texture bindings, or the bounded inference limit. A "
+                                "library input needs a concrete caller binding. Validate for complete diagnostics.");
+    }
+    if (resource.Format.isEmpty() == false)
+    {
+        detail += QStringLiteral("\n%1; %2 samples.").arg(resource.Format).arg(resource.Samples);
+    }
+    return {size, size + QLatin1Char('\n') + detail};
+}
+
 RenderGraphLinkCheck CheckRenderGraphTextureContracts(const RenderGraphDocument& document,
                                                       const QString& file,
                                                       const QString& configuration,

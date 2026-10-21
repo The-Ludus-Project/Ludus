@@ -637,6 +637,20 @@ instance's selected asset/configuration remain explicit, separately validated
 edits. See the [interface editing guide](../development/render-graph-authoring.md#edit-configuration-inputs-and-outputs)
 for the authoring workflow and identity restrictions.
 
+Canvas annotations are a read-only projection of the displayed draft. A bounded
+activity inspector mirrors observable-root selection (including nested effects,
+active cameras and the retained-subgraph input contract), with compiler-selection
+parity regressions. Standalone library inspection assumes every exposed output
+is requested. Structural uncertainty and import recursion produce Unknown rather
+than a false inactive claim; this projection never admits execution. Size labels
+reuse connection-check resource inference through writable targets and nested
+bindings. View-relative dimensions use the current World drawable reference,
+runtime integer-ceil rounding and extent bounds, or stay symbolic when that
+reference is unavailable. They do not describe the last presented generation.
+Port hover during a drag calls the existing connection pre-check, caches its
+result until the hovered endpoint changes, and displays its reason before drop.
+Annotations and hover state own no document history, compiler jobs or GPU state.
+
 Build, Preview and Apply to Session are explicit actions. Background compilation
 is an opt-in preference and never implicitly saves drafts or applies stale output.
 Jobs capture project epoch, document/dependency revisions, target and request ID;

@@ -3204,6 +3204,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
     }
 #endif
     mPreviewSourceOrNull = sourceOrNull;
+    mCanvas->SetReferenceSize({});
     mPreviewDeviceSerial = 0;
     mPreviewSceneIdentity.clear();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -3223,6 +3224,12 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
 #endif
     if (mPreviewSourceOrNull != nullptr)
     {
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+        mCanvas->SetReferenceSize(mPreviewSourceOrNull->GetDrawableSize());
+        connect(mPreviewSourceOrNull, &RenderPreview::DrawableSizeChanged, this, [this](const QSize& size) {
+            mCanvas->SetReferenceSize(size);
+        });
+#endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
         connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
             if (mPreviewSourceOrNull->HasDevice() == true && mPreviewTimer.isActive() == false)
@@ -3238,6 +3245,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
         connect(mPreviewSourceOrNull, &QObject::destroyed, this, [this]() {
             mPreviewTimer.stop();
             mPreviewSourceOrNull = nullptr;
+            mCanvas->SetReferenceSize({});
             mPreviewDeviceSerial = 0;
         });
     }

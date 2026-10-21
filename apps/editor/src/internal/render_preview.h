@@ -211,6 +211,9 @@ public:
         return mHasPendingFrame;
     }
 Q_SIGNALS:
+    /// Drawable reference changed, in physical pixels before the preview rendering cap.
+    /// Emitted on the GUI thread even when no device or rendered frame is ready.
+    void DrawableSizeChanged(const QSize& size);
     void Changed();
     void NavigationChanged();
     void DeviceRequested();
