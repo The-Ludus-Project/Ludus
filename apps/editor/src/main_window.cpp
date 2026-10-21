@@ -159,6 +159,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::renderGraphCommands);
     connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderGraphErrors);
     connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::renderGraphCommands);
+    connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::RenderDocumentActions);
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* before, QWidget* after) {
         LastEditedField_ = nullptr;
         disconnect(FocusUndoConnection_);

@@ -41,6 +41,7 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+class CodeEditor;
 class RenderGraphPreview;
 class RenderGraphWorker;
 class RenderPreview;
@@ -296,6 +297,7 @@ private:
     [[nodiscard]] bool isUneditedBuiltIn() const;
     [[nodiscard]] bool writeDocument();
     [[nodiscard]] bool hasPendingSourceText() const;
+    [[nodiscard]] bool commitPendingSource();
     void openProjectGraph();
     void showDocument(const RenderGraphDocument& document);
     [[nodiscard]] QByteArray getBuildIdentity(RenderGraphSource source = RenderGraphSource::Draft) const;
@@ -309,7 +311,7 @@ private:
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
     void editNodeOnCanvas();
     void renderEdges();
-    void renderSource();
+    void renderSource(bool shouldDiscardPending = false);
     void renderStatus();
     void updateActions();
     void documentEdited(RenderGraphDocumentStatus status,
@@ -374,7 +376,7 @@ private:
     QLineEdit* mEdgeFrom;
     QLineEdit* mEdgeTo;
     QComboBox* mSourceFile;
-    QPlainTextEdit* mSource;
+    CodeEditor* mSource;
     QPlainTextEdit* mSourceInterface;
     QPlainTextEdit* mPlan;
     RenderGraphBuildSettings mBuildSettings;
@@ -404,8 +406,7 @@ private:
     /// Renderer tab texture viewer; null in builds without the native GPU preview.
     TextureViewer* mTextureViewerOrNull = nullptr;
     QTimer mSourceEditDebounce;
-    QString mEditingSource;
-    QByteArray mEditingText;
+    QString mDisplayedSource;
     QTimer mPreviewTimer;
     foundation::uint64 mPreviewDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;

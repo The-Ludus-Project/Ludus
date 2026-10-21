@@ -210,6 +210,17 @@ set(editor_profiling_sources
     src/internal/profiling_panel.h src/profiling_panel.cpp
     src/main_window_profiling.cpp)
 
+# Reusable private text presentation; no renderer or shader-tool dependency.
+add_library(ludus_editor_code STATIC
+    src/internal/code_editor.h src/code_editor.cpp
+    src/internal/code_editor_panel.h src/code_editor_panel.cpp
+    src/internal/code_syntax_highlighter.h src/code_syntax_highlighter.cpp)
+set_target_properties(ludus_editor_code PROPERTIES AUTOMOC ON)
+target_include_directories(ludus_editor_code PRIVATE src)
+target_compile_definitions(ludus_editor_code PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets PRIVATE Ludus::FoundationBase)
+ludus_apply_project_defaults(ludus_editor_code)
+
 # --- Editor application ------------------------------------------------------
 qt_add_executable(ludus_editor
     ${editor_profiling_sources}
@@ -348,6 +359,7 @@ target_link_libraries(ludus_editor
     PRIVATE
         Ludus::RenderGraphFormat
         ludus_editor_core
+        ludus_editor_code
         ludus_world_demo_model
         ludus_world_render_items
         Qt6::Core
@@ -407,6 +419,16 @@ endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+    add_executable(ludus_code_editor_tests tests/main.cpp tests/code_editor_tests.cpp)
+    target_include_directories(ludus_code_editor_tests PRIVATE src)
+    target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_code_editor_tests PRIVATE ludus_editor_code Qt6::Test
+        Ludus::FoundationBase Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_code_editor_tests)
+    ludus_enable_test_exceptions(ludus_code_editor_tests)
+    add_test(NAME ludus_code_editor_tests COMMAND ludus_code_editor_tests)
+    set_tests_properties(ludus_code_editor_tests PROPERTIES LABELS "unit;editor;text" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # Replay the content suite through the browser's single-owner scheduler as
     # well as the normal native worker. No Qt/Wasm-private APIs enter this target.
     add_executable(ludus_editor_browser_content_tests
@@ -597,6 +619,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         PRIVATE
             Ludus::RenderGraphFormat
             ludus_editor_core
+            ludus_editor_code
             ludus_world_demo_model
             ludus_world_render_items
             Qt6::Core
@@ -757,6 +780,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # compile-usage-only dependency mechanism:
     # https://cmake.org/cmake/help/v3.29/manual/cmake-generator-expressions.7.html#genex:COMPILE_ONLY
     target_link_libraries(ludus_render_graph_configuration_tests PRIVATE Ludus::RenderGraphFormat ludus_editor_core
+        ludus_editor_code
         Qt6::Widgets Qt6::Test Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
         "$<COMPILE_ONLY:Ludus::Resources>")

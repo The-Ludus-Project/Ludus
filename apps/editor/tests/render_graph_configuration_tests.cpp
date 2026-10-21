@@ -1,3 +1,4 @@
+#include "internal/code_editor.h"
 #include "internal/render_graph_configuration_editor.h"
 #include "internal/render_graph_live_build.h"
 #include "internal/render_graph_pipeline.h"
@@ -853,4 +854,82 @@ TEST_CASE("canvas pipeline editing pairs resources and reports connected port er
     workspace.Undo();
     workspace.Undo();
     CHECK(document.GetDraft(ROOT_GRAPH) == original);
+}
+
+TEST_CASE("shader editing retains pending text across refresh and source switches", "[editor][render-graph][text]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString package = MakePackage(project);
+    const QString shader = QStringLiteral("editable.slang");
+    const QByteArray original = QByteArrayLiteral("float4 Shade() { return float4(1); }\n");
+    QFile file(QDir(package).filePath(shader));
+    REQUIRE(file.open(QIODevice::WriteOnly) == true);
+    REQUIRE(file.write(original) == original.size());
+    file.close();
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* sourceOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* editorOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceOrNull != nullptr);
+    REQUIRE(editorOrNull != nullptr);
+    sourceOrNull->setCurrentText(shader);
+    QSignalSpy draftChanges(&workspace, &RendererWorkspace::DocumentChanged);
+    editorOrNull->moveCursor(QTextCursor::End);
+    editorOrNull->insertPlainText(QStringLiteral("// pending\n"));
+    CHECK(draftChanges.count() == 0); // Typing must not re-register the package's file watches.
+    const QByteArray edited = editorOrNull->toPlainText().toUtf8();
+    CHECK(workspace.IsDirty() == true);
+    CHECK(workspace.CanSave() == true);
+    CHECK(workspace.GetDocument().GetDraft(shader) == original);
+    const QByteArray graph = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    REQUIRE(workspace.GetDocument().SetText(ROOT_GRAPH, graph + '\n') == RenderGraphDocumentStatus::Ok);
+    workspace.Undo(); // Refreshing other authored state must not erase focused text.
+    CHECK(editorOrNull->toPlainText().toUtf8() == edited);
+    sourceOrNull->setCurrentText(ROOT_GRAPH);
+    CHECK(workspace.GetDocument().GetDraft(shader) == edited);
+    sourceOrNull->setCurrentText(shader);
+    CHECK(editorOrNull->toPlainText().toUtf8() == edited);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(shader) == original);
+    CHECK(editorOrNull->toPlainText().toUtf8() == original);
+    editorOrNull->moveCursor(QTextCursor::End);
+    editorOrNull->insertPlainText(QStringLiteral("// saved without Apply\n"));
+    const QByteArray saved = editorOrNull->toPlainText().toUtf8();
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    CHECK(file.readAll() == saved);
+    CHECK(workspace.IsDirty() == false);
+}
+
+TEST_CASE("source capacity rejection retains text and cancels source switching and save",
+          "[editor][render-graph][text]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* sourceOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* editorOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceOrNull != nullptr);
+    REQUIRE(editorOrNull != nullptr);
+    sourceOrNull->setCurrentText(ROOT_GRAPH);
+    const QByteArray original = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    editorOrNull->selectAll();
+    const QString oversized(RenderGraphDocument::MAX_FILE_BYTES + 1, QLatin1Char('x'));
+    editorOrNull->insertPlainText(oversized);
+    sourceOrNull->setCurrentText(QStringLiteral("rasterize.lurender.json"));
+    CHECK(sourceOrNull->currentText() == ROOT_GRAPH);
+    CHECK(editorOrNull->toPlainText() == oversized);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
+    CHECK(workspace.Save() == false);
+    CHECK(editorOrNull->toPlainText() == oversized);
+    CHECK(workspace.IsDirty() == true);
+    editorOrNull->undo();
+    CHECK(editorOrNull->toPlainText().toUtf8() == original);
 }

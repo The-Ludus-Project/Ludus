@@ -4,6 +4,8 @@
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/render_graph_worker.h"
 #endif
+#include "internal/code_editor.h"
+#include "internal/code_editor_panel.h"
 #include "internal/item_selection.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_resources.h"
@@ -388,7 +390,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)), mNewKind(new QComboBox(mInspector)),
       mNodeCreationMessage(new QLabel(mInspector)), mEdges(new QTableWidget(mInspector)),
       mEdgeFrom(new QLineEdit(mInspector)), mEdgeTo(new QLineEdit(mInspector)), mSourceFile(new QComboBox(this)),
-      mSource(new QPlainTextEdit(this)), mSourceInterface(new QPlainTextEdit(this)), mPlan(new QPlainTextEdit(this)),
+      mSource(new CodeEditor(this)), mSourceInterface(new QPlainTextEdit(this)), mPlan(new QPlainTextEdit(this)),
       mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)), mStatus(new QLabel(this)),
       mCanvas(new RenderGraphCanvas(mDocument, this)), mPreviewPage(new QWidget(this)),
       mPreviewImage(new PreviewImage(mPreviewPage)), mPreviewStatus(new QLabel(mPreviewPage)),
@@ -512,8 +514,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QVBoxLayout* sourceLayout = new QVBoxLayout(sourcePage);
     mSourceFile->setObjectName(QStringLiteral("renderGraphSourceFile"));
     mSource->setObjectName(QStringLiteral("renderGraphSource"));
-    mSource->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    mSource->setLineWrapMode(QPlainTextEdit::NoWrap);
+    mSource->setAccessibleName(QStringLiteral("Shader and render graph source"));
     QPushButton* applyText = new QPushButton(QStringLiteral("Apply Text to Draft"), sourcePage);
     QPushButton* revertText = new QPushButton(QStringLiteral("Revert Text"), sourcePage);
     QHBoxLayout* sourceRow = new QHBoxLayout;
@@ -544,7 +545,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
 #endif
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
     QSplitter* sourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
-    sourceSplit->addWidget(mSource);
+    sourceSplit->addWidget(new CodeEditorPanel(mSource, sourceSplit));
     sourceSplit->addWidget(interfacePage);
     sourceSplit->setStretchFactor(0, 2);
     sourceSplit->setStretchFactor(1, 1);
@@ -812,16 +813,24 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         }
     });
     connect(mSourceFile, &QComboBox::currentTextChanged, this, [this]() {
-        if (mSourceEditDebounce.isActive() == true)
+        if (commitPendingSource() == false)
         {
-            applySourceEdit();
+            const QSignalBlocker blocker(mSourceFile);
+            mSourceFile->setCurrentText(mDisplayedSource);
+            return;
         }
         renderSource();
     });
     connect(applyText, &QPushButton::clicked, this, [this]() {
-        documentEdited(mDocument.SetText(mSourceFile->currentText(), mSource->toPlainText().toUtf8()));
+        if (commitPendingSource() == true)
+        {
+            documentEdited(RenderGraphDocumentStatus::Ok);
+        }
     });
-    connect(revertText, &QPushButton::clicked, this, [this]() { renderSource(); });
+    connect(revertText, &QPushButton::clicked, this, [this]() {
+        mSourceEditDebounce.stop();
+        renderSource(true);
+    });
     connect(openCodeEditor, &QPushButton::clicked, this, [this]() { static_cast<void>(OpenSourceInCodeEditor()); });
     connect(chooseCodeEditor, &QPushButton::clicked, this, [this]() {
         static_cast<void>(mCodeEditor.Configure(this));
@@ -847,11 +856,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mSource, &QPlainTextEdit::textChanged, this, [this]() {
         if (mIsWorldRenderingEnabled == true && mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == true)
         {
-            mEditingSource = mSourceFile->currentText();
-            mEditingText = mSource->toPlainText().toUtf8();
+            // Capture the text only when the timer fires or a command needs it.
             mSourceEditDebounce.start();
         }
     });
+    // Pending text changes command availability, not the package or its file watches.
+    connect(mSource->document(), &QTextDocument::modificationChanged, this, [this]() { Q_EMIT CommandsChanged(); });
     connect(&mSourceEditDebounce, &QTimer::timeout, this, &RendererWorkspace::applySourceEdit);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mWorkerOrNull = new RenderGraphWorker(this);
@@ -933,6 +943,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mResolvedTools = {};
     mResolvedSdk.clear();
     mDocument.Reset();
+    mDisplayedSource.clear();
     mBuildProblem.clear();
     mSourceProblem.clear();
     mExtractionProblem.clear();
@@ -1089,6 +1100,7 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     CancelJob();
     mSourceEditDebounce.stop();
     mDocument = document;
+    mDisplayedSource.clear();
     mBuildProblem.clear();
     mSourceProblem.clear();
     mExtractionProblem.clear();
@@ -1132,7 +1144,7 @@ bool RendererWorkspace::ConfirmDiscard()
 
 bool RendererWorkspace::IsDirty() const
 {
-    return mDocument.IsDirty();
+    return mDocument.IsDirty() == true || mSource->document()->isModified() == true;
 }
 
 bool RendererWorkspace::CanSave() const
@@ -1140,7 +1152,7 @@ bool RendererWorkspace::CanSave() const
     return mDocument.IsLoaded() == true &&
            (mDocument.IsDirty() == true ||
             IsNodeFieldControl(*this, *mInspector, QApplication::focusWidget()) == true ||
-            mSourceEditDebounce.isActive() == true);
+            mSource->document()->isModified() == true || mSourceEditDebounce.isActive() == true);
 }
 
 bool RendererWorkspace::Save()
@@ -1151,9 +1163,9 @@ bool RendererWorkspace::Save()
     {
         focusedControlOrNull->clearFocus();
     }
-    if (mSourceEditDebounce.isActive() == true)
+    if (commitPendingSource() == false)
     {
-        applySourceEdit();
+        return false;
     }
     if (isUneditedBuiltIn() == true)
     {
@@ -1165,10 +1177,10 @@ bool RendererWorkspace::Save()
 
 bool RendererWorkspace::hasPendingSourceText() const
 {
-    QString draftText = QString::fromUtf8(mDocument.GetDraft(mSourceFile->currentText()));
+    QString draftText = QString::fromUtf8(mDocument.GetDraft(mDisplayedSource));
     draftText.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     draftText.replace(QLatin1Char('\r'), QLatin1Char('\n'));
-    return mSourceFile->currentText().isEmpty() == false && mSource->document()->isModified() == true &&
+    return mDisplayedSource.isEmpty() == false && mSource->document()->isModified() == true &&
            mSource->toPlainText() != draftText;
 }
 
@@ -1260,6 +1272,10 @@ bool RendererWorkspace::IsBuiltIn() const
 bool RendererWorkspace::CustomizeBuiltIn()
 {
     if (mDocument.IsBuiltIn() == false || mProjectRoot.isEmpty() == true)
+    {
+        return false;
+    }
+    if (commitPendingSource() == false)
     {
         return false;
     }
@@ -1416,7 +1432,10 @@ bool RendererWorkspace::buildAndPreview(RenderGraphSource source)
     prepareDefaultPreview();
     if (source == RenderGraphSource::Draft && mSourceEditDebounce.isActive() == true)
     {
-        applySourceEdit();
+        if (commitPendingSource() == false)
+        {
+            return false;
+        }
     }
     // The unedited default already has a generation built with the editor: no tools needed.
     if (mDocument.IsBuiltIn() == true && (source == RenderGraphSource::Saved || mDocument.IsDirty() == false) &&
@@ -1516,19 +1535,37 @@ void RendererWorkspace::setProblem(QString& inoutProblem, const QString& text)
         Q_EMIT RenderProblemChanged();
     }
 }
-void RendererWorkspace::applySourceEdit()
+bool RendererWorkspace::commitPendingSource()
 {
     mSourceEditDebounce.stop();
-    const RenderGraphDocumentStatus status = mDocument.SetText(mEditingSource, mEditingText);
-    if (status == RenderGraphDocumentStatus::Ok)
+    if (mDisplayedSource.isEmpty() == true)
     {
-        renderStatus();
-        Q_EMIT DocumentChanged();
+        return true;
     }
-    else
+    QString draft = QString::fromUtf8(mDocument.GetDraft(mDisplayedSource));
+    draft.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    draft.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    const QString text = mSource->toPlainText();
+    if (text == draft)
+    {
+        mSource->document()->setModified(false);
+        return true;
+    }
+    const RenderGraphDocumentStatus status = mDocument.SetText(mDisplayedSource, text.toUtf8());
+    if (status != RenderGraphDocumentStatus::Ok)
     {
         mStatus->setText(DescribeStatus(status));
+        return false;
     }
+    mSource->document()->setModified(false);
+    renderStatus();
+    Q_EMIT DocumentChanged();
+    return true;
+}
+
+void RendererWorkspace::applySourceEdit()
+{
+    static_cast<void>(commitPendingSource());
 }
 void RendererWorkspace::EnableWorldRendering()
 {
@@ -2383,15 +2420,21 @@ void RendererWorkspace::renderEdges()
     }
 }
 
-void RendererWorkspace::renderSource()
+void RendererWorkspace::renderSource(bool shouldDiscardPending)
 {
     const QString file = mSourceFile->currentText();
     const QString text = QString::fromUtf8(mDocument.GetDraft(file));
-    if (mSource->toPlainText() != text)
+    const bool isSameSource = mDisplayedSource == file;
+    const bool shouldRefresh = isSameSource == false || shouldDiscardPending == true || hasPendingSourceText() == false;
+    if (shouldRefresh == true && (isSameSource == false || mSource->toPlainText() != text))
     {
         const QSignalBlocker blocker(mSource);
         mSource->setPlainText(text);
+        mSource->document()->setModified(false);
     }
+    mDisplayedSource = file;
+    mSource->SetLanguage(file.endsWith(QStringLiteral(".slang")) == true ? CodeLanguage::Slang
+                                                                         : CodeLanguage::PlainText);
     mSource->setEnabled(file.isEmpty() == false);
     mSourceInterface->parentWidget()->setVisible(file.endsWith(QStringLiteral(".slang")));
     QMap<QString, QByteArray> sources;
