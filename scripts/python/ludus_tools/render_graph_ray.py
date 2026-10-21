@@ -21,7 +21,7 @@ IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
-           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h')
+           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h', 'ray_shader.slang')
 
 
 def resolve_state(state):
@@ -87,29 +87,7 @@ def expand_programs(programs, technique, snapshot, helper, build):
 #define LUDUS_RENDER_GRAPH_RAY_PIPELINE 1
 #include "_ludus_ray/renderer_gpu_preview.slang"
 static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
-struct Ray
-{
-    float3 OriginWorld;
-    float MinDistanceWorld;
-    float3 DirectionWorld;
-    float MaxDistanceWorld;
-};
-struct RayLaunch
-{
-    uint2 PositionPixel;
-    uint2 ExtentPixel;
-    Ray CameraRay;
-};
-struct RayHit
-{
-    Ray IncomingRay;
-    float3 PositionWorld;
-    float DistanceWorld;
-    float3 NormalWorld;
-    uint Primitive;
-    float2 Barycentric;
-    float4 Color;
-};
+#include "_ludus_ray/ray_shader.slang"
 '''
     for source in sorted({program['source'] for program in selected.values()}):
         wrapper += '#include "' + source + '"\n'
