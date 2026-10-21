@@ -26,6 +26,7 @@
 #include <QKeySequence>
 #include <QMenu>
 #include <QNativeGestureEvent>
+#include <QPlainTextEdit>
 #include <QPointingDevice>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -885,6 +886,18 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     canvas.resetTransform();
     const QPointF position = canvas.GetNodePosition(QStringLiteral("trace"));
     canvas.centerOn(position);
+    // Source text already belongs to the document while the presentation refresh is deferred.
+    QComboBox* sourceFileOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    QPlainTextEdit* sourceOrNull = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceFileOrNull != nullptr);
+    REQUIRE(sourceOrNull != nullptr);
+    const QString editedFile = QStringLiteral("main_shaders/closest.slang");
+    sourceFileOrNull->setCurrentText(editedFile);
+    const QByteArray originalSource = workspace.GetDocument().GetDraft(editedFile);
+    sourceOrNull->appendPlainText(QStringLiteral("// Preserve this accepted source edit."));
+    const QByteArray editedSource = workspace.GetDocument().GetDraft(editedFile);
+    REQUIRE(editedSource != originalSource);
+    REQUIRE(editedSource.contains("// Preserve this accepted source edit.") == true);
     const uint64 revision = workspace.GetDocument().GetRevision();
     const QByteArray before = workspace.GetDocument().GetDraft(manifestFile);
     bool shouldExpand = false;
@@ -929,8 +942,10 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     }
     workspace.Undo();
     CHECK(workspace.GetDocument().GetDraft(manifestFile) == before);
+    CHECK(workspace.GetDocument().GetDraft(editedFile) == editedSource);
     workspace.Redo();
     CHECK(workspace.GetDocument().GetDraft(manifestFile).contains("scene_interface") == true);
+    CHECK(workspace.GetDocument().GetDraft(editedFile).contains("// Preserve this accepted source edit.") == true);
 }
 
 TEST_CASE("diagnostic navigation rings the exact port without Properties or draft edits",
