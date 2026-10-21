@@ -90,6 +90,14 @@ renderer’s triangle ray interfaces. Other stages remain authoring drafts subje
 to the execution limits below. Changing stage creates a new matching program and
 retains the previous source for reuse. Removing a shader row retains its program and source for reuse.
 
+In **Source**, **Shader API** shows the selected ray callback signature, its input
+struct and nested field types. Scene callbacks also list material, light and
+query function signatures, constants, and the current draft `ScenePayload`.
+Declarations come from the renderer shader sources used by the graph compiler;
+lookup requires no build. Type a field, type or function name in the search box;
+**Enter** or **Next** advances through matches and wraps at the end. Refreshing
+the same source preserves the reference pane's scroll position.
+
 The version-2 node fields are:
 
 | Field | Contract |

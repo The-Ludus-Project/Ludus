@@ -542,17 +542,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     chooseCodeEditor->setEnabled(false);
     sourceHint->setText(QStringLiteral("External code editors are available in the native Ludus editor."));
 #endif
-    mSourceInterface->setObjectName(QStringLiteral("renderGraphSourceInterface"));
-    mSourceInterface->setReadOnly(true);
-    mSourceInterface->setToolTip(QStringLiteral("Shader fields and uniforms declared by the draft build manifest. "
-                                                "Canvas ports describe pass resources, not shader parameters."));
-    mSourceInterface->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    mSourceInterface->setAccessibleName(QStringLiteral("Shader inputs and outputs"));
-    QWidget* interfacePage = new QWidget(sourcePage);
-    QVBoxLayout* interfaceLayout = new QVBoxLayout(interfacePage);
-    interfaceLayout->setContentsMargins(0, 0, 0, 0);
-    interfaceLayout->addWidget(new QLabel(QStringLiteral("Inputs / Outputs — draft manifest"), interfacePage));
-    interfaceLayout->addWidget(mSourceInterface, 1);
+    QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
     QSplitter* sourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
     sourceSplit->addWidget(mSource);
     sourceSplit->addWidget(interfacePage);
@@ -2404,7 +2394,17 @@ void RendererWorkspace::renderSource()
     }
     mSource->setEnabled(file.isEmpty() == false);
     mSourceInterface->parentWidget()->setVisible(file.endsWith(QStringLiteral(".slang")));
-    mSourceInterface->setPlainText(DescribeShaderInterface(mDocument.GetDraft(manifestFile()), file));
+    QMap<QString, QByteArray> sources;
+    for (const QString& draftFile : mDocument.GetFiles())
+    {
+        if (draftFile.endsWith(QStringLiteral(".slang")) == true)
+        {
+            sources.insert(QDir::cleanPath(draftFile), mDocument.GetDraft(draftFile));
+        }
+    }
+    UpdateShaderInterfaceView(*mSourceInterface,
+                              file,
+                              DescribeShaderInterface(mDocument.GetDraft(manifestFile()), file, sources));
 }
 
 void RendererWorkspace::renderStatus()

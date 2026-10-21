@@ -152,9 +152,18 @@ function(ludus_editor_compile_render_graph_host target)
         VERTEX VertexMain FRAGMENT FragmentMain)
 endfunction()
 
+function(ludus_editor_add_shader_api target)
+    # Display the same callback declarations the graph compiler includes.
+    qt_add_resources(${target} ludus_shader_api
+        PREFIX "/shader-api" BASE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders"
+        FILES "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/ray_shader.slang"
+              "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_shader.slang")
+endfunction()
+
 # The default graph's authored sources, read-only inside the editor (also in builds
 # without the native preview), so the Renderer tab can show and copy them.
 function(ludus_editor_add_default_render_graph target)
+    ludus_editor_add_shader_api(${target})
     get_property(default_graph GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR)
     get_property(default_graph_files GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_FILES)
     list(TRANSFORM default_graph_files PREPEND "${default_graph}/")
@@ -709,6 +718,19 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_enable_test_exceptions(ludus_render_graph_pipeline_tests)
     add_test(NAME ludus_render_graph_pipeline_tests COMMAND ludus_render_graph_pipeline_tests)
     set_tests_properties(ludus_render_graph_pipeline_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    add_executable(ludus_shader_interface_tests tests/main.cpp tests/render_graph_shader_interface_tests.cpp
+        src/render_graph_shader_interface.cpp)
+    target_include_directories(ludus_shader_interface_tests PRIVATE src)
+    target_compile_definitions(ludus_shader_interface_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
+        LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
+    target_link_libraries(ludus_shader_interface_tests PRIVATE Qt6::Widgets Catch2::Catch2 Ludus::FoundationBase)
+    ludus_editor_add_shader_api(ludus_shader_interface_tests)
+    ludus_apply_project_defaults(ludus_shader_interface_tests)
+    ludus_enable_test_exceptions(ludus_shader_interface_tests)
+    add_test(NAME ludus_shader_interface_tests COMMAND ludus_shader_interface_tests)
+    set_tests_properties(ludus_shader_interface_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Authoring uses the real workspace/document without requiring a viewport device.
