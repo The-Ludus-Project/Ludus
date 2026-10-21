@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import runpy
 import shutil
 import subprocess
@@ -670,6 +671,111 @@ class AnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(engine.EngineError, "Cannot launch analysis"):
                 engine.run_analysis_commands(Path(temporary), [[Path(temporary) / "missing-analyzer"]])
+
+    def listed_source_fixture(self, preset="linux-clang-development"):
+        build = self.root / "out/build" / preset
+        build.mkdir(parents=True)
+        sources = []
+        for name in ("apps/editor/src/controller.cpp", "apps/editor/tests/controller_tests.cpp"):
+            source = self.root / name
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("int main() { return 0; }\n")
+            sources.append(name)
+        (build / "compile_commands.json").write_text(json.dumps([
+            {"directory": str(build), "file": str(self.root / name), "arguments": ["clang++", "-c", name]}
+            for name in sources]))
+        patches = [patch.object(engine, "load_tool_versions", return_value={"minimum": {"clang": f"{LLVM_MAJOR}.0.0"}}),
+                   patch.object(engine, "find_system_tool", return_value="/pinned/clang-tidy"),
+                   patch.object(engine, "executable_version", return_value=f"{LLVM_MAJOR}.1.8")]
+        for item in patches:
+            self.addCleanup(item.stop)
+            item.start()
+        return build, sources
+
+    def test_listed_sources_run_through_the_bounded_concurrent_runner(self):
+        build, sources = self.listed_source_fixture()
+        with patch.object(engine, "run_analysis_commands") as runner, contextlib.redirect_stdout(io.StringIO()):
+            engine.run_tidy_sources(self.root, "linux-clang-development", sources)
+        runner.assert_called_once()
+        root, commands = runner.call_args.args
+        self.assertEqual(root, self.root)
+        # One ordinary database lookup per listed source: the same command a
+        # serial workflow step ran, so diagnostics and header filtering match.
+        self.assertEqual(commands, [["/pinned/clang-tidy", "-p", build, "--warnings-as-errors=*",
+                                     str((self.root / name).resolve())] for name in sources])
+
+    def test_unlisted_duplicate_or_uncompiled_sources_fail_before_analysis(self):
+        _, sources = self.listed_source_fixture()
+        (self.root / "apps/editor/src/orphan.cpp").write_text("")
+        cases = {"at least one": [], "listed twice": [sources[0], sources[0]],
+                 "not compiled": [sources[0], "apps/editor/src/orphan.cpp"]}
+        for message, listed in cases.items():
+            with self.subTest(message=message), patch.object(engine, "run_analysis_commands") as runner:
+                with self.assertRaisesRegex(engine.EngineError, message):
+                    engine.run_tidy_sources(self.root, "linux-clang-development", listed)
+                runner.assert_not_called()
+
+    def test_listed_sources_require_built_analysis_inputs(self):
+        self.listed_source_fixture()
+        with patch.object(engine, "run_analysis_commands") as runner:
+            with self.assertRaisesRegex(engine.EngineError, "build analysis inputs"):
+                engine.run_tidy_sources(self.root, "macos-clang-development", ["apps/editor/src/controller.cpp"])
+            runner.assert_not_called()
+
+    def test_listed_source_process_failure_preserves_all_diagnostics(self):
+        self.listed_source_fixture()
+        analyzer = self.root / "fake-tidy"
+        analyzer.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            "source = sys.argv[-1]\n"
+            "print('checked ' + source, flush=True)\n"
+            "sys.exit(1 if source.endswith('/controller.cpp') else 0)\n")
+        analyzer.chmod(0o755)
+        sources = ["apps/editor/src/controller.cpp", "apps/editor/tests/controller_tests.cpp"]
+        output = io.StringIO()
+        with patch.object(engine, "find_system_tool", return_value=str(analyzer)), \
+                patch.dict(os.environ, {"LUDUS_TIDY_JOBS": "2", "LUDUS_TIDY_SHARD_COUNT": "1",
+                                        "LUDUS_TIDY_SHARD_INDEX": "0"}), contextlib.redirect_stdout(output):
+            with self.assertRaisesRegex(engine.EngineError, "1 translation unit"):
+                engine.run_tidy_sources(self.root, "linux-clang-development", sources)
+        for source in sources:
+            self.assertIn("checked " + str((self.root / source).resolve()), output.getvalue())
+        reports = list((self.root / "out/quality/analysis").glob("*/results.json"))
+        self.assertEqual(len(reports), 1)
+        report = json.loads(reports[0].read_text())
+        self.assertEqual(report["completed"], 2)
+        self.assertEqual([result["state"] for result in report["results"]], ["fail", "pass"])
+
+    def test_editor_source_lists_use_bounded_analysis_entrypoint(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        for job, preset, workers, step in (
+            ("macos-compile", "macos-clang-development", 3, "Analyze native Editor production and regression sources"),
+            ("editor", "linux-clang-development", 4, "Analyze document interactions and regressions"),
+        ):
+            with self.subTest(job=job):
+                # Read the job until the next two-space job key, preserving step indentation.
+                section = re.split(r"\n  [a-z][a-z0-9-]*:\n", workflow.split(f"\n  {job}:\n", 1)[1], 1)[0]
+                self.assertIn(f'LUDUS_TIDY_JOBS: "{workers}"', section)
+                command = section.split(f"- name: {step}\n", 1)[1].split("\n      - ", 1)[0]
+                self.assertIn(f"./scripts/check {preset} --tidy-sources", command)
+                self.assertNotIn("out/host-tools/bin/clang-tidy", command)
+
+    def test_check_routes_listed_sources_without_running_other_checks(self):
+        args = engine.make_parser().parse_args(
+            ["check", "macos-clang-development", "--tidy-sources", "apps/editor/src/a.cpp", "apps/editor/src/b.cpp"])
+        self.assertEqual(args.tidy_sources, ["apps/editor/src/a.cpp", "apps/editor/src/b.cpp"])
+        with patch.object(engine, "repo_root", return_value=self.root), \
+                patch.object(engine, "ensure_bootstrap_for_preset") as bootstrap, \
+                patch.object(engine, "run_format_check") as formatting, \
+                patch.object(engine, "run_tidy") as tidy, \
+                patch.object(engine, "run_tidy_sources") as listed:
+            self.assertEqual(engine.command_check(args), 0)
+        bootstrap.assert_called_once_with(self.root, "macos-clang-development")
+        listed.assert_called_once_with(self.root, "macos-clang-development",
+                                       ["apps/editor/src/a.cpp", "apps/editor/src/b.cpp"])
+        formatting.assert_not_called()
+        tidy.assert_not_called()
 
     def test_missing_worker_result_cannot_pass(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(engine, "ThreadPoolExecutor") as pool:

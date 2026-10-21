@@ -321,6 +321,15 @@ keep their separate cache policy. The native setup action installs ccache.
 `LUDUS_TIDY_JOBS` sets the maximum number of concurrent native clang-tidy
 processes. The local default is one; CI uses four on Linux and three on macOS. Diagnostics are saved per
 compile command and printed in source/variant order.
+Workflow steps that analyze an explicit source list, such as the Editor
+production and regression sources on Linux and macOS, run
+`./scripts/check <preset> --tidy-sources <source>...` instead of one serial
+`clang-tidy` command line. Each listed source keeps its ordinary
+`compile_commands.json` lookup and the repository `.clang-tidy` policy, so the
+diagnostics match the direct invocation; the sources only run
+`LUDUS_TIDY_JOBS` at a time under the same bounded execution and evidence
+directory as the inventory check. A listed source the preset does not compile,
+a repeated source or a missing database fails before analysis starts.
 The selected preset's CMake File API codemodel is reconciled with its compilation
 database. All compiled first-party C, C++, Objective-C and Objective-C++ sources
 under `modules/`, `apps/`, `tools/`, `tests/` and `examples/` are inventoried;
