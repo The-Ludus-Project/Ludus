@@ -118,10 +118,23 @@ After **Initialize**, a progress window runs setup and shows:
   during: step* with the error and the log expanded. **Retry** reruns the same
   choices after a failure or cancellation.
 
+Both windows are titled *Ludus Setup* and use the Ludus Block theme and icon
+(`scripts/python/init_theme.py`). They follow the desktop's dark or light
+appearance; set `LUDUS_SETUP_APPEARANCE=dark` or `light` to choose one, and
+`LUDUS_SETUP_SCALE` (for example `2`) when a Linux desktop's scale is not
+detected. **Enter** chooses the highlighted action (Initialize, Retry or
+Close) and **Esc** cancels or closes. On Linux the window class is
+`ludus-setup` and the process name is `ludus-setup`; on macOS the menu bar and
+Dock show *Ludus Setup* with the Ludus icon.
+
 A sudo password prompt still appears in the launching terminal; the window
 shows a notice while it waits. Setup runs in a child `engine.py init --cli`
 process with every chosen option spelled out, so the window never blocks.
-In the terminal, the CLI prints the same steps as `==> [N/M] label` headers.
+In the terminal, the CLI opens with a *Ludus Setup* banner (repository, preset,
+scope), prints the same steps as `==> [N/M] label` headers and ends with the
+outcome, the total time and the next commands; a failure names the step that
+stopped. Colour is used only in an interactive terminal and is turned off by
+`NO_COLOR` (any non-empty value) or `TERM=dumb`; the text is identical either way.
 With `LUDUS_INIT_PROGRESS=1` it prints machine-readable lines instead:
 `LUDUS_PROGRESS <index> <total> <label>`, `LUDUS_PROGRESS_DETAIL <done> <total>
 <text>` and `LUDUS_PROGRESS_NOTE <text>` (see `scripts/python/init_progress.py`).

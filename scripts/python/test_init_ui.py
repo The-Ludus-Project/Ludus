@@ -266,8 +266,8 @@ class WindowTests(unittest.TestCase):
         real_tk = tk.Tk
         errors = []
 
-        def create_window():
-            window = real_tk()
+        def create_window(*arguments, **options):
+            window = real_tk(*arguments, **options)
 
             def on_error(*error):
                 errors.append(error)
@@ -395,6 +395,12 @@ class WindowTests(unittest.TestCase):
         result = self.select(accept, "--persona", "application")
         self.assertTrue(result.with_tests and result.run_tests)
         self.assertFalse(result.with_smoke_app or result.with_editor or result.with_shader_probe)
+
+    def test_enter_initializes_and_escape_cancels(self):
+        result = self.select(lambda window, _widgets: window.event_generate("<Return>"),
+                             engine.NATIVE_PRESET_PREFIX + "-development")
+        self.assertIsNotNone(result)
+        self.assertIsNone(self.select(lambda window, _widgets: window.event_generate("<Escape>")))
 
     def test_close_cancels(self):
         self.assertIsNone(self.select(lambda window, _widgets: window.destroy()))

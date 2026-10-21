@@ -22,6 +22,7 @@ from typing import Iterable, Iterator, Sequence
 
 from formatting import FormattingError, format_source
 import init_progress
+import init_terminal
 import managed_venv
 from analysis_inventory import compilation_entries, inventory, request_codemodel, SOURCE_ROOTS
 from quality_process import ANALYSIS_SECONDS, LANE_BYTES, LOG_BYTES, LogBudget, run_bounded
@@ -233,7 +234,7 @@ def run(
 ) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
     init_progress.announce_privileged_command(argv)
-    print(f"+ {command_line(argv)}", flush=True)
+    print(init_terminal.command_echo(command_line(argv), init_terminal.painter_for()), flush=True)
     try:
         return subprocess.run(
             [str(arg) for arg in argv],
@@ -1541,15 +1542,20 @@ def command_init(args: argparse.Namespace) -> int:
     init_progress.start(init_progress.native_plan(args))
     try:
         return run_init_steps(args, root, versions, preset, run_validation)
+    except EngineError:
+        init_progress.fail()
+        raise
     finally:
         init_progress.stop()
 
 
 def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dict[str, str]], preset: str,
                    run_validation: bool) -> int:
-    print("Ludus one-command onboarding")
-    print(f"Repository: {root}")
-    print(f"Preset: {preset}")
+    painter = init_terminal.painter_for()
+    scope = "this preset only" if args.preset_only and not run_validation else "all native presets"
+    for line in init_terminal.banner_lines((("Repository", str(root)), ("Preset", preset), ("Scope", scope)),
+                                           painter):
+        print(line)
 
     init_progress.begin("system")
     check_current_python(root, versions["minimum"]["python"])
@@ -1625,27 +1631,42 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
             init_progress.begin("sdk")
             command_install_sdk(argparse.Namespace(preset=preset))
 
+    print_init_summary(args, root, preset, presets, run_validation, painter)
+    return 0
+
+
+def print_init_summary(args: argparse.Namespace, root: Path, preset: str, presets: Sequence[str], run_validation: bool,
+                       painter: init_terminal.Painter) -> None:
+    """Print the closing summary. Its first line starts with ``Ludus initialization`` and the
+    next two carry the most useful facts: the setup window shows those three lines."""
     print("")
     if run_validation:
-        print("Ludus initialization and validation complete.")
+        outcome = "Ludus initialization and validation complete."
+    elif getattr(args, "run_tests", False):
+        outcome = "Ludus initialization complete. Opted-in tests were built and executed."
+    elif getattr(args, "with_editor", False):
+        outcome = "Ludus initialization complete. The optional editor and its dependencies were built."
     else:
-        if getattr(args, "run_tests", False):
-            print("Ludus initialization complete. Opted-in tests were built and executed.")
-        elif getattr(args, "with_editor", False):
-            print("Ludus initialization complete. The optional editor and its dependencies were built.")
-        else:
-            print("Ludus initialization complete. No engine targets were built.")
-        if getattr(args, "with_editor", False):
-            print(f"Launch the editor: ./scripts/editor --preset {preset}")
-        print("Prepared presets: " + ", ".join(presets))
-        print("VS Code CMake Tools is configured to use:")
-        print(f"  {cmake(root)}")
-        print("If VS Code was already open, reload the window before using the CMake Tools Build button.")
-        print("Build from VS Code CMake Tools, or run:")
-        print("  ./scripts/build")
-        print("Run the full build/test/SDK validation with:")
-        print("  ./init.sh --validate")
-    return 0
+        outcome = "Ludus initialization complete. No engine targets were built."
+    print(init_terminal.success(outcome, painter))
+    if getattr(args, "with_editor", False) and not run_validation:
+        print(f"Launch the editor: ./scripts/editor --preset {preset}")
+    print("Prepared presets: " + ", ".join(presets))
+    elapsed = init_progress.elapsed()
+    if elapsed:
+        print(f"Finished in {elapsed}.")
+    if run_validation:
+        return
+    print("")
+    print(init_terminal.heading("Next steps", painter))
+    rows = [("Build", "./scripts/build  (or the VS Code CMake Tools Build button)"),
+            ("Validate", "./init.sh --validate")]
+    for line in init_terminal.aligned_rows(rows, painter):
+        print(line)
+    print("")
+    print("VS Code CMake Tools is configured to use:")
+    print(f"  {cmake(root)}")
+    print("If VS Code was already open, reload the window before using the CMake Tools Build button.")
 
 
 def command_doctor(_args: argparse.Namespace) -> int:
@@ -2835,7 +2856,9 @@ def main(argv: Sequence[str]) -> int:
         return int(args.func(args))
     except (EngineError, OptionsError) as exc:
         sys.stdout.flush()
-        print(f"error: {exc}")
+        print(init_terminal.error_line(str(exc), init_terminal.painter_for()))
+        if args.command == "init" and not init_progress.is_machine_readable():
+            print("Fix the problem above, then run ./init.sh again. Finished steps are reused.")
         return 1
 
 
