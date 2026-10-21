@@ -452,8 +452,17 @@ In the native editor, choose **Tools > Profiling...** or **View > Profiling**.
 Select **CPU**, **GPU**, or **Both**, then use **Record Profiling** in the tool
 window's toolbar or Tools menu. **F9** uses the same Record/Stop action;
 some Mac keyboards require Fn. Press it again to stop. Mode and output cannot
-change during recording/finalization. Each recording has a 30-second automatic
-limit, bounded CPU trace storage and space for 4,096 completed GPU samples.
+change during recording/finalization. The action opens the Profiling window so
+its status and Record/Stop control remain visible. The status shows elapsed time
+and event counts during capture, then the saved trace's absolute path. Failed
+starts identify the unavailable source or conflicting output file; **Reveal Last
+Trace** becomes available only after a successful save. Even an idle CPU capture
+includes `EditorRecordingStarted` and `EditorRecordingStopped` markers.
+
+Each recording has a 30-second automatic limit, bounded CPU trace storage and
+space for 4,096 completed GPU samples. GPU recording follows the visible World
+viewport between recordings; an active recording retains its original source
+while submitted timing results are collected.
 
 CPU records instrumented scopes in the editor process, including viewport and
 render-graph ticks; it is not a statistical sampler or a viewport-only CPU

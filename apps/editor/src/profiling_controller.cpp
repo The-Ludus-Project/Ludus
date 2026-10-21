@@ -93,23 +93,50 @@ ProfilingController::ProfilingController(RenderPreview* preview, QObject* parent
     LUDUS_REQUIRE(preview != nullptr);
     mTimer.setInterval(POLL_MILLISECONDS);
     connect(&mTimer, &QTimer::timeout, this, &ProfilingController::poll);
-    connect(preview, &QObject::destroyed, this, [this]() {
+    connectPreview();
+}
+
+bool ProfilingController::SetPreviewSource(RenderPreview* preview)
+{
+    LUDUS_REQUIRE(preview != nullptr);
+    if (preview == mPreviewOrNull)
+    {
+        return true;
+    }
+    if (GetState() == ProfilingState::Recording || GetState() == ProfilingState::Finalizing)
+    {
+        return false;
+    }
+    if (mPreviewOrNull != nullptr)
+    {
+        disconnect(mPreviewOrNull, nullptr, this, nullptr);
+    }
+    mPreviewOrNull = preview;
+    connectPreview();
+    Q_EMIT Changed();
+    return true;
+}
+
+void ProfilingController::connectPreview()
+{
+    LUDUS_REQUIRE(mPreviewOrNull != nullptr);
+    connect(mPreviewOrNull, &QObject::destroyed, this, [this]() {
         mPreviewOrNull = nullptr;
         Stop();
     });
-    connect(preview, &RenderPreview::GpuProfileSample, this, &ProfilingController::acceptSample);
-    connect(preview,
+    connect(mPreviewOrNull, &RenderPreview::GpuProfileSample, this, &ProfilingController::acceptSample);
+    connect(mPreviewOrNull,
             &RenderPreview::GpuPassProfileBatch,
             this,
             &ProfilingController::acceptPassBatch,
             Qt::DirectConnection);
-    connect(preview, &RenderPreview::GpuProfileSubmission, this, [this]() {
+    connect(mPreviewOrNull, &RenderPreview::GpuProfileSubmission, this, [this]() {
         if (mState == ProfilingState::Recording && mIsStopping == false && mMode != ProfilingMode::Cpu)
         {
             ++mCoverage.EligibleFrames;
         }
     });
-    connect(preview, &RenderPreview::DeviceStopping, this, [this]() {
+    connect(mPreviewOrNull, &RenderPreview::DeviceStopping, this, [this]() {
         if (mState == ProfilingState::Recording && mMode != ProfilingMode::Cpu)
         {
             if (mPreviewOrNull->HasGpuProfilingPending() == true)
@@ -171,11 +198,30 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
         Q_EMIT Changed();
         return false;
     }
-    if (LUDUS_PROFILING_ENABLED == 0 || destination.isEmpty() == true || QFileInfo::exists(destination) == true ||
-        (mode != ProfilingMode::Cpu && CanRecordGpu() == false))
+    if (LUDUS_PROFILING_ENABLED == 0)
     {
-        mStatus = QStringLiteral("Recording unavailable: use a profiling-enabled build, a new output path, and "
-                                 "an active GPU viewport for GPU/Both.");
+        mStatus = QStringLiteral("Profiling is disabled in this build. Use a Debug, Development or Profile editor.");
+        Q_EMIT Changed();
+        return false;
+    }
+    if (destination.isEmpty() == true)
+    {
+        mStatus = QStringLiteral("Choose a new output path for the recording.");
+        Q_EMIT Changed();
+        return false;
+    }
+    if (QFileInfo::exists(destination) == true)
+    {
+        mStatus = QStringLiteral("The output file already exists: %1. Choose a new path or clear Output file "
+                                 "to use an automatic destination.")
+                      .arg(QFileInfo(destination).absoluteFilePath());
+        Q_EMIT Changed();
+        return false;
+    }
+    if (mode != ProfilingMode::Cpu && CanRecordGpu() == false)
+    {
+        mStatus = QStringLiteral("GPU timing is unavailable for the selected viewport. Start its preview, "
+                                 "or select CPU to record editor scopes.");
         Q_EMIT Changed();
         return false;
     }
@@ -214,7 +260,7 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
     mDestination = QFileInfo(destination).absoluteFilePath();
     mIsStopping = false;
     mState = ProfilingState::Recording;
-    mStatus = QStringLiteral("Recording (30 second limit). GPU durations use submission attribution.");
+    mStatus = QStringLiteral("Recording. Press F9 again to stop; automatic stop after 30 seconds.");
     if (mode != ProfilingMode::Cpu && mCoverage.IsPassTimingSupported == false)
     {
         mStatus += QStringLiteral(" Per-pass counters unavailable; frame timing only.");
@@ -222,6 +268,7 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
     if (mode != ProfilingMode::Gpu)
     {
         profile::RegisterThreadForTrace("Editor GUI");
+        LUDUS_PROFILE_MARK(EditorRecordingStarted);
     }
     mTimer.start();
     Q_EMIT Changed();
@@ -237,6 +284,7 @@ void ProfilingController::Stop()
     mStoppedTicks = time::NowTicks();
     if (mMode != ProfilingMode::Gpu)
     {
+        LUDUS_PROFILE_MARK(EditorRecordingStopped);
         mCpuStopOrNull = QThread::create([]() { profile::EndCapture(); });
         mCpuStopOrNull->start();
     }
@@ -416,6 +464,7 @@ void ProfilingController::finishExport()
         {
             mStatus = QStringLiteral("Saved CPU recording.");
         }
+        mStatus += QStringLiteral(" Trace: %1").arg(mLastPath);
     }
     else
     {

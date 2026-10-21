@@ -5,11 +5,13 @@
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
 
+#include <ludus/foundation/profiling/integration.hpp>
 #include <ludus/foundation/profiling/perfetto_export.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
 
 #include <QAction>
+#include <QByteArray>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -17,8 +19,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPushButton>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
@@ -175,6 +179,84 @@ TEST_CASE("profiling controls share F9 action and refuse GPU mode without a devi
     CHECK(modes->isEnabled() == true);
 }
 
+TEST_CASE("profiling reports the failed prerequisite without starting a recording", "[profiling][editor]")
+{
+    QTemporaryDir directory;
+    RenderPreview preview;
+    ProfilingController controller(&preview);
+    CHECK(controller.Start(ProfilingMode::Cpu, {}) == false);
+    CHECK(controller.GetStatus().contains(QStringLiteral("output path")) == true);
+    const QString existingPath = directory.filePath(QStringLiteral("existing.json"));
+    QFile existing(existingPath);
+    REQUIRE(existing.open(QIODevice::WriteOnly) == true);
+    existing.close();
+    CHECK(controller.Start(ProfilingMode::Cpu, existingPath) == false);
+    CHECK(controller.GetStatus().contains(QStringLiteral("already exists")) == true);
+    CHECK(controller.Start(ProfilingMode::Both, directory.filePath(QStringLiteral("both.json"))) == false);
+    CHECK(controller.GetStatus().contains(QStringLiteral("GPU timing")) == true);
+    CHECK(controller.GetStatus().contains(QStringLiteral("CPU")) == true);
+    CHECK(profile::IsCaptureActive() == false);
+}
+
+TEST_CASE("profiling disconnects a previous viewport and preserves the source of an active capture",
+          "[profiling][editor]")
+{
+    QTemporaryDir directory;
+    RenderPreview selectedPreview;
+    ProfilingController controller(&selectedPreview);
+    {
+        RenderPreview previousPreview;
+        REQUIRE(controller.SetPreviewSource(&previousPreview) == true);
+        REQUIRE(controller.SetPreviewSource(&selectedPreview) == true);
+        REQUIRE(controller.Start(ProfilingMode::Cpu, directory.filePath(QStringLiteral("selected.json"))) == true);
+        CHECK(controller.SetPreviewSource(&previousPreview) == false);
+    }
+    CHECK(controller.GetState() == ProfilingState::Recording);
+    controller.Stop();
+    REQUIRE(FinishRecording(controller) == true);
+    CHECK(controller.GetState() == ProfilingState::Complete);
+    CHECK(ReadTrace(controller.GetLastPath()).isEmpty() == false);
+}
+
+TEST_CASE("repeated profiling toggles save distinct traces and enable revealing the last capture",
+          "[profiling][editor]")
+{
+    QTemporaryDir directory;
+    RenderPreview preview;
+    QAction* action = CreateEditorCommand(PROFILING_RECORD_COMMAND, &preview);
+    ProfilingPanel panel(&preview, action);
+    panel.SetProjectRoot(directory.path());
+    QLabel* status = panel.findChild<QLabel*>(QStringLiteral("profilingStatus"));
+    QPushButton* reveal = panel.findChild<QPushButton*>(QStringLiteral("profilingReveal"));
+    REQUIRE(status != nullptr);
+    REQUIRE(reveal != nullptr);
+    CHECK(reveal->isEnabled() == false);
+    QString previousPath;
+    constexpr usize CAPTURE_COUNT = 8;
+    for (usize index = 0; index < CAPTURE_COUNT; ++index)
+    {
+        action->trigger();
+        REQUIRE(panel.GetController().GetState() == ProfilingState::Recording);
+        CHECK(action->text() == QStringLiteral("Stop Profiling"));
+        CHECK(status->text().contains(QStringLiteral("Recording")) == true);
+        action->trigger();
+        CHECK(panel.GetController().GetState() == ProfilingState::Finalizing);
+        CHECK(action->isEnabled() == false);
+        action->trigger();
+        REQUIRE(FinishRecording(panel.GetController()) == true);
+        INFO(panel.GetController().GetStatus().toStdString());
+        REQUIRE(panel.GetController().GetState() == ProfilingState::Complete);
+        const QString path = panel.GetController().GetLastPath();
+        CHECK(path != previousPath);
+        const QByteArray trace = QJsonDocument(ReadTrace(path)).toJson();
+        CHECK(trace.contains("EditorRecordingStarted") == true);
+        CHECK(trace.contains("EditorRecordingStopped") == true);
+        CHECK(reveal->isEnabled() == true);
+        CHECK(status->text().contains(path) == true);
+        previousPath = path;
+    }
+}
+
 TEST_CASE("editor shell F9 records through the same menu toolbar and Profiling window action", "[profiling][editor]")
 {
     QTemporaryDir directory;
@@ -196,12 +278,12 @@ TEST_CASE("editor shell F9 records through the same menu toolbar and Profiling w
     window.show();
     QDockWidget* dock = window.findChild<QDockWidget*>(QStringLiteral("profilingDock"));
     REQUIRE(dock != nullptr);
-    dock->show();
-    dock->raise();
+    dock->hide();
     window.activateWindow();
     QTest::qWait(20);
     QTest::keyClick(&window, Qt::Key_F9);
     REQUIRE(panel->GetController().GetState() == ProfilingState::Recording);
+    CHECK(dock->isVisible() == true);
     {
         LUDUS_PROFILE_SCOPE(EditorF9Evidence);
     }
@@ -293,6 +375,9 @@ TEST_CASE("real viewport GPU timing exports GPU-only and combined traces with St
 TEST_CASE("delegated project graph Stats and GPU recording share the viewport sampler", "[.profiling-gpu]")
 {
     QTemporaryDir directory;
+    RenderPreview initialPreview;
+    ProfilingController controller(&initialPreview);
+    CHECK(controller.CanRecordGpu() == false);
     RendererWorkspace workspace({});
     RenderPreview preview;
     preview.UseProjectGraph();
@@ -303,9 +388,11 @@ TEST_CASE("delegated project graph Stats and GPU recording share the viewport sa
     preview.SetStatisticsVisible(true);
     REQUIRE(preview.Start() == true);
     REQUIRE(preview.AdmitOffscreenDevice() == true);
-    ProfilingController controller(&preview);
+    REQUIRE(controller.SetPreviewSource(&preview) == true);
+    CHECK(controller.CanRecordGpu() == true);
     const QString path = directory.filePath(QStringLiteral("graph.json"));
     REQUIRE(controller.Start(ProfilingMode::Both, path) == true);
+    CHECK(controller.SetPreviewSource(&initialPreview) == false);
     QElapsedTimer timer;
     timer.start();
     while (timer.elapsed() < 1000)
