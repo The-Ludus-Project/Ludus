@@ -28,6 +28,7 @@
 #    include "internal/offscreen_frame_reader.h"
 #    include "internal/preview_shader_reload.h"
 #    include "internal/qt_viewport_device.h"
+#    include "internal/render_graph_preview.h"
 #    include "internal/renderer_workspace.h"
 #    include "internal/world_graph_view.h"
 #    include <QLibraryInfo>
@@ -1138,12 +1139,17 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     }
     Preview_->UseProjectGraph();
     const auto synchronizeProblem = [this, &inoutWorkspace]() {
-        Preview_->SetProjectGraphProblem(inoutWorkspace.GetRenderProblem());
+        Preview_->SetProjectGraphProblem(inoutWorkspace.GetScenePreparationProblem());
     };
     // A failure can originate inside activation polling. Rollback may detach that activation,
     // so deliver the current diagnostic only after the producer has left its stack.
     connect(&inoutWorkspace, &RendererWorkspace::RenderProblemChanged, this, synchronizeProblem, Qt::QueuedConnection);
     connect(&inoutWorkspace, &RendererWorkspace::DocumentChanged, this, synchronizeProblem);
+    connect(inoutWorkspace.GetPreviewOrNull(),
+            &RenderGraphPreview::Changed,
+            this,
+            synchronizeProblem,
+            Qt::QueuedConnection);
     synchronizeProblem();
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);

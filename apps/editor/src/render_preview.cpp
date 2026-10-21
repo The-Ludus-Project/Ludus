@@ -1093,6 +1093,8 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     SetStatisticsVisible(state.value(QStringLiteral("statistics")).toBool(false));
     SetLookSensitivity(static_cast<float32>(number(QStringLiteral("lookSensitivity"), 1)));
     navigationChanged();
+    // An empty project reset supplies no saved pose to preserve when the first scene arrives.
+    RestoredOrbit_ = state.isEmpty() == false;
 }
 void RenderPreview::resetFrames() noexcept
 {

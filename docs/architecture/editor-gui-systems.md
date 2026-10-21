@@ -1126,7 +1126,11 @@ The native World viewport delegates frame production to the current project's re
 `RenderPreview` retains the scene extraction, camera controller and device lifetime; it does
 not prepare a second built-in scene renderer while delegated. `RendererWorkspace` owns the
 immutable build requests and graph activation; `WorldGraphView` owns output/configuration
-selection and display. The engine default is used only when no project graph is present.
+selection and display. The prebuilt engine default provides the initial producer while a
+project graph builds, and remains available if that first build fails. The authored graph
+stays selected, its diagnostics remain visible, and the viewport labels the default fallback.
+Source/build diagnostics do not fail pending scene preparation while this producer is usable;
+extraction and unavailable-producer failures still do.
 The Render Preview dock mirrors that producer instead of defining a second rendering choice.
 
 The existing graph producer finishes its asynchronous attachment read before polling an

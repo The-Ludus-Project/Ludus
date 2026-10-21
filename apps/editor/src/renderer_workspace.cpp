@@ -937,6 +937,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     renderTree();
     renderSource();
     renderStatus();
+    prepareDefaultPreview();
     openProjectGraph();
     Q_EMIT DocumentChanged();
 }
@@ -953,7 +954,7 @@ void RendererWorkspace::openProjectGraph()
     const QString projectGraph = ResolveProjectRenderGraph(mProjectRoot);
     if (projectGraph.isEmpty() == false)
     {
-        // A broken authored graph is an error, never a request to silently draw the default.
+        // Keep the authored graph and its diagnostics; the viewport labels its fallback separately.
         static_cast<void>(OpenGraph(projectGraph));
         return;
     }
@@ -1081,6 +1082,7 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     mSourceProblem.clear();
     mExtractionProblem.clear();
     mPreviewSceneIdentity.clear();
+    prepareDefaultPreview();
     mSelectedFile = mDocument.GetRootGraph();
     mSelectedConfiguration.clear();
     mSelectedNode.clear();
@@ -1400,6 +1402,7 @@ bool RendererWorkspace::BuildAndPreview()
 
 bool RendererWorkspace::buildAndPreview(RenderGraphSource source)
 {
+    prepareDefaultPreview();
     if (source == RenderGraphSource::Draft && mSourceEditDebounce.isActive() == true)
     {
         applySourceEdit();
@@ -1438,6 +1441,62 @@ QString RendererWorkspace::GetRenderProblem() const
     }
     return mExtractionProblem.isEmpty() == false ? mExtractionProblem : mBuildProblem;
 }
+QString RendererWorkspace::GetScenePreparationProblem() const
+{
+    if (mExtractionProblem.isEmpty() == false)
+    {
+        return mExtractionProblem;
+    }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsWorldRenderingEnabled == true && mPreviewOrNull != nullptr)
+    {
+        const graphics::renderer::RenderGraphActivationReport report = mPreviewOrNull->GetReport();
+        if (report.ActiveGeneration != 0)
+        {
+            return {};
+        }
+        if (mIsDefaultPreview == true)
+        {
+            if (report.Candidate == graphics::renderer::RenderGraphCandidateState::Failed ||
+                report.Candidate == graphics::renderer::RenderGraphCandidateState::RestartRequired)
+            {
+                return mPreviewOrNull->GetDisplayStatus();
+            }
+            // Detach keeps the accepted package request; Attach reloads it on the next device.
+            if (mPreviewOrNull->IsAttached() == false || mPreviewOrNull->GetTargetSize().isEmpty() == false)
+            {
+                return {};
+            }
+        }
+    }
+#endif
+    return GetRenderProblem();
+}
+void RendererWorkspace::prepareDefaultPreview()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsWorldRenderingEnabled == false || mProjectRoot.isEmpty() == true || mPreviewOrNull == nullptr ||
+        mPreviewOrNull->GetTargetSize().isEmpty() == false)
+    {
+        return;
+    }
+    const QString runtime = GetDefaultRenderGraphRuntime();
+    if (runtime.isEmpty() == true)
+    {
+        return;
+    }
+    // Bootstrap the producer without changing the authored document or invoking shader tools.
+    // A failed project build leaves this generation rendering the latest World extraction.
+    mIsDefaultPreview = true;
+    mPreviewInputIdentity.clear();
+    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime);
+    if (loaded != RenderGraphPreviewLoad::Waiting && loaded != RenderGraphPreviewLoad::Staged)
+    {
+        mIsDefaultPreview = false;
+        setProblem(mBuildProblem, mPreviewOrNull->GetDisplayStatus());
+    }
+#endif
+}
 void RendererWorkspace::setProblem(QString& inoutProblem, const QString& text)
 {
     if (inoutProblem != text)
@@ -1463,6 +1522,7 @@ void RendererWorkspace::applySourceEdit()
 void RendererWorkspace::EnableWorldRendering()
 {
     mIsWorldRenderingEnabled = true;
+    prepareDefaultPreview();
     mSourceWatch.SetDocument(mDocument, mProjectRoot);
     SetLivePreview(true);
 }
@@ -2982,6 +3042,10 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
             mPreviewTimer.stop();
             mPreviewOrNull->Detach();
             mPreviewDeviceSerial = 0;
+            if (mIsDefaultPreview == true)
+            {
+                prepareDefaultPreview();
+            }
         });
     }
 #endif
@@ -3027,6 +3091,8 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
     {
         return false;
     }
+    const bool isPreviousPreviewDefault = mIsDefaultPreview;
+    mIsDefaultPreview = runtime == GetDefaultRenderGraphRuntime();
     const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime);
     if (loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting)
     {
@@ -3036,6 +3102,7 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
     }
     else
     {
+        mIsDefaultPreview = isPreviousPreviewDefault;
         setProblem(mBuildProblem, mPreviewOrNull->GetDisplayStatus());
     }
     if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true)

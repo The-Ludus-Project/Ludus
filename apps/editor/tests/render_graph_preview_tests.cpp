@@ -45,6 +45,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMouseEvent>
@@ -942,6 +943,123 @@ TEST_CASE("Texture viewer follows Live Preview frames and rebuilt generations by
     preview.Detach();
 }
 
+TEST_CASE("Cold project shader timeout keeps the default rendering the current World",
+          "[editor][render-graph][world-graph][fallback]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    const QString python = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
+    if (QFileInfo(compiler).isExecutable() == false || QFileInfo(python).isExecutable() == false)
+    {
+        SKIP("pinned shader tools are required for the project recovery test");
+    }
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const ToolingPaths tooling{python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    {
+        RendererWorkspace seed(tooling);
+        seed.SetProject(project.path(), 1);
+        REQUIRE(seed.CustomizeBuiltIn() == true);
+    }
+    const QString helper = QDir(project.path()).filePath(QStringLiteral("shader-helper"));
+    REQUIRE(QDir().mkpath(helper) == true);
+    const QDir originalHelper(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
+                                  .filePath(QStringLiteral("helper")));
+    for (const QString& file : originalHelper.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(originalHelper.filePath(file), QDir(helper).filePath(file)) == true);
+    }
+    const QString helperScript = QDir(helper).filePath(QStringLiteral("compile_shader.py"));
+    QFile originalScript(helperScript);
+    REQUIRE(originalScript.open(QIODevice::ReadOnly) == true);
+    const QByteArray script = originalScript.readAll();
+    originalScript.close();
+    const auto writeHelper = [&](const QByteArray& bytes) {
+        QSaveFile output(helperScript);
+        REQUIRE(output.open(QIODevice::WriteOnly) == true);
+        REQUIRE(output.write(bytes) == bytes.size());
+        REQUIRE(output.commit() == true);
+    };
+    // Exercise the real job/error mapping without waiting for the worker's 120-second deadline.
+    writeHelper(
+        QByteArrayLiteral("import sys\nprint('Ludus shader build: timed out', file=sys.stderr)\nsys.exit(1)\n"));
+    RendererWorkspace workspace(tooling);
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.resize(800, 600);
+    viewport.show();
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.IsBuiltIn() == false);
+    workspace.SetBuildTools(helper, compiler);
+    workspace.EnableWorldRendering();
+    QSignalSpy failed(&source, &RenderPreview::Failed);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        INFO(workspace.GetStatusText().toStdString());
+        INFO(workspace.GetPreviewOrNull()->GetStatus().toStdString());
+        return isReady();
+    };
+    REQUIRE(workspace.BuildAndPreview() == true);
+    REQUIRE(waitFor([&]() {
+                return workspace.GetLastResult().Request.Request != 0 && workspace.IsJobActive() == false;
+            }) == true);
+    REQUIRE(workspace.GetLastResult().IsSuccessful == false);
+    CHECK(workspace.GetLastResult().Code == QStringLiteral("RenderGraphBuildShader"));
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("timed out")) == true);
+    CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
+    REQUIRE(source.SetScene(MakeScene({1, 0, 0, 1})) == true);
+    REQUIRE(source.Start() == true);
+    WorldGraphView* graphViewOrNull = viewport.findChild<WorldGraphView*>();
+    REQUIRE(graphViewOrNull != nullptr);
+    REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage().isNull() == false; }) == true);
+    CHECK(workspace.IsUsingDefaultRenderer() == true);
+    CHECK(source.FrameAvailable() == true);
+    CHECK(failed.isEmpty() == true);
+    QLabel* statusOrNull = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatus"));
+    REQUIRE(statusOrNull != nullptr);
+    CHECK(statusOrNull->text().contains(QStringLiteral("timed out")) == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Engine default renderer fallback")) == true);
+    const QImage initial = graphViewOrNull->GetImage();
+    const uint64 generation = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    const uint64 revision = workspace.GetPreviewOrNull()->GetPresentedRevision();
+    RenderScene changed = MakeScene({0, 1, 0, 1});
+    changed.Identity = QByteArrayLiteral("changed-world-during-shader-failure");
+    REQUIRE(source.SetScene(changed) == true);
+    REQUIRE(waitFor([&]() {
+                return workspace.GetPreviewOrNull()->GetPresentedRevision() > revision &&
+                       graphViewOrNull->GetImage() != initial;
+            }) == true);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == generation);
+    const uint64 beforeNavigation = workspace.GetPreviewOrNull()->GetPresentedRevision();
+    source.Orbit(20, 10);
+    REQUIRE(waitFor([&]() { return workspace.GetPreviewOrNull()->GetPresentedRevision() > beforeNavigation; }) == true);
+    source.Stop();
+    QCoreApplication::processEvents();
+    REQUIRE(source.Start() == true);
+    REQUIRE(waitFor([&]() { return source.FrameAvailable() == true; }) == true);
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("timed out")) == true);
+    CHECK(failed.isEmpty() == true);
+    writeHelper(script);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    REQUIRE(waitFor([&]() { return workspace.GetPreviewOrNull()->GetPresentedGeneration() > generation; }) == true);
+    CHECK(workspace.IsUsingDefaultRenderer() == false);
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+    CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
+    CHECK(failed.isEmpty() == true);
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 TEST_CASE("World viewport follows project shaders and keeps drawable output after a failed edit",
           "[editor][render-graph][world-graph]")
 {
@@ -1189,7 +1307,7 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     rhi::Shutdown();
 }
 
-TEST_CASE("Supplied staircase2 World opens through its project raster graph", "[.staircase2-project]")
+TEST_CASE("Supplied staircase2 World stays drawable through the engine default fallback", "[.staircase2-project]")
 {
     constexpr int32 TIMEOUT_MILLISECONDS = 30000;
     const QString root = qEnvironmentVariable("LUDUS_EDITOR_STAIRCASE_PROJECT");
@@ -1212,6 +1330,9 @@ TEST_CASE("Supplied staircase2 World opens through its project raster graph", "[
                                .filePath(QStringLiteral("helper")),
                            compiler);
     renderer.EnableWorldRendering();
+    // The generic timeout regression exercises build failure/recovery. This supplied-scene
+    // check isolates fallback geometry from the project's potentially stalled custom compiler.
+    renderer.CancelJob();
     world.SetProject(root, 1);
     world.resize(1000, 700);
     world.show();
@@ -1231,8 +1352,11 @@ TEST_CASE("Supplied staircase2 World opens through its project raster graph", "[
     CHECK(world.GetRenderPreview().Scene().Objects.size() == 17);
     const QImage& image = renderer.GetPreviewOrNull()->GetImage();
     REQUIRE(image.isNull() == false);
+    CHECK(renderer.IsUsingDefaultRenderer() == true);
     bool hasGeometry = false;
-    const QRgb background = image.pixel(0, 0);
+    // A white wall can cover the complete frame. Compare against the default raster clear,
+    // rather than assuming that geometry must contain more than one flat material color.
+    const QRgb background = qRgb(0, 0, 0);
     for (int32 y = 0; y < image.height(); ++y)
     {
         for (int32 x = 0; x < image.width(); ++x)
@@ -1245,6 +1369,40 @@ TEST_CASE("Supplied staircase2 World opens through its project raster graph", "[
     if (capture.isEmpty() == false)
     {
         REQUIRE(world.grab().save(capture) == true);
+    }
+    QString depthTarget;
+    for (const RenderGraphTarget& target : renderer.GetPreviewOrNull()->GetTargetCatalogue().Targets)
+    {
+        if (target.IsDepth == true)
+        {
+            depthTarget = target.Name;
+            break;
+        }
+    }
+    REQUIRE(depthTarget.isEmpty() == false);
+    const QImage color = image;
+    renderer.GetPreviewOrNull()->SetOutputTarget(depthTarget);
+    timer.restart();
+    while (renderer.GetPreviewOrNull()->GetImage() == color && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(1);
+        renderer.ServicePreview();
+    }
+    const QImage depth = renderer.GetPreviewOrNull()->GetImage();
+    REQUIRE(depth != color);
+    bool hasDepthVariation = false;
+    const QRgb firstDepth = depth.pixel(0, 0);
+    for (int32 y = 0; y < depth.height(); ++y)
+    {
+        for (int32 x = 0; x < depth.width(); ++x)
+        {
+            hasDepthVariation = hasDepthVariation == true || depth.pixel(x, y) != firstDepth;
+        }
+    }
+    CHECK(hasDepthVariation == true);
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(depth.save(capture + QStringLiteral(".depth.png")) == true);
     }
     world.StopPreview();
     renderer.SetPreviewSource(nullptr);
