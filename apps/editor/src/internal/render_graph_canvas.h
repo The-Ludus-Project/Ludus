@@ -22,7 +22,7 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
-/// One typed node port: Scene, View, ColorTexture or DepthTexture.
+/// One typed node port, including graph-only RenderSize values and texture inputs.
 struct RenderGraphPort final
 {
     QString Id;
@@ -48,7 +48,7 @@ enum class RenderGraphDomain : foundation::uint8
 };
 
 /// Result of the canvas pre-check of one proposed edge. Code uses the shared validator's
-/// RenderGraph error names (Port, MultipleWriters, TypeMismatch, Cycle) without the prefix.
+/// RenderGraph error names (Port, MultipleWriters, TypeMismatch, AttachmentMismatch, Cycle) without the prefix.
 struct RenderGraphLinkCheck final
 {
     QString Code;
@@ -69,7 +69,8 @@ struct RenderGraphLinkCheck final
 GetRenderGraphNodePorts(const RenderGraphDocument& document, const QJsonObject& node, RenderGraphNodePorts& outPorts);
 
 /// Pre-check a `node.port` -> `node.port` edge against the draft configuration before it is
-/// committed: direction, known ports, type, a single writer per input and within-frame cycles.
+/// committed: direction, known ports, type, a single writer per input, within-frame cycles
+/// and newly provable texture-contract mismatches through subgraph bindings.
 /// The shared CLI validator still owns legality; this only gives the canvas immediate reasons.
 /// shouldReplaceExisting allows an occupied destination; all other checks still apply.
 [[nodiscard]] RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,

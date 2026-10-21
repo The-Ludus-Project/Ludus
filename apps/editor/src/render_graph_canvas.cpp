@@ -1,5 +1,6 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_resources.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -203,7 +204,7 @@ RenderGraphDomain GetRenderGraphDomain(const QString& kind)
     {
         return RenderGraphDomain::SceneView;
     }
-    if (kind == QStringLiteral("Target") || kind == QStringLiteral("Export"))
+    if (kind == QStringLiteral("Target") || kind == QStringLiteral("Export") || kind == QStringLiteral("RenderSize"))
     {
         return RenderGraphDomain::Resource;
     }
@@ -236,7 +237,19 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
     }
     else if (kind == QStringLiteral("Target"))
     {
+        if (node.value(QStringLiteral("extent")).toString() == QStringLiteral("RenderSize"))
+        {
+            ports.Inputs = {{QStringLiteral("size"), QStringLiteral("RenderSize")}};
+        }
         ports.Outputs = {{QStringLiteral("texture"), node.value(QStringLiteral("type")).toString()}};
+    }
+    else if (kind == QStringLiteral("RenderSize"))
+    {
+        if (node.value(QStringLiteral("extent")).toString() == QStringLiteral("Texture"))
+        {
+            ports.Inputs = {{QStringLiteral("texture"), QStringLiteral("Texture")}};
+        }
+        ports.Outputs = {{QStringLiteral("size"), QStringLiteral("RenderSize")}};
     }
     else if (kind == QStringLiteral("Raster"))
     {
@@ -378,7 +391,9 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
                         .arg(to, edge.toObject().value(QStringLiteral("from")).toString())};
         }
     }
-    if (sourceType != sinkType)
+    if (sourceType != sinkType &&
+        (sinkType != QStringLiteral("Texture") ||
+         (sourceType != QStringLiteral("ColorTexture") && sourceType != QStringLiteral("DepthTexture"))))
     {
         return {QStringLiteral("TypeMismatch"),
                 QStringLiteral("%1 (%2) cannot connect to %3 (%4)").arg(from, sourceType, to, sinkType)};
@@ -407,7 +422,7 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
             }
         }
     }
-    return {};
+    return CheckRenderGraphTextureContracts(document, file, configuration, from, to);
 }
 
 struct RenderGraphCanvas::NodeView final

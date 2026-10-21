@@ -65,7 +65,224 @@ QJsonObject GetConfiguration(const RenderGraphDocument& document, const QString&
     }
     return {};
 }
+
+QJsonObject GetNode(const RenderGraphDocument& document, const QString& identity)
+{
+    for (const QJsonValueConstRef node :
+         GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray())
+    {
+        if (node.toObject().value(QStringLiteral("id")).toString() == identity)
+        {
+            return node.toObject();
+        }
+    }
+    return {};
+}
 } // namespace
+
+TEST_CASE("shared render sizes reject proven nested attachment mismatches before editing",
+          "[editor][render-graph][render-size]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Disconnect(ROOT_GRAPH,
+                                DEFAULT_CONFIGURATION,
+                                QStringLiteral("depth.texture"),
+                                QStringLiteral("raster.depth")) == RenderGraphDocumentStatus::Ok);
+    QJsonObject depth = GetNode(document, QStringLiteral("depth"));
+    depth.insert(QStringLiteral("extent"), QJsonArray{97, 65});
+    REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, depth) == RenderGraphDocumentStatus::Ok);
+    const uint64 revision = document.GetRevision();
+    const RenderGraphLinkCheck mismatch = CheckRenderGraphLink(document,
+                                                               ROOT_GRAPH,
+                                                               DEFAULT_CONFIGURATION,
+                                                               QStringLiteral("depth.texture"),
+                                                               QStringLiteral("raster.depth"));
+    CHECK(mismatch.Code == QStringLiteral("AttachmentMismatch"));
+    CHECK(mismatch.Reason.contains(QStringLiteral("97 x 65")) == true);
+    CHECK(mismatch.Reason.contains(QStringLiteral("96 x 64")) == true);
+    CHECK(mismatch.Reason.contains(QStringLiteral("RenderSize")) == true);
+    CHECK(document.GetRevision() == revision);
+    REQUIRE(document.Connect(ROOT_GRAPH,
+                             DEFAULT_CONFIGURATION,
+                             QStringLiteral("depth.texture"),
+                             QStringLiteral("raster.depth")) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("scene.scene"),
+                               QStringLiteral("raster.scene"),
+                               true)
+              .IsLegal() == true);
+    REQUIRE(document.Disconnect(ROOT_GRAPH,
+                                DEFAULT_CONFIGURATION,
+                                QStringLiteral("depth.texture"),
+                                QStringLiteral("raster.depth")) == RenderGraphDocumentStatus::Ok);
+    depth.insert(QStringLiteral("extent"), QStringLiteral("RenderSize"));
+    REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, depth) == RenderGraphDocumentStatus::Ok);
+    // An unbound size is unknown; accepting this wire must not invent dimensions.
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("depth.texture"),
+                               QStringLiteral("raster.depth"))
+              .IsLegal() == true);
+    REQUIRE(document.Connect(ROOT_GRAPH,
+                             DEFAULT_CONFIGURATION,
+                             QStringLiteral("depth.texture"),
+                             QStringLiteral("raster.depth")) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject size{{QStringLiteral("id"), QStringLiteral("size")},
+                           {QStringLiteral("kind"), QStringLiteral("RenderSize")},
+                           {QStringLiteral("extent"), QJsonArray{97, 65}}};
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, size) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("size.size"),
+                               QStringLiteral("depth.size"))
+              .Code == QStringLiteral("AttachmentMismatch"));
+    QJsonObject matching = size;
+    matching.insert(QStringLiteral("extent"), QJsonArray{96, 64});
+    REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, matching) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("size.size"),
+                               QStringLiteral("depth.size"))
+              .IsLegal() == true);
+    REQUIRE(document.Connect(ROOT_GRAPH,
+                             DEFAULT_CONFIGURATION,
+                             QStringLiteral("size.size"),
+                             QStringLiteral("depth.size")) == RenderGraphDocumentStatus::Ok);
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(ROOT_GRAPH, graph) == true);
+    CHECK(graph.value(QStringLiteral("version")).toInt() == 2);
+    QString error;
+    depth.insert(QStringLiteral("extent"), QJsonArray{96, 64});
+    const uint64 connectedRevision = document.GetRevision();
+    CHECK(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, depth, &error) ==
+          RenderGraphDocumentStatus::InvalidEdit);
+    CHECK(error.contains(QStringLiteral("Disconnect depth.size")) == true);
+    CHECK(document.GetRevision() == connectedRevision);
+    REQUIRE(document.Undo() == true);
+    CHECK(
+        GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("edges")).toArray().size() ==
+        6);
+    REQUIRE(document.Redo() == true);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetNode(reopened, QStringLiteral("depth")).value(QStringLiteral("extent")) == QStringLiteral("RenderSize"));
+}
+
+TEST_CASE("texture-derived size ports accept color and depth but reject values and cycles",
+          "[editor][render-graph][render-size]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject size{{QStringLiteral("id"), QStringLiteral("size")},
+                           {QStringLiteral("kind"), QStringLiteral("RenderSize")},
+                           {QStringLiteral("extent"), QStringLiteral("Texture")}};
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, size) == RenderGraphDocumentStatus::Ok);
+    for (const QString& source : {QStringLiteral("color.texture"), QStringLiteral("depth.texture")})
+    {
+        CHECK(CheckRenderGraphLink(document, ROOT_GRAPH, DEFAULT_CONFIGURATION, source, QStringLiteral("size.texture"))
+                  .IsLegal() == true);
+    }
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("scene.scene"),
+                               QStringLiteral("size.texture"))
+              .Code == QStringLiteral("TypeMismatch"));
+    QJsonObject depth = GetNode(document, QStringLiteral("depth"));
+    depth.insert(QStringLiteral("extent"), QStringLiteral("RenderSize"));
+    REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, depth) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.Connect(ROOT_GRAPH,
+                             DEFAULT_CONFIGURATION,
+                             QStringLiteral("size.size"),
+                             QStringLiteral("depth.size")) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("depth.texture"),
+                               QStringLiteral("size.texture"))
+              .Code == QStringLiteral("Cycle"));
+}
+
+TEST_CASE("pipeline texture contracts check samples and explicit ray coverage", "[editor][render-graph][render-size]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject pipeline = MakePipelineNode(QStringLiteral("GraphicsPipeline"), QStringLiteral("work"));
+    pipeline.insert(QStringLiteral("inputs"),
+                    QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("color")},
+                                           {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+                                           {QStringLiteral("required"), true}}});
+    pipeline.insert(QStringLiteral("outputs"),
+                    QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("color")},
+                                           {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+                                           {QStringLiteral("target"), QStringLiteral("color")},
+                                           {QStringLiteral("format"), QStringLiteral("RGBA8Unorm")},
+                                           {QStringLiteral("load"), QStringLiteral("Clear")},
+                                           {QStringLiteral("store"), QStringLiteral("Store")}}});
+    QJsonObject state = pipeline.value(QStringLiteral("state")).toObject();
+    state.insert(QStringLiteral("samples"), 2);
+    pipeline.insert(QStringLiteral("state"), state);
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, pipeline) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("color.texture"),
+                               QStringLiteral("work.color"))
+              .Code == QStringLiteral("AttachmentMismatch"));
+    state.insert(QStringLiteral("samples"), 1);
+    pipeline.insert(QStringLiteral("state"), state);
+    REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, pipeline) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("color.texture"),
+                               QStringLiteral("work.color"))
+              .IsLegal() == true);
+    QJsonObject ray = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("ray"));
+    ray.insert(QStringLiteral("inputs"), pipeline.value(QStringLiteral("inputs")));
+    ray.insert(QStringLiteral("outputs"), pipeline.value(QStringLiteral("outputs")));
+    ray.insert(QStringLiteral("invocation"), QJsonObject{{QStringLiteral("dimensions"), QJsonArray{1, 2, 1}}});
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, ray) == RenderGraphDocumentStatus::Ok);
+    const RenderGraphLinkCheck mismatch = CheckRenderGraphLink(document,
+                                                               ROOT_GRAPH,
+                                                               DEFAULT_CONFIGURATION,
+                                                               QStringLiteral("color.texture"),
+                                                               QStringLiteral("ray.color"));
+    CHECK(mismatch.Code == QStringLiteral("AttachmentMismatch"));
+    CHECK(mismatch.Reason.contains(QStringLiteral("Match color target")) == true);
+    ray.insert(QStringLiteral("invocation"),
+               QJsonObject{{QStringLiteral("dimensions"), QStringLiteral("ColorTarget")}});
+    REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, ray) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("color.texture"),
+                               QStringLiteral("ray.color"))
+              .IsLegal() == true);
+    const QJsonObject recursive{{QStringLiteral("id"), QStringLiteral("recursive_draft")},
+                                {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                                {QStringLiteral("asset"), ROOT_GRAPH},
+                                {QStringLiteral("configuration"), DEFAULT_CONFIGURATION}};
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, recursive) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("color.texture"),
+                               QStringLiteral("ray.color"))
+              .IsLegal() == true);
+}
 
 TEST_CASE("ray launch sizing derives from color by default and preserves explicit drafts",
           "[editor][render-graph][pipeline]")

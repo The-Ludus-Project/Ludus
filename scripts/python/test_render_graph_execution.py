@@ -74,6 +74,23 @@ class ExecutionTests(unittest.TestCase):
         self.assertIn('result.CompositeVertex = compositeVertex', text)
         self.assertNotIn('std::', text)
 
+    def test_shared_render_sizes_lower_to_numeric_sdk_resource_descriptors(self):
+        value = json.loads(self.graph.read_text())
+        value['version'] = 2
+        configuration = value['configurations'][0]
+        configuration['nodes'].append({'id': 'size', 'kind': 'RenderSize', 'extent': [97, 65]})
+        for node in configuration['nodes']:
+            if node['kind'] == 'Target':
+                node['extent'] = 'RenderSize'
+                configuration['edges'].append({'from': 'size.size', 'to': node['id'] + '.size'})
+        self.graph.write_bytes(graph.canonical_asset(value))
+        package = self.package()
+        _, resources, _, _ = execution.lower_plan(package, 'Default')
+        self.assertTrue(all(resource['Width'] == 97 and resource['Height'] == 65 for resource in resources))
+        destination = self.root / 'shared_sizes.h'
+        execution.emit_runtime(self.output, destination, name='SizedGraph')
+        self.assertNotIn('RenderSize', destination.read_text())
+
     def test_depth_only_export_has_explicit_technique_and_private_backing(self):
         self.graph = graph.new_workspace(self.root / 'depth', output='depth')
         self.manifest = build.new_build_sources(self.graph, profiles=('metal', 'wgsl'), renderer_static=True)
