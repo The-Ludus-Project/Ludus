@@ -671,10 +671,12 @@ float3 Integrate(uint pixel, uint sample)
 }
 // The graph wrapper owns the entry point when this kernel is included as a helper.
 // Calling another annotated compute entry point hangs Slang 2026.1.2's parameter transform.
-#if !defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
-[numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)]
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+#    define LUDUS_GPU_PREVIEW_COMPUTE_ENTRY
+#else
+#    define LUDUS_GPU_PREVIEW_COMPUTE_ENTRY [numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)]
 #endif
-void ComputeMain(uint3 positionPixel : SV_DispatchThreadID)
+LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_DispatchThreadID)
 {
     if (positionPixel.x >= Dimensions.x || positionPixel.y >= Dimensions.y)
         return;
@@ -721,3 +723,4 @@ void ComputeMain(uint3 positionPixel : SV_DispatchThreadID)
     colors[pixel] = float4(compensation.w != 0 ? float3(1, 0, 1) : saturate(encoded), float(pixel));
 #endif
 }
+#undef LUDUS_GPU_PREVIEW_COMPUTE_ENTRY
