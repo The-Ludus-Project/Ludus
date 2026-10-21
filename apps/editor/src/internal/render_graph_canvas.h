@@ -97,6 +97,10 @@ class RenderGraphCanvas final : public QGraphicsView
 public:
     static constexpr foundation::int32 MAX_COORDINATE = RenderGraphDocument::MAX_COORDINATE;
 
+    /// Expand available Scene members; connected members remain visible when collapsed.
+    void SetSceneBundleExpanded(const QString& node, bool isExpanded);
+    /// Current per-canvas expansion preference for this configuration and node.
+    [[nodiscard]] bool IsSceneBundleExpanded(const QString& node) const;
     explicit RenderGraphCanvas(const RenderGraphDocument& document, QWidget* parentOrNull = nullptr);
     ~RenderGraphCanvas() override;
     RenderGraphCanvas(const RenderGraphCanvas&) = delete;
@@ -198,6 +202,7 @@ private:
     QString mFile;
     QString mConfiguration;
     QHash<QString, NodeView*> mNodes;
+    QStringList mExpandedSceneBundles;
     QVector<EdgeView*> mEdges;
     QStringList mDragNodes;
     QHash<QString, QPointF> mDragOrigins;

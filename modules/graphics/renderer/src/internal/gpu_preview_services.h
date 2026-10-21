@@ -297,6 +297,7 @@ Status PackGpuScene(const ReferenceJob& job,
     uniform.SurfaceLayout[1] = static_cast<uint32>(lightsWide);
     uniform.SurfaceLayout[2] = LUDUS_GPU_PREVIEW_KERNEL_VERSION;
     uniform.Options.X = job.Description.SecondaryDistance;
+    uniform.Options.W = GpuBits(job.SceneData);
     uniform.BoundsMinimumWorld = GpuVector(scene.Bounds.Min, GpuBits(static_cast<uint32>(job.SourceGeneration)));
     uniform.BoundsMaximumWorld =
         GpuVector(scene.Bounds.Max,

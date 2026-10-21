@@ -38,8 +38,12 @@ when choosing one light at each surface. It does not require recursive callbacks
 
 ## Snapshot and graph contract
 
-Keep one Scene port. Connecting it binds one immutable extraction generation,
-not one port per lamp. A pipeline declares which scene capabilities it reads:
+A full Scene port binds one immutable extraction generation and selects Geometry,
+Materials and Lights. The delivered editor can expand a direct Scene-to-pipeline
+wire into typed members and preserve a selected subset in the compiled pass.
+See [connect or expand a Scene bundle](../development/render-graph-authoring.md#connect-or-expand-a-scene-bundle)
+for the current groups, dependency rules and canvas workflow. The finer capability
+model below remains a broader target:
 
 | Proposed capability | Shader access | Required data |
 | --- | --- | --- |

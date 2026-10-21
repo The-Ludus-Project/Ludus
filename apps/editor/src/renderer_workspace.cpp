@@ -1,4 +1,5 @@
 #include "internal/render_graph_configuration_editor.h"
+#include "internal/render_graph_scene_bundle.h"
 #include <ludus/content/render_graph_format/plan.h>
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -2106,6 +2107,15 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                      new QLabel(mSelectedNode + QStringLiteral(" (") + node.value(QStringLiteral("kind")).toString() +
                                     QLatin1Char(')'),
                                 &inoutParent));
+    if (HasSceneBundle(node) == true)
+    {
+        QPushButton* expand = new QPushButton(QStringLiteral("Expand Scene Bundle"), &inoutParent);
+        expand->setObjectName(QStringLiteral("renderGraphExpandSceneBundle"));
+        expand->setCheckable(true);
+        expand->setChecked(mCanvas->IsSceneBundleExpanded(mSelectedNode));
+        connect(expand, &QPushButton::clicked, this, &RendererWorkspace::expandSceneBundle);
+        outFields.addRow(expand);
+    }
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
     {
         RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, &inoutParent);
@@ -2718,6 +2728,27 @@ void RendererWorkspace::activateSelectedNode()
     }
 }
 
+void RendererWorkspace::expandSceneBundle(bool isExpanded)
+{
+    if (hasPendingSourceText() == true)
+    {
+        mStatus->setText(QStringLiteral("Apply pending Source text before expanding Scene connections."));
+        return;
+    }
+    if (isExpanded == true)
+    {
+        const RenderGraphDocumentStatus status =
+            mDocument.ExpandSceneBundle(mSelectedFile, mSelectedConfiguration, mSelectedNode);
+        if (status != RenderGraphDocumentStatus::Ok)
+        {
+            documentEdited(status);
+            return;
+        }
+    }
+    mCanvas->SetSceneBundleExpanded(mSelectedNode, isExpanded);
+    documentEdited(RenderGraphDocumentStatus::Ok);
+}
+
 void RendererWorkspace::enableSceneMaterials()
 {
     if (hasPendingSourceText() == true)
@@ -2796,6 +2827,15 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
             QStringLiteral("Upgrade the package's shared ray callbacks, preserving original shader behavior. "
                            "Undo restores the previous interface; Save publishes the change."));
         connect(enable, &QAction::triggered, this, &RendererWorkspace::enableSceneMaterials);
+    }
+    if (HasSceneBundle(node) == true)
+    {
+        QAction* expand = menu.addAction(QStringLiteral("Expand Scene Bundle"));
+        expand->setObjectName(QStringLiteral("renderGraphExpandSceneBundleAction"));
+        expand->setCheckable(true);
+        expand->setChecked(mCanvas->IsSceneBundleExpanded(mSelectedNode));
+        expand->setEnabled(hasPendingSourceText() == false);
+        connect(expand, &QAction::triggered, this, &RendererWorkspace::expandSceneBundle);
     }
     if (node.isEmpty() == false)
     {

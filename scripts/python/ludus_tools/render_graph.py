@@ -23,6 +23,7 @@ import sys
 
 from .errors import ToolingError
 from . import render_graph_pipeline as pipeline
+from . import render_graph_scene as scene_bundle
 from . import render_graph_ray as ray
 
 MAX_ASSET_BYTES = 128 * 1024
@@ -98,7 +99,9 @@ def _endpoint(value, where):
              "Schema", where, "endpoint must be node.port (input.port for an interface)")
     node, port = value.split(".")
     _identifier(node, where)
-    _identifier(port, where)
+    # Derived members preserve every valid declared bundle ID, including 63-byte names.
+    suffix = next(("_" + part for part in scene_bundle.PARTS if port.endswith("_" + part)), "")
+    _identifier(port[:-len(suffix)] if suffix and len(port) > 63 else port, where)
     return node, port
 
 
@@ -110,7 +113,7 @@ def _ports(values, where, outputs=False, version=1):
         _identifier(port["id"], where)
         _require(port["id"] not in claimed, "DuplicateIdentity", where, port["id"])
         claimed.add(port["id"])
-        _enum(port["type"], ((*pipeline.RESOURCE_TYPES, 'RenderSize') if outputs else (*pipeline.INPUT_TYPES, 'RenderSize'))
+        _enum(port["type"], ((*pipeline.RESOURCE_TYPES, 'RenderSize', 'Scene', *scene_bundle.TYPES.values()) if outputs else (*pipeline.INPUT_TYPES, 'RenderSize'))
               if version == 2 else (TEXTURES if outputs else TYPES), where)
         if outputs:
             _endpoint(port["source"], where)
@@ -405,10 +408,10 @@ class _Library:
     def node_ports(self, node):
         kind = node["kind"]
         if kind in pipeline.KINDS:
-            return ({p["id"]: p["type"] for p in node["inputs"]},
+            return (scene_bundle.ports({p["id"]: p["type"] for p in node["inputs"]}),
                     {p["id"]: p["type"] for p in node["outputs"]})
         if kind == "Scene":
-            return {}, {"scene": "Scene"}
+            return {}, {"scene": "Scene", **scene_bundle.TYPES}
         if kind == "Camera":
             return {"target": node["target_type"]}, {"view": "View"}
         if kind == "Target":
@@ -455,6 +458,9 @@ class _Library:
                      f"{edge['from']} ({kind}) cannot connect to {edge['to']} ({ports[key][0][port]}). "
                      f"Connect a {ports[key][0][port]} output to this input, or change the input type in Properties.")
             incoming[key][port] = edge["from"]
+        for key, node in nodes.items():
+            if node['kind'] in pipeline.KINDS:
+                scene_bundle.check_connections(node, incoming[key], where + '/' + key, sys.modules[__name__])
         for output in config["outputs"]:
             _require(source(output["source"]) == output["type"], "TypeMismatch", where,
                      f"Configuration output '{output['id']}' expects {output['type']}, but source '{output['source']}' has a different type. "
@@ -513,6 +519,9 @@ class _Library:
                 required.clear()
             if node['kind'] in pipeline.KINDS:
                 required.update(port['target'] for port in node['outputs'])
+            if node["kind"] in pipeline.KINDS:
+                required -= {p["id"] for p in node["inputs"] if p["type"] == "Scene" and
+                             any(p["id"] + "_" + part in incoming[key] for part in scene_bundle.PARTS)}
             missing = sorted(required - incoming[key].keys())
             descriptions = ', '.join(f"'{key}.{port}' ({ports[0][port]})" for port in missing)
             _require(not missing, "UnboundInput", where + "/" + key,
@@ -544,6 +553,7 @@ class _Value:
     cameras: tuple[str, ...] = ()
     extent: tuple[int, ...] = ()
     scale: tuple[int, ...] = ()
+    scene_data: int = scene_bundle.ALL_DATA
 
 
 class _Compiler:
@@ -594,6 +604,7 @@ class _Compiler:
             authored_pipeline = None
             output_mapping = None
             if kind in pipeline.KINDS:
+                inputs = scene_bundle.resolve(node, inputs, where, sys.modules[__name__])
                 authored_pipeline = node
                 if kind == 'ComputePipeline':
                     required_stage = 'compute' if kind == 'ComputePipeline' else 'ray_generation'
@@ -609,6 +620,8 @@ class _Compiler:
                 kind = node['kind']
             if kind == "Scene":
                 outputs["scene"] = _Value("Scene", origin=where)
+                outputs.update({part: _Value(kind, origin=where, scene_data=1 << scene_bundle.PARTS.index(part))
+                                for part, kind in scene_bundle.TYPES.items()})
             elif kind == "Target":
                 self.resources[where] = {key: node[key] for key in
                     ("type", "format", "extent", "samples", "imported", "initialized", "presentation")}
@@ -662,7 +675,7 @@ class _Compiler:
                 self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
                     'technique': ray.TECHNIQUE, 'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
                     'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
-                    'scene': inputs['scene'].origin, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
+                    'scene': inputs['scene'].origin, 'scene_data': inputs['scene'].scene_data, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
                     'dimensions': expected_dimensions,
                     'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
@@ -686,6 +699,7 @@ class _Compiler:
                          "technique": technique, "source": self.library.label(path), "asset": self.library.assets[path]["id"],
                          "asset_configuration": config["id"], "vertex_layout": node["vertex_layout"],
                          "material": node["material"], "scene": inputs["scene"].origin,
+                         "scene_data": inputs["scene"].scene_data,
                          "view": inputs["view"].origin, "cameras": list(inputs["view"].cameras),
                          "dependencies": sorted({v.producer for v in inputs.values() if v.producer}),
                          "attachments": {aspect: {"resource": value.resource, "input_version": inputs[aspect].version,

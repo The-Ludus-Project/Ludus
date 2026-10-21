@@ -17,6 +17,19 @@ constexpr float32 MAX_EMISSION = 10000;
 constexpr float32 MIN_ROUGHNESS = 0.045F;
 constexpr float32 MAX_NORMAL_SCALE = 8;
 constexpr float32 POSITION_ROUNDING = 2e-6F;
+SceneShaderMaterial SelectSceneMaterial(const SceneShaderMaterial& source, uint32 data) noexcept
+{
+    SceneShaderMaterial material = source;
+    if ((data & ::ludus::content::render_graph_format::SCENE_DATA_MATERIALS) == 0)
+    {
+        material.BaseColor = {};
+        material.Metallic = 0;
+        material.Roughness = 1;
+        material.ColorTexture = {};
+        material.SurfaceTexture = {};
+    }
+    return material;
+}
 bool IsTextureValid(const rhi::TextureCpuContent& texture, bool isData) noexcept
 {
     if (texture.Bytes == nullptr)
@@ -44,11 +57,32 @@ bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
            IsTextureValid(material.SurfaceTexture, true) && IsTextureValid(material.EmissionTexture, false);
 }
 } // namespace
-Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& input,
+Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                                   const ReferenceCaptureDescription& description,
                                   usize byteBudget,
                                   core::UniquePtr<ReferenceJob>& outJob) noexcept
 {
+    if ((source.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
+        (source.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
+    {
+        return Status::InvalidDescription;
+    }
+    RenderGraphSceneDescription input = source;
+    const bool hasMaterials = (input.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_MATERIALS) != 0;
+    const bool hasLights = (input.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_LIGHTS) != 0;
+    if (hasMaterials == false && hasLights == false)
+    {
+        input.Inputs.Materials = {};
+    }
+    if (hasLights == false)
+    {
+        input.Inputs.Lights = {};
+        input.Inputs.Environment = {};
+        input.Inputs.EnvironmentPixels = {};
+        input.Inputs.EnvironmentWidth = 0;
+        input.Inputs.EnvironmentHeight = 0;
+    }
+
     SceneShaderDiagnostics localDiagnostics;
     SceneShaderDiagnostics& diagnostics =
         input.DiagnosticsOrNull != nullptr ? *input.DiagnosticsOrNull : localDiagnostics;
@@ -71,7 +105,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& input,
     usize textureBytes = 0;
     for (usize i = 0; i < input.Inputs.Materials.GetSize(); ++i)
     {
-        const SceneShaderMaterial& material = input.Inputs.Materials[i];
+        const SceneShaderMaterial material = SelectSceneMaterial(input.Inputs.Materials[i], input.SceneData);
         if (IsMaterialValid(material) == false)
         {
             if (input.AreErrorsAllowed == false)
@@ -154,6 +188,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& input,
         return Status::OutOfMemory;
     }
     candidate->SourceGeneration = input.SourceGeneration;
+    candidate->SceneData = input.SceneData;
     candidate->Description = description;
     candidate->Description.Environment = input.Inputs.Environment;
     LightSelection lights;
@@ -222,7 +257,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& input,
     usize writtenBytes = 0;
     for (usize i = 0; i < materials.GetSize(); ++i)
     {
-        materials[i] = input.Inputs.Materials[i];
+        materials[i] = SelectSceneMaterial(input.Inputs.Materials[i], input.SceneData);
         if (IsMaterialValid(materials[i]) == false)
         {
             materials[i] = {};
@@ -273,6 +308,10 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& input,
             {
                 materialIndex = item.MaterialOverrides[slot];
             }
+            if (hasMaterials == false && hasLights == false)
+            {
+                materialIndex = DEFAULT_SCENE_MATERIAL;
+            }
             SceneShaderMaterial material;
             uint32 materialKind = materialIndex == DEFAULT_SCENE_MATERIAL ? 1U : 0U;
             if (materialIndex != DEFAULT_SCENE_MATERIAL)
@@ -297,7 +336,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& input,
                     material = materials[materialIndex];
                 }
             }
-            if (input.HasMaterialInterface == false)
+            if (input.HasMaterialInterface == false && hasMaterials == true)
             {
                 material.BaseColor = {item.Material.Color.X, item.Material.Color.Y, item.Material.Color.Z};
                 materialKind = 0;
@@ -331,7 +370,8 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& input,
             instance.EmissionMap = material.EmissionTexture;
             instance.SourceId = item.SourceId;
             instance.FirstTriangle = candidate->Scene.Triangles.GetSize();
-            const bool isEmitter = material.Emission.X > 0 || material.Emission.Y > 0 || material.Emission.Z > 0;
+            const bool isEmitter =
+                hasLights == true && (material.Emission.X > 0 || material.Emission.Y > 0 || material.Emission.Z > 0);
             const usize firstEmitter = candidate->Scene.Emitters.GetSize();
             float32 totalArea = 0;
             for (usize primitive = 0; primitive < geometry.IndexCount / CORNERS; ++primitive)

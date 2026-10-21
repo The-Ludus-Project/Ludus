@@ -415,6 +415,11 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
         hasCameraRoute[pass.Camera] =
             hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
+        if ((pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
+            (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
+        {
+            return Status::InvalidDescription;
+        }
         if (pass.Program == format::Technique::RayTracing)
         {
             ++rayPassCount;
@@ -1688,15 +1693,15 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     }
     const StaticArray<format::Resource, format::MAX_RESOURCES>& preparingResources =
         state.Resizing.Get() != nullptr ? state.Resizing->Resources : state.Resources;
-    const RenderGraphSceneDescription rayScene{
-        meshes,
-        items,
-        sceneInputsOrNull != nullptr && state.Programs.HasSceneShaderInterface == true ? *sceneInputsOrNull
-                                                                                       : SceneShaderInputs{},
-        state.Programs.HasSceneShaderInterface,
-        policy == RenderGraphCoveragePolicy::DiagnosticColor,
-        &state.Report.SceneDiagnostics,
-        sceneRevision};
+    RenderGraphSceneDescription rayScene{meshes,
+                                         items,
+                                         sceneInputsOrNull != nullptr && state.Programs.HasSceneShaderInterface == true
+                                             ? *sceneInputsOrNull
+                                             : SceneShaderInputs{},
+                                         state.Programs.HasSceneShaderInterface,
+                                         policy == RenderGraphCoveragePolicy::DiagnosticColor,
+                                         &state.Report.SceneDiagnostics,
+                                         sceneRevision};
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         if (state.Passes[pass].Program != format::Technique::RayTracing)
@@ -1704,6 +1709,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             continue;
         }
         const format::Pass& operation = state.Passes[pass];
+        rayScene.SceneData = operation.SceneData;
         const Status created =
             candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
                                                   state.Device,

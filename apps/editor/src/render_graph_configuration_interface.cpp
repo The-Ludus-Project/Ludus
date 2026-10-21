@@ -69,10 +69,18 @@ QStringList GetConfigurationPortTypes(int32 version, bool isOutput)
     {
         types.append(QStringLiteral("Buffer"));
         types.append(QStringLiteral("RenderSize"));
+        types += {QStringLiteral("Scene"),
+                  QStringLiteral("SceneGeometry"),
+                  QStringLiteral("SceneMaterials"),
+                  QStringLiteral("SceneLights")};
     }
     if (isOutput == false)
     {
-        types += {QStringLiteral("Scene"), QStringLiteral("View")};
+        types.append(QStringLiteral("View"));
+        if (version != 2)
+        {
+            types.append(QStringLiteral("Scene"));
+        }
         if (version == 2)
         {
             types += {QStringLiteral("AccelerationStructure"),

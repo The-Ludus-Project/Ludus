@@ -137,6 +137,7 @@ struct RenderGraphPackage::State final
     StaticArray<BorrowedView<const char>, format::MAX_PASSES> PassNames{};
     bool HasPassNames = false;
     bool HasRelativeSizes = false;
+    bool HasSceneData = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -399,8 +400,11 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         const uint32 depthLoad = inoutReader.ReadWord();
         const uint32 depthStore = inoutReader.ReadWord();
         pass.AllowsRepeatedCoverage = inoutReader.ReadWord();
+        pass.SceneData =
+            HasSceneData == true ? inoutReader.ReadWord() : ::ludus::content::render_graph_format::SCENE_DATA_ALL;
         if (program > MAX_TECHNIQUE || colorLoad > MAX_LOAD || depthLoad > MAX_LOAD || colorStore > MAX_STORE ||
-            depthStore > MAX_STORE)
+            depthStore > MAX_STORE || (pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
+            (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -445,12 +449,13 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
-         version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
+         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
-    candidate->HasRelativeSizes = version == format::PACKAGE_VERSION;
+    candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
+    candidate->HasSceneData = version >= format::PACKAGE_VERSION;
     candidate->Header.Version = format::VERSION;
     candidate->Header.ResourceCount = reader.ReadWord();
     candidate->Header.PassCount = reader.ReadWord();

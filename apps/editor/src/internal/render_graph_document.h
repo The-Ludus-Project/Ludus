@@ -129,6 +129,10 @@ public:
                                                           const QString& configuration,
                                                           const QJsonObject& node,
                                                           QString* outErrorOrNull = nullptr);
+    /// Unpack full Scene wires touching a node into typed members as one undoable edit.
+    /// Preserves the selected scene/data. Failure preserves all draft files. No disk writes.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ExpandSceneBundle(const QString& file, const QString& configuration, const QString& node);
     /// Upgrade the package's shared ray technique to scene materials in one undoable edit.
     /// Preserves original callbacks through adapters, program IDs and admission budgets.
     /// Failure preserves draft/history and reports the required repair. No disk writes.

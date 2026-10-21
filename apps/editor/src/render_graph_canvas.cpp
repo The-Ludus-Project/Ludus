@@ -2,6 +2,7 @@
 #include "internal/render_graph_canvas_feedback.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_resources.h"
+#include "internal/render_graph_scene_bundle.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -155,7 +156,7 @@ QColor GetDomainColor(RenderGraphDomain domain)
 
 QColor GetTypeColor(const QString& type)
 {
-    if (type == QStringLiteral("Scene") || type == QStringLiteral("View"))
+    if (type.startsWith(QStringLiteral("Scene")) == true || type == QStringLiteral("View"))
     {
         return {120, 170, 230};
     }
@@ -235,11 +236,15 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
     if (IsPipelineNode(kind) == true)
     {
         ports.Inputs = ReadInterface(node.value(QStringLiteral("inputs")).toArray());
+        AppendSceneBundleInputs(ports.Inputs);
         ports.Outputs = ReadInterface(node.value(QStringLiteral("outputs")).toArray());
     }
     else if (kind == QStringLiteral("Scene"))
     {
-        ports.Outputs = {{QStringLiteral("scene"), QStringLiteral("Scene")}};
+        ports.Outputs = {{QStringLiteral("scene"), QStringLiteral("Scene")},
+                         {QStringLiteral("geometry"), QStringLiteral("SceneGeometry")},
+                         {QStringLiteral("materials"), QStringLiteral("SceneMaterials")},
+                         {QStringLiteral("lights"), QStringLiteral("SceneLights")}};
     }
     else if (kind == QStringLiteral("Camera"))
     {
@@ -408,6 +413,26 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
     {
         return {QStringLiteral("TypeMismatch"),
                 QStringLiteral("%1 (%2) cannot connect to %3 (%4)").arg(from, sourceType, to, sinkType)};
+    }
+    for (const RenderGraphPort& port : sinkPorts.Inputs)
+    {
+        if (port.Type != QStringLiteral("Scene"))
+        {
+            continue;
+        }
+        const QString bundle = sink + QLatin1Char('.') + port.Id;
+        const QString memberPrefix = bundle + QLatin1Char('_');
+        for (const QJsonValueConstRef value : edges)
+        {
+            const QString target = value.toObject().value(QStringLiteral("to")).toString();
+            if ((to == bundle && target.startsWith(memberPrefix) == true) ||
+                (to.startsWith(memberPrefix) == true && target == bundle))
+            {
+                return {QStringLiteral("MultipleWriters"),
+                        QStringLiteral("Expand the Scene bundle before connecting its members; disconnect the member "
+                                       "wires before reconnecting the full bundle.")};
+            }
+        }
     }
     // The new edge makes `sink` depend on `source`; a path sink -> ... -> source closes a cycle.
     QStringList pending{sink};
@@ -702,6 +727,50 @@ void RenderGraphCanvas::Rebuild()
         const QString kind = node.value(QStringLiteral("kind")).toString();
         RenderGraphNodePorts ports;
         const bool hasPorts = GetRenderGraphNodePorts(mDocument, node, ports);
+        if (IsSceneBundleExpanded(identity) == false)
+        {
+            const auto hideUnusedMembers =
+                [&edges, &identity, &record, &kind, &node](QVector<RenderGraphPort>& inoutPorts, bool isOutput) {
+                    for (qsizetype index = inoutPorts.size(); index > 0; --index)
+                    {
+                        const RenderGraphPort& port = inoutPorts.at(index - 1);
+                        if (IsSceneBundleMember(port) == false)
+                        {
+                            continue;
+                        }
+                        const bool isDerivedMember =
+                            kind == QStringLiteral("Scene") || GetSceneBundlePortType(node, port.Id).isEmpty() == false;
+                        if (isDerivedMember == false)
+                        {
+                            continue;
+                        }
+                        bool isConnected = false;
+                        for (const QJsonValueConstRef edge : edges)
+                        {
+                            isConnected =
+                                isConnected == true ||
+                                edge.toObject()
+                                        .value(isOutput == true ? QStringLiteral("from") : QStringLiteral("to"))
+                                        .toString() == identity + QLatin1Char('.') + port.Id;
+                        }
+                        if (isOutput == true)
+                        {
+                            for (const QJsonValueConstRef output : record.value(QStringLiteral("outputs")).toArray())
+                            {
+                                isConnected = isConnected == true ||
+                                              output.toObject().value(QStringLiteral("source")).toString() ==
+                                                  identity + QLatin1Char('.') + port.Id;
+                            }
+                        }
+                        if (isConnected == false)
+                        {
+                            inoutPorts.removeAt(index - 1);
+                        }
+                    }
+                };
+            hideUnusedMembers(ports.Inputs, false);
+            hideUnusedMembers(ports.Outputs, true);
+        }
         const int32 column = columns.value(identity);
         lastColumn = qMax(lastColumn, column);
         const float64 row = rows.value(column);
@@ -986,6 +1055,21 @@ void RenderGraphCanvas::updateLinkFeedback(QPointF position)
     {
         mLinkPreviewOrNull->setPen(QPen(color, 2));
     }
+}
+
+bool RenderGraphCanvas::IsSceneBundleExpanded(const QString& node) const
+{
+    return mExpandedSceneBundles.contains(mFile + QLatin1Char('#') + mConfiguration + QLatin1Char('/') + node);
+}
+void RenderGraphCanvas::SetSceneBundleExpanded(const QString& node, bool isExpanded)
+{
+    const QString key = mFile + QLatin1Char('#') + mConfiguration + QLatin1Char('/') + node;
+    mExpandedSceneBundles.removeAll(key);
+    if (isExpanded == true)
+    {
+        mExpandedSceneBundles.append(key);
+    }
+    ShowConfiguration(mFile, mConfiguration);
 }
 
 void RenderGraphCanvas::updateEdges()

@@ -130,6 +130,22 @@ QString ValidatePorts(const QJsonArray& ports, const QString& direction)
         }
         identities.append(identity);
     }
+    for (const QJsonValueConstRef value : ports)
+    {
+        const QJsonObject port = value.toObject();
+        if (port.value(QStringLiteral("type")).toString() != QStringLiteral("Scene"))
+        {
+            continue;
+        }
+        for (const QString& part : {QStringLiteral("geometry"), QStringLiteral("materials"), QStringLiteral("lights")})
+        {
+            const QString member = port.value(QStringLiteral("id")).toString() + QLatin1Char('_') + part;
+            if (identities.contains(member) == true)
+            {
+                return QStringLiteral("Scene member ID %1 is reserved by its bundle.").arg(member);
+            }
+        }
+    }
     return {};
 }
 
@@ -141,6 +157,9 @@ QStringList GetCellChoices(const QString& field, const QString& kind, const QStr
         if (table == QStringLiteral("inputs"))
         {
             types += {QStringLiteral("Scene"),
+                      QStringLiteral("SceneGeometry"),
+                      QStringLiteral("SceneMaterials"),
+                      QStringLiteral("SceneLights"),
                       QStringLiteral("View"),
                       QStringLiteral("AccelerationStructure"),
                       QStringLiteral("Float32"),

@@ -29,7 +29,7 @@ LUDUS_SHADER_BINDING(0) cbuffer Parameters
     uint4 Counts;     // triangles, nodes, emitters, analytic lights
     uint4 Sampling;   // key lo, key hi, flags (reverse/infinite/center), target
     float4 Environment;
-    float4 Options; // secondary range, exposure, reserved
+    float4 Options; // secondary range, exposure, material count bits, scene data group bits
     float4 BoundsMinimumWorld;
     float4 BoundsMaximumWorld;
     uint4 SurfaceLayout; // surface stride, analytic offset, private kernel ABI, see renderer_gpu_preview_layout.h,

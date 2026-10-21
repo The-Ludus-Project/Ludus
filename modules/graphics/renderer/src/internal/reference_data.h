@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/content/render_graph_format/scene_data.h>
+
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 
@@ -142,6 +144,7 @@ struct ReferenceJob final
     ReferenceSceneData Scene;
     Array<ReferenceSurfaceData> FlatSurfaces;
     uint64 SourceGeneration = 0;
+    uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     Array<math::Vector4> ShaderEmitters;
     Array<uint8> ShaderTextureBytes;
     Array<ReferenceAccumulator> Pixels;

@@ -10,7 +10,7 @@ from copy import deepcopy
 
 KINDS = ('GraphicsPipeline', 'ComputePipeline', 'RayTracingPipeline')
 RESOURCE_TYPES = ('ColorTexture', 'DepthTexture', 'Buffer')
-INPUT_TYPES = ('Scene', 'View', *RESOURCE_TYPES, 'AccelerationStructure',
+INPUT_TYPES = ('Scene', 'SceneGeometry', 'SceneMaterials', 'SceneLights', 'View', *RESOURCE_TYPES, 'AccelerationStructure',
                'Float32', 'Float2', 'Float3', 'Float4', 'UInt32')
 MAX_PORTS = 8
 MAX_SHADERS = 16
@@ -64,6 +64,13 @@ def validate(node, where, graph):
     graph._enum(node['kind'], KINDS, where)
     ports = {}
     targets = {}
+    _check_field(graph._list, node['inputs'], 'inputs', where, graph, MAX_PORTS)
+    declared = {port.get('id') for port in node['inputs'] if type(port) is dict}
+    for port in node['inputs']:
+        if type(port) is dict and port.get('type') == 'Scene':
+            for part in graph.scene_bundle.PARTS:
+                graph._require(port.get('id', '') + '_' + part not in declared, 'DuplicateIdentity', where,
+                               f"Scene member ID {port.get('id')}_{part} is reserved by its bundle.")
     for direction in ('inputs', 'outputs'):
         _check_field(graph._list, node[direction], direction, where, graph, MAX_PORTS)
         identities = set()

@@ -416,10 +416,13 @@ record the departures.
 ## Shared schemas and CPU/GPU layout
 
 The [shared scene, material and lighting shader contract](shared-scene-shader-contract.md)
-proposes typed scene/light access, geometric mesh-emitter sampling and bounded
+describes typed scene/light access, geometric mesh-emitter sampling and bounded
 intersection/visibility queries for authored raygen and closest-hit shaders.
-It keeps NEE and bounce policy in user shader sources. This is a proposed new
-profile; the delivered flat triangle-ray interface retains its current limits.
+The delivered scene-ray profile keeps NEE and bounce policy in user shader sources.
+A full Scene connection selects every data group; expanded Geometry, Materials and
+Lights wires retain one scene identity and select the pass's data mask. The
+[authoring guide](../development/render-graph-authoring.md#connect-or-expand-a-scene-bundle)
+owns the exact delivered workflow and limits.
 
 Define fields, stable IDs, units/defaults, resource kinds and packing policy once
 in an authoritative schema. The editor is a view/controller for that source; an

@@ -404,6 +404,53 @@ shader-local callbacks. The renderer performs no NEE, MIS or bounce integration
 for this interface: those algorithms belong to the author's raygen and
 closest-hit source. The existing Ray/Color function interfaces remain compatible.
 
+### Connect or expand a Scene bundle
+
+A full **Scene → RayTracing** connection selects Geometry, Materials and Lights
+from one immutable scene generation. New ray shaders use the scene-aware callback
+interface automatically. Connecting a complete legacy ray pipeline upgrades its
+callbacks through adapters in the same undo step, preserving the authored shader
+behavior and existing manifest program/artifact budgets. Source and manifest
+changes remain drafts until **Save**.
+
+Right-click the **Scene** or **RayTracing** node and choose **Expand Scene Bundle**
+(the same control is available in Properties). For a direct Scene-to-pipeline
+connection, expansion replaces the full wire with all three member wires in one
+undoable edit. Disconnect the members the pass does not need:
+
+| Member | Data supplied |
+| --- | --- |
+| **Geometry** | Vertices, indices, instances/transforms, normals, tangents, UVs and vertex colors |
+| **Materials** | Base color, roughness, metallic, emission and retained material texture/sampler views |
+| **Lights** | Analytic lights, geometric emitters and environment; emission records/maps remain dependencies of mesh lights |
+
+Ray tracing requires Geometry. Materials and Lights are optional. For example,
+leave only Geometry connected for a normal or primitive-ID visualization. Members
+must originate from the same Scene generation. A pipeline accepts either its
+full Scene input or members, never both. Collapsing hides disconnected derived
+ports; connected members remain visible. Expansion preference is local to the
+canvas, while the member connections survive Save/reload and undo/redo.
+
+In source JSON, the Scene node exposes `scene`, `geometry`, `materials`, `lights`.
+A pipeline input declared `{ "id": "scene", "type": "Scene", "required": true }`
+also accepts implicit `scene_geometry`, `scene_materials`, `scene_lights` inputs;
+these IDs are reserved and need no additional input declarations. Component
+values have types `SceneGeometry`, `SceneMaterials`, `SceneLights` and can be
+forwarded through explicitly typed subgraph interfaces. Whole-Scene subgraph
+interfaces retain their full bundle contract. Geometry is currently the smallest
+renderable selection; raw vertex-only compute execution is outside this profile.
+
+The selected mask reaches each compiled `Pass.SceneData`. Runtime ray preparation
+omits unrequested light/environment resources and material texture maps. Selecting
+Lights without Materials retains emission dependencies, with neutral surface
+parameters. Shaders can test selection with
+`HasSceneData(scene, SCENE_DATA_MATERIALS)` or
+`HasSceneData(scene, SCENE_DATA_LIGHTS)`. Material lookup returns invalid when
+neither Materials nor its Lights dependency is present; light enumeration is
+empty without Lights. This selects data, without generating shader permutations
+or adding an integrator. Raster shader bindings keep their existing authored
+uniform contract; the scene-aware query API belongs to the ray profile.
+
 ### Select the interface in the manifest
 
 Keep the graph node's existing Scene/View/ColorTexture ports and its bounded
@@ -1467,9 +1514,10 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h` (layout version 4, with
-view-relative size policies, pass names, uniform binding/block/field records and
-GLSL ES block names; fixed-size versions 2 and 3 remain readable). `emit-runtime`
+`ludus/content/render_graph_format/runtime_package.h` (layout version 5, with
+per-pass Scene data masks, view-relative size policies, pass names, uniform
+binding/block/field records and GLSL ES block names; versions 2, 3 and 4 remain
+readable and imply full Scene data). `emit-runtime`
 headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
 interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to
 `ludus_compile_render_graph`; it sets `<NAME>_RUNTIME_PACKAGE` to the cooked file.
