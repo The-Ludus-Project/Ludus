@@ -12,6 +12,7 @@
 #include "internal/render_scene.h"
 #include "internal/texture_inspection.h"
 #include "internal/viewport_statistics.h"
+#include "internal/viewport_trace.h"
 
 #include <QImage>
 #include <QObject>
@@ -129,6 +130,8 @@ public:
     /// Advance activation, preparation, rendering and the asynchronous copy without waiting.
     /// @param preparationMilliseconds Active caller work converting the current World/camera, in ms.
     void Tick(foundation::float64 preparationMilliseconds = 0);
+    /// GUI-thread observer for frame stages and image-to-paint correlation.
+    [[nodiscard]] ViewportFrameTrace& GetFrameTrace() noexcept;
     /// Completed output statistics; retained while preparation is pending or fails, reset on Detach.
     [[nodiscard]] const GraphViewportStatistics& GetStatistics() const noexcept;
 

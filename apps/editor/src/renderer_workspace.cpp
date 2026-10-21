@@ -17,6 +17,7 @@
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/profiling/profiling.hpp>
 
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -3386,9 +3387,14 @@ void RendererWorkspace::ServicePreview()
     {
         return;
     }
+    LUDUS_PROFILE_SCOPE(EditorGraphService);
+    RenderGraphPreview& preview = *mPreviewOrNull;
+    const ScopedViewportService traceService(
+        preview.GetFrameTrace(),
+        mPreviewSourceOrNull != nullptr ? mPreviewSourceOrNull->GetNextProfileFrameId() : 0,
+        mPreviewSourceOrNull != nullptr ? mPreviewSourceOrNull->GetDeviceSerial() : 0);
     QElapsedTimer preparationTimer;
     preparationTimer.start();
-    RenderGraphPreview& preview = *mPreviewOrNull;
     if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true &&
         (preview.IsAttached() == false || mPreviewSourceOrNull->GetDeviceSerial() != mPreviewDeviceSerial))
     {
@@ -3425,6 +3431,7 @@ void RendererWorkspace::ServicePreview()
         if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
                                 AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
         {
+            LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
             RenderGraphExtraction extraction;
             if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)
             {

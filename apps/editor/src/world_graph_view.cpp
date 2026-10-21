@@ -3,6 +3,7 @@
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/time/time.hpp>
 
 #include <QComboBox>
@@ -137,6 +138,7 @@ void WorldGraphView::refreshStatistics()
 }
 void WorldGraphView::ClearFrame()
 {
+    mPaintTrace.Cancel();
     mImage = {};
     update();
 }
@@ -175,6 +177,8 @@ void WorldGraphView::refreshFrame()
     {
         if (mImage.cacheKey() != mPreview.GetImage().cacheKey())
         {
+            ViewportFrameTrace& trace = mPreview.GetFrameTrace();
+            mPaintTrace.Queue(trace.GetPublishedIdentity(), trace.GetPublishedBeginTicks());
             mImage = mPreview.GetImage();
             ++mPresentedFrames;
         }
@@ -218,13 +222,18 @@ void WorldGraphView::refreshStatus()
 }
 void WorldGraphView::paintEvent(QPaintEvent*)
 {
-    QPainter painter(this);
-    painter.fillRect(rect(), palette().window());
-    if (mImage.isNull() == false)
+    LUDUS_PROFILE_SCOPE(EditorWorldGraphPaint);
+    mPaintTrace.BeginPaint();
     {
-        const QSize size = mImage.size().scaled(this->size(), Qt::KeepAspectRatio);
-        const QRect target(QPoint((width() - size.width()) / 2, (height() - size.height()) / 2), size);
-        painter.drawImage(target, mImage);
+        QPainter painter(this);
+        painter.fillRect(rect(), palette().window());
+        if (mImage.isNull() == false)
+        {
+            const QSize size = mImage.size().scaled(this->size(), Qt::KeepAspectRatio);
+            const QRect target(QPoint((width() - size.width()) / 2, (height() - size.height()) / 2), size);
+            painter.drawImage(target, mImage);
+        }
     }
+    mPaintTrace.EndPaint();
 }
 } // namespace ludus::editor

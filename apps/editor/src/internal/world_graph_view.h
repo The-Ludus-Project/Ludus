@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include "internal/viewport_trace.h"
+
 #include <QImage>
 #include <QString>
 #include <QTimer>
@@ -53,6 +55,7 @@ private:
     QTimer mStatisticsTimer;
     bool mIsStatisticsVisible = false;
     QImage mImage;
+    ViewportPaintTrace mPaintTrace;
     foundation::uint64 mPresentedFrames = 0;
     bool mCanPresent = true;
 };

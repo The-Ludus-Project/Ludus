@@ -488,6 +488,41 @@ snapshot. The previous successful trace remains available after a later failure.
 Closing during recording stops it and keeps the editor open until saving finishes.
 After a save failure, retry Save or discard the retained recording before quitting.
 
+CPU and Both also record the native project-graph viewport's wall-clock path.
+In Perfetto, expand **Viewport N** tracks:
+
+- **Frame to image ready** spans owner-thread preparation through output readback
+  and display conversion. **Observed frame stages** splits submission, producer
+  completion wait, readback requests/waits and CPU display conversion.
+- **Between preview services** fills the gaps between service callbacks, labelled
+  with the state waiting for the next callback. These intervals include timer
+  pacing and other GUI work; they do not imply that the CPU or GPU was idle.
+- **Qt presentation wait** covers image delivery to the World view until its
+  paint handler starts. **Qt paint handler** measures that handler, and **Frame
+  to Qt paint** includes the whole preparation-to-paint path. **Paint intervals**
+  shows the interval between new images painted by the view.
+
+Select a slice for `viewportId`, `frameId`, `deviceSession` and `outcome`.
+Frame/device IDs match the GPU sample identities in Both mode. CPU scopes
+`EditorGraphService`, `EditorGraphWorldExtraction`, `EditorReadbackRequestBand`,
+`EditorReadbackPoll`, `EditorReadbackCopyBand`, `EditorReadbackCopyTextureBytes`,
+`EditorGraphDisplayImageConversion` and `EditorWorldGraphPaint` distinguish actual
+owner-thread work from the elapsed wait intervals. Instant markers identify
+pending GPU readback bands and unavailable transfer capacity.
+
+Waits end when a service callback observes readiness, so they include polling
+latency. Qt paint completion is before compositor presentation or display scanout;
+these tracks do not measure either. Frame, stage and scheduling tracks overlap:
+use them to explain one frame's critical path, rather than summing their durations.
+The overlay's Readback value includes polling and conversion as well as the copy.
+
+Viewport capture reserves 32,768 spans before recording and allocates no span
+storage on the recording path. `ludusViewportTiming` reports capacity, span count
+and dropped spans. Capture boundaries clip in-flight intervals; unfinished waits,
+failures, superseded images and cleared views have explicit outcomes. GPU-only
+mode excludes these CPU-clock tracks. Recording observes the existing scheduling
+and readback path without introducing waits or changing its service cadence.
+
 GPU data appears as `GPU/FrameDurationNanoseconds` counters on a separate named
 track. Each counter is placed at its **CPU submission marker**, with frame and
 device-generation identity and collection time in a companion event. The value

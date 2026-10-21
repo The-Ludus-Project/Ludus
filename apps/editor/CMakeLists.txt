@@ -206,6 +206,7 @@ ludus_apply_project_defaults(ludus_editor_core)
 
 
 set(editor_profiling_sources
+    src/internal/viewport_trace.h src/viewport_trace.cpp
     src/internal/profiling_controller.h src/profiling_controller.cpp
     src/internal/profiling_panel.h src/profiling_panel.cpp
     src/main_window_profiling.cpp)
@@ -469,6 +470,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_editor_tests
         ${editor_profiling_sources}
         tests/profiling_tests.cpp
+        tests/viewport_trace_tests.cpp
             src/internal/render_load_job.h
         src/render_load_job.cpp
         src/internal/render_preview.h
