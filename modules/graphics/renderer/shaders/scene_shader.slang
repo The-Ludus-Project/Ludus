@@ -3,8 +3,8 @@
 // https://pbr-book.org/4ed/Light_Sources/Light_Interface
 // separate discrete source choice from incident-light proposals and solid-angle PDFs.
 // No integrator, MIS weighting or bounce decision is performed in this module.
-#include "scene_shader_layout.h"
 #include "scene_data.h"
+#include "scene_shader_layout.h"
 static const uint SCENE_INTERFACE_VERSION = LUDUS_SCENE_SHADER_INTERFACE_VERSION;
 static const uint SCENE_INVALID_INDEX = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
 static const uint SCENE_QUERY_MISS = 0;
@@ -126,16 +126,23 @@ bool HasSceneData(SceneContext scene, uint groups)
 }
 uint GetEmitterCount(SceneContext scene)
 {
-    return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & SCENE_DATA_LIGHTS) != 0 ? asuint(Environment.w) : 0;
+    return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & SCENE_DATA_LIGHTS) != 0
+               ? asuint(Environment.w)
+               : 0;
 }
 uint GetMaterialCount(SceneContext scene)
 {
-    return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & (SCENE_DATA_MATERIALS | SCENE_DATA_LIGHTS)) != 0 ? asuint(Options.z) : 0;
+    return scene.Version == SCENE_INTERFACE_VERSION &&
+                   (asuint(Options.w) & (SCENE_DATA_MATERIALS | SCENE_DATA_LIGHTS)) != 0
+               ? asuint(Options.z)
+               : 0;
 }
 uint GetLightCount(SceneContext scene)
 {
-    return (asuint(Options.w) & SCENE_DATA_LIGHTS) != 0 ? Counts.w + GetEmitterCount(scene) +
-           ((SurfaceLayout.w != 0 || HasPositiveComponent(Environment.xyz)) ? 1u : 0u) : 0;
+    return (asuint(Options.w) & SCENE_DATA_LIGHTS) != 0
+               ? Counts.w + GetEmitterCount(scene) +
+                     ((SurfaceLayout.w != 0 || HasPositiveComponent(Environment.xyz)) ? 1u : 0u)
+               : 0;
 }
 float4 GetEmitter(SceneContext scene, uint emitterIndex)
 {
