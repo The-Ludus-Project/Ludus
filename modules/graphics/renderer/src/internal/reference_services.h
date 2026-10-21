@@ -84,23 +84,24 @@ void PutFloat(uint8* output, float32 value) noexcept
     std::memcpy(&bits, &value, sizeof(bits));
     Put32(output, bits);
 }
-bool ReferenceFingerprint(ReferenceJob& job, usize budget) noexcept
+bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagnostics* diagnosticsOrNull) noexcept
 {
     // One bounded cold scratch stream, serialized without padding or host byte order.
     // Hashes are diagnostics; exact retained identities/parameters control resets.
-    const usize triangleBytes = job.Scene.Triangles.GetSize() * FINGERPRINT_TRIANGLE_BYTES;
-    usize bytes = triangleBytes + job.Scene.InstanceCount * FINGERPRINT_INSTANCE_BYTES +
-                  job.Description.LightCount * FINGERPRINT_LIGHT_BYTES + FINGERPRINT_ENVIRONMENT_BYTES +
-                  (job.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
-    for (usize i = 0; i < job.Scene.InstanceCount; ++i)
+    const usize triangleBytes = inoutJob.Scene.Triangles.GetSize() * FINGERPRINT_TRIANGLE_BYTES;
+    usize bytes = triangleBytes + inoutJob.Scene.InstanceCount * FINGERPRINT_INSTANCE_BYTES +
+                  inoutJob.Description.LightCount * FINGERPRINT_LIGHT_BYTES + FINGERPRINT_ENVIRONMENT_BYTES +
+                  (inoutJob.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
+    for (usize i = 0; i < inoutJob.Scene.InstanceCount; ++i)
     {
-        if (job.Scene.Instances[i].Surface->HasSurfaceMap)
+        if (inoutJob.Scene.Instances[i].Surface->HasSurfaceMap)
         {
             bytes += FINGERPRINT_SURFACE_MAP_BYTES;
         }
     }
     if (bytes > budget)
     {
+        static_cast<void>(internal::RejectSceneMemory(diagnosticsOrNull, SceneMemoryBudget::CpuScratch, bytes, budget));
         return false;
     }
     Array<uint8> stream;
@@ -122,7 +123,7 @@ bool ReferenceFingerprint(ReferenceJob& job, usize budget) noexcept
         scalar(value.Y);
         scalar(value.Z);
     };
-    for (const auto& triangle : job.Scene.Triangles)
+    for (const ReferenceTriangle& triangle : inoutJob.Scene.Triangles)
     {
         for (auto p : triangle.Positions)
         {
@@ -150,9 +151,9 @@ bool ReferenceFingerprint(ReferenceJob& job, usize budget) noexcept
             scalar(triangle.Colors[corner].W);
         }
     }
-    for (usize i = 0; i < job.Scene.InstanceCount; ++i)
+    for (usize i = 0; i < inoutJob.Scene.InstanceCount; ++i)
     {
-        const auto& instance = job.Scene.Instances[i];
+        const internal::ReferenceInstance& instance = inoutJob.Scene.Instances[i];
         const auto& surface = *instance.Surface;
         Put64(stream.GetData() + offset, instance.SourceId);
         offset += 8;
@@ -214,9 +215,9 @@ bool ReferenceFingerprint(ReferenceJob& job, usize budget) noexcept
             word(0);
         }
     }
-    for (usize i = 0; i < job.Description.LightCount; ++i)
+    for (usize i = 0; i < inoutJob.Description.LightCount; ++i)
     {
-        const auto& light = job.Lights[i];
+        const DirectLight& light = inoutJob.Lights[i];
         Put64(stream.GetData() + offset, light.SourceId);
         offset += 8;
         word(static_cast<uint32>(light.Kind));
@@ -228,23 +229,23 @@ bool ReferenceFingerprint(ReferenceJob& job, usize budget) noexcept
         scalar(light.InnerCos);
         scalar(light.OuterCos);
     }
-    vector(job.Description.Environment);
-    if (job.EnvironmentOrNull != nullptr)
+    vector(inoutJob.Description.Environment);
+    if (inoutJob.EnvironmentOrNull != nullptr)
     {
-        Put64(stream.GetData() + offset, job.EnvironmentOrNull->FingerprintLow);
+        Put64(stream.GetData() + offset, inoutJob.EnvironmentOrNull->FingerprintLow);
         offset += sizeof(uint64);
-        Put64(stream.GetData() + offset, job.EnvironmentOrNull->FingerprintHigh);
+        Put64(stream.GetData() + offset, inoutJob.EnvironmentOrNull->FingerprintHigh);
         offset += sizeof(uint64);
-        word(job.EnvironmentOrNull->Width);
-        word(job.EnvironmentOrNull->Height);
+        word(inoutJob.EnvironmentOrNull->Width);
+        word(inoutJob.EnvironmentOrNull->Height);
     }
     if (offset != bytes)
     {
         return false;
     }
     const foundation::Fingerprint128 fingerprint = foundation::StableFingerprint128({stream.GetData(), offset});
-    job.Scene.FingerprintLow = fingerprint.Low;
-    job.Scene.FingerprintHigh = fingerprint.High;
+    inoutJob.Scene.FingerprintLow = fingerprint.Low;
+    inoutJob.Scene.FingerprintHigh = fingerprint.High;
     return true;
 }
 } // namespace

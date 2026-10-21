@@ -1280,12 +1280,11 @@ Status RenderGraph::Poll() noexcept
         {
             if (state.HasRaySetup == false)
             {
-                constexpr usize RAY_CPU_BYTES = usize{256} * 1024 * 1024;
-                constexpr usize RAY_GPU_BYTES = usize{256} * 1024 * 1024;
-                status = state.Contexts[i].EnableTriangleRayPipeline(state.Programs.RayCompute,
-                                                                     state.Programs.RayImageVertex,
-                                                                     state.Programs.RayImageFragment,
-                                                                     {RAY_CPU_BYTES, RAY_GPU_BYTES, 1});
+                status = state.Contexts[i].EnableTriangleRayPipeline(
+                    state.Programs.RayCompute,
+                    state.Programs.RayImageVertex,
+                    state.Programs.RayImageFragment,
+                    {internal::GRAPH_RAY_CPU_BYTES, internal::GRAPH_RAY_GPU_BYTES, 1});
                 if (IsAccepted(status) == false)
                 {
                     return status;

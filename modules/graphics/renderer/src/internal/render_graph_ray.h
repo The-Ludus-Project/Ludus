@@ -5,6 +5,10 @@
 
 namespace ludus::graphics::renderer::internal
 {
+/// Bounded setup ceiling for imported multi-million-triangle scenes, including packing scratch.
+inline constexpr foundation::usize GRAPH_RAY_CPU_BYTES = foundation::usize{2} * 1024 * 1024 * 1024;
+/// Logical preview ceiling includes current and replacement GPU scenes until producer retirement.
+inline constexpr foundation::usize GRAPH_RAY_GPU_BYTES = foundation::usize{2} * 1024 * 1024 * 1024;
 /// One immutable ray invocation's scene inputs and one-shot per-frame commands.
 /// The borrowed context/device outlive this owner. All calls use the RHI owner
 /// thread; initialize/poll/prepare/reset are between frames, Encode is in a frame.

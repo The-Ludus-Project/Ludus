@@ -149,6 +149,43 @@ TEST_CASE("Emitter construction skips collapsed faces and computes transformed a
           rhi::RasterStatus::InvalidDescription);
 }
 
+TEST_CASE("Ray scene admission reports required and available CPU bytes and clears stale diagnostics", "[scene-shader]")
+{
+    SceneFixture fixture;
+    renderer::SceneShaderDiagnostics diagnostics;
+    fixture.Scene.DiagnosticsOrNull = &diagnostics;
+    core::UniquePtr<internal::ReferenceJob> job;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, 1, job) ==
+            rhi::RasterStatus::CapacityExceeded);
+    CHECK(job.Get() == nullptr);
+    CHECK(diagnostics.ExceededBudget == renderer::SceneMemoryBudget::CpuScene);
+    CHECK(diagnostics.RequiredBytes > sizeof(internal::ReferenceTriangle) * 2);
+    CHECK(diagnostics.AvailableBytes == 1);
+    const usize requiredBytes = static_cast<usize>(diagnostics.RequiredBytes);
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, requiredBytes - 1, job) ==
+            rhi::RasterStatus::CapacityExceeded);
+    CHECK(diagnostics.RequiredBytes == requiredBytes);
+    CHECK(diagnostics.AvailableBytes == requiredBytes - 1);
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, requiredBytes, job) ==
+            rhi::RasterStatus::Ready);
+    CHECK(diagnostics.ExceededBudget == renderer::SceneMemoryBudget::None);
+    CHECK(diagnostics.RequiredBytes == 0);
+    CHECK(diagnostics.AvailableBytes == 0);
+    CHECK(job->Scene.Triangles.GetSize() == 2);
+}
+
+TEST_CASE("Ray CPU byte estimation rejects overflow before reading triangle indices", "[scene-shader]")
+{
+    SceneFixture fixture;
+    constexpr usize CORNERS_PER_TRIANGLE = 3;
+    fixture.Mesh.Geometry.IndexCount = (~usize{0} / CORNERS_PER_TRIANGLE) * CORNERS_PER_TRIANGLE;
+    fixture.Mesh.MaterialSlots = {};
+    core::UniquePtr<internal::ReferenceJob> job;
+    CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+          rhi::RasterStatus::CapacityExceeded);
+    CHECK(job.Get() == nullptr);
+}
+
 TEST_CASE("Unassigned higher mesh slots retain defaults and expose candidate diagnostics", "[scene-shader]")
 {
     SceneFixture fixture;

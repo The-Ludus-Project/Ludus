@@ -21,6 +21,10 @@
 
 namespace ludus::editor
 {
+/// Describe a rejected extraction, including measured memory admission and preservation of the last frame.
+[[nodiscard]] QString
+DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
+                                     const graphics::renderer::SceneShaderDiagnostics& diagnostics);
 /// One World extraction converted to RenderGraph records. Mesh geometry borrows Scene's
 /// storage (its PreviewMesh arrays or its shared cooked Definition), which this value keeps
 /// alive by implicit sharing and reference counting until it is replaced.
