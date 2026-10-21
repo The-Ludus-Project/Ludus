@@ -157,6 +157,11 @@ public:
     void BuildRun(const QString& hostedWindowAddress = {});
     void BuildDebug(const QString& debugger = {}, bool setup = false);
     void CheckProjectSetup();
+    /// Mark the current project's setup incomplete after a trusted rendering job detects missing tools.
+    /// Owner-thread only; does not run tools, mutate project settings or clear an existing problem.
+    /// Empty messages and closed projects are ignored. A fresh successful check or verified repair
+    /// clears the notice; a read-only check already in flight cannot dismiss the newer problem.
+    void ReportProjectSetupProblem(const QString& problem);
     void SetupProject(const QString& sdk, const QString& webSdk, bool prepareEngine, bool disableWeb = false);
     /// Rebuild and install this editor's engine, select it for the project and verify the
     /// project build. Offered when the last check reported a stale or unusable engine pin.

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import test_render_graph_build as fixtures
 from test_ludus_tools import _manifest_json, _write_sdk_prefix
+from test_project_setup import write_translator
 from ludus_tools import cli, lockfile, render_graph_project as project_tools, render_graph_reload
 from ludus_tools.create import create_project
 from ludus_tools.errors import ToolingError
@@ -34,6 +35,9 @@ class ProjectGraphToolsTests(unittest.TestCase):
     def make_sdk(self, name):
         sdk = _write_sdk_prefix(self.root / name, _manifest_json())
         shutil.copytree(self.builder.helper, sdk / 'lib/cmake/Ludus/shaders')
+        pin = fixtures.ROOT / 'config/spirv_cross_toolchain.json'
+        shutil.copyfile(pin, sdk / 'lib/cmake/Ludus/shaders/spirv_cross_toolchain.json')
+        shutil.copyfile(pin, self.builder.helper / 'spirv_cross_toolchain.json')
         return sdk
 
     def resolve(self, **options):
@@ -104,13 +108,15 @@ class ProjectGraphToolsTests(unittest.TestCase):
         source = fixtures.ROOT / 'tests/sdk_consumer/rg2/raytracing/main.lushader.json.in'
         value = json.loads(source.read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
         self.builder.manifest.write_text(json.dumps(value))
-        cross = self.tools / 'out/shader-tools/spirv-cross/bin/spirv-cross'
-        cross.parent.mkdir(parents=True)
-        cross.write_text('#!/bin/sh\nexit 0\n')
-        cross.chmod(0o755)
+        cross = write_translator(self.tools, self.sdk)
         options, _ = self.resolve()
         self.assertEqual(cross, options['spirv_cross'])
         self.assertNotIn('validator', options)
+        before = self.snapshot(self.project)
+        cross.write_bytes(cross.read_bytes() + b'changed')
+        with self.assertRaisesRegex(ToolingError, 'prepare them automatically'):
+            self.resolve()
+        self.assertEqual(before, self.snapshot(self.project))
 
     def test_project_preset_tools_and_only_required_profile_dependencies_are_selected(self):
         value = self.builder.value()
@@ -124,6 +130,7 @@ class ProjectGraphToolsTests(unittest.TestCase):
             path.write_text('prepared tool')
             path.chmod(0o755)
             cache[key] = {'type': 'FILEPATH', 'value': str(path.relative_to(self.project))}
+        write_translator(self.tools, self.sdk, binary=self.project / 'custom-tools/spirv-cross')
         (self.project / 'CMakeUserPresets.json').write_text(json.dumps({
             'version': 6, 'configurePresets': [{'name': 'linux-clang-development', 'cacheVariables': cache}]}))
         options, _ = self.resolve()
@@ -134,7 +141,7 @@ class ProjectGraphToolsTests(unittest.TestCase):
         self.assertEqual(self.builder.helper, options['helper'])
         self.assertEqual(self.builder.compiler, options['compiler'])
         (self.project / 'custom-tools/spirv-val').unlink()
-        with self.assertRaisesRegex(ToolingError, 'spirv-val'):
+        with self.assertRaisesRegex(ToolingError, 'prepare them automatically'):
             self.resolve()
 
     def test_missing_tools_preserve_existing_build_and_runtime(self):

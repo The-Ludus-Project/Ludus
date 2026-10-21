@@ -108,8 +108,13 @@ def prepare_creation_sdk(root: Path, prefix: Path, *, runner, cancel_check=None,
     from .project_setup import environment
     env = environment(root) if environ is None else dict(environ)
     env["CI"] = "true"
+    from .shader_tools import preparation_steps
+    # Metal ray recipes may be configured while preparing the engine itself, before a
+    # project or installed SDK exists. Use the trusted checkout's pinned bootstrap.
+    rendering = ([command for _, command in preparation_steps(root, {"compiler", "spirv_cross"})]
+                 if profile.startswith("macos-") else [])
     commands = ([str(root / "scripts/init"), profile, "--preset-only", "--cli", "--no-system-install"],
-                [str(root / "scripts/build"), profile])
+                *rendering, [str(root / "scripts/build"), profile])
     for argv in commands:
         if cancel_check:
             cancel_check()

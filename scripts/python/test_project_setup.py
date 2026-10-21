@@ -1,4 +1,5 @@
 """Setup regressions use real CMake preset discovery, fake build execution."""
+import hashlib
 import json
 import os
 import shutil
@@ -13,6 +14,23 @@ from ludus_tools.errors import ToolingError
 from ludus_tools import project_setup as setup
 from ludus_tools.toolchain import PINNED_LLVM_MAJOR, pinned_llvm_tool
 from test_ludus_tools import _manifest_json, _write_sdk_prefix
+
+
+def write_translator(root: Path, sdk: Path, *, binary: Path | None = None) -> Path:
+    """Independent verified-tool fixture; never invokes a downloaded executable."""
+    binary = binary or root / "out/shader-tools/spirv-cross/bin/spirv-cross"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    pin = Path(__file__).resolve().parents[2] / "config/spirv_cross_toolchain.json"
+    destination = sdk / "lib/cmake/Ludus/shaders/spirv_cross_toolchain.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(pin.read_bytes())
+    record = json.loads(pin.read_text())["spirv_cross"]
+    built = {key: record[key] for key in ("tag", "commit", "source_sha256")}
+    built["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
+    Path(str(binary) + ".build.json").write_text(json.dumps(built))
+    return binary
 
 
 class ProjectSetupTests(unittest.TestCase):
@@ -168,10 +186,7 @@ class ProjectSetupTests(unittest.TestCase):
         toolchain = self.tools / "out/host-tools/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
         toolchain.parent.mkdir(parents=True)
         toolchain.write_text("# prepared toolchain\n")
-        cross = self.tools / "out/shader-tools/spirv-cross/bin/spirv-cross"
-        cross.parent.mkdir(parents=True)
-        cross.write_text("#!/bin/sh\nexit 0\n")
-        cross.chmod(0o755)
+        write_translator(self.tools, self.sdk)
         path = self.project / "CMakePresets.json"
         base = setup.read_object(path)
         base["configurePresets"].extend([
