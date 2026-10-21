@@ -480,6 +480,8 @@ the editor uses it for any project that has no graph of its own.
    On a first build failure or shader-worker timeout, the engine default continues rendering
    the current scene and camera. The diagnostic remains visible, but does not cancel scene
    loading. A successful project generation replaces the fallback only when ready.
+   Generated ray wrappers own their compute entry point; the included renderer kernel is
+   an ordinary helper, avoiding nested entry-point lowering in the native shader compiler.
    No worker socket or shader paths need to be entered when the project's SDK is configured.
    **Build & Preview** explicitly builds the current draft without saving; **Live Preview**
    pauses/resumes automatic builds of saved sources. Changing the preview configuration
