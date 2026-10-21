@@ -1403,3 +1403,66 @@ TEST_CASE("World grid uses scene depth without writing it in the project graph",
     }
     preview.Detach();
 }
+
+TEST_CASE("view-relative preview resizes without losing its last completed image",
+          "[editor][render-graph][preview][size]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No headless GPU adapter is available");
+    }
+    QByteArray relative = ReadFixture();
+    constexpr qsizetype VIEW_NUMERATOR_FIELD = 6;
+    constexpr qsizetype VIEW_DENOMINATOR_FIELD = 7;
+    for (qsizetype resource = 0; resource < static_cast<qsizetype>(host::RESOURCE_COUNT); ++resource)
+    {
+        const qsizetype start = static_cast<qsizetype>(format::HEADER_BYTES) +
+                                resource * static_cast<qsizetype>(format::RESOURCE_RECORD_BYTES);
+        // Fixture is little-endian; a one-byte change suffices for the small test ratios.
+        relative[start + VIEW_NUMERATOR_FIELD * sizeof(uint32)] = 1;
+        relative[start + VIEW_DENOMINATOR_FIELD * sizeof(uint32)] = 2;
+    }
+    QTemporaryDir directory;
+    const QString runtime = WriteBytes(directory, QStringLiteral("relative.lurgrt"), relative);
+    RenderGraphPreview preview = MakePreview();
+    preview.SetReferenceSize({192, 128});
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    REQUIRE(preview.Load(runtime) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetImage().size() == QSize(96, 64); }) == true);
+    const QImage first = preview.GetImage();
+    preview.SetReferenceSize({193, 129});
+    CHECK(preview.GetImage() == first);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetImage().size() == QSize(97, 65); }) == true);
+    CHECK(preview.GetPresentedGeneration() == 1);
+    CHECK(preview.GetPresentedRevision() == 1);
+    const QImage resized = preview.GetImage();
+    preview.SetReferenceSize({0, 0});
+    preview.Tick();
+    CHECK(preview.GetImage() == resized);
+    preview.SetReferenceSize({100000, 100000});
+    preview.Tick();
+    CHECK(preview.GetImage() == resized);
+    CHECK(preview.GetDisplayStatus().contains(QStringLiteral("rejected")) == true);
+    preview.SetReferenceSize({257, 193});
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetImage().size() == QSize(129, 97); }) == true);
+    // Another preview owns its own reference; a fixed export does not inherit the first view's size.
+    RenderGraphPreview fixed = MakePreview();
+    fixed.SetReferenceSize({3840, 2160});
+    REQUIRE(fixed.Attach(device.Device, device.Surface) == true);
+    fixed.SetExtraction(MakeExtraction({1, 0, 0, 1}, 1));
+    REQUIRE(fixed.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(fixed, [&]() { return fixed.GetImage().size() == QSize(WIDTH, HEIGHT); }) == true);
+    CHECK(preview.GetImage().size() == QSize(129, 97));
+}
+
+TEST_CASE("drawable reference pixels are retained before the edit preview cap", "[editor][render-graph][preview][size]")
+{
+    RenderPreview viewport;
+    viewport.Resize(3840, 2160);
+    CHECK(viewport.GetDrawableSize() == QSize(3840, 2160));
+    CHECK(viewport.WindowInfo().Width < 3840);
+    viewport.Resize(0, 0);
+    CHECK(viewport.GetDrawableSize().isEmpty() == true);
+}

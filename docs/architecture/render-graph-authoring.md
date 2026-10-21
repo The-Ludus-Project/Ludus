@@ -231,12 +231,23 @@ for the source representation and editor controls.
 Version-2 `RenderSize` nodes own graph-only size values: fixed pixel dimensions or
 the dimensions of a connected color/depth texture. Targets may consume those
 values, and subgraph interfaces may pass them between caller instances. The
-compiler resolves size dependencies before publishing numeric resource extents;
+compiler resolves size dependencies before publishing nominal resource extents;
 metadata-only target descriptions need no GPU allocation. The same explicit edge
 and cycle rules apply to size dependencies. Fixed array extents remain compatible.
 The [size workflow](../development/render-graph-authoring.md#share-render-sizes)
-owns the source syntax and editor instructions. View-relative policies and runtime
-resize remain future work, separate from this fixed-size lowering.
+owns the source syntax and editor instructions. A view-relative RenderSize carries
+an integer scale ratio into numeric plan version 3 and runtime package version 4.
+The per-instance drawable reference comes from the viewport/export request, with
+ceil rounding and bounded resolution. It never enters shader recipe identity.
+Resource initialization resolves it before device admission. Extent-only resize
+stages an owned attachment set and a fresh scene using the existing pipeline
+contexts. They publish together only after readiness; the old scene/output remains
+available while pending or on failure. A newer request discards the unactivated
+set and its scene. GPU retirement and pooling remain in their existing owners.
+Fresh ray jobs reset accumulation; temporal/history imports remain outside the
+admitted profile. The editor supplies pre-render-scale physical viewport pixels,
+keeps its last completed image across replacement, and updates inspection metadata
+from the published resource descriptions.
 
 Editor connection preflight resolves known target descriptors through paired
 resource outputs and nested subgraph bindings, checking each supported operation's
@@ -749,8 +760,9 @@ The execution profile uses RGBA8, Depth32, one sample, conventional Less with
 depth writes and the Renderer’s six-location static instance interface. Within a
 material family, ColorAndDepth and DepthOnly share the exact geometry stage;
 opaque depth fixtures qualify the authored void coverage function. Transparency,
-deformation, arbitrary vertex layouts, reverse-Z, imported images, resize and
-history remain explicit admission failures. Thus an exported depth graph is not
+deformation, arbitrary vertex layouts, reverse-Z, imported images and
+history remain explicit admission failures. Extent-only resize uses the staged
+resource/scene replacement described in the size workflow. Thus an exported depth graph is not
 automatically a compatible pre-Z for an arbitrary subsequent shading pass. No
 error shader or output-driven permutation is synthesized. The installed CMake
 helper and CLI emit identical typed plans with static shader storage, without a
@@ -779,13 +791,14 @@ is not admitted.
 
 Scene/camera replacements publish only when their retained resources are Ready.
 Candidate reports and the last drawable revision are distinct, including when a
-newer rejection arrives while an older candidate is pending. A new extent needs
-a separately initialized graph; caller-reported physical extent is checked before
-acquisition and actual extent is checked again afterward. History/import modes
+newer rejection arrives while an older candidate is pending. A view-relative extent
+change stages replacement attachments and a fresh extraction in the same graph,
+without preparing shader/pipeline contexts again. Caller-reported physical surface
+extent is checked before acquisition and actual extent is checked again afterward. History/import modes
 are rejected instead of retaining stale resources. RG2 bounds three retained
 scene candidates (current, pending, preparation), plus RHI retirement of actual
 GPU uses. It conservatively completion-gates reuse of export allocations; export
-consumers must complete before another render/reset.
+consumers must complete before another render, resize publication or reset.
 
 Current RHI private depth is physically paired with color: depth-only offscreen
 allocates a compatibility RGBA8 image alongside depth (kept by RG4a, see above). Renderer contexts also
@@ -826,6 +839,8 @@ remains a separate obligation. Parameter migration keeps values only for equal
 field identity and type, requires explicit defaults for added or changed fields
 and reports dropped values; it never writes sources. See
 [RG3 usage and evidence](../development/render-graph-authoring.md#edit-and-reload-graphs-rg3).
+Version 4 extends each resource with a view scale numerator/denominator; zero
+numerator preserves fixed extents. Versions 2 and 3 decode as fixed-size plans.
 Version 3 appends a bounded UTF-8 name for each executable authored pass, shared
 by native GPU annotations and Perfetto counters. Version 2 remains readable with
 fallback labels. Names are debug metadata, not source expressions; they are

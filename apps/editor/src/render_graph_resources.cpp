@@ -1,4 +1,5 @@
 #include "internal/render_graph_resources.h"
+#include <ludus/content/render_graph_format/plan.h>
 
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
@@ -31,6 +32,7 @@ struct ResourceDescription final
     QString Type;
     QString Format;
     QJsonArray Extent;
+    QJsonObject ViewPolicy{};
     int32 Samples = 0;
     bool IsPresentation = false;
 };
@@ -121,15 +123,18 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
         ResourceDescription result{node.value(QStringLiteral("type")).toString(),
                                    node.value(QStringLiteral("format")).toString(),
                                    extent.toArray(),
+                                   {},
                                    node.value(QStringLiteral("samples")).toInt(),
                                    node.value(QStringLiteral("presentation")).toBool()};
         if (extent.toString() == QStringLiteral("RenderSize"))
         {
-            result.Extent = ResolveResource(context,
-                                            FindSource(context.Configuration, identity + QStringLiteral(".size")),
-                                            inoutRemainingSteps,
-                                            depth + 1)
-                                .Extent;
+            const ResourceDescription size =
+                ResolveResource(context,
+                                FindSource(context.Configuration, identity + QStringLiteral(".size")),
+                                inoutRemainingSteps,
+                                depth + 1);
+            result.Extent = size.Extent;
+            result.ViewPolicy = size.ViewPolicy;
         }
         return result;
     }
@@ -137,13 +142,21 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
     {
         ResourceDescription result;
         result.Type = QStringLiteral("RenderSize");
-        result.Extent = extent.toString() == QStringLiteral("Texture")
-                            ? ResolveResource(context,
-                                              FindSource(context.Configuration, identity + QStringLiteral(".texture")),
-                                              inoutRemainingSteps,
-                                              depth + 1)
-                                  .Extent
-                            : extent.toArray();
+        if (extent.toString() == QStringLiteral("Texture"))
+        {
+            const ResourceDescription texture =
+                ResolveResource(context,
+                                FindSource(context.Configuration, identity + QStringLiteral(".texture")),
+                                inoutRemainingSteps,
+                                depth + 1);
+            result.Extent = texture.Extent;
+            result.ViewPolicy = texture.ViewPolicy;
+        }
+        else
+        {
+            result.Extent = extent.toArray();
+            result.ViewPolicy = extent.toObject();
+        }
         return result;
     }
     if (kind == QStringLiteral("Subgraph"))
@@ -172,14 +185,53 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
                            depth + 1);
 }
 
+bool HasViewPolicy(const ResourceDescription& resource)
+{
+    const QJsonArray scale = resource.ViewPolicy.value(QStringLiteral("scale")).toArray();
+    if (resource.ViewPolicy.value(QStringLiteral("reference")).toString() != QStringLiteral("View") ||
+        HasKnownExtent(scale) == false)
+    {
+        return false;
+    }
+    return scale.at(0).toDouble() <= content::render_graph_format::MAX_TARGET_EXTENT &&
+           scale.at(1).toDouble() <= content::render_graph_format::MAX_TARGET_EXTENT;
+}
+
 QString DescribeTexture(const QString& port, const ResourceDescription& resource)
 {
+    if (HasViewPolicy(resource) == true)
+    {
+        const QJsonArray scale = resource.ViewPolicy.value(QStringLiteral("scale")).toArray();
+        return QStringLiteral("%1: view scale %2/%3, %4, %5 samples")
+            .arg(port)
+            .arg(scale.at(0).toInt())
+            .arg(scale.at(1).toInt())
+            .arg(resource.Format)
+            .arg(resource.Samples);
+    }
     return QStringLiteral("%1: %2 x %3, %4, %5 samples")
         .arg(port)
         .arg(resource.Extent.at(0).toInteger())
         .arg(resource.Extent.at(1).toInteger())
         .arg(resource.Format)
         .arg(resource.Samples);
+}
+
+bool HasKnownSize(const ResourceDescription& resource)
+{
+    return HasKnownExtent(resource.Extent) == true || HasViewPolicy(resource) == true;
+}
+bool HaveEqualSize(const ResourceDescription& left, const ResourceDescription& right)
+{
+    if (left.ViewPolicy.isEmpty() == true && right.ViewPolicy.isEmpty() == true)
+    {
+        return left.Extent == right.Extent;
+    }
+    const QJsonArray leftScale = left.ViewPolicy.value(QStringLiteral("scale")).toArray();
+    const QJsonArray rightScale = right.ViewPolicy.value(QStringLiteral("scale")).toArray();
+    return HasViewPolicy(left) == true && HasViewPolicy(right) == true &&
+           leftScale.at(0).toInteger() * rightScale.at(1).toInteger() ==
+               rightScale.at(0).toInteger() * leftScale.at(1).toInteger();
 }
 
 void CollectProblems(const ResourceContext& context,
@@ -273,8 +325,8 @@ void CollectProblems(const ResourceContext& context,
                                      QStringLiteral(" requires an offscreen single-sample RGBA8Unorm color target."));
             }
         }
-        if (HasKnownExtent(color.Extent) == true && HasKnownExtent(depth.Extent) == true &&
-            (color.Extent != depth.Extent ||
+        if (HasKnownSize(color) == true && HasKnownSize(depth) == true &&
+            (HaveEqualSize(color, depth) == false ||
              (color.Samples > 0 && depth.Samples > 0 && color.Samples != depth.Samples)))
         {
             inoutProblems.append(
@@ -284,6 +336,12 @@ void CollectProblems(const ResourceContext& context,
         }
         const QJsonArray launch =
             node.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray();
+        if (kind == QStringLiteral("RayTracingPipeline") && color.ViewPolicy.isEmpty() == false &&
+            launch.size() == RAY_LAUNCH_DIMENSION_COUNT)
+        {
+            inoutProblems.append(where +
+                                 QStringLiteral(": view-relative color requires Match color target in Invocation."));
+        }
         if (kind == QStringLiteral("RayTracingPipeline") && HasKnownExtent(color.Extent) == true &&
             launch.size() == RAY_LAUNCH_DIMENSION_COUNT &&
             launch != QJsonArray{color.Extent.at(0), color.Extent.at(1), 1})

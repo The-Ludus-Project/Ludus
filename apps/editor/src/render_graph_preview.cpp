@@ -6,6 +6,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
+#include "internal/render_graph_resources.h"
 #include "internal/render_target_reader.h"
 
 #include <QFile>
@@ -299,6 +300,7 @@ struct RenderGraphPreview::State final
         uint32 Cameras = 0;
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
+        StaticArray<format::Resource, format::MAX_RESOURCES> Descriptions{};
     };
     StaticArray<uint8, format::IDENTITY_BYTES> Interface{};
     rhi::RasterShaderDescription CompositeVertex{};
@@ -313,6 +315,29 @@ struct RenderGraphPreview::State final
     rhi::DeviceHandle Device{};
     rhi::SurfaceHandle Surface{};
     bool IsAttached = false;
+    QSize ReferenceSize{DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT};
+    QSize AppliedReference;
+    bool IsResizeRejected = false;
+    void ResolveTarget(Target& inoutTarget) const
+    {
+        for (RenderGraphTarget& texture : inoutTarget.Catalogue.Targets)
+        {
+            format::Resource resolved{};
+            if (renderer::ResolveRenderGraphResource(inoutTarget.Descriptions[texture.Resource],
+                                                     static_cast<uint32>(ReferenceSize.width()),
+                                                     static_cast<uint32>(ReferenceSize.height()),
+                                                     resolved) == rhi::RasterStatus::Ready)
+            {
+                texture.Width = resolved.Width;
+                texture.Height = resolved.Height;
+                if (texture.Resource == inoutTarget.Resource)
+                {
+                    inoutTarget.Width = resolved.Width;
+                    inoutTarget.Height = resolved.Height;
+                }
+            }
+        }
+    }
     bool IsInterfaceValid = false;
     /// Incremented per Attach; activation serials restart with every device session.
     uint64 Session = 0;
@@ -384,7 +409,14 @@ bool RenderGraphPreview::Attach(rhi::DeviceHandle device, rhi::SurfaceHandle sur
     }
     state.Device = device;
     state.Surface = surface;
+    state.IsResizeRejected = false;
     state.IsAttached = true;
+    if (state.ReferenceSize.isEmpty() == false)
+    {
+        static_cast<void>(state.Activation.Resize(static_cast<uint32>(state.ReferenceSize.width()),
+                                                  static_cast<uint32>(state.ReferenceSize.height())));
+        state.AppliedReference = state.ReferenceSize;
+    }
     ++state.Session;
     mStatus.clear();
     // An explicit preview request survives a viewport device restart.
@@ -468,6 +500,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
         const format::Resource& resource = plan.Resources[i];
+        target.Descriptions[i] = resource;
         if (resource.IsSurface == 1)
         {
             setStatus(QStringLiteral("This configuration renders to a presentation surface. Preview an Export "
@@ -493,6 +526,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     const QByteArray namesDocument =
         names.open(QIODevice::ReadOnly) == true ? names.read(MAX_PACKAGE_BYTES) : QByteArray();
     target.Catalogue = MakeTargetCatalogue(plan, package->GetGenerationIdentity(), namesDocument);
+    state.ResolveTarget(target);
     state.Waiting = target;
     state.WaitingOrNull.Swap(package);
     if (state.IsAttached == false)
@@ -507,6 +541,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
 RenderGraphPreviewLoad RenderGraphPreview::stage()
 {
     State& state = *mState;
+    state.IsResizeRejected = false;
     const rhi::RasterStatus staged = state.Activation.Stage(Move(state.WaitingOrNull));
     state.WaitingOrNull.Reset();
     const renderer::RenderGraphActivationReport report = state.Activation.GetReport();
@@ -549,12 +584,26 @@ void RenderGraphPreview::SetExtraction(const RenderGraphExtraction& extraction)
     mState->HasExtraction = extraction.Revision != 0;
 }
 
+void RenderGraphPreview::SetReferenceSize(const QSize& size)
+{
+    mState->ReferenceSize = size;
+}
+
 QSize RenderGraphPreview::GetTargetSize() const noexcept
 {
     const State& state = *mState;
     const State::Target& target = state.WaitingOrNull.Get() != nullptr ? state.Waiting
                                   : state.Candidate.Serial != 0        ? state.Candidate
                                                                        : state.Active;
+    format::Resource resolved{};
+    if (state.ReferenceSize.isEmpty() == false &&
+        renderer::ResolveRenderGraphResource(target.Descriptions[target.Resource],
+                                             static_cast<uint32>(state.ReferenceSize.width()),
+                                             static_cast<uint32>(state.ReferenceSize.height()),
+                                             resolved) == rhi::RasterStatus::Ready)
+    {
+        return {static_cast<int32>(resolved.Width), static_cast<int32>(resolved.Height)};
+    }
     return {static_cast<int32>(target.Width), static_cast<int32>(target.Height)};
 }
 
@@ -678,6 +727,29 @@ void RenderGraphPreview::finishCopy()
 void RenderGraphPreview::advance()
 {
     State& state = *mState;
+    if (state.ReferenceSize.isEmpty() == true)
+    {
+        return;
+    }
+    if (state.AppliedReference != state.ReferenceSize)
+    {
+        const rhi::RasterStatus resized = state.Activation.Resize(static_cast<uint32>(state.ReferenceSize.width()),
+                                                                  static_cast<uint32>(state.ReferenceSize.height()));
+        state.AppliedReference = state.ReferenceSize;
+        state.IsResizeRejected = IsAccepted(resized) == false;
+        if (IsAccepted(resized) == false)
+        {
+            setStatus(QStringLiteral("The requested render size was rejected (%1); the shown frame is kept.")
+                          .arg(DescribeRasterStatus(resized)));
+            return;
+        }
+        state.UpdatedRevision = 0;
+        state.ResolveTarget(state.Candidate);
+    }
+    if (state.IsResizeRejected == true)
+    {
+        return;
+    }
     const renderer::RenderGraphActivationReport before = state.Activation.GetReport();
     // No export consumer is outstanding here, so Poll may activate and Reset the old generation.
     static_cast<void>(state.Activation.Poll());
@@ -739,6 +811,29 @@ void RenderGraphPreview::advance()
     if (activeOrNull == nullptr)
     {
         return;
+    }
+    bool hasResized = false;
+    for (RenderGraphTarget& target : state.Active.Catalogue.Targets)
+    {
+        format::Resource resolved{};
+        if (activeOrNull->GetResourceDescription(target.Resource, resolved) == true)
+        {
+            hasResized = hasResized == true || target.Width != resolved.Width || target.Height != resolved.Height;
+            target.Width = resolved.Width;
+            target.Height = resolved.Height;
+            if (target.Resource == state.Active.Resource)
+            {
+                state.Active.Width = resolved.Width;
+                state.Active.Height = resolved.Height;
+            }
+        }
+    }
+    if (hasResized == true)
+    {
+        mPresentedSession = 0;
+        state.FailedOutputGeneration = 0;
+        state.FailedOutputRevision = 0;
+        Q_EMIT TargetsChanged();
     }
     const uint64 drawable = activeOrNull->GetDrawableSceneRevision();
     if ((state.FailedOutputGeneration == report.ActiveGeneration && state.FailedOutputRevision == drawable) ||

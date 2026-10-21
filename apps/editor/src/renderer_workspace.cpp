@@ -1,4 +1,6 @@
 #include "internal/render_graph_configuration_editor.h"
+#include <ludus/content/render_graph_format/plan.h>
+
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/render_graph_worker.h"
 #endif
@@ -61,7 +63,7 @@ namespace ludus::editor
 using namespace foundation;
 namespace
 {
-constexpr int32 MAX_EXTENT = 16384;
+constexpr int32 MAX_EXTENT = static_cast<int32>(content::render_graph_format::MAX_TARGET_EXTENT);
 constexpr int32 MAX_COORDINATE = RenderGraphDocument::MAX_COORDINATE;
 constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 constexpr int32 NODE_EDITOR_WIDTH = 720;
@@ -2122,8 +2124,31 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             const QString source = isSizeNode == true ? QStringLiteral("Texture") : QStringLiteral("RenderSize");
             mode->addItem(QStringLiteral("Fixed dimensions"));
             mode->addItem(isSizeNode == true ? QStringLiteral("Match texture") : QStringLiteral("From size input"));
+            const QJsonArray scale = field.value().toObject().value(QStringLiteral("scale")).toArray();
+            constexpr int32 QUARTER_DENOMINATOR = 4;
+            constexpr int32 FIRST_VIEW_MODE = 2;
+            constexpr int32 VIEW_PRESET_COUNT = 3;
+            if (isSizeNode == true)
+            {
+                mode->addItems({QStringLiteral("Full view"),
+                                QStringLiteral("Half view"),
+                                QStringLiteral("Quarter view"),
+                                QStringLiteral("Custom view scale")});
+            }
             const bool isFixed = field.value().isArray();
-            mode->setCurrentIndex(isFixed == true ? 0 : 1);
+            int32 selectedMode = isFixed == true ? 0 : 1;
+            if (field.value().isObject() == true)
+            {
+                selectedMode = FIRST_VIEW_MODE + VIEW_PRESET_COUNT;
+                for (int32 preset = 0; preset < VIEW_PRESET_COUNT; ++preset)
+                {
+                    if (scale == QJsonArray{1, 1 << preset})
+                    {
+                        selectedMode = FIRST_VIEW_MODE + preset;
+                    }
+                }
+            }
+            mode->setCurrentIndex(selectedMode);
             rowLayout->addWidget(mode);
             QSpinBox* width = new QSpinBox(row);
             QSpinBox* height = new QSpinBox(row);
@@ -2140,11 +2165,58 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 isFixed == true ? field.value().toArray() : QJsonArray{DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT};
             width->setValue(extent.at(0).toInt());
             height->setValue(extent.at(1).toInt());
-            connect(mode, &QComboBox::activated, this, [this, source, width, height](int32 index) {
-                replaceSelectedField(QStringLiteral("extent"),
-                                     index == 0 ? QJsonValue(QJsonArray{width->value(), height->value()})
-                                                : QJsonValue(source));
-            });
+            QSpinBox* numerator = new QSpinBox(row);
+            QSpinBox* denominator = new QSpinBox(row);
+            numerator->setObjectName(QStringLiteral("renderGraphScaleNumerator"));
+            denominator->setObjectName(QStringLiteral("renderGraphScaleDenominator"));
+            const bool isCustom = selectedMode == mode->count() - 1 && selectedMode >= FIRST_VIEW_MODE;
+            for (QSpinBox* spin : {numerator, denominator})
+            {
+                spin->setRange(1, MAX_EXTENT);
+                spin->setVisible(isCustom);
+                spin->setEnabled(isCustom);
+                rowLayout->addWidget(spin);
+            }
+            numerator->setValue(scale.isEmpty() == true ? 1 : scale.at(0).toInt());
+            denominator->setValue(scale.isEmpty() == true ? 1 : scale.at(1).toInt());
+            const auto commitScale = [this, numerator, denominator]() {
+                replaceSelectedField(
+                    QStringLiteral("extent"),
+                    QJsonObject{{QStringLiteral("reference"), QStringLiteral("View")},
+                                {QStringLiteral("scale"), QJsonArray{numerator->value(), denominator->value()}}});
+            };
+            connect(numerator, &QSpinBox::editingFinished, this, commitScale);
+            connect(denominator, &QSpinBox::editingFinished, this, commitScale);
+            connect(mode,
+                    &QComboBox::activated,
+                    this,
+                    [this, source, width, height, numerator, denominator](int32 index) {
+                        const bool isCustomScale = index == FIRST_VIEW_MODE + VIEW_PRESET_COUNT;
+                        // Selecting Custom may keep the same fraction as a preset, so there may
+                        // be no document edit/rebuild. Reveal its controls in that case too.
+                        numerator->setEnabled(isCustomScale);
+                        denominator->setEnabled(isCustomScale);
+                        numerator->setVisible(isCustomScale);
+                        denominator->setVisible(isCustomScale);
+                        QJsonValue extentValue = source;
+                        if (index == 0)
+                        {
+                            extentValue = QJsonArray{width->value(), height->value()};
+                        }
+                        else if (index >= FIRST_VIEW_MODE)
+                        {
+                            const int32 divisor = index == FIRST_VIEW_MODE       ? 1
+                                                  : index == FIRST_VIEW_MODE + 1 ? 2
+                                                  : index == FIRST_VIEW_MODE + 2 ? QUARTER_DENOMINATOR
+                                                                                 : denominator->value();
+                            extentValue = QJsonObject{
+                                {QStringLiteral("reference"), QStringLiteral("View")},
+                                {QStringLiteral("scale"),
+                                 QJsonArray{index < FIRST_VIEW_MODE + VIEW_PRESET_COUNT ? 1 : numerator->value(),
+                                            divisor}}};
+                        }
+                        replaceSelectedField(QStringLiteral("extent"), extentValue);
+                    });
             const auto commitExtent = [this, width, height]() {
                 replaceSelectedField(QStringLiteral("extent"), QJsonArray{width->value(), height->value()});
             };
@@ -3110,13 +3182,13 @@ void RendererWorkspace::ServicePreview()
             mPreviewSceneIdentity.clear();
         }
     }
+    if (mPreviewSourceOrNull != nullptr)
+    {
+        preview.SetReferenceSize(mPreviewSourceOrNull->GetDrawableSize());
+    }
     const QSize target = preview.GetTargetSize();
     if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false)
     {
-        if (mIsWorldRenderingEnabled == true)
-        {
-            mPreviewSourceOrNull->Resize(target.width(), target.height());
-        }
         // The World viewport's current camera or orbit, at the graph's exported extent. The
         // runtime profile admits only conventional depth, so request a finite conventional
         // projection of the same camera instead of the viewport's infinite reverse-Z one.

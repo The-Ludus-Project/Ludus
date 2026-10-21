@@ -137,6 +137,10 @@ platform::NativeWindowInfo RenderPreview::WindowInfo() const noexcept
 {
     return { .Width = RequestedWidth_, .Height = RequestedHeight_ };
 }
+QSize RenderPreview::GetDrawableSize() const noexcept
+{
+    return mDrawableSize;
+}
 bool RenderPreview::SetScene(const RenderScene& scene)
 {
     bool isValid =
@@ -829,6 +833,7 @@ void RenderPreview::SetPresentationVisible(bool isVisible) noexcept
 }
 void RenderPreview::Resize(int32 width, int32 height)
 {
+    mDrawableSize = QSize(width, height);
     if (width <= 0 || height <= 0)
     {
         return;

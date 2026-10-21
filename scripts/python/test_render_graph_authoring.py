@@ -309,7 +309,7 @@ def parse_runtime(data):
     interface, generation = data[offset:offset + 32].hex(), data[offset + 32:offset + 64].hex()
     offset += 64
     result = {'magic': magic, 'version': version, 'interface': interface, 'generation': generation,
-              'resources': [take(6) for _ in range(resources)], 'cameras': [take(1) for _ in range(cameras)],
+              'resources': [take(8 if version >= 4 else 6) for _ in range(resources)], 'cameras': [take(1) for _ in range(cameras)],
               'passes': [take(9) for _ in range(passes)], 'uniform_values': values,
               'bindings': [take(5) for _ in range(bindings)], 'blocks': [take(3) for _ in range(blocks)],
               'fields': [take(5) for _ in range(fields)], 'stages': []}
@@ -328,7 +328,7 @@ def parse_runtime(data):
         result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry,
                                  'artifact': artifact, 'blocks': names})
     result['pass_names'] = []
-    if version == 3:
+    if version >= 3:
         for _ in range(passes):
             (name_bytes,) = take(1)
             assert 0 < name_bytes <= 127
@@ -359,7 +359,7 @@ class RuntimePackageTests(BuildFixture):
         cooked = execution.cook_runtime(package, self.root / 'graph.lurgrt')
         data = (self.root / 'graph.lurgrt').read_bytes()
         parsed = parse_runtime(data)
-        self.assertEqual((execution.PACKAGE_MAGIC, 3), (parsed['magic'], parsed['version']))
+        self.assertEqual((execution.PACKAGE_MAGIC, execution.PACKAGE_VERSION), (parsed['magic'], parsed['version']))
         self.assertEqual(['Main/raster/draw'], parsed['pass_names'])
         self.assertEqual(header['interface_identity'], parsed['interface'])
         self.assertEqual(cooked['generation'], parsed['generation'])

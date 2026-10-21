@@ -23,13 +23,16 @@
 /// to a four-byte boundary. Version 3 appends PassCount names, each a uint32 byte
 /// count and that many UTF-8 bytes zero-padded to four bytes. Names are nonempty,
 /// contain no zero, and have at most MAX_PASS_NAME_BYTES bytes. No trailing bytes
-/// are permitted. Version 2 has no name table.
+/// are permitted. Version 2 has no name table. Version 4 adds ViewNumerator and
+/// ViewDenominator after each resource's six legacy fields; versions 2/3 are fixed.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 3;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 4;
+/// Version with pass names and fixed resource extents.
+inline constexpr foundation::uint32 NAMED_PACKAGE_VERSION = 3;
 /// Previous numeric-only runtime generation, accepted with fallback debug names.
 inline constexpr foundation::uint32 LEGACY_PACKAGE_VERSION = 2;
 /// Maximum encoded UTF-8 bytes of an authored pass name (excludes terminating zero).
@@ -55,8 +58,8 @@ inline constexpr foundation::usize STATIC_INPUT_COUNT = 6;
 inline constexpr foundation::usize HEADER_FIELD_COUNT = 10;
 /// Serialized header width.
 inline constexpr foundation::usize HEADER_BYTES = HEADER_FIELD_COUNT * sizeof(foundation::uint32) + 2 * IDENTITY_BYTES;
-/// Serialized resource record width; matches Resource's six fields.
-inline constexpr foundation::usize RESOURCE_RECORD_BYTES = 6 * sizeof(foundation::uint32);
+/// Serialized resource record width; matches Resource's eight fields.
+inline constexpr foundation::usize RESOURCE_RECORD_BYTES = 8 * sizeof(foundation::uint32);
 /// Serialized camera record width; matches Camera's one field.
 inline constexpr foundation::usize CAMERA_RECORD_BYTES = sizeof(foundation::uint32);
 /// Serialized pass record width; matches Pass's nine fields.

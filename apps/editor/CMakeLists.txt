@@ -337,6 +337,7 @@ target_include_directories(ludus_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src
 target_compile_definitions(ludus_editor PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
 target_link_libraries(ludus_editor
     PRIVATE
+        Ludus::RenderGraphFormat
         ludus_editor_core
         ludus_world_demo_model
         ludus_world_render_items
@@ -584,6 +585,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/workspace_style.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
+            Ludus::RenderGraphFormat
             ludus_editor_core
             ludus_world_demo_model
             ludus_world_render_items
@@ -700,7 +702,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_include_directories(ludus_render_graph_pipeline_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_pipeline_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
-    target_link_libraries(ludus_render_graph_pipeline_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Test
+    target_link_libraries(ludus_render_graph_pipeline_tests PRIVATE Ludus::RenderGraphFormat Qt6::Core Qt6::Widgets Qt6::Test
         Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2)
     ludus_apply_project_defaults(ludus_render_graph_pipeline_tests)
     ludus_enable_test_exceptions(ludus_render_graph_pipeline_tests)
@@ -731,7 +733,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # Thanks to Kitware, "cmake-generator-expressions(7)", COMPILE_ONLY, for the
     # compile-usage-only dependency mechanism:
     # https://cmake.org/cmake/help/v3.29/manual/cmake-generator-expressions.7.html#genex:COMPILE_ONLY
-    target_link_libraries(ludus_render_graph_configuration_tests PRIVATE ludus_editor_core
+    target_link_libraries(ludus_render_graph_configuration_tests PRIVATE Ludus::RenderGraphFormat ludus_editor_core
         Qt6::Widgets Qt6::Test Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
         "$<COMPILE_ONLY:Ludus::Resources>")

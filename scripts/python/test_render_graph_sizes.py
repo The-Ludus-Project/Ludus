@@ -3,6 +3,7 @@ import copy
 import unittest
 
 from ludus_tools import render_graph as graph
+from ludus_tools.errors import ToolingError
 import test_render_graph as fixtures
 
 
@@ -22,6 +23,34 @@ class RenderSizeTests(unittest.TestCase):
             self.node(value, identity)['extent'] = 'RenderSize'
             self.config(value)['edges'].append({'from': 'size.size', 'to': identity + '.size'})
         return value
+
+    def test_view_size_policy_survives_targets_and_matching_metadata(self):
+        value = self.share_size({'reference': 'View', 'scale': [2, 4]})
+        self.write(value)
+        plan = graph.compile_graph(self.path)
+        for identity in ('color', 'depth'):
+            self.assertEqual([320, 240], plan['resources']['Main/' + identity]['extent'])
+            self.assertEqual([1, 2], plan['resources']['Main/' + identity]['view_scale'])
+        # The same nominal fixed dimensions do not establish a runtime equality contract.
+        self.node(value, 'depth')['extent'] = [320, 240]
+        self.config(value)['edges'] = [edge for edge in self.config(value)['edges'] if edge['to'] != 'depth.size']
+        self.write(value)
+        self.fails('AttachmentMismatch')
+
+    def test_large_scale_is_validated_against_the_runtime_reference_not_the_nominal_one(self):
+        self.write(self.share_size({'reference': 'View', 'scale': [graph.MAX_TARGET_EXTENT, 1]}))
+        plan = graph.compile_graph(self.path)
+        self.assertEqual([graph.MAX_TARGET_EXTENT, graph.MAX_TARGET_EXTENT], plan['resources']['Main/color']['extent'])
+        self.assertEqual([graph.MAX_TARGET_EXTENT, 1], plan['resources']['Main/color']['view_scale'])
+
+    def test_view_size_schema_rejects_unknown_reference_and_invalid_scale(self):
+        for extent in ({'reference': 'Window', 'scale': [1, 2]},
+                       {'reference': 'View', 'scale': [1, 0]},
+                       {'reference': 'View', 'scale': [True, 2]},
+                       {'reference': 'View', 'scale': [1, 2], 'extra': True}):
+            self.write(self.share_size(extent))
+            with self.assertRaises(ToolingError):
+                graph.compile_graph(self.path)
 
     def test_one_size_drives_color_and_depth_without_creating_a_gpu_resource(self):
         value = self.share_size([97, 65])

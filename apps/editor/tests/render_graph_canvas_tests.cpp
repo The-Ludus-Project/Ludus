@@ -202,6 +202,29 @@ TEST_CASE("shared size policies edit through Properties and canvas with undo", "
         }
         QComboBox* mode = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphExtentMode"));
         REQUIRE(mode != nullptr);
+        if (identity == QStringLiteral("rendersize"))
+        {
+            const uint64 beforeScale = workspace.GetDocument().GetRevision();
+            mode->setCurrentText(QStringLiteral("Half view"));
+            Q_EMIT mode->activated(mode->currentIndex());
+            CHECK(workspace.GetDocument().GetRevision() == beforeScale + 1);
+            CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("View") == true);
+            CHECK(workspace.GetCanvas().GetPortPosition(port, false).isNull() == true);
+            QComboBox* customMode = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphExtentMode"));
+            REQUIRE(customMode != nullptr);
+            customMode->setCurrentText(QStringLiteral("Custom view scale"));
+            Q_EMIT customMode->activated(customMode->currentIndex());
+            QSpinBox* denominator = inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphScaleDenominator"));
+            REQUIRE(denominator != nullptr);
+            CHECK(denominator->isEnabled() == true);
+            denominator->setValue(3);
+            Q_EMIT denominator->editingFinished();
+            CHECK(workspace.GetDocument().GetRevision() == beforeScale + 2);
+            workspace.Undo();
+            workspace.Undo();
+            mode = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphExtentMode"));
+            REQUIRE(mode != nullptr);
+        }
         const uint64 revision = workspace.GetDocument().GetRevision();
         mode->setCurrentIndex(1);
         Q_EMIT mode->activated(1);

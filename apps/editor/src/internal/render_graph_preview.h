@@ -109,6 +109,9 @@ public:
     [[nodiscard]] bool IsCopyingOutput() const noexcept;
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
     void SetExtraction(const RenderGraphExtraction& extraction);
+    /// Queue the owning viewport's drawable size (physical pixels before rendering scale).
+    /// Applied between output consumers; zero suspends new submissions and keeps the image.
+    void SetReferenceSize(const QSize& size);
     /// Export extent of the generation the next frame will show (candidate first), or 0x0.
     [[nodiscard]] QSize GetTargetSize() const noexcept;
     /// Advance activation, preparation, rendering and the asynchronous copy without waiting.

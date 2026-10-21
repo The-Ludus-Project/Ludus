@@ -132,6 +132,14 @@ public:
     /// returns Unsupported with RestartRequired; setup failure returns its status
     /// with Failed. Neither changes the active generation. Pending/Ready is accepted.
     [[nodiscard]] rhi::RasterStatus Stage(foundation::core::UniquePtr<RenderGraphPackage> package) noexcept;
+    /// Set this activation's drawable reference size, including before Stage. Relative packages
+    /// require a positive reference before staging; fixed packages ignore it. For an active or
+    /// staged graph, follows RenderGraph::Resize's consumer, Update and publication contract.
+    /// A minimized (zero) request returns NotReady and preserves the prior reference/output.
+    /// No shader artifacts or pipeline contexts are recreated. Independent activations keep
+    /// independent references. Failure preserves the active drawable generation.
+    [[nodiscard]] rhi::RasterStatus Resize(foundation::uint32 referenceWidth,
+                                           foundation::uint32 referenceHeight) noexcept;
     /// Advance the active graph and the candidate; activate a complete candidate.
     /// Returns the active graph's Poll status, or the candidate's while no generation is active.
     /// Export consumers of the active generation must have completed before a Poll that may activate.
