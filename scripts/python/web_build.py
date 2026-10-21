@@ -9,10 +9,10 @@ import shlex
 import shutil
 import subprocess
 import urllib.request
-import venv
 
 from formatting import format_source
 import init_progress
+import managed_venv
 from analysis_inventory import inventory, request_codemodel, SOURCE_ROOTS
 
 PRESETS = ("web-emscripten-development", "web-emscripten-release")
@@ -98,8 +98,10 @@ def command(args, engine) -> int:
         if args.command in ("init", "bootstrap"):
             init_progress.begin("host_tools")
             native = json.loads((root / "config/tool_versions.json").read_text())["managed"]
-            if not (host_bin / "python").exists():
-                venv.EnvBuilder(with_pip=True).create(host_bin.parent)
+            try:
+                managed_venv.ensure(host_bin.parent, notify=init_progress.note)
+            except managed_venv.ManagedEnvironmentError as exc:
+                raise EngineError(str(exc)) from exc
             run([host_bin / "python", "-m", "pip", "install",
                  f"cmake=={native['cmake']}", f"ninja=={native['ninja']}"], cwd=root)
             init_progress.begin("emsdk")
