@@ -567,12 +567,12 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
 | GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; no radiance estimate is added |
+| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
 | EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
 | EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
-| SampleSceneRandom / MakeCameraRay | Addressed random dimension / chosen subpixel camera ray |
+| SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing reflection-model primitives; no integrator or MIS |
 
 SurfaceHit includes InstanceIndex, original mesh-local Primitive, source identity,
@@ -584,6 +584,35 @@ default=1, error=2. Checked data getters return IsValid=false for invalid indice
 authors must not use invalid results. Query/ray failures latch HasFailed and
 produce diagnostic pixels. Miss/clear is SCENE_QUERY_MISS, hit/occluded is
 SCENE_QUERY_SURFACE, and failure is SCENE_QUERY_FAILURE.
+
+Random sampling is available directly in ray generation, closest-hit and miss.
+The renderer initializes a deterministic stream from the seed, pixel and
+progressive sample index before invoking raygen. Each call advances the stream:
+
+```slang
+const float u = SampleSceneRandom(queries);
+const float v = SampleSceneRandom(queries);
+const float root = sqrt(u);
+const float2 barycentric = float2(root * (1 - v), root * v);
+```
+
+Both draws are uniform pseudorandom values in `[0, 1)`; the barycentrics sample
+a triangle uniformly in area. These helpers require no launch field, seed or
+dimension counter in `ScenePayload`. Forward the same `queries` through callbacks and continuations;
+do not reset or copy its sampling state. `SelectLight(scene, queries)` shares this
+stream and consumes one dimension when the source set is nonempty. A bounded
+selection failure latches `HasFailed`; an empty source set is an ordinary no-sample
+result and consumes no dimension.
+
+The stream admits dimensions zero through FoundationMath's
+`RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
+zero/no sample; the renderer rejects that invocation's result. Scheduling other
+pixels does not change the stream. Changing the callback's draw order does.
+The existing `SampleSceneRandom(launch, dimension)` and
+`SelectLight(scene, launch, dimension)` overloads remain available for explicitly
+addressed algorithms. They do not advance the automatic stream and can address
+the same draws; use one addressing strategy or reserve disjoint dimensions when
+combining them.
 
 The default distribution is uniform over analytic sources, emitting instance/slot
 groups and the optional environment. Mesh triangles are selected by world area,
