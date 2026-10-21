@@ -20,9 +20,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -76,6 +80,79 @@ QJsonArray GetInputConnections(const RenderGraphDocument& document, const QStrin
     return result;
 }
 } // namespace
+
+TEST_CASE("multiline shader failures preserve the render graph editing area", "[editor][render-graph][layout]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    const QString package = MakePackage(project);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    QSplitter* splitter = workspace.findChild<QSplitter*>(QStringLiteral("renderGraphSplitter"));
+    QLabel* status = workspace.findChild<QLabel*>(QStringLiteral("renderGraphStatus"));
+    REQUIRE(views != nullptr);
+    REQUIRE(splitter != nullptr);
+    REQUIRE(status != nullptr);
+    SECTION("canvas at a compact window size")
+    {
+        workspace.resize(1000, 600);
+        views->setCurrentIndex(0);
+    }
+    SECTION("source at a regular window size")
+    {
+        workspace.resize(1280, 800);
+        views->setCurrentIndex(1);
+    }
+    workspace.show();
+    QCoreApplication::processEvents();
+    const QSize windowSize = workspace.size();
+    const int32 editingHeight = splitter->height();
+    const int32 statusHeightAllowance = status->fontMetrics().lineSpacing() * 3;
+    RenderGraphJobResult failure;
+    failure.Request.ProjectEpoch = 1;
+    failure.Request.Action = QStringLiteral("build");
+    failure.Code = QStringLiteral("RenderGraphBuildShader");
+    failure.Message = QStringLiteral("shader helper: Ludus shader build:\n");
+    for (int32 line = 0; line < 80; ++line)
+    {
+        failure.Message += QStringLiteral("shader.slang(4): error 30015: undefined identifier '<primitives>'.\n"
+                                          "    uint materialId = primitives[input.primitiveId].materialIndex;\n");
+    }
+    failure.Message += QStringLiteral("compilation ceased");
+    workspace.AcceptResult(failure);
+    QCoreApplication::processEvents();
+    CHECK(workspace.size() == windowSize);
+    CHECK(splitter->height() >= editingHeight - statusHeightAllowance);
+    if (views->currentIndex() == 1)
+    {
+        QPlainTextEdit* source = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
+        REQUIRE(source != nullptr);
+        CHECK(source->viewport()->height() > statusHeightAllowance);
+        source->selectAll();
+        QTest::keyClicks(source, QStringLiteral("// fix shader here"));
+        CHECK(source->toPlainText() == QStringLiteral("// fix shader here"));
+    }
+    CHECK(workspace.GetStatusText().contains(failure.Message) == true);
+    CHECK(status->textFormat() == Qt::PlainText);
+    CHECK(status->textInteractionFlags().testFlag(Qt::TextSelectableByMouse) == true);
+    QScrollArea* statusPanel = workspace.findChild<QScrollArea*>(QStringLiteral("renderGraphStatusPanel"));
+    REQUIRE(statusPanel != nullptr);
+    CHECK(statusPanel->height() <= statusHeightAllowance);
+    REQUIRE(statusPanel->verticalScrollBar()->maximum() > 0);
+    statusPanel->verticalScrollBar()->setValue(statusPanel->verticalScrollBar()->maximum());
+    CHECK(status->geometry().bottom() <= statusPanel->viewport()->rect().bottom());
+
+    // A shorter result releases the scroll range and leaves editing usable after resizing.
+    failure.Message = QStringLiteral("one shader error");
+    workspace.AcceptResult(failure);
+    workspace.resize(1100, 700);
+    QCoreApplication::processEvents();
+    CHECK(statusPanel->verticalScrollBar()->maximum() == 0);
+    CHECK(splitter->height() >= editingHeight - statusHeightAllowance - 100);
+}
 
 TEST_CASE("configuration interface UI creates connectable ports with undo and save",
           "[editor][render-graph][interface]")

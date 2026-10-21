@@ -70,6 +70,7 @@ constexpr int32 NODE_EDITOR_WIDTH = 720;
 constexpr int32 NODE_EDITOR_HEIGHT = 600;
 // The source tree stays wide enough for nested node names.
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
+constexpr int32 STATUS_VISIBLE_LINES = 3;
 // Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
 constexpr int32 SOURCE_TREE_SHARE = 1;
 constexpr int32 VIEWS_SHARE = 4;
@@ -596,8 +597,20 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
 #endif
 
     mStatus->setObjectName(QStringLiteral("renderGraphStatus"));
+    mStatus->setTextFormat(Qt::PlainText);
+    mStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    mStatus->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     mStatus->setWordWrap(true);
     mStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    // Compiler messages may contain the entire multiline report. Keep it readable
+    // without letting its height displace the graph/source editing area.
+    QScrollArea* statusPanel = new QScrollArea(this);
+    statusPanel->setObjectName(QStringLiteral("renderGraphStatusPanel"));
+    statusPanel->setFrameShape(QFrame::NoFrame);
+    statusPanel->setWidgetResizable(true);
+    statusPanel->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    statusPanel->setFixedHeight(mStatus->fontMetrics().lineSpacing() * STATUS_VISIBLE_LINES);
+    statusPanel->setWidget(mStatus);
     QSplitter* horizontal = new QSplitter(Qt::Horizontal, this);
     horizontal->setObjectName(QStringLiteral("renderGraphSplitter"));
     horizontal->addWidget(mTree);
@@ -626,7 +639,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->addLayout(header);
     layout->addWidget(mContent, 1);
-    layout->addWidget(mStatus);
+    layout->addWidget(statusPanel);
 
     connect(mCreateFirst, &QPushButton::clicked, this, [this]() { static_cast<void>(PromptNewGraph()); });
     connect(mConfiguration, &QComboBox::currentTextChanged, this, [this]() {
