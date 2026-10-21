@@ -833,7 +833,12 @@ void RenderPreview::SetPresentationVisible(bool isVisible) noexcept
 }
 void RenderPreview::Resize(int32 width, int32 height)
 {
-    mDrawableSize = QSize(width, height);
+    const QSize size(width, height);
+    if (mDrawableSize != size)
+    {
+        mDrawableSize = size;
+        Q_EMIT DrawableSizeChanged(size);
+    }
     if (width <= 0 || height <= 0)
     {
         return;

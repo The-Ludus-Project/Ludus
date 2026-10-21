@@ -8,12 +8,16 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QPointF>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 #include <QVector>
 
 QT_BEGIN_NAMESPACE
 class QGraphicsPathItem;
+class QGraphicsEllipseItem;
+class QGraphicsSimpleTextItem;
+class QGraphicsTextItem;
 class QGraphicsScene;
 class QShowEvent;
 class QRubberBand;
@@ -102,6 +106,9 @@ public:
     void ShowConfiguration(const QString& file, const QString& configuration);
     /// Re-read the draft after any document change, keeping the view and selection.
     void Rebuild();
+    /// Current World drawable reference in physical pixels; empty means unavailable.
+    /// Refreshes size annotations without changing drafts, selection, layout or undo history.
+    void SetReferenceSize(const QSize& size);
     [[nodiscard]] const QString& GetFile() const noexcept
     {
         return mFile;
@@ -181,6 +188,8 @@ private:
     [[nodiscard]] QString portAt(QPointF position, bool& outIsOutput) const;
     [[nodiscard]] QString edgeAt(QPointF position, QString& outTo) const;
     void cancelLink();
+    void refreshFeedback();
+    void updateLinkFeedback(QPointF position);
     void fitGraph();
     void zoomAt(foundation::float64 factor, QPointF position);
 
@@ -196,6 +205,11 @@ private:
     QPointF mPressPosition;
     QString mLinkFrom;
     QGraphicsPathItem* mLinkPreviewOrNull = nullptr;
+    QGraphicsTextItem* mLinkHintOrNull = nullptr;
+    QGraphicsEllipseItem* mLinkPortOrNull = nullptr;
+    QString mLinkPortTooltip;
+    QString mLinkEndpoint;
+    QSize mReferenceSize;
     QRubberBand* mSelectionBox;
     QPoint mSelectionStart;
     QPoint mPanPosition;

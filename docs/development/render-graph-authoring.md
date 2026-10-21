@@ -1731,6 +1731,44 @@ dependency order for display only; nothing is written until you move them.
 Configuration output links can be selected and deleted, just like pass connections.
 They edit the configuration output's source rather than adding an ordinary edge.
 
+### Read canvas feedback
+
+Each node has a draft-route label. **Inactive branch** nodes and their incoming
+wires are dimmed: they have no route to an exposed configuration output,
+Export/Present effect or active camera. Hover the node or label for the reason.
+These nodes remain selectable and editable. **On draft route** means a dependency
+is retained, including the complete input contract of a retained Subgraph; it
+does not establish that its shaders, bindings or execution profile are valid.
+**Activity unknown** keeps normal visibility when broken wires, unresolved or
+cyclic imports, dependency cycles or an inspection bound prevent classification.
+Validation still checks structural errors in unused branches.
+
+Opening a library configuration alone assumes all of its exposed outputs are
+requested. The node tooltip states this scope; it does not claim which branches
+a particular enclosing instance will use.
+
+Texture and RenderSize ports show inferred dimensions in their tooltips and a
+compact node footer. Fixed/shared sizes, texture metadata, writable pipeline
+targets and nested bindings use the same inference as connection checks. When
+resource ports have different inferred sizes, the footer says **Mixed sizes**;
+hover individual ports for their contracts. Missing, cyclic or unbound library
+inputs say **Size unresolved**.
+
+View-relative policies show their ratio and, when a World drawable reference is
+available, the resolved physical pixel dimensions. For example, `View 1/2` at
+1919 × 1079 resolves to 960 × 540 using integer ceiling. Resizing refreshes the
+annotations. Without a current reference they say **awaiting viewport**; they
+do not substitute nominal dimensions. Oversized results show an extent-limit
+message. All feedback describes the current draft, independently of any older
+image retained by the viewport after a pending or failed build.
+
+While dragging a wire, the hovered port and preview wire turn green for a
+compatible pre-check or red for a rejection. A nearby text hint gives the reason,
+including type, cycle or attachment-contract mismatches. Occupied inputs are
+checked as replacements. Drop commits through the existing document operation;
+rejection or Escape preserves the previous connection and history. Feedback
+itself never saves, builds shaders or creates GPU resources.
+
 ### Add configurations and reuse node groups
 
 Right-click a graph file, configuration, or empty canvas and choose **Add
