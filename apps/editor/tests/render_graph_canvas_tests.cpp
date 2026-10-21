@@ -618,6 +618,43 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         workspace.Redo();
         CHECK(workspace.GetSelectedShaderSources() == sources);
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
+        // Undo/Redo rebuilds the field controls; use the currently displayed editor.
+        QWidget* ownerOrNull = QApplication::activeModalWidget();
+        if (ownerOrNull == nullptr)
+        {
+            ownerOrNull = &workspace;
+        }
+        RenderGraphPipelineEditor* currentEditorOrNull = nullptr;
+        for (RenderGraphPipelineEditor* candidate : ownerOrNull->findChildren<RenderGraphPipelineEditor*>())
+        {
+            if (candidate->isHidden() == false)
+            {
+                currentEditorOrNull = candidate;
+            }
+        }
+        REQUIRE(currentEditorOrNull != nullptr);
+        QPushButton* completeShader =
+            currentEditorOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
+        QTableWidget* completeShaders = currentEditorOrNull->findChild<QTableWidget*>(QStringLiteral("shaders"));
+        REQUIRE(completeShader != nullptr);
+        REQUIRE(completeShaders != nullptr);
+        completeShader->click();
+        constexpr int32 MISS_ROW = 2;
+        completeShaders->item(MISS_ROW, 0)->setText(QStringLiteral("miss"));
+        QComboBox* missStage = qobject_cast<QComboBox*>(completeShaders->cellWidget(MISS_ROW, 1));
+        REQUIRE(missStage != nullptr);
+        const QByteArray beforeTechnique = workspace.GetDocument().GetDraft(QStringLiteral("main.lushader.json"));
+        missStage->setCurrentText(QStringLiteral("miss"));
+        CHECK(workspace.GetSelectedShaderSources().size() == 3);
+        CHECK(workspace.GetDocument()
+                  .GetDraft(QStringLiteral("main.lushader.json"))
+                  .contains("RendererTriangles.RayTracing") == true);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(QStringLiteral("main.lushader.json")) == beforeTechnique);
+        workspace.Redo();
+        CHECK(workspace.GetDocument()
+                  .GetDraft(QStringLiteral("main.lushader.json"))
+                  .contains("RendererTriangles.RayTracing") == true);
         REQUIRE(workspace.Save() == true);
         for (const QString& source : sources)
         {

@@ -714,7 +714,12 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     for plan in plans:
         require(all(digest(snapshot.files[d['source']]) == d['sha256'] for d in plan['dependencies']),
                 'Stale', plan['configuration'], 'graph changed during plan compilation')
-        require(set(plan['techniques']) <= techniques.keys(), 'Configuration', plan['configuration'], 'graph selects an undeclared technique')
+        for missing in sorted(set(plan['techniques']) - techniques.keys()):
+            operation = next(item for item in plan['passes'] if item.get('technique') == missing)
+            fail('Configuration', operation['source'] + '#' + operation['id'],
+                 f"graph selects an undeclared technique '{missing}' in configuration '{plan['configuration']}'. "
+                 f"Declare it in {manifest_label}, with this pipeline's shader programs and recipe; "
+                 'the editor registers complete pipelines when editing or explicitly building the graph')
         for operation in plan['passes']:
             if 'pipeline' not in operation:
                 continue

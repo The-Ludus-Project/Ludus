@@ -425,8 +425,11 @@ class BuildTests(unittest.TestCase):
 
     def test_graph_selecting_undeclared_technique_fails(self):
         self.edit(lambda v: (v['techniques'].pop(0), v['programs'].pop(1)))
-        with self.assertRaisesRegex(ToolingError, 'undeclared technique'):
+        with self.assertRaisesRegex(ToolingError, 'undeclared technique') as caught:
             self.run_build()
+        self.assertIn('DefaultStaticOpaque.ColorAndDepth', str(caught.exception))
+        self.assertIn('main.lushader.json', str(caught.exception))
+        self.assertIn('rasterize.lurender.json', str(caught.exception))
         self.assertFalse(self.calls)
 
     def test_duplicate_nonfinite_and_unknown_json_fields_fail(self):

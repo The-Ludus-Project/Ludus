@@ -78,7 +78,12 @@ and set its shader ID. Completed edits automatically create a `.slang` template 
 receives a unique name from the node and shader IDs. To share a shader, enter an existing
 program name with a matching stage. New sources appear immediately in **Source**;
 **Save** writes them beside the manifest. Creation, manifest registration and node
-assignments form one undo step. Name/file conflicts or incompatible references
+assignments form one undo step. Completing an executable graphics or triangle ray
+pipeline also registers its technique and pipeline recipe in the root manifest
+in that same undo step, including pipelines in imported subgraphs. Recipe edits
+retain existing recipes; conflicting program selections for a shared technique
+or exhausted manifest budgets preserve the draft and explain the repair.
+Incomplete shader tables remain authoring drafts. Name/file conflicts or incompatible references
 preserve the draft. Templates are starting points: vertex/fragment interfaces use
 the manifest schemas; ray-generation, miss and closest-hit functions use the
 renderer’s triangle ray interfaces. Other stages remain authoring drafts subject
@@ -1194,6 +1199,10 @@ and on the Render Graph toolbar (see the
 - **Source** edits graph, build-manifest/schema and shader text; **Apply Text to
   Draft** makes it one undoable document edit. Generated wrappers and packages
   are build products and never editable sources.
+- An explicit **Build Graph** or **Build & Preview** registers missing techniques
+  for complete pipelines in older graph packages as one undoable draft edit.
+  **Save** publishes the repaired manifest; shader sources are preserved. Automatic
+  saved-source Live Preview does not rewrite the saved package.
 - **Plan** shows the deterministic serial plan of the last validation, or the last
   build's report.
 - Edit > Undo/Redo and Save act on the render-graph draft while the Render Graph is
