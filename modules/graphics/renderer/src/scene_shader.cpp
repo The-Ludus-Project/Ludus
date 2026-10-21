@@ -1,4 +1,5 @@
 #include "internal/render_graph_ray_scene.h"
+#include "internal/scene_memory.h"
 
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -17,6 +18,12 @@ constexpr float32 MAX_EMISSION = 10000;
 constexpr float32 MIN_ROUGHNESS = 0.045F;
 constexpr float32 MAX_NORMAL_SCALE = 8;
 constexpr float32 POSITION_ROUNDING = 2e-6F;
+bool TryAddSceneAllocation(usize count, usize stride, uint64& inoutBytes) noexcept
+{
+    uint64 bytes = 0;
+    return TryMultiply(static_cast<uint64>(count), static_cast<uint64>(stride), bytes) == true &&
+           TryAdd(inoutBytes, bytes, inoutBytes) == true;
+}
 SceneShaderMaterial SelectSceneMaterial(const SceneShaderMaterial& source, uint32 data) noexcept
 {
     SceneShaderMaterial material = source;
@@ -165,19 +172,26 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
             return Status::CapacityExceeded;
         }
     }
-    if (textureBytes > byteBudget || triangleCapacity > byteBudget / sizeof(ReferenceTriangle) ||
-        surfaceCapacity > byteBudget / sizeof(ReferenceInstance) ||
-        input.Inputs.EnvironmentPixels.GetSize() > byteBudget / (sizeof(math::Vector4) + sizeof(float64)))
+    uint64 peak = sizeof(ReferenceJob) + sizeof(EnvironmentData);
+    if (TryAddSceneAllocation(textureBytes, 1, peak) == false ||
+        TryAddSceneAllocation(input.Inputs.Materials.GetSize(), sizeof(SceneShaderMaterial), peak) == false ||
+        TryAddSceneAllocation(input.Inputs.EnvironmentPixels.GetSize(),
+                              sizeof(math::Vector4) + sizeof(float64),
+                              peak) == false ||
+        TryAddSceneAllocation(surfaceCapacity,
+                              sizeof(ReferenceInstance) + sizeof(ReferenceSurfaceData) + sizeof(math::Vector4),
+                              peak) == false ||
+        TryAddSceneAllocation(triangleCapacity,
+                              sizeof(ReferenceTriangle) + 2 * sizeof(ReferenceBvhNode) + 2 * sizeof(uint32),
+                              peak) == false)
     {
         return Status::CapacityExceeded;
     }
-    const uint64 peak =
-        sizeof(ReferenceJob) + uint64(textureBytes) +
-        uint64(input.Inputs.Materials.GetSize()) * sizeof(SceneShaderMaterial) + sizeof(EnvironmentData) +
-        uint64(input.Inputs.EnvironmentPixels.GetSize()) * (sizeof(math::Vector4) + sizeof(float64)) +
-        uint64(surfaceCapacity) * (sizeof(ReferenceInstance) + sizeof(ReferenceSurfaceData) + sizeof(math::Vector4)) +
-        uint64(triangleCapacity) * (sizeof(ReferenceTriangle) + 2 * sizeof(ReferenceBvhNode) + 2 * sizeof(uint32));
-    if (peak > byteBudget || triangleCapacity > (~uint32{0}) / 2 || surfaceCapacity > ~uint32{0})
+    if (peak > byteBudget)
+    {
+        return RejectSceneMemory(&diagnostics, SceneMemoryBudget::CpuScene, peak, byteBudget);
+    }
+    if (triangleCapacity > (~uint32{0}) / 2 || surfaceCapacity > ~uint32{0})
     {
         return Status::CapacityExceeded;
     }

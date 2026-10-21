@@ -2044,6 +2044,27 @@ straight tint with alpha below one is declared `Transparent`, and the editor's
 hiding them. Textures, lights and other materials are outside the current static
 profile. An authored surface's flat tint is its schema tint.
 
+Triangle-ray graphs admit up to **2 GiB of CPU preparation** and **2 GiB of GPU
+preview resources**. These are ceilings, not allocations made when a graph opens.
+CPU preparation includes frozen triangles, BVH construction, material and texture
+data, fingerprints and upload scratch. The GPU ceiling includes current and
+replacement previews until retained GPU uses retire. The device-wide RHI resource
+budget and each device's storage-buffer binding range apply independently; a
+larger graph ceiling cannot override either one. The supplied imported Sponza
+World's two million triangles require more than the previous 256 MiB ceilings.
+
+When measured byte admission fails, `RenderGraphReport::SceneDiagnostics` names
+the exceeded budget and records required and available bytes. The editor displays
+those values with the rejection while keeping the last drawable frame. CPU scene,
+CPU scratch/upload, GPU preview, device-wide RHI resources and device storage-buffer
+range have separate diagnostics. Available bytes are the remaining allowance at
+that stage, not free physical RAM or VRAM. Allocation failures and non-memory
+capacity failures retain their own status without inventing a byte requirement.
+
+Ray-scene preparation retains off-screen geometry: authored shadow, reflection
+and secondary rays may intersect it. Camera-frustum or raster occlusion rejection
+alone does not establish that geometry can be removed from a ray BVH.
+
 Imported and merged Worlds are cooked: their geometry lives only in the decoded
 scene definition, which the extraction borrows (and keeps alive) without copying.
 Their base color lives only in textures, which the static profile does not sample.

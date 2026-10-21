@@ -86,6 +86,40 @@ bool IsAccepted(rhi::RasterStatus status)
 }
 } // namespace
 
+QString DescribeRenderGraphExtractionFailure(rhi::RasterStatus status,
+                                             const renderer::SceneShaderDiagnostics& diagnostics)
+{
+    QString budget;
+    switch (diagnostics.ExceededBudget)
+    {
+        case renderer::SceneMemoryBudget::None:
+            break;
+        case renderer::SceneMemoryBudget::CpuScene:
+            budget = QStringLiteral("ray-tracing CPU scene preparation");
+            break;
+        case renderer::SceneMemoryBudget::CpuScratch:
+            budget = QStringLiteral("ray-tracing CPU scratch/upload");
+            break;
+        case renderer::SceneMemoryBudget::GpuPreview:
+            budget = QStringLiteral("ray-tracing GPU preview (including retained frames)");
+            break;
+        case renderer::SceneMemoryBudget::RhiResources:
+            budget = QStringLiteral("device-wide RHI resource");
+            break;
+        case renderer::SceneMemoryBudget::DeviceStorageRange:
+            budget = QStringLiteral("device storage-buffer binding");
+            break;
+    }
+    const QString detail = budget.isEmpty() == true
+                               ? QString{}
+                               : QStringLiteral(" %1 memory budget exceeded: requires %2 bytes; %3 bytes available.")
+                                     .arg(budget)
+                                     .arg(diagnostics.RequiredBytes)
+                                     .arg(diagnostics.AvailableBytes);
+    return QStringLiteral("The World extraction was rejected (%1).%2 The shown frame is kept.")
+        .arg(DescribeRasterStatus(status), detail);
+}
+
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — distinct scene/view/revision inputs.
 bool MakeRenderGraphExtraction(const RenderScene& scene,
                                const renderer::ViewDescription& view,
@@ -801,8 +835,7 @@ void RenderGraphPreview::advance()
             state.UpdatedRevision = state.Extraction.Revision;
             if (IsAccepted(updated) == false)
             {
-                setStatus(QStringLiteral("The World extraction was rejected (%1); the shown frame is kept.")
-                              .arg(DescribeRasterStatus(updated)));
+                setStatus(DescribeRenderGraphExtractionFailure(updated, graphReport.SceneDiagnostics));
             }
             Q_EMIT Changed();
         }

@@ -24,11 +24,14 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/content/render_graph_format/runtime_package.h>
+#include <ludus/content/scene_cook/scene_assets.h>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/profile.h>
 
 #include <cstring>
 #include <initializer_list>
@@ -44,6 +47,7 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -105,11 +109,12 @@ struct DeviceFixture final
     rhi::DeviceHandle Device{};
     rhi::SurfaceHandle Surface{};
     bool IsAvailable = false;
-    DeviceFixture()
+    explicit DeviceFixture(const rhi::StorageLimits& storage = {})
     {
         rhi::Shutdown();
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
+        description.Storage = storage;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
             rhi::CreateDevice({}, { .Width = 1, .Height = 1 }, description, Device, Surface, &failure);
@@ -638,6 +643,46 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     CHECK(preview.IsAttached() == false);
     CHECK(preview.GetImage() == red);
     CHECK(preview.GetStatus().contains(QStringLiteral("last presented frame")) == true);
+}
+
+TEST_CASE("Rejected ray extractions name their measured memory ceiling", "[editor][render-graph][preview]")
+{
+    renderer::SceneShaderDiagnostics diagnostics;
+    diagnostics.RequiredBytes = 4096;
+    diagnostics.AvailableBytes = 2048;
+    for (const renderer::SceneMemoryBudget budget : {renderer::SceneMemoryBudget::CpuScene,
+                                                     renderer::SceneMemoryBudget::CpuScratch,
+                                                     renderer::SceneMemoryBudget::GpuPreview,
+                                                     renderer::SceneMemoryBudget::RhiResources,
+                                                     renderer::SceneMemoryBudget::DeviceStorageRange})
+    {
+        diagnostics.ExceededBudget = budget;
+        const QString message = DescribeRenderGraphExtractionFailure(rhi::RasterStatus::CapacityExceeded, diagnostics);
+        CHECK(message.contains(QStringLiteral("requires 4096 bytes; 2048 bytes available")) == true);
+        CHECK(message.contains(QStringLiteral("shown frame is kept")) == true);
+        switch (budget)
+        {
+            case renderer::SceneMemoryBudget::CpuScene:
+                CHECK(message.contains(QStringLiteral("CPU scene preparation")) == true);
+                break;
+            case renderer::SceneMemoryBudget::CpuScratch:
+                CHECK(message.contains(QStringLiteral("CPU scratch/upload")) == true);
+                break;
+            case renderer::SceneMemoryBudget::GpuPreview:
+                CHECK(message.contains(QStringLiteral("GPU preview (including retained frames)")) == true);
+                break;
+            case renderer::SceneMemoryBudget::DeviceStorageRange:
+                CHECK(message.contains(QStringLiteral("device storage-buffer binding")) == true);
+                break;
+            case renderer::SceneMemoryBudget::RhiResources:
+                CHECK(message.contains(QStringLiteral("device-wide RHI resource")) == true);
+                break;
+            case renderer::SceneMemoryBudget::None:
+                FAIL("Expected a measured memory ceiling");
+        }
+    }
+    CHECK(DescribeRenderGraphExtractionFailure(rhi::RasterStatus::InvalidDescription, {})
+              .contains(QStringLiteral("memory budget")) == false);
 }
 
 TEST_CASE("RG3b Renderer workspace previews only explicitly requested generations", "[editor][render-graph][preview]")
@@ -1305,6 +1350,125 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
+}
+
+TEST_CASE("Supplied Sponza World replaces a drawable frame through its authored ray graph", "[.sponza-ray-project]")
+{
+    const QString root = qEnvironmentVariable("LUDUS_SPONZA_TEST_PROJECT");
+    const QString runtime = qEnvironmentVariable("LUDUS_SPONZA_TEST_RUNTIME");
+    if (root.isEmpty() == true || runtime.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_SPONZA_TEST_PROJECT to an isolated project copy and LUDUS_SPONZA_TEST_RUNTIME to its ray "
+             "package.");
+    }
+    rhi::StorageLimits storage;
+    storage.ResourcesPerKind = 4096;
+    storage.BindingDescriptors = 32768;
+    storage.HostBytes = usize{256} * 1024 * 1024;
+    storage.ResourceBytes = uint64{2} * 1024 * 1024 * 1024;
+    DeviceFixture device(storage);
+    REQUIRE(device.IsAvailable == true);
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; }) == true);
+    const QImage previous = preview.GetImage();
+    WorldDocument world;
+    QString error;
+    REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\","
+                                               "\"label\":\"World\",\"components\":[],\"assets\":[]}"),
+                             error) == true);
+    QFile file(QDir(root).filePath(QStringLiteral("assets/sponza.world.json")));
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    REQUIRE(world.Load(file.readAll(), error) == true);
+    const QJsonObject level = world.SceneLevel();
+    const QByteArray levelBytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
+    const QByteArray projectRoot = root.toUtf8();
+    Array<uint8> bundle;
+    ludus::content::scene_cook::AssetError assetError;
+    const bool hasBundle = ludus::content::scene_cook::AssembleLevel(
+        {projectRoot.constData(), static_cast<usize>(projectRoot.size())},
+        {reinterpret_cast<const uint8*>(levelBytes.constData()), static_cast<usize>(levelBytes.size())},
+        {},
+        bundle,
+        assetError);
+    INFO(assetError.Message.View());
+    REQUIRE(hasBundle == true);
+    const QByteArray cooked(reinterpret_cast<const char*>(bundle.GetData()), static_cast<qsizetype>(bundle.GetSize()));
+    RenderScene scene;
+    const bool hasScene = RenderScene::LoadCooked(cooked, level, scene, error, {});
+    INFO(error.toStdString());
+    REQUIRE(hasScene == true);
+    REQUIRE(scene.Objects.size() == 26);
+    RenderPreview viewport;
+    REQUIRE(viewport.SetScene(scene) == true);
+    constexpr uint32 TARGET_WIDTH = 640;
+    constexpr uint32 TARGET_HEIGHT = 480;
+    renderer::ViewDescription view;
+    REQUIRE(viewport.DescribeConventionalView(TARGET_WIDTH, TARGET_HEIGHT, view, error) == true);
+    RenderGraphExtraction extraction;
+    REQUIRE(MakeRenderGraphExtraction(scene, view, 2, extraction, error) == true);
+    usize triangleCount = 0;
+    constexpr usize CORNERS_PER_TRIANGLE = 3;
+    for (const renderer::RenderGraphMesh& mesh : extraction.Meshes)
+    {
+        triangleCount += mesh.Geometry.IndexCount / CORNERS_PER_TRIANGLE;
+    }
+    REQUIRE(triangleCount == 2000000);
+    QFile runtimeFile(runtime);
+    REQUIRE(runtimeFile.open(QIODevice::ReadOnly) == true);
+    const QByteArray runtimeBytes = runtimeFile.readAll();
+    renderer::RenderGraphPackage package;
+    REQUIRE(package.Decode({reinterpret_cast<const uint8*>(runtimeBytes.constData()),
+                            static_cast<usize>(runtimeBytes.size())}) == renderer::RenderGraphPackageStatus::Ready);
+    bool hasRayPass = false;
+    const renderer::RenderGraphPlan plan = package.GetPlan();
+    for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
+    {
+        hasRayPass = hasRayPass == true || plan.Passes[passIndex].Program == format::Technique::RayTracing;
+    }
+    REQUIRE(hasRayPass == true);
+    REQUIRE(preview.Load(runtime) == RenderGraphPreviewLoad::Staged);
+    const uint64 rayGeneration = preview.GetReport().CandidateGeneration;
+    preview.SetExtraction(extraction);
+    CHECK(preview.GetImage() == previous);
+    constexpr int32 TIMEOUT_MILLISECONDS = 180000;
+    QElapsedTimer timer;
+    timer.start();
+    while ((preview.GetPresentedRevision() != 2 || preview.GetPresentedGeneration() != rayGeneration) &&
+           timer.elapsed() < TIMEOUT_MILLISECONDS && preview.GetStatus().contains(QStringLiteral("rejected")) == false)
+    {
+        preview.Tick();
+        QTest::qWait(1);
+    }
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(preview.GetPresentedRevision() == 2);
+    REQUIRE(preview.GetPresentedGeneration() == rayGeneration);
+    CHECK(preview.GetImage().isNull() == false);
+    CHECK(preview.GetImage() != previous);
+    const QImage firstRayFrame = preview.GetImage();
+    viewport.Look(20, 0);
+    REQUIRE(viewport.DescribeConventionalView(TARGET_WIDTH, TARGET_HEIGHT, extraction.View, error) == true);
+    extraction.Revision = 3;
+    preview.SetExtraction(extraction);
+    CHECK(preview.GetImage() == firstRayFrame);
+    timer.restart();
+    while (preview.GetPresentedRevision() != 3 && timer.elapsed() < TIMEOUT_MILLISECONDS &&
+           preview.GetStatus().contains(QStringLiteral("rejected")) == false)
+    {
+        preview.Tick();
+        QTest::qWait(1);
+    }
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(preview.GetPresentedRevision() == 3);
+    CHECK(preview.GetPresentedGeneration() == rayGeneration);
+    CHECK(preview.GetImage() != firstRayFrame);
+    const QString capture = qEnvironmentVariable("LUDUS_SPONZA_TEST_IMAGE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(preview.GetImage().save(capture) == true);
+    }
 }
 
 TEST_CASE("Supplied staircase2 World stays drawable through the engine default fallback", "[.staircase2-project]")
