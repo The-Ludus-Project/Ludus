@@ -1340,7 +1340,9 @@ Render Graph Runtime** run the installed
 `ludus --json render-graph` backend as a separate process; the GUI never waits
 for it; **Cancel Render Graph Job** (Ctrl+Break) stops the running job. Results and
 diagnostics appear in the **Error List**; double-click a row to select its graph
-node or open its source line. Validate and Build first write an immutable copy of the current draft to
+node or open its source line. The workspace status area stays bounded when a compiler
+returns a long report; scroll it to read the full message or select text to copy it.
+Validate and Build first write an immutable copy of the current draft to
 `out/render-graph/drafts/` in the project and delete it afterwards, so unsaved
 edits can be checked without touching saved sources. The same files give the
 same result through the CLI:
