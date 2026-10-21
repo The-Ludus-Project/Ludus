@@ -24,6 +24,7 @@ from .descriptor import parse_descriptor_file
 from .engine_pin import validate_install_prefix
 from .native import validate_target
 from .toolchain import PINNED_LLVM_MAJOR
+from .shader_tools import REPAIR_MESSAGE, preparation_steps, project_shader_tools, verify_translator
 
 OWNER = "ludus.dev/project-setup/1"
 
@@ -132,7 +133,59 @@ def validate_native_identity(identity, descriptor):
         raise ToolingError(INVALID_PROJECT, f"SDK lacks required components: {sorted(missing)}")
 
 
-def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | None):
+def _shader_inputs(root: Path, sdk: Path, required: set[str]) -> dict:
+    paths = {}
+    try:
+        if "compiler" in required:
+            paths["compiler"] = executable(root / "out/shader-tools/slang/bin/slangc")
+        if "validator" in required:
+            paths["validator"] = spirv_validator(root)
+        if "spirv_cross" in required:
+            binary = root / "out/shader-tools/spirv-cross/bin/spirv-cross"
+            verify_translator(binary, sdk / "lib/cmake/Ludus/shaders/spirv_cross_toolchain.json")
+            paths["spirv_cross"] = binary
+            paths["spirv_cross_manifest"] = Path(str(binary.resolve()) + ".build.json")
+    except ToolingError as error:
+        raise ToolingError("MissingTools", REPAIR_MESSAGE) from error
+    # Do not shadow the native C++ compiler in the setup signature's tool table.
+    return {("shader_compiler" if key == "compiler" else key): value for key, value in paths.items()}
+
+
+def _prepare_shader_tools(root: Path, sdk: Path, required: set[str], *, runner, cancel_check) -> None:
+    if not required:
+        return
+    try:
+        _shader_inputs(root, sdk, required)
+        return
+    except ToolingError:
+        pass
+    cancel_check()
+    # Projects sharing this trusted tooling root must not race a tool installation.
+    with BuildTreeLock(root / "out/shader-tools"):
+        executable(root / "out/host-tools/venv/bin/python")
+        for group, command in preparation_steps(root, required):
+            try:
+                _shader_inputs(root, sdk, group)
+                continue
+            except ToolingError:
+                pass
+            cancel_check()
+            runner(command, cwd=root, env=environment(root))
+            cancel_check()
+            _shader_inputs(root, sdk, group)
+
+
+def _validate_web_sdk(root: Path, sdk: Path, native_identity) -> Path:
+    identity = load_prefix_manifest(sdk)
+    if identity.engine_version != native_identity.engine_version or identity.target_triple != "wasm32-unknown-emscripten":
+        raise ToolingError(INVALID_PROJECT, "Web SDK must match the engine release and wasm32-unknown-emscripten target")
+    toolchain = root / "out/host-tools/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+    if not toolchain.is_file():
+        raise ToolingError("MissingTools", "Web toolchain is missing; prepare Emscripten")
+    return toolchain
+
+
+def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | None, *, project: Path | None = None):
     native = load_prefix_manifest(sdk)
     configured = tools(root)
     cache = {"CMAKE_MAKE_PROGRAM": str(configured["ninja"]),
@@ -167,26 +220,21 @@ def _inputs(root: Path, source: Path, sdk: Path, profile: str, web_sdk: Path | N
         cache.update(CMAKE_OSX_SYSROOT=str(sysroot.resolve()), CMAKE_OSX_ARCHITECTURES=architecture,
                      CMAKE_OSX_DEPLOYMENT_TARGET=baseline.group(1),
                      CMAKE_CXX_FLAGS=f'-stdlib=libc++ -nostdinc++ -isystem "{libcxx}"')
-    shaders = "ludus_compile_shader" in (source / "CMakeLists.txt").read_text()
-    # Shader includes are also common (Sandbox owns cmake/Shaders.cmake).
-    shaders |= any("ludus_compile_shader" in p.read_text() for p in (source / "cmake").glob("*.cmake"))
-    if shaders:
-        cache["LUDUS_SLANG_COMPILER"] = str(executable(root / "out/shader-tools/slang/bin/slangc"))
-        if not profile.startswith("macos-"):
-            cache["LUDUS_SPIRV_VALIDATOR"] = str(spirv_validator(root))
+    required = project_shader_tools(project or source, source, profile, web_sdk is not None)
+    shader_paths = _shader_inputs(root, sdk, required)
+    configured.update(shader_paths)
+    for name, key in (("shader_compiler", "LUDUS_SLANG_COMPILER"), ("validator", "LUDUS_SPIRV_VALIDATOR"),
+                      ("spirv_cross", "LUDUS_SPIRV_CROSS")):
+        if name in shader_paths:
+            cache[key] = str(shader_paths[name])
     records = {profile: {"cacheVariables": cache}}
     stamps = {str(sdk): compute_stamp(sdk)}
     if web_sdk:
-        web_identity = load_prefix_manifest(web_sdk)
-        if web_identity.engine_version != native.engine_version or web_identity.target_triple != "wasm32-unknown-emscripten":
-            raise ToolingError(INVALID_PROJECT, "Web SDK must match the engine release and wasm32-unknown-emscripten target")
-        toolchain = root / "out/host-tools/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
-        if not toolchain.is_file():
-            raise ToolingError("MissingTools", "Web toolchain is missing; prepare Emscripten")
-        cross = executable(root / "out/shader-tools/spirv-cross/bin/spirv-cross")
+        toolchain = _validate_web_sdk(root, web_sdk, native)
+        cross = shader_paths["spirv_cross"]
         webcache = {k: v for k, v in cache.items()
                     if k not in ("CMAKE_CXX_COMPILER", "CMAKE_CXX_FLAGS") and not k.startswith("CMAKE_OSX_")}
-        if shaders:
+        if "compiler" in required:
             webcache["LUDUS_SPIRV_VALIDATOR"] = str(spirv_validator(root))
         webcache.update(CMAKE_PREFIX_PATH=str(web_sdk), CMAKE_FIND_ROOT_PATH=str(web_sdk), LUDUS_SPIRV_CROSS=str(cross))
         for webprofile, buildtype in (("web-emscripten-development", "RelWithDebInfo"), ("web-emscripten-release", "Release")):
@@ -280,7 +328,7 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
     sdk = resolved.resolution.prefix.resolve()
     validate_native_identity(resolved.resolution.identity, descriptor)
     web = Path(settings["web_sdk"]) if settings.get("web_sdk") else None
-    configured, records, stamps = _inputs(tooling_root, source, sdk, descriptor.preset, web)
+    configured, records, stamps = _inputs(tooling_root, source, sdk, descriptor.preset, web, project=paths.project_dir)
     if settings.get("signature") != _signature(configured, records, stamps):
         raise ToolingError(INVALID_PROJECT, "SDK or tool inputs changed; run repair to refresh presets and caches")
     local = read_object(source / "CMakeUserPresets.json")
@@ -306,7 +354,7 @@ def check_project(path: Path, *, tooling_root: Path, profile: str | None = None,
     identity = resolved.resolution.identity
     warning = stale_revision_warning(tooling_root, identity.source_revision, sdk).rstrip()
     warning = "\n" + warning if warning else ""
-    return ("Setup checked: selectable presets, SDKs, tools and IDE settings\n"
+    return ("Setup checked: selectable presets, SDKs, rendering tools and IDE settings\n"
             f"Selected engine: Ludus {identity.engine_version} · {identity.flavor} · {identity.target_triple}\n"
             f"Engine revision: {identity.source_revision or 'unknown'}\n"
             f"Selection: {resolved.resolution.source}"
@@ -362,7 +410,11 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
         web_sdk = Path(previous["web_sdk"])
     if web_sdk:
         web_sdk = web_sdk.resolve()
-    configured, records, stamps = _inputs(tooling_root, source, sdk, descriptor.preset, web_sdk)
+        _validate_web_sdk(tooling_root, web_sdk, identity)
+    required = project_shader_tools(paths.project_dir, source, descriptor.preset, web_sdk is not None)
+    _prepare_shader_tools(tooling_root, sdk, required, runner=runner, cancel_check=cancel_check)
+    configured, records, stamps = _inputs(tooling_root, source, sdk, descriptor.preset, web_sdk,
+                                         project=paths.project_dir)
     local = read_object(source / "CMakeUserPresets.json")
     ide = read_object(source / ".vscode/settings.json")
     # CMake validates included roots/inheritance/conditions with real list calls.

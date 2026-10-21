@@ -190,6 +190,19 @@ Repair preserves custom presets and unrelated IDE settings, refreshes stale
 owned CMake inputs, and verifies selectable configure/build/test presets plus an
 actual configure/build/native test run. Browser repair requires a matching SDK.
 
+Repair also prepares the rendering tools required by the project's saved render
+graphs, including native ray tracing on macOS. It selects and verifies these
+dependencies automatically; no executable paths or separate bootstrap commands
+are needed. The same dependency rules drive graph builds and setup checks, so
+**Setup ready** cannot overlook a missing ray-tracing translator. Missing tools
+discovered by a graph build bring back the setup notice with **Repair setup…**.
+Existing drawable viewport output is retained while setup needs attention.
+Tool preparation runs through the background setup job and supports cancellation;
+failure or cancellation before project verification keeps existing project settings.
+Opening a project and **Check Setup** remain read-only. Native editor installation
+prepares its Metal rendering dependencies up front; projects with only raster
+graphs do not acquire unnecessary dependencies during repair.
+
 The installed CLI exposes the same operations:
 
 ```bash

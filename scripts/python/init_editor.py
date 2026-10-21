@@ -41,6 +41,8 @@ def preview_tool_args(root: Path) -> list[str]:
     result = [f"-DLUDUS_SLANG_COMPILER={root / 'out/shader-tools/slang/bin/slangc'}"]
     if platform.system() != "Darwin":
         result.append(f"-DLUDUS_SPIRV_VALIDATOR={root / 'out/shader-tools/spirv-tools/usr/bin/spirv-val'}")
+    if platform.system() == "Darwin":
+        result.append(f"-DLUDUS_SPIRV_CROSS={root / 'out/shader-tools/spirv-cross/bin/spirv-cross'}")
     return result
 
 
@@ -50,6 +52,8 @@ def prepare_editor_preview(args, engine) -> None:
         validate_editor_options(args, engine)
         root = engine.repo_root()
         engine.run([engine.venv_python(root), root / "scripts/shader-probe", "bootstrap"], cwd=root)
+        if platform.system() == "Darwin":
+            engine.run([engine.venv_python(root), root / "scripts/bootstrap-spirv-cross"], cwd=root)
 
 
 def setup_editor(args, engine) -> None:

@@ -74,8 +74,9 @@ ProjectSetupDialog::ProjectSetupDialog(const QString& projectDirectory,
     setMinimumWidth(540);
     auto* layout = new QVBoxLayout(this);
     auto* explanation = new QLabel(
-        QStringLiteral("Your game needs an installed Ludus engine to build. Repair updates this computer's build "
-                       "settings, builds the game, and runs its tests."),
+        QStringLiteral(
+            "Your game needs an installed Ludus engine to build. Repair updates this computer's build "
+            "settings, prepares required rendering tools automatically, builds the game, and runs its tests."),
         this);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);

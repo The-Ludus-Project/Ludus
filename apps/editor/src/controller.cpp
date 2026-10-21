@@ -450,6 +450,24 @@ void EditorController::CheckProjectSetup()
     }
 }
 
+void EditorController::ReportProjectSetupProblem(const QString& problem)
+{
+    if (State_.Document != DocumentState::ProjectLoaded || problem.isEmpty() == true)
+    {
+        return;
+    }
+    // A read-only check already in flight may have sampled the tool set before this
+    // rendering failure. Its older success must not dismiss the newer repair notice.
+    if (SetupCheckJob_ != 0 && State_.ActiveAction != ActionKind::ProjectSetup)
+    {
+        SetupCheckJob_ = 0;
+        PendingSetupDetails_.clear();
+    }
+    State_.SetupProblem = problem;
+    State_.SetupStatus = QStringLiteral("Project setup needs attention: %1").arg(problem);
+    Publish();
+}
+
 void EditorController::SetupProject(const QString& sdk, const QString& webSdk, bool prepareEngine, bool disableWeb)
 {
     if (Caps().CanProjectSetup == false)

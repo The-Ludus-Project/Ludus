@@ -634,3 +634,28 @@ TEST_CASE("macOS keeps native build/run while gating deferred debugger and missi
     CHECK(controller.State().ActiveJob == job);
 }
 #endif
+
+TEST_CASE("Rendering tool failures invalidate setup readiness without running tools or changing the project",
+          "[editor][setup][shader-setup]")
+{
+    QTemporaryDir directory;
+    const QByteArray descriptor = ValidDescriptor();
+    const QString path = WriteDescriptor(directory, descriptor);
+    EditorController controller(NoTooling());
+    MainWindow window(&controller);
+    controller.OpenProject(path);
+    const QString problem = QStringLiteral("Rendering tools need preparation. Choose Repair setup.");
+    controller.ReportProjectSetupProblem(problem);
+    CHECK(controller.State().SetupProblem == problem);
+    CHECK(controller.State().SetupStatus.contains(problem) == true);
+    CHECK(controller.Caps().CanCloseImmediately == true);
+    CHECK(controller.State().Dirty() == false);
+    QFile saved(path);
+    REQUIRE(saved.open(QIODevice::ReadOnly) == true);
+    CHECK(saved.readAll() == descriptor);
+    controller.ReportProjectSetupProblem({});
+    CHECK(controller.State().SetupProblem == problem);
+    REQUIRE(controller.CloseProject() == true);
+    controller.ReportProjectSetupProblem(problem);
+    CHECK(controller.State().SetupProblem.isEmpty() == true);
+}

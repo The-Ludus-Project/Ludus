@@ -7,11 +7,13 @@
 
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
+#include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/error_list.h"
 #include "internal/main_window.h"
 #include "internal/options_dialog.h"
 #include "internal/project_explorer.h"
+#include "internal/render_graph_job.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
 #include "internal/world_workspace.h"
@@ -238,7 +240,12 @@ void MainWindow::showOptions()
 
 void MainWindow::renderGraphErrors()
 {
-    const QList<ErrorListEntry> entries = MakeRenderGraphErrorEntries(Renderer_->GetLastResult());
+    const RenderGraphJobResult& result = Renderer_->GetLastResult();
+    if (result.IsSuccessful == false && result.Code == QStringLiteral("MissingTools"))
+    {
+        Controller_->ReportProjectSetupProblem(result.Message);
+    }
+    const QList<ErrorListEntry> entries = MakeRenderGraphErrorEntries(result);
     mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, entries);
     for (const ErrorListEntry& entry : entries)
     {

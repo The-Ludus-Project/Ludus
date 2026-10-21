@@ -65,7 +65,10 @@ command) before building. Configure and build do not download or repair tools.
   the Ludus source repository. Browser GLSL ES also needs
   `./scripts/bootstrap-spirv-cross`. If tools moved, update
   `LUDUS_SLANG_COMPILER`, `LUDUS_SPIRV_VALIDATOR`, or `LUDUS_SPIRV_CROSS`.
-  macOS Metal requires only Slang. Installed SDK consumers use the same checks;
+  Metal raster shaders use Slang; native Metal ray queries also use the pinned
+  translator. Rendered native editor setup prepares both, and **Project → Repair
+  Project Setup** automatically prepares missing tools required by saved graphs.
+  Installed SDK consumers use the same checks;
   bootstrap commands belong to the source repository, not the game directory.
 - Unusable Python: install Python 3.10+ and set `Python3_EXECUTABLE` if needed.
 - Missing editor Qt: use opted-in native editor setup or follow the
