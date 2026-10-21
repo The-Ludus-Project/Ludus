@@ -363,10 +363,11 @@ SelectedLight SelectLight(SceneContext scene, inout RayQueryContext queries)
     uint dimension;
     if (TryAdvanceSceneRandomDimension(queries, dimension) == false)
         return result;
-    result.HasSample = TrySampleRandomBounded(queries.RandomSeed,
-                                              PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension),
-                                              count,
-                                              result.LightIndex);
+    result.HasSample =
+        TrySampleRandomBounded(queries.RandomSeed,
+                               PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension),
+                               count,
+                               result.LightIndex);
     if (result.HasSample == false)
         queries.HasFailed = true;
     result.SelectionPmf = result.HasSample == true ? 1.0 / float(count) : 0;
@@ -594,7 +595,7 @@ float SampleSceneRandom(inout RayQueryContext queries)
     if (TryAdvanceSceneRandomDimension(queries, dimension) == false)
         return 0;
     return SampleRandomFloat01(queries.RandomSeed,
-                              PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension));
+                               PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension));
 }
 void EvaluateStandardBsdf(MaterialSample material,
                           float3 viewDirectionWorld,
