@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 from formatting import FormattingError, format_source
+import init_progress
 from analysis_inventory import compilation_entries, inventory, request_codemodel, SOURCE_ROOTS
 from quality_process import ANALYSIS_SECONDS, LANE_BYTES, LOG_BYTES, LogBudget, run_bounded
 
@@ -231,6 +232,7 @@ def run(
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
+    init_progress.announce_privileged_command(argv)
     print(f"+ {command_line(argv)}", flush=True)
     try:
         return subprocess.run(
@@ -1269,10 +1271,12 @@ def prepare_conan_artifacts(
     # toolchain is unavailable (especially with --no-system-install).
     configure_system_tool_shims(root, versions)
     validate_required_system_tools(root, versions)
+    init_progress.begin("host_tools")
     create_or_update_venv(root)
     install_managed_tools(root, versions)
     validate_managed_tools(root, versions)
     profile_path = install_conan_profile(root)
+    init_progress.begin("conan")
     # Exporting makes this checkout's recipe revisions the latest in the cache,
     # so a shared cache must not interleave another checkout's export before
     # this one resolves its lock and installs.
@@ -1285,8 +1289,10 @@ def prepare_conan_artifacts(
         export_local_recipes(root, locked=locked)
         if not locked:
             create_conan_lock(root, profile_path)
-        for preset in presets:
+        for index, preset in enumerate(presets):
+            init_progress.detail(index, len(presets), "conan install " + preset)
             conan_install_for_preset(root, profile_path, preset, locked=locked)
+        init_progress.detail(len(presets), len(presets), "Conan dependencies ready")
 
 
 def cmake_cache_value(cache_path: Path, name: str) -> str | None:
@@ -1531,10 +1537,20 @@ def command_init(args: argparse.Namespace) -> int:
     if args.ci:
         os.environ["CI"] = "true"
 
+    init_progress.start(init_progress.native_plan(args))
+    try:
+        return run_init_steps(args, root, versions, preset, run_validation)
+    finally:
+        init_progress.stop()
+
+
+def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dict[str, str]], preset: str,
+                   run_validation: bool) -> int:
     print("Ludus one-command onboarding")
     print(f"Repository: {root}")
     print(f"Preset: {preset}")
 
+    init_progress.begin("system")
     check_current_python(root, versions["minimum"]["python"])
     if args.no_system_install:
         print("Skipping automatic system package installation because --no-system-install was supplied.")
@@ -1561,14 +1577,20 @@ def command_init(args: argparse.Namespace) -> int:
     save_options(root, presets, args)
     prepare_conan_artifacts(root, versions, presets, locked=args.locked)
     from init_editor import prepare_editor_preview
+    if args.with_editor and args.with_editor_preview:
+        init_progress.begin("preview_tools")
     prepare_editor_preview(args, sys.modules[__name__])
+    init_progress.begin("cmake_caches")
     repair_existing_cmake_caches(root, presets)
     if args.with_rad_debugger:
+        init_progress.begin("rad")
         command_setup_rad_debugger(args)
+    init_progress.begin("doctor")
     if command_doctor(argparse.Namespace()) != 0:
         raise EngineError("doctor reported an invalid required tool or project state")
 
     if not args.ci and not os.environ.get("CI"):
+        init_progress.begin("hooks")
         command_install_hooks(argparse.Namespace())
 
     if getattr(args, "with_editor", False):
@@ -1576,13 +1598,17 @@ def command_init(args: argparse.Namespace) -> int:
         setup_editor(args, sys.modules[__name__])
 
     if getattr(args, "run_tests", False) and not run_validation:
+        init_progress.begin("tests")
         command_test(argparse.Namespace(preset=preset, label=None))
 
     if run_validation:
+        init_progress.begin("validate_build")
         command_build(argparse.Namespace(preset=preset, extra=[]))
+        init_progress.begin("validate_test")
         command_test(argparse.Namespace(preset=preset, label=None))
 
         if not args.skip_checks:
+            init_progress.begin("checks")
             command_check(
                 argparse.Namespace(
                     preset=preset, format=False, tidy=False, include_cleaner=False, all=True, fix=False
@@ -1590,10 +1616,12 @@ def command_init(args: argparse.Namespace) -> int:
             )
 
         if not args.skip_sanitizers:
+            init_progress.begin("sanitizers")
             command_build(argparse.Namespace(preset=NATIVE_PRESET_PREFIX + "-asan-ubsan", extra=[]))
             command_test(argparse.Namespace(preset=NATIVE_PRESET_PREFIX + "-asan-ubsan", label=None))
 
         if not args.skip_sdk:
+            init_progress.begin("sdk")
             command_install_sdk(argparse.Namespace(preset=preset))
 
     print("")
@@ -2760,6 +2788,9 @@ def main(argv: Sequence[str]) -> int:
             if args is None:
                 print("Initialization cancelled. No setup actions were run.")
                 return 0
+            if getattr(args, "show_progress_window", False):
+                from init_window import run_setup
+                return run_setup(args, sys.modules[__name__], geometry=getattr(args, "window_geometry", None))
         if args.command != "debug" and str(getattr(args, "preset", "")).startswith("web-emscripten-"):
             from web_build import command
             return command(args, sys.modules[__name__])

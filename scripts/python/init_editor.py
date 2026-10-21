@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import cmake_targets
+import init_progress
 
 
 SUPPORTED_PRESETS = tuple(f"{family}-clang-{flavor}" for family in ("linux", "macos")
@@ -70,6 +71,7 @@ def refresh_editor_engine_installs(args, engine) -> list[Path]:
     if getattr(args, "skip_engine_refresh", False):
         print("Skipping the engine install refresh (--no-engine-refresh).")
         return []
+    init_progress.begin("engine_refresh")
     from ludus_tools.engine_pin import stale_editor_installs
     from ludus_tools.errors import ToolingError
     from ludus_tools.identity import load_manifest_file
@@ -105,6 +107,7 @@ def build_editor(args, engine) -> None:
     if platform.system() == "Darwin":
         brew = shutil.which("brew")
         if not args.no_system_install:
+            init_progress.begin("editor_packages")
             if not brew:
                 raise engine.EngineError("Install Qt 6.4+ manually, or install Homebrew, then rerun editor setup")
             engine.run([brew, "install", "qtbase", *(["qtdeclarative"] if args.with_editor_preview else [])], cwd=root)
@@ -123,11 +126,14 @@ def build_editor(args, engine) -> None:
                 if status == 0 and quick_directory.is_dir():
                     # Homebrew's split formula is not beneath qtbase's Qt6_DIR.
                     qt_args.append(f"-DQt6Quick_DIR={quick_directory}")
+        init_progress.begin("editor_configure")
         cmake_targets.query_codemodel(engine.build_dir_for_preset(root, args.preset), "ludus-editor")
         engine.cmake_configure(root, args.preset, ["-DLUDUS_BUILD_EDITOR=ON", *preview_args, *qt_args])
+        init_progress.begin("editor_build")
         engine.cmake_build(root, args.preset, ["--target", "ludus_editor"])
         return
     if not args.no_system_install:
+        init_progress.begin("editor_packages")
         if not engine.host_supports_apt_install():
             raise engine.EngineError("Automatic editor prerequisites require Ubuntu/Debian; install Qt 6.4+ manually and use --no-system-install")
         missing = []
@@ -144,6 +150,8 @@ def build_editor(args, engine) -> None:
     else:
         print("Using existing Qt 6.4+ packages for the optional editor (--no-system-install).")
 
+    init_progress.begin("editor_configure")
     cmake_targets.query_codemodel(engine.build_dir_for_preset(root, args.preset), "ludus-editor")
     engine.cmake_configure(root, args.preset, ["-DLUDUS_BUILD_EDITOR=ON", *preview_args])
+    init_progress.begin("editor_build")
     engine.cmake_build(root, args.preset, ["--target", "ludus_editor"])

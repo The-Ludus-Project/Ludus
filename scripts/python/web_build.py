@@ -12,6 +12,7 @@ import urllib.request
 import venv
 
 from formatting import format_source
+import init_progress
 from analysis_inventory import inventory, request_codemodel, SOURCE_ROOTS
 
 PRESETS = ("web-emscripten-development", "web-emscripten-release")
@@ -88,16 +89,20 @@ def command(args, engine) -> int:
     sdk = root / "out/host-tools/emsdk"
     host_bin = root / "out/host-tools/venv/bin"
 
+    if args.command == "init":
+        init_progress.start(init_progress.browser_plan(args))
     try:
         if args.command == "init":
             from init_options import save_options
             save_options(root, (args.preset,), args)
         if args.command in ("init", "bootstrap"):
+            init_progress.begin("host_tools")
             native = json.loads((root / "config/tool_versions.json").read_text())["managed"]
             if not (host_bin / "python").exists():
                 venv.EnvBuilder(with_pip=True).create(host_bin.parent)
             run([host_bin / "python", "-m", "pip", "install",
                  f"cmake=={native['cmake']}", f"ninja=={native['ninja']}"], cwd=root)
+            init_progress.begin("emsdk")
             if not (sdk / "emsdk").exists():
                 if sdk.exists() and any(sdk.iterdir()):
                     raise EngineError("Incomplete SDK directory; preserve it and repair before retrying")
@@ -110,6 +115,8 @@ def command(args, engine) -> int:
             run([sdk / "emsdk", "install", lock["emscripten"]], cwd=root)
             run([sdk / "emsdk", "activate", lock["emscripten"]], cwd=root)
 
+        if args.command == "init":
+            init_progress.begin("verify")
         # Reuse W0's SDK version and vendored-port integrity validation.
         probe_tools = runpy.run_path(str(root / "scripts/webgpu-probe"))
         emscripten, env = probe_tools["verify_sdk"](sdk, lock)
@@ -131,6 +138,7 @@ def command(args, engine) -> int:
         shader_args = []
         if read_options(root, args.preset).get("LUDUS_BUILD_SMOKE_APP", True):
             if args.command in ("init", "bootstrap"):
+                init_progress.begin("shader_tools")
                 run([root / "scripts/shader-probe", "bootstrap"], cwd=root)
                 run([root / "scripts/bootstrap-spirv-cross"], cwd=root)
             tools = root / "out/shader-tools"
@@ -143,6 +151,7 @@ def command(args, engine) -> int:
                 if not path.is_file():
                     raise EngineError("Missing shader tool; run ./init.sh " + args.preset + " --preset-only")
                 shader_args.append("-D" + variable + "=" + str(path))
+        init_progress.begin("configure")
         request_codemodel(root / "out/build" / args.preset)
         run([emscripten / "emcmake", cmake, "--preset", args.preset, *shader_args], cwd=root, env=env)
         if args.command in ("init", "bootstrap"):
@@ -208,3 +217,5 @@ def command(args, engine) -> int:
         return 0
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         raise EngineError(str(error)) from error
+    finally:
+        init_progress.stop()

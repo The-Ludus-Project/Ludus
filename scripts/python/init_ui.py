@@ -1,7 +1,8 @@
 """Optional native setup selector; all installation stays in the engine runner.
 
 Tk is loaded only for graphical setup. Closing the window cancels before any
-setup mutation; accepting it returns to the terminal so sudo retains its TTY.
+setup mutation. Accepting it opens the progress window (``init_window``),
+which runs the engine runner as a child that keeps the terminal for sudo.
 """
 from __future__ import annotations
 
@@ -95,6 +96,43 @@ def validate_options(args: argparse.Namespace, engine) -> None:
     validate_editor_options(args, engine)
 
 
+# Options passed to the child runner verbatim; every other init option is a
+# --with-x/--no-x pair whose default is resolved by apply_defaults.
+STORE_TRUE_OPTIONS = (
+    ("no_system_install", "--no-system-install"),
+    ("with_rad_debugger", "--with-rad-debugger"),
+    ("skip_engine_refresh", "--no-engine-refresh"),
+    ("run_tests", "--run-tests"),
+    ("all_presets", "--all-presets"),
+    ("preset_only", "--preset-only"),
+    ("validate", "--validate"),
+    ("skip_checks", "--skip-checks"),
+    ("skip_sanitizers", "--skip-sanitizers"),
+    ("skip_sdk", "--skip-sdk"),
+    ("locked", "--locked"),
+    ("ci", "--ci"),
+)
+PAIRED_OPTIONS = (
+    ("with_editor", "--with-editor", "--no-editor"),
+    ("with_editor_preview", "--with-editor-preview", "--no-editor-preview"),
+    ("with_tests", "--with-tests", "--no-tests"),
+    ("with_smoke_app", "--with-smoke-app", "--no-smoke-app"),
+    ("with_web_probes", "--with-web-probes", "--no-web-probes"),
+    ("with_shader_probe", "--with-shader-probe", "--no-shader-probe"),
+)
+
+
+def selection_to_argv(args: argparse.Namespace) -> list[str]:
+    """Spell a resolved selection as explicit ``engine.py init --cli`` options."""
+    argv = [args.preset, "--cli", "--persona", args.persona]
+    for name, option in STORE_TRUE_OPTIONS:
+        if getattr(args, name, False):
+            argv.append(option)
+    for name, enabled, disabled in PAIRED_OPTIONS:
+        argv.append(enabled if getattr(args, name) else disabled)
+    return argv
+
+
 def wants_gui(args: argparse.Namespace) -> bool:
     if args.cli:
         return False
@@ -111,6 +149,8 @@ def prepare_init(args: argparse.Namespace, engine) -> argparse.Namespace | None:
     if wants_gui(args):
         try:
             args = select_options(args, engine)
+            if args is not None:
+                args.show_progress_window = True
         except GuiUnavailable as error:
             if args.gui:
                 raise engine.EngineError(str(error)) from error
@@ -252,7 +292,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             if flags["with_editor"].get():
                 included.append("3D preview + live shaders" if flags["with_editor_preview"].get() else "document-only editor")
             summary.set(f"{action} for {scope}.\nOptional targets: {', '.join(included) or 'none'}.\n"
-                        "Progress and any sudo password prompt appear in the launching terminal.")
+                        "Progress appears in a window after you choose Initialize; "
+                        "any sudo password prompt appears in the launching terminal.")
 
         def change_workflow(_event=None):
             chosen = next(item for item in PERSONAS if item.label == persona.get())
@@ -306,6 +347,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             except engine.EngineError as error:
                 messagebox.showerror("Check setup options", str(error), parent=window)
                 return
+            # Open the progress window where the selector was.
+            candidate.window_geometry = f"+{window.winfo_x()}+{window.winfo_y()}"
             selection = candidate
             window.destroy()
 

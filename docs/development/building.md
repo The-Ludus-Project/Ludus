@@ -98,8 +98,30 @@ On an interactive desktop, that command opens a graphical setup window. Choose
 Engine contributor (all native presets), Application developer (one native
 preset), Browser developer (one Emscripten preset), or Full validation, then
 review the preset and optional tools before pressing **Initialize**. Closing or
-cancelling the window runs no setup actions. Setup progress and any sudo password
-prompt appear in the launching terminal after the window closes.
+cancelling the selection runs no setup actions.
+
+After **Initialize**, a progress window runs setup and shows:
+
+- each planned step (for example *Conan install*, *CMake configure (editor)*,
+  *Building the editor*) with a tick, a spinner or a cross, and its duration;
+- *Step N of M*, a progress bar that also advances with Conan's preset count
+  and Ninja's `[done/total]` build status, the newest output line and the
+  elapsed time;
+- **Show output** for the live log. The complete log is also written to
+  `out/init/setup.log`, and the launching terminal keeps receiving it;
+- **Cancel**, which asks for confirmation and stops the runner and its
+  CMake/Ninja/Conan/sudo children. Finished steps are kept, so rerunning resumes;
+- the outcome: *Ludus is ready* with the runner's summary, or *Setup failed
+  during: step* with the error and the log expanded. **Retry** reruns the same
+  choices after a failure or cancellation.
+
+A sudo password prompt still appears in the launching terminal; the window
+shows a notice while it waits. Setup runs in a child `engine.py init --cli`
+process with every chosen option spelled out, so the window never blocks.
+In the terminal, the CLI prints the same steps as `==> [N/M] label` headers.
+With `LUDUS_INIT_PROGRESS=1` it prints machine-readable lines instead:
+`LUDUS_PROGRESS <index> <total> <label>`, `LUDUS_PROGRESS_DETAIL <done> <total>
+<text>` and `LUDUS_PROGRESS_NOTE <text>` (see `scripts/python/init_progress.py`).
 
 The default Engine contributor workflow prepares system prerequisites,
 project-managed CMake/Ninja/Conan, and Conan dependency files for all native
