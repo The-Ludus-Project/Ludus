@@ -691,8 +691,9 @@ Run only clang-tidy:
 
 clang-tidy uses the selected preset's `compile_commands.json` and analyzes project sources under `modules/` and `apps/`, not generated, installed, or third-party code.
 
-`LUDUS_TIDY_JOBS` bounds concurrent analyzer processes (default 1). CI uses
-two workers per job and two native shards. To reproduce one shard:
+`LUDUS_TIDY_JOBS` bounds concurrent analyzer processes (default 1). CI selects
+worker and shard limits per job; the explicit Editor source lists use four
+workers on Linux and three on macOS. To reproduce one shard:
 
 ```bash
 LUDUS_TIDY_JOBS=2 LUDUS_TIDY_SHARD_COUNT=2 LUDUS_TIDY_SHARD_INDEX=0 \
@@ -701,6 +702,21 @@ LUDUS_TIDY_JOBS=2 LUDUS_TIDY_SHARD_COUNT=2 LUDUS_TIDY_SHARD_INDEX=0 \
 
 Shard indices start at zero; every shard must pass. The default count of one
 analyzes the full database. Invalid indices and empty shards fail explicitly.
+
+To analyze a few compiled sources concurrently, for example after editing the
+Editor, list them explicitly; the result equals running `clang-tidy -p` on each:
+
+```bash
+LUDUS_TIDY_JOBS=4 ./scripts/check linux-clang-development --tidy-sources \
+  apps/editor/src/controller.cpp apps/editor/tests/controller_tests.cpp
+```
+
+This runs the full project tidy policy for the listed sources, without the
+changed-line filtering of `--tidy-changed`. Build the selected preset first.
+A missing compilation database, duplicate source or source absent from that
+database fails before analysis starts. Analyzer failures retain diagnostics
+for every selected source and fail the check.
+
 Browser analysis uses the same worker limit and includes owned engine,
 application, probe and consumer-fixture sources while excluding pinned vendor implementations.
 Both browser build configurations remain checked.

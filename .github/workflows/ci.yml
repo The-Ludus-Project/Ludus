@@ -71,6 +71,7 @@ jobs:
     runs-on: macos-15
     env:
       CMAKE_BUILD_PARALLEL_LEVEL: "3"
+      LUDUS_TIDY_JOBS: "3"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -222,7 +223,7 @@ jobs:
 
       - name: Analyze native Editor production and regression sources
         run: |
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' \
+          ./scripts/check macos-clang-development --tidy-sources \
             apps/editor/src/controller_play.cpp apps/editor/src/workspace.cpp \
             apps/editor/src/main_window.cpp apps/editor/src/main_window_layout.cpp \
             apps/editor/src/recent_projects.cpp apps/editor/tests/controller_tests.cpp \
@@ -1186,6 +1187,8 @@ jobs:
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
+    env:
+      LUDUS_TIDY_JOBS: "4"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1235,7 +1238,7 @@ jobs:
           path: out/editor-content-scale.txt
       - name: Analyze document interactions and regressions
         run: |
-          out/host-tools/bin/clang-tidy -p out/build/linux-clang-development --warnings-as-errors='*' \
+          ./scripts/check linux-clang-development --tidy-sources \
             apps/editor/src/controller.cpp apps/editor/src/main_window.cpp \
             apps/editor/src/main_window_layout.cpp apps/editor/src/document_commands.cpp \
             apps/editor/src/configuration_workspace.cpp apps/editor/src/audio_workspace.cpp \

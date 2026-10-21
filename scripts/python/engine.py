@@ -1794,6 +1794,37 @@ def run_tidy(root: Path, preset: str, *, analyzer: bool = False) -> None:
     run_analysis_commands(root, commands, directory=directory)
 
 
+def run_tidy_sources(root: Path, preset: str, sources: Sequence[str]) -> None:
+    """Analyze explicitly listed compiled sources with bounded concurrency.
+
+    Each source retains clang-tidy's ordinary compilation-database lookup and
+    project policy. Validate the complete list before starting any analysis.
+    """
+    versions = load_tool_versions(root)
+    clang_tidy = find_system_tool(root, "clang-tidy", versions)
+    actual_version = executable_version(clang_tidy, ("--version",), root)
+    if not version_tuple(actual_version) or version_tuple(actual_version)[0] != llvm_major_version(versions):
+        raise EngineError(f"Static analysis requires reference clang-tidy {llvm_major_version(versions)}")
+    if not sources:
+        raise EngineError("Analysis requires at least one listed source")
+    build_dir = build_dir_for_preset(root, preset)
+    if not (build_dir / "compile_commands.json").is_file():
+        raise EngineError(f"Missing compilation database for preset {preset}; build analysis inputs first")
+    compiled = compile_database_files(build_dir)
+    commands = []
+    seen: set[Path] = set()
+    for source in sources:
+        path = (root / source).resolve()
+        if path in seen:
+            raise EngineError(f"Analysis source listed twice: {source}")
+        seen.add(path)
+        if path not in compiled:
+            raise EngineError(f"Analysis source is not compiled by preset {preset}: {source}")
+        commands.append([clang_tidy, "-p", build_dir, "--warnings-as-errors=*", str(path)])
+    print(f"Analysis sources: {len(commands)} listed sources from {build_dir}", flush=True)
+    run_analysis_commands(root, commands)
+
+
 def analysis_directory(root: Path) -> Path:
     parent = root / "out/quality/analysis"
     parent.mkdir(parents=True, exist_ok=True)
@@ -1980,7 +2011,9 @@ def command_check(args: argparse.Namespace) -> int:
     tooling = getattr(args, "tooling", False)
     inventory_only = getattr(args, "inventory", False)
     tidy_changed = getattr(args, "tidy_changed", False)
-    explicit = args.format or args.tidy or include_cleaner or analyzer or tooling or inventory_only or tidy_changed
+    tidy_sources = getattr(args, "tidy_sources", None) or []
+    explicit = (args.format or args.tidy or include_cleaner or analyzer or tooling or inventory_only
+                or tidy_changed or bool(tidy_sources))
     run_all = args.all or not explicit
 
     if args.format or run_all:
@@ -1991,7 +2024,7 @@ def command_check(args: argparse.Namespace) -> int:
         run_foundational_includes(root)
         run_naming_check(root)
         run_container_policy(root)
-    if args.tidy or run_all or include_cleaner or analyzer or inventory_only:
+    if args.tidy or run_all or include_cleaner or analyzer or inventory_only or tidy_sources:
         ensure_bootstrap_for_preset(root, args.preset)
     if inventory_only:
         try:
@@ -2006,6 +2039,8 @@ def command_check(args: argparse.Namespace) -> int:
         run_tidy(root, args.preset)
     if analyzer:
         run_tidy(root, args.preset, analyzer=True)
+    if tidy_sources:
+        run_tidy_sources(root, args.preset, tidy_sources)
     if tidy_changed:
         ensure_bootstrap_for_preset(root, args.preset)
         run_tidy_changed(root, args.preset, getattr(args, "base", None) or "origin/develop")
@@ -2685,6 +2720,8 @@ def make_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--analyzer", action="store_true", help="run advisory stable LLVM analyzer rules on the complete configured inventory")
     check_parser.add_argument("--tooling", action="store_true", help="check Python and workflows with prepared pinned Ruff/actionlint")
     check_parser.add_argument("--inventory", action="store_true", help="validate complete configured source inventory without running analyzers")
+    check_parser.add_argument("--tidy-sources", nargs="+", metavar="SOURCE", dest="tidy_sources",
+                              help="run clang-tidy on listed compiled sources with LUDUS_TIDY_JOBS concurrency")
     check_parser.add_argument(
         "--include-cleaner",
         action="store_true",
