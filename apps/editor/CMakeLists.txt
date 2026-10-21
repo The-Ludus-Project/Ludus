@@ -259,7 +259,7 @@ qt_add_executable(ludus_editor
     src/internal/render_graph_source.h
     src/render_graph_document.cpp src/render_graph_node_transfer.cpp
     src/internal/render_graph_shader_creation.h
-    src/render_graph_shader_creation.cpp src/render_graph_techniques.cpp
+    src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_techniques.cpp
     src/internal/render_graph_pipeline.h
     src/render_graph_pipeline.cpp
     src/internal/render_graph_pipeline_node.h
@@ -487,7 +487,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_source.h
         src/render_graph_document.cpp src/render_graph_node_transfer.cpp
         src/internal/render_graph_shader_creation.h
-        src/render_graph_shader_creation.cpp src/render_graph_techniques.cpp
+        src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_techniques.cpp
         src/internal/render_graph_pipeline.h
         src/render_graph_pipeline.cpp
         src/internal/render_graph_pipeline_node.h
@@ -704,16 +704,17 @@ endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
-        src/render_graph_document.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_creation.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
+        src/render_graph_document.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/render_graph_resources.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
-        src/render_graph_configuration_interface.cpp)
+        src/render_graph_configuration_interface.cpp src/render_graph_shader_interface.cpp)
     set_target_properties(ludus_render_graph_pipeline_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_pipeline_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_pipeline_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
     target_link_libraries(ludus_render_graph_pipeline_tests PRIVATE Ludus::RenderGraphFormat Qt6::Core Qt6::Widgets Qt6::Test
         Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2)
+    ludus_editor_add_shader_api(ludus_render_graph_pipeline_tests)
     ludus_apply_project_defaults(ludus_render_graph_pipeline_tests)
     ludus_enable_test_exceptions(ludus_render_graph_pipeline_tests)
     add_test(NAME ludus_render_graph_pipeline_tests COMMAND ludus_render_graph_pipeline_tests)
@@ -737,7 +738,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_configuration_tests
         tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp
         src/internal/renderer_workspace.h src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
-        src/render_graph_document.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_creation.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp
+        src/render_graph_document.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/render_graph_resources.cpp
@@ -770,7 +771,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp
         src/render_graph_document.cpp src/render_graph_node_transfer.cpp
         src/internal/render_graph_shader_creation.h
-        src/render_graph_shader_creation.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp
+        src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp
         src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_live_build_tests PRIVATE src)

@@ -32,9 +32,21 @@ QString FindSchema(const QJsonArray& schemas, const QString& role)
     return {};
 }
 
+bool IsSceneRayStage(const QString& stage)
+{
+    return stage == QStringLiteral("ray_generation") || stage == QStringLiteral("miss") ||
+           stage == QStringLiteral("closest_hit");
+}
+
 QByteArray MakeSource(QJsonObject& inoutProgram, const QJsonArray& schemas)
 {
     const QString stage = inoutProgram.value(QStringLiteral("stage")).toString();
+    if (IsSceneRayStage(stage) == true &&
+        (inoutProgram.value(QStringLiteral("output")).toString() == QStringLiteral("Radiance") ||
+         inoutProgram.value(QStringLiteral("output")).toString() == QStringLiteral("ScenePayload")))
+    {
+        return MakeSceneRaySource(inoutProgram);
+    }
     QString source = QStringLiteral("// Edit this shader, then Save to publish it to the project.\n");
     QString input;
     QString output;
@@ -396,6 +408,12 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
         return RenderGraphDocumentStatus::Malformed;
     }
     QJsonObject manifest = manifestDocument.object();
+    const RenderGraphDocumentStatus defaultStatus =
+        PrepareSceneRayDefaults(inoutSnapshot, manifest, inoutNode, packageRoot);
+    if (defaultStatus != RenderGraphDocumentStatus::Ok)
+    {
+        return defaultStatus;
+    }
     QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
     // Reclaim only untouched generated leftovers. Authored or shared sources survive.
     QStringList references =
@@ -545,6 +563,11 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
                                 {QStringLiteral("source"), sourceFile},
                                 {QStringLiteral("function"), QStringLiteral("ShaderMain")},
                                 {QStringLiteral("bindings"), QJsonArray{}}};
+            if (HasSceneRayInterface(manifest) == true && IsSceneRayStage(stage) == true &&
+                inoutNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+            {
+                program.insert(QStringLiteral("output"), QStringLiteral("ScenePayload"));
+            }
             const QByteArray source = MakeSource(program, manifest.value(QStringLiteral("schemas")).toArray());
             if (source.isEmpty() == true)
             {

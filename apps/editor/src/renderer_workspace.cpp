@@ -7,6 +7,7 @@
 #include "internal/item_selection.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_resources.h"
+#include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_shader_interface.h"
 #include "internal/renderer_workspace.h"
 
@@ -2125,6 +2126,18 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         });
         outFields.addRow(editor);
     }
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline") &&
+        HasSceneRayInterface(QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object()) == false)
+    {
+        QPushButton* enable = new QPushButton(QStringLiteral("Enable Scene Materials"), &inoutParent);
+        enable->setObjectName(QStringLiteral("renderGraphEnableSceneMaterials"));
+        enable->setEnabled(hasPendingSourceText() == false);
+        enable->setToolTip(
+            QStringLiteral("Upgrade the package's shared ray callbacks in one undoable edit. "
+                           "Original shaders keep their behavior through adapters. Save publishes the change."));
+        connect(enable, &QPushButton::clicked, this, &RendererWorkspace::enableSceneMaterials);
+        outFields.addRow(enable);
+    }
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster"))
     {
         QPushButton* migrate = new QPushButton(QStringLiteral("Convert to Graphics Pipeline"), &inoutParent);
@@ -2705,6 +2718,23 @@ void RendererWorkspace::activateSelectedNode()
     }
 }
 
+void RendererWorkspace::enableSceneMaterials()
+{
+    if (hasPendingSourceText() == true)
+    {
+        mStatus->setText(QStringLiteral("Apply or revert pending Source text before enabling scene materials."));
+        return;
+    }
+    QString error;
+    const RenderGraphDocumentStatus status = mDocument.EnableSceneMaterials(error);
+    documentEdited(status);
+    mStatus->setText(
+        status == RenderGraphDocumentStatus::Ok
+            ? QStringLiteral("Scene materials enabled. Open the new closest-hit shader from View Shaders "
+                             "to use EvaluateMaterial(scene, hit). Original callbacks are preserved. Save to publish.")
+            : error);
+}
+
 void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
 {
     QMenu menu(this);
@@ -2754,6 +2784,18 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
             QAction* open = shaders->addAction(source);
             connect(open, &QAction::triggered, this, [this, source]() { openSourceLine(source, 1); });
         }
+    }
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+    {
+        QAction* enable = menu.addAction(QStringLiteral("Enable Scene Materials"));
+        enable->setObjectName(QStringLiteral("renderGraphEnableSceneMaterialsAction"));
+        const bool hasSceneMaterials =
+            HasSceneRayInterface(QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object());
+        enable->setEnabled(hasSceneMaterials == false && hasPendingSourceText() == false);
+        enable->setToolTip(
+            QStringLiteral("Upgrade the package's shared ray callbacks, preserving original shader behavior. "
+                           "Undo restores the previous interface; Save publishes the change."));
+        connect(enable, &QAction::triggered, this, &RendererWorkspace::enableSceneMaterials);
     }
     if (node.isEmpty() == false)
     {

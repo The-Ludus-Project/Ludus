@@ -4,6 +4,7 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_shader_interface.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -1347,7 +1348,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
     const QString renamedSource = QStringLiteral("shader_Shader_trace_raygen.slang");
     CHECK(document.GetFiles().contains(originalSource) == false);
     CHECK(document.GetDraft(renamedSource) == authored);
-    CHECK(document.GetFiles().size() == initialFiles + 1);
+    CHECK(document.GetFiles().size() == initialFiles + 2);
     REQUIRE(document.Undo() == true);
     CHECK(document.GetDraft(originalSource) == authored);
     CHECK(document.GetFiles().contains(renamedSource) == false);
@@ -1362,7 +1363,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
     node.insert(QStringLiteral("shaders"), shaders);
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
     CHECK(document.GetDraft(renamedSource) == authored);
-    CHECK(document.GetFiles().size() == initialFiles + 1);
+    CHECK(document.GetFiles().size() == initialFiles + 2);
     const QJsonArray programs =
         QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("programs")).toArray();
     const QJsonObject program = programs.last().toObject();
@@ -1663,26 +1664,6 @@ TEST_CASE("completing an imported ray pipeline registers its technique in the sa
     RenderGraphDocument reloaded;
     REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(GetRayTechnique(reloaded) == technique);
-
-    SECTION("an older package is repaired without changing graph or shader bytes")
-    {
-        // Restore programs while removing only the technique, as in existing editor-created packages.
-        QJsonObject manifest =
-            QJsonDocument::fromJson(reloaded.GetDraft(QStringLiteral("main.lushader.json"))).object();
-        QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
-        techniques.removeLast();
-        manifest.insert(QStringLiteral("techniques"), techniques);
-        REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(manifest)) ==
-                RenderGraphDocumentStatus::Ok);
-        const QByteArray graph = document.GetDraft(LIBRARY);
-        const uint64 beforeRepair = document.GetRevision();
-        REQUIRE(document.PrepareTechniques(error) == RenderGraphDocumentStatus::Ok);
-        CHECK(document.GetRevision() == beforeRepair + 1);
-        CHECK(GetRayTechnique(document) == technique);
-        CHECK(document.GetDraft(LIBRARY) == graph);
-        REQUIRE(document.Undo() == true);
-        CHECK(GetRayTechnique(document).isEmpty() == true);
-    }
 }
 
 TEST_CASE("pipeline technique conflicts and budgets preserve the complete draft",
@@ -1785,4 +1766,215 @@ TEST_CASE("graphics pipelines register missing techniques and retain authored re
     CHECK(recipes.last().toObject().value(QStringLiteral("cull")) == QStringLiteral("Back"));
     CHECK(recipes.first().toObject().value(QStringLiteral("id")) !=
           recipes.last().toObject().value(QStringLiteral("id")));
+}
+
+TEST_CASE("new ray shaders expose scene materials without manifest edits",
+          "[editor][render-graph][pipeline][scene-materials]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject node = MakeCompleteRayPipeline(QStringLiteral("materials"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QStringList originalFiles = document.GetFiles();
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject technique = GetRayTechnique(document);
+    const QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
+    CHECK(document.GetDraft(interface.value(QStringLiteral("payload")).toString()).contains("float3 Radiance;") ==
+          true);
+    const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+    for (const QJsonValueConstRef value :
+         QJsonDocument::fromJson(manifest).object().value(QStringLiteral("programs")).toArray())
+    {
+        const QJsonObject program = value.toObject();
+        const QString stage = program.value(QStringLiteral("stage")).toString();
+        if (technique.value(stage) != program.value(QStringLiteral("id")))
+        {
+            continue;
+        }
+        const QString source = program.value(QStringLiteral("source")).toString();
+        const QByteArray text = document.GetDraft(source);
+        CHECK(text.contains("SceneContext scene") == true);
+        const QString description = DescribeShaderInterface(manifest, source);
+        CHECK(description.contains(QStringLiteral("Scene materials enabled")) == true);
+        CHECK(description.contains(QStringLiteral("Legacy ray interface")) == false);
+        if (stage == QStringLiteral("closest_hit"))
+        {
+            CHECK(program.value(QStringLiteral("input")) == QStringLiteral("SurfaceHit"));
+            CHECK(text.contains("EvaluateMaterial(scene, hit)") == true);
+            CHECK(text.contains("material.BaseColor") == true);
+        }
+        if (stage == QStringLiteral("ray_generation"))
+        {
+            CHECK(program.value(QStringLiteral("output")) == QStringLiteral("Radiance"));
+            CHECK(text.contains("TraceAndShade(scene, queries, launch.CameraRay, payload)") == true);
+        }
+    }
+    SECTION("other ray stages remain authoring drafts")
+    {
+        QJsonObject pipeline = GetNode(document, QStringLiteral("materials"));
+        QJsonArray shaders = pipeline.value(QStringLiteral("shaders")).toArray();
+        shaders.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("anyHit")},
+                                   {QStringLiteral("stage"), QStringLiteral("any_hit")},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}});
+        pipeline.insert(QStringLiteral("shaders"), shaders);
+        REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, pipeline) == RenderGraphDocumentStatus::Ok);
+        const QJsonObject program = QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json")))
+                                        .object()
+                                        .value(QStringLiteral("programs"))
+                                        .toArray()
+                                        .last()
+                                        .toObject();
+        CHECK(program.value(QStringLiteral("input")).toString().isEmpty() == true);
+        CHECK(document.GetDraft(program.value(QStringLiteral("source")).toString()).contains("Authoring draft") ==
+              true);
+        REQUIRE(document.Undo() == true);
+    }
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles() == originalFiles);
+    REQUIRE(document.Redo() == true);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument loaded;
+    REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetRayTechnique(loaded) == technique);
+}
+
+TEST_CASE("legacy ray conversion preserves authored callbacks and is atomic",
+          "[editor][render-graph][pipeline][scene-materials]")
+{
+    QTemporaryDir project;
+    const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/raytracing"));
+    const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
+    for (const QString& file : {ROOT_GRAPH,
+                                QStringLiteral("main.lushader.json.in"),
+                                QStringLiteral("main_shaders/geometry.slang"),
+                                QStringLiteral("main_shaders/color.slang"),
+                                QStringLiteral("main_shaders/depth.slang"),
+                                QStringLiteral("main_shaders/generate.slang"),
+                                QStringLiteral("main_shaders/miss.slang"),
+                                QStringLiteral("main_shaders/closest.slang")})
+    {
+        QFile input(source.filePath(file));
+        REQUIRE(input.open(QIODevice::ReadOnly) == true);
+        QByteArray bytes = input.readAll();
+        bytes.replace("@RG2_TEST_PROFILES@", "[\"metal\", \"wgsl\"]");
+        REQUIRE(QDir().mkpath(QFileInfo(QDir(package).filePath(file)).absolutePath()) == true);
+        QFile output(QDir(package).filePath(file.endsWith(QStringLiteral(".in")) ? file.chopped(3) : file));
+        REQUIRE(output.open(QIODevice::WriteOnly) == true);
+        REQUIRE(output.write(bytes) == bytes.size());
+    }
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    const QByteArray originalManifest = document.GetDraft(manifestFile);
+    const QByteArray originalGraph = document.GetDraft(ROOT_GRAPH);
+    const QStringList originalFiles = document.GetFiles();
+    QMap<QString, QByteArray> originalSources;
+    for (const QString& file : originalFiles)
+    {
+        if (file.endsWith(QStringLiteral(".slang")) == true)
+        {
+            originalSources.insert(file, document.GetDraft(file));
+        }
+    }
+    CHECK(DescribeShaderInterface(originalManifest, QStringLiteral("main_shaders/closest.slang"))
+              .contains(QStringLiteral("material tint: return input.Color.xyz")) == true);
+    QString error;
+    const uint64 revision = document.GetRevision();
+    SECTION("conversion")
+    {
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(error.isEmpty() == true);
+        CHECK(document.GetRevision() == revision + 1);
+        const QJsonObject technique = GetRayTechnique(document);
+        CHECK(technique.contains(QStringLiteral("scene_interface")) == true);
+        CHECK(technique.value(QStringLiteral("recipes")).toArray().size() == 1);
+        for (QMap<QString, QByteArray>::const_iterator file = originalSources.constBegin();
+             file != originalSources.constEnd();
+             ++file)
+        {
+            CHECK(document.GetDraft(file.key()) == file.value());
+        }
+        const QByteArray converted = document.GetDraft(manifestFile);
+        for (const QJsonValueConstRef value :
+             QJsonDocument::fromJson(converted).object().value(QStringLiteral("programs")).toArray())
+        {
+            const QJsonObject program = value.toObject();
+            const QString stage = program.value(QStringLiteral("stage")).toString();
+            if (technique.value(stage) == program.value(QStringLiteral("id")))
+            {
+                const QByteArray adapter = document.GetDraft(program.value(QStringLiteral("source")).toString());
+                CHECK(adapter.contains("SceneShaderMain") == true);
+                if (stage == QStringLiteral("closest_hit"))
+                {
+                    CHECK(adapter.contains("input.Primitive = hit.TriangleIndex") == true);
+                    CHECK(adapter.contains("ShadeClosest(input)") == true);
+                }
+            }
+        }
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == revision + 1);
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(manifestFile) == originalManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        CHECK(document.GetFiles() == originalFiles);
+        REQUIRE(document.Redo() == true);
+        CHECK(document.GetDraft(manifestFile) == converted);
+        QStringList saved;
+        REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+        RenderGraphDocument loaded;
+        REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        CHECK(loaded.GetDraft(manifestFile) == converted);
+    }
+    SECTION("legacy technique repair preserves callback bytes")
+    {
+        const QJsonObject technique = GetRayTechnique(document);
+        QJsonObject manifest = QJsonDocument::fromJson(originalManifest).object();
+        QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+        techniques.removeLast();
+        manifest.insert(QStringLiteral("techniques"), techniques);
+        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+        const uint64 beforeRepair = document.GetRevision();
+        REQUIRE(document.PrepareTechniques(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == beforeRepair + 1);
+        const QJsonObject repaired = GetRayTechnique(document);
+        CHECK(repaired.value(QStringLiteral("ray_generation")) == technique.value(QStringLiteral("ray_generation")));
+        CHECK(repaired.value(QStringLiteral("miss")) == technique.value(QStringLiteral("miss")));
+        CHECK(repaired.value(QStringLiteral("closest_hit")) == technique.value(QStringLiteral("closest_hit")));
+        CHECK(repaired.contains(QStringLiteral("scene_interface")) == false);
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        for (QMap<QString, QByteArray>::const_iterator file = originalSources.constBegin();
+             file != originalSources.constEnd();
+             ++file)
+        {
+            CHECK(document.GetDraft(file.key()) == file.value());
+        }
+        REQUIRE(document.Undo() == true);
+        CHECK(GetRayTechnique(document).isEmpty() == true);
+    }
+    SECTION("budget failure preserves every file")
+    {
+        QJsonObject manifest = QJsonDocument::fromJson(originalManifest).object();
+        QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+        SECTION("program slots")
+        {
+            budgets.insert(QStringLiteral("programs"), manifest.value(QStringLiteral("programs")).toArray().size());
+        }
+        SECTION("profile artifacts")
+        {
+            budgets.insert(QStringLiteral("artifacts"),
+                           manifest.value(QStringLiteral("programs")).toArray().size() *
+                               manifest.value(QStringLiteral("profiles")).toArray().size());
+        }
+        manifest.insert(QStringLiteral("budgets"), budgets);
+        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+        const uint64 failureRevision = document.GetRevision();
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Capacity);
+        CHECK(error.contains(QStringLiteral("budget")) == true);
+        CHECK(document.GetRevision() == failureRevision);
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        CHECK(document.GetFiles() == originalFiles);
+    }
 }
