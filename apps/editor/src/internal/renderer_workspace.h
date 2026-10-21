@@ -208,8 +208,8 @@ public:
     [[nodiscard]] bool SelectNode(const QString& file, const QString& configuration, const QString& node);
     /// Selected node as `file#configuration/node`, or empty.
     [[nodiscard]] QString GetSelection() const;
-    /// Rows of the last published result: one summary row, then one row per tool
-    /// diagnostic of a failed result. Zero before any result. The shell's Error List shows
+    /// Rows of the last published result, with structured validation batches shown once.
+    /// Zero before any result. The shell's Error List shows
     /// the same rows in the same order (MakeRenderGraphErrorEntries).
     [[nodiscard]] foundation::int32 GetDiagnosticCount() const;
     /// Navigate to a diagnostic row's authored node (selecting it on the Canvas) or source
@@ -308,7 +308,7 @@ private:
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
-    void editNodeOnCanvas();
+    void editNodeOnCanvas(const QString& diagnosticField = {});
     void renderEdges();
     void renderSource();
     void renderStatus();

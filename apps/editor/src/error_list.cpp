@@ -11,8 +11,11 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1StringView>
+#include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QResizeEvent>
+#include <QScrollBar>
 #include <QStringList>
 #include <QStyle>
 #include <QTableWidget>
@@ -37,6 +40,8 @@ enum Column : foundation::uint8
 constexpr foundation::int32 ENTRY_ROLE = Qt::UserRole;
 // Output lines longer than this are not compiler diagnostics worth matching.
 constexpr qsizetype MAX_DIAGNOSTIC_LINE_CHARACTERS = 4096;
+constexpr foundation::int32 MAX_DETAILS_HEIGHT = 100;
+constexpr foundation::int32 MINIMUM_TABLE_ROWS = 2;
 
 [[nodiscard]] ErrorListSeverity ParseSeverity(const QString& text)
 {
@@ -71,6 +76,14 @@ constexpr qsizetype MAX_DIAGNOSTIC_LINE_CHARACTERS = 4096;
     {
         parts.append(node.isEmpty() == true ? QStringLiteral("#%1").arg(configuration)
                                             : QStringLiteral("#%1/%2").arg(configuration, node));
+    }
+    for (const QString& key : {QStringLiteral("port"), QStringLiteral("field")})
+    {
+        const QString value = location.value(key).toString();
+        if (value.isEmpty() == false)
+        {
+            parts.append(QStringLiteral("%1 %2").arg(key, value));
+        }
     }
     return parts.join(QStringLiteral(", "));
 }
@@ -112,27 +125,13 @@ QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& re
         });
         return entries;
     }
-    entries.append(
+    for (foundation::int32 row = 0; row < result.GetDiagnosticCount(); ++row)
     {
-        .Severity = ErrorListSeverity::Error,
-        .Producer = ErrorListProducer::RenderGraph,
-        .Code = result.Code,
-        .Description = result.Message,
-        .File = result.Location.value(QStringLiteral("source")).toString(),
-        .Location = DescribeRenderGraphLocation(result.Location),
-        .Origin = result.Code.startsWith(QLatin1StringView("RenderGraphBuildShader")) == true
-                      ? QStringLiteral("Shader")
-                      : QStringLiteral("Render graph"),
-        .SourceIndex = 0,
-    });
-    foundation::int32 row = 1;
-    for (const QJsonValueConstRef value : result.Diagnostics)
-    {
-        const QJsonObject diagnostic = value.toObject();
+        const QJsonObject diagnostic = result.GetDiagnostic(row);
         const QJsonObject location = diagnostic.value(QStringLiteral("location")).toObject();
         const QString program = diagnostic.value(QStringLiteral("program")).toString();
         const QString target = diagnostic.value(QStringLiteral("target")).toString();
-        QString description = diagnostic.value(QStringLiteral("message")).toString();
+        QString description = DescribeRenderGraphDiagnostic(diagnostic);
         if (program.isEmpty() == false)
         {
             description = QStringLiteral("%1 (%2): %3").arg(program, target, description);
@@ -141,16 +140,20 @@ QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& re
         {
             .Severity = ParseSeverity(diagnostic.value(QStringLiteral("severity")).toString()),
             .Producer = ErrorListProducer::RenderGraph,
-            .Code = {},
+            .Code = diagnostic.value(QStringLiteral("code")).toString(),
             .Description = description,
             .File = location.contains(QStringLiteral("generated")) == true
                         ? location.value(QStringLiteral("generated")).toString()
                         : location.value(QStringLiteral("source")).toString(),
             .Location = DescribeRenderGraphLocation(location),
-            .Origin = program.isEmpty() == true ? QStringLiteral("Render graph") : QStringLiteral("Shader"),
+            .Origin =
+                program.isEmpty() == false || diagnostic.value(QStringLiteral("code"))
+                                                      .toString()
+                                                      .startsWith(QLatin1StringView("RenderGraphBuildShader")) == true
+                    ? QStringLiteral("Shader")
+                    : QStringLiteral("Render graph"),
             .SourceIndex = row,
         });
-        ++row;
     }
     return entries;
 }
@@ -249,10 +252,42 @@ ErrorList::ErrorList(QWidget* parentOrNull)
     mTable->setWordWrap(false);
     mTable->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     layout->addWidget(mTable, 1);
+    mDetails = new QPlainTextEdit(this);
+    mDetails->setObjectName(QStringLiteral("errorListDetails"));
+    mDetails->setReadOnly(true);
+    mDetails->hide();
+    mDetails->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    mDetails->setPlaceholderText(QStringLiteral("Select a diagnostic to read its details and suggested repair."));
+    layout->addWidget(mDetails);
+    connect(mTable, &QTableWidget::currentCellChanged, this, [this](foundation::int32 row) {
+        const QTableWidgetItem* itemOrNull = row >= 0 ? mTable->item(row, SEVERITY_COLUMN) : nullptr;
+        const foundation::int32 index = itemOrNull == nullptr ? -1 : itemOrNull->data(ENTRY_ROLE).toInt();
+        mDetails->setPlainText(index >= 0 && index < mEntries.size() ? mEntries.at(index).Description : QString());
+        updateDetailsHeight();
+    });
     connect(mTable, &QTableWidget::itemActivated, this, [this](QTableWidgetItem* item) {
         static_cast<void>(ActivateVisibleRow(item->row()));
     });
     render();
+}
+
+void ErrorList::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    updateDetailsHeight();
+}
+
+void ErrorList::updateDetailsHeight()
+{
+    const foundation::int32 reservedHeight =
+        mErrors->sizeHint().height() + mTable->horizontalHeader()->sizeHint().height() +
+        MINIMUM_TABLE_ROWS * mTable->verticalHeader()->defaultSectionSize() + mTable->frameWidth() * 2 +
+        (mTable->horizontalScrollBar()->isVisible() == true ? mTable->horizontalScrollBar()->sizeHint().height() : 0);
+    const foundation::int32 availableHeight = height() - reservedHeight;
+    const foundation::int32 detailsHeight =
+        availableHeight < 0 ? 0 : (availableHeight > MAX_DETAILS_HEIGHT ? MAX_DETAILS_HEIGHT : availableHeight);
+    mDetails->setMaximumHeight(detailsHeight);
+    mDetails->setVisible(mTable->currentRow() >= 0 && detailsHeight > 0);
 }
 
 void ErrorList::ReplaceEntries(ErrorListProducer producer, const QList<ErrorListEntry>& entries)
@@ -342,6 +377,10 @@ void ErrorList::render()
         mTable->setItem(row, FILE_COLUMN, new QTableWidgetItem(entry.File));
         mTable->setItem(row, LOCATION_COLUMN, new QTableWidgetItem(entry.Location));
         mTable->setItem(row, ORIGIN_COLUMN, new QTableWidgetItem(entry.Origin));
+    }
+    if (mTable->rowCount() > 0)
+    {
+        mTable->setCurrentCell(0, SEVERITY_COLUMN);
     }
 }
 } // namespace ludus::editor

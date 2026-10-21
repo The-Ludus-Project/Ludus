@@ -24,6 +24,7 @@ import time
 from .buildlock import BuildTreeLock
 from .errors import ToolingError
 from . import render_graph as graph
+from . import render_graph_diagnostics as diagnostics
 from . import render_graph_ray as ray
 
 VERSION = 1
@@ -432,6 +433,7 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None):
         paths['helper/' + NATIVE_WORKER_HELPER] = client
     paths['generator/render_graph_build.py'] = Path(__file__)
     paths['generator/render_graph.py'] = Path(graph.__file__)
+    paths['generator/render_graph_diagnostics.py'] = Path(diagnostics.__file__)
     paths['generator/render_graph_pipeline.py'] = Path(graph.pipeline.__file__)
     paths['generator/render_graph_ray.py'] = Path(ray.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
@@ -759,7 +761,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'schemas': [schemas[s] for s in sorted(used) if s in schemas], 'target': target,
                                 'sources': {p: digest(snapshot.files[p]) for p in closure}, 'wrapper': shader_source(program, schemas),
                                 'tools': {k: h for k, h in tool_hashes.items()
-                                          if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py')
+                                          if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py', 'generator/render_graph_diagnostics.py')
                                           and not (target in ('metal', 'wgsl') and k == 'tool/spirv-val')
                                           and not (target != 'glsl' and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
                     key = identity(key_data)

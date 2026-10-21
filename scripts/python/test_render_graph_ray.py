@@ -131,6 +131,29 @@ class RayPipelineTests(unittest.TestCase):
         self.assertIn('[96, 64, 1]', failure.exception.message)
         self.assertIn('Main/color', failure.exception.message)
         self.assertIn('Match color target', failure.exception.message)
+        self.assertEqual('invocation.dimensions', failure.exception.location['field'])
+        issue = failure.exception.diagnostics[0]
+        self.assertEqual('[96, 64, 1]', issue['expected'])
+        self.assertEqual('[1, 2, 1]', issue['actual'])
+        self.assertIn('Match color target', issue['repair'])
+
+    def test_independent_pipeline_profile_errors_are_collected_before_resource_lowering(self):
+        self.node['state']['max_recursion'] = 2
+        other = deepcopy(self.node)
+        other['id'] = 'other'
+        config = self.document['configurations'][0]
+        config['nodes'].extend([other, {'id': 'otherOutput', 'kind': 'Export', 'type': 'ColorTexture'}])
+        config['edges'].extend([{**edge, 'to': 'other.' + edge['to'].split('.')[1]}
+                                for edge in list(config['edges']) if edge['to'].startswith(self.node['id'] + '.')])
+        config['edges'].append({'from': 'other.color', 'to': 'otherOutput.texture'})
+        with self.assertRaises(ToolingError) as caught:
+            self.compile()
+        self.assertEqual(2, len(caught.exception.diagnostics))
+        self.assertEqual({self.node['id'], 'other'}, {issue['location']['node'] for issue in caught.exception.diagnostics})
+        for issue in caught.exception.diagnostics:
+            self.assertEqual('RenderGraphCapability', issue['code'])
+            self.assertEqual('state', issue['location']['field'])
+            self.assertIn('automatic', issue['repair'])
 
     def test_extra_depth_declaration_diagnostic_names_port_type_and_repair(self):
         self.node['inputs'].append({'id': 'unused_depth', 'type': 'DepthTexture', 'required': False})

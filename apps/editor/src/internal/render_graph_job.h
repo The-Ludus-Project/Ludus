@@ -44,7 +44,15 @@ struct RenderGraphJobResult final
     QString Message;
     QJsonObject Location;
     QJsonArray Diagnostics;
+    /// Number of Error List rows. Structured graph batches replace the legacy summary;
+    /// shader diagnostics retain their build summary. Success has one informational row.
+    [[nodiscard]] foundation::int32 GetDiagnosticCount() const;
+    /// Copied row record, or empty for an out-of-range row. Never mutates the result.
+    [[nodiscard]] QJsonObject GetDiagnostic(foundation::int32 row) const;
 };
+
+/// Plain-text message with bounded tool-provided expected/actual values and repair guidance.
+[[nodiscard]] QString DescribeRenderGraphDiagnostic(const QJsonObject& diagnostic);
 
 // Runs `python -m ludus_tools --json render-graph ...` from the tooling checkout, so
 // the editor and CLI share one backend and produce identical results for the same
