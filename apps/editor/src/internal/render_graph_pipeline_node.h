@@ -10,7 +10,7 @@ namespace ludus::editor
 [[nodiscard]] bool IsPipelineNode(const QString& kind) noexcept;
 /// Shader stage names accepted for this authored pipeline kind; empty for other kinds.
 [[nodiscard]] QStringList GetPipelineShaderStages(const QString& kind);
-/// Make an empty-interface draft with explicit initial state and invocation values.
+/// Make an empty-interface draft; ray limits are automatic until explicitly overridden.
 /// The shared backend validates program/interface compatibility before execution.
 [[nodiscard]] QJsonObject MakePipelineNode(const QString& kind, const QString& identity);
 /// Convert a legacy Raster using its explicitly selected manifest technique.

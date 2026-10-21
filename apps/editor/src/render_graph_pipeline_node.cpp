@@ -58,9 +58,8 @@ QJsonObject MakePipelineNode(const QString& kind, const QString& identity)
     }
     else if (kind == QStringLiteral("RayTracingPipeline"))
     {
-        state = {{QStringLiteral("max_recursion"), 1},
-                 {QStringLiteral("payload_bytes"), 0},
-                 {QStringLiteral("attribute_bytes"), 0}};
+        // Omitted limits are derived by the selected execution profile.
+        state = {};
     }
     return {{QStringLiteral("id"), identity},
             {QStringLiteral("kind"), kind},

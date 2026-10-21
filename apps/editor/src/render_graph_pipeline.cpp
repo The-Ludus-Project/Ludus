@@ -5,6 +5,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -29,6 +30,9 @@ constexpr int32 MAX_SHADERS = 16;
 constexpr int32 TABLE_HEIGHT = 160;
 constexpr int32 MAX_PROPERTY_VALUE = 65535;
 constexpr int32 DIMENSION_COUNT = 3;
+constexpr int32 MAX_RAY_RECURSION = 31;
+constexpr int32 MAX_RAY_INTERFACE_BYTES = 4096;
+constexpr int32 AUTOMATIC_RAY_LIMIT = -1;
 
 QJsonArray ReadRows(const QTableWidget& table, const QStringList& fields)
 {
@@ -421,6 +425,12 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
 
 void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QString& name)
 {
+    if (name == QStringLiteral("state") &&
+        mNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+    {
+        addRayStateProperties(outForm);
+        return;
+    }
     const QJsonObject properties = mNode.value(name).toObject();
     for (QJsonObject::const_iterator property = properties.begin(); property != properties.end(); ++property)
     {
@@ -477,6 +487,78 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             outForm.addRow(key, control);
         }
     }
+}
+
+void RenderGraphPipelineEditor::addRayStateProperties(QFormLayout& outForm)
+{
+    QLabel* explanation = new QLabel(
+        QStringLiteral(
+            "Automatic: the triangle profile supplies hit attributes (float2 barycentrics) and trace limits. "
+            "ScenePayload is a customizable shader struct; Slang determines its local layout. "
+            "Native payload bytes do not size ScenePayload."),
+        this);
+    explanation->setWordWrap(true);
+    outForm.addRow(explanation);
+    QGroupBox* advanced = new QGroupBox(QStringLiteral("Advanced overrides"), this);
+    advanced->setObjectName(QStringLiteral("renderGraphRayAdvanced"));
+    advanced->setCheckable(true);
+    advanced->setChecked(mNode.value(QStringLiteral("state")).toObject().isEmpty() == false);
+    QVBoxLayout* advancedLayout = new QVBoxLayout(advanced);
+    QWidget* fields = new QWidget(advanced);
+    fields->setObjectName(QStringLiteral("renderGraphRayLimits"));
+    QFormLayout* form = new QFormLayout(fields);
+    fields->setVisible(advanced->isChecked());
+    connect(advanced, &QGroupBox::toggled, fields, &QWidget::setVisible);
+    for (const QString& key :
+         {QStringLiteral("max_recursion"), QStringLiteral("payload_bytes"), QStringLiteral("attribute_bytes")})
+    {
+        QSpinBox* control = new QSpinBox(fields);
+        control->setObjectName(QStringLiteral("renderGraphRay_") + key);
+        const int32 automaticValue = key == QStringLiteral("max_recursion") ? 0 : AUTOMATIC_RAY_LIMIT;
+        control->setRange(automaticValue,
+                          key == QStringLiteral("max_recursion") ? MAX_RAY_RECURSION : MAX_RAY_INTERFACE_BYTES);
+        control->setSpecialValueText(QStringLiteral("Automatic"));
+        control->setValue(mNode.value(QStringLiteral("state")).toObject().value(key).toInt(automaticValue));
+        connect(control, &QSpinBox::valueChanged, this, [this, key, automaticValue](int32 number) {
+            QJsonObject state = mNode.value(QStringLiteral("state")).toObject();
+            if (number == automaticValue)
+            {
+                state.remove(key);
+            }
+            else
+            {
+                state.insert(key, number);
+            }
+            mNode.insert(QStringLiteral("state"), state);
+            publishEdit();
+        });
+        const QString label = key == QStringLiteral("max_recursion")   ? QStringLiteral("Trace recursion limit")
+                              : key == QStringLiteral("payload_bytes") ? QStringLiteral("Native payload bytes")
+                                                                       : QStringLiteral("Hit attribute bytes");
+        form->addRow(label, control);
+    }
+    QLabel* limits = new QLabel(
+        QStringLiteral(
+            "Overrides must match the selected profile. Custom intersection attributes need procedural "
+            "geometry, which this triangle profile does not execute. Collapsing this section retains overrides."),
+        fields);
+    limits->setWordWrap(true);
+    form->addRow(limits);
+    advancedLayout->addWidget(fields);
+    outForm.addRow(advanced);
+    QPushButton* reset = new QPushButton(QStringLiteral("Use automatic settings"), this);
+    reset->setObjectName(QStringLiteral("renderGraphRayAutomatic"));
+    connect(reset, &QPushButton::clicked, this, [this, fields, advanced]() {
+        for (QSpinBox* control : fields->findChildren<QSpinBox*>())
+        {
+            const QSignalBlocker blocker(control);
+            control->setValue(control->minimum());
+        }
+        mNode.insert(QStringLiteral("state"), QJsonObject{});
+        advanced->setChecked(false);
+        publishEdit();
+    });
+    outForm.addRow(reset);
 }
 
 void RenderGraphPipelineEditor::SetShaderAssignments(const QJsonArray& shaders)

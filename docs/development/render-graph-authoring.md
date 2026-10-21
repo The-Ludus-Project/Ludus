@@ -167,13 +167,31 @@ setup technique:
   "miss": "Miss",
   "closest_hit": "Closest",
   "recipes": [
-    {"id": "Triangles", "max_recursion": 1, "payload_bytes": 0, "attribute_bytes": 8}
+    {"id": "Triangles"}
   ]
 }
 ```
 
-Select those exact program IDs in the node's Shaders table. Its state must match
-the recipe above: the eight attribute bytes represent triangle barycentrics.
+Select those exact program IDs in the node's Shaders table. New ray nodes use
+`"state": {}`: the selected execution profile derives its limits automatically.
+The triangle profile resolves to `max_recursion: 1`, `payload_bytes: 0` and
+`attribute_bytes: 8`. Attributes are the intersection's `float2` barycentric
+coordinates; normals, UVs and material data come from the triangle and scene.
+There is no byte count to maintain when editing ordinary shader code.
+
+**Pipeline State → Advanced overrides** exposes the explicit limits in both
+Properties and the canvas node editor. Each field can remain **Automatic**;
+**Use automatic settings** clears all overrides in one undoable edit. Collapsing
+Advanced retains authored values. Existing numeric state and recipe records stay
+compatible and are never silently rewritten; invalid overrides receive a build
+diagnostic. In particular, old drafts with `attribute_bytes: 0` can be repaired
+with **Use automatic settings**. Omitted limits in a manifest triangle recipe
+resolve identically, and built packages record the concrete effective state.
+Explicit overrides must match the supported profile. Custom intersection
+attributes require a procedural geometry profile; procedural execution is not
+currently supported. Trace recursion is independent of an integrator's bounce
+count.
+
 Declare exactly one input each of type Scene, View and ColorTexture, and one
 RGBA8Unorm color output naming that color input as its `target`, with `Clear` and
 `Store`. In the editor, add the color through **Writable Resources**; its paired
@@ -185,7 +203,7 @@ versions of a renderer can be separate configurations; do not branch physical
 writes from the same attachment version.
 
 The profile admits one ray invocation per configuration and the existing graph
-mesh/item limits. It rejects payloads, recursive tracing, additional hit groups,
+mesh/item limits. It rejects native ray payloads, recursive tracing, additional hit groups,
 any-hit/intersection/callable stages, extra resources, masked/transparent or
 deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
 aspect; no ray depth output is inferred. Ray preparation has renderer-owned
@@ -223,8 +241,7 @@ triangle recipe state. Add this record to the manifest's
   "version": 1,
   "payload": "main_shaders/payload.slang",
   "surface_queries": 2,
-  "visibility_queries": 2,
-  "local_payload_bytes": 1024
+  "visibility_queries": 2
 }
 ```
 
@@ -242,10 +259,14 @@ flat `struct ScenePayload` and no other declarations except `#pragma once` and
 comments. Fields can be float scalars/vectors/matrices, uint/int scalars/vectors,
 bool, Ray, RayLaunch, SurfaceHit or MaterialSample, optionally in fixed literal
 length arrays. Resources, pointers, methods and unbounded arrays are unsupported.
-The compiler uses a conservative sixteen-byte field accounting plus bounded
-built-in record sizes; `local_payload_bytes` is optional (default 1024, admitted
-range 16..4096). This is ordinary shader-local storage, independent of the node's
-native `payload_bytes: 0`. Surface queries are bounded to 1..8, visibility queries
+Slang determines the struct's actual shader-local layout automatically. The
+builder separately admits it using conservative sixteen-byte field accounting
+plus bounded built-in record sizes, up to 4096 bytes. This admission accounting
+is not an ABI size or allocation request. Editing the struct requires no matching
+byte setting. Advanced authors can optionally set `local_payload_bytes` (16..4096)
+in `scene_interface` to impose a lower admission cap; exceeding the cap fails the
+build before package publication. This is ordinary shader-local storage,
+independent of the node's native `payload_bytes: 0`. Surface queries are bounded to 1..8, visibility queries
 to 0..16. Budget exhaustion latches failure and does not commit a partial sample.
 
 For example, the author can start with this payload:

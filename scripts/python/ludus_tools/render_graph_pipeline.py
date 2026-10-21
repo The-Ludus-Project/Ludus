@@ -39,7 +39,7 @@ def new_node(kind, identity):
         invocation = {'mode': 'ColorAndDepth', 'vertex_layout': 'RendererStatic',
                       'material': 'DefaultOpaque', 'scene': 'scene', 'view': 'view'}
     elif kind == 'RayTracingPipeline':
-        state = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 0}
+        state = {}  # The selected ray profile supplies its limits unless explicitly overridden.
     return {'id': identity, 'kind': kind, 'inputs': [], 'outputs': [], 'shaders': [],
             'state': state, 'invocation': invocation}
 
@@ -142,10 +142,12 @@ def validate(node, where, graph):
         _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
         _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
     else:
-        _check_field(graph._keys, state, 'Pipeline State', where, graph, ('max_recursion', 'payload_bytes', 'attribute_bytes'))
-        _check_field(graph._integer, state['max_recursion'], 'Pipeline State → max_recursion', where, graph, 1, 31)
+        graph._keys(state, (), where, ('max_recursion', 'payload_bytes', 'attribute_bytes'))
+        if 'max_recursion' in state:
+            _check_field(graph._integer, state['max_recursion'], 'Pipeline State → max_recursion', where, graph, 1, 31)
         for field in ('payload_bytes', 'attribute_bytes'):
-            _check_field(graph._integer, state[field], f'Pipeline State → {field} (bytes)', where, graph, 0, 4096)
+            if field in state:
+                _check_field(graph._integer, state[field], f'Pipeline State → {field} (bytes)', where, graph, 0, 4096)
         _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
         _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
 
