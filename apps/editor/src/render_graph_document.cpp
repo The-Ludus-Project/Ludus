@@ -845,6 +845,17 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
     graph.insert(QStringLiteral("configurations"), configurations);
     graph.insert(QStringLiteral("version"), 2);
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    QString techniqueError;
+    const RenderGraphDocumentStatus techniqueStatus =
+        PrepareRenderGraphTechniques(candidate, mRootGraph, techniqueError);
+    if (techniqueStatus != RenderGraphDocumentStatus::Ok)
+    {
+        if (outErrorOrNull != nullptr)
+        {
+            *outErrorOrNull = techniqueError;
+        }
+        return techniqueStatus;
+    }
     if (outErrorOrNull != nullptr)
     {
         outErrorOrNull->clear();
@@ -852,6 +863,18 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
     if (candidate == mDraft)
     {
         return RenderGraphDocumentStatus::Ok;
+    }
+    mLastMove.clear();
+    return commit(candidate, false);
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::PrepareTechniques(QString& outError)
+{
+    RenderGraphSnapshot candidate = mDraft;
+    const RenderGraphDocumentStatus status = PrepareRenderGraphTechniques(candidate, mRootGraph, outError);
+    if (status != RenderGraphDocumentStatus::Ok || candidate == mDraft)
+    {
+        return status;
     }
     mLastMove.clear();
     return commit(candidate, false);

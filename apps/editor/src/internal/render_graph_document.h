@@ -122,13 +122,16 @@ public:
                                                         const QJsonObject& node,
                                                         QString* outErrorOrNull = nullptr);
     /// Apply a pipeline and create missing shader programs and source templates as one
-    /// undoable draft edit. Program placeholders receive generated names. Existing
-    /// programs must match stage and source. Failure preserves all draft files; Save
-    /// publishes new files without replacement.
+    /// undoable draft edit, including the selected technique and recipe. Program placeholders receive generated names.
+    /// Existing programs must match stage and source. Failure preserves all draft files; Save publishes new files
+    /// without replacement.
     [[nodiscard]] RenderGraphDocumentStatus ApplyPipeline(const QString& file,
                                                           const QString& configuration,
                                                           const QJsonObject& node,
                                                           QString* outErrorOrNull = nullptr);
+    /// Register complete pipelines from the root import closure in one undoable draft edit.
+    /// Repairs older packages without changing shaders. Conflict/capacity failures preserve the draft.
+    [[nodiscard]] RenderGraphDocumentStatus PrepareTechniques(QString& outError);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
     /// Add an empty named configuration to an existing file without changing its default.

@@ -902,3 +902,207 @@ TEST_CASE("ray state defaults are automatic and explicit overrides survive reset
     attributes->setValue(attributes->minimum());
     CHECK(applied.value(QStringLiteral("state")).toObject().isEmpty() == true);
 }
+
+namespace
+{
+QJsonObject MakeCompleteRayPipeline(const QString& identity)
+{
+    QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), identity);
+    QJsonArray shaders;
+    for (const QString& stage :
+         {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
+    {
+        shaders.append(QJsonObject{{QStringLiteral("id"), stage},
+                                   {QStringLiteral("stage"), stage},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}});
+    }
+    node.insert(QStringLiteral("shaders"), shaders);
+    return node;
+}
+QJsonObject GetRayTechnique(const RenderGraphDocument& document)
+{
+    const QJsonObject manifest =
+        QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    for (const QJsonValueConstRef value : manifest.value(QStringLiteral("techniques")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")) == QStringLiteral("RendererTriangles.RayTracing"))
+        {
+            return value.toObject();
+        }
+    }
+    return {};
+}
+} // namespace
+
+TEST_CASE("completing an imported ray pipeline registers its technique in the same undo step",
+          "[editor][render-graph][pipeline][technique]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject node = MakeCompleteRayPipeline(QStringLiteral("trace"));
+    REQUIRE(document.AddNode(LIBRARY,
+                             QStringLiteral("ColorAndDepth"),
+                             MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"))) ==
+            RenderGraphDocumentStatus::Ok);
+    const QByteArray originalManifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+    const QStringList originalFiles = document.GetFiles();
+    const uint64 revision = document.GetRevision();
+    REQUIRE(document.ApplyPipeline(LIBRARY, QStringLiteral("ColorAndDepth"), node) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetRevision() == revision + 1);
+    const QJsonObject technique = GetRayTechnique(document);
+    REQUIRE(technique.isEmpty() == false);
+    CHECK(technique.value(QStringLiteral("configuration")) == QStringLiteral("RayTracing"));
+    constexpr int32 TRIANGLE_ATTRIBUTE_BYTES = 8;
+    CHECK(technique.value(QStringLiteral("recipes"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("attribute_bytes"))
+              .toInt() == TRIANGLE_ATTRIBUTE_BYTES);
+    const QJsonArray nodes =
+        GetConfiguration(document, LIBRARY, QStringLiteral("ColorAndDepth")).value(QStringLiteral("nodes")).toArray();
+    node = nodes.last().toObject();
+    for (const QJsonValueConstRef shader : node.value(QStringLiteral("shaders")).toArray())
+    {
+        CHECK(technique.value(shader.toObject().value(QStringLiteral("stage")).toString()) ==
+              shader.toObject().value(QStringLiteral("program")));
+    }
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == originalManifest);
+    CHECK(document.GetFiles() == originalFiles);
+    REQUIRE(document.Redo() == true);
+    CHECK(GetRayTechnique(document) == technique);
+    QString error;
+    const uint64 registeredRevision = document.GetRevision();
+    CHECK(document.PrepareTechniques(error) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetRevision() == registeredRevision);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetRayTechnique(reloaded) == technique);
+
+    SECTION("an older package is repaired without changing graph or shader bytes")
+    {
+        // Restore programs while removing only the technique, as in existing editor-created packages.
+        QJsonObject manifest =
+            QJsonDocument::fromJson(reloaded.GetDraft(QStringLiteral("main.lushader.json"))).object();
+        QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+        techniques.removeLast();
+        manifest.insert(QStringLiteral("techniques"), techniques);
+        REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(manifest)) ==
+                RenderGraphDocumentStatus::Ok);
+        const QByteArray graph = document.GetDraft(LIBRARY);
+        const uint64 beforeRepair = document.GetRevision();
+        REQUIRE(document.PrepareTechniques(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == beforeRepair + 1);
+        CHECK(GetRayTechnique(document) == technique);
+        CHECK(document.GetDraft(LIBRARY) == graph);
+        REQUIRE(document.Undo() == true);
+        CHECK(GetRayTechnique(document).isEmpty() == true);
+    }
+}
+
+TEST_CASE("pipeline technique conflicts and budgets preserve the complete draft",
+          "[editor][render-graph][pipeline][technique]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject node = MakeCompleteRayPipeline(QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH,
+                             DEFAULT_CONFIGURATION,
+                             MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"))) ==
+            RenderGraphDocumentStatus::Ok);
+    QString error;
+    SECTION("a second pipeline cannot silently replace a shared technique")
+    {
+        QJsonObject manifestBudget =
+            QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+        QJsonObject budgets = manifestBudget.value(QStringLiteral("budgets")).toObject();
+        constexpr int32 SHARED_PROGRAM_BUDGET = 16;
+        budgets.insert(QStringLiteral("programs"), SHARED_PROGRAM_BUDGET);
+        manifestBudget.insert(QStringLiteral("budgets"), budgets);
+        REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(manifestBudget)) ==
+                RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+        node = MakeCompleteRayPipeline(QStringLiteral("otherTrace"));
+        REQUIRE(document.AddNode(ROOT_GRAPH,
+                                 DEFAULT_CONFIGURATION,
+                                 MakePipelineNode(QStringLiteral("RayTracingPipeline"),
+                                                  QStringLiteral("otherTrace"))) == RenderGraphDocumentStatus::Ok);
+        const QStringList files = document.GetFiles();
+        const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+        const uint64 revision = document.GetRevision();
+        CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) ==
+              RenderGraphDocumentStatus::Conflict);
+        CHECK(error.contains(QStringLiteral("trace")) == true);
+        CHECK(error.contains(QStringLiteral("otherTrace")) == true);
+        CHECK(error.contains(QStringLiteral("RendererTriangles.RayTracing")) == true);
+        CHECK(document.GetRevision() == revision);
+        CHECK(document.GetFiles() == files);
+        CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == manifest);
+    }
+    SECTION("a technique cannot exceed the manifest authoring budget")
+    {
+        QJsonObject manifest =
+            QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+        QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+        budgets.insert(QStringLiteral("configurations"), manifest.value(QStringLiteral("techniques")).toArray().size());
+        manifest.insert(QStringLiteral("budgets"), budgets);
+        REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(manifest)) ==
+                RenderGraphDocumentStatus::Ok);
+        const QStringList files = document.GetFiles();
+        const uint64 revision = document.GetRevision();
+        CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) ==
+              RenderGraphDocumentStatus::Capacity);
+        CHECK(error.contains(QStringLiteral("budget")) == true);
+        CHECK(document.GetRevision() == revision);
+        CHECK(document.GetFiles() == files);
+    }
+}
+
+TEST_CASE("graphics pipelines register missing techniques and retain authored recipes",
+          "[editor][render-graph][pipeline][technique]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString configuration = QStringLiteral("ColorAndDepth");
+    const QJsonObject original =
+        GetConfiguration(document, LIBRARY, configuration).value(QStringLiteral("nodes")).toArray().first().toObject();
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    QJsonObject node;
+    REQUIRE(MigrateRasterNode(original, manifest, node) == true);
+    QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    techniques.removeFirst();
+    manifest.insert(QStringLiteral("techniques"), techniques);
+    REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(manifest)) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.ApplyPipeline(LIBRARY, configuration, node) == RenderGraphDocumentStatus::Ok);
+    manifest = QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    REQUIRE(techniques.size() == 2);
+    const QJsonObject registered = techniques.last().toObject();
+    CHECK(registered.value(QStringLiteral("id")) == QStringLiteral("DefaultStaticOpaque.ColorAndDepth"));
+    CHECK(registered.value(QStringLiteral("vertex")) == QStringLiteral("Geometry"));
+    CHECK(registered.value(QStringLiteral("fragment")) == QStringLiteral("Color"));
+    QJsonObject state = node.value(QStringLiteral("state")).toObject();
+    state.insert(QStringLiteral("cull"), QStringLiteral("Back"));
+    node.insert(QStringLiteral("state"), state);
+    REQUIRE(document.ApplyPipeline(LIBRARY, configuration, node) == RenderGraphDocumentStatus::Ok);
+    manifest = QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    const QJsonArray recipes = manifest.value(QStringLiteral("techniques"))
+                                   .toArray()
+                                   .last()
+                                   .toObject()
+                                   .value(QStringLiteral("recipes"))
+                                   .toArray();
+    REQUIRE(recipes.size() == 2);
+    CHECK(recipes.first() == registered.value(QStringLiteral("recipes")).toArray().first());
+    CHECK(recipes.last().toObject().value(QStringLiteral("cull")) == QStringLiteral("Back"));
+    CHECK(recipes.first().toObject().value(QStringLiteral("id")) !=
+          recipes.last().toObject().value(QStringLiteral("id")));
+}

@@ -1539,6 +1539,24 @@ void RendererWorkspace::SetWorkerSocket(const QString& endpoint)
 
 bool RendererWorkspace::startBuild(bool shouldPreview, RenderGraphSource source)
 {
+    if (source == RenderGraphSource::Draft)
+    {
+        if (ReloadSourcesFromDisk() == false)
+        {
+            return false;
+        }
+        const foundation::uint64 revision = mDocument.GetRevision();
+        QString error;
+        if (mDocument.PrepareTechniques(error) != RenderGraphDocumentStatus::Ok)
+        {
+            mStatus->setText(error);
+            return false;
+        }
+        if (mDocument.GetRevision() != revision)
+        {
+            documentEdited(RenderGraphDocumentStatus::Ok);
+        }
+    }
     if (mDocument.GetFiles(source).contains(manifestFile()) == false)
     {
         mStatus->setText(
