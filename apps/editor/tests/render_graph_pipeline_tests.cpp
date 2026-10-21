@@ -1885,6 +1885,7 @@ TEST_CASE("legacy ray conversion preserves authored callbacks and is atomic",
     const uint64 revision = document.GetRevision();
     SECTION("conversion")
     {
+        const QJsonObject manifestBefore = QJsonDocument::fromJson(originalManifest).object();
         REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Ok);
         CHECK(error.isEmpty() == true);
         CHECK(document.GetRevision() == revision + 1);
@@ -1898,6 +1899,11 @@ TEST_CASE("legacy ray conversion preserves authored callbacks and is atomic",
             CHECK(document.GetDraft(file.key()) == file.value());
         }
         const QByteArray converted = document.GetDraft(manifestFile);
+        const QJsonObject manifestAfter = QJsonDocument::fromJson(converted).object();
+        CHECK(manifestAfter.value(QStringLiteral("budgets")) == manifestBefore.value(QStringLiteral("budgets")));
+        CHECK(manifestAfter.value(QStringLiteral("programs")).toArray().size() ==
+              manifestBefore.value(QStringLiteral("programs")).toArray().size());
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
         for (const QJsonValueConstRef value :
              QJsonDocument::fromJson(converted).object().value(QStringLiteral("programs")).toArray())
         {
@@ -1954,27 +1960,70 @@ TEST_CASE("legacy ray conversion preserves authored callbacks and is atomic",
         REQUIRE(document.Undo() == true);
         CHECK(GetRayTechnique(document).isEmpty() == true);
     }
-    SECTION("budget failure preserves every file")
+    SECTION("malformed callback preserves every file")
     {
         QJsonObject manifest = QJsonDocument::fromJson(originalManifest).object();
-        QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
-        SECTION("program slots")
+        QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+        for (qsizetype index = 0; index < programs.size(); ++index)
         {
-            budgets.insert(QStringLiteral("programs"), manifest.value(QStringLiteral("programs")).toArray().size());
+            QJsonObject program = programs.at(index).toObject();
+            if (program.value(QStringLiteral("stage")).toString() == QStringLiteral("closest_hit"))
+            {
+                program.insert(QStringLiteral("input"), QStringLiteral("Ray"));
+                programs.replace(index, program);
+            }
         }
-        SECTION("profile artifacts")
-        {
-            budgets.insert(QStringLiteral("artifacts"),
-                           manifest.value(QStringLiteral("programs")).toArray().size() *
-                               manifest.value(QStringLiteral("profiles")).toArray().size());
-        }
-        manifest.insert(QStringLiteral("budgets"), budgets);
-        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
-        const uint64 failureRevision = document.GetRevision();
-        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Capacity);
-        CHECK(error.contains(QStringLiteral("budget")) == true);
-        CHECK(document.GetRevision() == failureRevision);
+        manifest.insert(QStringLiteral("programs"), programs);
+        const QByteArray invalidManifest = EncodeCanonicalJson(manifest);
+        REQUIRE(document.SetText(manifestFile, invalidManifest) == RenderGraphDocumentStatus::Ok);
+        const uint64 invalidRevision = document.GetRevision();
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::InvalidEdit);
+        CHECK(error.isEmpty() == false);
+        CHECK(document.GetRevision() == invalidRevision);
+        CHECK(document.GetDraft(manifestFile) == invalidManifest);
         CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
         CHECK(document.GetFiles() == originalFiles);
+    }
+    SECTION("conversion reuses full program and artifact budgets")
+    {
+        QJsonObject manifest = QJsonDocument::fromJson(originalManifest).object();
+        const QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+        QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+        budgets.insert(QStringLiteral("programs"), programs.size());
+        budgets.insert(QStringLiteral("artifacts"),
+                       programs.size() * manifest.value(QStringLiteral("profiles")).toArray().size());
+        manifest.insert(QStringLiteral("budgets"), budgets);
+        const QByteArray fullManifest = EncodeCanonicalJson(manifest);
+        REQUIRE(document.SetText(manifestFile, fullManifest) == RenderGraphDocumentStatus::Ok);
+        const uint64 conversionRevision = document.GetRevision();
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(error.isEmpty() == true);
+        CHECK(document.GetRevision() == conversionRevision + 1);
+        const QJsonObject converted = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+        CHECK(converted.value(QStringLiteral("budgets")).toObject() == budgets);
+        const QJsonArray convertedPrograms = converted.value(QStringLiteral("programs")).toArray();
+        REQUIRE(convertedPrograms.size() == programs.size());
+        for (qsizetype index = 0; index < programs.size(); ++index)
+        {
+            CHECK(convertedPrograms.at(index).toObject().value(QStringLiteral("id")) ==
+                  programs.at(index).toObject().value(QStringLiteral("id")));
+        }
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        for (QMap<QString, QByteArray>::const_iterator file = originalSources.constBegin();
+             file != originalSources.constEnd();
+             ++file)
+        {
+            CHECK(document.GetDraft(file.key()) == file.value());
+        }
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(manifestFile) == fullManifest);
+        CHECK(document.GetFiles() == originalFiles);
+        REQUIRE(document.Redo() == true);
+        CHECK(QJsonDocument::fromJson(document.GetDraft(manifestFile)).object() == converted);
+        QStringList saved;
+        REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+        RenderGraphDocument loaded;
+        REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        CHECK(QJsonDocument::fromJson(loaded.GetDraft(manifestFile)).object() == converted);
     }
 }

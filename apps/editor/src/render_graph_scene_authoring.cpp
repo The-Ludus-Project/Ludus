@@ -45,35 +45,6 @@ QJsonObject MakeSceneInterface(RenderGraphSnapshot& inoutSnapshot, const QString
                        {QStringLiteral("visibility_queries"), 1}};
 }
 
-QJsonValue ReplacePrograms(const QJsonValue& value, const QMap<QString, QString>& replacements)
-{
-    if (value.isArray() == true)
-    {
-        QJsonArray result;
-        for (const QJsonValueConstRef entry : value.toArray())
-        {
-            result.append(ReplacePrograms(entry, replacements));
-        }
-        return result;
-    }
-    if (value.isObject() == true)
-    {
-        QJsonObject result = value.toObject();
-        for (QJsonObject::iterator field = result.begin(); field != result.end(); ++field)
-        {
-            if (field.key() == QStringLiteral("program") && replacements.contains(field.value().toString()) == true)
-            {
-                field.value() = replacements.value(field.value().toString());
-            }
-            else
-            {
-                field.value() = ReplacePrograms(field.value(), replacements);
-            }
-        }
-        return result;
-    }
-    return value;
-}
 } // namespace
 
 bool HasSceneRayInterface(const QJsonObject& manifest)
@@ -197,16 +168,6 @@ RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSna
         outError.clear();
         return RenderGraphDocumentStatus::Ok;
     }
-    const qsizetype programCount = programs.size() + RAY_STAGES.size();
-    const QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
-    if (programCount > budgets.value(QStringLiteral("programs")).toInt() ||
-        programCount * manifest.value(QStringLiteral("profiles")).toArray().size() >
-            budgets.value(QStringLiteral("artifacts")).toInt())
-    {
-        outError = QStringLiteral("Scene material conversion needs three adapter programs and their profile artifacts. "
-                                  "Increase the manifest program/artifact budgets first. The draft was preserved.");
-        return RenderGraphDocumentStatus::Capacity;
-    }
     QJsonObject technique = techniques.at(techniqueIndex).toObject();
     QMap<QString, QJsonObject> originals;
     QStringList sources;
@@ -264,28 +225,15 @@ RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSna
         legacy += "#include \"" + source.toUtf8() + "\"\n";
     }
     inoutSnapshot.Files.insert(bridge, legacy);
-    QMap<QString, QString> replacements;
     for (const QString& stage : RAY_STAGES)
     {
         const QJsonObject original = originals.value(stage);
         const QString previous = original.value(QStringLiteral("id")).toString();
         const QString base = previous.left(ADAPTER_PROGRAM_BASE_LENGTH);
-        QString identity = QStringLiteral("Scene_") + base;
-        QStringList identities;
-        for (const QJsonValueConstRef value : programs)
-        {
-            identities.append(value.toObject().value(QStringLiteral("id")).toString());
-        }
-        for (qsizetype suffix = 2; identities.contains(identity) == true; ++suffix)
-        {
-            identity = QStringLiteral("Scene_%1_%2").arg(base, QString::number(suffix));
-        }
-        const QString source = MakeSourcePath(inoutSnapshot, packageRoot, QStringLiteral("shader_") + identity);
-        QJsonObject program{{QStringLiteral("id"), identity},
-                            {QStringLiteral("stage"), stage},
-                            {QStringLiteral("source"), source},
-                            {QStringLiteral("function"), QStringLiteral("SceneShaderMain")},
-                            {QStringLiteral("bindings"), QJsonArray{}}};
+        const QString source = MakeSourcePath(inoutSnapshot, packageRoot, QStringLiteral("shader_Scene_") + base);
+        QJsonObject program = original;
+        program.insert(QStringLiteral("source"), source);
+        program.insert(QStringLiteral("function"), QStringLiteral("SceneShaderMain"));
         QString adapter = QString::fromUtf8(MakeSceneRaySource(program));
         if (stage == QStringLiteral("ray_generation"))
         {
@@ -315,28 +263,21 @@ RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSna
                          original.value(QStringLiteral("function")).toString());
         }
         inoutSnapshot.Files.insert(source, (QStringLiteral("#include \"%1\"\n").arg(bridge) + adapter).toUtf8());
-        programs.append(program);
-        replacements.insert(previous, identity);
-        technique.insert(stage, identity);
+        // Reuse the selected program's slot; preserve IDs, ordering and all graph references.
+        for (qsizetype index = 0; index < programs.size(); ++index)
+        {
+            if (programs.at(index).toObject().value(QStringLiteral("id")) == original.value(QStringLiteral("id")))
+            {
+                programs.replace(index, program);
+                break;
+            }
+        }
     }
     technique.insert(QStringLiteral("scene_interface"), MakeSceneInterface(inoutSnapshot, packageRoot));
     techniques.replace(techniqueIndex, technique);
     manifest.insert(QStringLiteral("techniques"), techniques);
     manifest.insert(QStringLiteral("programs"), programs);
     inoutSnapshot.Files.insert(manifestFile, EncodeCanonicalJson(manifest));
-    for (QMap<QString, QByteArray>::iterator file = inoutSnapshot.Files.begin(); file != inoutSnapshot.Files.end();
-         ++file)
-    {
-        if (file.key().endsWith(QStringLiteral(".lurender.json")) == true)
-        {
-            const QJsonDocument graph = QJsonDocument::fromJson(file.value());
-            const QJsonObject replaced = ReplacePrograms(graph.object(), replacements).toObject();
-            if (replaced != graph.object())
-            {
-                file.value() = EncodeCanonicalJson(replaced);
-            }
-        }
-    }
     outError.clear();
     return RenderGraphDocumentStatus::Ok;
 }

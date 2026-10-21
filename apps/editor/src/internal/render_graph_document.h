@@ -130,7 +130,7 @@ public:
                                                           const QJsonObject& node,
                                                           QString* outErrorOrNull = nullptr);
     /// Upgrade the package's shared ray technique to scene materials in one undoable edit.
-    /// Preserves original callbacks through adapters; all graph references change together.
+    /// Preserves original callbacks through adapters, program IDs and admission budgets.
     /// Failure preserves draft/history and reports the required repair. No disk writes.
     [[nodiscard]] RenderGraphDocumentStatus EnableSceneMaterials(QString& outError);
     /// Register complete pipelines from the root import closure in one undoable draft edit.
