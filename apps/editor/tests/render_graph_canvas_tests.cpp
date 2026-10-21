@@ -859,6 +859,14 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     }
     QByteArray manifest = ReadFile(source.filePath(QStringLiteral("main.lushader.json.in")));
     manifest.replace("@RG2_TEST_PROFILES@", "[\"metal\", \"wgsl\"]");
+    QJsonObject fullManifest = QJsonDocument::fromJson(manifest).object();
+    const QJsonArray programs = fullManifest.value(QStringLiteral("programs")).toArray();
+    QJsonObject budgets = fullManifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), programs.size());
+    budgets.insert(QStringLiteral("artifacts"),
+                   programs.size() * fullManifest.value(QStringLiteral("profiles")).toArray().size());
+    fullManifest.insert(QStringLiteral("budgets"), budgets);
+    manifest = EncodeCanonicalJson(fullManifest);
     const QString manifestFile = QStringLiteral("main.lushader.json");
     WriteFile(QDir(package).filePath(manifestFile), manifest);
     RendererWorkspace workspace({});
@@ -890,6 +898,10 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
     QCoreApplication::sendEvent(canvas.viewport(), &context);
     CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(QJsonDocument::fromJson(workspace.GetDocument().GetDraft(manifestFile))
+              .object()
+              .value(QStringLiteral("budgets"))
+              .toObject() == budgets);
     CHECK(workspace.GetDocument().GetDraft(manifestFile).contains("scene_interface") == true);
     CHECK(workspace.GetSelectedShaderSources().size() == 3);
     for (const QString& file : workspace.GetSelectedShaderSources())

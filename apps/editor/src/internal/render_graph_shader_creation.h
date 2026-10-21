@@ -24,7 +24,8 @@ namespace ludus::editor
                                                                 const QJsonObject& node,
                                                                 const QString& packageRoot);
 /// Adapt the shared legacy ray technique, preserving original sources and callback behavior.
-/// Updates all package graph references in the candidate; caller discards it on failure.
+/// Reuses program records and IDs, preserving graph references and authored admission budgets.
+/// Caller discards the unpublished candidate on failure.
 [[nodiscard]] RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSnapshot,
                                                                  const QString& manifestFile,
                                                                  const QString& packageRoot,

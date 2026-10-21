@@ -101,9 +101,9 @@ the package's shared ray technique and all references in one undoable draft edit
 Adapters call the original shaders without rewriting their sources. Open the new
 closest-hit adapter through **View Shaders** and replace its legacy callback call
 with `EvaluateMaterial(scene, hit)` to author shading with full material properties.
-The conversion requires three additional manifest program slots and their profile
-artifacts; capacity failures
-preserve the draft. **Save** publishes the payload, adapters and manifest together.
+The conversion reuses the existing program records, IDs and profile artifact slots.
+It works with full program/artifact budgets and preserves those authored limits;
+you do not need to edit the manifest before converting. **Save** publishes the payload, adapters and manifest together.
 The Source interface panel describes the active interface and available material
 fields. See [scene-aware ray shaders](#author-scene-aware-ray-shaders) for callback
 and material contracts.
