@@ -1803,6 +1803,7 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     }
     // The rows are the Error List's (MakeRenderGraphErrorEntries); ActivateDiagnostic maps
     // a row back to its authored location from this result.
+    mCanvas->ClearDiagnostic();
     mLastResult = result;
     mHasResult = true;
     if (result.IsSuccessful == true)
@@ -2332,7 +2333,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     }
 }
 
-void RendererWorkspace::editNodeOnCanvas()
+void RendererWorkspace::editNodeOnCanvas(const QString& diagnosticField)
 {
     if (selectedNode().isEmpty() == true || CanCreateSubgraph() == false)
     {
@@ -2381,6 +2382,34 @@ void RendererWorkspace::editNodeOnCanvas()
         scroll->setWidget(fields);
     };
     refresh();
+    if (diagnosticField.isEmpty() == false)
+    {
+        for (QWidget* control : scroll->findChildren<QWidget*>())
+        {
+            if (control->property("renderGraphField").toString() == diagnosticField ||
+                control->objectName() == QStringLiteral("renderGraphField_") + diagnosticField)
+            {
+                control->setProperty("isRenderGraphDiagnosticTarget", true);
+                control->setStyleSheet(
+                    QStringLiteral("*[isRenderGraphDiagnosticTarget=\"true\"] { border: 2px solid #ff9a88; }"));
+                for (QTabWidget* tabs : scroll->findChildren<QTabWidget*>())
+                {
+                    for (int32 index = 0; index < tabs->count(); ++index)
+                    {
+                        if (tabs->widget(index) == control || tabs->widget(index)->isAncestorOf(control) == true)
+                        {
+                            tabs->setCurrentIndex(index);
+                        }
+                    }
+                }
+                control->setFocusPolicy(Qt::StrongFocus);
+                control->setAccessibleDescription(mStatus->text());
+                control->setFocus(Qt::OtherFocusReason);
+                QTimer::singleShot(0, control, [scroll, control]() { scroll->ensureWidgetVisible(control); });
+                break;
+            }
+        }
+    }
     connect(this, &RendererWorkspace::NodeFieldsChanged, &dialog, [scroll, refresh](QWidget* editOriginOrNull) {
         if (editOriginOrNull == nullptr || scroll->isAncestorOf(editOriginOrNull) == false)
         {
@@ -2842,7 +2871,7 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         QAction* edit = menu.addAction(QStringLiteral("Edit Node..."));
         edit->setObjectName(QStringLiteral("renderGraphEditNodeAction"));
         edit->setEnabled(CanCreateSubgraph());
-        connect(edit, &QAction::triggered, this, &RendererWorkspace::editNodeOnCanvas);
+        connect(edit, &QAction::triggered, this, [this]() { editNodeOnCanvas(); });
     }
     QAction* editInterface = menu.addAction(QStringLiteral("Edit Inputs / Outputs..."));
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterfaceAction"));
@@ -3043,17 +3072,12 @@ int32 RendererWorkspace::GetDiagnosticCount() const
     {
         return 0;
     }
-    return mLastResult.IsSuccessful == true ? 1 : 1 + static_cast<int32>(mLastResult.Diagnostics.size());
+    return mLastResult.GetDiagnosticCount();
 }
 
 QJsonObject RendererWorkspace::getDiagnosticLocation(int32 row) const
 {
-    // Row 0 summarizes the result; later rows are the tool diagnostics in report order.
-    if (row == 0)
-    {
-        return mLastResult.IsSuccessful == true ? QJsonObject() : mLastResult.Location;
-    }
-    return mLastResult.Diagnostics.at(row - 1).toObject().value(QStringLiteral("location")).toObject();
+    return mLastResult.GetDiagnostic(row).value(QStringLiteral("location")).toObject();
 }
 
 void RendererWorkspace::openSourceLine(const QString& file, int32 line)
@@ -3103,9 +3127,28 @@ bool RendererWorkspace::ActivateDiagnostic(int32 row)
         return true;
     }
     mViews->setCurrentIndex(CANVAS_VIEW);
-    return SelectNode(source,
-                      location.value(QStringLiteral("configuration")).toString(),
-                      location.value(QStringLiteral("node")).toString());
+    const QString node = location.value(QStringLiteral("node")).toString();
+    const bool isSelected = SelectNode(source,
+                                       location.value(QStringLiteral("configuration")).toString(),
+                                       node == QStringLiteral("input") ? QString() : node);
+    QString description = DescribeRenderGraphDiagnostic(mLastResult.GetDiagnostic(row));
+    if (mLastResult.Request.InputIdentity.isEmpty() == false &&
+        mLastResult.Request.InputIdentity != getBuildIdentity(mLastResult.Request.Source))
+    {
+        description.prepend(
+            QStringLiteral("This report describes an earlier source version. Validate again after edits.\n"));
+    }
+    mStatus->setText(description);
+    if (isSelected == true)
+    {
+        static_cast<void>(mCanvas->ShowDiagnostic(location, description));
+        const QString field = location.value(QStringLiteral("field")).toString();
+        if (field.isEmpty() == false && selectedNode().isEmpty() == false)
+        {
+            editNodeOnCanvas(field);
+        }
+    }
+    return isSelected;
 }
 
 QString RendererWorkspace::GetSourceFile() const

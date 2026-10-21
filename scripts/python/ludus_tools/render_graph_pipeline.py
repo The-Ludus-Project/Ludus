@@ -200,7 +200,9 @@ def lower_graphics(node, where, graph):
     stages = {shader['stage'] for shader in node['shaders']}
     graph._require({'vertex', 'fragment'} <= stages, 'IncompletePipeline', where,
                    f"GraphicsPipeline is missing shader stages: {', '.join(sorted({'vertex', 'fragment'} - stages))}. "
-                   'Add these stages in Shaders and assign each a build-manifest program ID.')
+                   'Add these stages in Shaders and assign each a build-manifest program ID.',
+                   field='shaders', expected='vertex, fragment', actual=', '.join(sorted(stages)) or 'no stages',
+                   repair='Add the missing stages in Shaders and assign each a build-manifest program ID.')
     graph._require(stages <= {'vertex', 'fragment'}, 'Capability', where,
                    'optional graphics stages are not admitted by the current graph build profile')
     input_types = {port['id']: port['type'] for port in node['inputs']}
@@ -208,7 +210,9 @@ def lower_graphics(node, where, graph):
     for key, kind in (('scene', 'Scene'), ('view', 'View')):
         graph._require(input_types.get(mappings[key]) == kind, 'IncompletePipeline', where,
                        f"Invocation '{key}' names '{mappings[key]}', which is not a declared {kind} input. "
-                       f"Add a {kind} Read Input and select its ID in Invocation → {key}.")
+                       f"Add a {kind} Read Input and select its ID in Invocation → {key}.",
+                       field='invocation.' + key, expected=kind, actual=input_types.get(mappings[key], 'undeclared input'),
+                       repair=f'Add a {kind} Read Input and select its ID in Invocation → {key}.')
     record = {'id': node['id'], 'kind': 'Raster', **{key: invocation[key] for key in ('mode', 'vertex_layout', 'material')}}
     outputs = {}
     for aspect in ('depth', 'color') if invocation['mode'] == 'ColorAndDepth' else ('depth',):

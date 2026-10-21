@@ -545,6 +545,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/render_graph_default_tests.cpp
         tests/render_graph_canvas_tests.cpp
         tests/render_graph_canvas_feedback_tests.cpp
+        tests/render_graph_diagnostic_tests.cpp
         tests/texture_inspection_tests.cpp
         tests/external_code_editor_tests.cpp
         tests/live_journey_tests.cpp
@@ -737,7 +738,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
-        tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_canvas_feedback_tests.cpp
+        tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp
         src/internal/renderer_workspace.h src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/render_graph_document.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
@@ -745,6 +746,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/internal/render_graph_job.h src/render_graph_job.cpp
+        src/internal/error_list.h src/error_list.cpp
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
         src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
         src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp

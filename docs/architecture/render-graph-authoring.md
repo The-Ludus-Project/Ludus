@@ -613,7 +613,15 @@ all imported runtime instances. Expose configuration choices and their count/cos
 before build. Create GPU Work offers the three pipeline types. The selected node's
 inspector owns Inputs, Outputs, Shaders, Pipeline State and Invocation editing;
 adding/removing/retyping ports is a semantic edit with stable IDs, undo and
-mapped validation diagnostics. Removing a connected port reports the affected
+mapped validation diagnostics. Diagnostics carry stable node/port/direction or
+field keys, independently of human-readable labels. The shared validator collects
+bounded independent failures between validation phases and stops before dependent
+analysis can produce cascades. Resource lowering remains transactional and
+fail-fast. The editor displays each structured issue once with expected/actual
+values and repair guidance, and navigation rings its port or focuses the shared
+canvas field control without editing the document. See the
+[mapped diagnostics contract](../development/render-graph-authoring.md#mapped-diagnostics)
+for payload fields and limits. Removing a connected port reports the affected
 links and requires an explicit draft edit rather than silently retargeting them.
 Shader assignments open their source in the existing source editor. Stage
 interfaces remain inside the pipeline node instead of appearing as independently

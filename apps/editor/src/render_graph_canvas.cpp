@@ -577,6 +577,7 @@ QJsonObject RenderGraphCanvas::configuration() const
 void RenderGraphCanvas::Rebuild()
 {
     const QStringList selected = GetSelectedNodes();
+    ClearDiagnostic();
     cancelLink();
     mIsDragging = false;
     mIsBoxSelecting = false;
@@ -1175,6 +1176,66 @@ void RenderGraphCanvas::RevealNode(const QString& node)
             return;
         }
     }
+}
+
+void RenderGraphCanvas::ClearDiagnostic()
+{
+    delete mDiagnosticMarkerOrNull;
+    mDiagnosticMarkerOrNull = nullptr;
+    mDiagnosticLocation = {};
+    setAccessibleDescription({});
+}
+
+bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QString& description)
+{
+    ClearDiagnostic();
+    const bool isOutput = location.value(QStringLiteral("direction")).toString() == QStringLiteral("output");
+    const QString port = location.value(QStringLiteral("port")).toString();
+    QString owner = location.value(QStringLiteral("node")).toString();
+    if (owner.isEmpty() == true && port.isEmpty() == false)
+    {
+        owner = isOutput == true ? OUTPUTS_NODE : INPUT_NODE;
+    }
+    NodeView* viewOrNull = mNodes.value(owner, nullptr);
+    if (viewOrNull == nullptr)
+    {
+        return false;
+    }
+    mDiagnosticLocation = location;
+    setAccessibleDescription(description);
+    mDiagnosticMarkerOrNull = new QGraphicsRectItem(viewOrNull->Frame->rect(), viewOrNull->Frame);
+    mDiagnosticMarkerOrNull->setAcceptedMouseButtons(Qt::NoButton);
+    mDiagnosticMarkerOrNull->setPen(QPen(QColor::fromRgba(LINK_REJECT_COLOR), NODE_BORDER_WIDTH * 2));
+    mDiagnosticMarkerOrNull->setToolTip(description.toHtmlEscaped());
+    // Exposed outputs are consumers on the left side of the configuration output box.
+    const bool isOutputConnector = owner == OUTPUTS_NODE ? false : isOutput;
+    const QGraphicsEllipseItem* connectorOrNull =
+        (isOutputConnector == true ? viewOrNull->OutputItems : viewOrNull->InputItems).value(port, nullptr);
+    if (connectorOrNull != nullptr)
+    {
+        QGraphicsEllipseItem* ring = new QGraphicsEllipseItem(
+            connectorOrNull->rect().adjusted(-NODE_PADDING, -NODE_PADDING, NODE_PADDING, NODE_PADDING),
+            mDiagnosticMarkerOrNull);
+        ring->setPos(connectorOrNull->mapToItem(mDiagnosticMarkerOrNull, QPointF()));
+        ring->setAcceptedMouseButtons(Qt::NoButton);
+        ring->setPen(QPen(QColor::fromRgba(LINK_REJECT_COLOR), NODE_BORDER_WIDTH * 2));
+    }
+    QGraphicsSimpleTextItem* label = new QGraphicsSimpleTextItem(mDiagnosticMarkerOrNull);
+    const QString target = port.isEmpty() == false ? port : location.value(QStringLiteral("field")).toString();
+    label->setText(QFontMetricsF(label->font())
+                       .elidedText(QStringLiteral("Error: %1").arg(target.isEmpty() == true ? owner : target),
+                                   Qt::ElideRight,
+                                   NODE_WIDTH - NODE_PADDING * 2));
+    label->setBrush(QColor::fromRgba(LINK_REJECT_COLOR));
+    label->setPos(NODE_PADDING, viewOrNull->Frame->rect().bottom() + NODE_PADDING);
+    label->setToolTip(description.toHtmlEscaped());
+    ensureVisible(mDiagnosticMarkerOrNull->sceneBoundingRect().united(label->sceneBoundingRect()));
+    return true;
+}
+
+QJsonObject RenderGraphCanvas::GetDiagnosticLocation() const
+{
+    return mDiagnosticLocation;
 }
 
 void RenderGraphCanvas::updateSelection()

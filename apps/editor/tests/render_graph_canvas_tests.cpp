@@ -18,6 +18,8 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsScene>
 #include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -929,4 +931,137 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     CHECK(workspace.GetDocument().GetDraft(manifestFile) == before);
     workspace.Redo();
     CHECK(workspace.GetDocument().GetDraft(manifestFile).contains("scene_interface") == true);
+}
+
+TEST_CASE("diagnostic navigation rings the exact port without Properties or draft edits",
+          "[editor][render-graph][canvas][diagnostics]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 7);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->hide();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    RenderGraphDocument& document = workspace.GetDocument();
+    const uint64 revision = document.GetRevision();
+    const QByteArray bytes = document.GetDraft(ROOT_GRAPH);
+    const QJsonObject location{{QStringLiteral("source"), ROOT_GRAPH},
+                               {QStringLiteral("configuration"), DEFAULT_CONFIGURATION},
+                               {QStringLiteral("node"), QStringLiteral("raster")},
+                               {QStringLiteral("port"), QStringLiteral("depth")},
+                               {QStringLiteral("direction"), QStringLiteral("input")}};
+    RenderGraphJobResult result;
+    result.Request.ProjectEpoch = 7;
+    result.Request.InputIdentity = QByteArray("earlier source");
+    result.Code = QStringLiteral("RenderGraphUnboundInput");
+    result.Message = QStringLiteral("Unconnected depth");
+    result.Location = location;
+    result.Diagnostics = QJsonArray{QJsonObject{{QStringLiteral("code"), result.Code},
+                                                {QStringLiteral("message"), result.Message},
+                                                {QStringLiteral("severity"), QStringLiteral("error")},
+                                                {QStringLiteral("location"), location},
+                                                {QStringLiteral("expected"), QStringLiteral("DepthTexture")},
+                                                {QStringLiteral("actual"), QStringLiteral("unconnected")},
+                                                {QStringLiteral("repair"), QStringLiteral("Connect a depth target.")}}};
+    workspace.AcceptResult(result);
+    REQUIRE(workspace.GetDiagnosticCount() == 1);
+    REQUIRE(workspace.ActivateDiagnostic(0) == true);
+    CHECK(canvas.GetDiagnosticLocation() == location);
+    const auto hasRingAt = [&canvas](QPointF position) {
+        for (QGraphicsItem* item : canvas.scene()->items())
+        {
+            const QGraphicsEllipseItem* ringOrNull = qgraphicsitem_cast<QGraphicsEllipseItem*>(item);
+            if (ringOrNull != nullptr && ringOrNull->rect().width() > 20 &&
+                ringOrNull->mapToScene(ringOrNull->rect().center()) == position)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    CHECK(hasRingAt(canvas.GetPortPosition(QStringLiteral("raster.depth"), false)) == true);
+    workspace.AcceptResult(result);
+    CHECK(canvas.GetDiagnosticLocation().isEmpty() == true);
+    REQUIRE(workspace.ActivateDiagnostic(0) == true);
+    CHECK(canvas.accessibleDescription().contains(QStringLiteral("DepthTexture")) == true);
+    CHECK(canvas.accessibleDescription().contains(QStringLiteral("earlier source version")) == true);
+    CHECK(workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->isHidden() == true);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(ROOT_GRAPH) == bytes);
+    canvas.Rebuild();
+    CHECK(canvas.GetDiagnosticLocation().isEmpty() == true);
+    CHECK(canvas.accessibleDescription().isEmpty() == true);
+    CHECK(canvas.ShowDiagnostic(QJsonObject{{QStringLiteral("node"), QStringLiteral("deleted")}}, {}) == false);
+    canvas.ShowConfiguration(LIBRARY, QStringLiteral("ColorAndDepth"));
+    REQUIRE(canvas.ShowDiagnostic(QJsonObject{{QStringLiteral("port"), QStringLiteral("color")},
+                                              {QStringLiteral("direction"), QStringLiteral("output")}},
+                                  QStringLiteral("Choose a matching output source.")) == true);
+    CHECK(hasRingAt(canvas.GetPortPosition(QStringLiteral("#outputs.color"), false)) == true);
+    CHECK(document.GetRevision() == revision);
+}
+
+TEST_CASE("field diagnostics open the shared canvas editor at the highlighted control",
+          "[editor][render-graph][canvas][diagnostics]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 7);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->hide();
+    QString field = QStringLiteral("depth_load");
+    QString file = LIBRARY;
+    QString configuration = QStringLiteral("ColorAndDepth");
+    QString node = QStringLiteral("draw");
+    SECTION("legacy attachment load") {}
+    SECTION("ray launch field on a hidden tab")
+    {
+        field = QStringLiteral("invocation.dimensions");
+        node = QStringLiteral("raytracingpipeline");
+    }
+    SECTION("shader assignments on a hidden tab")
+    {
+        field = QStringLiteral("shaders");
+        node = QStringLiteral("raytracingpipeline");
+    }
+    if (node == QStringLiteral("raytracingpipeline"))
+    {
+        QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+        REQUIRE(kinds != nullptr);
+        kinds->setCurrentText(QStringLiteral("RayTracingPipeline"));
+        workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
+        file = ROOT_GRAPH;
+        configuration = DEFAULT_CONFIGURATION;
+    }
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    RenderGraphJobResult result;
+    result.Request.ProjectEpoch = 7;
+    result.Code = QStringLiteral("RenderGraphInitialization");
+    result.Message = QStringLiteral("Choose Clear");
+    result.Location = QJsonObject{{QStringLiteral("source"), file},
+                                  {QStringLiteral("configuration"), configuration},
+                                  {QStringLiteral("node"), node},
+                                  {QStringLiteral("field"), field}};
+    workspace.AcceptResult(result);
+    bool hasHighlightedField = false;
+    QTimer::singleShot(0, &workspace, [&hasHighlightedField, field]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        for (QWidget* control : dialogOrNull->findChildren<QWidget*>())
+        {
+            if (control->property("isRenderGraphDiagnosticTarget").toBool() == true)
+            {
+                hasHighlightedField = true;
+                CHECK(control->isVisible() == true);
+                CHECK((control->property("renderGraphField").toString() == field ||
+                       control->objectName() == QStringLiteral("renderGraphField_") + field));
+            }
+        }
+        dialogOrNull->reject();
+    });
+    REQUIRE(workspace.ActivateDiagnostic(0) == true);
+    CHECK(hasHighlightedField == true);
+    CHECK(workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->isHidden() == true);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
 }

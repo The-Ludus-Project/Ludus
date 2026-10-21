@@ -20,7 +20,10 @@ def check_connections(node, inputs, where, graph):
             identity = port['id']
             members = any(identity + '_' + part in inputs for part in PARTS)
             graph._require(not (identity in inputs and members), "MultipleWriters", where,
-                           "Use either the full Scene connection or its expanded members, not both.")
+                           "Use either the full Scene connection or its expanded members, not both.",
+                           port=identity, direction='input', expected='full Scene or expanded members',
+                           actual='full Scene and expanded members',
+                           repair='Keep the full Scene wire or its member wires; disconnect the other connections.')
 
 
 def resolve(node, inputs, where, graph):

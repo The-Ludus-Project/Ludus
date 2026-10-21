@@ -94,6 +94,21 @@ class RayPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'full Scene'):
             graph.load_library(self.path)
 
+    def test_scene_bundle_conflicts_join_independent_wiring_diagnostics(self):
+        self.connect_members(('geometry',))
+        configuration = self.document['configurations'][0]
+        configuration['edges'].append({'from': 'scene.scene', 'to': 'trace.scene'})
+        next(edge for edge in configuration['edges'] if edge['to'] == 'trace.view')['from'] = 'color.texture'
+        with self.assertRaises(ToolingError) as caught:
+            self.compile()
+        issues = caught.exception.diagnostics
+        self.assertEqual(['RenderGraphTypeMismatch', 'RenderGraphMultipleWriters'],
+                         [issue['code'] for issue in issues])
+        self.assertEqual('trace', issues[1]['location']['node'])
+        self.assertEqual('scene', issues[1]['location']['port'])
+        self.assertEqual('input', issues[1]['location']['direction'])
+        self.assertIn('disconnect', issues[1]['repair'])
+
     def test_scene_members_preserve_maximum_length_bundle_names(self):
         name = 's' * 63
         self.node['inputs'][0]['id'] = name
@@ -227,6 +242,29 @@ class RayPipelineTests(unittest.TestCase):
         self.assertIn('[96, 64, 1]', failure.exception.message)
         self.assertIn('Main/color', failure.exception.message)
         self.assertIn('Match color target', failure.exception.message)
+        self.assertEqual('invocation.dimensions', failure.exception.location['field'])
+        issue = failure.exception.diagnostics[0]
+        self.assertEqual('[96, 64, 1]', issue['expected'])
+        self.assertEqual('[1, 2, 1]', issue['actual'])
+        self.assertIn('Match color target', issue['repair'])
+
+    def test_independent_pipeline_profile_errors_are_collected_before_resource_lowering(self):
+        self.node['state']['max_recursion'] = 2
+        other = deepcopy(self.node)
+        other['id'] = 'other'
+        config = self.document['configurations'][0]
+        config['nodes'].extend([other, {'id': 'otherOutput', 'kind': 'Export', 'type': 'ColorTexture'}])
+        config['edges'].extend([{**edge, 'to': 'other.' + edge['to'].split('.')[1]}
+                                for edge in list(config['edges']) if edge['to'].startswith(self.node['id'] + '.')])
+        config['edges'].append({'from': 'other.color', 'to': 'otherOutput.texture'})
+        with self.assertRaises(ToolingError) as caught:
+            self.compile()
+        self.assertEqual(2, len(caught.exception.diagnostics))
+        self.assertEqual({self.node['id'], 'other'}, {issue['location']['node'] for issue in caught.exception.diagnostics})
+        for issue in caught.exception.diagnostics:
+            self.assertEqual('RenderGraphCapability', issue['code'])
+            self.assertEqual('state', issue['location']['field'])
+            self.assertIn('automatic', issue['repair'])
 
     def test_extra_depth_declaration_diagnostic_names_port_type_and_repair(self):
         self.node['inputs'].append({'id': 'unused_depth', 'type': 'DepthTexture', 'required': False})
