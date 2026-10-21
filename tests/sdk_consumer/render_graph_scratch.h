@@ -65,10 +65,12 @@ struct ScratchShape final
     constexpr usize RESOURCE_FIELDS = format::RESOURCE_RECORD_BYTES / sizeof(uint32);
     constexpr usize PASS_FIELDS = format::PASS_RECORD_BYTES / sizeof(uint32);
     uint32 magic = 0;
+    uint32 version = 0;
     uint32 resources = 0;
     uint32 passes = 0;
     uint32 cameras = 0;
     if (ReadWord(offscreen, 0, magic) == false || magic != format::PACKAGE_MAGIC ||
+        ReadWord(offscreen, sizeof(uint32), version) == false || version != format::PACKAGE_VERSION ||
         ReadWord(offscreen, RESOURCE_COUNT_FIELD * sizeof(uint32), resources) == false ||
         ReadWord(offscreen, PASS_COUNT_FIELD * sizeof(uint32), passes) == false ||
         ReadWord(offscreen, CAMERA_COUNT_FIELD * sizeof(uint32), cameras) == false ||
@@ -112,7 +114,7 @@ struct ScratchShape final
         const uint32 color = resources + 2 * i;
         for (const format::Aspect aspect : {format::Aspect::Color, format::Aspect::Depth})
         {
-            for (const uint32 word : {width, height, static_cast<uint32>(aspect), color, 0U, 0U})
+            for (const uint32 word : {width, height, static_cast<uint32>(aspect), color, 0U, 0U, 0U, 1U})
             {
                 WriteWord(bytes, word);
             }
@@ -145,6 +147,17 @@ struct ScratchShape final
     for (usize offset = restAt; offset < offscreen.GetSize(); ++offset)
     {
         bytes.Add(offscreen[offset]);
+    }
+    constexpr uint32 SCRATCH_NAME_BYTES = 7;
+    constexpr uint32 SCRATCH_NAME_PADDING = 0;
+    for (uint32 i = 0; i < scratchCount; ++i)
+    {
+        WriteWord(bytes, SCRATCH_NAME_BYTES);
+        for (const char character : {'S', 'c', 'r', 'a', 't', 'c', 'h'})
+        {
+            bytes.Add(static_cast<uint8>(character));
+        }
+        bytes.Add(static_cast<uint8>(SCRATCH_NAME_PADDING));
     }
     outBytes = Move(bytes);
     return true;

@@ -136,6 +136,7 @@ struct RenderGraphPackage::State final
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
     StaticArray<BorrowedView<const char>, format::MAX_PASSES> PassNames{};
     bool HasPassNames = false;
+    bool HasRelativeSizes = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -366,6 +367,16 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         resource.Backing = inoutReader.ReadWord();
         resource.IsSurface = inoutReader.ReadWord();
         resource.IsExported = inoutReader.ReadWord();
+        if (HasRelativeSizes == true)
+        {
+            resource.ViewNumerator = inoutReader.ReadWord();
+            resource.ViewDenominator = inoutReader.ReadWord();
+            if (resource.ViewNumerator > format::MAX_TARGET_EXTENT || resource.ViewDenominator == 0 ||
+                resource.ViewDenominator > format::MAX_TARGET_EXTENT)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+        }
         if (aspect > MAX_ASPECT)
         {
             return RenderGraphPackageStatus::Malformed;
@@ -434,10 +445,12 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
+    candidate->HasRelativeSizes = version == format::PACKAGE_VERSION;
     candidate->Header.Version = format::VERSION;
     candidate->Header.ResourceCount = reader.ReadWord();
     candidate->Header.PassCount = reader.ReadWord();
@@ -482,7 +495,7 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     {
         return status;
     }
-    if (version == format::PACKAGE_VERSION)
+    if (version >= format::NAMED_PACKAGE_VERSION)
     {
         for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
         {
@@ -687,6 +700,8 @@ struct RenderGraphActivation::State final
     core::UniquePtr<Generation> Active;
     core::UniquePtr<Generation> Candidate;
     uint64 NextSerial = 0;
+    uint32 ReferenceWidth = 0;
+    uint32 ReferenceHeight = 0;
     RenderGraphActivationReport Report{};
     void FailCandidate(Status status) noexcept
     {
@@ -783,7 +798,9 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
         state.Device,
         generation->Package->GetPlan(),
         generation->Package->GetPrograms(state.CompositeVertex, state.CompositeFragment, true),
-        state.IsPooled == true ? &state.Pool : nullptr);
+        state.IsPooled == true ? &state.Pool : nullptr,
+        state.ReferenceWidth,
+        state.ReferenceHeight);
     if (IsAccepted(status) == false)
     {
         state.FailCandidate(status);
@@ -792,6 +809,41 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     state.Candidate.Swap(generation);
     state.Report.Candidate = RenderGraphCandidateState::Preparing;
     return status;
+}
+Status RenderGraphActivation::Resize(uint32 referenceWidth, uint32 referenceHeight) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (referenceWidth == 0 || referenceHeight == 0)
+    {
+        return Status::NotReady;
+    }
+    state.ReferenceWidth = referenceWidth;
+    state.ReferenceHeight = referenceHeight;
+    Status activeStatus = Status::Ready;
+    if (state.Active.Get() != nullptr)
+    {
+        activeStatus = state.Active->Graph.Resize(referenceWidth, referenceHeight);
+    }
+    if (state.Candidate.Get() != nullptr)
+    {
+        const Status candidateStatus = state.Candidate->Graph.Resize(referenceWidth, referenceHeight);
+        if (IsAccepted(candidateStatus) == false)
+        {
+            state.FailCandidate(candidateStatus);
+            return candidateStatus;
+        }
+        if (candidateStatus == Status::Pending)
+        {
+            state.Candidate->SceneRevision = 0;
+            state.Report.Candidate = RenderGraphCandidateState::NeedsUpdate;
+            activeStatus = IsAccepted(activeStatus) == true ? Status::Pending : activeStatus;
+        }
+    }
+    return activeStatus;
 }
 Status RenderGraphActivation::Poll() noexcept
 {
@@ -827,10 +879,12 @@ Status RenderGraphActivation::Poll() noexcept
     }
     candidate.IsSetupReady = true;
     const uint64 latest = state.Report.LatestSceneRevision;
-    if (latest != 0 && candidate.Graph.GetDrawableSceneRevision() != latest)
+    if (candidate.Graph.HasPendingResize() == true ||
+        (latest != 0 && candidate.Graph.GetDrawableSceneRevision() != latest))
     {
-        state.Report.Candidate = candidate.SceneRevision == latest ? RenderGraphCandidateState::Preparing
-                                                                   : RenderGraphCandidateState::NeedsUpdate;
+        state.Report.Candidate = latest != 0 && candidate.SceneRevision == latest
+                                     ? RenderGraphCandidateState::Preparing
+                                     : RenderGraphCandidateState::NeedsUpdate;
         return state.Active.Get() != nullptr ? activeStatus : Status::Pending;
     }
     state.Activate();

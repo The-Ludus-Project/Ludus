@@ -91,6 +91,27 @@ class ExecutionTests(unittest.TestCase):
         execution.emit_runtime(self.output, destination, name='SizedGraph')
         self.assertNotIn('RenderSize', destination.read_text())
 
+    def test_relative_sizes_survive_lowering_and_runtime_serialization(self):
+        value = json.loads(self.graph.read_text())
+        value['version'] = 2
+        configuration = value['configurations'][0]
+        configuration['nodes'].append({'id': 'size', 'kind': 'RenderSize',
+                                       'extent': {'reference': 'View', 'scale': [1, 2]}})
+        for node in configuration['nodes']:
+            if node['kind'] == 'Target':
+                node['extent'] = 'RenderSize'
+                configuration['edges'].append({'from': 'size.size', 'to': node['id'] + '.size'})
+        self.graph.write_text(json.dumps(value))
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        data = execution.encode_runtime_package(contents)
+        for index, resource in enumerate(contents['resources']):
+            self.assertEqual((resource['ViewNumerator'], resource['ViewDenominator']), (1, 2))
+            self.assertEqual(struct.unpack_from('<8I', data, 104 + index * 32)[-2:], (1, 2))
+        destination = self.root / 'relative.h'
+        execution.emit_runtime(self.output, destination, name='RelativeGraph')
+        self.assertIn('1, 2}', destination.read_text())
+
     def test_depth_only_export_has_explicit_technique_and_private_backing(self):
         self.graph = graph.new_workspace(self.root / 'depth', output='depth')
         self.manifest = build.new_build_sources(self.graph, profiles=('metal', 'wgsl'), renderer_static=True)
@@ -230,7 +251,7 @@ class ExecutionTests(unittest.TestCase):
         header = struct.unpack('<10I', data[:40])
         self.assertEqual(header[:2], (execution.PACKAGE_MAGIC, execution.PACKAGE_VERSION))
         self.assertEqual(header[5:9], (4, 1, 2, 4))
-        records = 104 + 6 * 4 * 2 + 4 + 9 * 4
+        records = 104 + 8 * 4 * 2 + 4 + 9 * 4
         self.assertEqual(struct.unpack('<5I', data[records:records + 20]), (0, 0, 2, 0, 4))
 
     def test_runtime_package_names_its_resources_in_record_order(self):

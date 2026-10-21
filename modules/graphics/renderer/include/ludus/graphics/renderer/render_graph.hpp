@@ -30,6 +30,19 @@ struct RenderGraphPlan final
     /// shorter than rhi::GPU_SCOPE_NAME_BYTES. Empty table uses a generic label with a stable ordinal identity.
     foundation::BorrowedView<const foundation::BorrowedView<const char>> PassNames{};
 };
+/// Resolve one fixed or view-relative resource without GPU work. Relative dimensions
+/// use ceil(reference * numerator / denominator), with a minimum of one pixel.
+/// @param resource Authored fixed dimensions or a validated view-relative ratio; borrowed for the call.
+/// @param referenceWidth Drawable pixels, before render scale; zero suspends relative resolution.
+/// @param referenceHeight Drawable pixels, with the same contract as referenceWidth.
+/// @param outResource Resolved copy, unchanged on failure; its policy remains intact for later resizes.
+/// @return Ready on success; NotReady for a zero relative reference; InvalidDescription
+/// for malformed policies; CapacityExceeded above MAX_TARGET_EXTENT. Fixed resources ignore the reference.
+[[nodiscard]] rhi::RasterStatus
+ResolveRenderGraphResource(const content::render_graph_format::Resource& resource,
+                           foundation::uint32 referenceWidth,
+                           foundation::uint32 referenceHeight,
+                           content::render_graph_format::Resource& outResource) noexcept;
 /// Cooked static raster stage pairs and linked triangle ray compute/image stages.
 /// No compiler or shader-source discovery. Ray plans also carry ColorVertex/ColorFragment
 /// for shared static mesh ownership; that pair never rasterizes the ray scene.
@@ -259,6 +272,8 @@ public:
     /// @param device Ready owned device without an open frame; outlives this graph.
     /// @param plan Numeric plan; its records are copied before return.
     /// @param programs Cooked stages; artifact storage stays alive until Initialize/Poll reaches Ready.
+    /// @param referenceWidth Drawable view width for relative resources; zero rejects unresolved relative sizes.
+    /// @param referenceHeight Drawable view height, independent of any other graph instance.
     /// @param poolOrNull Optional RG4 attachment pool on the same device; transient backings are
     /// taken from it and returned on Reset. Null selects the serial control: every attachment is
     /// created here and destroyed on Reset. Both paths encode identical commands. An uninitialized
@@ -267,7 +282,23 @@ public:
     [[nodiscard]] rhi::RasterStatus Initialize(rhi::DeviceHandle device,
                                                const RenderGraphPlan& plan,
                                                const RenderGraphPrograms& programs,
-                                               RenderGraphAttachmentPool* poolOrNull = nullptr) noexcept;
+                                               RenderGraphAttachmentPool* poolOrNull = nullptr,
+                                               foundation::uint32 referenceWidth = 0,
+                                               foundation::uint32 referenceHeight = 0) noexcept;
+    /// Request new per-view drawable dimensions between frames, without shader/pipeline preparation.
+    /// Fixed targets ignore the reference. Zero dimensions return NotReady and preserve any pending request.
+    /// A new request supersedes an unactivated resize. Ready means unchanged; Pending requires Update
+    /// with the current extraction (even at the same scene revision), then Poll. Attachments and scene
+    /// publish together only when Ready. Failure preserves the drawable scene and output.
+    /// Export/readback consumers must finish before this call and before Update/Poll may publish.
+    [[nodiscard]] rhi::RasterStatus Resize(foundation::uint32 referenceWidth,
+                                           foundation::uint32 referenceHeight) noexcept;
+    /// Whether a resource replacement needs a fresh extraction or is preparing it.
+    [[nodiscard]] bool HasPendingResize() const noexcept;
+    /// Copy a drawing resource's resolved dimensions and policy. False preserves outResource
+    /// when uninitialized or the index is out of range; never reports a pending replacement.
+    [[nodiscard]] bool GetResourceDescription(foundation::uint32 resource,
+                                              content::render_graph_format::Resource& outResource) const noexcept;
     /// Copy attachment ownership counters; an empty graph reports zeros.
     [[nodiscard]] RenderGraphAllocationReport GetAllocationReport() const noexcept;
     /// Poll prewarming and pending replacement; publish only a complete Ready candidate.

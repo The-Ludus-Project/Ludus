@@ -25,6 +25,7 @@
 #include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
+#include <QSize>
 
 namespace ludus::editor
 {
@@ -177,6 +178,8 @@ public:
         return mHasFrame;
     }
     [[nodiscard]] platform::NativeWindowInfo WindowInfo() const noexcept;
+    /// Drawable view size before the edit-preview rendering cap, in physical pixels.
+    [[nodiscard]] QSize GetDrawableSize() const noexcept;
     [[nodiscard]] bool TakeFrame(graphics::renderer::ViewportFrame& outFrame,
                                  graphics::renderer::ViewportImage& outImage) noexcept override;
     void ReleaseFrame(graphics::renderer::ViewportFrame& inoutFrame) noexcept override;
@@ -296,6 +299,9 @@ private:
     [[nodiscard]] bool prepare();
     void restartResources() noexcept;
     RenderScene Scene_;
+    static constexpr foundation::int32 DEFAULT_DRAWABLE_WIDTH = 640;
+    static constexpr foundation::int32 DEFAULT_DRAWABLE_HEIGHT = 480;
+    QSize mDrawableSize{DEFAULT_DRAWABLE_WIDTH, DEFAULT_DRAWABLE_HEIGHT};
     foundation::uint32 RequestedWidth_ = 640, RequestedHeight_ = 480;
     bool RestoredOrbit_ = false;
     QString CameraId_;

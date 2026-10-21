@@ -81,7 +81,9 @@ struct PackageOptions final
 {
     uint8 Interface = HOST_INTERFACE;
     uint8 Generation = 1;
-    uint32 Version = format::LEGACY_PACKAGE_VERSION;
+    uint32 Version = format::PACKAGE_VERSION;
+    uint32 ViewNumerator = 0;
+    uint32 ViewDenominator = 1;
     uint32 Backing = 0;
     std::string_view PassName = "Scene/Opaque";
     bool HasDepthStages = true;
@@ -148,6 +150,11 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
         inoutWriter.WriteWord(options.Backing);
         inoutWriter.WriteWord(0);
         inoutWriter.WriteWord(aspect == 0 ? 1 : 0);
+        if (options.Version >= format::PACKAGE_VERSION)
+        {
+            inoutWriter.WriteWord(options.ViewNumerator);
+            inoutWriter.WriteWord(options.ViewDenominator);
+        }
     }
     inoutWriter.WriteWord(0);
     for (const uint32 value : {static_cast<uint32>(format::Technique::ColorAndDepth),
@@ -209,7 +216,7 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
-    if (options.Version == format::PACKAGE_VERSION)
+    if (options.Version >= format::NAMED_PACKAGE_VERSION)
     {
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
         writer.WritePadded(options.PassName);
@@ -252,6 +259,8 @@ Array<uint8> MakeMultiTargetPackageBytes(std::string_view vertexSpirv, bool hasF
     }
     WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::Wgsl, FRAGMENT_TEXT, "FragmentMain");
     WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::GlslEs, GLSL_TEXT, "main");
+    writer.WriteWord(static_cast<uint32>(PackageOptions{}.PassName.size()));
+    writer.WritePadded(PackageOptions{}.PassName);
     return Move(writer.Bytes);
 }
 core::UniquePtr<renderer::RenderGraphPackage> MakePackage(const PackageOptions& options)
@@ -730,6 +739,8 @@ TEST_CASE("RG3 runtime packages carry GLSL ES block names and reject malformed u
                    FRAGMENT_TEXT,
                    "FragmentMain",
                    blockTarget == format::ShaderTarget::Wgsl ? block : std::string_view{});
+        writer.WriteWord(static_cast<uint32>(options.PassName.size()));
+        writer.WritePadded(options.PassName);
         return Move(writer.Bytes);
     };
     const Array<uint8> valid = makeBytes(format::ShaderTarget::GlslEs, BLOCK_NAME);
@@ -916,4 +927,72 @@ TEST_CASE("runtime generation owns validated authored GPU pass names", "[rendere
     renderer::RenderGraphPackage rejected;
     CHECK(rejected.Decode({truncated.GetData(), truncated.GetSize() - 1}) ==
           renderer::RenderGraphPackageStatus::Malformed);
+}
+
+TEST_CASE("runtime packages preserve relative policies and decode fixed legacy versions",
+          "[render-graph][activation][size]")
+{
+    for (const uint32 version :
+         {format::LEGACY_PACKAGE_VERSION, format::NAMED_PACKAGE_VERSION, format::PACKAGE_VERSION})
+    {
+        PackageOptions options;
+        options.Version = version;
+        options.ViewNumerator = 1;
+        options.ViewDenominator = 2;
+        const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
+        const format::Resource& resource = package->GetPlan().Resources[0];
+        CHECK(resource.ViewNumerator == (version == format::PACKAGE_VERSION ? 1 : 0));
+        CHECK(resource.ViewDenominator == (version == format::PACKAGE_VERSION ? 2 : 1));
+        CHECK(package->GetPlan().PassNames.IsEmpty() == (version == format::LEGACY_PACKAGE_VERSION));
+    }
+    PackageOptions invalid;
+    invalid.ViewNumerator = 1;
+    invalid.ViewDenominator = 0;
+    CHECK(DecodeBytes(MakePackageBytes(invalid)) == renderer::RenderGraphPackageStatus::Malformed);
+}
+
+TEST_CASE("activation resizes a relative generation without staging another shader generation",
+          "[render-graph][activation][size]")
+{
+    ActivationFixture fixture;
+    REQUIRE(fixture.Activation.Resize(96, 64) == rhi::RasterStatus::Ready);
+    PackageOptions options;
+    options.ViewNumerator = 1;
+    REQUIRE(fixture.Activation.Stage(MakePackage(options)) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    fixture.Render();
+    rhi::reference::Completed = rhi::reference::Submitted;
+    const uint64 serial = fixture.Activation.GetReport().ActiveGeneration;
+    REQUIRE(fixture.Activation.Resize(193, 129) == rhi::RasterStatus::Pending);
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == serial);
+    format::Resource resource{};
+    REQUIRE(fixture.Activation.GetActiveOrNull()->GetResourceDescription(0, resource) == true);
+    CHECK(resource.Width == 193);
+    CHECK(resource.Height == 129);
+    CHECK(fixture.Activation.Resize(0, 0) == rhi::RasterStatus::NotReady);
+}
+
+TEST_CASE("resizing a staged generation requests its first extraction before activation",
+          "[render-graph][activation][size]")
+{
+    ActivationFixture fixture;
+    REQUIRE(fixture.Activation.Resize(96, 64) == rhi::RasterStatus::Ready);
+    PackageOptions options;
+    options.ViewNumerator = 1;
+    REQUIRE(fixture.Activation.Stage(MakePackage(options)) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Resize(193, 129) == rhi::RasterStatus::Pending);
+    CHECK(fixture.Activation.Poll() == rhi::RasterStatus::Pending);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 0);
+    CHECK(fixture.Activation.GetReport().Candidate == renderer::RenderGraphCandidateState::NeedsUpdate);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.GetActiveOrNull() != nullptr);
+    format::Resource resource{};
+    REQUIRE(fixture.Activation.GetActiveOrNull()->GetResourceDescription(0, resource) == true);
+    CHECK(resource.Width == 193);
 }

@@ -380,7 +380,8 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         }
         const format::Resource& backing = plan.Resources[resource.Backing];
         if (backing.Backing != resource.Backing || backing.Width != resource.Width ||
-            backing.Height != resource.Height || backing.IsSurface != resource.IsSurface ||
+            backing.Height != resource.Height || backing.ViewNumerator != resource.ViewNumerator ||
+            backing.ViewDenominator != resource.ViewDenominator || backing.IsSurface != resource.IsSurface ||
             (resource.Kind == format::Aspect::Color && resource.Backing != i) ||
             (resource.IsExported == 1 && resource.IsSurface == 1))
         {
@@ -509,6 +510,45 @@ bool IsExportBacking(BorrowedView<const format::Resource> resources, usize backi
     return isExported;
 }
 } // namespace
+Status ResolveRenderGraphResource(const format::Resource& resource,
+                                  uint32 referenceWidth,
+                                  uint32 referenceHeight,
+                                  format::Resource& outResource) noexcept
+{
+    if (resource.ViewDenominator == 0 || resource.ViewDenominator > format::MAX_TARGET_EXTENT ||
+        resource.ViewNumerator > format::MAX_TARGET_EXTENT)
+    {
+        return Status::InvalidDescription;
+    }
+    format::Resource resolved = resource;
+    if (resource.ViewNumerator != 0)
+    {
+        if (referenceWidth == 0 || referenceHeight == 0)
+        {
+            return Status::NotReady;
+        }
+        const uint64 width =
+            (uint64{referenceWidth} * resource.ViewNumerator + resource.ViewDenominator - 1) / resource.ViewDenominator;
+        const uint64 height = (uint64{referenceHeight} * resource.ViewNumerator + resource.ViewDenominator - 1) /
+                              resource.ViewDenominator;
+        if (width > format::MAX_TARGET_EXTENT || height > format::MAX_TARGET_EXTENT)
+        {
+            return Status::CapacityExceeded;
+        }
+        resolved.Width = static_cast<uint32>(width);
+        resolved.Height = static_cast<uint32>(height);
+    }
+    if (resolved.Width == 0 || resolved.Height == 0)
+    {
+        return Status::InvalidDescription;
+    }
+    if (resolved.Width > format::MAX_TARGET_EXTENT || resolved.Height > format::MAX_TARGET_EXTENT)
+    {
+        return Status::CapacityExceeded;
+    }
+    outResource = resolved;
+    return Status::Ready;
+}
 struct RenderGraph::State final
 {
     rhi::DeviceHandle Device{};
@@ -529,6 +569,56 @@ struct RenderGraph::State final
     StaticArray<bool, format::MAX_RESOURCES> IsPooled{};
     RenderGraphAttachmentPool* PoolOrNull = nullptr;
     RenderGraphAllocationReport Allocation{};
+    struct AttachmentReplacement final
+    {
+        rhi::DeviceHandle Device{};
+        RenderGraphAttachmentPool* PoolOrNull = nullptr;
+        uint32 Count = 0;
+        StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
+        StaticArray<rhi::TextureHandle, format::MAX_RESOURCES> Textures{};
+        StaticArray<bool, format::MAX_RESOURCES> IsPooled{};
+        ~AttachmentReplacement() noexcept
+        {
+            for (usize i = 0; i < Count; ++i)
+            {
+                if (IsPooled[i] == true && internal::RenderGraphPoolAccess::IsBound(*PoolOrNull) == true)
+                {
+                    internal::RenderGraphPoolAccess::Release(*PoolOrNull,
+                                                             MakeAttachmentDescription(Resources[i]),
+                                                             Textures[i]);
+                }
+                else
+                {
+                    static_cast<void>(rhi::Destroy(Device, Textures[i]));
+                }
+            }
+        }
+    };
+    core::UniquePtr<AttachmentReplacement> Resizing;
+    /// Commit only beside the scene prepared for these dimensions. The local retired set
+    /// releases old leases through RHI completion, using the same pool ownership ledger.
+    void PublishResize() noexcept
+    {
+        if (Resizing.Get() == nullptr)
+        {
+            return;
+        }
+        for (usize i = 0; i < Header.ResourceCount; ++i)
+        {
+            const format::Resource resource = Resources[i];
+            const rhi::TextureHandle texture = Textures[i];
+            const bool isPooled = IsPooled[i];
+            Resources[i] = Resizing->Resources[i];
+            Textures[i] = Resizing->Textures[i];
+            IsPooled[i] = Resizing->IsPooled[i];
+            Resizing->Resources[i] = resource;
+            Resizing->Textures[i] = texture;
+            Resizing->IsPooled[i] = isPooled;
+        }
+        Resizing.Reset();
+        HasValidOutput = false;
+        OutputRevision = 0;
+    }
     StaticArray<Renderer, format::TECHNIQUE_COUNT> Contexts{};
     StaticArray<bool, format::TECHNIQUE_COUNT> IsUsed{};
     StaticArray<bool, format::TECHNIQUE_COUNT> HasViews{};
@@ -641,6 +731,22 @@ struct RenderGraph::State final
     }
     Status PollScene(Scene& inoutScene) noexcept
     {
+        if (Resizing.Get() != nullptr)
+        {
+            for (usize i = 0; i < Resizing->Count; ++i)
+            {
+                if (Resizing->Resources[i].Backing == i && Resizing->Resources[i].IsSurface == 0)
+                {
+                    const Status ready = rhi::GetStatus(Device, Resizing->Textures[i]);
+                    if (ready != Status::Ready)
+                    {
+                        return ready;
+                    }
+                }
+            }
+        }
+        const StaticArray<format::Resource, format::MAX_RESOURCES>& preparingResources =
+            Resizing.Get() != nullptr ? Resizing->Resources : Resources;
         for (usize context = 0; context < format::TECHNIQUE_COUNT; ++context)
         {
             if (IsUsed[context] == false)
@@ -685,12 +791,13 @@ struct RenderGraph::State final
             {
                 if (inoutScene.HasViews[i] == false)
                 {
-                    const Status created = inoutScene.RayPasses[i].Initialize(context,
-                                                                              Device,
-                                                                              inoutScene.Snapshots[i],
-                                                                              inoutScene.Cameras[Passes[i].Camera],
-                                                                              Resources[Passes[i].Color].Width,
-                                                                              Resources[Passes[i].Color].Height);
+                    const Status created =
+                        inoutScene.RayPasses[i].Initialize(context,
+                                                           Device,
+                                                           inoutScene.Snapshots[i],
+                                                           inoutScene.Cameras[Passes[i].Camera],
+                                                           preparingResources[Passes[i].Color].Width,
+                                                           preparingResources[Passes[i].Color].Height);
                     if (IsAccepted(created) == false)
                     {
                         return created;
@@ -798,6 +905,7 @@ struct RenderGraph::State final
     ~State() noexcept
     {
         Pending.Reset();
+        Resizing.Reset();
         Current.Reset();
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
@@ -822,9 +930,11 @@ void RenderGraph::Reset() noexcept
     mState.Reset();
 }
 Status RenderGraph::Initialize(rhi::DeviceHandle device,
-                               const RenderGraphPlan& plan,
+                               const RenderGraphPlan& sourcePlan,
                                const RenderGraphPrograms& programs,
-                               RenderGraphAttachmentPool* poolOrNull) noexcept
+                               RenderGraphAttachmentPool* poolOrNull,
+                               uint32 referenceWidth,
+                               uint32 referenceHeight) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -839,6 +949,22 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidDescription;
     }
+    StaticArray<format::Resource, format::MAX_RESOURCES> resolvedResources{};
+    if (sourcePlan.Resources.IsValid() == false || sourcePlan.Resources.GetSize() > format::MAX_RESOURCES)
+    {
+        return Status::InvalidDescription;
+    }
+    for (usize i = 0; i < sourcePlan.Resources.GetSize(); ++i)
+    {
+        status =
+            ResolveRenderGraphResource(sourcePlan.Resources[i], referenceWidth, referenceHeight, resolvedResources[i]);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+    }
+    RenderGraphPlan plan = sourcePlan;
+    plan.Resources = {resolvedResources.GetData(), sourcePlan.Resources.GetSize()};
     status = ValidatePlan(plan);
     if (status != Status::Ready)
     {
@@ -1013,6 +1139,111 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     }
     return status;
 }
+Status RenderGraph::Resize(uint32 referenceWidth, uint32 referenceHeight) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (state.HasOpenFrame == true || state.HasExternalRecording == true || HasUnconfirmedEncoding() == true)
+    {
+        return Status::InvalidState;
+    }
+    if (referenceWidth == 0 || referenceHeight == 0)
+    {
+        return Status::NotReady;
+    }
+    StaticArray<format::Resource, format::MAX_RESOURCES> resources{};
+    bool hasChanges = false;
+    bool isSameRequest = state.Resizing.Get() != nullptr;
+    for (usize i = 0; i < state.Header.ResourceCount; ++i)
+    {
+        const Status resolved =
+            ResolveRenderGraphResource(state.Resources[i], referenceWidth, referenceHeight, resources[i]);
+        if (resolved != Status::Ready)
+        {
+            state.Pending.Reset();
+            state.Resizing.Reset();
+            return resolved;
+        }
+        hasChanges = hasChanges == true || resources[i].Width != state.Resources[i].Width ||
+                     resources[i].Height != state.Resources[i].Height;
+        isSameRequest = isSameRequest == true && resources[i].Width == state.Resizing->Resources[i].Width &&
+                        resources[i].Height == state.Resizing->Resources[i].Height;
+    }
+    if (isSameRequest == true)
+    {
+        return Status::Pending;
+    }
+    if (hasChanges == false)
+    {
+        if (state.Resizing.Get() != nullptr)
+        {
+            state.Pending.Reset();
+            state.Resizing.Reset();
+        }
+        return Status::Ready;
+    }
+    state.Pending.Reset();
+    state.Resizing.Reset();
+    State::AttachmentReplacement* allocationOrNull = new (std::nothrow) State::AttachmentReplacement;
+    core::UniquePtr<State::AttachmentReplacement> candidate{allocationOrNull};
+    if (candidate.Get() == nullptr)
+    {
+        return Status::OutOfMemory;
+    }
+    candidate->Device = state.Device;
+    candidate->PoolOrNull = state.PoolOrNull;
+    candidate->Count = state.Header.ResourceCount;
+    candidate->Resources = resources;
+    const BorrowedView<const format::Resource> descriptions{resources.GetData(), state.Header.ResourceCount};
+    for (usize i = 0; i < state.Header.ResourceCount; ++i)
+    {
+        if (resources[i].Backing != i || resources[i].IsSurface == 1)
+        {
+            continue;
+        }
+        const rhi::TextureDescription description = MakeAttachmentDescription(resources[i]);
+        const bool isExported = IsExportBacking(descriptions, i);
+        Status allocated = Status::Ready;
+        if (state.PoolOrNull != nullptr && isExported == false)
+        {
+            bool isReused = false;
+            allocated = internal::RenderGraphPoolAccess::Acquire(*state.PoolOrNull,
+                                                                 description,
+                                                                 candidate->Textures[i],
+                                                                 isReused);
+            candidate->IsPooled[i] = IsAccepted(allocated);
+            state.Allocation.ReusedAllocations += isReused == true ? 1 : 0;
+            state.Allocation.CreatedAllocations += isReused == false && IsAccepted(allocated) == true ? 1 : 0;
+        }
+        else
+        {
+            allocated = rhi::CreateTexture(state.Device, description, {}, candidate->Textures[i]);
+            state.Allocation.CreatedAllocations += IsAccepted(allocated) == true ? 1 : 0;
+        }
+        if (IsAccepted(allocated) == false)
+        {
+            return allocated;
+        }
+    }
+    state.Resizing.Swap(candidate);
+    return Status::Pending;
+}
+bool RenderGraph::HasPendingResize() const noexcept
+{
+    return mState.Get() != nullptr && mState->Resizing.Get() != nullptr;
+}
+bool RenderGraph::GetResourceDescription(uint32 resource, format::Resource& outResource) const noexcept
+{
+    if (mState.Get() == nullptr || resource >= mState->Header.ResourceCount)
+    {
+        return false;
+    }
+    outResource = mState->Resources[resource];
+    return true;
+}
 Status RenderGraph::Poll() noexcept
 {
     if (mState.Get() == nullptr)
@@ -1097,6 +1328,7 @@ Status RenderGraph::Poll() noexcept
         const Status ready = state.PollScene(*state.Pending);
         if (ready == Status::Ready)
         {
+            state.PublishResize();
             state.Current.Swap(state.Pending);
             state.Pending.Reset();
             if (state.Report.IsAccepted == true && state.Report.SceneRevision == state.Current->Revision)
@@ -1111,6 +1343,7 @@ Status RenderGraph::Poll() noexcept
                 state.Report.IsReady = false;
             }
             state.Pending.Reset();
+            state.Resizing.Reset();
         }
         return ready;
     }
@@ -1453,6 +1686,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             candidate->Items[pass][candidate->Counts[pass]++] = drawing;
         }
     }
+    const StaticArray<format::Resource, format::MAX_RESOURCES>& preparingResources =
+        state.Resizing.Get() != nullptr ? state.Resizing->Resources : state.Resources;
     const RenderGraphSceneDescription rayScene{
         meshes,
         items,
@@ -1474,8 +1709,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                                                   state.Device,
                                                   {},
                                                   cameras[operation.Camera],
-                                                  state.Resources[operation.Color].Width,
-                                                  state.Resources[operation.Color].Height,
+                                                  preparingResources[operation.Color].Width,
+                                                  preparingResources[operation.Color].Height,
                                                   &rayScene);
         if (IsAccepted(created) == false)
         {
@@ -1493,6 +1728,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     state.Report.IsReady = prepared == Status::Ready;
     if (prepared == Status::Ready)
     {
+        state.PublishResize();
         state.Current.Swap(candidate);
         state.Pending.Reset();
     }

@@ -14,6 +14,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGraphicsScene>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
@@ -127,6 +128,8 @@ TEST_CASE("Create Node menus author every supported type inside an empty library
     CHECK(kinds.contains(QStringLiteral("Subgraph")) == true);
     for (const QString& kind : kinds)
     {
+        INFO(kind.toStdString());
+        INFO(shouldUseTree);
         // A file row still resolves to its displayed default configuration.
         static_cast<void>(workspace.SelectNode(library, {}, {}));
         const QByteArray before = workspace.GetDocument().GetDraft(library);
@@ -145,7 +148,13 @@ TEST_CASE("Create Node menus author every supported type inside an empty library
         else
         {
             RenderGraphCanvas& canvas = workspace.GetCanvas();
-            const QPoint position(1, 1);
+            // Inspector widths and graph auto-fit can put a port at (1, 1). Pick
+            // actual background beyond the authored items instead of a fixed pixel.
+            const QPointF background = canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100);
+            canvas.centerOn(background);
+            const QPoint position = canvas.mapFromScene(background);
+            REQUIRE(canvas.viewport()->rect().contains(position) == true);
+            REQUIRE(canvas.itemAt(position) == nullptr);
             QContextMenuEvent context(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
             QCoreApplication::sendEvent(canvas.viewport(), &context);
         }

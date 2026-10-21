@@ -842,3 +842,139 @@ TEST_CASE("RG2 masked depth needs its own authored coverage function and matchin
     CHECK(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Unsupported);
     CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) == rhi::RasterStatus::Ready);
 }
+
+TEST_CASE("view-relative resource resolution is bounded and independent of graph instances", "[render-graph][size]")
+{
+    format::Resource source{640, 480, format::Aspect::Color, 0, 0, 1, 1, 2};
+    format::Resource first{};
+    format::Resource second{};
+    REQUIRE(renderer::ResolveRenderGraphResource(source, 193, 129, first) == rhi::RasterStatus::Ready);
+    CHECK(first.Width == 97);
+    CHECK(first.Height == 65);
+    REQUIRE(renderer::ResolveRenderGraphResource(source, 3840, 2160, second) == rhi::RasterStatus::Ready);
+    CHECK(second.Width == 1920);
+    CHECK(second.Height == 1080);
+    CHECK(first.Width == 97);
+    CHECK(source.Width == 640);
+    CHECK(renderer::ResolveRenderGraphResource(source, 0, 129, first) == rhi::RasterStatus::NotReady);
+    CHECK(first.Width == 97);
+    CHECK(renderer::ResolveRenderGraphResource(source, ~uint32{0}, ~uint32{0}, first) ==
+          rhi::RasterStatus::CapacityExceeded);
+    CHECK(first.Height == 65);
+    source.ViewDenominator = 0;
+    CHECK(renderer::ResolveRenderGraphResource(source, 1, 1, first) == rhi::RasterStatus::InvalidDescription);
+    source.ViewDenominator = 4;
+    REQUIRE(renderer::ResolveRenderGraphResource(source, 1, 1, first) == rhi::RasterStatus::Ready);
+    CHECK(first.Width == 1);
+    CHECK(first.Height == 1);
+    source.ViewNumerator = 0;
+    REQUIRE(renderer::ResolveRenderGraphResource(source, 0, 0, first) == rhi::RasterStatus::Ready);
+    CHECK(first.Width == 640); // Fixed-resolution export ignores the drawable view.
+}
+
+TEST_CASE("resize publishes resources with a ready scene and creates no shader or pipeline", "[render-graph][size]")
+{
+    GraphFixture fixture;
+    for (format::Resource& resource : fixture.Resources)
+    {
+        resource.ViewNumerator = 1;
+        resource.ViewDenominator = 2;
+    }
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, fixture.MakePlan(), fixture.MakePrograms(), nullptr, 192, 128) ==
+            rhi::RasterStatus::Ready);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    const usize shaders = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)];
+    const usize pipelines = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Pipeline)];
+    REQUIRE(fixture.Graph.Resize(193, 129) == rhi::RasterStatus::Pending);
+    REQUIRE(fixture.Graph.HasPendingResize() == true);
+    format::Resource drawing{};
+    REQUIRE(fixture.Graph.GetResourceDescription(0, drawing) == true);
+    CHECK(drawing.Width == 96);
+    rhi::TextureHandle oldOutput;
+    rhi::TextureAspect aspect;
+    REQUIRE(fixture.Graph.GetExport(0, oldOutput, aspect) == rhi::RasterStatus::Ready);
+    // Same request does not discard pending preparation or allocate again.
+    const usize textures = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Texture)];
+    CHECK(fixture.Graph.Resize(193, 129) == rhi::RasterStatus::Pending);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Texture)] == textures);
+    CHECK(fixture.Graph.Resize(0, 0) == rhi::RasterStatus::NotReady);
+    // A newer request supersedes it; a failed request cannot later publish the older dimensions.
+    REQUIRE(fixture.Graph.Resize(401, 301) == rhi::RasterStatus::Pending);
+    CHECK(fixture.Graph.Resize(~uint32{0}, 301) == rhi::RasterStatus::CapacityExceeded);
+    CHECK(fixture.Graph.HasPendingResize() == false);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 1);
+    REQUIRE(fixture.Graph.GetExport(0, oldOutput, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Graph.Resize(193, 129) == rhi::RasterStatus::Pending);
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready); // Same World revision, new resolution.
+    CHECK(fixture.Graph.HasPendingResize() == false);
+    REQUIRE(fixture.Graph.GetResourceDescription(0, drawing) == true);
+    CHECK(drawing.Width == 97);
+    CHECK(drawing.Height == 65);
+    REQUIRE(fixture.Graph.GetResourceDescription(1, drawing) == true);
+    CHECK(drawing.Width == 97);
+    CHECK(fixture.Graph.GetExport(0, oldOutput, aspect) == rhi::RasterStatus::NotReady);
+    completion = {};
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaders);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Pipeline)] == pipelines);
+}
+
+TEST_CASE("pending resize and failed attachment creation preserve the drawable output", "[render-graph][size]")
+{
+    GraphFixture fixture;
+    for (format::Resource& resource : fixture.Resources)
+    {
+        resource.ViewNumerator = 1;
+    }
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, fixture.MakePlan(), fixture.MakePrograms(), nullptr, 96, 64) ==
+            rhi::RasterStatus::Ready);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    rhi::reference::Next = rhi::RasterStatus::OutOfMemory;
+    CHECK(fixture.Graph.Resize(193, 129) == rhi::RasterStatus::OutOfMemory);
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    rhi::TextureHandle output;
+    rhi::TextureAspect aspect;
+    CHECK(fixture.Graph.GetExport(0, output, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Graph.Resize(193, 129) == rhi::RasterStatus::Pending);
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    REQUIRE(fixture.Update(report, renderer::RenderGraphCoveragePolicy::RejectIncomplete, 2) ==
+            rhi::RasterStatus::Pending);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 1);
+    CHECK(fixture.Graph.GetExport(0, output, aspect) == rhi::RasterStatus::Ready);
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    for (usize i = 0; i < rhi::reference::PendingCount; ++i)
+    {
+        rhi::internal::RasterComplete(rhi::reference::PendingRequests[i], rhi::RasterStatus::Ready);
+    }
+    REQUIRE(fixture.Graph.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+    format::Resource drawing{};
+    REQUIRE(fixture.Graph.GetResourceDescription(0, drawing) == true);
+    CHECK(drawing.Width == 193);
+    completion = {};
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    REQUIRE(fixture.Graph.Resize(257, 193) == rhi::RasterStatus::Pending);
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    REQUIRE(fixture.Update(report, renderer::RenderGraphCoveragePolicy::RejectIncomplete, 3) ==
+            rhi::RasterStatus::Pending);
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    for (usize i = 0; i < rhi::reference::PendingCount; ++i)
+    {
+        rhi::internal::RasterComplete(rhi::reference::PendingRequests[i], rhi::RasterStatus::Failed);
+    }
+    CHECK(fixture.Graph.Poll() == rhi::RasterStatus::Failed);
+    CHECK(fixture.Graph.HasPendingResize() == false);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+    CHECK(fixture.Graph.GetExport(0, output, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Graph.GetResourceDescription(0, drawing) == true);
+    CHECK(drawing.Width == 193);
+}

@@ -163,7 +163,7 @@ outputs. It is distinct from GPU textures/buffers and shader parameters, and it
 cannot be an Export/Present or root configuration output. Subgraphs resolve sizes
 through each caller's bindings. No size node allocates a GPU resource or creates
 a shader program; the compiled Plan and generated SDK resources contain concrete
-numeric extents.
+numeric nominal extents and, for view-relative targets, their scale policy.
 
 Texture compatibility belongs to the operation using the texture. The current
 color/depth raster operation requires equal attachment extents and sample counts;
@@ -180,8 +180,56 @@ Bounded editor inference defers unknown contracts to build validation, which che
 the selected concrete graph instance. Existing unrelated draft problems do not
 block an otherwise compatible new connection. This is not a universal same-size
 rule for sampled textures; future resize/composite operations need their own
-declared relationships. View-relative full/half presets, adaptive resolution and
-runtime resizing remain separate work.
+declared relationships. Adaptive resolution and arbitrary texture resampling remain
+separate work.
+
+Choose **Full view**, **Half view**, **Quarter view**, or **Custom view scale** in
+the RenderSize node's extent control. The same controls are available from the
+canvas node menu with Properties hidden. Half view scales both dimensions, so it
+uses one quarter of the full-view pixel count. Custom scale is a positive integer
+numerator/denominator; each component is at most 16384. The source representation is:
+
+```json
+{"id": "scene_size", "kind": "RenderSize",
+ "extent": {"reference": "View", "scale": [1, 2]}}
+```
+
+The reference belongs to each viewport or export request, in **drawable pixels**
+(after display scaling, before render scaling), rather than to the project or a
+particular output texture. Each dimension resolves with integer ceiling; a
+193 × 129 view at half size produces 97 × 65 attachments. A positive reference
+always produces at least one pixel. Resolved dimensions above 16384 or the device's
+attachment limit reject. Zero/minimized view sizes suspend new work and retain the
+last view. Fixed targets ignore the reference, so a 1920 × 1080 export stays fixed
+while the window changes. Independent graph instances supply independent references.
+
+The compiler normalizes scale fractions, propagates them through texture metadata
+and subgraph bindings, and retains them in generated plans/runtime packages.
+Attachment compatibility compares policies as well as nominal dimensions: a fixed
+320 × 240 image and a half-view image are not guaranteed to match. Relative ray
+outputs require **Match color target**, since an explicit launch cannot cover
+every reference size.
+
+For direct SDK use, pass the drawable width/height after the optional pool argument
+to `RenderGraph::Initialize`. For `RenderGraphActivation`, call `Resize(width, height)`
+before `Stage`. Supply an explicit reference for an offscreen export that uses a
+relative policy; no global window is inferred. On a later view change, finish
+outstanding export/readback consumers, call `Resize`, then `Update` with the current
+World/camera extraction (even if the scene revision did not change), and `Poll`
+between frames. `HasPendingResize` reports resource preparation. Repeated identical
+requests reuse the pending candidate; a newer request supersedes it. Read the actual
+published extent through `GetResourceDescription`.
+
+Resize allocates a candidate attachment set and prepares its scene beside the
+current one. It reuses existing shader/pipeline contexts, with no offline compiler,
+source rewrite or shader variant. The replacement attachments and scene publish
+together only when Ready. Pending or failed replacement keeps the old drawable
+scene and the editor's last completed image; retired GPU resources follow the
+existing RHI completion/pool ledger. The editor reads physical viewport dimensions
+before its ordinary edit-preview cap, and updates target inspection dimensions
+only after publication. Resolution changes create fresh ray jobs and reset their
+accumulation. The current profile has no persistent temporal/history imports;
+those remain rejected rather than retaining incompatible history across resize.
 
 ## Execute a triangle ray pipeline
 
@@ -295,9 +343,8 @@ can report an incomplete draft's interface without requiring execution-ready inp
 Compilation never removes or rewrites unused authored nodes, ports or wires.
 
 The target-derived launch mode uses each target's resolved extent, including
-[shared render sizes](#share-render-sizes). View-relative full/half resolution
-presets, runtime resize and adaptive resolution are not implemented by this mode;
-the World viewport still follows the target/resize limitations documented below.
+[shared and view-relative render sizes](#share-render-sizes). Runtime launch coverage
+follows the instantiated color extent; adaptive resolution remains separate work.
 
 The profile admits one ray invocation per configuration and the existing graph
 mesh/item limits. It rejects native ray payloads, recursive tracing, additional hit groups,
@@ -572,7 +619,9 @@ Limits:
   it has no local shader compiler or native runtime-graph preview.
 - The current runtime profile and CPU interface identity restrictions below still apply.
   The default uses 640×360 targets. Target extents come from the graph; resizing the World
-  widget scales that output and preserves its aspect ratio, rather than rewriting project data.
+  widget scales a fixed output and preserves its aspect ratio. Connect its targets to a
+  view-relative RenderSize to resize their resource instances with the drawable view;
+  neither path rewrites project data.
 - Graph output uses the existing asynchronous GPU readback path. Navigation remains live,
   but this is not the Qt shared-texture presentation path; no zero-copy performance is claimed.
 - Opening or saving an unedited default writes nothing. Project loading never bootstraps
@@ -706,7 +755,8 @@ Root execution configurations cannot contain unbound interface inputs.
 | --- | --- | --- |
 | Scene | None | Outputs `scene: Scene`; declares a future scene-snapshot binding |
 | Camera | `active`, `role` (`Presentation` or `Offscreen`), `target_type` | Input `target` of the specified texture type; output `view: View`. An inactive camera may leave target unbound and needs no route, but cannot drive a raster pass |
-| Target | `type`, `format`, `extent: [width, height]`, `samples`, `imported`, `initialized`, `presentation` | Outputs `texture` of the specified texture type; names physical resource version 0 |
+| Target | `type`, `format`, `extent: [width, height]` or `"RenderSize"`, `samples`, `imported`, `initialized`, `presentation` | Optional `size: RenderSize` input; outputs `texture` of the specified texture type; names physical resource version 0 |
+| RenderSize (version 2) | Fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | Optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
 | Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
 | Subgraph | `asset`, `configuration` | Selected asset interface defines its input/output ports |
 | Export | `type` | Input `texture` matching ColorTexture or DepthTexture; external output root |
@@ -1378,8 +1428,9 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h` (layout version 2, with
-uniform binding/block/field records and GLSL ES block names). `emit-runtime`
+`ludus/content/render_graph_format/runtime_package.h` (layout version 4, with
+view-relative size policies, pass names, uniform binding/block/field records and
+GLSL ES block names; fixed-size versions 2 and 3 remain readable). `emit-runtime`
 headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
 interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to
 `ludus_compile_render_graph`; it sets `<NAME>_RUNTIME_PACKAGE` to the cooked file.

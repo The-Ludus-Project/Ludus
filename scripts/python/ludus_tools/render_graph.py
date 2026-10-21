@@ -117,6 +117,15 @@ def _ports(values, where, outputs=False, version=1):
             _boolean(port["required"], where)
 
 
+def _validate_size(extent, where):
+    if type(extent) is dict:
+        _keys(extent, {'reference', 'scale'}, where)
+        _enum(extent['reference'], ('View',), where)
+        _validate_extent(extent['scale'], where)
+    else:
+        _validate_extent(extent, where)
+
+
 def _validate_extent(extent, where):
     _require(type(extent) is list and len(extent) == 2,
              'Schema', where, 'extent must contain width and height in pixels')
@@ -170,7 +179,7 @@ def _validate_node(node, where):
                  "TypeMismatch", where, "presentation requires an imported color target")
     elif kind == 'RenderSize':
         if node['extent'] != 'Texture':
-            _validate_extent(node['extent'], where)
+            _validate_size(node['extent'], where)
     elif kind == "Raster":
         _enum(node["mode"], MODES, where)
         _enum(node["vertex_layout"], ("RendererStatic",), where)
@@ -534,6 +543,7 @@ class _Value:
     producer: str | None = None
     cameras: tuple[str, ...] = ()
     extent: tuple[int, ...] = ()
+    scale: tuple[int, ...] = ()
 
 
 class _Compiler:
@@ -604,12 +614,27 @@ class _Compiler:
                     ("type", "format", "extent", "samples", "imported", "initialized", "presentation")}
                 if node['extent'] == 'RenderSize':
                     self.resources[where]['extent'] = list(inputs['size'].extent)
+                    if inputs['size'].scale:
+                        self.resources[where]['view_scale'] = list(inputs['size'].scale)
                 self.latest[where] = 0
                 outputs["texture"] = _Value(node["type"], origin=where, resource=where, defined=node["initialized"])
             elif kind == 'RenderSize':
                 extent = (self.resources[inputs['texture'].resource]['extent']
                           if node['extent'] == 'Texture' else node['extent'])
-                outputs['size'] = _Value('RenderSize', origin=where, extent=tuple(extent))
+                scale = ()
+                if node['extent'] == 'Texture':
+                    scale = tuple(self.resources[inputs['texture'].resource].get('view_scale', ()))
+                elif type(extent) is dict:
+                    from math import gcd
+                    numerator, denominator = extent['scale']
+                    divisor = gcd(numerator, denominator)
+                    scale = (numerator // divisor, denominator // divisor)
+                    # Bounded nominal dimensions keep offline reports readable. They do not
+                    # constrain the caller's actual reference; runtime validates that instance.
+                    extent = [min(MAX_TARGET_EXTENT, max(1, (dimension * scale[0] + scale[1] - 1) // scale[1]))
+                              for dimension in (640, 480)]
+                    _validate_extent(extent, where)
+                outputs['size'] = _Value('RenderSize', origin=where, extent=tuple(extent), scale=scale)
             elif kind == "Camera":
                 camera = {"id": where, "active": node["active"], "role": node["role"],
                           "target": inputs["target"].resource if "target" in inputs else None}
@@ -626,10 +651,12 @@ class _Compiler:
                          'Capability', where, 'ray pipeline requires an offscreen single-sample RGBA8Unorm target')
                 dimensions = authored_pipeline['invocation']['dimensions']
                 expected_dimensions = [*target['extent'], 1]
-                _require(dimensions == 'ColorTarget' or dimensions == expected_dimensions,
+                _require(dimensions == 'ColorTarget' or (not target.get('view_scale') and dimensions == expected_dimensions),
                          'AttachmentMismatch', where,
-                         f"Ray launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
-                         f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}.")
+                         (f"Color target '{inputs['color'].resource}' is view-relative; explicit launch dimensions {dimensions} "
+                          'cannot follow view changes. Choose Match color target in Invocation.' if target.get('view_scale') else
+                          f"Ray launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
+                          f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."))
                 value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
                 self.techniques.add(ray.TECHNIQUE)
                 self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
@@ -645,10 +672,11 @@ class _Compiler:
                 _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera")
                 if node["mode"] == "ColorAndDepth":
                     color, depth_target = (self.resources[inputs[aspect].resource] for aspect in ("color", "depth"))
-                    _require((color["extent"], color["samples"]) == (depth_target["extent"], depth_target["samples"]),
+                    _require((color['extent'], color['samples'], color.get('view_scale')) == (depth_target['extent'], depth_target['samples'], depth_target.get('view_scale')),
                              "AttachmentMismatch", where,
                              f"Color target '{inputs['color'].resource}' has extent {color['extent']} and {color['samples']} samples; "
                              f"depth target '{inputs['depth'].resource}' has extent {depth_target['extent']} and {depth_target['samples']} samples. "
+                             f"Size policies: color {color.get('view_scale', 'Fixed')}, depth {depth_target.get('view_scale', 'Fixed')}. "
                              'This raster operation requires equal attachment extents and samples. Connect both targets to the same RenderSize, or use matching fixed sizes.')
                 for aspect in ("depth", "color") if node["mode"] == "ColorAndDepth" else ("depth",):
                     outputs[aspect] = self.write(inputs[aspect], node, aspect, where, inputs["view"].cameras)

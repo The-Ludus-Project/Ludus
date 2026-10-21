@@ -10,7 +10,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 2;
+inline constexpr foundation::uint32 VERSION = 3;
 /// Maximum authored passes in one admitted configuration.
 inline constexpr foundation::usize MAX_PASSES = 16;
 /// Maximum logical resources; depth may alias a color allocation's private aspect.
@@ -96,15 +96,21 @@ enum class Visibility : foundation::uint32
     Fragment = 2, ///< Read by the technique's fragment stage only.
     Both = 3,     ///< Read by both stages with one identical schema and layout.
 };
-/// Logical image requirement. Extents are pixels; no runtime native handle.
+/// Largest resolved image dimension and scale component admitted by graph authoring.
+inline constexpr foundation::uint32 MAX_TARGET_EXTENT = 16384;
+/// Logical image requirement. Fixed extents are pixels; relative extents carry
+/// nominal offline dimensions plus a rational scale of each view's drawable size.
+/// No runtime native handle. Width/Height are resolved per instance before allocation.
 struct Resource final
 {
-    foundation::uint32 Width;      ///< Positive physical width.
-    foundation::uint32 Height;     ///< Positive physical height.
-    Aspect Kind;                   ///< Color or depth aspect.
-    foundation::uint32 Backing;    ///< Index of the color/private-depth allocation owner; may name itself.
-    foundation::uint32 IsSurface;  ///< Zero or one; owner is the acquired presentation surface.
-    foundation::uint32 IsExported; ///< Zero or one; output may be leased after producer completion.
+    foundation::uint32 Width;               ///< Positive physical width.
+    foundation::uint32 Height;              ///< Positive physical height.
+    Aspect Kind;                            ///< Color or depth aspect.
+    foundation::uint32 Backing;             ///< Index of the color/private-depth allocation owner; may name itself.
+    foundation::uint32 IsSurface;           ///< Zero or one; owner is the acquired presentation surface.
+    foundation::uint32 IsExported;          ///< Zero or one; output may be leased after producer completion.
+    foundation::uint32 ViewNumerator = 0;   ///< Zero selects fixed Width/Height; otherwise scale numerator.
+    foundation::uint32 ViewDenominator = 1; ///< Positive scale denominator; both components at most MAX_TARGET_EXTENT.
 };
 /// Required destination for one active camera, verified independently of pass coverage.
 struct Camera final
@@ -163,7 +169,7 @@ struct Header final
     foundation::uint32 UniformBlockCount;   ///< Bounded per-target block table size.
     foundation::uint32 UniformFieldCount;   ///< Bounded per-target field table size.
 };
-static_assert(sizeof(Resource) == sizeof(foundation::uint32) * 6);
+static_assert(sizeof(Resource) == sizeof(foundation::uint32) * 8);
 static_assert(sizeof(Pass) == sizeof(foundation::uint32) * 9);
 static_assert(sizeof(Camera) == sizeof(foundation::uint32));
 static_assert(sizeof(UniformBinding) == sizeof(foundation::uint32) * 5);

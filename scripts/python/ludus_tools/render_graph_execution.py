@@ -25,7 +25,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -90,7 +90,9 @@ def lower_plan(package, configuration):
         resource_records.append({'Width': value['extent'][0], 'Height': value['extent'][1],
                                  'Kind': 'Color' if value['type'] == 'ColorTexture' else 'Depth',
                                  'Backing': resources.index(backing[resource]), 'IsSurface': int(parent['presentation']),
-                                 'IsExported': int(resource in output_resources)})
+                                 'IsExported': int(resource in output_resources),
+                                 'ViewNumerator': value.get('view_scale', [0, 1])[0],
+                                 'ViewDenominator': value.get('view_scale', [0, 1])[1]})
     pass_records = []
     color_defined = {r: False for r in resources}
     for operation in rasters:
@@ -126,7 +128,7 @@ STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 3
+PACKAGE_VERSION = 4
 MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
@@ -494,7 +496,8 @@ def encode_runtime_package(contents):
                          len(contents['blocks']), len(contents['fields']), len(stages)))
     data += bytes.fromhex(contents['interface_identity']) + bytes.fromhex(contents['generation'])
     for r in contents['resources']:
-        data += u32(r['Width'], r['Height'], aspects[r['Kind']], r['Backing'], r['IsSurface'], r['IsExported'])
+        data += u32(r['Width'], r['Height'], aspects[r['Kind']], r['Backing'], r['IsSurface'], r['IsExported'],
+                    r.get('ViewNumerator', 0), r.get('ViewDenominator', 1))
     for target in contents['camera_targets']:
         data += u32(target)
     for p in contents['passes']:
