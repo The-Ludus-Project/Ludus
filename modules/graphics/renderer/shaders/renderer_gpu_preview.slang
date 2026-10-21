@@ -40,7 +40,8 @@ float4 SceneValue(uint index)
     return asfloat(sceneWords[index]);
 }
 LUDUS_SHADER_BINDING(2) RWStructuredBuffer<float4> accumulation; // sum/count, compensation/error
-LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_COLORS_BINDING) RWStructuredBuffer<float4> colors;       // Encoded RGB and binary32-exact pixel index.
+LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_COLORS_BINDING)
+RWStructuredBuffer<float4> colors; // Encoded RGB and binary32-exact pixel index.
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_TEXELS_BINDING) StructuredBuffer<uint4> textureWords;
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING) RaytracingAccelerationStructure rayScene;
 // Mirrors the CPU reference path's addresses: Scope is the 32-bit pixel index,
