@@ -2149,7 +2149,6 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     {
         QPushButton* enable = new QPushButton(QStringLiteral("Enable Scene Materials"), &inoutParent);
         enable->setObjectName(QStringLiteral("renderGraphEnableSceneMaterials"));
-        enable->setEnabled(hasPendingSourceText() == false);
         enable->setToolTip(
             QStringLiteral("Upgrade the package's shared ray callbacks in one undoable edit. "
                            "Original shaders keep their behavior through adapters. Save publishes the change."));
@@ -2765,11 +2764,6 @@ void RendererWorkspace::activateSelectedNode()
 
 void RendererWorkspace::expandSceneBundle(bool isExpanded)
 {
-    if (hasPendingSourceText() == true)
-    {
-        mStatus->setText(QStringLiteral("Apply pending Source text before expanding Scene connections."));
-        return;
-    }
     if (isExpanded == true)
     {
         const RenderGraphDocumentStatus status =
@@ -2786,11 +2780,6 @@ void RendererWorkspace::expandSceneBundle(bool isExpanded)
 
 void RendererWorkspace::enableSceneMaterials()
 {
-    if (hasPendingSourceText() == true)
-    {
-        mStatus->setText(QStringLiteral("Apply or revert pending Source text before enabling scene materials."));
-        return;
-    }
     QString error;
     const RenderGraphDocumentStatus status = mDocument.EnableSceneMaterials(error);
     documentEdited(status);
@@ -2857,7 +2846,7 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         enable->setObjectName(QStringLiteral("renderGraphEnableSceneMaterialsAction"));
         const bool hasSceneMaterials =
             HasSceneRayInterface(QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object());
-        enable->setEnabled(hasSceneMaterials == false && hasPendingSourceText() == false);
+        enable->setEnabled(hasSceneMaterials == false);
         enable->setToolTip(
             QStringLiteral("Upgrade the package's shared ray callbacks, preserving original shader behavior. "
                            "Undo restores the previous interface; Save publishes the change."));
@@ -2869,7 +2858,6 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         expand->setObjectName(QStringLiteral("renderGraphExpandSceneBundleAction"));
         expand->setCheckable(true);
         expand->setChecked(mCanvas->IsSceneBundleExpanded(mSelectedNode));
-        expand->setEnabled(hasPendingSourceText() == false);
         connect(expand, &QAction::triggered, this, &RendererWorkspace::expandSceneBundle);
     }
     if (node.isEmpty() == false)
