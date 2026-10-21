@@ -3,6 +3,8 @@
 #include <ludus/foundation/profiling/perfetto_export.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 
+#include "internal/viewport_trace.h"
+
 #include <QObject>
 #include <QString>
 #include <QTimer>
@@ -84,6 +86,7 @@ private:
     foundation::Array<RecordedGpuSample> mSamples;
     foundation::Array<foundation::uint8> mSnapshot;
     foundation::profiling::GpuTraceCoverage mCoverage;
+    ViewportTraceSnapshot mViewportSnapshot;
     foundation::usize mCompletedSampleCount = 0;
     foundation::uint64 mStartedTicks = 0;
     foundation::uint64 mStoppedTicks = 0;

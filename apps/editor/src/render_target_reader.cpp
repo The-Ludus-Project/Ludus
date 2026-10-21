@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/graphics/rhi/graph.h>
 
 #include "editor_texture_depth_pack.h"
@@ -100,6 +101,7 @@ RenderTargetReadStatus RenderTargetReader::Poll() noexcept
         Cancel();
         return RenderTargetReadStatus::Failed;
     }
+    LUDUS_PROFILE_SCOPE(EditorReadbackCopyTextureBytes);
     const QImage image = mReader.TakeImage();
     InspectedTexture texture;
     texture.Encoding = mEncoding;

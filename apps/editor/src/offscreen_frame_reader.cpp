@@ -1,6 +1,7 @@
 #include "internal/offscreen_frame_reader.h"
 
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 
 namespace ludus::editor
 {
@@ -51,6 +52,7 @@ bool OffscreenFrameReader::Begin(rhi::DeviceHandle device, rhi::TextureHandle te
 }
 bool OffscreenFrameReader::requestBand(Band& outBand) noexcept
 {
+    LUDUS_PROFILE_SCOPE(EditorReadbackRequestBand);
     const uint32 height = static_cast<uint32>(mImage.height());
     const uint32 rows = math::Min(mRowsPerBand, height - mNextRow);
     rhi::ReadbackTicket ticket;
@@ -62,6 +64,7 @@ bool OffscreenFrameReader::requestBand(Band& outBand) noexcept
         ticket);
     if (requested == rhi::RasterStatus::NotReady || requested == rhi::RasterStatus::CapacityExceeded)
     {
+        LUDUS_PROFILE_MARK(EditorReadbackAwaitTransferCapacity);
         // Ring slices are still retiring; retry on the next poll.
         return true;
     }
@@ -75,6 +78,7 @@ bool OffscreenFrameReader::requestBand(Band& outBand) noexcept
 }
 OffscreenReadStatus OffscreenFrameReader::Poll() noexcept
 {
+    LUDUS_PROFILE_SCOPE(EditorReadbackPoll);
     if (mIsBusy == false)
     {
         return OffscreenReadStatus::Idle;
@@ -92,8 +96,10 @@ OffscreenReadStatus OffscreenFrameReader::Poll() noexcept
             const rhi::RasterStatus status = rhi::GetStatus(mDevice, band.Ticket);
             if (status == rhi::RasterStatus::Pending)
             {
+                LUDUS_PROFILE_MARK(EditorReadbackAwaitGpu);
                 continue;
             }
+            LUDUS_PROFILE_SCOPE(EditorReadbackCopyBand);
             const usize offset = static_cast<usize>(band.FirstRow) * static_cast<usize>(mImage.bytesPerLine());
             const usize capacity = static_cast<usize>(band.RowCount) * static_cast<usize>(mImage.bytesPerLine());
             const bool isCopied =

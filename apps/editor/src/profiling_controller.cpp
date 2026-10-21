@@ -7,9 +7,12 @@
 #include <ludus/foundation/profiling/trace_system.hpp>
 #include <ludus/foundation/time/time.hpp>
 
+#include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QThread>
 
 namespace ludus::editor
@@ -32,6 +35,7 @@ public:
     Array<RecordedGpuSample> Samples;
     Array<uint8> Bytes;
     profile::GpuTraceCoverage Coverage;
+    ViewportTraceSnapshot ViewportSnapshot;
     QString Destination;
     QString Error;
     bool ShouldIncludeCpu = false;
@@ -68,6 +72,23 @@ protected:
         {
             Error = QStringLiteral("No trace data was recorded, or serialization failed.");
             return;
+        }
+        if (ShouldSerialize == true && ViewportSnapshot.StartedTicks != 0)
+        {
+            const QByteArray original(reinterpret_cast<const char*>(Bytes.GetData()),
+                                      static_cast<qsizetype>(Bytes.GetSize()));
+            QJsonObject trace = QJsonDocument::fromJson(original).object();
+            AppendViewportTrace(trace, ViewportSnapshot);
+            const QByteArray serialized = QJsonDocument(trace).toJson(QJsonDocument::Compact);
+            if (Bytes.TryResize(static_cast<usize>(serialized.size())) == false)
+            {
+                Error = QStringLiteral("Cannot allocate viewport trace export bytes.");
+                return;
+            }
+            for (usize index = 0; index < Bytes.GetSize(); ++index)
+            {
+                Bytes[index] = static_cast<uint8>(serialized[static_cast<qsizetype>(index)]);
+            }
         }
         QFile file(Destination);
         if (QDir().mkpath(QFileInfo(Destination).absolutePath()) == false ||
@@ -173,6 +194,7 @@ ProfilingController::~ProfilingController()
     }
     else if (mState == ProfilingState::Recording && mMode != ProfilingMode::Gpu)
     {
+        static_cast<void>(StopViewportTrace());
         profile::EndCapture();
     }
 }
@@ -238,12 +260,23 @@ bool ProfilingController::Start(ProfilingMode mode, const QString& destination)
         Q_EMIT Changed();
         return false;
     }
+    if (mode != ProfilingMode::Gpu && StartViewportTrace() == false)
+    {
+        if (mPreviewOrNull != nullptr)
+        {
+            static_cast<void>(mPreviewOrNull->SetGpuProfilingEnabled(false));
+        }
+        mStatus = QStringLiteral("Viewport recorder is busy or its bounded storage could not be reserved.");
+        Q_EMIT Changed();
+        return false;
+    }
     if (mode != ProfilingMode::Gpu && profile::BeginCapture(CPU_CAPTURE_CHUNKS) == false)
     {
         if (mPreviewOrNull != nullptr)
         {
             static_cast<void>(mPreviewOrNull->SetGpuProfilingEnabled(false));
         }
+        static_cast<void>(StopViewportTrace());
         mStatus = QStringLiteral("CPU recorder is busy or its bounded buffer could not be reserved.");
         Q_EMIT Changed();
         return false;
@@ -284,6 +317,7 @@ void ProfilingController::Stop()
     mStoppedTicks = time::NowTicks();
     if (mMode != ProfilingMode::Gpu)
     {
+        mViewportSnapshot = StopViewportTrace();
         LUDUS_PROFILE_MARK(EditorRecordingStopped);
         mCpuStopOrNull = QThread::create([]() { profile::EndCapture(); });
         mCpuStopOrNull->start();
@@ -432,6 +466,7 @@ void ProfilingController::beginExport()
     mCompletedSampleCount = mSamples.GetSize();
     mJobOrNull->Samples = Move(mSamples);
     mJobOrNull->Coverage = mCoverage;
+    mJobOrNull->ViewportSnapshot = Move(mViewportSnapshot);
     mJobOrNull->Destination = mDestination;
     mJobOrNull->ShouldIncludeCpu = mMode != ProfilingMode::Gpu;
     connect(mJobOrNull, &QThread::finished, this, &ProfilingController::finishExport);

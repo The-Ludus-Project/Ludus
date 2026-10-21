@@ -4,6 +4,7 @@
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include "internal/world_graph_view.h"
 
 #include <ludus/foundation/profiling/integration.hpp>
 #include <ludus/foundation/profiling/perfetto_export.hpp>
@@ -128,6 +129,9 @@ TEST_CASE("editor CPU recording retains a failed save for retry and refuses repl
     REQUIRE(controller.Start(ProfilingMode::Cpu, blocker.fileName() + QStringLiteral("/trace.json")) == true);
     {
         LUDUS_PROFILE_SCOPE(EditorRetryEvidence);
+        const ViewportTraceToken token =
+            BeginViewportTrace("Retained viewport span", ViewportTraceLane::Stage, {1, 1, 1});
+        EndViewportTrace(token);
     }
     CHECK(preview.HasGpuProfilingPending() == false);
     CHECK(controller.Start(ProfilingMode::Cpu, directory.filePath(QStringLiteral("other.json"))) == false);
@@ -145,6 +149,7 @@ TEST_CASE("editor CPU recording retains a failed save for retry and refuses repl
     REQUIRE(trace.isEmpty() == false);
     CHECK(trace.value(QStringLiteral("ludusGpuTiming")).toObject().value(QStringLiteral("sampleCount")).toInt() == 0);
     CHECK(QJsonDocument(trace).toJson().contains("EditorRetryEvidence") == true);
+    CHECK(QJsonDocument(trace).toJson().contains("Retained viewport span") == true);
     CHECK(controller.Start(ProfilingMode::Cpu, path) == false);
     CHECK(ReadTrace(path) == trace);
 }
@@ -369,6 +374,7 @@ TEST_CASE("real viewport GPU timing exports GPU-only and combined traces with St
         CHECK(coverage.value(QStringLiteral("eligibleFrames")).toInt() >=
               coverage.value(QStringLiteral("frameSampleCount")).toInt());
         CHECK(QJsonDocument(trace).toJson().contains("GpuModeCpuEvidence") == (mode == ProfilingMode::Both));
+        CHECK(trace.contains(QStringLiteral("ludusViewportTiming")) == (mode == ProfilingMode::Both));
     }
     preview.Stop();
 }
@@ -390,6 +396,9 @@ TEST_CASE("delegated project graph Stats and GPU recording share the viewport sa
     REQUIRE(preview.AdmitOffscreenDevice() == true);
     REQUIRE(controller.SetPreviewSource(&preview) == true);
     CHECK(controller.CanRecordGpu() == true);
+    WorldGraphView view(workspace, nullptr);
+    view.resize(320, 180);
+    view.show();
     const QString path = directory.filePath(QStringLiteral("graph.json"));
     REQUIRE(controller.Start(ProfilingMode::Both, path) == true);
     CHECK(controller.SetPreviewSource(&initialPreview) == false);
@@ -408,6 +417,38 @@ TEST_CASE("delegated project graph Stats and GPU recording share the viewport sa
     const QJsonObject trace = ReadTrace(path);
     CHECK(trace.value(QStringLiteral("ludusGpuTiming")).toObject().value(QStringLiteral("sampleCount")).toInt() > 0);
     CHECK(QJsonDocument(trace).toJson().contains("EditorRenderGraphTick") == true);
+    CHECK(QJsonDocument(trace).toJson().contains("Await producer completion (observed)") == true);
+    CHECK(QJsonDocument(trace).toJson().contains("Readback requests and wait (observed)") == true);
+    CHECK(QJsonDocument(trace).toJson().contains("CPU display image conversion") == true);
+    CHECK(QJsonDocument(trace).toJson().contains("Frame to Qt paint complete") == true);
+    CHECK(trace.value(QStringLiteral("ludusViewportTiming")).toObject().value(QStringLiteral("droppedSpans")).toInt() ==
+          0);
+    bool hasMatchedGpuFrame = false;
+    for (const QJsonValue& wallValue : trace.value(QStringLiteral("traceEvents")).toArray())
+    {
+        const QJsonObject wall = wallValue.toObject();
+        if (wall.value(QStringLiteral("name")).toString() != QStringLiteral("Frame to Qt paint complete"))
+        {
+            continue;
+        }
+        const QJsonObject identity = wall.value(QStringLiteral("args")).toObject();
+        for (const QJsonValue& gpuValue : trace.value(QStringLiteral("traceEvents")).toArray())
+        {
+            const QJsonObject gpu = gpuValue.toObject();
+            const QJsonObject arguments = gpu.value(QStringLiteral("args")).toObject();
+            if (gpu.value(QStringLiteral("name")).toString() == QStringLiteral("GPU sample identity") &&
+                identity.value(QStringLiteral("frameId")) == arguments.value(QStringLiteral("frameId")) &&
+                identity.value(QStringLiteral("deviceSession")) == arguments.value(QStringLiteral("deviceSession")))
+            {
+                hasMatchedGpuFrame = true;
+                const float64 submitted = gpu.value(QStringLiteral("ts")).toDouble();
+                const float64 frameBegin = wall.value(QStringLiteral("ts")).toDouble();
+                CHECK(submitted >= frameBegin);
+                CHECK(submitted <= frameBegin + wall.value(QStringLiteral("dur")).toDouble());
+            }
+        }
+    }
+    CHECK(hasMatchedGpuFrame == true);
     const QString evidence = qEnvironmentVariable("LUDUS_EDITOR_PROFILING_CAPTURE");
     if (evidence.isEmpty() == false)
     {

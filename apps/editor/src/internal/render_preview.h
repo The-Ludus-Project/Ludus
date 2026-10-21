@@ -90,6 +90,11 @@ public:
                                                       0}) const noexcept;
     void PrepareGpuProfileFrame() noexcept;
     void NotifyGpuProfileSubmission() noexcept;
+    /// Next successful submission identity shared by CPU viewport spans and GPU samples.
+    [[nodiscard]] LUDUS_INLINE foundation::uint64 GetNextProfileFrameId() const noexcept
+    {
+        return mSubmittedFrameSequence + 1;
+    }
     [[nodiscard]] LUDUS_INLINE bool IsStatisticsVisible() const noexcept
     {
         return mIsStatisticsVisible;

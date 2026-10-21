@@ -346,6 +346,7 @@ struct RenderGraphPreview::State final
     renderer::RenderGraphActivation Activation;
     RenderTargetReader Reader;
     GraphViewportStatistics Statistics;
+    ViewportFrameTrace Trace;
     QElapsedTimer ReadbackTimer;
     bool HasCompletedStatisticsFrame = false;
     QString OutputName;
@@ -479,6 +480,7 @@ void RenderGraphPreview::Detach() noexcept
     {
         return;
     }
+    state.Trace.Cancel("preview detached");
     // Drop the export and inspection consumers before the generations that own their textures.
     state.Reader.Release();
     state.Statistics.Reset();
@@ -727,6 +729,10 @@ const GraphViewportStatistics& RenderGraphPreview::GetStatistics() const noexcep
 {
     return mState->Statistics;
 }
+ViewportFrameTrace& RenderGraphPreview::GetFrameTrace() noexcept
+{
+    return mState->Trace;
+}
 void RenderGraphPreview::Tick(float64 preparationMilliseconds)
 {
     State& state = *mState;
@@ -788,6 +794,7 @@ void RenderGraphPreview::tick()
                 state.IsAwaitingProducer = false;
                 state.FailedOutputGeneration = state.RenderedGeneration;
                 state.FailedOutputRevision = state.RenderedRevision;
+                state.Trace.Cancel("selected output unavailable");
                 setStatus(QStringLiteral("The selected graph target is unavailable; the shown frame is kept."));
                 return;
             }
@@ -806,11 +813,13 @@ void RenderGraphPreview::tick()
         state.IsAwaitingProducer = false;
         if (exported != rhi::RasterStatus::Ready)
         {
+            state.Trace.Cancel("producer failed");
             setStatus(QStringLiteral("The preview frame did not complete (%1); the shown frame is kept.")
                           .arg(DescribeRasterStatus(exported)));
             return;
         }
         state.ReadingOutputRevision = state.OutputRevision;
+        state.Trace.SetStage("Readback requests and wait (observed)");
         state.ReadbackTimer.start();
         const RenderTargetReadStatus started =
             state.Reader.Begin(state.Device, state.Surface, texture, aspect, width, height);
@@ -818,6 +827,7 @@ void RenderGraphPreview::tick()
         {
             state.FailedOutputGeneration = state.RenderedGeneration;
             state.FailedOutputRevision = state.RenderedRevision;
+            state.Trace.Cancel("readback request rejected");
             setStatus(
                 started == RenderTargetReadStatus::Undefined
                     ? QStringLiteral("The selected graph target was discarded or has undefined contents; "
@@ -853,10 +863,12 @@ void RenderGraphPreview::finishCopy()
     {
         // A superseded read cannot consume the new selection's pending publication marker.
         state.Reader.Cancel();
+        state.Trace.Cancel("output selection superseded");
         return;
     }
     if (status == RenderTargetReadStatus::Complete)
     {
+        state.Trace.SetStage("CPU display image conversion");
         const InspectedTexture texture = state.Reader.TakeTexture();
         TextureDisplaySettings settings;
         if (texture.Encoding == TexelEncoding::Depth32Float)
@@ -864,7 +876,11 @@ void RenderGraphPreview::finishCopy()
             settings.Range = TextureRangeMode::Automatic;
         }
         TextureValueRange range;
-        mImage = MakeDisplayImage(texture, settings, range);
+        {
+            LUDUS_PROFILE_SCOPE(EditorGraphDisplayImageConversion);
+            mImage = MakeDisplayImage(texture, settings, range);
+        }
+        state.Trace.Publish();
         mPresentedGeneration = state.RenderedGeneration;
         mPresentedRevision = state.RenderedRevision;
         mPresentedSession = state.Session;
@@ -876,6 +892,7 @@ void RenderGraphPreview::finishCopy()
     else if (status == RenderTargetReadStatus::Failed || status == RenderTargetReadStatus::Undefined)
     {
         state.Reader.Cancel();
+        state.Trace.Cancel("output readback failed");
         setStatus(QStringLiteral("The preview frame copy failed; the shown frame is kept."));
     }
 }
@@ -998,16 +1015,19 @@ void RenderGraphPreview::advance()
     {
         return;
     }
+    state.Trace.BeginFrame();
     rhi::SubmissionToken completion;
     Q_EMIT PreparingSubmission();
     const rhi::RasterStatus rendered =
         activeOrNull->Render(state.Surface, state.Active.Width, state.Active.Height, completion);
     if (rendered == rhi::RasterStatus::NotReady)
     {
+        state.Trace.SetStage("Await graph submission admission (NotReady)");
         return;
     }
     if (IsAccepted(rendered) == false)
     {
+        state.Trace.Cancel("render submission rejected");
         setStatus(QStringLiteral("The active generation could not render (%1); the shown frame is kept.")
                       .arg(DescribeRasterStatus(rendered)));
         return;
@@ -1015,6 +1035,7 @@ void RenderGraphPreview::advance()
     Q_EMIT SubmissionRecorded();
     state.RenderedGeneration = report.ActiveGeneration;
     state.RenderedRevision = drawable;
+    state.Trace.SetStage("Await producer completion (observed)");
     state.IsAwaitingProducer = true;
     state.ProducerTicks = 0;
 }
