@@ -27,7 +27,16 @@ class PipelineDocumentTests(unittest.TestCase):
         return value
 
     def fails(self, node, code):
-        self.write(node)
+        node['inputs'] = [{'id': 'color', 'type': 'ColorTexture', 'required': True}]
+        node['outputs'] = [{'id': 'color', 'type': 'ColorTexture', 'target': 'color',
+                            'format': 'RGBA8Unorm', 'load': 'Clear', 'store': 'Store'}]
+        value = self.write(node)
+        configuration = value['configurations'][0]
+        configuration['nodes'].extend([graph._target('target', 'ColorTexture'),
+                                       {'id': 'output', 'kind': 'Export', 'type': 'ColorTexture'}])
+        configuration['edges'] = [{'from': 'target.texture', 'to': 'work.color'},
+                                  {'from': 'work.color', 'to': 'output.texture'}]
+        self.path.write_bytes(graph.canonical_asset(value))
         with self.assertRaises(ToolingError) as failure:
             graph.compile_graph(self.path)
         self.assertEqual('RenderGraph' + code, failure.exception.code)
@@ -40,7 +49,9 @@ class PipelineDocumentTests(unittest.TestCase):
                 self.write(node)
                 before = self.path.read_bytes()
                 self.assertEqual('InterfacesOnly', graph.load_library(self.path)['validation'])
-                self.fails(node, 'IncompletePipeline')
+                with self.assertRaises(ToolingError) as failure:
+                    graph.compile_graph(self.path)
+                self.assertEqual('RenderGraphUnboundOutput', failure.exception.code)
                 self.assertEqual(before, self.path.read_bytes())
 
     def test_compute_and_ray_programs_are_capability_gated(self):
@@ -110,10 +121,15 @@ class PipelineDocumentTests(unittest.TestCase):
         node['inputs'] = [{'id': 'color', 'type': 'ColorTexture', 'required': False}]
         node['outputs'] = [{'id': 'result', 'type': 'ColorTexture', 'target': 'color',
                             'format': 'RGBA8Unorm', 'load': 'Clear', 'store': 'Store'}]
-        self.write(node)
+        value = self.write(node)
+        configuration = value['configurations'][0]
+        configuration['nodes'].append({'id': 'output', 'kind': 'Export', 'type': 'ColorTexture'})
+        configuration['edges'] = [{'from': 'work.result', 'to': 'output.texture'}]
+        self.path.write_bytes(graph.canonical_asset(value))
         before = self.path.read_bytes()
+        self.assertEqual('InterfacesOnly', graph.load_library(self.path)['validation'])
         with self.assertRaises(ToolingError) as failure:
-            graph.load_library(self.path)
+            graph.compile_graph(self.path)
         self.assertEqual('RenderGraphUnboundInput', failure.exception.code)
         self.assertIn("'work.color' (ColorTexture)", str(failure.exception))
         self.assertIn('Connect a matching output', str(failure.exception))
@@ -143,6 +159,20 @@ class PipelineBuildTests(unittest.TestCase):
     stage = fixtures.BuildTests.stage
     run_build = fixtures.BuildTests.run_build
     pointer = fixtures.BuildTests.pointer
+
+    def test_unused_draft_does_not_require_a_manifest_program_or_compile_it(self):
+        value = json.loads(self.graph.read_text())
+        value['version'] = 2
+        draft = pipeline.new_node('ComputePipeline', 'draft')
+        draft['shaders'] = [{'id': 'compute', 'stage': 'compute', 'program': 'UnregisteredDraft'}]
+        draft['inputs'] = [{'id': 'unbound', 'type': 'Buffer', 'required': True}]
+        value['configurations'][0]['nodes'].append(draft)
+        self.graph.write_bytes(graph.canonical_asset(value))
+        before = self.graph.read_bytes()
+        result = self.run_build()
+        self.assertEqual(6, result['cache_misses'])
+        self.assertEqual(before, self.graph.read_bytes())
+
     def migrate(self):
         path = self.graph.parent / 'rasterize.lurender.json'
         original = json.loads(path.read_text())

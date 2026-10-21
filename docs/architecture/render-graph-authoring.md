@@ -93,8 +93,9 @@ Creating a GPU work node means choosing Graphics Pipeline, Compute Pipeline or
 Ray Tracing Pipeline. The new node starts as a draft with no authored inputs or
 outputs; Scene, View, Color and Depth are additions, not mandatory built-in ports.
 A template may populate the same fields explicitly. An incomplete node can be
-edited and saved, but cannot build or execute until its selected configuration
-satisfies the shader, resource, invocation and capability contracts.
+edited and saved. It must satisfy shader, resource, invocation and capability
+contracts when selected for execution. Unused draft branches do not block another
+valid route; structural source and wire validation still covers the whole library.
 
 | Pipeline node | Customizable inputs and outputs | Node-owned shaders, state and invocation |
 | --- | --- | --- |
@@ -219,6 +220,15 @@ State color space and alpha convention where meaningful. Describe requested
 resource usage as a checked union of legal producers/consumers; unsupported
 attachment-plus-sampling/resolve combinations reject. Extents are data or bounded
 expressions, not compile-time shader switches by default.
+
+The current triangle ray profile supports target-derived launch sizing: its
+`invocation.dimensions` may be `"ColorTarget"`, resolving to the connected writable
+color target's `[width, height, 1]` for each graph instance. This derives execution
+coverage without selecting another shader or pipeline configuration. Explicit
+dimensions remain supported as a checked equality contract. Targets currently
+retain fixed extents; shared/view-relative size expressions and runtime resizing
+remain further work. See the [authoring guide](../development/render-graph-authoring.md#execute-a-triangle-ray-pipeline)
+for the source representation and editor controls.
 
 Each GPU resource output names a logical resource version. Writes produce a new
 version; preserve/load requires a dependency on initialized previous contents.
@@ -504,7 +514,16 @@ candidate route. Optional effects use an authored ready fallback or explicit
 pending/unsupported status. The diagnostic error route itself must be prewarmed.
 Draw encoding never blocks on compilation or constructs a new pipeline key.
 
-Lower the dependency graph to a deterministic author-visible serial order first:
+Select observable execution dependencies before checking bound inputs or lowering
+pipeline capabilities. Export/Present operations, root interface outputs and
+explicit active-camera routing obligations are roots. Retain nested effects;
+expand only consumed subgraph output branches while preserving the retained
+subgraph's declared input contract. Required-output consumer checks count live
+consumers. Pruning never edits source nodes or wires, and never changes a live
+pipeline's declared attachment/shader contract. Structural cycles, invalid wires
+and imports remain source errors even outside the execution selection.
+
+Lower the selected dependency graph to a deterministic author-visible serial order first:
 dependencies constrain order, explicit order edges express semantic order, stable
 authored ordinals break remaining ties. Supply that ordered plan to existing
 RHI/GDI graph validation. It owns hazard lowering and accepted-submission state;

@@ -334,6 +334,7 @@ class _Library:
         self.active = []
         self.attempted = set()
         self.total = 0
+        self.effects = {}
 
     def inside(self, relative, where):
         _require(type(relative) is str and relative and "\\" not in relative and ":" not in relative,
@@ -412,7 +413,6 @@ class _Library:
         sources = {"input": {p["id"]: p["type"] for p in config["inputs"]}}
         sources.update({key: value[1] for key, value in ports.items()})
         incoming = {key: {} for key in nodes}
-        used = set()
 
         def source(endpoint):
             key, port = _endpoint(endpoint, where)
@@ -431,21 +431,66 @@ class _Library:
                      f"{edge['from']} ({kind}) cannot connect to {edge['to']} ({ports[key][0][port]}). "
                      f"Connect a {ports[key][0][port]} output to this input, or change the input type in Properties.")
             incoming[key][port] = edge["from"]
-            used.add(edge["from"])
         for output in config["outputs"]:
             _require(source(output["source"]) == output["type"], "TypeMismatch", where,
                      f"Configuration output '{output['id']}' expects {output['type']}, but source '{output['source']}' has a different type. "
                      'Choose a matching source in Edit Inputs / Outputs, or change the output type.')
-            used.add(output["source"])
-        for key, node in nodes.items():
+        dependencies = {key: {_endpoint(e, where)[0] for e in values.values()} - {"input"}
+                        for key, values in incoming.items()}
+        ordered, done = [], set()
+        while len(done) < len(nodes):
+            ready = next((key for key in nodes if key not in done and dependencies[key] <= done), None)
+            _require(ready is not None, "Cycle", where, "Within-frame dependency cycle. Remove a feedback wire and connect passes in forward execution order.")
+            ordered.append(nodes[ready])
+            done.add(ready)
+        return ordered, incoming
+
+    def has_effects(self, path, config):
+        """Explicit sinks and active-camera obligations survive unused output culling."""
+        identity = (path, config['id'])
+        if identity not in self.effects:
+            self.effects[identity] = any(
+                node['kind'] in ('Export', 'Present') or
+                (node['kind'] == 'Camera' and node['active']) or
+                (node['kind'] == 'Subgraph' and self.child_has_effects(node))
+                for node in config['nodes'])
+        return self.effects[identity]
+
+    def child_has_effects(self, node):
+        path = self.inside(node['asset'], node['id'])
+        return self.has_effects(path, _configuration(self.assets[path], node['configuration'], node['id']))
+
+    def execution_order(self, path, config, requested_outputs):
+        """Select observable dependencies before checking execution-only requirements.
+
+        A retained subgraph keeps its declared input contract. Only the requested
+        output branches and explicit effects inside that subgraph are expanded.
+        Structural validation still covers every saved node and wire in order().
+        """
+        ordered, incoming = self.order(path, config)
+        where = self.label(path) + '#' + config['id']
+        used = {port['source'] for port in config['outputs'] if port['id'] in requested_outputs}
+        selected = {node['id'] for node in ordered if node['kind'] in ('Export', 'Present') or
+                    (node['kind'] == 'Camera' and node['active']) or
+                    (node['kind'] == 'Subgraph' and self.child_has_effects(node))}
+        selected.update(_endpoint(endpoint, where)[0] for endpoint in used)
+        # Reverse topological order visits each newly selected producer later.
+        for node in reversed(ordered):
+            if node['id'] in selected:
+                used.update(incoming[node['id']].values())
+                selected.update(_endpoint(endpoint, where)[0] for endpoint in incoming[node['id']].values())
+        ordered = [node for node in ordered if node['id'] in selected]
+        for node in ordered:
+            key = node['id']
+            ports = self.node_ports(node)
             required = ({p["id"] for p in node["inputs"] if p["required"]}
-                        if node["kind"] in pipeline.KINDS else set(ports[key][0]))
+                        if node["kind"] in pipeline.KINDS else set(ports[0]))
             if node["kind"] == "Camera" and not node["active"]:
                 required.clear()
             if node['kind'] in pipeline.KINDS:
                 required.update(port['target'] for port in node['outputs'])
             missing = sorted(required - incoming[key].keys())
-            descriptions = ', '.join(f"'{key}.{port}' ({ports[key][0][port]})" for port in missing)
+            descriptions = ', '.join(f"'{key}.{port}' ({ports[0][port]})" for port in missing)
             _require(not missing, "UnboundInput", where + "/" + key,
                      f"Unconnected inputs: {descriptions}. Connect a matching output to each input; "
                      'writable resource inputs must be connected even when Load is Clear or Discard.')
@@ -456,15 +501,7 @@ class _Library:
                     _require(not output["required"] or key + "." + output["id"] in used,
                              "UnusedRequiredOutput", where + "/" + key,
                              f"output {output['id']} requires a consumer")
-        dependencies = {key: {_endpoint(e, where)[0] for e in values.values()} - {"input"}
-                        for key, values in incoming.items()}
-        ordered, done = [], set()
-        while len(done) < len(nodes):
-            ready = next((key for key in nodes if key not in done and dependencies[key] <= done), None)
-            _require(ready is not None, "Cycle", where, "Within-frame dependency cycle. Remove a feedback wire and connect passes in forward execution order.")
-            ordered.append(nodes[ready])
-            done.add(ready)
-        return ordered, incoming
+        return ordered, incoming, used
 
     def verify_snapshot(self):
         for path, data in self.bytes.items():
@@ -514,10 +551,12 @@ class _Compiler:
         self.latest[value.resource] = result.version
         return result
 
-    def expand(self, path, config, prefix, bindings, depth=0):
+    def expand(self, path, config, prefix, bindings, depth=0, requested_outputs=None):
         _require(depth < MAX_DEPTH, "Capacity", prefix, "expanded subgraph depth exceeded")
         self.instances[prefix] = (self.library.label(path), config["id"], {n["id"] for n in config["nodes"]})
-        order, incoming = self.library.order(path, config)
+        if requested_outputs is None:
+            requested_outputs = {port['id'] for port in config['outputs']}
+        order, incoming, used = self.library.execution_order(path, config, requested_outputs)
         values = {"input." + key: value for key, value in bindings.items()}
         for node in order:
             self.expanded += 1
@@ -563,8 +602,12 @@ class _Compiler:
                 _require(inputs['view'].cameras, 'CameraTarget', where, 'ray pipeline requires an active camera')
                 _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
                          'Capability', where, 'ray pipeline requires an offscreen single-sample RGBA8Unorm target')
-                _require(authored_pipeline['invocation']['dimensions'] == [*target['extent'], 1],
-                         'AttachmentMismatch', where, 'ray launch dimensions must match the output width, height and depth=1')
+                dimensions = authored_pipeline['invocation']['dimensions']
+                expected_dimensions = [*target['extent'], 1]
+                _require(dimensions == 'ColorTarget' or dimensions == expected_dimensions,
+                         'AttachmentMismatch', where,
+                         f"Ray launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
+                         f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}.")
                 value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
                 self.techniques.add(ray.TECHNIQUE)
                 self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
@@ -572,6 +615,7 @@ class _Compiler:
                     'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
                     'scene': inputs['scene'].origin, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
+                    'dimensions': expected_dimensions,
                     'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
                 outputs = {output_mapping['color']: value}
@@ -611,7 +655,8 @@ class _Compiler:
                 child_path = self.library.inside(node["asset"], where)
                 child = self.library.assets[child_path]
                 selected = _configuration(child, node["configuration"], where)
-                outputs = self.expand(child_path, selected, where, inputs, depth + 1)
+                requested = {port['id'] for port in selected['outputs'] if node['id'] + '.' + port['id'] in used}
+                outputs = self.expand(child_path, selected, where, inputs, depth + 1, requested)
             else:
                 value = inputs["texture" if kind == "Export" else "color"]
                 self.root(where, kind, value)
@@ -620,7 +665,7 @@ class _Compiler:
                                "dependencies": [value.producer] if value.producer else [],
                                "resource": value.resource, "version": value.version})
             values.update({node["id"] + "." + key: value for key, value in outputs.items()})
-        return {p["id"]: values[p["source"]] for p in config["outputs"]}
+        return {p["id"]: values[p["source"]] for p in config["outputs"] if p['id'] in requested_outputs}
 
     def root(self, where, kind, value):
         _require(value.defined, "Initialization", where,
@@ -728,6 +773,8 @@ def dump_plan(plan):
         lines.append(f"{ordinal:03} {entry['id']} {entry['kind']}{detail} [{entry['source']}#{entry['asset_configuration']}]")
         if entry["kind"] == "Raster":
             lines.append(f"    scene: {entry['scene']}; view: {entry['view']}; technique: {entry['technique']}")
+        if entry['kind'] == 'RayTracing':
+            lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
         for aspect, attachment in entry.get("attachments", {}).items():
             lines.append(f"    {aspect}: {attachment['resource']}@{attachment['input_version']} -> "
                          f"@{attachment['output_version']} {attachment['load']}/{attachment['store']} "

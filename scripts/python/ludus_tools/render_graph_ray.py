@@ -43,8 +43,15 @@ def lower(node, where, graph):
         choices = [identity for identity, value in types.items() if value == kind]
         graph._require(len(choices) == 1, 'IncompletePipeline', where, f'exactly one {kind} input required')
         mappings[aspect] = choices[0]
-    graph._require(len(types) == len(mappings) and len(node['outputs']) == 1, 'Capability', where,
-                   'triangle ray profile accepts Scene, View and ColorTexture, and writes one color output')
+    unsupported = sorted(set(types) - set(mappings.values()))
+    descriptions = ', '.join(f"'{identity}' ({types[identity]})" for identity in unsupported)
+    graph._require(not unsupported, 'Capability', where,
+                   f"Unsupported ray pipeline inputs: {descriptions}. This triangle ray profile accepts only "
+                   'Scene, View and ColorTexture. Remove the extra input declarations and their wires; '
+                   'if exposed by a subgraph, also remove the matching interface inputs and parent wires.')
+    graph._require(len(node['outputs']) == 1, 'Capability', where,
+                   f"Triangle ray profile requires one color output; found {len(node['outputs'])}. "
+                   'Keep one ColorTexture writable resource in the pipeline editor.')
     output = node['outputs'][0]
     graph._require(output['type'] == 'ColorTexture' and output['target'] == mappings['color'] and
                    output['load'] == 'Clear' and output['store'] == 'Store', 'Capability', where,

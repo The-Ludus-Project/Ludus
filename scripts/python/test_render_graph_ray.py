@@ -111,6 +111,63 @@ class RayPipelineTests(unittest.TestCase):
                 with self.assertRaises(ToolingError):
                     self.compile()
 
+    def test_target_derived_launch_tracks_extent_without_rewriting_authored_node(self):
+        self.node['invocation']['dimensions'] = 'ColorTarget'
+        for extent in ([97, 65], [1, 1], [1920, 1080]):
+            target = next(node for node in self.document['configurations'][0]['nodes'] if node['kind'] == 'Target')
+            target['extent'] = extent
+            plan = self.compile()
+            operation = next(value for value in plan['passes'] if value['kind'] == 'RayTracing')
+            self.assertEqual([*extent, 1], operation['dimensions'])
+            self.assertEqual('ColorTarget', operation['pipeline']['invocation']['dimensions'])
+            self.assertEqual(self.document, json.loads(self.path.read_text()))
+
+    def test_explicit_launch_mismatch_reports_actual_expected_and_repair(self):
+        self.node['invocation']['dimensions'] = [1, 2, 1]
+        with self.assertRaises(ToolingError) as failure:
+            self.compile()
+        self.assertEqual('RenderGraphAttachmentMismatch', failure.exception.code)
+        self.assertIn('[1, 2, 1]', failure.exception.message)
+        self.assertIn('[96, 64, 1]', failure.exception.message)
+        self.assertIn('Main/color', failure.exception.message)
+        self.assertIn('Match color target', failure.exception.message)
+
+    def test_extra_depth_declaration_diagnostic_names_port_type_and_repair(self):
+        self.node['inputs'].append({'id': 'unused_depth', 'type': 'DepthTexture', 'required': False})
+        with self.assertRaises(ToolingError) as failure:
+            self.compile()
+        self.assertEqual('RenderGraphCapability', failure.exception.code)
+        self.assertIn("'unused_depth' (DepthTexture)", failure.exception.message)
+        self.assertIn('input declarations', failure.exception.message)
+        self.assertIn('interface inputs and parent wires', failure.exception.message)
+
+    def test_reused_ray_subgraph_derives_size_from_each_callers_target(self):
+        self.node['invocation']['dimensions'] = 'ColorTarget'
+        identity = self.node['id']
+        configuration = self.document['configurations'][0]
+        child = {'version': 2, 'id': 'RaySubgraph', 'default': 'Default', 'configurations': [{
+            'id': 'Default', 'inputs': [{'id': port['id'], 'type': port['type']} for port in self.node['inputs']],
+            'outputs': [{'id': 'color', 'type': 'ColorTexture', 'source': identity + '.color', 'required': False}],
+            'nodes': [deepcopy(self.node)],
+            'edges': [{'from': 'input.' + port['id'], 'to': identity + '.' + port['id']}
+                      for port in self.node['inputs']]}]}
+        child_path = self.path.parent / 'ray.lurender.json'
+        child_path.write_bytes(graph.canonical_asset(child))
+        configuration['nodes'] = [node for node in configuration['nodes'] if node['id'] != identity]
+        configuration['nodes'].append({'id': identity, 'kind': 'Subgraph',
+                                       'asset': child_path.name, 'configuration': 'Default'})
+        large = deepcopy(configuration)
+        large['id'] = 'Large'
+        next(node for node in large['nodes'] if node['kind'] == 'Target')['extent'] = [193, 129]
+        self.document['configurations'].append(large)
+        self.compile()
+        for name, expected in (('Default', [96, 64, 1]), ('Large', [193, 129, 1])):
+            plan = graph.compile_graph(self.path, configuration=name)
+            operation = next(value for value in plan['passes'] if value['kind'] == 'RayTracing')
+            self.assertEqual(expected, operation['dimensions'])
+            self.assertIn('launch: ' + str(expected), graph.dump_plan(plan))
+        self.assertEqual(child, json.loads(child_path.read_text()))
+
     def test_manifest_accepts_exact_ray_functions_and_rejects_shader_stage_mismatch(self):
         value = json.loads((FIXTURE / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
         _, programs, techniques, _ = build.validate_manifest(value)

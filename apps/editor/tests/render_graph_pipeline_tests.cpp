@@ -67,6 +67,51 @@ QJsonObject GetConfiguration(const RenderGraphDocument& document, const QString&
 }
 } // namespace
 
+TEST_CASE("ray launch sizing derives from color by default and preserves explicit drafts",
+          "[editor][render-graph][pipeline]")
+{
+    const QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    CHECK(node.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")) ==
+          QStringLiteral("ColorTarget"));
+    RenderGraphPipelineEditor editor(node);
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    QComboBox* mode = editor.findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
+    QSpinBox* width = editor.findChild<QSpinBox*>(QStringLiteral("rayLaunchDimension0"));
+    REQUIRE(mode != nullptr);
+    REQUIRE(width != nullptr);
+    CHECK(mode->currentText() == QStringLiteral("Match color target"));
+    CHECK(applied.isEmpty() == true);
+    mode->setCurrentIndex(1);
+    width->setValue(97);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray() ==
+          QJsonArray{97, 1, 1});
+    mode->setCurrentIndex(0);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")) ==
+          QStringLiteral("ColorTarget"));
+
+    QJsonObject legacy = node;
+    legacy.insert(QStringLiteral("invocation"), QJsonObject{{QStringLiteral("dimensions"), QJsonArray{96, 64, 1}}});
+    RenderGraphPipelineEditor legacyEditor(legacy);
+    QComboBox* legacyMode = legacyEditor.findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
+    REQUIRE(legacyMode != nullptr);
+    CHECK(legacyMode->currentText() == QStringLiteral("Explicit size"));
+    QJsonObject legacyApplied;
+    QObject::connect(&legacyEditor,
+                     &RenderGraphPipelineEditor::Edited,
+                     &legacyEditor,
+                     [&legacyApplied](const QJsonObject& candidate) { legacyApplied = candidate; });
+    CHECK(legacyApplied.isEmpty() == true);
+    legacyMode->setCurrentIndex(0);
+    CHECK(legacyApplied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")) ==
+          QStringLiteral("ColorTarget"));
+    legacyMode->setCurrentIndex(1);
+    CHECK(legacyApplied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray() ==
+          QJsonArray{96, 64, 1});
+}
+
 TEST_CASE("pipeline nodes edit custom interfaces with connection-safe undo and save",
           "[editor][render-graph][pipeline]")
 {
