@@ -219,6 +219,32 @@ bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& argu
     {
         return false;
     }
+    const QString previousExtent = previous.value(QStringLiteral("extent")).toString();
+    if ((previous.value(QStringLiteral("kind")).toString() == QStringLiteral("Target") &&
+         previousExtent == QStringLiteral("RenderSize")) ||
+        (previous.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize") &&
+         previousExtent == QStringLiteral("Texture")))
+    {
+        const QString removedInput =
+            previous.value(QStringLiteral("id")).toString() +
+            (previousExtent == QStringLiteral("RenderSize") ? QStringLiteral(".size") : QStringLiteral(".texture"));
+        if (node.value(QStringLiteral("extent")).toString() != previousExtent)
+        {
+            for (const QJsonValueConstRef edge : inoutConfiguration.value(QStringLiteral("edges")).toArray())
+            {
+                if (edge.toObject().value(QStringLiteral("to")).toString() == removedInput)
+                {
+                    if (outErrorOrNull != nullptr)
+                    {
+                        *outErrorOrNull = QStringLiteral("Disconnect %1 before changing to fixed dimensions. "
+                                                         "The connected size policy was preserved.")
+                                              .arg(removedInput);
+                    }
+                    return false;
+                }
+            }
+        }
+    }
     if (IsPipelineNode(previous.value(QStringLiteral("kind")).toString()) == true)
     {
         const auto getType = [](const QJsonObject& record, const QString& direction, const QString& port) -> QString {
@@ -733,7 +759,9 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     const QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
     for (const QJsonValueConstRef node : nodes)
     {
-        if (IsPipelineNode(node.toObject().value(QStringLiteral("kind")).toString()) == true)
+        if (IsPipelineNode(node.toObject().value(QStringLiteral("kind")).toString()) == true ||
+            node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize") ||
+            node.toObject().value(QStringLiteral("extent")).toString() == QStringLiteral("RenderSize"))
         {
             graph.insert(QStringLiteral("version"), 2);
             break;

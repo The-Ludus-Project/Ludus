@@ -225,10 +225,25 @@ The current triangle ray profile supports target-derived launch sizing: its
 `invocation.dimensions` may be `"ColorTarget"`, resolving to the connected writable
 color target's `[width, height, 1]` for each graph instance. This derives execution
 coverage without selecting another shader or pipeline configuration. Explicit
-dimensions remain supported as a checked equality contract. Targets currently
-retain fixed extents; shared/view-relative size expressions and runtime resizing
-remain further work. See the [authoring guide](../development/render-graph-authoring.md#execute-a-triangle-ray-pipeline)
+dimensions remain supported as a checked equality contract. See the [authoring guide](../development/render-graph-authoring.md#execute-a-triangle-ray-pipeline)
 for the source representation and editor controls.
+
+Version-2 `RenderSize` nodes own graph-only size values: fixed pixel dimensions or
+the dimensions of a connected color/depth texture. Targets may consume those
+values, and subgraph interfaces may pass them between caller instances. The
+compiler resolves size dependencies before publishing numeric resource extents;
+metadata-only target descriptions need no GPU allocation. The same explicit edge
+and cycle rules apply to size dependencies. Fixed array extents remain compatible.
+The [size workflow](../development/render-graph-authoring.md#share-render-sizes)
+owns the source syntax and editor instructions. View-relative policies and runtime
+resize remain future work, separate from this fixed-size lowering.
+
+Editor connection preflight resolves known target descriptors through paired
+resource outputs and nested subgraph bindings, checking each supported operation's
+attachment extent, format and sample contracts. It rejects newly provable
+mismatches without mutating the document, while bounded/unknown inference defers
+to concrete build validation. No global equal-size constraint is imposed on
+sampled textures, and a texture connection never selects another shader recipe.
 
 Each GPU resource output names a logical resource version. Writes produce a new
 version; preserve/load requires a dependency on initialized previous contents.

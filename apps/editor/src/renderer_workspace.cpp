@@ -4,6 +4,7 @@
 #endif
 #include "internal/item_selection.h"
 #include "internal/render_graph_pipeline.h"
+#include "internal/render_graph_resources.h"
 #include "internal/render_graph_shader_interface.h"
 #include "internal/renderer_workspace.h"
 
@@ -263,11 +264,15 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
     {
         node.insert(QStringLiteral("type"), QStringLiteral("ColorTexture"));
         node.insert(QStringLiteral("format"), QStringLiteral("RGBA8Unorm"));
-        node.insert(QStringLiteral("extent"), QJsonArray{640, 480});
+        node.insert(QStringLiteral("extent"), QJsonArray{DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT});
         node.insert(QStringLiteral("samples"), 1);
         node.insert(QStringLiteral("imported"), false);
         node.insert(QStringLiteral("initialized"), false);
         node.insert(QStringLiteral("presentation"), false);
+    }
+    else if (kind == QStringLiteral("RenderSize"))
+    {
+        node.insert(QStringLiteral("extent"), QJsonArray{DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT});
     }
     else if (kind == QStringLiteral("Subgraph"))
     {
@@ -451,6 +456,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mNewKind->addItems({QStringLiteral("Scene"),
                         QStringLiteral("Camera"),
                         QStringLiteral("Target"),
+                        QStringLiteral("RenderSize"),
                         QStringLiteral("GraphicsPipeline"),
                         QStringLiteral("ComputePipeline"),
                         QStringLiteral("RayTracingPipeline"),
@@ -1979,7 +1985,12 @@ void RendererWorkspace::renderInspector()
             {
                 // Focus loss during teardown must not submit another edit from obsolete controls.
                 disconnect(widgetOrNull, nullptr, this, nullptr);
+                for (QObject* control : widgetOrNull->findChildren<QObject*>())
+                {
+                    disconnect(control, nullptr, this, nullptr);
+                }
                 widgetOrNull->hide();
+                widgetOrNull->setParent(nullptr);
                 widgetOrNull->deleteLater();
             }
             delete itemOrNull;
@@ -2105,15 +2116,35 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             QWidget* row = new QWidget(&inoutParent);
             QHBoxLayout* rowLayout = new QHBoxLayout(row);
             rowLayout->setContentsMargins(0, 0, 0, 0);
+            QComboBox* mode = new QComboBox(row);
+            mode->setObjectName(QStringLiteral("renderGraphExtentMode"));
+            const bool isSizeNode = node.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize");
+            const QString source = isSizeNode == true ? QStringLiteral("Texture") : QStringLiteral("RenderSize");
+            mode->addItem(QStringLiteral("Fixed dimensions"));
+            mode->addItem(isSizeNode == true ? QStringLiteral("Match texture") : QStringLiteral("From size input"));
+            const bool isFixed = field.value().isArray();
+            mode->setCurrentIndex(isFixed == true ? 0 : 1);
+            rowLayout->addWidget(mode);
             QSpinBox* width = new QSpinBox(row);
             QSpinBox* height = new QSpinBox(row);
+            width->setObjectName(QStringLiteral("renderGraphExtentWidth"));
+            height->setObjectName(QStringLiteral("renderGraphExtentHeight"));
             for (QSpinBox* spin : {width, height})
             {
                 spin->setRange(1, MAX_EXTENT);
+                spin->setEnabled(isFixed);
+                spin->setVisible(isFixed);
                 rowLayout->addWidget(spin);
             }
-            width->setValue(field.value().toArray().at(0).toInt());
-            height->setValue(field.value().toArray().at(1).toInt());
+            const QJsonArray extent =
+                isFixed == true ? field.value().toArray() : QJsonArray{DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT};
+            width->setValue(extent.at(0).toInt());
+            height->setValue(extent.at(1).toInt());
+            connect(mode, &QComboBox::activated, this, [this, source, width, height](int32 index) {
+                replaceSelectedField(QStringLiteral("extent"),
+                                     index == 0 ? QJsonValue(QJsonArray{width->value(), height->value()})
+                                                : QJsonValue(source));
+            });
             const auto commitExtent = [this, width, height]() {
                 replaceSelectedField(QStringLiteral("extent"), QJsonArray{width->value(), height->value()});
             };
@@ -2366,7 +2397,18 @@ void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonVa
                         configurations.contains(authoredDefault) == true ? authoredDefault : configurations.first());
         }
     }
-    documentEdited(mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, node));
+    QString error;
+    const RenderGraphDocumentStatus status = mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, node, &error);
+    documentEdited(status);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        renderInspector();
+        Q_EMIT NodeFieldsChanged(nullptr);
+        if (error.isEmpty() == false)
+        {
+            mStatus->setText(error);
+        }
+    }
 }
 
 bool RendererWorkspace::CanCreateSubgraph() const
