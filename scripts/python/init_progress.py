@@ -1,7 +1,7 @@
 """Step plan, progress markers and their parser for ./init.sh.
 
 The engine runner announces each setup step on stdout. In a terminal the
-announcement is a readable ``==> [3/9] Label`` header. When the graphical setup
+announcement is a readable ``==> [3/9] Label`` header (styled by ``init_terminal``). When the graphical setup
 window runs the engine as a child process it sets ``LUDUS_INIT_PROGRESS=1``
 and the runner prints machine-readable lines instead::
 
@@ -19,9 +19,12 @@ from __future__ import annotations
 import os
 import platform
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
+
+import init_terminal
 
 
 PROGRESS_ENVIRONMENT = "LUDUS_INIT_PROGRESS"
@@ -117,20 +120,40 @@ def is_machine_readable(environment=None) -> bool:
 class Reporter:
     """Announce the steps of one plan; unknown keys are ignored."""
 
-    def __init__(self, steps: Sequence[Step], *, machine_readable: bool, write=print):
+    def __init__(self, steps: Sequence[Step], *, machine_readable: bool, write=print, clock=time.monotonic):
         self.steps = list(steps)
         self.machine_readable = machine_readable
         self.write = write
+        self.clock = clock
+        self.started_at = clock()
+        self.current = 0
 
     def begin(self, key: str) -> None:
         for index, step in enumerate(self.steps, start=1):
             if step.key == key:
+                self.current = index
                 if self.machine_readable:
                     self.write(f"{STEP_MARKER} {index} {len(self.steps)} {step.label}", flush=True)
                 else:
                     self.write("", flush=True)
-                    self.write(f"==> [{index}/{len(self.steps)}] {step.label}", flush=True)
+                    self.write(init_terminal.step_line(index, len(self.steps), step.label, init_terminal.painter_for()),
+                               flush=True)
                 return
+
+    def elapsed(self) -> str:
+        """Time since the plan started, as ``mm:ss`` or ``h:mm:ss``."""
+        return format_elapsed(self.clock() - self.started_at)
+
+    def fail(self) -> None:
+        """Name the step that stopped a terminal run; the setup window shows its own failure state."""
+        if self.machine_readable or self.current == 0:
+            return
+        step = self.steps[self.current - 1]
+        painter = init_terminal.painter_for()
+        self.write("", flush=True)
+        self.write(init_terminal.failure(
+            f"Setup stopped at step {self.current}/{len(self.steps)}: {step.label} (after {self.elapsed()}).", painter),
+            flush=True)
 
     def detail(self, done: int, total: int, text: str) -> None:
         if self.machine_readable:
@@ -154,6 +177,17 @@ def start(steps: Sequence[Step], *, environment=None) -> Reporter:
 def stop() -> None:
     global _active
     _active = None
+
+
+def fail() -> None:
+    """Report which step of the current plan failed, in a terminal run."""
+    if _active is not None:
+        _active.fail()
+
+
+def elapsed() -> str:
+    """Time since the current plan started; empty without a plan."""
+    return _active.elapsed() if _active is not None else ""
 
 
 def begin(key: str) -> None:

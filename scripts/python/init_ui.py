@@ -43,6 +43,45 @@ PERSONAS = (
 )
 
 
+# Width of wrapped text in the setup window, in logical pixels.
+OPTION_WRAP_POINTS = 720
+OPTION_COLUMN_WRAP_POINTS = 330
+# Left edge of a checkbox's text relative to its indicator.
+CHECKBOX_TEXT_INDENT_POINTS = 23
+OPTION_LABELS = {
+    "with_editor": "Build Ludus editor",
+    "with_tests": "Include native test targets",
+    "with_smoke_app": "Include sample applications",
+    "with_web_probes": "Include browser feasibility probes",
+    "with_shader_probe": "Include shader feasibility probe",
+    "with_rad_debugger": "Build RAD Debugger",
+    "preset_only": "Prepare only the selected preset",
+    "no_system_install": "Use existing system packages",
+    "run_tests": "Build and run native tests after setup",
+    "validate": "Run full validation after setup",
+    "skip_checks": "Skip formatting and static analysis",
+    "skip_sanitizers": "Skip sanitizer build and tests",
+    "skip_sdk": "Skip SDK consumer test",
+    "ci": "Use CI validation policy",
+}
+OPTION_HINTS = {
+    "with_editor": "Includes the 3D preview and live shaders unless you turn them off in Advanced setup.",
+    "with_smoke_app": "The smoke test and the native input demo.",
+    "with_shader_probe": "Linux Vulkan only; needs separate pinned tools.",
+    "with_rad_debugger": "Optional native debugger for Linux x64.",
+    "no_system_install": "Skips automatic package installation.",
+    "validate": "Build, test, check, run sanitizers and test the SDK.",
+    "ci": "Warnings as errors; no local Git hooks.",
+}
+NESTED_OPTIONS = ("skip_checks", "skip_sanitizers", "skip_sdk")
+OPTION_COLUMNS = (
+    (("Targets", ("with_editor", "with_tests", "with_smoke_app", "with_web_probes", "with_shader_probe",
+                  "with_rad_debugger")),),
+    (("Setup scope", ("preset_only", "no_system_install")),
+     ("After setup", ("run_tests", "validate", "skip_checks", "skip_sanitizers", "skip_sdk", "ci"))),
+)
+
+
 class GuiUnavailable(RuntimeError):
     """The optional Tk window cannot be opened on this host."""
 
@@ -178,24 +217,27 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         raise GuiUnavailable(
             "macOS graphical setup requires Tk 8.6 or later. Apple's system Tk is unsupported. "
             "Use a modern Python with Tk from Homebrew or python.org, or use --cli.")
+    import init_theme
     try:
-        window = tk.Tk()
+        window = init_theme.create_root(tk)
     except tk.TclError as error:
         raise GuiUnavailable("Cannot open a desktop display. Use --cli, or check your display connection.") from error
 
     selection = None
     try:
-        window.title("Ludus setup")
-        window.minsize(680, 680)
-        panel = ttk.Frame(window, padding=24)
-        panel.grid(sticky="nsew")
+        theme = init_theme.Theme(window, ttk)
+        theme.apply_window_icon(window)
+        space = theme.space
+        wrap = space(OPTION_WRAP_POINTS)
         window.columnconfigure(0, weight=1)
-        window.rowconfigure(0, weight=1)
-        panel.columnconfigure(1, weight=1)
-        ttk.Label(panel, text="Set up Ludus", font=("", 20, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(panel, text="Choose the tools and workflow you need.").grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(4, 16))
+        window.rowconfigure(1, weight=1)
+        header = build_header(ttk, window, theme, "Set up Ludus", "Choose the tools and workflow you need.")
+        header.grid(row=0, column=0, sticky="ew")
+
+        panel = ttk.Frame(window, style="Workspace.TFrame",
+                          padding=(space(init_theme.SPACE_EXTRA_LARGE), space(init_theme.SPACE_LARGE)))
+        panel.grid(row=1, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=1)
 
         persona = tk.StringVar(value=next(item.label for item in PERSONAS if item.key == args.persona))
         preset = tk.StringVar(value=args.preset)
@@ -207,34 +249,75 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             "skip_checks", "skip_sanitizers", "skip_sdk", "ci",
         )}
 
-        ttk.Label(panel, text="Workflow").grid(row=2, column=0, sticky="w", padx=(0, 16))
-        workflow = ttk.Combobox(panel, textvariable=persona, state="readonly",
-                               values=[item.label for item in PERSONAS])
-        workflow.grid(row=2, column=1, sticky="ew")
-        ttk.Label(panel, textvariable=description, wraplength=600).grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=(8, 16))
+        card_padding = (space(init_theme.SPACE_LARGE), space(init_theme.SPACE_MEDIUM))
+        workflow_card = ttk.Frame(panel, style="Card.TFrame", padding=card_padding)
+        workflow_card.grid(row=0, column=0, sticky="ew")
+        workflow_card.columnconfigure(1, weight=1, uniform="choice")
+        workflow_card.columnconfigure(3, weight=1, uniform="choice")
+        label_gap = space(init_theme.SPACE_MEDIUM)
+        ttk.Label(workflow_card, text="Workflow", style="Card.Strong.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, label_gap))
+        workflow = ttk.Combobox(workflow_card, textvariable=persona, state="readonly",
+                                values=[item.label for item in PERSONAS], font=theme.fonts.body)
+        workflow.grid(row=0, column=1, sticky="ew")
         from web_build import PRESETS
-        ttk.Label(panel, text="Build preset").grid(row=4, column=0, sticky="w")
-        presets = ttk.Combobox(panel, textvariable=preset, state="readonly",
-                              values=[*engine.HOST_PRESETS, *PRESETS])
-        presets.grid(row=4, column=1, sticky="ew")
+        ttk.Label(workflow_card, text="Build preset", style="Card.Strong.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(space(init_theme.SPACE_EXTRA_LARGE), label_gap))
+        presets = ttk.Combobox(workflow_card, textvariable=preset, state="readonly",
+                               values=[*engine.HOST_PRESETS, *PRESETS], font=theme.fonts.body)
+        presets.grid(row=0, column=3, sticky="ew")
+        ttk.Label(workflow_card, textvariable=description, style="Card.Secondary.TLabel", wraplength=wrap).grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(space(init_theme.SPACE_SMALL), 0))
+
+        options_card = ttk.Frame(panel, style="Card.TFrame", padding=card_padding)
+        options_card.grid(row=1, column=0, sticky="ew", pady=(space(init_theme.SPACE_MEDIUM), 0))
+        options_card.columnconfigure(0, weight=1, uniform="options")
+        options_card.columnconfigure(1, weight=1, uniform="options")
         controls = {}
-        labels = (
-            ("preset_only", "Prepare only the selected preset"),
-            ("no_system_install", "Use existing system packages (skip automatic package installation)"),
-            ("with_rad_debugger", "Build optional RAD Debugger (Linux x64)"),
-            ("with_editor", "Build Ludus editor (3D preview included by default)"),
-            ("with_tests", "Include native test targets and their dependencies"),
-            ("run_tests", "Build and run native tests after setup"),
-            ("with_smoke_app", "Include sample applications (smoke and native input demo)"),
-            ("with_web_probes", "Include browser feasibility probes"),
-            ("with_shader_probe", "Include shader feasibility probe (Linux Vulkan only; separate pinned tools required)"),
-            ("validate", "Build and run full validation after setup"),
-            ("skip_checks", "Skip formatting and static analysis during validation"),
-            ("skip_sanitizers", "Skip sanitizer build and tests during validation"),
-            ("skip_sdk", "Skip SDK consumer test during validation"),
-            ("ci", "Use CI validation policy (warnings as errors; no local hooks)"),
-        )
+        column_wrap = space(OPTION_COLUMN_WRAP_POINTS)
+        hint_indent = space(CHECKBOX_TEXT_INDENT_POINTS)
+        for column, sections in enumerate(OPTION_COLUMNS):
+            column_frame = ttk.Frame(options_card, style="Panel.TFrame")
+            column_frame.grid(row=0, column=column, sticky="nsew",
+                              padx=(0, space(init_theme.SPACE_EXTRA_LARGE)) if column == 0 else 0)
+            row = 0
+            for section_index, (title, names) in enumerate(sections):
+                ttk.Label(column_frame, text=title, style="Card.Heading.TLabel").grid(
+                    row=row, column=0, sticky="w",
+                    pady=(space(init_theme.SPACE_LARGE) if section_index else 0, space(init_theme.SPACE_EXTRA_SMALL)))
+                row += 1
+                for name in names:
+                    indent = hint_indent if name in NESTED_OPTIONS else 0
+                    controls[name] = ttk.Checkbutton(column_frame, text=OPTION_LABELS[name], variable=flags[name],
+                                                     command=lambda: refresh(), style="Card.TCheckbutton")
+                    controls[name].grid(row=row, column=0, sticky="w", padx=(indent, 0))
+                    row += 1
+                    if name in OPTION_HINTS:
+                        ttk.Label(column_frame, text=OPTION_HINTS[name], style="Card.Secondary.TLabel",
+                                  wraplength=column_wrap - hint_indent - indent).grid(
+                            row=row, column=0, sticky="w", padx=(hint_indent + indent, 0),
+                            pady=(0, space(init_theme.SPACE_EXTRA_SMALL)))
+                        row += 1
+
+        advanced_toggle = ttk.Button(panel, text="Advanced setup", style="Workspace.Link.TButton",
+                                     command=lambda: toggle_advanced())
+        advanced_toggle.grid(row=2, column=0, sticky="w", pady=(space(init_theme.SPACE_SMALL), 0))
+        advanced = ttk.Frame(panel, style="Card.TFrame", padding=card_padding)
+        advanced.grid(row=3, column=0, sticky="ew", pady=(space(init_theme.SPACE_EXTRA_SMALL), 0))
+        ttk.Label(advanced, text="Editor", style="Card.Heading.TLabel").grid(row=0, column=0, sticky="w")
+        controls["with_editor_preview"] = ttk.Checkbutton(
+            advanced, text="Include 3D preview and live shaders (disable for a lightweight editor)",
+            variable=flags["with_editor_preview"], command=lambda: refresh(), style="Card.TCheckbutton")
+        controls["with_editor_preview"].grid(row=1, column=0, sticky="w", pady=(space(init_theme.SPACE_EXTRA_SMALL), 0))
+        advanced.grid_remove()
+
+        summary_card = ttk.Frame(panel, style="Card.TFrame", padding=card_padding)
+        summary_card.grid(row=4, column=0, sticky="ew", pady=(space(init_theme.SPACE_MEDIUM), 0))
+        summary_card.columnconfigure(0, weight=1)
+        ttk.Label(summary_card, textvariable=summary, style="Card.TLabel", wraplength=wrap, justify="left").grid(
+            row=0, column=0, sticky="w", pady=(0, space(init_theme.SPACE_SMALL)))
+        ttk.Label(summary_card, text=f"Repository  {engine.repo_root()}", style="Card.Mono.TLabel",
+                  wraplength=wrap).grid(row=1, column=0, sticky="w")
 
         def current_args():
             result = copy.copy(args)
@@ -309,37 +392,18 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             flags["with_shader_probe"].set(False)
             refresh()
 
-        for row, (name, label) in enumerate(labels, start=5):
-            controls[name] = ttk.Checkbutton(panel, text=label, variable=flags[name], command=refresh)
-            controls[name].grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
-        workflow.bind("<<ComboboxSelected>>", change_workflow)
-        presets.bind("<<ComboboxSelected>>", lambda _event: refresh())
-        description.set(next(item.description for item in PERSONAS if item.key == args.persona))
-        advanced_row = 5 + len(labels)
-        advanced = ttk.LabelFrame(panel, text="Advanced editor setup", padding=8)
-        advanced.grid(row=advanced_row + 1, column=0, columnspan=2, sticky="ew")
-        controls["with_editor_preview"] = ttk.Checkbutton(
-            advanced, text="Include 3D preview and live shaders (disable for a lightweight editor)",
-            variable=flags["with_editor_preview"], command=refresh)
-        controls["with_editor_preview"].pack(anchor="w")
-        advanced.grid_remove()
-
         def toggle_advanced():
             if advanced.winfo_ismapped():
                 advanced.grid_remove()
             else:
                 advanced.grid()
+            init_theme.fit_minimum_size(window)
 
-        ttk.Button(panel, text="Advanced setup", command=toggle_advanced).grid(
-            row=advanced_row, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        separator_row = advanced_row + 2
-        ttk.Separator(panel).grid(row=separator_row, column=0, columnspan=2, sticky="ew", pady=14)
-        ttk.Label(panel, textvariable=summary, wraplength=600).grid(
-            row=separator_row + 1, column=0, columnspan=2, sticky="w")
-        ttk.Label(panel, text=f"Repository: {engine.repo_root()}", wraplength=600).grid(
-            row=separator_row + 2, column=0, columnspan=2, sticky="w", pady=(8, 16))
+        workflow.bind("<<ComboboxSelected>>", change_workflow)
+        presets.bind("<<ComboboxSelected>>", lambda _event: refresh())
+        description.set(next(item.description for item in PERSONAS if item.key == args.persona))
 
-        def accept():
+        def accept(_event=None):
             nonlocal selection
             candidate = current_args()
             try:
@@ -352,13 +416,21 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             selection = candidate
             window.destroy()
 
-        buttons = ttk.Frame(panel)
-        buttons.grid(row=separator_row + 3, column=0, columnspan=2, sticky="e")
-        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="left", padx=(0, 8))
-        ttk.Button(buttons, text="Initialize", command=accept).pack(side="left")
+        footer = build_footer(ttk, window, theme, "Enter to initialize · Esc to cancel")
+        footer.grid(row=2, column=0, sticky="ew")
+        buttons = ttk.Frame(footer, style="Workspace.TFrame")
+        buttons.grid(row=1, column=1, sticky="e", padx=footer.buttons_padding)
+        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="left", padx=(0, space(init_theme.SPACE_SMALL)))
+        initialize = ttk.Button(buttons, text="Initialize", style="Primary.TButton", command=accept)
+        initialize.pack(side="left")
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         window.bind("<Escape>", lambda _event: window.destroy())
+        window.bind("<Return>", accept)
+        window.bind("<KP_Enter>", accept)
         refresh()
+        init_theme.fit_minimum_size(window)
+        init_theme.centre_window(window)
+        initialize.focus_set()
         window.mainloop()
     finally:
         # Also release Tk when a callback/building the form fails.
@@ -367,3 +439,42 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         except tk.TclError:
             pass
     return selection
+
+
+def build_header(ttk, window, theme, title: str, subtitle: str, *, title_variable=None, subtitle_variable=None):
+    """The branded band at the top of both setup windows: icon, title and subtitle."""
+    import init_theme
+    space = theme.space
+    header = ttk.Frame(window, style="Header.TFrame")
+    content = ttk.Frame(header, style="Header.TFrame",
+                        padding=(space(init_theme.SPACE_EXTRA_LARGE), space(init_theme.SPACE_LARGE)))
+    content.grid(row=0, column=0, sticky="ew")
+    header.columnconfigure(0, weight=1)
+    content.columnconfigure(1, weight=1)
+    image = theme.header_image()
+    if image is not None:
+        ttk.Label(content, image=image, style="Header.TLabel").grid(
+            row=0, column=0, rowspan=2, sticky="w", padx=(0, space(init_theme.SPACE_LARGE)))
+    title_options = {"textvariable": title_variable} if title_variable is not None else {"text": title}
+    subtitle_options = {"textvariable": subtitle_variable} if subtitle_variable is not None else {"text": subtitle}
+    ttk.Label(content, style="Header.Title.TLabel", **title_options).grid(row=0, column=1, sticky="sw")
+    header.subtitle = ttk.Label(content, style="Header.Secondary.TLabel", wraplength=space(OPTION_WRAP_POINTS),
+                                **subtitle_options)
+    header.subtitle.grid(row=1, column=1, sticky="nw", pady=(space(init_theme.SPACE_EXTRA_SMALL) // 2, 0))
+    ttk.Frame(header, style="Rule.TFrame", height=1).grid(row=1, column=0, sticky="ew")
+    return header
+
+
+def build_footer(ttk, window, theme, hint: str):
+    """A ruled footer with a keyboard hint on the left; callers add buttons at column 1."""
+    import init_theme
+    space = theme.space
+    footer = ttk.Frame(window, style="Workspace.TFrame")
+    footer.columnconfigure(0, weight=1)
+    ttk.Frame(footer, style="Rule.TFrame", height=1).grid(row=0, column=0, columnspan=2, sticky="ew")
+    footer.hint = ttk.Label(footer, text=hint, style="Workspace.Secondary.TLabel")
+    footer.hint.grid(row=1, column=0, sticky="w", padx=(space(init_theme.SPACE_EXTRA_LARGE), 0),
+                     pady=space(init_theme.SPACE_LARGE))
+    # Callers place their button row at column 1 with this horizontal padding.
+    footer.buttons_padding = (0, space(init_theme.SPACE_EXTRA_LARGE))
+    return footer

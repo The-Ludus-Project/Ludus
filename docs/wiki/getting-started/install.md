@@ -26,7 +26,7 @@ From the checkout root, launch the setup window:
 1. Under **Workflow**, select **Application developer**.
 2. Keep **Build preset** set to `linux-clang-development` and
    **Prepare only the selected preset** checked.
-3. Check **Build Ludus editor (3D preview included by default)**.
+3. Under **Targets**, check **Build Ludus editor** (the 3D preview is included by default).
 4. Choose **Initialize**. A progress window lists each setup step, shows
    *Step N of M*, a progress bar and the elapsed time, and can show the live
    output. Leave the launching terminal open: a sudo password prompt appears

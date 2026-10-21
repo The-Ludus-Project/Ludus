@@ -334,6 +334,35 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(observed["retry"], ("Retry", "normal"))
         self.assertTrue(observed["log_visible"])
 
+    def test_enter_retries_after_a_failure(self):
+        import tkinter as tk
+        from tkinter import ttk
+        steps = [init_progress.Step("system", "Installing system prerequisites"),
+                 init_progress.Step("conan", "Conan install (all native presets)")]
+        window = init_window.SetupWindow(tk, ttk, steps=steps, command=[sys.executable, "-c", FAKE_RUNNER, "fail"],
+                                         title="test", log_path=None, cwd=engine.repo_root(),
+                                         environment=init_window.child_environment())
+        try:
+            window.start()
+            deadline = time.monotonic() + 20
+            while window.finished_at is None and time.monotonic() < deadline:
+                window.window.update()
+                time.sleep(0.02)
+            self.assertEqual(str(window.initialize_button.cget("text")), "Retry")
+            window.window.event_generate("<Return>")
+            window.window.update()
+            self.assertIsNone(window.finished_at)
+            self.assertEqual(str(window.initialize_button.cget("state")), "disabled")
+        finally:
+            if window.process is not None and window.process.poll() is None:
+                init_window.signal_process_tree(window.process, force=True)
+                window.process.wait()
+            for timer in window.timers.values():
+                window.window.after_cancel(timer)
+            if window.process is not None and window.process.stdout is not None:
+                window.process.stdout.close()
+            window.window.destroy()
+
     def test_cancel_stops_the_runner(self):
         code, window, observed = self.run_window("hang", action=lambda window: window.cancel())
         self.assertEqual(code, init_window.CANCELLED_EXIT_CODE)
