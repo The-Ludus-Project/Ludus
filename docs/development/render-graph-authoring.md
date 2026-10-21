@@ -1391,8 +1391,11 @@ and on the Render Graph toolbar (see the
   new nodes, and `node.port` connections in the configuration. Layout x/y edits
   only change the `layout` record; consecutive moves of one node coalesce into one
   undo step.
-- **Source** edits graph, build-manifest/schema and shader text; **Apply Text to
-  Draft** makes it one undoable document edit. Generated wrappers and packages
+- **Source** edits graph, build-manifest/schema and shader text directly in the
+  shared document draft/history. Save publishes accepted changes; rejected text
+  admission restores the previous accepted source. See
+  [in-app source editing](#edit-shader-sources-inside-ludus) for commands,
+  undo grouping and native shader formatting. Generated wrappers and packages
   are build products and never editable sources.
 - An explicit **Build Graph** or **Build & Preview** registers missing techniques
   for complete pipelines in older graph packages as one undoable draft edit.
@@ -1668,6 +1671,71 @@ RG3b completes the editor half of the
 a visual node canvas over the same draft, and a trusted preview of the cooked
 runtime generation on the editor's existing viewport device.
 
+### Edit shader sources inside Ludus
+
+The **Source** pane uses the shared code editor: line numbers, Slang lexical
+coloring, current-line and matching-bracket highlighting, and native text
+selection, clipboard and navigation. Strings and comments are excluded from
+bracket matching; matching is bounded for responsiveness. Shader formatting and
+unified source/canvas undo are available; hover and completion remain future
+increments, described in the
+[shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
+
+Right-click the source for the editing commands. On macOS, use Command where
+Ctrl is shown below (Qt's native shortcut mapping):
+
+| Action | Shortcut |
+| --- | --- |
+| Find / replace | Platform Find / Replace shortcuts, also in the context menu |
+| Go to line | Ctrl+G |
+| Indent / outdent selected lines | Tab / Shift+Tab |
+| Toggle Slang line comments | Ctrl+/ |
+| Duplicate selected lines, or current line | Ctrl+D |
+| Move selected/current lines | Alt+Up / Alt+Down |
+| Delete selected/current lines | Ctrl+Shift+K |
+| Format shader document (native desktop) | Ctrl+Shift+I |
+
+Enter retains the current indentation and adds one level after an opening Slang
+brace. Line commands and Replace All each form one document undo step.
+Find supports forward/backward wrapping, case matching, and replacement; Escape
+closes its controls and returns focus to the source. Go to line uses one-based
+line numbers. Ordinary text and JSON sources share the commands, with Slang
+coloring/comment toggling enabled only for `.slang` files.
+
+Edits enter the package draft immediately. Text, canvas and inspector changes
+share one Undo/Redo order, including keyboard, source context-menu and shell
+commands. Adjacent typing coalesces within a word/time boundary; commands, source
+switches, navigation and Save end the group. Undo returns to the affected source
+and restores its selection. Save publishes accepted draft text without an Apply
+step; external-file conflicts preserve it. An oversized/invalid edit restores the
+last accepted text without blocking later navigation or adding an undo item.
+Existing UTF-8 BOMs, Unicode text and CRLF line endings survive ordinary edits.
+
+On native desktop, use **Format Document** in the source context menu or its
+shortcut. It requires the pinned `clang-format` version in
+`config/tool_versions.json` (currently 23.1.3). Ludus tries the build toolchain,
+then `clang-format-23`/`clang-format` on PATH; **Choose Formatter...** selects an
+executable explicitly. The process verifies its version before formatting.
+Project `.clang-format` is resolved from the source path; without a style file,
+clang-format's default style applies. Include sorting and qualifier rewriting
+are disabled. Slang uses a C++-syntax profile, so validate/compile the result;
+not every Slang extension is qualified. This command is shader-only and
+unavailable in the browser host.
+
+Formatting runs asynchronously, preserves selection/scroll and is one undoable
+draft edit. Continuing to type makes the result stale; switching source/project
+cancels it. Failure, timeout, incomplete parse or output beyond document limits
+preserves the source. Formatting never saves a file or runs automatically on
+Save. The shared document/controller and formatter boundary can be reused by
+scripting without a dependency on shader compilation or graph schemas.
+
+Ordinary edits convert only inserted UTF-16 ranges to UTF-8; whole-source byte
+copies use implicit sharing until changed. Tree/interface/watch refreshes remain
+debounced. Source editing itself requires no compiler or language server.
+Extreme single-line files remain a known Qt layout performance limit; the
+ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
+`ludus_code_editor_tests`.
+
 ### Edit shader sources in a code editor
 
 On native desktop, select a file in the **Source** view and click **Open in Code
@@ -1757,7 +1825,8 @@ Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
 
 Double-click a Subgraph to open it, or a Raster node to open its first mapped
 shader source. The source selector and **View Shaders** menu give access to the
-other stage. Apply or revert pending Source text before navigating or creating.
+other stage. Accepted Source edits stay in the shared draft when navigating or
+creating nodes.
 
 ### Edit on the canvas
 

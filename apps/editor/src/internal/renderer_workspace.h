@@ -9,6 +9,7 @@
 #include "internal/external_code_editor.h"
 #include "internal/render_graph_build_settings.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_code_document.h"
 #include "internal/render_graph_creation.h"
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_document.h"
@@ -41,6 +42,9 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+class CodeEditor;
+class CodeDocumentController;
+class CodeFormatter;
 class RenderGraphPreview;
 class RenderGraphWorker;
 class RenderPreview;
@@ -90,13 +94,13 @@ public:
     [[nodiscard]] bool CreateSubgraph(const QString& name);
     /// Prompt for an asset name and create/open the library in the current package.
     [[nodiscard]] bool PromptCreateSubgraph();
-    /// True when a configuration is selected and no unapplied text or source conflict exists.
+    /// True when a configuration is selected and no external source conflict exists.
     [[nodiscard]] bool CanCreateSubgraph() const;
     /// Create/select an empty configuration in the selected graph file. One undo step;
-    /// Save publishes it. Invalid/duplicate names or pending source edits preserve the draft.
+    /// Save publishes it. Invalid/duplicate names or external source conflicts preserve the draft.
     [[nodiscard]] bool CreateConfiguration(const QString& name);
     /// Copy the selected authored-node group to the system clipboard; writes no project files.
-    /// Requires one configuration and no pending source conflict. Failure retains clipboard data.
+    /// Requires one configuration and no external source conflict. Failure retains clipboard data.
     [[nodiscard]] bool CopySelectedNodes();
     /// Paste the clipboard group into the displayed configuration at a scene position.
     /// Unique IDs, internal connections and layout are one undo step. Failure preserves the draft.
@@ -295,7 +299,6 @@ private:
     [[nodiscard]] bool buildAndPreview(RenderGraphSource source);
     [[nodiscard]] bool isUneditedBuiltIn() const;
     [[nodiscard]] bool writeDocument();
-    [[nodiscard]] bool hasPendingSourceText() const;
     void openProjectGraph();
     void showDocument(const RenderGraphDocument& document);
     [[nodiscard]] QByteArray getBuildIdentity(RenderGraphSource source = RenderGraphSource::Draft) const;
@@ -312,6 +315,7 @@ private:
     void editNodeOnCanvas(const QString& diagnosticField = {});
     void renderEdges();
     void renderSource();
+    void restoreSourceHistory();
     void renderStatus();
     void updateActions();
     void documentEdited(RenderGraphDocumentStatus status,
@@ -350,6 +354,7 @@ private:
     bool mHasResult = false;
     bool mIsLivePreviewEnabled = false;
     RenderGraphDocument mDocument;
+    RenderGraphCodeDocument mSourceDocument;
     ExternalCodeEditor mCodeEditor;
     RenderGraphJob mJob;
     RenderGraphCreation mCreation;
@@ -376,7 +381,9 @@ private:
     QLineEdit* mEdgeFrom;
     QLineEdit* mEdgeTo;
     QComboBox* mSourceFile;
-    QPlainTextEdit* mSource;
+    CodeEditor* mSource;
+    CodeDocumentController* mSourceController;
+    CodeFormatter* mSourceFormatter;
     QPlainTextEdit* mSourceInterface;
     QPlainTextEdit* mPlan;
     RenderGraphBuildSettings mBuildSettings;
@@ -406,8 +413,6 @@ private:
     /// Renderer tab texture viewer; null in builds without the native GPU preview.
     TextureViewer* mTextureViewerOrNull = nullptr;
     QTimer mSourceEditDebounce;
-    QString mEditingSource;
-    QByteArray mEditingText;
     QTimer mPreviewTimer;
     foundation::uint64 mPreviewDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;

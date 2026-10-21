@@ -3,6 +3,9 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
+
+#include "internal/code_document.h"
 #include "internal/document_history.h"
 #include "internal/render_graph_source.h"
 
@@ -17,11 +20,23 @@
 
 namespace ludus::editor
 {
+/// Non-authoring cursor hint for the source transaction restored by Undo/Redo.
+struct RenderGraphTextState final
+{
+    QString File;
+    CodeTextSelection Selection;
+};
+
 /// Complete authored render-graph package content: package-relative path to bytes.
 struct RenderGraphSnapshot final
 {
     QMap<QString, QByteArray> Files;
-    [[nodiscard]] bool operator==(const RenderGraphSnapshot& other) const = default;
+    RenderGraphTextState TextState;
+    /// History cursor hints do not participate in authored equality or serialization.
+    [[nodiscard]] LUDUS_INLINE bool operator==(const RenderGraphSnapshot& other) const
+    {
+        return Files == other.Files;
+    }
 };
 
 /// Layout position of one node, in canvas units (presentation only; never compiled).
@@ -102,6 +117,8 @@ public:
     /// Package-relative files in the requested source version.
     [[nodiscard]] QStringList GetFiles(RenderGraphSource source = RenderGraphSource::Draft) const;
     [[nodiscard]] QByteArray GetDraft(const QString& file) const;
+    /// Borrow source bytes until the next document mutation; empty for missing files.
+    [[nodiscard]] foundation::BorrowedView<const char> GetDraftView(const QString& file) const noexcept;
     [[nodiscard]] QByteArray GetSaved(const QString& file) const;
     [[nodiscard]] bool IsFileDirty(const QString& file) const;
     [[nodiscard]] bool IsDirty() const;
@@ -230,6 +247,20 @@ public:
     MoveNodes(const QString& file, const QString& configuration, const QVector<RenderGraphNodePosition>& positions);
     /// Replace an existing source's draft bytes (shader function, build manifest or graph text).
     [[nodiscard]] RenderGraphDocumentStatus SetText(const QString& file, const QByteArray& bytes);
+    /// Apply a UTF-8 replacement against the exact draft revision. Preserves draft,
+    /// history and cursor hints on rejection. Only adjacent text groups on the same
+    /// file may merge; structural edits, Save and history navigation end a group.
+    [[nodiscard]] CodeEditStatus ApplyTextEdit(const QString& file,
+                                               foundation::uint64 expectedRevision,
+                                               const CodeTextEdit& edit,
+                                               CodeTextSelection before,
+                                               CodeTextSelection after,
+                                               bool shouldMerge);
+    void BreakTextGroup() noexcept;
+    [[nodiscard]] LUDUS_INLINE const RenderGraphTextState& GetHistoryTextState() const noexcept
+    {
+        return mDraft.TextState;
+    }
 
     [[nodiscard]] bool CanUndo() const noexcept
     {
@@ -276,7 +307,10 @@ private:
                                                               const QStringList& arguments,
                                                               EditFunction edit,
                                                               bool shouldMerge);
-    [[nodiscard]] RenderGraphDocumentStatus commit(const RenderGraphSnapshot& candidate, bool shouldMerge);
+    [[nodiscard]] RenderGraphDocumentStatus commit(const RenderGraphSnapshot& candidate,
+                                                   bool shouldMerge,
+                                                   const RenderGraphTextState& beforeText = {},
+                                                   const RenderGraphTextState& afterText = {});
     [[nodiscard]] RenderGraphDocumentStatus createPackage(QStringList& outSavedFiles);
     void
     adopt(const QString& packageRoot, const QString& rootGraph, const RenderGraphSnapshot& snapshot, bool isBuiltIn);
@@ -286,6 +320,7 @@ private:
     foundation::uint64 mSavedRevision = 0;
     RenderGraphSnapshot mDraft;
     QString mLastMove;
+    QString mLastTextFile;
     bool mIsBuiltIn = false;
     DocumentHistory<RenderGraphSnapshot, HISTORY_CAPACITY> mHistory;
 };

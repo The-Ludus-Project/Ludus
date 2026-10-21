@@ -1,20 +1,26 @@
+#include "internal/code_editor.h"
 #include "internal/configuration_workspace.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/main_window.h"
+#include "internal/renderer_workspace.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QFile>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextDocument>
 #include <QTimer>
 
 using namespace ludus::editor;
@@ -291,4 +297,61 @@ TEST_CASE("Immediate field edits cannot arrive after opening another project", "
     CHECK(controller.State().Draft.Name == QStringLiteral("second"));
     CHECK_FALSE(controller.State().Dirty());
     CHECK_FALSE(controller.CanUndoProject());
+}
+
+TEST_CASE("Shader text undo reaches the package through shell keyboard and context menu",
+          "[editor][document][widget][text]")
+{
+    QTemporaryDir directory;
+    EditorController controller(MissingTools());
+    MainWindow window(&controller);
+    controller.OpenProject(Project(directory));
+    ShowReady(window, controller);
+    RendererWorkspace* workspaceOrNull = window.findChild<RendererWorkspace*>();
+    REQUIRE(workspaceOrNull != nullptr);
+    REQUIRE(window.GetDocumentWell().OpenDocument(workspaceOrNull) == true);
+    CodeEditor* editorOrNull = workspaceOrNull->findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(editorOrNull != nullptr);
+    QTabWidget* viewsOrNull = workspaceOrNull->findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(viewsOrNull != nullptr);
+    viewsOrNull->setCurrentIndex(1);
+    editorOrNull->setFocus();
+    QApplication::processEvents();
+    const QString original = editorOrNull->toPlainText();
+    editorOrNull->moveCursor(QTextCursor::End);
+    QTest::keyClicks(editorOrNull, QStringLiteral(" "));
+    CHECK(workspaceOrNull->IsDirty() == true);
+    CHECK(editorOrNull->document()->isUndoAvailable() == false);
+    REQUIRE(Action(window, "document.undo")->isEnabled() == true);
+    Action(window, "document.undo")->trigger();
+    CHECK(editorOrNull->toPlainText() == original);
+    REQUIRE(Action(window, "document.redo")->isEnabled() == true);
+    Action(window, "document.redo")->trigger();
+    CHECK(editorOrNull->toPlainText() == original + QLatin1Char(' '));
+    QTest::keySequence(editorOrNull, QKeySequence(QKeySequence::Undo));
+    CHECK(editorOrNull->toPlainText() == original);
+    QTest::keySequence(editorOrNull, QKeySequence(QKeySequence::Redo));
+    CHECK(editorOrNull->toPlainText() == original + QLatin1Char(' '));
+    bool hasInvokedContextUndo = false;
+    QTimer::singleShot(0, editorOrNull, [&]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (menuOrNull != nullptr)
+        {
+            for (QAction* action : menuOrNull->actions())
+            {
+                if (action->text() == QStringLiteral("Undo") && action->isEnabled() == true)
+                {
+                    action->trigger();
+                    hasInvokedContextUndo = true;
+                    break;
+                }
+            }
+            menuOrNull->close();
+        }
+    });
+    const QPoint point(20, 20);
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, editorOrNull->viewport()->mapToGlobal(point));
+    QApplication::sendEvent(editorOrNull->viewport(), &context);
+    CHECK(hasInvokedContextUndo == true);
+    CHECK(workspaceOrNull->IsDirty() == false);
 }
