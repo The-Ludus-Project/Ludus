@@ -11,6 +11,7 @@
 #include "internal/render_graph_targets.h"
 #include "internal/render_scene.h"
 #include "internal/texture_inspection.h"
+#include "internal/viewport_statistics.h"
 
 #include <QImage>
 #include <QObject>
@@ -115,7 +116,10 @@ public:
     /// Export extent of the generation the next frame will show (candidate first), or 0x0.
     [[nodiscard]] QSize GetTargetSize() const noexcept;
     /// Advance activation, preparation, rendering and the asynchronous copy without waiting.
-    void Tick();
+    /// @param preparationMilliseconds Active caller work converting the current World/camera, in ms.
+    void Tick(foundation::float64 preparationMilliseconds = 0);
+    /// Completed output statistics; retained while preparation is pending or fails, reset on Detach.
+    [[nodiscard]] const GraphViewportStatistics& GetStatistics() const noexcept;
 
     /// Last complete frame of an active generation; null before the first one.
     [[nodiscard]] const QImage& GetImage() const noexcept
@@ -182,6 +186,7 @@ Q_SIGNALS:
 private:
     struct State;
     [[nodiscard]] RenderGraphPreviewLoad stage();
+    void tick();
     void advance();
     void finishCopy();
     [[nodiscard]] bool beginInspection();

@@ -55,6 +55,40 @@ struct ViewportStatistics final
     foundation::uint32 Draws = 0;
 };
 
+/// Completed graph-output measurements, independent of the device timing owner.
+/// GUI-thread only. CPU samples sum active service work, excluding asynchronous waits.
+class GraphViewportStatistics final
+{
+public:
+    /// A gap this long marks the on-demand producer idle and starts a new FPS window.
+    static constexpr foundation::uint64 IDLE_NANOSECONDS = 1'000'000'000;
+    /// Clear all series and any unfinished CPU work, as on device replacement.
+    void Reset() noexcept;
+    /// Accumulate finite nonnegative CPU work in milliseconds toward the next delivered image.
+    void AddCpuWork(foundation::float64 milliseconds) noexcept;
+    /// Commit one successfully read and converted image. Timestamps use one monotonic CPU clock.
+    /// Readback is elapsed milliseconds from copy request through display-image conversion.
+    void CompleteFrame(foundation::uint64 nowNanoseconds, foundation::float64 readbackMilliseconds) noexcept;
+    /// Average update rate; zero after an idle gap or before two completed images.
+    [[nodiscard]] foundation::float64 GetFramesPerSecond(foundation::uint64 nowNanoseconds) const noexcept;
+    [[nodiscard]] const RollingAverage& GetCpuMilliseconds() const noexcept;
+    [[nodiscard]] const RollingAverage& GetReadbackMilliseconds() const noexcept;
+
+private:
+    RollingAverage mCpuMilliseconds;
+    RollingAverage mReadbackMilliseconds;
+    RollingAverage mFrameNanoseconds;
+    foundation::float64 mPendingCpuMilliseconds = 0;
+    foundation::uint64 mLastFrameNanoseconds = 0;
+    bool mHasFrame = false;
+};
+
+/// Graph overlay: delivered-image FPS, active CPU work, device GPU time, and elapsed readback.
+/// GPU timing comes from the existing device owner; this formatter never arms or polls queries.
+[[nodiscard]] QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
+                                                    const ViewportStatistics& deviceStatistics,
+                                                    foundation::uint64 nowNanoseconds);
+
 /// Overlay text: GPU and CPU frame times (two decimals, milliseconds), then resolution and draws.
 /// Unavailable GPU timing reads "GPU: n/a"; a pending first sample reads "GPU: …".
 [[nodiscard]] QString FormatViewportStatistics(const ViewportStatistics& statistics);

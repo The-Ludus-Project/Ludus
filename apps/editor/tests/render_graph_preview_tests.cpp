@@ -56,6 +56,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
+#include <QToolButton>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -552,6 +553,8 @@ TEST_CASE("RG3b preview publishes only complete frames and matches the live path
     // Pending: the candidate prepares and nothing is presented yet.
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     CHECK(preview.GetImage().isNull() == true);
+    CHECK(preview.GetStatistics().GetCpuMilliseconds().GetCount() == 0);
+    CHECK(preview.GetStatistics().GetReadbackMilliseconds().GetCount() == 0);
     CHECK(preview.GetPresentedGeneration() == 0);
     CHECK(preview.GetTargetSize() == QSize(WIDTH, HEIGHT));
 
@@ -583,6 +586,8 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
     const QImage green = preview.GetImage();
+    const usize sampleCount = preview.GetStatistics().GetCpuMilliseconds().GetCount();
+    REQUIRE(sampleCount != 0);
     CheckCenter(green, 0, 255, 0);
     const auto expectKept = [&]() {
         for (int32 tick = 0; tick < 50; ++tick)
@@ -590,6 +595,8 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
             preview.Tick();
         }
         CHECK(preview.GetImage() == green);
+        CHECK(preview.GetStatistics().GetCpuMilliseconds().GetCount() == sampleCount);
+        CHECK(preview.GetStatistics().GetReadbackMilliseconds().GetCount() == sampleCount);
         CHECK(preview.GetPresentedGeneration() == 1);
         CHECK(preview.GetReport().ActiveGeneration == 1);
     };
@@ -636,6 +643,8 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     // Stopping the viewport device keeps the last presented frame and reports it as such.
     preview.Detach();
     CHECK(preview.IsAttached() == false);
+    CHECK(preview.GetStatistics().GetCpuMilliseconds().GetCount() == 0);
+    CHECK(preview.GetStatistics().GetReadbackMilliseconds().GetCount() == 0);
     CHECK(preview.GetImage() == red);
     CHECK(preview.GetStatus().contains(QStringLiteral("last presented frame")) == true);
 }
@@ -1060,6 +1069,36 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     rhi::Shutdown();
 }
 
+TEST_CASE("Graph viewport Stats toggle is visible and persists with navigation",
+          "[editor][render-graph][graph-statistics]")
+{
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    QToolButton* statistics = viewport.findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    QLabel* overlay = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatisticsOverlay"));
+    REQUIRE(statistics != nullptr);
+    REQUIRE(overlay != nullptr);
+    CHECK(statistics->isHidden() == false);
+    CHECK(overlay->isHidden() == true);
+    statistics->click();
+    CHECK(source.IsStatisticsVisible() == true);
+    CHECK(overlay->isHidden() == false);
+    CHECK(overlay->testAttribute(Qt::WA_TransparentForMouseEvents) == true);
+    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("FPS (updates):")) == true);
+    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Readback:")) == true);
+    const QJsonObject navigation = source.Navigation();
+    statistics->click();
+    CHECK(overlay->isHidden() == true);
+    CHECK(viewport.GetStatisticsText().isEmpty() == true);
+    source.RestoreNavigation(navigation);
+    CHECK(statistics->isChecked() == true);
+    CHECK(overlay->isHidden() == false);
+    workspace.SetPreviewSource(nullptr);
+}
+
 TEST_CASE("World viewport follows project shaders and keeps drawable output after a failed edit",
           "[editor][render-graph][world-graph]")
 {
@@ -1086,6 +1125,7 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.IsBuiltIn() == true);
     REQUIRE(source.SetScene(MakeScene({1, 1, 1, 1})) == true);
+    source.SetStatisticsVisible(true);
     REQUIRE(source.Start() == true);
     const auto waitFor = [&](const auto& isReady) {
         QElapsedTimer timer;
@@ -1104,6 +1144,15 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
     CHECK(source.FrameAvailable() == true);
     CHECK(source.Frames() != 0);
+    const GraphViewportStatistics& measured = workspace.GetPreviewOrNull()->GetStatistics();
+    REQUIRE(measured.GetCpuMilliseconds().GetCount() != 0);
+    CHECK(measured.GetCpuMilliseconds().GetAverage() > 0);
+    REQUIRE(measured.GetReadbackMilliseconds().GetCount() != 0);
+    CHECK(measured.GetReadbackMilliseconds().GetAverage() > 0);
+    QLabel* overlay = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatisticsOverlay"));
+    REQUIRE(overlay != nullptr);
+    CHECK(overlay->isVisible() == true);
+    REQUIRE(waitFor([&]() { return source.GetStatistics().GpuState != ViewportGpuTimeState::Waiting; }) == true);
     CHECK(QFileInfo::exists(QDir(project.path()).filePath(QStringLiteral("graphs"))) == false);
     REQUIRE(workspace.CustomizeBuiltIn() == true);
     workspace.SetBuildTools(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
@@ -1202,8 +1251,15 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == savedGeneration);
     REQUIRE(workspace.GetDocument().SetText(workspace.GetDocument().GetRootGraph(), savedGraph) ==
             RenderGraphDocumentStatus::Ok);
+    // Direct document edits above bypass the source controller. Rebind through the selector
+    // so the next shader edit uses the restored graph's current revision.
+    sourceFiles->setCurrentText(workspace.GetDocument().GetRootGraph());
+    sourceFiles->setCurrentText(QStringLiteral("main_shaders/color.slang"));
+    REQUIRE(sourceFiles->currentText() == QStringLiteral("main_shaders/color.slang"));
     const uint64 beforeInvalidShader = workspace.GetLastResult().Request.Request;
     sourceText->setPlainText(QStringLiteral("broken shader source"));
+    REQUIRE(workspace.GetDocument().GetDraft(QStringLiteral("main_shaders/color.slang")) ==
+            QByteArrayLiteral("broken shader source"));
     REQUIRE(workspace.Save() == true);
     REQUIRE(waitFor([&]() {
                 return workspace.IsJobActive() == false && workspace.GetLastResult().IsSuccessful == false &&

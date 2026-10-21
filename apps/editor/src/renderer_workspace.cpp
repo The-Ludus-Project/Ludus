@@ -34,6 +34,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -3377,6 +3378,8 @@ void RendererWorkspace::ServicePreview()
     {
         return;
     }
+    QElapsedTimer preparationTimer;
+    preparationTimer.start();
     RenderGraphPreview& preview = *mPreviewOrNull;
     if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true &&
         (preview.IsAttached() == false || mPreviewSourceOrNull->GetDeviceSerial() != mPreviewDeviceSerial))
@@ -3429,7 +3432,12 @@ void RendererWorkspace::ServicePreview()
             mPreviewWorldToClip = view.WorldToClip;
         }
     }
-    preview.Tick();
+    if (mPreviewSourceOrNull != nullptr)
+    {
+        mPreviewSourceOrNull->PollGpuProfiling();
+    }
+    constexpr foundation::float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
+    preview.Tick(static_cast<foundation::float64>(preparationTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND);
     if (mPreviewSourceOrNull == nullptr || mPreviewSourceOrNull->HasDevice() == false ||
         preview.GetTargetSize().isEmpty() == true)
     {

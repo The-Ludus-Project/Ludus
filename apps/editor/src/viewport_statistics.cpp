@@ -1,6 +1,7 @@
 #include "internal/viewport_statistics.h"
 
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/time/time.hpp>
 
 namespace ludus::editor
 {
@@ -9,6 +10,7 @@ namespace
 using namespace foundation;
 /// Decimal places shown for millisecond values.
 constexpr int32 MILLISECOND_DECIMALS = 2;
+constexpr int32 FPS_DECIMALS = 1;
 QString FormatMilliseconds(const RollingAverage& average)
 {
     return average.GetCount() == 0 ? QStringLiteral("…")
@@ -47,6 +49,69 @@ float64 RollingAverage::GetAverage() const noexcept
         sum += mSamples[(mNext + VIEWPORT_STATISTICS_AVERAGE_FRAMES - 1 - i) % VIEWPORT_STATISTICS_AVERAGE_FRAMES];
     }
     return sum / static_cast<float64>(mCount);
+}
+void GraphViewportStatistics::Reset() noexcept
+{
+    mCpuMilliseconds.Reset();
+    mReadbackMilliseconds.Reset();
+    mFrameNanoseconds.Reset();
+    mPendingCpuMilliseconds = 0;
+    mLastFrameNanoseconds = 0;
+    mHasFrame = false;
+}
+void GraphViewportStatistics::AddCpuWork(float64 milliseconds) noexcept
+{
+    if (math::IsFinite(milliseconds) == true && milliseconds >= 0)
+    {
+        mPendingCpuMilliseconds += milliseconds;
+    }
+}
+void GraphViewportStatistics::CompleteFrame(uint64 nowNanoseconds, float64 readbackMilliseconds) noexcept
+{
+    if (mHasFrame == true && nowNanoseconds > mLastFrameNanoseconds &&
+        nowNanoseconds - mLastFrameNanoseconds < IDLE_NANOSECONDS)
+    {
+        mFrameNanoseconds.Add(static_cast<float64>(nowNanoseconds - mLastFrameNanoseconds));
+    }
+    else
+    {
+        mFrameNanoseconds.Reset();
+    }
+    mLastFrameNanoseconds = nowNanoseconds;
+    mHasFrame = true;
+    mCpuMilliseconds.Add(mPendingCpuMilliseconds);
+    mPendingCpuMilliseconds = 0;
+    mReadbackMilliseconds.Add(readbackMilliseconds);
+}
+float64 GraphViewportStatistics::GetFramesPerSecond(uint64 nowNanoseconds) const noexcept
+{
+    if (mHasFrame == false || nowNanoseconds < mLastFrameNanoseconds ||
+        nowNanoseconds - mLastFrameNanoseconds >= IDLE_NANOSECONDS || mFrameNanoseconds.GetCount() == 0)
+    {
+        return 0;
+    }
+    return static_cast<float64>(time::NANOSECONDS_PER_SECOND) / mFrameNanoseconds.GetAverage();
+}
+const RollingAverage& GraphViewportStatistics::GetCpuMilliseconds() const noexcept
+{
+    return mCpuMilliseconds;
+}
+const RollingAverage& GraphViewportStatistics::GetReadbackMilliseconds() const noexcept
+{
+    return mReadbackMilliseconds;
+}
+QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
+                                      const ViewportStatistics& deviceStatistics,
+                                      uint64 nowNanoseconds)
+{
+    const QString gpu = deviceStatistics.GpuState == ViewportGpuTimeState::Unavailable
+                            ? QStringLiteral("n/a")
+                            : FormatMilliseconds(deviceStatistics.GpuMilliseconds);
+    return QStringLiteral("FPS (updates): %1\nCPU: %2\nGPU: %3\nReadback: %4")
+        .arg(statistics.GetFramesPerSecond(nowNanoseconds), 0, 'f', FPS_DECIMALS)
+        .arg(FormatMilliseconds(statistics.GetCpuMilliseconds()),
+             gpu,
+             FormatMilliseconds(statistics.GetReadbackMilliseconds()));
 }
 QString FormatViewportStatistics(const ViewportStatistics& statistics)
 {

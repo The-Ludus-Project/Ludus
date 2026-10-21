@@ -688,6 +688,30 @@ rebuilds; a removed target returns to Final output. Discarded/undefined attachme
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
 
+The **Stats** toggle beside the viewport controls shows a live performance overlay.
+The preference is saved with World navigation. It refreshes four times a second;
+time measurements average the last 30 completed samples:
+
+- **FPS (updates)** counts completed graph output images delivered to the viewport,
+  using the average interval between images. The graph renders on demand, so this
+  is an interaction update rate, not monitor refresh or a continuous benchmark.
+  It shows zero before two images arrive and after one second without a new image;
+  a new interaction after that idle gap starts a fresh rate window.
+- **CPU** sums active owner-thread World/camera extraction, graph preparation,
+  submission, polling and output conversion work per delivered image. It excludes
+  the wall-clock gaps between asynchronous service calls and other editor work.
+- **GPU** uses the existing asynchronous device timestamp probe for graph frame
+  execution. It excludes CPU conversion and is not input-to-display latency.
+  `…` means no sample has completed; `n/a` means timestamps are unavailable.
+  The overlay and profiling recorder share the device's timing owner.
+- **Readback** measures elapsed time from requesting the output copy until its
+  CPU display image is ready, including asynchronous copy waits, polling cadence
+  and image conversion. It excludes the earlier graph render and final Qt paint.
+
+Pending or failed output copies do not publish successful frame samples or erase
+last-completed time averages. Device replacement clears the graph series. These
+measurements do not add a GPU wait or change the graph's on-demand scheduling.
+
 The adjacent configuration selector lists configurations authored in the root graph. Use
 those for custom debug permutations or open another project graph. The editor does not
 invent graph passes or infer a normal/UV buffer from a target's name. A normal/UV debug
