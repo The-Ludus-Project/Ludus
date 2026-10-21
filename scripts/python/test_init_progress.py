@@ -41,12 +41,18 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(progress.steps[0].finished_at, 20.0)
         self.assertFalse(progress.feed("LUDUS_PROGRESS_DETAIL 1 4 conan install linux-clang-debug", 21.0))
         self.assertEqual(progress.fraction(), (2 + 0.25) / 4)
-        self.assertTrue(progress.feed("[50/200] Building CXX object modules/a.cpp.o", 22.0))
+        # A dependency's Ninja build inside Conan does not replace the runner's count.
+        self.assertTrue(progress.feed("[45/45] Linking static target libfreetype.a", 22.0))
+        self.assertEqual((progress.detail_done, progress.detail_total), (1, 4))
+        self.assertEqual(progress.last_line, "[45/45] Linking static target libfreetype.a")
+        self.assertFalse(progress.is_last_line_status)
+        self.assertFalse(progress.feed("LUDUS_PROGRESS 4 4 Building the editor", 23.0))
+        self.assertEqual(progress.detail_total, 0)
+        self.assertTrue(progress.feed("[50/200] Building CXX object modules/a.cpp.o", 24.0))
         self.assertEqual((progress.detail_done, progress.detail_total), (50, 200))
         self.assertEqual(progress.detail_text, "Building CXX object modules/a.cpp.o")
-        self.assertEqual(progress.fraction(), (2 + 0.25) / 4)
-        self.assertFalse(progress.feed("LUDUS_PROGRESS 4 4 Verifying tools", 23.0))
-        self.assertEqual(progress.detail_total, 0)
+        self.assertTrue(progress.is_last_line_status)
+        self.assertEqual(progress.fraction(), (3 + 0.25) / 4)
 
     def test_runner_plan_replaces_a_different_prediction(self):
         progress = init_progress.SetupProgress.from_plan([init_progress.Step("a", "A")])

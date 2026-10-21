@@ -28,9 +28,12 @@ TERMINATE_GRACE_MILLISECONDS = 5000
 READ_CHUNK_BYTES = 65536
 MAX_LINES_PER_POLL = 400
 MAX_LOG_LINES = 5000
-MAX_DETAIL_CHARACTERS = 110
+MAX_DETAIL_CHARACTERS = 84
 WRAP_PIXELS = 620
-LOG_HEIGHT_LINES = 14
+LOG_HEIGHT_LINES = 10
+# The rest of the runner's closing text stays in the output log, so the window
+# still fits a laptop screen with the log open.
+MAX_SUMMARY_LINES = 3
 WINDOW_MINIMUM_WIDTH = 680
 WINDOW_MINIMUM_HEIGHT = 520
 SPINNER_FRAMES = "◐◓◑◒"
@@ -215,7 +218,12 @@ class SetupWindow:
         self.bar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 4))
         self.bar.start()
         self.detail = tk.StringVar(value="")
-        ttk.Label(panel, textvariable=self.detail, foreground="#5e5c64").grid(row=4, column=0, columnspan=2, sticky="w")
+        self.activity = tk.StringVar(value="")
+        details = ttk.Frame(panel)
+        details.grid(row=4, column=0, columnspan=2, sticky="ew")
+        ttk.Label(details, textvariable=self.detail).grid(row=0, column=0, sticky="w")
+        ttk.Label(details, textvariable=self.activity, foreground="#5e5c64", font=("TkFixedFont", 9)).grid(
+            row=1, column=0, sticky="w")
 
         self.note = tk.StringVar(value="")
         self.note_label = tk.Label(panel, textvariable=self.note, background=NOTE_BACKGROUND, anchor="w",
@@ -445,10 +453,11 @@ class SetupWindow:
             if not self.is_cancelling:
                 self.status.set(f"Step {progress.current + 1} of {len(progress.steps)}: {step.label}")
         if progress.detail_total > 0:
-            text = f"{progress.detail_done}/{progress.detail_total}  {progress.detail_text}"
+            self.detail.set(shorten(f"{progress.detail_done}/{progress.detail_total}  {progress.detail_text}"))
         else:
-            text = progress.last_line
-        self.detail.set(shorten(text))
+            self.detail.set("Working…" if progress.has_started_step else "")
+        # The newest output line shows activity even when a step reports no counts.
+        self.activity.set("" if progress.is_last_line_status else shorten(progress.last_line))
         if progress.note:
             self.note.set("⚠ " + progress.note)
             self.note_label.grid()
@@ -462,12 +471,13 @@ class SetupWindow:
         self.bar.stop()
         self.bar.configure(mode="determinate", value=self.progress.fraction())
         self.detail.set("")
+        self.activity.set("")
         outcome = self.progress.outcome
         if outcome == init_progress.DONE:
             self.heading.set("Ludus is ready")
             self.status.set("Setup finished successfully.")
             self.status_label.configure(foreground=STATUS_COLOURS[init_progress.DONE])
-            summary = "\n".join(self.progress.summary) or "Ludus initialization complete."
+            summary = "\n".join(self.progress.summary[:MAX_SUMMARY_LINES]) or "Ludus initialization complete."
             self.outcome.set(summary)
             self.outcome_label.configure(background=SUCCESS_BACKGROUND)
         elif outcome == init_progress.CANCELLED:
@@ -481,7 +491,7 @@ class SetupWindow:
             self.status.set(f"Setup failed during: {failed}" if failed else "Setup failed.")
             self.status_label.configure(foreground=STATUS_COLOURS[init_progress.FAILED])
             self.outcome.set("Error: " + self.progress.error +
-                             "\nFix the reported problem, then run ./init.sh again. The output below shows the details.")
+                             "\nFix the reported problem, then choose Retry or run ./init.sh again. The output below has the details.")
             self.outcome_label.configure(background=ERROR_BACKGROUND)
             self.show_log(True)
         if self.outcome.get():

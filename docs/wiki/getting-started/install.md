@@ -27,8 +27,10 @@ From the checkout root, launch the setup window:
 2. Keep **Build preset** set to `linux-clang-development` and
    **Prepare only the selected preset** checked.
 3. Check **Build Ludus editor (3D preview included by default)**.
-4. Choose **Initialize**. The selection window closes and preparation continues
-   in the terminal; leave that terminal open and follow its progress.
+4. Choose **Initialize**. A progress window lists each setup step, shows
+   *Step N of M*, a progress bar and the elapsed time, and can show the live
+   output. Leave the launching terminal open: a sudo password prompt appears
+   there, and the window tells you when it is waiting for one.
 
 Initialization prepares pinned tools and dependencies, installs missing supported
 system prerequisites when needed, and builds the editor. First-time setup can
@@ -36,9 +38,11 @@ download dependencies and request a sudo password for system packages. Cancellin
 the selection window starts no setup actions. Tests are optional here; engine
 contributors have additional validation steps in the building guide.
 
-**Checkpoint:** initialization completes successfully and reports the prepared
-editor. If it fails, fix the reported prerequisite before launching. Merely
-closing the selection window does not mean setup succeeded.
+**Checkpoint:** the progress window shows **Ludus is ready** and reports the
+prepared editor. If it shows **Setup failed**, fix the reported error, then
+choose **Retry**. Merely closing the selection window does not mean setup
+succeeded. See [Building Ludus](../../development/building.md) for the progress
+window's controls.
 
 For terminal-only initialization, the equivalent choice is:
 

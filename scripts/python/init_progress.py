@@ -219,8 +219,10 @@ class SetupProgress:
     detail_done: int = 0
     detail_total: int = 0
     detail_text: str = ""
+    has_runner_detail: bool = False
     note: str = ""
     last_line: str = ""
+    is_last_line_status: bool = False
     error: str = ""
     summary: list[str] = field(default_factory=list)
     outcome: str = RUNNING
@@ -255,6 +257,7 @@ class SetupProgress:
         match = DETAIL_LINE.match(line)
         if match:
             self.detail_done, self.detail_total, self.detail_text = int(match.group(1)), int(match.group(2)), match.group(3)
+            self.has_runner_detail = True
             return False
         match = NOTE_LINE.match(line)
         if match:
@@ -265,7 +268,10 @@ class SetupProgress:
         self.note = ""
         self.last_line = line
         match = NINJA_STATUS.match(line)
-        if match:
+        # A runner's own detail (Conan's preset count) outranks the Ninja
+        # status of a third-party package it happens to be building.
+        self.is_last_line_status = bool(match) and not self.has_runner_detail
+        if self.is_last_line_status:
             self.detail_done, self.detail_total = int(match.group(1)), int(match.group(2))
             self.detail_text = match.group(3)
         if line.startswith(ERROR_PREFIX):
@@ -313,6 +319,7 @@ class SetupProgress:
         self.detail_done = 0
         self.detail_total = 0
         self.detail_text = ""
+        self.has_runner_detail = False
         self.note = ""
 
 
