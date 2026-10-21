@@ -23,6 +23,7 @@
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -581,6 +582,11 @@ TEST_CASE("RG3 Renderer workspace maps CLI errors and matches CLI plans", "[edit
     CHECK(failure.Location.value(QStringLiteral("instance")).toString() == QStringLiteral("Main/raster/draw"));
     CHECK(ReadFile(QDir(package).filePath(LIBRARY)) == library);
     REQUIRE(workspace.GetDiagnosticCount() == 1);
+    QTimer::singleShot(0, &workspace, []() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        dialogOrNull->reject();
+    });
     REQUIRE(workspace.ActivateDiagnostic(0) == true);
     CHECK(workspace.GetSelection() == QStringLiteral("rasterize.lurender.json#ColorAndDepth/draw"));
 

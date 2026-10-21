@@ -22,6 +22,7 @@ import re
 import sys
 
 from .errors import ToolingError
+from .render_graph_diagnostics import DiagnosticBatch, make_error
 from . import render_graph_pipeline as pipeline
 from . import render_graph_ray as ray
 
@@ -44,19 +45,13 @@ FORMATS = {"ColorTexture": ("RGBA8Unorm",), "DepthTexture": ("Depth32Float",)}
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,62}\Z")
 
 
-def _fail(code, where, message):
-    diagnostic = f"{where}: {message}".encode("utf-8", errors="backslashreplace")
-    if len(diagnostic) > 4096:
-        diagnostic = diagnostic[:4080].decode("utf-8", errors="ignore").encode() + b"... (truncated)"
-    error = ToolingError("RenderGraph" + code, diagnostic.decode("utf-8"))
-    # Raw location text is mapped to authored records by _locate at the API boundary.
-    error.where = where
-    raise error
+def _fail(code, where, message, **details):
+    raise make_error(code, where, message, **details)
 
 
-def _require(condition, code, where, message):
+def _require(condition, code, where, message, **details):
     if not condition:
-        _fail(code, where, message)
+        _fail(code, where, message, **details)
 
 
 def _keys(value, required, where, optional=()):
@@ -298,7 +293,7 @@ def _configuration(asset, identity, where):
     _fail("Configuration", where, f"configuration {identity} is not declared by {asset['id']}")
 
 
-def _locate(error, library, instances=None):
+def _locate_one(error, library, instances=None):
     """Map a validator location to its authored package-relative owner.
 
     Locations are package-relative source labels optionally followed by
@@ -345,6 +340,34 @@ def _locate(error, library, instances=None):
     if location:
         error.location = location
     return error
+
+
+def _locate(error, library, instances=None):
+    records = []
+    for issue in getattr(error, 'issues', [error]):
+        _locate_one(issue, library, instances)
+        location = {**(issue.location or {}), **getattr(issue, 'target', {})}
+        if location:
+            issue.location = location
+        records.append({'code': issue.code, 'severity': getattr(issue, 'severity', 'error'), 'message': issue.message,
+                        'location': location, **getattr(issue, 'details', {})})
+    error.diagnostics = records
+    return error
+
+
+def _lower_pipeline(node, where):
+    if node['kind'] == 'ComputePipeline':
+        _require(any(shader['stage'] == 'compute' for shader in node['shaders']),
+                 'IncompletePipeline', where,
+                 'ComputePipeline is missing its compute shader. Add that stage in Shaders and assign a build-manifest program ID.',
+                 field='shaders', expected='compute shader', actual='no compute stage',
+                 repair='Add a compute stage in Shaders and assign a build-manifest program ID.')
+        _fail('Capability', where, 'ComputePipeline execution is not supported by the current graph build profile. '
+              'Keep it as a saved draft, or use a GraphicsPipeline with supported vertex/fragment programs for preview.',
+              expected='supported graphics or triangle ray profile', actual='ComputePipeline',
+              repair='Use a supported pipeline for preview, or keep this compute pipeline as an unused draft.')
+    return (ray.lower(node, where, sys.modules[__name__]) if node['kind'] == 'RayTracingPipeline'
+            else pipeline.lower_graphics(node, where, sys.modules[__name__]))
 
 
 class _Library:
@@ -397,7 +420,6 @@ class _Library:
                     if node["kind"] == "Subgraph":
                         child = self.load(self.inside(node["asset"], where))
                         _configuration(child, node["configuration"], where + "/" + node["id"])
-                self.order(path, config)
         finally:
             self.active.pop()
         return asset
@@ -438,27 +460,46 @@ class _Library:
         sources.update({key: value[1] for key, value in ports.items()})
         incoming = {key: {} for key in nodes}
 
+        diagnostics = DiagnosticBatch()
+
         def source(endpoint):
             key, port = _endpoint(endpoint, where)
-            _require(key in sources and port in sources[key], "Port", where,
-                     f"Output '{endpoint}' does not exist. Reconnect from a declared output port or restore that port in Properties.")
+            _require(key in sources and port in sources[key], "Port", where + "/" + key,
+                     f"Output '{endpoint}' does not exist. Reconnect from a declared output port or restore that port in Edit Node.",
+                     port=port, direction='output', expected='declared output port', actual=endpoint,
+                     repair='Reconnect from an existing output, or restore the output declaration.')
             return sources[key][port]
 
         for edge in config["edges"]:
-            kind = source(edge["from"])
-            key, port = _endpoint(edge["to"], where)
-            _require(key in ports and port in ports[key][0], "Port", where,
-                     f"Input '{edge['to']}' does not exist. Reconnect to a declared input port or restore that port in Properties.")
-            _require(port not in incoming[key], "MultipleWriters", where,
-                     f"Input '{edge['to']}' has multiple connections, including '{edge['from']}'. Disconnect all but one incoming wire.")
-            _require(kind == ports[key][0][port] or (ports[key][0][port] == 'Texture' and kind in TEXTURES), "TypeMismatch", where,
-                     f"{edge['from']} ({kind}) cannot connect to {edge['to']} ({ports[key][0][port]}). "
-                     f"Connect a {ports[key][0][port]} output to this input, or change the input type in Properties.")
-            incoming[key][port] = edge["from"]
+            with diagnostics.capture():
+                kind = source(edge["from"])
+                key, port = _endpoint(edge["to"], where)
+                target = where + '/' + key
+                _require(key in ports and port in ports[key][0], "Port", target,
+                         f"Input '{edge['to']}' does not exist. Reconnect to a declared input port or restore that port in Edit Node.",
+                         port=port, direction='input', expected='declared input port', actual=edge['to'],
+                         repair='Reconnect to an existing input, or restore the input declaration.')
+                _require(port not in incoming[key], "MultipleWriters", target,
+                         f"Input '{edge['to']}' has multiple connections, including '{edge['from']}'. Disconnect all but one incoming wire.",
+                         port=port, direction='input', expected='one incoming connection', actual='multiple connections',
+                         repair='Disconnect all but one incoming wire, or replace its current connection.')
+                expected = ports[key][0][port]
+                _require(kind == expected or (expected == 'Texture' and kind in TEXTURES), "TypeMismatch", target,
+                         f"{edge['from']} ({kind}) cannot connect to {edge['to']} ({expected}). "
+                         f"Connect a {expected} output to this input, or change the input type in Edit Node.",
+                         port=port, direction='input', expected=expected, actual=kind,
+                         repair=f'Connect a {expected} output, or change this input declaration.')
+                incoming[key][port] = edge["from"]
         for output in config["outputs"]:
-            _require(source(output["source"]) == output["type"], "TypeMismatch", where,
-                     f"Configuration output '{output['id']}' expects {output['type']}, but source '{output['source']}' has a different type. "
-                     'Choose a matching source in Edit Inputs / Outputs, or change the output type.')
+            with diagnostics.capture():
+                actual = source(output["source"])
+                _require(actual == output["type"], "TypeMismatch", where,
+                         f"Configuration output '{output['id']}' expects {output['type']}, but source '{output['source']}' has type {actual}. "
+                         'Choose a matching source in Edit Inputs / Outputs, or change the output type.',
+                         port=output['id'], direction='output', field='outputs', expected=output['type'], actual=actual,
+                         repair='Choose a matching source or change this output type in Edit Inputs / Outputs.')
+        # Broken wiring invalidates dependency ordering; do not emit cycles or execution cascades.
+        diagnostics.raise_if_any()
         dependencies = {key: {_endpoint(e, where)[0] for e in values.values()} - {"input"}
                         for key, values in incoming.items()}
         ordered, done = [], set()
@@ -484,13 +525,15 @@ class _Library:
         path = self.inside(node['asset'], node['id'])
         return self.has_effects(path, _configuration(self.assets[path], node['configuration'], node['id']))
 
-    def execution_order(self, path, config, requested_outputs):
+    def execution_order(self, path, config, requested_outputs, diagnostics=None):
         """Select observable dependencies before checking execution-only requirements.
 
         A retained subgraph keeps its declared input contract. Only the requested
         output branches and explicit effects inside that subgraph are expanded.
         Structural validation still covers every saved node and wire in order().
         """
+        own_diagnostics = diagnostics is None
+        diagnostics = DiagnosticBatch() if own_diagnostics else diagnostics
         ordered, incoming = self.order(path, config)
         where = self.label(path) + '#' + config['id']
         used = {port['source'] for port in config['outputs'] if port['id'] in requested_outputs}
@@ -514,18 +557,56 @@ class _Library:
             if node['kind'] in pipeline.KINDS:
                 required.update(port['target'] for port in node['outputs'])
             missing = sorted(required - incoming[key].keys())
-            descriptions = ', '.join(f"'{key}.{port}' ({ports[0][port]})" for port in missing)
-            _require(not missing, "UnboundInput", where + "/" + key,
-                     f"Unconnected inputs: {descriptions}. Connect a matching output to each input; "
-                     'writable resource inputs must be connected even when Load is Clear or Discard.')
+            for port in missing:
+                with diagnostics.capture():
+                    _fail("UnboundInput", where + "/" + key,
+                          f"Unconnected inputs: '{key}.{port}' ({ports[0][port]}). Connect a matching output; "
+                          'writable resource inputs must be connected even when Load is Clear or Discard.',
+                          port=port, direction='input', expected=ports[0][port], actual='unconnected',
+                          repair=f'Connect a {ports[0][port]} output to {key}.{port}.')
             if node["kind"] == "Subgraph":
                 child = self.assets[self.inside(node["asset"], where)]
                 selected = _configuration(child, node["configuration"], where)
                 for output in selected["outputs"]:
-                    _require(not output["required"] or key + "." + output["id"] in used,
-                             "UnusedRequiredOutput", where + "/" + key,
-                             f"output {output['id']} requires a consumer")
+                    with diagnostics.capture():
+                        _require(not output["required"] or key + "." + output["id"] in used,
+                                 "UnusedRequiredOutput", where + "/" + key,
+                                 f"output {output['id']} requires a consumer",
+                                 port=output['id'], direction='output', expected='connected consumer', actual='unused',
+                                 repair='Connect this required output, or make it optional in the subgraph interface.')
+        if own_diagnostics:
+            diagnostics.raise_if_any()
         return ordered, incoming, used
+
+    def validate_execution(self, path, config, requested_outputs, diagnostics, depth=0, budget=None, prefix=None):
+        if budget is None:
+            budget = [0]
+        _require(depth < MAX_DEPTH, 'Capacity', self.label(path), 'expanded subgraph depth exceeded')
+        prefix = self.assets[path]['id'] if prefix is None else prefix
+        first_issue = len(diagnostics.errors)
+        ordered, incoming, used = self.execution_order(path, config, requested_outputs, diagnostics)
+        for issue in diagnostics.errors[first_issue:]:
+            issue.target['instance'] = prefix + '/' + issue.where.rsplit('/', 1)[-1]
+        for node in ordered:
+            budget[0] += 1
+            _require(budget[0] <= MAX_EXPANDED_NODES, 'Capacity', self.label(path), 'expanded node capacity exceeded')
+            where = self.label(path) + '#' + config['id'] + '/' + node['id']
+            # Pipeline profile checks depend on declarations, not resource versions.
+            # Check independent retained nodes before starting transactional lowering.
+            if node['kind'] in pipeline.KINDS:
+                required = {port['id'] for port in node['inputs'] if port['required']}
+                required.update(port['target'] for port in node['outputs'])
+                if required <= incoming[node['id']].keys():
+                    first_issue = len(diagnostics.errors)
+                    with diagnostics.capture():
+                        _lower_pipeline(node, where)
+                    for issue in diagnostics.errors[first_issue:]:
+                        issue.target['instance'] = prefix + '/' + node['id']
+            if node['kind'] == 'Subgraph':
+                child_path = self.inside(node['asset'], node['id'])
+                child = _configuration(self.assets[child_path], node['configuration'], node['id'])
+                outputs = {port['id'] for port in child['outputs'] if node['id'] + '.' + port['id'] in used}
+                self.validate_execution(child_path, child, outputs, diagnostics, depth + 1, budget, prefix + '/' + node['id'])
 
     def verify_snapshot(self):
         for path, data in self.bytes.items():
@@ -563,10 +644,13 @@ class _Compiler:
         _require(len(self.passes) < MAX_PASSES, "Capacity", entry["id"], "serial pass capacity exceeded")
         self.passes.append(entry)
 
-    def write(self, value, node, aspect, where, camera):
+    def write(self, value, node, aspect, where, camera, *, port=None, field=None):
         load, store = node[aspect + "_load"], node[aspect + "_store"]
         _require(load != "Load" or value.defined, "Initialization", where,
-                 f"{aspect} Load reads undefined {value.resource}@{value.version}. Choose Clear, or connect a preceding pass that stores initialized contents.")
+                 f"{aspect} Load reads undefined {value.resource}@{value.version}. Choose Clear, or connect a preceding pass that stores initialized contents.",
+                 port=port or aspect, direction='input', field=field,
+                 expected='initialized resource version', actual=f'undefined {value.resource}@{value.version}',
+                 repair='Choose Clear for the writable resource, or connect a preceding pass that stores initialized contents.')
         key = (value.resource, value.version)
         _require(key not in self.writers, "MultipleWriters", where,
                  f"multiple writes branch from {value.resource}@{value.version}; connect the preceding version")
@@ -595,14 +679,7 @@ class _Compiler:
             output_mapping = None
             if kind in pipeline.KINDS:
                 authored_pipeline = node
-                if kind == 'ComputePipeline':
-                    required_stage = 'compute' if kind == 'ComputePipeline' else 'ray_generation'
-                    _require(any(shader['stage'] == required_stage for shader in node['shaders']),
-                             'IncompletePipeline', where, f'{kind} is missing its {required_stage} shader. Add that stage in Shaders and assign a build-manifest program ID.')
-                    _fail('Capability', where, f'{kind} execution is not supported by the current graph build profile. '
-                             'Keep it as a saved draft, or use a GraphicsPipeline with supported vertex/fragment programs for preview.')
-                node, input_mapping, output_mapping = (ray.lower(node, where, sys.modules[__name__])
-                    if kind == 'RayTracingPipeline' else pipeline.lower_graphics(node, where, sys.modules[__name__]))
+                node, input_mapping, output_mapping = _lower_pipeline(node, where)
                 _require(set(input_mapping.values()) <= inputs.keys(), 'UnboundInput', where,
                          'the selected graphics invocation requires all mapped inputs')
                 inputs = {name: inputs[port] for name, port in input_mapping.items()}
@@ -646,9 +723,14 @@ class _Compiler:
                 outputs["view"] = _Value("View", origin=where, cameras=(where,) if node["active"] else ())
             elif kind == "RayTracing":
                 target = self.resources[inputs['color'].resource]
-                _require(inputs['view'].cameras, 'CameraTarget', where, 'ray pipeline requires an active camera')
+                _require(inputs['view'].cameras, 'CameraTarget', where, 'ray pipeline requires an active camera',
+                         port=input_mapping['view'], direction='input', expected='active camera View', actual='inactive camera View',
+                         repair='Enable Active on the connected camera and give it a route to Export or Present.')
                 _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
-                         'Capability', where, 'ray pipeline requires an offscreen single-sample RGBA8Unorm target')
+                         'Capability', where, 'ray pipeline requires an offscreen single-sample RGBA8Unorm target',
+                         port=input_mapping['color'], direction='input', expected='offscreen RGBA8Unorm, samples=1',
+                         actual=f"{target['format']}, samples={target['samples']}, presentation={target['presentation']}",
+                         repair='Connect an offscreen single-sample RGBA8Unorm color target.')
                 dimensions = authored_pipeline['invocation']['dimensions']
                 expected_dimensions = [*target['extent'], 1]
                 _require(dimensions == 'ColorTarget' or (not target.get('view_scale') and dimensions == expected_dimensions),
@@ -656,7 +738,9 @@ class _Compiler:
                          (f"Color target '{inputs['color'].resource}' is view-relative; explicit launch dimensions {dimensions} "
                           'cannot follow view changes. Choose Match color target in Invocation.' if target.get('view_scale') else
                           f"Ray launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
-                          f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."))
+                          f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
+                         field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
+                         actual=dimensions, repair='Choose Match color target in Invocation → Launch size.')
                 value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
                 self.techniques.add(ray.TECHNIQUE)
                 self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
@@ -669,7 +753,10 @@ class _Compiler:
                         'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
                 outputs = {output_mapping['color']: value}
             elif kind == "Raster":
-                _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera")
+                _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera",
+                         port=input_mapping['view'] if authored_pipeline is not None else 'view', direction='input',
+                         expected='active camera View', actual='inactive camera View',
+                         repair='Enable Active on the connected camera and give it a route to Export or Present.')
                 if node["mode"] == "ColorAndDepth":
                     color, depth_target = (self.resources[inputs[aspect].resource] for aspect in ("color", "depth"))
                     _require((color['extent'], color['samples'], color.get('view_scale')) == (depth_target['extent'], depth_target['samples'], depth_target.get('view_scale')),
@@ -677,9 +764,15 @@ class _Compiler:
                              f"Color target '{inputs['color'].resource}' has extent {color['extent']} and {color['samples']} samples; "
                              f"depth target '{inputs['depth'].resource}' has extent {depth_target['extent']} and {depth_target['samples']} samples. "
                              f"Size policies: color {color.get('view_scale', 'Fixed')}, depth {depth_target.get('view_scale', 'Fixed')}. "
-                             'This raster operation requires equal attachment extents and samples. Connect both targets to the same RenderSize, or use matching fixed sizes.')
+                             'This raster operation requires equal attachment extents and samples. Connect both targets to the same RenderSize, or use matching fixed sizes.',
+                             port=input_mapping['depth'] if authored_pipeline is not None else 'depth', direction='input',
+                             expected=f"extent={color['extent']}, samples={color['samples']}, size policy={color.get('view_scale', 'Fixed')}",
+                             actual=f"extent={depth_target['extent']}, samples={depth_target['samples']}, size policy={depth_target.get('view_scale', 'Fixed')}",
+                             repair='Connect both attachments to the same RenderSize, or use matching fixed sizes and samples.')
                 for aspect in ("depth", "color") if node["mode"] == "ColorAndDepth" else ("depth",):
-                    outputs[aspect] = self.write(inputs[aspect], node, aspect, where, inputs["view"].cameras)
+                    outputs[aspect] = self.write(inputs[aspect], node, aspect, where, inputs["view"].cameras,
+                        port=input_mapping[aspect] if authored_pipeline is not None else aspect,
+                        field=None if authored_pipeline is not None else aspect + '_load')
                 technique = MATERIALS[node["material"]] + "." + node["mode"]
                 self.techniques.add(technique)
                 entry = {"id": where, "kind": "Raster", "configuration": node["mode"],
@@ -757,6 +850,12 @@ def _library(path, root):
     library = _Library(Path(root) if root is not None else path.parent)
     try:
         library.load(path)
+        diagnostics = DiagnosticBatch()
+        for source, asset in library.assets.items():
+            for config in asset['configurations']:
+                with diagnostics.capture():
+                    library.order(source, config)
+        diagnostics.raise_if_any()
     except ToolingError as error:
         raise _locate(error, library)
     return library, path
@@ -801,6 +900,9 @@ def compile_graph(path, *, configuration=None, root=None):
         config = _configuration(asset, selected, library.label(path))
         _require(not config["inputs"], "UnboundInput", library.label(path),
                  "root interface inputs require a containing graph; use --library to inspect the interface")
+        diagnostics = DiagnosticBatch()
+        library.validate_execution(path, config, {port['id'] for port in config['outputs']}, diagnostics)
+        diagnostics.raise_if_any()
         outputs = compiler.expand(path, config, asset["id"], {})
         for key, value in outputs.items():
             compiler.root(asset["id"] + "/output/" + key, "Export", value)

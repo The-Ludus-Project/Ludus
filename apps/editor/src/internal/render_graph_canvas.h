@@ -15,6 +15,7 @@
 
 QT_BEGIN_NAMESPACE
 class QGraphicsPathItem;
+class QGraphicsRectItem;
 class QGraphicsEllipseItem;
 class QGraphicsSimpleTextItem;
 class QGraphicsTextItem;
@@ -132,6 +133,14 @@ public:
     /// Scroll the node into view without changing the current zoom or selection.
     void RevealNode(const QString& node);
     [[nodiscard]] QStringList GetSelectedNodes() const;
+    /// Remove the display marker and accessibility description without changing graph state.
+    void ClearDiagnostic();
+    /// Reveal a diagnostic's authored node/interface and ring its exact port when present.
+    /// Missing ports fall back to their owner. Display only; cleared by the next rebuild.
+    /// Returns false when no displayed owner exists; never changes document/history.
+    [[nodiscard]] bool ShowDiagnostic(const QJsonObject& location, const QString& description);
+    /// Current display marker, empty after a rebuild or when its owner is absent.
+    [[nodiscard]] QJsonObject GetDiagnosticLocation() const;
 
     /// Gesture entry points shared by mouse handling and tests. A gesture moves every
     /// selected node live in the view and reports the final positions once in EndDrag.
@@ -195,6 +204,8 @@ private:
 
     const RenderGraphDocument& mDocument;
     QGraphicsScene* mScene;
+    QGraphicsRectItem* mDiagnosticMarkerOrNull = nullptr;
+    QJsonObject mDiagnosticLocation;
     QString mFile;
     QString mConfiguration;
     QHash<QString, NodeView*> mNodes;

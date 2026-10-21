@@ -32,23 +32,32 @@ def resolve_state(state):
 def lower(node, where, graph):
     assignments = {shader['stage']: shader['program'] for shader in node['shaders']}
     graph._require(set(assignments) == set(STAGES) and len(node['shaders']) == len(STAGES),
-                   'IncompletePipeline', where, 'triangle ray pipelines require one ray_generation, miss and closest_hit program')
+                   'IncompletePipeline', where, 'triangle ray pipelines require one ray_generation, miss and closest_hit program',
+                   field='shaders', expected=', '.join(STAGES), actual=', '.join(sorted(assignments)) or 'no stages',
+                   repair='Add the missing stages in Shaders and assign a build-manifest program to each.')
     graph._require(resolve_state(node['state']) == STATE, 'Capability', where,
                    'triangle ray profile derives recursion=1, native payload=0 bytes and triangle barycentrics=8 bytes. '
                    'Use automatic Pipeline State (state: {}) or matching advanced overrides. '
-                   'Customize ScenePayload in the scene interface; custom intersection attributes require an unsupported procedural profile')
+                   'Customize ScenePayload in the scene interface; custom intersection attributes require an unsupported procedural profile',
+                   field='state', expected=STATE, actual=resolve_state(node['state']),
+                   repair='Reset advanced ray state overrides to automatic.')
     types = {port['id']: port['type'] for port in node['inputs']}
     mappings = {}
     for aspect, kind in (('scene', 'Scene'), ('view', 'View'), ('color', 'ColorTexture')):
         choices = [identity for identity, value in types.items() if value == kind]
-        graph._require(len(choices) == 1, 'IncompletePipeline', where, f'exactly one {kind} input required')
+        graph._require(len(choices) == 1, 'IncompletePipeline', where, f'exactly one {kind} input required',
+                       field='inputs', expected=f'one {kind} input', actual=f'{len(choices)} inputs',
+                       repair=f'Add or retain exactly one {kind} input in the pipeline editor.')
         mappings[aspect] = choices[0]
     unsupported = sorted(set(types) - set(mappings.values()))
     descriptions = ', '.join(f"'{identity}' ({types[identity]})" for identity in unsupported)
     graph._require(not unsupported, 'Capability', where,
                    f"Unsupported ray pipeline inputs: {descriptions}. This triangle ray profile accepts only "
                    'Scene, View and ColorTexture. Remove the extra input declarations and their wires; '
-                   'if exposed by a subgraph, also remove the matching interface inputs and parent wires.')
+                   'if exposed by a subgraph, also remove the matching interface inputs and parent wires.',
+                   port=unsupported[0] if unsupported else None, direction='input',
+                   expected='Scene, View, ColorTexture', actual=descriptions,
+                   repair='Remove unsupported pipeline inputs and their wires; also update exposed subgraph interfaces.')
     graph._require(len(node['outputs']) == 1, 'Capability', where,
                    f"Triangle ray profile requires one color output; found {len(node['outputs'])}. "
                    'Keep one ColorTexture writable resource in the pipeline editor.')

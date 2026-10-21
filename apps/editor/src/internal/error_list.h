@@ -19,6 +19,8 @@
 
 QT_BEGIN_NAMESPACE
 class QTableWidget;
+class QPlainTextEdit;
+class QResizeEvent;
 class QToolButton;
 QT_END_NAMESPACE
 
@@ -62,7 +64,8 @@ struct ErrorListEntry final
 inline constexpr foundation::int32 MAX_BUILD_DIAGNOSTICS = 1000;
 
 /// Rows for one render-graph job result, in RendererWorkspace's diagnostic row order:
-/// the result summary first, then each mapped diagnostic. SourceIndex is that row.
+/// structured graph batches appear once; shader failures retain their build summary.
+/// SourceIndex is the producer's row.
 [[nodiscard]] QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& result);
 /// Compiler (`file:line[:column]: error|warning|note: text`) and CMake
 /// (`CMake Error|Warning at file:line`) diagnostics in build output, at most
@@ -93,7 +96,12 @@ Q_SIGNALS:
     /// The user activated a row; the shell navigates to its source.
     void EntryActivated(const ludus::editor::ErrorListEntry& entry);
 
+protected:
+    /// Reserve visible table rows before giving the selected diagnostic remaining height.
+    void resizeEvent(QResizeEvent* event) override;
+
 private:
+    void updateDetailsHeight();
     void render();
     [[nodiscard]] bool isShown(ErrorListSeverity severity) const;
 
@@ -102,5 +110,6 @@ private:
     QToolButton* mWarnings;
     QToolButton* mMessages;
     QTableWidget* mTable;
+    QPlainTextEdit* mDetails;
 };
 } // namespace ludus::editor

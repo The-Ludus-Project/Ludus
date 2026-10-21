@@ -1441,7 +1441,33 @@ With `--json`, a failure's `error.location` names its authored owner:
 | Generated wrapper error | `generated: wrapper.slang`, `program`, `line` | Opens the program record in the build manifest |
 
 Locations are package-relative and never contain machine paths. Activate a
-diagnostic (double-click or Enter) to navigate to it.
+diagnostic (double-click or Enter) to navigate to it. Wiring diagnostics add
+`port` and `direction` (`input` or `output`); the canvas rings that connector and
+marks its owner. A removed connector falls back to the owner. Editable field
+diagnostics use a stable `field` key, such as `invocation.dimensions` or
+`depth_load`, to open the shared canvas node editor, select its tab and highlight
+the control. These actions work with Properties hidden and do not change the draft
+or undo history. Markers clear on graph rebuild or replacement of the report.
+Reactivating a report after its captured source identity changes labels it as an
+earlier source version and asks for validation again.
+
+Graph validation returns an ordered `diagnostics` array with `code`, `severity`,
+`message` and `location`. Supported wiring, missing-input, pipeline profile and
+ray launch errors also include bounded `expected`, `actual` and `repair` strings.
+The Error List shows each record once; selecting a row displays its complete
+message and repair guidance in a scrollable details area. The CLI's text mode
+prints each issue and these details too. For compatibility, top-level `error.code`,
+`message` and `location` still describe the first issue.
+
+Collection stops between dependent phases: invalid source/schema/imports prevent
+wiring analysis; broken wiring prevents execution checks; missing bindings or
+pipeline declaration errors prevent resource lowering. Independent wires across
+loaded configurations and missing ports/profile failures across retained nested
+subgraphs are collected in authored order. Resource-version and initialization
+checks remain fail-fast because later checks depend on successful lowering. Reports
+contain at most 32 records (31 issues and an explicit omission notice when the
+limit is exceeded); repair the reported issues and validate again. No partial plan
+is published and failed validation preserves the last drawable preview.
 
 Shader failure messages are portable too. The helper's own command echoes
 (`+ <tool> <arguments>`, with absolute tool and temporary paths) are dropped,
