@@ -18,6 +18,7 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeySequence>
@@ -26,6 +27,7 @@
 #include <QPointingDevice>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -542,6 +544,24 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
     add->click();
     const auto exercise = [&workspace, &package](RenderGraphPipelineEditor* editor) {
         REQUIRE(editor != nullptr);
+        QGroupBox* advanced = editor->findChild<QGroupBox*>(QStringLiteral("renderGraphRayAdvanced"));
+        QSpinBox* attributes = editor->findChild<QSpinBox*>(QStringLiteral("renderGraphRay_attribute_bytes"));
+        QPushButton* automatic = editor->findChild<QPushButton*>(QStringLiteral("renderGraphRayAutomatic"));
+        REQUIRE(advanced != nullptr);
+        REQUIRE(attributes != nullptr);
+        REQUIRE(automatic != nullptr);
+        CHECK(advanced->isChecked() == false);
+        const uint64 stateRevision = workspace.GetDocument().GetRevision();
+        advanced->setChecked(true);
+        CHECK(workspace.GetDocument().GetRevision() == stateRevision);
+        constexpr int32 TRIANGLE_ATTRIBUTE_BYTES = 8;
+        attributes->setValue(TRIANGLE_ATTRIBUTE_BYTES);
+        CHECK(workspace.GetDocument().GetRevision() == stateRevision + 1);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("attribute_bytes") == true);
+        automatic->click();
+        CHECK(workspace.GetDocument().GetRevision() == stateRevision + 2);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("attribute_bytes") == false);
+        CHECK(advanced->isChecked() == false);
         QPushButton* addShader = editor->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
         REQUIRE(addShader != nullptr);
         QTableWidget* shaders = editor->findChild<QTableWidget*>(QStringLiteral("shaders"));

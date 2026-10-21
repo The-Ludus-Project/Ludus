@@ -39,6 +39,7 @@ private:
     [[nodiscard]] QTableWidget*
     createTable(const QString& name, const QStringList& fields, const QStringList& defaults);
     void addProperties(QFormLayout& outForm, const QString& name);
+    void addRayStateProperties(QFormLayout& outForm);
     void publishEdit();
     void connectChoices(QTableWidget& inoutTable, foundation::int32 row);
     QJsonObject mNode;

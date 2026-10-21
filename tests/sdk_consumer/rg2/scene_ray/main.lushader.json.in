@@ -169,10 +169,7 @@
       "closest_hit": "Closest",
       "recipes": [
         {
-          "id": "Triangles",
-          "max_recursion": 1,
-          "payload_bytes": 0,
-          "attribute_bytes": 8
+          "id": "Triangles"
         }
       ],
       "scene_interface": {

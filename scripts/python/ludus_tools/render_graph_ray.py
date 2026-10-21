@@ -8,7 +8,14 @@ import re
 
 TECHNIQUE = 'RendererTriangles.RayTracing'
 STAGES = ('ray_generation', 'miss', 'closest_hit')
+# Thanks to Microsoft, DirectX Raytracing Functional Spec, “Intersection Attributes”:
+# https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html#intersection-attributes
+# Triangle intersections supply float2 barycentrics. This portable compute profile
+# retains that contract, but uses shader-local ScenePayload rather than a DXR payload.
 STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
+MAX_LOCAL_PAYLOAD_BYTES = 4096
+PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
+
 COMPUTE_ID = 'GraphRayCompute'
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
@@ -17,12 +24,19 @@ HELPERS = ('renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 
            'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h')
 
 
+def resolve_state(state):
+    """Resolve validated optional overrides without changing authored source."""
+    return {**STATE, **state}
+
+
 def lower(node, where, graph):
     assignments = {shader['stage']: shader['program'] for shader in node['shaders']}
     graph._require(set(assignments) == set(STAGES) and len(node['shaders']) == len(STAGES),
                    'IncompletePipeline', where, 'triangle ray pipelines require one ray_generation, miss and closest_hit program')
-    graph._require(node['state'] == STATE, 'Capability', where,
-                   'triangle ray profile requires max_recursion=1, payload_bytes=0 and attribute_bytes=8')
+    graph._require(resolve_state(node['state']) == STATE, 'Capability', where,
+                   'triangle ray profile derives recursion=1, native payload=0 bytes and triangle barycentrics=8 bytes. '
+                   'Use automatic Pipeline State (state: {}) or matching advanced overrides. '
+                   'Customize ScenePayload in the scene interface; custom intersection attributes require an unsupported procedural profile')
     types = {port['id']: port['type'] for port in node['inputs']}
     mappings = {}
     for aspect, kind in (('scene', 'Scene'), ('view', 'View'), ('color', 'ColorTexture')):
@@ -179,7 +193,7 @@ def scene_wrapper(selected, interface, snapshot, build, recipe):
         build.require((program['input'], program['output']) == expected[stage],
                       'ShaderInterface', program['id'], 'scene ray profile requires its complete callback interface')
     snapshot.shader_closure(interface['payload'])
-    validate_payload(snapshot.files[interface['payload']], interface.get('local_payload_bytes', 1024), build)
+    validate_payload(snapshot.files[interface['payload']], interface.get('local_payload_bytes'), build)
     wrapper = '''float3 EvaluateGraphRay(uint pixel);
 #define LUDUS_RENDER_GRAPH_RAY_PIPELINE 1
 #define LUDUS_SCENE_RAY_INTERFACE 1
@@ -251,6 +265,10 @@ def validate_payload(data, budget, build):
     match = re.fullmatch(r'struct\s+ScenePayload\s*\{([^{}]*)\}\s*;', source, re.S)
     build.require(match is not None, 'ShaderInterface', 'ScenePayload',
                   'payload source must define only one flat struct ScenePayload with plain fields')
+    # Slang owns the actual local layout. This accounting is only an admission cap,
+    # not an allocation size or a native payload ABI. Omission needs no byte tuning.
+    if budget is None:
+        budget = MAX_LOCAL_PAYLOAD_BYTES
     size = 0
     fields = set()
     sizes = {'Ray': 64, 'RayLaunch': 512, 'SurfaceHit': 512, 'MaterialSample': 128}
@@ -263,7 +281,9 @@ def validate_payload(data, budget, build):
         kind, name, count = field.groups()
         build.require(name not in fields, 'ShaderInterface', name, 'duplicate payload field')
         fields.add(name)
-        field_size = sizes.get(kind, 16 * max(int(kind[-1]), int(kind[-3])) if 'x' in kind else 16)
+        field_size = sizes.get(kind, PAYLOAD_FIELD_ALIGNMENT_BYTES * max(int(kind[-1]), int(kind[-3])) if 'x' in kind else PAYLOAD_FIELD_ALIGNMENT_BYTES)
         size += field_size * (int(count) if count else 1)
-        build.require(size <= budget, 'Capacity', 'ScenePayload', 'conservative shader-local payload budget exceeded')
+        build.require(size <= budget, 'Capacity', 'ScenePayload', f'conservative shader-local payload requires {size} bytes, exceeding the {budget}-byte admission limit; '
+                      'reduce ScenePayload or raise the explicit local_payload_bytes cap (maximum '
+                      f'{MAX_LOCAL_PAYLOAD_BYTES})')
     build.require(fields, 'ShaderInterface', 'ScenePayload', 'empty payload is not supported')

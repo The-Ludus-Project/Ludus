@@ -13,10 +13,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
 
@@ -837,4 +839,66 @@ TEST_CASE("renaming a registered shader updates techniques and local include ref
     REQUIRE(document.Undo() == true);
     CHECK(document.GetDraft(original) == source);
     CHECK(document.GetDraft(consumer).contains("geometry.slang") == true);
+}
+
+TEST_CASE("ray state defaults are automatic and explicit overrides survive reset undo and save",
+          "[editor][render-graph][pipeline]")
+{
+    QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    CHECK(node.value(QStringLiteral("state")).toObject().isEmpty() == true);
+    RenderGraphPipelineEditor automatic(node);
+    QGroupBox* defaultAdvanced = automatic.findChild<QGroupBox*>(QStringLiteral("renderGraphRayAdvanced"));
+    REQUIRE(defaultAdvanced != nullptr);
+    CHECK(defaultAdvanced->isChecked() == false);
+    node.insert(QStringLiteral("state"),
+                QJsonObject{{QStringLiteral("max_recursion"), 1},
+                            {QStringLiteral("payload_bytes"), 0},
+                            {QStringLiteral("attribute_bytes"), 0}});
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    RenderGraphPipelineEditor editor(node);
+    QJsonObject applied;
+    QObject::connect(&editor,
+                     &RenderGraphPipelineEditor::Edited,
+                     &editor,
+                     [&document, &applied](const QJsonObject& candidate) {
+                         applied = candidate;
+                         REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, candidate) ==
+                                 RenderGraphDocumentStatus::Ok);
+                     });
+    QGroupBox* advanced = editor.findChild<QGroupBox*>(QStringLiteral("renderGraphRayAdvanced"));
+    QSpinBox* attributes = editor.findChild<QSpinBox*>(QStringLiteral("renderGraphRay_attribute_bytes"));
+    QPushButton* reset = editor.findChild<QPushButton*>(QStringLiteral("renderGraphRayAutomatic"));
+    REQUIRE(advanced != nullptr);
+    REQUIRE(attributes != nullptr);
+    REQUIRE(reset != nullptr);
+    CHECK(advanced->isChecked() == true);
+    CHECK(attributes->value() == 0); // Opening must preserve the old invalid value until the author resets it.
+    advanced->setChecked(false);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    const uint64 revision = document.GetRevision();
+    reset->click();
+    CHECK(document.GetRevision() == revision + 1);
+    CHECK(applied.value(QStringLiteral("state")).toObject().isEmpty() == true);
+    CHECK(attributes->value() == attributes->minimum());
+    CHECK(advanced->isChecked() == false);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    REQUIRE(document.Redo() == true);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reloaded.GetDraft(ROOT_GRAPH) == document.GetDraft(ROOT_GRAPH));
+    advanced->setChecked(true);
+    constexpr int32 TRIANGLE_ATTRIBUTE_BYTES = 8;
+    attributes->setValue(TRIANGLE_ATTRIBUTE_BYTES);
+    CHECK(applied.value(QStringLiteral("state")).toObject() ==
+          QJsonObject{{QStringLiteral("attribute_bytes"), TRIANGLE_ATTRIBUTE_BYTES}});
+    attributes->setValue(attributes->minimum());
+    CHECK(applied.value(QStringLiteral("state")).toObject().isEmpty() == true);
 }

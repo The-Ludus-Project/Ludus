@@ -244,14 +244,22 @@ def validate_manifest(value):
             scene_interface = technique.get('scene_interface')
             if scene_interface is not None:
                 keys(scene_interface, ('version', 'payload', 'surface_queries', 'visibility_queries'), 'scene interface', ('local_payload_bytes',))
-                integer(scene_interface.get('local_payload_bytes', 1024), 16, 4096, 'shader-local payload budget')
+                if 'local_payload_bytes' in scene_interface:
+                    integer(scene_interface['local_payload_bytes'], ray.PAYLOAD_FIELD_ALIGNMENT_BYTES,
+                            ray.MAX_LOCAL_PAYLOAD_BYTES, 'shader-local payload budget')
                 integer(scene_interface['version'], 1, 1, 'scene interface version')
                 integer(scene_interface['surface_queries'], 1, 8, 'surface query budget')
                 integer(scene_interface['visibility_queries'], 0, 16, 'visibility query budget')
                 require(type(scene_interface['payload']) is str and scene_interface['payload'].endswith('.slang'),
                         'Schema', 'payload', 'package-local Slang payload source required')
-            require(technique['configuration'] == 'RayTracing' and technique['recipes'] == [{'id': 'Triangles', **ray.STATE}],
-                    'Capability', ray.TECHNIQUE, 'expected the bounded triangle ray profile state')
+            bounded_list(technique['recipes'], 1, 'ray recipes')
+            require(len(technique['recipes']) == 1, 'Capability', ray.TECHNIQUE, 'one triangle ray recipe required')
+            recipe = technique['recipes'][0]
+            keys(recipe, ('id',), 'triangle ray recipe', tuple(ray.STATE))
+            overrides = {key: value for key, value in recipe.items() if key != 'id'}
+            require(technique['configuration'] == 'RayTracing' and recipe['id'] == 'Triangles' and
+                    all(type(value) is int for value in overrides.values()) and ray.resolve_state(overrides) == ray.STATE,
+                    'Capability', ray.TECHNIQUE, 'use automatic triangle ray state or matching explicit profile limits')
             for stage in ray.STAGES:
                 require(technique[stage] in programs and programs[technique[stage]]['stage'] == stage,
                         'ShaderInterface', ray.TECHNIQUE, 'unknown or wrong ray stage program')
@@ -716,8 +724,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             stage_names = ray.STAGES if node['kind'] == 'RayTracingPipeline' else ('vertex', 'fragment')
             require(assigned == {stage: technique[stage] for stage in stage_names},
                     'ShaderInterface', operation['id'], 'node shader assignments differ from the authored technique')
-            require(any(all(recipe[key] == value for key, value in node['state'].items())
-                        for recipe in technique['recipes']), 'Capability', operation['id'],
+            state = ray.resolve_state(node['state']) if node['kind'] == 'RayTracingPipeline' else node['state']
+            require(any(all((ray.resolve_state(recipe) if node['kind'] == 'RayTracingPipeline' else recipe)[key] == value
+                            for key, value in state.items()) for recipe in technique['recipes']), 'Capability', operation['id'],
                     'no authored recipe matches the complete node-owned pipeline state')
     counts['root_configurations'] = len(plans)
     counts['graph_configurations'] = sum(len(a['configurations']) for a in library.assets.values())
@@ -772,7 +781,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             for tid, technique in sorted(techniques.items()):
                 for target in sorted(value['profiles']):
                     if tid == ray.TECHNIQUE:
-                        record = {'technique': tid, 'profile': target, 'state': technique['recipes'][0],
+                        record = {'technique': tid, 'profile': target, 'state': ray.resolve_state(technique['recipes'][0]),
                             'compute': entries[(ray.COMPUTE_ID, target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
                             'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
                         record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)

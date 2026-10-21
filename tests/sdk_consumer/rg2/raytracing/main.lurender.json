@@ -103,11 +103,7 @@
               "program": "Closest"
             }
           ],
-          "state": {
-            "max_recursion": 1,
-            "payload_bytes": 0,
-            "attribute_bytes": 8
-          },
+          "state": {},
           "invocation": {
             "dimensions": [
               96,
