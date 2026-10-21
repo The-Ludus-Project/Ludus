@@ -604,6 +604,23 @@ stream and consumes one dimension when the source set is nonempty. A bounded
 selection failure latches `HasFailed`; an empty source set is an ordinary no-sample
 result and consumes no dimension.
 
+For a uniform unsigned integer, pass an inclusive lower bound and an exclusive
+upper bound:
+
+```slang
+const uint index = SampleSceneRandom(queries, 0, count);
+```
+
+For positive `count`, this returns an index in `[0, count)`. Any `uint` bounds
+with `minimumInclusive < maximumExclusive` are supported, including values near
+the largest unsigned integer. A one-value range still consumes one dimension
+and always returns its lower bound. The helper reuses FoundationMath's unbiased
+bounded integer mapper; it does not scale a float or apply a modulo reduction.
+Empty/reversed ranges latch `HasFailed`, return zero and consume no dimension.
+Stream exhaustion or bounded-mapping failure also latches `HasFailed` and returns
+zero, which must not be used as a sample after failure. Float draws, integer draws
+and automatic light selection share the same invocation stream.
+
 The stream admits dimensions zero through FoundationMath's
 `RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
 zero/no sample; the renderer rejects that invocation's result. Scheduling other

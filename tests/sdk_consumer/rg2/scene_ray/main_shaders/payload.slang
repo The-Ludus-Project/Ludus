@@ -7,4 +7,5 @@ struct ScenePayload
     float3 ExpectedRandom;
     float ExpectedMissRandom;
     uint ExpectedLightIndex;
+    uint ExpectedInteger;
 };

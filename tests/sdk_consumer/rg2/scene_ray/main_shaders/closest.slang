@@ -10,6 +10,11 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     if (any(float3(triangleChoice, u, v) != payload.ExpectedRandom) ||
         (selected.HasSample == true && selected.LightIndex != payload.ExpectedLightIndex))
         queries.HasFailed = true;
+    const uint INTEGER_RANGE_MINIMUM = 5;
+    const uint INTEGER_RANGE_MAXIMUM = 12;
+    uint integerSample = SampleSceneRandom(queries, INTEGER_RANGE_MINIMUM, INTEGER_RANGE_MAXIMUM);
+    if (integerSample != payload.ExpectedInteger)
+        queries.HasFailed = true;
     LightSample light = SampleIncidentLight(scene, selected, hit, float3(triangleChoice, u, v));
     if (light.HasSample == true)
     {
