@@ -41,6 +41,10 @@ class ProfilingController final : public QObject
 public:
     explicit ProfilingController(RenderPreview* preview, QObject* parentOrNull = nullptr);
     ~ProfilingController() override;
+    /// Borrows the selected viewport on the GUI thread; destruction stops a recording.
+    /// Returns false when changing sources during recording/finalization, preserving pending timing.
+    /// @pre preview is nonnull.
+    [[nodiscard]] bool SetPreviewSource(RenderPreview* preview);
     [[nodiscard]] bool Start(ProfilingMode mode, const QString& destination);
     void Stop();
     /// Retry writing the retained serialized snapshot after an I/O error.
@@ -58,6 +62,7 @@ Q_SIGNALS:
     void Changed();
 
 private:
+    void connectPreview();
     void poll();
     void beginExport();
     void finishExport();

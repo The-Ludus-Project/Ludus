@@ -33,6 +33,8 @@ ProfilingPanel::ProfilingPanel(RenderPreview* preview, QAction* recordAction, QW
     mDestination->setObjectName(QStringLiteral("profilingDestination"));
     mDestination->setPlaceholderText(QStringLiteral("Automatic: project out/profiling/<unique-id>.json"));
     mStatus->setObjectName(QStringLiteral("profilingStatus"));
+    mReveal->setObjectName(QStringLiteral("profilingReveal"));
+    mReveal->setToolTip(QStringLiteral("Available after a recording has been saved successfully."));
     mStatus->setWordWrap(true);
     QVBoxLayout* layout = new QVBoxLayout(this);
     QToolBar* toolbar = new QToolBar(this);
@@ -45,7 +47,7 @@ ProfilingPanel::ProfilingPanel(RenderPreview* preview, QAction* recordAction, QW
     layout->addLayout(fields);
     QLabel* explanation = new QLabel(QStringLiteral("CPU: editor process scopes. GPU: scene viewport device duration. "
                                                     "GPU counters are attributed to submission, not aligned execution "
-                                                    "slices. Recording stops after 30 seconds."),
+                                                    "slices. F9 starts/stops recording; 30 seconds is the maximum."),
                                      this);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
