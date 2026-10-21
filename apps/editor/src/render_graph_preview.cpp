@@ -730,11 +730,13 @@ const GraphViewportStatistics& RenderGraphPreview::GetStatistics() const noexcep
 void RenderGraphPreview::Tick(float64 preparationMilliseconds)
 {
     State& state = *mState;
+    renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
+    const bool hasPendingSamples = activeOrNull != nullptr && activeOrNull->HasPendingSamples() == true;
     const bool hasActiveWork =
-        state.IsAttached == true &&
-        (state.Reader.IsBusy() == true || state.IsAwaitingProducer == true || state.Candidate.Serial != 0 ||
-         (state.HasExtraction == true &&
-          (state.Extraction.Revision != mPresentedRevision || state.Session != mPresentedSession)));
+        state.IsAttached == true && (hasPendingSamples == true || state.Reader.IsBusy() == true ||
+                                     state.IsAwaitingProducer == true || state.Candidate.Serial != 0 ||
+                                     (state.HasExtraction == true && (state.Extraction.Revision != mPresentedRevision ||
+                                                                      state.Session != mPresentedSession)));
     QElapsedTimer timer;
     timer.start();
     state.HasCompletedStatisticsFrame = false;
@@ -992,7 +994,7 @@ void RenderGraphPreview::advance()
     if ((state.FailedOutputGeneration == report.ActiveGeneration && state.FailedOutputRevision == drawable) ||
         drawable == 0 ||
         (mPresentedSession == state.Session && report.ActiveGeneration == mPresentedGeneration &&
-         drawable == mPresentedRevision))
+         drawable == mPresentedRevision && activeOrNull->HasPendingSamples() == false))
     {
         return;
     }

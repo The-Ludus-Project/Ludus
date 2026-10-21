@@ -92,6 +92,8 @@ rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
     description.MaxDepth = 1;
     description.RouletteDepth = 1;
     description.CenterRays = true;
+    // A camera/scene edit restarts accumulation, but must not replay the same per-pixel stream.
+    description.Seed = sceneOrNull != nullptr ? sceneOrNull->SourceGeneration : 0;
     const rhi::RasterStatus status = inoutContext.BeginGpuPreview(snapshot, description, mJob, sceneOrNull);
     if (status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending)
     {

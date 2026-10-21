@@ -1,5 +1,6 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 
+#include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
 
@@ -652,6 +653,7 @@ struct RenderGraph::State final
         StaticArray<bool, format::MAX_PASSES> HasViews{};
         usize MeshCount = 0;
         uint64 Revision = 0;
+        uint32 SubmittedRaySamples = 0;
         ~Scene() noexcept
         {
             if (OwnerOrNull != nullptr)
@@ -904,6 +906,11 @@ struct RenderGraph::State final
         {
             HasValidOutput = submitted == Status::Ready && RecordingStatus == Status::Ready;
             OutputRevision = HasValidOutput == true ? RecordingRevision : 0;
+            if (HasValidOutput == true && HasRaySetup == true &&
+                Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET)
+            {
+                ++Current->SubmittedRaySamples;
+            }
         }
         return RecordingStatus == Status::Ready ? submitted : RecordingStatus;
     }
@@ -1764,6 +1771,11 @@ uint64 RenderGraph::GetDrawableSceneRevision() const noexcept
 {
     return mState.Get() == nullptr || mState->Current.Get() == nullptr ? 0 : mState->Current->Revision;
 }
+bool RenderGraph::HasPendingSamples() const noexcept
+{
+    return mState.Get() != nullptr && mState->Current.Get() != nullptr && mState->HasRaySetup == true &&
+           mState->Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET;
+}
 uint64 RenderGraph::GetOutputSceneRevision() const noexcept
 {
     if (mState.Get() == nullptr || mState->HasValidOutput == false || mState->Producer.IsNull() == true ||
@@ -1937,6 +1949,11 @@ Status RenderGraph::ConfirmSubmission(rhi::SubmissionToken completion) noexcept
         state.Producer = completion;
         state.HasValidOutput = state.RecordingStatus == Status::Ready && submitted != Status::Failed;
         state.OutputRevision = state.HasValidOutput == true ? state.RecordingRevision : 0;
+        if (state.HasValidOutput == true && state.HasRaySetup == true &&
+            state.Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET)
+        {
+            ++state.Current->SubmittedRaySamples;
+        }
         state.HasExternalRecording = false;
         return state.RecordingStatus == Status::Ready ? submitted : state.RecordingStatus;
     }

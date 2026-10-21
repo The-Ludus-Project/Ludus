@@ -724,7 +724,18 @@ competing BSDF continuation there. The engine does not apply that weight for you
 
 Scene callbacks return unclamped linear RGB. GPU history accumulates it before
 the preview's exposure-one Reinhard/sRGB display conversion. Each scene/camera or
-shader generation starts new history, advancing up to 4096 samples. Persistent
+shader generation starts new history, advancing up to 4096 samples. The editor
+continues submitting ray frames for an unchanged drawable extraction until that
+budget is reached. Each completed render advances the sample index, so automatic
+float and integer draws change across successive samples without scene edits.
+Camera and scene edits start a new history whose seed derives from the extraction
+revision, so restarting at sample zero does not replay the previous per-pixel
+draws. Replaying the same revision and inputs remains deterministic. Raster-only
+graphs remain on demand. `RenderGraph::HasPendingSamples()` lets
+other hosts schedule the same bounded progression; it tracks accepted submissions,
+including pending producers, and never waits or submits work. Hosts still finish
+the previous producer and all export consumers before rendering again. Pending
+or failed replacement scenes preserve the current drawable history. Persistent
 history remains graph-owned and completion-tracked; no radiance is read back for
 rendering. Exposure is currently fixed by the graph preview profile. Selective
 history preservation when only a stop target changes remains a future extension.
@@ -810,8 +821,9 @@ The preference is saved with World navigation. It refreshes four times a second;
 time measurements average the last 30 completed samples:
 
 - **FPS (updates)** counts completed graph output images delivered to the viewport,
-  using the average interval between images. The graph renders on demand, so this
-  is an interaction update rate, not monitor refresh or a continuous benchmark.
+  using the average interval between images. Raster graphs render on demand;
+  ray graphs also produce progressive samples until their budget is exhausted.
+  This is an image update rate, not monitor refresh or a continuous benchmark.
   It shows zero before two images arrive and after one second without a new image;
   a new interaction after that idle gap starts a fresh rate window.
 - **CPU** sums active owner-thread World/camera extraction, graph preparation,
@@ -827,7 +839,7 @@ time measurements average the last 30 completed samples:
 
 Pending or failed output copies do not publish successful frame samples or erase
 last-completed time averages. Device replacement clears the graph series. These
-measurements do not add a GPU wait or change the graph's on-demand scheduling.
+measurements do not add a GPU wait or change the graph's scheduling.
 
 The adjacent configuration selector lists configurations authored in the root graph. Use
 those for custom debug permutations or open another project graph. The editor does not

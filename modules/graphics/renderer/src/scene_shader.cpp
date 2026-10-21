@@ -3,6 +3,7 @@
 
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/addressed_random.hpp>
 
 #include <new>
 
@@ -204,6 +205,10 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
     candidate->SourceGeneration = input.SourceGeneration;
     candidate->SceneData = input.SceneData;
     candidate->Description = description;
+    if (math::TryMakeRandomKey(description.Seed, REFERENCE_RANDOM_DOMAIN, candidate->Key) != math::MathStatus::Success)
+    {
+        return Status::InvalidDescription;
+    }
     candidate->Description.Environment = input.Inputs.Environment;
     LightSelection lights;
     Status status = NormalizeDirectLights(input.Inputs.Lights.GetDataOrNull(), input.Inputs.Lights.GetSize(), lights);
