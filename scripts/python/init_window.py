@@ -9,6 +9,7 @@ input, so sudo still prompts there; the window says when it is waiting.
 """
 from __future__ import annotations
 
+import gc
 import os
 import queue
 import signal
@@ -304,6 +305,10 @@ class SetupWindow:
             self._finish(None)
             return False
         self.pump = OutputPump(self.process, self.log_path, self.echo)
+        # Tk variables must be finalized on the Tk thread. Collect unreachable
+        # ones (the selection window's, an earlier run's) now, so a collection
+        # triggered on the reader thread never finds Tk objects to delete.
+        gc.collect()
         self.pump.start()
         self._schedule(POLL_MILLISECONDS, self._poll)
         self._schedule(CLOCK_MILLISECONDS, self._tick)
