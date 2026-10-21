@@ -453,6 +453,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             tests/world_workspace_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
+        tests/world_lighting_switch_tests.cpp
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
