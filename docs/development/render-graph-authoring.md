@@ -638,12 +638,12 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
 | GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; no radiance estimate is added |
+| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
 | EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
 | EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
-| SampleSceneRandom / MakeCameraRay | Addressed random dimension / chosen subpixel camera ray |
+| SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing reflection-model primitives; no integrator or MIS |
 
 SurfaceHit includes InstanceIndex, original mesh-local Primitive, source identity,
@@ -655,6 +655,52 @@ default=1, error=2. Checked data getters return IsValid=false for invalid indice
 authors must not use invalid results. Query/ray failures latch HasFailed and
 produce diagnostic pixels. Miss/clear is SCENE_QUERY_MISS, hit/occluded is
 SCENE_QUERY_SURFACE, and failure is SCENE_QUERY_FAILURE.
+
+Random sampling is available directly in ray generation, closest-hit and miss.
+The renderer initializes a deterministic stream from the seed, pixel and
+progressive sample index before invoking raygen. Each call advances the stream:
+
+```slang
+const float u = SampleSceneRandom(queries);
+const float v = SampleSceneRandom(queries);
+const float root = sqrt(u);
+const float2 barycentric = float2(root * (1 - v), root * v);
+```
+
+Both draws are uniform pseudorandom values in `[0, 1)`; the barycentrics sample
+a triangle uniformly in area. These helpers require no launch field, seed or
+dimension counter in `ScenePayload`. Forward the same `queries` through callbacks and continuations;
+do not reset or copy its sampling state. `SelectLight(scene, queries)` shares this
+stream and consumes one dimension when the source set is nonempty. A bounded
+selection failure latches `HasFailed`; an empty source set is an ordinary no-sample
+result and consumes no dimension.
+
+For a uniform unsigned integer, pass an inclusive lower bound and an exclusive
+upper bound:
+
+```slang
+const uint index = SampleSceneRandom(queries, 0, count);
+```
+
+For positive `count`, this returns an index in `[0, count)`. Any `uint` bounds
+with `minimumInclusive < maximumExclusive` are supported, including values near
+the largest unsigned integer. A one-value range still consumes one dimension
+and always returns its lower bound. The helper reuses FoundationMath's unbiased
+bounded integer mapper; it does not scale a float or apply a modulo reduction.
+Empty/reversed ranges latch `HasFailed`, return zero and consume no dimension.
+Stream exhaustion or bounded-mapping failure also latches `HasFailed` and returns
+zero, which must not be used as a sample after failure. Float draws, integer draws
+and automatic light selection share the same invocation stream.
+
+The stream admits dimensions zero through FoundationMath's
+`RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
+zero/no sample; the renderer rejects that invocation's result. Scheduling other
+pixels does not change the stream. Changing the callback's draw order does.
+The existing `SampleSceneRandom(launch, dimension)` and
+`SelectLight(scene, launch, dimension)` overloads remain available for explicitly
+addressed algorithms. They do not advance the automatic stream and can address
+the same draws; use one addressing strategy or reserve disjoint dimensions when
+combining them.
 
 The default distribution is uniform over analytic sources, emitting instance/slot
 groups and the optional environment. Mesh triangles are selected by world area,
@@ -758,6 +804,30 @@ an Export node for each diagnostic target. Selection follows expanded resource n
 rebuilds; a removed target returns to Final output. Discarded/undefined attachments report
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
+
+The **Stats** toggle beside the viewport controls shows a live performance overlay.
+The preference is saved with World navigation. It refreshes four times a second;
+time measurements average the last 30 completed samples:
+
+- **FPS (updates)** counts completed graph output images delivered to the viewport,
+  using the average interval between images. The graph renders on demand, so this
+  is an interaction update rate, not monitor refresh or a continuous benchmark.
+  It shows zero before two images arrive and after one second without a new image;
+  a new interaction after that idle gap starts a fresh rate window.
+- **CPU** sums active owner-thread World/camera extraction, graph preparation,
+  submission, polling and output conversion work per delivered image. It excludes
+  the wall-clock gaps between asynchronous service calls and other editor work.
+- **GPU** uses the existing asynchronous device timestamp probe for graph frame
+  execution. It excludes CPU conversion and is not input-to-display latency.
+  `…` means no sample has completed; `n/a` means timestamps are unavailable.
+  The overlay and profiling recorder share the device's timing owner.
+- **Readback** measures elapsed time from requesting the output copy until its
+  CPU display image is ready, including asynchronous copy waits, polling cadence
+  and image conversion. It excludes the earlier graph render and final Qt paint.
+
+Pending or failed output copies do not publish successful frame samples or erase
+last-completed time averages. Device replacement clears the graph series. These
+measurements do not add a GPU wait or change the graph's on-demand scheduling.
 
 The adjacent configuration selector lists configurations authored in the root graph. Use
 those for custom debug permutations or open another project graph. The editor does not
@@ -2115,6 +2185,27 @@ straight tint with alpha below one is declared `Transparent`, and the editor's
 `DiagnosticColor` coverage policy draws unsupported items in magenta instead of
 hiding them. Textures, lights and other materials are outside the current static
 profile. An authored surface's flat tint is its schema tint.
+
+Triangle-ray graphs admit up to **2 GiB of CPU preparation** and **2 GiB of GPU
+preview resources**. These are ceilings, not allocations made when a graph opens.
+CPU preparation includes frozen triangles, BVH construction, material and texture
+data, fingerprints and upload scratch. The GPU ceiling includes current and
+replacement previews until retained GPU uses retire. The device-wide RHI resource
+budget and each device's storage-buffer binding range apply independently; a
+larger graph ceiling cannot override either one. The supplied imported Sponza
+World's two million triangles require more than the previous 256 MiB ceilings.
+
+When measured byte admission fails, `RenderGraphReport::SceneDiagnostics` names
+the exceeded budget and records required and available bytes. The editor displays
+those values with the rejection while keeping the last drawable frame. CPU scene,
+CPU scratch/upload, GPU preview, device-wide RHI resources and device storage-buffer
+range have separate diagnostics. Available bytes are the remaining allowance at
+that stage, not free physical RAM or VRAM. Allocation failures and non-memory
+capacity failures retain their own status without inventing a byte requirement.
+
+Ray-scene preparation retains off-screen geometry: authored shadow, reflection
+and secondary rays may intersect it. Camera-frustum or raster occlusion rejection
+alone does not establish that geometry can be removed from a ray BVH.
 
 Imported and merged Worlds are cooked: their geometry lives only in the decoded
 scene definition, which the extraction borrows (and keeps alive) without copying.

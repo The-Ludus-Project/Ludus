@@ -3,8 +3,19 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
 {
     MaterialSample material = EvaluateMaterial(scene, hit);
     payload.Radiance = material.BaseColor + EvaluateEmission(scene, hit, -hit.IncomingRay.DirectionWorld);
-    SelectedLight selected = SelectLight(scene, payload.Launch, 2);
-    LightSample light = SampleIncidentLight(scene, selected, hit, float3(0.5, 0.5, 0.5));
+    SelectedLight selected = SelectLight(scene, queries);
+    float triangleChoice = SampleSceneRandom(queries);
+    float u = SampleSceneRandom(queries);
+    float v = SampleSceneRandom(queries);
+    if (any(float3(triangleChoice, u, v) != payload.ExpectedRandom) ||
+        (selected.HasSample == true && selected.LightIndex != payload.ExpectedLightIndex))
+        queries.HasFailed = true;
+    const uint INTEGER_RANGE_MINIMUM = 5;
+    const uint INTEGER_RANGE_MAXIMUM = 12;
+    uint integerSample = SampleSceneRandom(queries, INTEGER_RANGE_MINIMUM, INTEGER_RANGE_MAXIMUM);
+    if (integerSample != payload.ExpectedInteger)
+        queries.HasFailed = true;
+    LightSample light = SampleIncidentLight(scene, selected, hit, float3(triangleChoice, u, v));
     if (light.HasSample == true)
     {
         // Validate the proposal/evaluation contract without estimating illumination.

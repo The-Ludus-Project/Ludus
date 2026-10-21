@@ -353,6 +353,51 @@ class RayPipelineTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
                      'set LUDUS_RG1_SLANG, LUDUS_RG1_HELPER and LUDUS_RG1_CROSS for native ray compiler acceptance')
 class RayCompilerAcceptance(unittest.TestCase):
+    def test_sampling_in_every_callback_needs_only_a_radiance_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'scene_ray'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text()
+                                .replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+            shaders = source / 'main_shaders'
+            (shaders / 'payload.slang').write_text('struct ScenePayload { float3 Radiance; };\n')
+            (shaders / 'generate.slang').write_text('''
+float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+{
+    ScenePayload payload = (ScenePayload)0;
+    uint half = SampleSceneRandom(queries, 0, 2);
+    float u = SampleSceneRandom(queries);
+    float v = SampleSceneRandom(queries);
+    float2 jitterPixel = float2((float(half) + u) * 0.5, v);
+    TraceAndShade(scene, queries, MakeCameraRay(launch, jitterPixel), payload);
+    return payload.Radiance;
+}
+''')
+            (shaders / 'closest.slang').write_text('''
+void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
+{
+    SelectedLight selected = SelectLight(scene, queries);
+    float u = SampleSceneRandom(queries);
+    float v = SampleSceneRandom(queries);
+    uint index = SampleSceneRandom(queries, 0, 7);
+    payload.Radiance = float3(u, v, float(index) * selected.SelectionPmf);
+}
+''')
+            (shaders / 'miss.slang').write_text('''
+void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)
+{
+    uint index = SampleSceneRandom(queries, 1, 3);
+    payload.Radiance = float3(SampleSceneRandom(queries), float(index), 0);
+}
+''')
+            result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                         compiler=os.environ['LUDUS_RG1_SLANG'])
+            package = build.verify_package(Path(result['package']))
+            self.assertEqual({'metal', 'wgsl'}, {r['profile'] for r in package['recipes']
+                                               if r['technique'] == ray.TECHNIQUE})
+
     def test_automatic_limits_compile_to_concrete_state_and_retain_prior_package_on_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

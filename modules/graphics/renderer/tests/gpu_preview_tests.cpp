@@ -14,8 +14,10 @@
 #include "renderer_surface.h"
 #include "renderer_surface_shadow.h"
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -757,4 +759,80 @@ TEST_CASE("CPU and GPU reference transport retained HDR source radiance and auth
     // aggregate convergence, not a byte-identical random trajectory.
     CHECK(totalError < static_cast<int32>(CAPTURE_PIXELS * 3 * 3));
     REQUIRE(renderer.Release(frame) == S::Ready);
+}
+
+TEST_CASE("Ray admission distinguishes GPU, RHI resource and CPU scratch ceilings", "[renderer][gpu][ray-memory]")
+{
+    rhi::Shutdown();
+    struct DeviceGuard final
+    {
+        ~DeviceGuard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceDescription deviceDescription;
+    deviceDescription.Required.PortableRaster = true;
+    deviceDescription.Required.Compute = true;
+    rr::GpuPreviewOptions options;
+    options.CpuByteBudget = usize{1} * 1024 * 1024;
+    options.GpuByteBudget = usize{1} * 1024 * 1024;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = capture.Height = 8;
+    capture.OrthographicCamera = true;
+    rr::SceneMemoryBudget expected = rr::SceneMemoryBudget::GpuPreview;
+    SECTION("GPU budget counts pixel resources")
+    {
+        options.GpuByteBudget = 1024;
+    }
+    SECTION("CPU scratch counts pixel initialization independently of geometry")
+    {
+        capture.Width = capture.Height = 256;
+        options.GpuByteBudget = usize{8} * 1024 * 1024;
+        expected = rr::SceneMemoryBudget::CpuScratch;
+    }
+    SECTION("RHI resource budget includes other live device resources")
+    {
+        capture.Width = capture.Height = 256;
+        options.CpuByteBudget = options.GpuByteBudget = usize{8} * 1024 * 1024;
+        deviceDescription.Storage.ResourceBytes = uint64{1} * 1024 * 1024;
+        expected = rr::SceneMemoryBudget::RhiResources;
+    }
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, deviceDescription, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rr::Renderer context;
+    REQUIRE(context.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
+            S::Ready);
+    REQUIRE(context.EnableTriangleRayPipeline(shaders::renderer_gpu_preview::Compute(),
+                                              shaders::renderer_gpu_preview_image::Vertex(),
+                                              shaders::renderer_gpu_preview_image::Fragment(),
+                                              options) == S::Ready);
+    constexpr usize VERTEX_COUNT = 3;
+    StaticArray<math::Vector3, VERTEX_COUNT> positions{{{0, 0, .5F}, {1, 0, .5F}, {0, 1, .5F}}};
+    StaticArray<uint32, VERTEX_COUNT> indices{{0, 1, 2}};
+    rr::RenderGraphMesh mesh;
+    mesh.Geometry = {positions.GetData(), positions.GetSize(), indices.GetData(), indices.GetSize()};
+    rr::RenderGraphItem item;
+    item.SourceId = 1;
+    rr::SceneShaderDiagnostics diagnostics;
+    rr::RenderGraphSceneDescription scene;
+    scene.Meshes = {&mesh, 1};
+    scene.Items = {&item, 1};
+    scene.DiagnosticsOrNull = &diagnostics;
+    rr::GpuPreview output;
+    REQUIRE(context.BeginGpuPreview({}, capture, output, &scene) == S::CapacityExceeded);
+    CHECK(diagnostics.ExceededBudget == expected);
+    CHECK(diagnostics.RequiredBytes > diagnostics.AvailableBytes);
+    if (expected == rr::SceneMemoryBudget::GpuPreview)
+    {
+        CHECK(diagnostics.AvailableBytes > 0);
+        CHECK(diagnostics.AvailableBytes < options.GpuByteBudget);
+    }
 }

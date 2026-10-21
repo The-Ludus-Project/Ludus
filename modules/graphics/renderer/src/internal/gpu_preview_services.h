@@ -7,6 +7,7 @@
 
 #include "gpu_preview_ray.h"
 #include "render_graph_ray_scene.h"
+#include "scene_memory.h"
 // Included only by renderer.cpp. CPU work here only
 // freezes input, builds the static BVH, packs bytes, and observes submission state.
 // Transport, accumulation and display conversion are exclusively shader work.
@@ -18,7 +19,9 @@ using internal::GpuPreviewRecord;
 using internal::GpuPreviewState;
 using internal::ReferenceJob;
 // Shared cold serializer is defined by reference_services.h in this translation unit.
-bool ReferenceFingerprint(ReferenceJob& inoutJob, usize byteBudget) noexcept;
+bool ReferenceFingerprint(ReferenceJob& inoutJob,
+                          usize byteBudget,
+                          SceneShaderDiagnostics* diagnosticsOrNull = nullptr) noexcept;
 constexpr StaticArray<rhi::RasterBinding, LUDUS_GPU_PREVIEW_BINDING_COUNT> GPU_COMPUTE_BINDINGS{
     {{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Compute, sizeof(internal::GpuPreviewUniform)},
      {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, 16},
@@ -53,7 +56,8 @@ Status PackGpuScene(const ReferenceJob& job,
                     usize budget,
                     Array<math::Vector4>& data,
                     Array<math::Vector4>& texels,
-                    internal::GpuPreviewUniform& uniform) noexcept
+                    internal::GpuPreviewUniform& outUniform,
+                    SceneShaderDiagnostics* diagnosticsOrNull) noexcept
 {
     const internal::ReferenceSceneData& scene = job.Scene;
     const uint64 nodesWide = uint64(scene.Triangles.GetSize()) * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
@@ -82,7 +86,11 @@ Status PackGpuScene(const ReferenceJob& job,
     };
     if (textureCount * sizeof(usize) > budget || textures.TryResize(textureCount) == false)
     {
-        return Status::CapacityExceeded;
+        return textureCount * sizeof(usize) > budget ? internal::RejectSceneMemory(diagnosticsOrNull,
+                                                                                   SceneMemoryBudget::CpuScratch,
+                                                                                   textureCount * sizeof(usize),
+                                                                                   budget)
+                                                     : Status::OutOfMemory;
     }
     for (usize i = 0; i < textureCount; ++i)
     {
@@ -117,10 +125,14 @@ Status PackGpuScene(const ReferenceJob& job,
     {
         size = 1;
     }
-    if (size > ~uint32{0} ||
-        uint64(size) + dataSize > (budget - textures.GetSize() * sizeof(usize)) / sizeof(math::Vector4))
+    if (size > ~uint32{0})
     {
         return Status::CapacityExceeded;
+    }
+    const uint64 requiredBytes = (uint64{size} + dataSize) * sizeof(math::Vector4) + textures.GetSize() * sizeof(usize);
+    if (requiredBytes > budget)
+    {
+        return internal::RejectSceneMemory(diagnosticsOrNull, SceneMemoryBudget::CpuScratch, requiredBytes, budget);
     }
     if (data.TryResize(dataSize) == false || texels.TryResize(size) == false)
     {
@@ -264,17 +276,20 @@ Status PackGpuScene(const ReferenceJob& job,
             GpuBits(static_cast<uint32>(light.SourceId >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)),
             0};
     }
-    uniform.ClipToWorld = job.ClipToWorld;
-    uniform.CameraPositionWorld =
+    outUniform.ClipToWorld = job.ClipToWorld;
+    outUniform.CameraPositionWorld =
         GpuVector(job.Description.CameraPosition, job.Description.OrthographicCamera ? 1.0F : 0.0F);
-    uniform.Dimensions[0] = job.Description.Width;
-    uniform.Dimensions[1] = job.Description.Height;
-    uniform.Dimensions[2] = job.Description.MaxDepth;
-    uniform.Dimensions[3] = job.Description.RouletteDepth;
-    uniform.Offsets[0] = static_cast<uint32>(nodes);
-    uniform.Offsets[1] = static_cast<uint32>(order);
-    uniform.Offsets[2] = static_cast<uint32>(emitters);
-    uniform.Offsets[3] = static_cast<uint32>(surfaces);
+    outUniform.Dimensions[0] = job.Description.Width;
+    outUniform.Dimensions[1] = job.Description.Height;
+    outUniform.Dimensions[2] = job.Description.MaxDepth;
+    constexpr usize FOURTH_COMPONENT = 3;
+    constexpr usize RANDOM_KEY_WORD_BITS = 32;
+    constexpr uint32 CENTER_RAYS_FLAG = 4;
+    outUniform.Dimensions[FOURTH_COMPONENT] = job.Description.RouletteDepth;
+    outUniform.Offsets[0] = static_cast<uint32>(nodes);
+    outUniform.Offsets[1] = static_cast<uint32>(order);
+    outUniform.Offsets[2] = static_cast<uint32>(emitters);
+    outUniform.Offsets[FOURTH_COMPONENT] = static_cast<uint32>(surfaces);
     if (job.EnvironmentOrNull != nullptr)
     {
         const internal::EnvironmentData& environment = *job.EnvironmentOrNull;
@@ -288,28 +303,28 @@ Status PackGpuScene(const ReferenceJob& job,
                     ? static_cast<float32>(environment.Distribution[pixel] / environment.Weight)
                     : static_cast<float32>(pixel + 1) / static_cast<float32>(environment.Pixels.GetSize());
         }
-        uniform.SurfaceLayout[3] =
+        outUniform.SurfaceLayout[FOURTH_COMPONENT] =
             static_cast<uint32>(environmentWide) + 1; // Zero denotes absent; offset zero remains representable.
     }
-    uniform.Counts[0] = static_cast<uint32>(scene.Triangles.GetSize());
-    uniform.Counts[1] = static_cast<uint32>(scene.Nodes.GetSize());
-    uniform.Counts[2] = static_cast<uint32>(scene.Emitters.GetSize());
-    uniform.Counts[3] = static_cast<uint32>(job.Description.LightCount);
-    uniform.Sampling[0] = static_cast<uint32>(job.Key.Value);
-    uniform.Sampling[1] = static_cast<uint32>(job.Key.Value >> 32);
-    uniform.Sampling[2] = (job.Description.ReverseZ ? 1U : 0U) | (job.Description.InfiniteFar ? 2U : 0U) |
-                          (job.Description.CenterRays ? 4U : 0U);
-    uniform.Sampling[3] = job.Description.TargetSamples;
-    uniform.Environment =
+    outUniform.Counts[0] = static_cast<uint32>(scene.Triangles.GetSize());
+    outUniform.Counts[1] = static_cast<uint32>(scene.Nodes.GetSize());
+    outUniform.Counts[2] = static_cast<uint32>(scene.Emitters.GetSize());
+    outUniform.Counts[FOURTH_COMPONENT] = static_cast<uint32>(job.Description.LightCount);
+    outUniform.Sampling[0] = static_cast<uint32>(job.Key.Value);
+    outUniform.Sampling[1] = static_cast<uint32>(job.Key.Value >> RANDOM_KEY_WORD_BITS);
+    outUniform.Sampling[2] = (job.Description.ReverseZ ? 1U : 0U) | (job.Description.InfiniteFar ? 2U : 0U) |
+                             (job.Description.CenterRays == true ? CENTER_RAYS_FLAG : 0U);
+    outUniform.Sampling[FOURTH_COMPONENT] = job.Description.TargetSamples;
+    outUniform.Environment =
         GpuVector(job.Description.Environment, GpuBits(static_cast<uint32>(job.ShaderEmitters.GetSize())));
-    uniform.Options.Z = GpuBits(static_cast<uint32>(scene.InstanceCount));
-    uniform.SurfaceLayout[0] = LUDUS_GPU_PREVIEW_SURFACE_WORDS;
-    uniform.SurfaceLayout[1] = static_cast<uint32>(lightsWide);
-    uniform.SurfaceLayout[2] = LUDUS_GPU_PREVIEW_KERNEL_VERSION;
-    uniform.Options.X = job.Description.SecondaryDistance;
-    uniform.Options.W = GpuBits(job.SceneData);
-    uniform.BoundsMinimumWorld = GpuVector(scene.Bounds.Min, GpuBits(static_cast<uint32>(job.SourceGeneration)));
-    uniform.BoundsMaximumWorld =
+    outUniform.Options.Z = GpuBits(static_cast<uint32>(scene.InstanceCount));
+    outUniform.SurfaceLayout[0] = LUDUS_GPU_PREVIEW_SURFACE_WORDS;
+    outUniform.SurfaceLayout[1] = static_cast<uint32>(lightsWide);
+    outUniform.SurfaceLayout[2] = LUDUS_GPU_PREVIEW_KERNEL_VERSION;
+    outUniform.Options.X = job.Description.SecondaryDistance;
+    outUniform.Options.W = GpuBits(job.SceneData);
+    outUniform.BoundsMinimumWorld = GpuVector(scene.Bounds.Min, GpuBits(static_cast<uint32>(job.SourceGeneration)));
+    outUniform.BoundsMaximumWorld =
         GpuVector(scene.Bounds.Max,
                   GpuBits(static_cast<uint32>(job.SourceGeneration >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)));
     return Status::Ready;
@@ -816,6 +831,11 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         }
     }
     core::UniquePtr<ReferenceJob> scene;
+    SceneShaderDiagnostics localDiagnostics;
+    SceneShaderDiagnostics* diagnosticsOrNull =
+        graphSceneOrNull != nullptr && graphSceneOrNull->DiagnosticsOrNull != nullptr
+            ? graphSceneOrNull->DiagnosticsOrNull
+            : &localDiagnostics;
     if (graphSceneOrNull != nullptr)
     {
         status =
@@ -823,12 +843,14 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                                  description,
                                                  mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes,
                                                  scene);
-        if (status == Status::Ready &&
-            ReferenceFingerprint(*scene,
-                                 mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes -
-                                     scene->Info.CpuBytes) == false)
+        if (status == Status::Ready && ReferenceFingerprint(*scene,
+                                                            mState->Reference->Options.CpuByteBudget -
+                                                                mState->Reference->CpuBytes - scene->Info.CpuBytes,
+                                                            diagnosticsOrNull) == false)
         {
-            return Status::OutOfMemory;
+            return diagnosticsOrNull != nullptr && diagnosticsOrNull->ExceededBudget != SceneMemoryBudget::None
+                       ? Status::CapacityExceeded
+                       : Status::OutOfMemory;
         }
     }
     else if (state.IsGraphRayScene == true)
@@ -883,12 +905,15 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     const foundation::usize cpuRemaining = mState->Reference->Options.CpuByteBudget - mState->Reference->CpuBytes;
     if (scene->Info.CpuBytes > cpuRemaining)
     {
-        return Status::CapacityExceeded;
+        return internal::RejectSceneMemory(diagnosticsOrNull,
+                                           SceneMemoryBudget::CpuScene,
+                                           scene->Info.CpuBytes,
+                                           cpuRemaining);
     }
     const usize scratch = cpuRemaining - scene->Info.CpuBytes;
     Array<math::Vector4> data, texels;
     internal::GpuPreviewUniform uniform;
-    status = PackGpuScene(*scene, scratch, data, texels, uniform);
+    status = PackGpuScene(*scene, scratch, data, texels, uniform, diagnosticsOrNull);
     if (status != Status::Ready)
     {
         return status;
@@ -900,13 +925,41 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     usize gpuBytes = 0;
     if (foundation::TryMultiply(pixels, usize{64}, gpuBytes) == false ||
         foundation::TryAdd(gpuBytes, uploadBytes, gpuBytes) == false ||
-        foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) == false ||
-        gpuBytes > state.Options.GpuByteBudget - state.GpuBytes || uploadBytes > scratch ||
-        pixels > (scratch - uploadBytes) / 32)
+        foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) == false)
     {
         return Status::CapacityExceeded;
     }
+    const usize gpuRemaining = state.Options.GpuByteBudget - state.GpuBytes;
+    if (gpuBytes > gpuRemaining)
+    {
+        return internal::RejectSceneMemory(diagnosticsOrNull, SceneMemoryBudget::GpuPreview, gpuBytes, gpuRemaining);
+    }
+    const uint64 requiredScratch = uint64{uploadBytes} + uint64{pixels} * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES;
+    if (requiredScratch > scratch)
+    {
+        return internal::RejectSceneMemory(diagnosticsOrNull, SceneMemoryBudget::CpuScratch, requiredScratch, scratch);
+    }
     rhi::ComputeCapabilities computeCaps;
+    rhi::StorageUsage usage;
+    status = rhi::GetStorageUsage(mState->Device, usage);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    rhi::DeviceInfo deviceInformation;
+    if (rhi::GetDeviceInfo(mState->Device, deviceInformation) != rhi::DeviceStatus::Ready)
+    {
+        return Status::NotReady;
+    }
+    const uint64 resourceBudget = deviceInformation.Profile.Storage.ResourceBytes;
+    const uint64 resourceRemaining = resourceBudget - math::Min(resourceBudget, usage.ResourceBytes);
+    if (gpuBytes > resourceRemaining)
+    {
+        return internal::RejectSceneMemory(diagnosticsOrNull,
+                                           SceneMemoryBudget::RhiResources,
+                                           gpuBytes,
+                                           resourceRemaining);
+    }
     rhi::FormatCapabilities formatCaps;
     status = rhi::GetComputeCapabilities(mState->Device, computeCaps);
     if (status == Status::Ready)
@@ -917,9 +970,16 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         return status;
     }
+    const usize largestStorageBuffer =
+        math::Max(math::Max(dataBytes, texelBytes), pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES);
+    if (largestStorageBuffer > computeCaps.MaxStorageRange)
+    {
+        return internal::RejectSceneMemory(diagnosticsOrNull,
+                                           SceneMemoryBudget::DeviceStorageRange,
+                                           largestStorageBuffer,
+                                           computeCaps.MaxStorageRange);
+    }
     if ((description.Width + 63) / 64 > computeCaps.MaxDispatch[0] || description.Height > computeCaps.MaxDispatch[1] ||
-        dataBytes > computeCaps.MaxStorageRange || texelBytes > computeCaps.MaxStorageRange ||
-        pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES > computeCaps.MaxStorageRange ||
         description.Width > formatCaps.MaxAttachmentDimension2D ||
         description.Height > formatCaps.MaxAttachmentDimension2D)
     {

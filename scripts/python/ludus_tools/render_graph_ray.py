@@ -224,6 +224,10 @@ float3 EvaluateGraphRay(uint pixel)
     launch.IsOrthographic = CameraPositionWorld.w != 0;
     launch.SampleIndex = uint(accumulation[pixel * 2].w);
     launch.Seed = Sampling.xy;
+    queries.RandomSeed = launch.Seed;
+    queries.RandomPixel = pixel;
+    queries.RandomSampleIndex = launch.SampleIndex;
+    queries.NextRandomDimension = 0;
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
     float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
     float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));

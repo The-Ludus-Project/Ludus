@@ -148,3 +148,40 @@ TEST_CASE("Viewport statistics show GPU n/a when timestamps are unavailable", "[
     statistics.Draws = 1;
     CHECK(FormatViewportStatistics(statistics) == QStringLiteral("GPU: n/a\nCPU: 4.00 ms\n64×32 · draws 1"));
 }
+
+TEST_CASE("Graph statistics measure delivered updates and separate active CPU from elapsed readback",
+          "[editor][viewport][statistics][graph-statistics]")
+{
+    GraphViewportStatistics statistics;
+    ViewportStatistics device;
+    CHECK(FormatGraphViewportStatistics(statistics, device, 0) ==
+          QStringLiteral("FPS (updates): 0.0\nCPU: …\nGPU: …\nReadback: …"));
+    statistics.AddCpuWork(1.5);
+    statistics.AddCpuWork(2.5);
+    statistics.AddCpuWork(-1);
+    statistics.AddCpuWork(std::numeric_limits<float64>::infinity());
+    statistics.CompleteFrame(0, 20);
+    CHECK(statistics.GetCpuMilliseconds().GetAverage() == 4);
+    statistics.AddCpuWork(2);
+    statistics.CompleteFrame(50'000'000, 30);
+    CHECK(statistics.GetFramesPerSecond(50'000'000) == Catch::Approx(20));
+    CHECK(statistics.GetCpuMilliseconds().GetAverage() == 3);
+    CHECK(statistics.GetReadbackMilliseconds().GetAverage() == 25);
+    device.GpuMilliseconds.Add(0.25);
+    device.GpuState = ViewportGpuTimeState::Available;
+    CHECK(FormatGraphViewportStatistics(statistics, device, 50'000'000) ==
+          QStringLiteral("FPS (updates): 20.0\nCPU: 3.00 ms\nGPU: 0.25 ms\nReadback: 25.00 ms"));
+    device.GpuState = ViewportGpuTimeState::Unavailable;
+    CHECK(FormatGraphViewportStatistics(statistics, device, 50'000'000).contains(QStringLiteral("GPU: n/a")));
+    // No new output is produced while an unchanged graph is idle. Its former rate must expire.
+    CHECK(statistics.GetFramesPerSecond(50'000'000 + GraphViewportStatistics::IDLE_NANOSECONDS) == 0);
+    statistics.CompleteFrame(2'000'000'000, 1);
+    CHECK(statistics.GetFramesPerSecond(2'000'000'000) == 0);
+    statistics.CompleteFrame(2'100'000'000, 1);
+    CHECK(statistics.GetFramesPerSecond(2'100'000'000) == Catch::Approx(10));
+    CHECK(statistics.GetFramesPerSecond(1) == 0);
+    statistics.Reset();
+    CHECK(statistics.GetCpuMilliseconds().GetCount() == 0);
+    CHECK(statistics.GetReadbackMilliseconds().GetCount() == 0);
+    CHECK(statistics.GetFramesPerSecond(2'100'000'000) == 0);
+}
