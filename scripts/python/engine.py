@@ -16,7 +16,6 @@ import sys
 import time
 import tempfile
 import urllib.request
-import venv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
@@ -24,6 +23,7 @@ from typing import Iterable, Iterator, Sequence
 from formatting import FormattingError, format_source
 import init_progress
 import init_terminal
+import managed_venv
 from analysis_inventory import compilation_entries, inventory, request_codemodel, SOURCE_ROOTS
 from quality_process import ANALYSIS_SECONDS, LANE_BYTES, LOG_BYTES, LogBudget, run_bounded
 
@@ -388,18 +388,8 @@ def managed_package_version(root: Path, package_name: str) -> str:
 
 
 def venv_has_pip(root: Path) -> bool:
-    python = venv_python(root)
-    if not python.exists():
-        return False
-    completed = subprocess.run(
-        [str(python), "-m", "pip", "--version"],
-        cwd=str(root),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        check=False,
-    )
-    return completed.returncode == 0
+    """Whether the managed environment runs on this interpreter and has pip."""
+    return managed_venv.inspect(venv_dir(root)).is_usable
 
 
 def system_python_has_venv_support() -> bool:
@@ -418,29 +408,26 @@ def check_current_python(_root: Path, minimum: str) -> None:
     print(f"Python {actual} satisfies minimum {minimum}: {sys.executable}")
 
 
-def create_or_update_venv(root: Path) -> None:
-    directory = venv_dir(root)
-    directory.parent.mkdir(parents=True, exist_ok=True)
-    if directory.is_dir() and venv_has_pip(root):
-        print(f"Project-managed virtual environment is already usable: {directory}")
-        return
+def print_venv_support_help() -> None:
+    print("")
+    print("Missing required Python virtual-environment support.")
+    print(f"Detected host: {platform.platform()}")
+    print(f"Detected Python: {platform.python_version()} at {sys.executable}")
+    print("Ubuntu install command:")
+    print("  sudo apt-get update && sudo apt-get install -y python3-venv")
+    print("Rerun after installing prerequisites:")
+    print("  ./init.sh")
 
-    print(f"Creating or updating project-managed virtual environment: {directory}")
+
+def build_venv(directory: Path) -> None:
     try:
         import ensurepip  # noqa: F401
     except ModuleNotFoundError as exc:
-        print("")
-        print("Missing required Python virtual-environment support.")
-        print(f"Detected host: {platform.platform()}")
-        print(f"Detected Python: {platform.python_version()} at {sys.executable}")
-        print("Ubuntu install command:")
-        print("  sudo apt-get update && sudo apt-get install -y python3-venv")
-        print("Rerun after installing prerequisites:")
-        print("  ./init.sh")
+        print_venv_support_help()
         raise EngineError("python3-venv or ensurepip support is required") from exc
 
     try:
-        venv.EnvBuilder(with_pip=True, clear=False, upgrade=False).create(directory)
+        managed_venv.create(directory)
     except Exception as exc:
         print("")
         print("Failed to create the project-managed virtual environment.")
@@ -451,6 +438,19 @@ def create_or_update_venv(root: Path) -> None:
         print("Rerun after installing prerequisites:")
         print("  ./init.sh")
         raise EngineError("virtual environment creation failed") from exc
+
+
+def create_or_update_venv(root: Path) -> None:
+    """Reuse ``out/host-tools/venv`` only while it matches this interpreter; otherwise rebuild it.
+
+    A Python upgrade (for example Ubuntu moving from 3.12 to 3.14) leaves an
+    environment whose ``bin/python`` cannot start, so it is deleted and
+    recreated, and the caller reinstalls the pinned packages.
+    """
+    try:
+        managed_venv.ensure(venv_dir(root), notify=init_progress.note, builder=build_venv)
+    except managed_venv.ManagedEnvironmentError as exc:
+        raise EngineError(str(exc)) from exc
 
 
 def install_managed_tools(root: Path, versions: dict[str, dict[str, str]]) -> None:
@@ -776,7 +776,8 @@ def project_state_statuses(root: Path) -> list[ToolStatus]:
     source_profile = root / "config" / "conan" / "profiles" / native_profile_name()
     lockfile = root / "conan.lock"
     environment = venv_dir(root)
-    environment_ok = environment.is_dir() and venv_python(root).exists() and venv_has_pip(root)
+    environment_health = managed_venv.inspect(environment)
+    environment_ok = environment_health.is_usable
     profile_installed = installed_profile.is_file()
     profile_current = (
         profile_installed
@@ -806,7 +807,7 @@ def project_state_statuses(root: Path) -> list[ToolStatus]:
             "Project-managed virtual environment",
             True,
             environment.is_dir(),
-            "pip available" if environment_ok else "missing pip" if environment.is_dir() else "",
+            "usable" if environment_ok else ("stale: " + environment_health.reason) if environment.is_dir() else "",
             str(environment) if environment.is_dir() else "",
             "present",
             environment_ok,

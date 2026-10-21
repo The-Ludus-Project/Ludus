@@ -65,7 +65,10 @@ command) before building. Configure and build do not download or repair tools.
   the Ludus source repository. Browser GLSL ES also needs
   `./scripts/bootstrap-spirv-cross`. If tools moved, update
   `LUDUS_SLANG_COMPILER`, `LUDUS_SPIRV_VALIDATOR`, or `LUDUS_SPIRV_CROSS`.
-  macOS Metal requires only Slang. Installed SDK consumers use the same checks;
+  Metal raster shaders use Slang; native Metal ray queries also use the pinned
+  translator. Rendered native editor setup prepares both, and **Project → Repair
+  Project Setup** automatically prepares missing tools required by saved graphs.
+  Installed SDK consumers use the same checks;
   bootstrap commands belong to the source repository, not the game directory.
 - Unusable Python: install Python 3.10+ and set `Python3_EXECUTABLE` if needed.
 - Missing editor Qt: use opted-in native editor setup or follow the
@@ -477,6 +480,15 @@ Run:
 ```
 
 Bootstrap is the exhaustive dependency-preparation step. It uses the system Python to create `out/host-tools/venv/`, then installs the pinned CMake, Ninja, and Conan versions from `config/tool_versions.json`. This is intentional network access.
+
+`out/host-tools/venv/` is reused only while it still belongs to the Python running init. Init compares the `version` (or
+`version_info`) and `home` recorded in its `pyvenv.cfg` with the current interpreter, then runs the environment's own
+`python` to import `encodings` and find pip. When any check fails, for example after Ubuntu or Homebrew replaces Python
+3.12 with 3.14, init prints `Recreating stale virtual environment (<reason>)`, shows the same notice in the setup
+window, deletes only that directory and rebuilds it before reinstalling the pinned packages. Rebuilding in place is not
+enough: `venv` keeps an existing `bin/python` copied from the removed interpreter. `./scripts/doctor` lists the reason
+on the "Project-managed virtual environment" row, and the `scripts/clangd`, `editor-task`, `setup-editor` and
+`setup-quality-tools` wrappers fall back to the system `python3` while the environment cannot start.
 
 After tool validation, bootstrap installs the committed Conan profile into `out/conan/profiles/`, creates `conan.lock`, populates the Conan cache, writes Conan generator files under `out/conan/<preset>/`, and runs a minimal CMake configure smoke test.
 

@@ -40,37 +40,170 @@ binding needed by the accepted workflow, not a general RPC/object proxy system.
 
 ## Source editing direction
 
-The current Renderer Source pane is a Qt `QPlainTextEdit` over the graph draft.
-Its platform clipboard, selection, undo/redo and cursor-navigation behavior is
-part of the editing baseline, including modifier keys and keyboard-only use.
-The current pane does not provide language completion or formatting. Qt's
-[QPlainTextEdit documentation](https://doc.qt.io/qt-6/qplaintextedit.html)
-describes the supplied text operations; those must remain intact when adding
-code-specific behavior.
+The accepted direction (2026-10-21) is a reusable code editor over Qt's
+maintained plain-text engine, with asynchronous language services. The Renderer
+Source pane is the first consumer; scripting reuses the editing commands and
+language-service contracts. Keep Qt text layout, clipboard, selection, native
+navigation, input methods and accessibility. Do not build another text engine.
+Thanks to The Qt Company, *QPlainTextEdit*, *QSyntaxHighlighter* and *Code Editor
+Example*, Qt Widgets/GUI documentation, for the block-highlighting and visible
+line-gutter mechanisms:
+[plain text](https://doc.qt.io/qt-6/qplaintextedit.html),
+[highlighter](https://doc.qt.io/qt-6/qsyntaxhighlighter.html),
+[code editor](https://doc.qt.io/qt-6/qtwidgets-widgets-codeeditor-example.html).
 
-Use lightweight in-editor editing plus **Open in Code Editor** for full code
-work. The Renderer Source pane now lets native users choose an installed
-application and open the selected saved project file. It asks before saving
-pending changes or creating a project copy of the built-in graph. External saves
-refresh a clean draft before validation/build, as one undoable revision; local
-conflicts retain the draft and block the operation. Project-owned sources stay
-in the project, and builds continue to consume a captured revision. The first
-launcher opens files; diagnostic line navigation and editor-specific command
-arguments are not yet integrated.
+### Responsibilities and dependency direction
 
-Full embedded code editing would require a maintained editor component,
-project-aware completion and diagnostics, language-specific formatting, file
-tabs, indentation, search, native Home/End and modifier-key behavior, clipboard,
-IME and accessibility acceptance. Completion must see the same manifest-generated
-shader interfaces and bindings as compilation, including unsaved source buffers.
-Evaluate that as a separate integration rather
-than growing a bespoke text widget. Slang's official
-[editor extensions](https://shader-slang.org/tools/) already offer completion,
-semantic highlighting and navigation; its
-[VS Code extension](https://github.com/shader-slang/slang-vscode-extension)
-uses `clang-format` for shader formatting. Prettier supports
-[JSON and other listed languages](https://prettier.io/docs); formatter selection
-must follow the source language and project configuration.
+| Component | Owns | Boundary |
+| --- | --- | --- |
+| Code editor view | Text presentation, visible line gutter, current line/bracket highlighting, popup presentation and native input | Sends editing intentions; no file writes, shader compilation or process ownership |
+| Editing controller | Editing commands, request scheduling/cancellation and result application | Uses version-checked document edits and copied service results |
+| Document adapter | Connects text edits to the existing draft/history/save owner | One authority for authored state; formatting/completion are atomic undo transactions |
+| Language services | Hover, completion, signature help, diagnostics and formatting | Explicit per-language capabilities; no dependency on a widget or GPU |
+| Shader context provider | Selected program, captured sources, generated interfaces, imports, defines and compiler settings | Shared with shader compilation; generated locations map back to authored sources |
+
+Keep the implementation private to the editor. Portable request/result/edit
+values must not expose Qt objects or enter the installed engine SDK. Add a
+scripting provider when its workflow needs it; language selection supplies
+comment syntax, highlighting, indentation and service capabilities, rather than
+forking the editor. The implemented document identity/edit/selection seam is
+Qt-free; the native formatter's owned process buffers and XML decoder remain
+private Qt adapters and convert at that seam. This is not a general plugin or
+widget framework.
+
+### Editing and document transactions
+
+The foundation supplies line numbers, syntax coloring, current-line and matching
+bracket highlighting, automatic indentation, selected-line indent/outdent and
+comment toggling, duplicate/move/delete line, find/replace and go to line.
+Preserve platform Home/End, modifiers, clipboard, selection, IME and accessibility.
+
+The target document operation accepts an expected revision and bounded edits;
+rejecting an edit preserves the draft. Typing coalesces into sensible undo groups;
+completion and formatting each form one group. Route undo/redo through the
+document owner, without competing widget and workspace histories. IME preedit
+is temporary until committed. Dirty drafts survive conflicting external saves.
+
+The implemented adapter (`CodeDocumentHost`) uses Qt-free UTF-8 byte edits,
+selection ranges and an identity containing project epoch, source binding and the
+owner's monotonic revision. `CodeDocumentController` maps Qt UTF-16 input deltas
+into that contract. The render-graph adapter commits them immediately to the
+existing package history; Qt's competing undo stack is disabled while bound.
+Keyboard, context-menu and shell undo all route to that owner. A different
+single-file/script document can implement the same host without graph or shader
+dependencies.
+
+Typing coalesces while adjacent, within one second and within a word boundary;
+navigation, focus/source changes, Save and commands break groups. Line commands,
+Replace All and formatting each commit once. Undo/redo restores the relevant
+source and directed selection; those view hints are excluded from authored
+content equality and serialization. IME preedit creates no history until commit.
+UTF-8 scalar boundaries, UTF-16 surrogate pairs and CRLF units are mapped
+explicitly. Existing BOMs and untouched source bytes survive ordinary edits.
+New lines follow CRLF when the source uses it; mixed endings are otherwise left
+as authored.
+
+Admission checks precede publication. Invalid text, stale revisions and source
+capacity failures restore the last accepted view, preserving the draft/history.
+Save alone publishes files; it retains the existing package bounds and external
+conflict checks. Expensive tree/interface/watch refreshes are coalesced at the
+existing debounce; draft revisions and Undo availability update immediately.
+
+### Language intelligence and formatting
+
+Use Slang's language server for symbol hover, completion, signature help and
+analysis diagnostics. Thanks to the Slang contributors, *The Slang Shading
+Language VSCode Extension*, sections "Features", "Additional Search Path" and
+"clang-format location and style", for the existing semantic and formatting
+integration model. Its [official source](https://github.com/shader-slang/slang-vscode-extension)
+provides context-aware suggestions and signature/documentation hover; formatting
+requires `clang-format`. Use these tools rather than maintaining a shader parser
+for semantic intelligence. Lexical coloring is independently available.
+
+Assistance sees unsaved source buffers, manifest-generated types/bindings,
+imports, defines and the selected program's compiler settings from the same
+source-generation owner as compilation. One file may participate in several
+program contexts: key results by program/context identity, not only filename.
+The Shader API pane is a reference view, not a second semantic authority.
+
+Hover appears after a short dwell and shows type/signature and documentation.
+Completion supports explicit invocation, member triggers, keyboard selection,
+replacement ranges, optional additional edits and bounded documentation.
+Explicit **Format Document** is implemented for native shader sources. The
+process adapter checks the exact `clang-format` pin from
+`config/tool_versions.json`, reads the captured source through stdin and requests
+replacement XML. `--assume-filename` locates project `.clang-format` configuration;
+include sorting and qualifier rewriting are disabled to keep this formatting
+profile conservative. It does not pass `-i`, invoke a shell or save files. A
+missing/wrong tool, incomplete parse or process failure leaves the draft intact.
+Use **Choose Formatter...** to configure its executable; normal editing needs no
+tool. No process is launched until formatting is explicitly requested.
+
+One request runs at a time, with a ten-second deadline, an independent 8 MiB
+encoded-output limit and 8 KiB diagnostic limit; decoded text must fit the
+document owner's existing source limit. XML replacement decoding yields between
+two-millisecond slices. Ordered nonoverlapping UTF-8 scalar ranges map the
+current directed selection, and publication preserves scroll. An edit, Undo,
+project replacement or source rebinding invalidates the captured identity;
+rebinding cancels work. Cancellation/failure never adds history. A successful
+change is one document undo group; an unchanged result adds none. Tool profiles,
+captured values and result application are shared seams for later script
+formatters, although this first decoder speaks clang-format replacement XML.
+There is no format-on-save or script formatter yet.
+
+Slang formatting remains a C++-syntax clang-format profile. Regression fixtures
+exercise Unicode, CRLF, project style, attributes and common shader constructs;
+they cannot establish correctness for every Slang extension. Compile/validate a
+shader after changing it, including after formatting.
+
+Every asynchronous request records project epoch, document identity/revision,
+shader-context identity and request identity. Validate them before publication,
+including after close, project switch and tool restart. Map positions explicitly
+between UTF-8 document bytes, Qt UTF-16 positions and the negotiated language
+server position encoding. Do not infer freshness from response arrival order.
+
+### Responsiveness and host capabilities
+
+Capture edit deltas on the input path; defer full UTF-8 snapshots until a consumer
+needs them. Cache lexical state by block and update affected blocks plus necessary
+successors. Bound bracket searches, queues, result sets, diagnostics and caches.
+Start one language server lazily per workspace/language, shared by its files;
+use incremental synchronization when the pinned server supports it. Parsing,
+formatting and shader compilation do not block the UI thread. Prioritize hover
+and completion over background diagnostics; cancel obsolete requests. Preview
+compilation has its own debounce. Tool failure/restart must leave editing usable.
+
+Native **Open in Code Editor** remains available. The launcher opens a saved
+project file, asks before saving pending changes or copying the built-in graph,
+and preserves conflicts. Browser text editing can share Qt/Wasm views; native
+language-server/formatter processes are unavailable in the static browser host.
+Qualify a Wasm worker or an authorized host transport separately, with explicit
+capabilities and the same stale-result rules.
+
+Proposed acceptance targets, not measurements: under 4 ms p95 UI-thread edit
+handling and warm completion within 150 ms on a named reference machine. Measure
+current admitted file/package sizes, long lines, large pastes, multiple open
+files and typing during diagnostics. Report end-to-end input/paint latency,
+memory, startup and idle work. Exercise Unicode mapping, IME, native navigation,
+undo grouping, source switches, stale replies, formatter failure and server
+crashes; offscreen tests alone do not qualify native interaction or Qt/Wasm.
+
+The foundation includes opt-in `[.benchmark]` editor tests with ordinary lines at
+the current shader file limit, an extreme single line, and an unmodified
+`QPlainTextEdit` comparison with the same font/NoWrap settings. The single-line
+probe exposes a Qt text-layout bottleneck also present in the plain control;
+this workload is not qualified against the edit-latency target. Keep raw host
+measurements in ignored output, separate from the portable architecture. Run
+these probes without concurrent build/analysis jobs before comparing changes.
+
+### Incremental delivery
+
+1. Implemented: shared editing foundation and shader integration; lexical
+   coloring, commands and find/replace.
+2. Implemented: version-checked document adapter/unified text history and native
+   asynchronous formatting, atomic undo, project style and stale-result rejection.
+3. Slang context integration, unsaved overlays, hover, completion and diagnostics.
+4. Scripting workspace integration and its language provider.
 
 ## Toolkit evaluation
 

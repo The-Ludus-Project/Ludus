@@ -61,6 +61,12 @@ public:
     void Look(foundation::float32 deltaX, foundation::float32 deltaY);
     void Fly(foundation::math::Vector3 movementControls, foundation::float32 deltaSeconds, foundation::float32 speed);
     [[nodiscard]] foundation::float32 GetFocusDistance() const noexcept;
+    /// Persist the local viewport renderer preference; emits RendererPreferenceChanged on change.
+    void SetForceRaster(bool shouldForceRaster);
+    [[nodiscard]] LUDUS_INLINE bool ShouldForceRaster() const noexcept
+    {
+        return mShouldForceRaster;
+    }
     void SetShading(PreviewShading shading);
     [[nodiscard]] LUDUS_INLINE PreviewShading GetShading() const noexcept
     {
@@ -211,8 +217,12 @@ public:
         return mHasPendingFrame;
     }
 Q_SIGNALS:
+    /// Drawable reference changed, in physical pixels before the preview rendering cap.
+    /// Emitted on the GUI thread even when no device or rendered frame is ready.
+    void DrawableSizeChanged(const QSize& size);
     void Changed();
     void NavigationChanged();
+    void RendererPreferenceChanged(bool shouldForceRaster);
     void DeviceRequested();
     /// Emitted before the owned device is destroyed; borrowers must release device resources.
     void DeviceStopping();
@@ -250,6 +260,7 @@ private:
         return (Scene_.Lit == true && mShading != PreviewShading::Albedo) || IsPreviewDebugShading(mShading) == true;
     }
     PreviewShading mShading = PreviewShading::Solid;
+    bool mShouldForceRaster = false;
     /// Read a completed GPU timing sample and re-arm the probe; call only between frames.
     void serviceGpuTiming(bool shouldArm) noexcept;
     bool mIsGpuProfilingEnabled = false;

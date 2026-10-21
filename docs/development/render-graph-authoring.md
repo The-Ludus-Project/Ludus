@@ -86,9 +86,39 @@ or exhausted manifest budgets preserve the draft and explain the repair.
 Incomplete shader tables remain authoring drafts. Name/file conflicts or incompatible references
 preserve the draft. Templates are starting points: vertex/fragment interfaces use
 the manifest schemas; ray-generation, miss and closest-hit functions use the
-renderer’s triangle ray interfaces. Other stages remain authoring drafts subject
+renderer’s triangle ray interfaces. A new ray technique uses scene-aware callbacks:
+closest-hit receives `SurfaceHit` and `SceneContext`, and its template demonstrates
+`MaterialSample material = EvaluateMaterial(scene, hit)` and `material.BaseColor`.
+The editor creates the shared `ScenePayload` source and manifest interface alongside
+the callbacks. Raygen traces the camera ray once; the template displays material
+color and adds no lighting estimator.
+
+Existing ray techniques keep their interface and authored sources. For a legacy
+`ShaderMain(RayHit input)`, material tint is `input.Color.xyz`; full material
+parameters are unavailable through `RayHit`. Select the ray pipeline and choose
+**Enable Scene Materials** in its canvas context menu or Properties. This upgrades
+the package's shared ray technique and all references in one undoable draft edit.
+Adapters call the original shaders without rewriting their sources. Open the new
+closest-hit adapter through **View Shaders** and replace its legacy callback call
+with `EvaluateMaterial(scene, hit)` to author shading with full material properties.
+The conversion reuses the existing program records, IDs and profile artifact slots.
+It works with full program/artifact budgets and preserves those authored limits;
+you do not need to edit the manifest before converting. **Save** publishes the payload, adapters and manifest together.
+The Source interface panel describes the active interface and available material
+fields. See [scene-aware ray shaders](#author-scene-aware-ray-shaders) for callback
+and material contracts.
+
+Other stages remain authoring drafts subject
 to the execution limits below. Changing stage creates a new matching program and
 retains the previous source for reuse. Removing a shader row retains its program and source for reuse.
+
+In **Source**, **Shader API** shows the selected ray callback signature, its input
+struct and nested field types. Scene callbacks also list material, light and
+query function signatures, constants, and the current draft `ScenePayload`.
+Declarations come from the renderer shader sources used by the graph compiler;
+lookup requires no build. Type a field, type or function name in the search box;
+**Enter** or **Next** advances through matches and wraps at the end. Refreshing
+the same source preserves the reference pane's scroll position.
 
 The version-2 node fields are:
 
@@ -235,18 +265,89 @@ those remain rejected rather than retaining incompatible history across resize.
 
 A `RayTracingPipeline` can run authored ray-generation, miss and closest-hit
 functions over the selected World's static opaque triangles. The renderer freezes
-an immutable World extraction, builds its BVH during scene preparation, and uploads
-geometry and camera inputs. GPU compute performs traversal and shading; a
+an immutable World extraction, builds native triangle BLAS/TLAS structures during
+scene preparation, and uploads geometry and camera inputs. A GPU shader uses native
+ray queries for accelerated traversal and invokes the authored shading functions; a
 renderer-owned image pass transfers GPU-produced colors to the graph's attachment.
 There is no CPU tracing or pixel readback in this path. The editor's World/camera
 updates create replacement inputs, retaining the last drawable view until they
 are ready, just as raster graph updates do.
 
-This is a portable GPU triangle profile, including Metal on macOS. It does not
-request dedicated Vulkan/DXR ray stages or hardware acceleration structures, and
-makes no claim of hardware ray-traversal acceleration. WebGPU compute artifacts
-can be carried by the same package. WebGL2/GLSL ES is unsupported. An unavailable
-compute/storage capability rejects activation while preserving the prior view.
+This profile requires native ray support: Vulkan acceleration structures and
+`VK_KHR_ray_query`, or Metal acceleration structures/intersection queries on Apple
+GPU family 9 or newer. Metal API availability alone does not admit older GPUs
+without dedicated ray hardware. Software/CPU Vulkan adapters are excluded. The
+shader uses native traversal inside a compute invocation; dedicated ray stages or
+shader tables are not required for hardware acceleration. It contains no manual
+BVH traversal or software ray fallback. WebGPU and WebGL2 do not execute this
+profile. Packages can retain browser raster targets alongside native targets;
+their `capability_profiles.ray_tracing` lists only `metal` and/or `spirv`, and no
+browser RT recipe or ray shader artifact is emitted. A browser-only RT manifest
+is rejected and needs an authored raster configuration. Metal cooking
+requires the SDK-pinned SPIRV-Cross translator (`LUDUS_SPIRV_CROSS` in CMake or
+`--spirv-cross` for the package builder).
+
+Request `DeviceDescription.Preferred.RayQueries = true` when creating a device
+for a renderer with optional RT, then inspect `GetRayCapabilities` on that actual
+device/API. A capable physical GPU is insufficient when its logical device has
+not enabled the ray profile. In particular, the currently adopted Vulkan editor
+device does not expose ray queries; engine-owned Vulkan device negotiation is a
+separate path. Use `Required.RayQueries` for an RT-only application. An unavailable
+profile returns `Unsupported` before scene retention or ray dispatch; a failed
+replacement preserves the prior drawable view. Old software-ray runtime packages
+must be rebuilt; they are rejected rather than reinterpreted as accelerated graphs.
+
+### Support developers and players without RT hardware
+
+The World viewport selects its renderer automatically. An authored project graph
+with raytracing passes runs only when the current logical device has enabled native
+triangle acceleration structures, inline ray queries and the required compute
+profile. Otherwise the viewport uses the engine's authored raster graph and keeps
+rendering the current World and camera. A raster project graph continues to run as
+a raster graph. The preview status identifies the selected renderer and explains
+when hardware raytracing is unavailable on the current GPU/API.
+
+Turn on **Force raster** in the viewport toolbar to exercise the raster path on RT
+hardware. This is a local saved viewport preference, restored with navigation
+settings; it does not edit the project's graph or shader manifest. Turn it off to
+return to Automatic and re-evaluate the requested project graph. Device restarts
+also re-evaluate selection against the new device's enabled capabilities. Pending
+or failed replacements keep the last completed image until the new renderer
+presents. No selection invokes CPU raytracing or shader-based software traversal.
+
+Runtime applications ship an authored raster package alongside an optional native
+RT package and use `RenderGraphActivation::StageSelected`. After initializing the
+activation and setting its drawable reference size, pass ownership of both decoded
+packages:
+
+```cpp
+const ludus::graphics::rhi::RasterStatus status = activation.StageSelected(
+    ludus::foundation::core::Move(rasterPackage),
+    ludus::foundation::core::Move(rayPackageOrNull),
+    shouldForceRaster == true
+        ? ludus::graphics::renderer::RenderGraphPreference::ForceRaster
+        : ludus::graphics::renderer::RenderGraphPreference::Automatic);
+```
+
+The raster package is mandatory and must contain no raytracing pass. An omitted
+RT package selects raster even on RT hardware. Selection queries enabled native
+capabilities before preparing any ray shader or acceleration structure, releases
+the unselected package and then follows normal asynchronous activation. Use
+`GetReport().ActiveRenderer` to identify the drawing renderer and
+`CandidateRenderer` for a staged selection. Re-stage fresh packages to change the
+runtime preference. `SelectRenderGraphRenderer` exposes the same capability policy
+for hosts that manage their own package loading. Packages still need artifacts for
+the selected backend and the host's compiled CPU interface. Malformed packages,
+shader/scene errors and allocation failures remain explicit errors; selection does
+not hide them by rewriting a graph.
+
+Keep World, gameplay and material inputs shared; only renderer-specific effects
+and quality settings should depend on RT. Raster can use authored shadow maps,
+probes, baked lighting and reflection approximations. Validate both renderer
+selections and the explicit unsupported-RT case in CI; native ray pixel tests
+require a qualified physical GPU. An RT-only host can instead use `Stage` and
+report the unsupported-hardware error as its minimum requirement. Browser backends
+select raster and perform no raytracing.
 
 Author three manifest programs with these built-in function interfaces:
 
@@ -374,6 +475,53 @@ shader-local callbacks. The renderer performs no NEE, MIS or bounce integration
 for this interface: those algorithms belong to the author's raygen and
 closest-hit source. The existing Ray/Color function interfaces remain compatible.
 
+### Connect or expand a Scene bundle
+
+A full **Scene → RayTracing** connection selects Geometry, Materials and Lights
+from one immutable scene generation. New ray shaders use the scene-aware callback
+interface automatically. Connecting a complete legacy ray pipeline upgrades its
+callbacks through adapters in the same undo step, preserving the authored shader
+behavior and existing manifest program/artifact budgets. Source and manifest
+changes remain drafts until **Save**.
+
+Right-click the **Scene** or **RayTracing** node and choose **Expand Scene Bundle**
+(the same control is available in Properties). For a direct Scene-to-pipeline
+connection, expansion replaces the full wire with all three member wires in one
+undoable edit. Disconnect the members the pass does not need:
+
+| Member | Data supplied |
+| --- | --- |
+| **Geometry** | Vertices, indices, instances/transforms, normals, tangents, UVs and vertex colors |
+| **Materials** | Base color, roughness, metallic, emission and retained material texture/sampler views |
+| **Lights** | Analytic lights, geometric emitters and environment; emission records/maps remain dependencies of mesh lights |
+
+Ray tracing requires Geometry. Materials and Lights are optional. For example,
+leave only Geometry connected for a normal or primitive-ID visualization. Members
+must originate from the same Scene generation. A pipeline accepts either its
+full Scene input or members, never both. Collapsing hides disconnected derived
+ports; connected members remain visible. Expansion preference is local to the
+canvas, while the member connections survive Save/reload and undo/redo.
+
+In source JSON, the Scene node exposes `scene`, `geometry`, `materials`, `lights`.
+A pipeline input declared `{ "id": "scene", "type": "Scene", "required": true }`
+also accepts implicit `scene_geometry`, `scene_materials`, `scene_lights` inputs;
+these IDs are reserved and need no additional input declarations. Component
+values have types `SceneGeometry`, `SceneMaterials`, `SceneLights` and can be
+forwarded through explicitly typed subgraph interfaces. Whole-Scene subgraph
+interfaces retain their full bundle contract. Geometry is currently the smallest
+renderable selection; raw vertex-only compute execution is outside this profile.
+
+The selected mask reaches each compiled `Pass.SceneData`. Runtime ray preparation
+omits unrequested light/environment resources and material texture maps. Selecting
+Lights without Materials retains emission dependencies, with neutral surface
+parameters. Shaders can test selection with
+`HasSceneData(scene, SCENE_DATA_MATERIALS)` or
+`HasSceneData(scene, SCENE_DATA_LIGHTS)`. Material lookup returns invalid when
+neither Materials nor its Lights dependency is present; light enumeration is
+empty without Lights. This selects data, without generating shader permutations
+or adding an integrator. Raster shader bindings keep their existing authored
+uniform contract; the scene-aware query API belongs to the ray profile.
+
 ### Select the interface in the manifest
 
 Keep the graph node's existing Scene/View/ColorTexture ports and its bounded
@@ -490,12 +638,12 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
 | GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; no radiance estimate is added |
+| SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
 | EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
 | EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
-| SampleSceneRandom / MakeCameraRay | Addressed random dimension / chosen subpixel camera ray |
+| SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing reflection-model primitives; no integrator or MIS |
 
 SurfaceHit includes InstanceIndex, original mesh-local Primitive, source identity,
@@ -507,6 +655,52 @@ default=1, error=2. Checked data getters return IsValid=false for invalid indice
 authors must not use invalid results. Query/ray failures latch HasFailed and
 produce diagnostic pixels. Miss/clear is SCENE_QUERY_MISS, hit/occluded is
 SCENE_QUERY_SURFACE, and failure is SCENE_QUERY_FAILURE.
+
+Random sampling is available directly in ray generation, closest-hit and miss.
+The renderer initializes a deterministic stream from the seed, pixel and
+progressive sample index before invoking raygen. Each call advances the stream:
+
+```slang
+const float u = SampleSceneRandom(queries);
+const float v = SampleSceneRandom(queries);
+const float root = sqrt(u);
+const float2 barycentric = float2(root * (1 - v), root * v);
+```
+
+Both draws are uniform pseudorandom values in `[0, 1)`; the barycentrics sample
+a triangle uniformly in area. These helpers require no launch field, seed or
+dimension counter in `ScenePayload`. Forward the same `queries` through callbacks and continuations;
+do not reset or copy its sampling state. `SelectLight(scene, queries)` shares this
+stream and consumes one dimension when the source set is nonempty. A bounded
+selection failure latches `HasFailed`; an empty source set is an ordinary no-sample
+result and consumes no dimension.
+
+For a uniform unsigned integer, pass an inclusive lower bound and an exclusive
+upper bound:
+
+```slang
+const uint index = SampleSceneRandom(queries, 0, count);
+```
+
+For positive `count`, this returns an index in `[0, count)`. Any `uint` bounds
+with `minimumInclusive < maximumExclusive` are supported, including values near
+the largest unsigned integer. A one-value range still consumes one dimension
+and always returns its lower bound. The helper reuses FoundationMath's unbiased
+bounded integer mapper; it does not scale a float or apply a modulo reduction.
+Empty/reversed ranges latch `HasFailed`, return zero and consume no dimension.
+Stream exhaustion or bounded-mapping failure also latches `HasFailed` and returns
+zero, which must not be used as a sample after failure. Float draws, integer draws
+and automatic light selection share the same invocation stream.
+
+The stream admits dimensions zero through FoundationMath's
+`RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
+zero/no sample; the renderer rejects that invocation's result. Scheduling other
+pixels does not change the stream. Changing the callback's draw order does.
+The existing `SampleSceneRandom(launch, dimension)` and
+`SelectLight(scene, launch, dimension)` overloads remain available for explicitly
+addressed algorithms. They do not advance the automatic stream and can address
+the same draws; use one addressing strategy or reserve disjoint dimensions when
+combining them.
 
 The default distribution is uniform over analytic sources, emitting instance/slot
 groups and the optional environment. Mesh triangles are selected by world area,
@@ -530,7 +724,18 @@ competing BSDF continuation there. The engine does not apply that weight for you
 
 Scene callbacks return unclamped linear RGB. GPU history accumulates it before
 the preview's exposure-one Reinhard/sRGB display conversion. Each scene/camera or
-shader generation starts new history, advancing up to 4096 samples. Persistent
+shader generation starts new history, advancing up to 4096 samples. The editor
+continues submitting ray frames for an unchanged drawable extraction until that
+budget is reached. Each completed render advances the sample index, so automatic
+float and integer draws change across successive samples without scene edits.
+Camera and scene edits start a new history whose seed derives from the extraction
+revision, so restarting at sample zero does not replay the previous per-pixel
+draws. Replaying the same revision and inputs remains deterministic. Raster-only
+graphs remain on demand. `RenderGraph::HasPendingSamples()` lets
+other hosts schedule the same bounded progression; it tracks accepted submissions,
+including pending producers, and never waits or submits work. Hosts still finish
+the previous producer and all export consumers before rendering again. Pending
+or failed replacement scenes preserve the current drawable history. Persistent
 history remains graph-owned and completion-tracked; no radiance is read back for
 rendering. Exposure is currently fixed by the graph preview profile. Selective
 history preservation when only a stop target changes remains a future extension.
@@ -610,6 +815,31 @@ an Export node for each diagnostic target. Selection follows expanded resource n
 rebuilds; a removed target returns to Final output. Discarded/undefined attachments report
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
+
+The **Stats** toggle beside the viewport controls shows a live performance overlay.
+The preference is saved with World navigation. It refreshes four times a second;
+time measurements average the last 30 completed samples:
+
+- **FPS (updates)** counts completed graph output images delivered to the viewport,
+  using the average interval between images. Raster graphs render on demand;
+  ray graphs also produce progressive samples until their budget is exhausted.
+  This is an image update rate, not monitor refresh or a continuous benchmark.
+  It shows zero before two images arrive and after one second without a new image;
+  a new interaction after that idle gap starts a fresh rate window.
+- **CPU** sums active owner-thread World/camera extraction, graph preparation,
+  submission, polling and output conversion work per delivered image. It excludes
+  the wall-clock gaps between asynchronous service calls and other editor work.
+- **GPU** uses the existing asynchronous device timestamp probe for graph frame
+  execution. It excludes CPU conversion and is not input-to-display latency.
+  `…` means no sample has completed; `n/a` means timestamps are unavailable.
+  The overlay and profiling recorder share the device's timing owner.
+- **Readback** measures elapsed time from requesting the output copy until its
+  CPU display image is ready, including asynchronous copy waits, polling cadence
+  and image conversion. It excludes the earlier graph render and final Qt paint.
+
+Pending or failed output copies do not publish successful frame samples or erase
+last-completed time averages. Device replacement clears the graph series. These
+measurements do not add a GPU wait or change the graph's scheduling.
 
 The adjacent configuration selector lists configurations authored in the root graph. Use
 those for custom debug permutations or open another project graph. The editor does not
@@ -1314,8 +1544,11 @@ and on the Render Graph toolbar (see the
   new nodes, and `node.port` connections in the configuration. Layout x/y edits
   only change the `layout` record; consecutive moves of one node coalesce into one
   undo step.
-- **Source** edits graph, build-manifest/schema and shader text; **Apply Text to
-  Draft** makes it one undoable document edit. Generated wrappers and packages
+- **Source** edits graph, build-manifest/schema and shader text directly in the
+  shared document draft/history. Save publishes accepted changes; rejected text
+  admission restores the previous accepted source. See
+  [in-app source editing](#edit-shader-sources-inside-ludus) for commands,
+  undo grouping and native shader formatting. Generated wrappers and packages
   are build products and never editable sources.
 - An explicit **Build Graph** or **Build & Preview** registers missing techniques
   for complete pipelines in older graph packages as one undoable draft edit.
@@ -1340,7 +1573,9 @@ Render Graph Runtime** run the installed
 `ludus --json render-graph` backend as a separate process; the GUI never waits
 for it; **Cancel Render Graph Job** (Ctrl+Break) stops the running job. Results and
 diagnostics appear in the **Error List**; double-click a row to select its graph
-node or open its source line. Validate and Build first write an immutable copy of the current draft to
+node or open its source line. The workspace status area stays bounded when a compiler
+returns a long report; scroll it to read the full message or select text to copy it.
+Validate and Build first write an immutable copy of the current draft to
 `out/render-graph/drafts/` in the project and delete it afterwards, so unsaved
 edits can be checked without touching saved sources. The same files give the
 same result through the CLI:
@@ -1409,7 +1644,33 @@ With `--json`, a failure's `error.location` names its authored owner:
 | Generated wrapper error | `generated: wrapper.slang`, `program`, `line` | Opens the program record in the build manifest |
 
 Locations are package-relative and never contain machine paths. Activate a
-diagnostic (double-click or Enter) to navigate to it.
+diagnostic (double-click or Enter) to navigate to it. Wiring diagnostics add
+`port` and `direction` (`input` or `output`); the canvas rings that connector and
+marks its owner. A removed connector falls back to the owner. Editable field
+diagnostics use a stable `field` key, such as `invocation.dimensions` or
+`depth_load`, to open the shared canvas node editor, select its tab and highlight
+the control. These actions work with Properties hidden and do not change the draft
+or undo history. Markers clear on graph rebuild or replacement of the report.
+Reactivating a report after its captured source identity changes labels it as an
+earlier source version and asks for validation again.
+
+Graph validation returns an ordered `diagnostics` array with `code`, `severity`,
+`message` and `location`. Supported wiring, missing-input, pipeline profile and
+ray launch errors also include bounded `expected`, `actual` and `repair` strings.
+The Error List shows each record once; selecting a row displays its complete
+message and repair guidance in a scrollable details area. The CLI's text mode
+prints each issue and these details too. For compatibility, top-level `error.code`,
+`message` and `location` still describe the first issue.
+
+Collection stops between dependent phases: invalid source/schema/imports prevent
+wiring analysis; broken wiring prevents execution checks; missing bindings or
+pipeline declaration errors prevent resource lowering. Independent wires across
+loaded configurations and missing ports/profile failures across retained nested
+subgraphs are collected in authored order. Resource-version and initialization
+checks remain fail-fast because later checks depend on successful lowering. Reports
+contain at most 32 records (31 issues and an explicit omission notice when the
+limit is exceeded); repair the reported issues and validate again. No partial plan
+is published and failed validation preserves the last drawable preview.
 
 Shader failure messages are portable too. The helper's own command echoes
 (`+ <tool> <arguments>`, with absolute tool and temporary paths) are dropped,
@@ -1435,9 +1696,11 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h` (layout version 4, with
-view-relative size policies, pass names, uniform binding/block/field records and
-GLSL ES block names; fixed-size versions 2 and 3 remain readable). `emit-runtime`
+`ludus/content/render_graph_format/runtime_package.h` (layout version 6, with
+native-only ray roles, per-pass Scene data masks, view-relative size policies, pass
+names, uniform binding/block/field records and GLSL ES block names; raster packages
+from versions 2 through 5 remain readable, with versions 2 through 4 implying full
+Scene data. Older software-ray packages require recooking). `emit-runtime`
 headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
 interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to
 `ludus_compile_render_graph`; it sets `<NAME>_RUNTIME_PACKAGE` to the cooked file.
@@ -1562,6 +1825,71 @@ RG3b completes the editor half of the
 a visual node canvas over the same draft, and a trusted preview of the cooked
 runtime generation on the editor's existing viewport device.
 
+### Edit shader sources inside Ludus
+
+The **Source** pane uses the shared code editor: line numbers, Slang lexical
+coloring, current-line and matching-bracket highlighting, and native text
+selection, clipboard and navigation. Strings and comments are excluded from
+bracket matching; matching is bounded for responsiveness. Shader formatting and
+unified source/canvas undo are available; hover and completion remain future
+increments, described in the
+[shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
+
+Right-click the source for the editing commands. On macOS, use Command where
+Ctrl is shown below (Qt's native shortcut mapping):
+
+| Action | Shortcut |
+| --- | --- |
+| Find / replace | Platform Find / Replace shortcuts, also in the context menu |
+| Go to line | Ctrl+G |
+| Indent / outdent selected lines | Tab / Shift+Tab |
+| Toggle Slang line comments | Ctrl+/ |
+| Duplicate selected lines, or current line | Ctrl+D |
+| Move selected/current lines | Alt+Up / Alt+Down |
+| Delete selected/current lines | Ctrl+Shift+K |
+| Format shader document (native desktop) | Ctrl+Shift+I |
+
+Enter retains the current indentation and adds one level after an opening Slang
+brace. Line commands and Replace All each form one document undo step.
+Find supports forward/backward wrapping, case matching, and replacement; Escape
+closes its controls and returns focus to the source. Go to line uses one-based
+line numbers. Ordinary text and JSON sources share the commands, with Slang
+coloring/comment toggling enabled only for `.slang` files.
+
+Edits enter the package draft immediately. Text, canvas and inspector changes
+share one Undo/Redo order, including keyboard, source context-menu and shell
+commands. Adjacent typing coalesces within a word/time boundary; commands, source
+switches, navigation and Save end the group. Undo returns to the affected source
+and restores its selection. Save publishes accepted draft text without an Apply
+step; external-file conflicts preserve it. An oversized/invalid edit restores the
+last accepted text without blocking later navigation or adding an undo item.
+Existing UTF-8 BOMs, Unicode text and CRLF line endings survive ordinary edits.
+
+On native desktop, use **Format Document** in the source context menu or its
+shortcut. It requires the pinned `clang-format` version in
+`config/tool_versions.json` (currently 23.1.3). Ludus tries the build toolchain,
+then `clang-format-23`/`clang-format` on PATH; **Choose Formatter...** selects an
+executable explicitly. The process verifies its version before formatting.
+Project `.clang-format` is resolved from the source path; without a style file,
+clang-format's default style applies. Include sorting and qualifier rewriting
+are disabled. Slang uses a C++-syntax profile, so validate/compile the result;
+not every Slang extension is qualified. This command is shader-only and
+unavailable in the browser host.
+
+Formatting runs asynchronously, preserves selection/scroll and is one undoable
+draft edit. Continuing to type makes the result stale; switching source/project
+cancels it. Failure, timeout, incomplete parse or output beyond document limits
+preserves the source. Formatting never saves a file or runs automatically on
+Save. The shared document/controller and formatter boundary can be reused by
+scripting without a dependency on shader compilation or graph schemas.
+
+Ordinary edits convert only inserted UTF-16 ranges to UTF-8; whole-source byte
+copies use implicit sharing until changed. Tree/interface/watch refreshes remain
+debounced. Source editing itself requires no compiler or language server.
+Extreme single-line files remain a known Qt layout performance limit; the
+ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
+`ludus_code_editor_tests`.
+
 ### Edit shader sources in a code editor
 
 On native desktop, select a file in the **Source** view and click **Open in Code
@@ -1651,7 +1979,8 @@ Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
 
 Double-click a Subgraph to open it, or a Raster node to open its first mapped
 shader source. The source selector and **View Shaders** menu give access to the
-other stage. Apply or revert pending Source text before navigating or creating.
+other stage. Accepted Source edits stay in the shared draft when navigating or
+creating nodes.
 
 ### Edit on the canvas
 
@@ -1698,6 +2027,44 @@ show the value type. Nodes without a `layout` position are arranged by
 dependency order for display only; nothing is written until you move them.
 Configuration output links can be selected and deleted, just like pass connections.
 They edit the configuration output's source rather than adding an ordinary edge.
+
+### Read canvas feedback
+
+Each node has a draft-route label. **Inactive branch** nodes and their incoming
+wires are dimmed: they have no route to an exposed configuration output,
+Export/Present effect or active camera. Hover the node or label for the reason.
+These nodes remain selectable and editable. **On draft route** means a dependency
+is retained, including the complete input contract of a retained Subgraph; it
+does not establish that its shaders, bindings or execution profile are valid.
+**Activity unknown** keeps normal visibility when broken wires, unresolved or
+cyclic imports, dependency cycles or an inspection bound prevent classification.
+Validation still checks structural errors in unused branches.
+
+Opening a library configuration alone assumes all of its exposed outputs are
+requested. The node tooltip states this scope; it does not claim which branches
+a particular enclosing instance will use.
+
+Texture and RenderSize ports show inferred dimensions in their tooltips and a
+compact node footer. Fixed/shared sizes, texture metadata, writable pipeline
+targets and nested bindings use the same inference as connection checks. When
+resource ports have different inferred sizes, the footer says **Mixed sizes**;
+hover individual ports for their contracts. Missing, cyclic or unbound library
+inputs say **Size unresolved**.
+
+View-relative policies show their ratio and, when a World drawable reference is
+available, the resolved physical pixel dimensions. For example, `View 1/2` at
+1919 × 1079 resolves to 960 × 540 using integer ceiling. Resizing refreshes the
+annotations. Without a current reference they say **awaiting viewport**; they
+do not substitute nominal dimensions. Oversized results show an extent-limit
+message. All feedback describes the current draft, independently of any older
+image retained by the viewport after a pending or failed build.
+
+While dragging a wire, the hovered port and preview wire turn green for a
+compatible pre-check or red for a rejection. A nearby text hint gives the reason,
+including type, cycle or attachment-contract mismatches. Occupied inputs are
+checked as replacements. Drop commits through the existing document operation;
+rejection or Escape preserves the previous connection and history. Feedback
+itself never saves, builds shaders or creates GPU resources.
 
 ### Add configurations and reuse node groups
 
@@ -1750,9 +2117,14 @@ to open the same dialog.
 - Select rows and choose **Remove Selected** to remove ports. Names must begin
   with an ASCII letter and contain at most 63 letters, digits, `_` or `-`.
   Each direction supports up to eight ports. Types follow the graph's version.
-- Choose **Apply** to commit both tables as one undoable draft edit; **Cancel**
-  discards the dialog's edits. **Save** publishes the draft. Rejected edits keep
-  the dialog open with an explanation and preserve the document.
+- Review the repair preview beneath the tables. Renaming an existing row preserves
+  compatible links inside the child and at every instance in the loaded package,
+  including callers in other files or configurations. Removing a row or changing
+  its type disconnects affected incompatible links. Compatible uses stay connected.
+- Choose **Apply** to commit the interface and all listed caller repairs as one
+  undoable draft edit; **Cancel** discards the dialog's edits. **Save** publishes
+  all changed sources. Rejected edits keep the dialog open with an explanation
+  and preserve the document.
 
 The grey input/output boxes appear as soon as their first ports are applied.
 Drag configuration input ports to pass inputs; drag pass outputs to configuration
@@ -1763,11 +2135,25 @@ new wire onto it replaces that source in one undo step. Type or cycle rejection
 preserves the previous source. Unconnected outputs are incomplete
 drafts and must be connected before validation/build succeeds.
 
-Disconnect affected internal and containing-subgraph links before removing,
-renaming or changing the type of a connected port. The dialog checks those
-references across the loaded package. Removing a producing node retains its
-configuration output declarations as unconnected ports. Editing interfaces does
-not change which GPU pipeline kinds the runtime profile can execute.
+When a changed port invalidates a configuration output's source, repair clears
+the source and retains that output's name, type and **Requires consumer** flag.
+This leaves a visible incomplete draft for reconnection; it does not propagate
+a different output type through further enclosing interfaces. Removing a
+producing node likewise retains its configuration outputs as unconnected ports.
+
+Edit an existing row's name to rename it. Removing a row and adding a different
+name creates a new identity and disconnects the removed port's uses. Swapping
+two existing row names is supported; reusing a renamed port's old name for a new
+row, or renaming over a removed row's old name, needs separate Apply steps to
+avoid ambiguous identities. Source choices track the original row while showing
+its candidate name. The preview lists at most 128 repair details, with a count
+of any remaining repairs; Apply includes them all.
+
+Repair covers direct references to this configuration in the loaded package.
+Malformed graph JSON blocks caller inspection until its Source is fixed. Raw
+Source edits and changing a Subgraph's selected asset/configuration do not run
+interface repair. Editing interfaces does not change the admitted GPU pipeline
+profile or rewrite pipeline port declarations.
 
 Before a link reaches the draft, the canvas checks it against the configuration
 and rejects it with the shared validator's error name and a reason in the status
@@ -1811,6 +2197,27 @@ straight tint with alpha below one is declared `Transparent`, and the editor's
 `DiagnosticColor` coverage policy draws unsupported items in magenta instead of
 hiding them. Textures, lights and other materials are outside the current static
 profile. An authored surface's flat tint is its schema tint.
+
+Triangle-ray graphs admit up to **2 GiB of CPU preparation** and **2 GiB of GPU
+preview resources**. These are ceilings, not allocations made when a graph opens.
+CPU preparation includes frozen triangles, BVH construction, material and texture
+data, fingerprints and upload scratch. The GPU ceiling includes current and
+replacement previews until retained GPU uses retire. The device-wide RHI resource
+budget and each device's storage-buffer binding range apply independently; a
+larger graph ceiling cannot override either one. The supplied imported Sponza
+World's two million triangles require more than the previous 256 MiB ceilings.
+
+When measured byte admission fails, `RenderGraphReport::SceneDiagnostics` names
+the exceeded budget and records required and available bytes. The editor displays
+those values with the rejection while keeping the last drawable frame. CPU scene,
+CPU scratch/upload, GPU preview, device-wide RHI resources and device storage-buffer
+range have separate diagnostics. Available bytes are the remaining allowance at
+that stage, not free physical RAM or VRAM. Allocation failures and non-memory
+capacity failures retain their own status without inventing a byte requirement.
+
+Ray-scene preparation retains off-screen geometry: authored shadow, reflection
+and secondary rays may intersect it. Camera-frustum or raster occlusion rejection
+alone does not establish that geometry can be removed from a ray BVH.
 
 Imported and merged Worlds are cooked: their geometry lives only in the decoded
 scene definition, which the extraction borrows (and keeps alive) without copying.

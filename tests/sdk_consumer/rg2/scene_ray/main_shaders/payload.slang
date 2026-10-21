@@ -3,5 +3,9 @@
 struct ScenePayload
 {
     float3 Radiance;
-    RayLaunch Launch;
+    // Reference answers supplied by raygen for callback sampling acceptance.
+    float3 ExpectedRandom;
+    float ExpectedMissRandom;
+    uint ExpectedLightIndex;
+    uint ExpectedInteger;
 };

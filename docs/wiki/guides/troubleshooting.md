@@ -17,6 +17,7 @@ avoid repeatedly rebuilding an incompatible or stale setup.
 | Close Project disabled | Stop owned build/run/Play work and wait for confirmed cleanup |
 | Save failed or external file conflict | Keep the draft; inspect permissions and reconcile the external file before saving again |
 | Panel missing | Use View or the Window menu to show it, or Window → Reset Window Layout to restore placement |
+| `./init.sh` fails with `No module named 'encodings'` after a Python upgrade | Rerun `./init.sh`: it now detects a `out/host-tools/venv` built by a removed or different Python, prints `Recreating stale virtual environment (built with Python 3.12, now 3.14)` and rebuilds it. If it refuses because the path is a link, move that link aside and rerun |
 | Browser runtime cannot start | Follow the browser/device acceptance guide; documentation hosting does not establish WebGPU support |
 
 ## Gather a useful report

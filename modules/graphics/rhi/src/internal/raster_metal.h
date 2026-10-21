@@ -80,6 +80,12 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
             {
                 found = ((id<MTLBufferBinding>)binding).bufferDataSize <= entry.MinSize;
             }
+            else if (entry.Kind == RasterBindingKind::RayScene)
+            {
+                found = binding.type == MTLBindingTypeInstanceAccelerationStructure ||
+                        (binding.type == MTLBindingTypeBuffer &&
+                         ((id<MTLBufferBinding>)binding).bufferDataType == MTLDataTypeInstanceAccelerationStructure);
+            }
             else if (internal::TextureBinding(entry.Kind) && binding.type == MTLBindingTypeTexture)
             {
                 found = ((id<MTLTextureBinding>)binding).textureType ==
@@ -102,6 +108,28 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
                            binding.name.UTF8String,
                            static_cast<uint64>(binding.index),
                            static_cast<uint64>(binding.type));
+            return false;
+        }
+    }
+    for (usize entry = 0; entry < shader.Layout.Count; ++entry)
+    {
+        const RasterBinding& declared = shader.Layout.Entries[entry];
+        if (declared.Kind != RasterBindingKind::RayScene)
+        {
+            continue;
+        }
+        bool hasNativeScene = false;
+        for (id<MTLBinding> binding in bindings)
+        {
+            hasNativeScene =
+                hasNativeScene == true ||
+                (binding.used == true && binding.index == declared.Binding &&
+                 (binding.type == MTLBindingTypeInstanceAccelerationStructure ||
+                  (binding.type == MTLBindingTypeBuffer &&
+                   ((id<MTLBufferBinding>)binding).bufferDataType == MTLDataTypeInstanceAccelerationStructure)));
+        }
+        if (hasNativeScene == false)
+        {
             return false;
         }
     }
@@ -231,7 +259,7 @@ struct MetalShaderPreparation final : NativePreparationTask
         @autoreleasepool
         {
             MTLCompileOptions* options = [MTLCompileOptions new];
-            options.languageVersion = MTLLanguageVersion2_3;
+            options.languageVersion = MTLLanguageVersion2_4;
             NSError* errorOrNull = nil;
             id<MTLLibrary> libraryOrNull = [DeviceOrNull newLibraryWithSource:SourceOrNull
                                                                       options:options
@@ -360,6 +388,12 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
     task->Request = request;
     return SubmitNativePreparation(foundation::Move(task), info.ShouldPrepareAsynchronously);
 }
+struct RayMetalSceneBinding final
+{
+    usize Scene = 0;
+    uint32 Binding = 0;
+};
+void BindRayMetalScene(id<MTLComputeCommandEncoder> encoder, const RayMetalSceneBinding& description) noexcept;
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
     MTLComputePassDescriptor* description = [MTLComputePassDescriptor computePassDescriptor];
@@ -375,6 +409,11 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     const internal::RasterLayout& layout = set.Description;
     for (usize i = 0; i < layout.Count; ++i)
     {
+        if (layout.Entries[i].Kind == RasterBindingKind::RayScene)
+        {
+            BindRayMetalScene(encoder, {set.Slots[i], layout.Entries[i].Binding});
+            continue;
+        }
         [encoder setBuffer:gRasterBuffers[set.Slots[i]]
                     offset:set.Offsets[i] + packet.BindingOffsets.Bytes[layout.Entries[i].Binding]
                    atIndex:layout.Entries[i].Binding];

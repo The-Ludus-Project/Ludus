@@ -19,6 +19,7 @@
 #include <QByteArray>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
@@ -1027,4 +1028,40 @@ TEST_CASE("Tools Options round-trips the render-graph build settings", "[editor]
     CHECK(renderer->GetBuildSettings().ShouldOverrideTools == false);
     CHECK(renderer->GetBuildSettings().Tools == expected.Tools);
     CHECK(window.findChild<OptionsDialog*>() == nullptr);
+}
+
+TEST_CASE("Missing rendering tools offer project repair directly above the viewport", "[editor][setup][shader-setup]")
+{
+    QTemporaryDir directory;
+    const QString descriptor = WriteProject(directory);
+    WriteBytes(descriptor,
+               ReadBytes(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/apps/editor/tests/fixtures/valid_v2_cmake.json")));
+    EditorController controller(ToolingPaths{});
+    MainWindow window(&controller);
+    window.show();
+    controller.OpenProject(descriptor);
+    Settle();
+    RendererWorkspace* rendererOrNull = window.findChild<RendererWorkspace*>();
+    REQUIRE(rendererOrNull != nullptr);
+    REQUIRE(rendererOrNull->OpenGraph(QDir(directory.path()).filePath(PACKAGE_GRAPH)) == true);
+    RenderGraphJobResult result;
+    result.Request.ProjectEpoch = controller.State().ProjectEpoch;
+    result.Request.Action = QStringLiteral("build");
+    result.Code = QStringLiteral("MissingTools");
+    result.Message =
+        QStringLiteral("Rendering tools need preparation. Choose Repair setup to prepare them automatically.");
+    rendererOrNull->AcceptResult(result);
+    Settle();
+    QToolBar* noticeOrNull = window.findChild<QToolBar*>(QStringLiteral("projectSetupNotice"));
+    QPushButton* repairOrNull = window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeRepair"));
+    REQUIRE(noticeOrNull != nullptr);
+    REQUIRE(repairOrNull != nullptr);
+    CHECK(controller.State().SetupProblem == result.Message);
+    CHECK(noticeOrNull->isVisible() == true);
+    REQUIRE(repairOrNull->isEnabled() == true);
+    repairOrNull->click();
+    QDialog* dialogOrNull = window.findChild<QDialog*>(QStringLiteral("projectSetupDialog"));
+    REQUIRE(dialogOrNull != nullptr);
+    CHECK(dialogOrNull->isVisible() == true);
+    dialogOrNull->reject();
 }

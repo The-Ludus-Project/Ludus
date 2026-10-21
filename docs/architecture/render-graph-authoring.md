@@ -416,10 +416,13 @@ record the departures.
 ## Shared schemas and CPU/GPU layout
 
 The [shared scene, material and lighting shader contract](shared-scene-shader-contract.md)
-proposes typed scene/light access, geometric mesh-emitter sampling and bounded
+describes typed scene/light access, geometric mesh-emitter sampling and bounded
 intersection/visibility queries for authored raygen and closest-hit shaders.
-It keeps NEE and bounce policy in user shader sources. This is a proposed new
-profile; the delivered flat triangle-ray interface retains its current limits.
+The delivered scene-ray profile keeps NEE and bounce policy in user shader sources.
+A full Scene connection selects every data group; expanded Geometry, Materials and
+Lights wires retain one scene identity and select the pass's data mask. The
+[authoring guide](../development/render-graph-authoring.md#connect-or-expand-a-scene-bundle)
+owns the exact delivered workflow and limits.
 
 Define fields, stable IDs, units/defaults, resource kinds and packing policy once
 in an authoritative schema. The editor is a view/controller for that source; an
@@ -610,13 +613,54 @@ all imported runtime instances. Expose configuration choices and their count/cos
 before build. Create GPU Work offers the three pipeline types. The selected node's
 inspector owns Inputs, Outputs, Shaders, Pipeline State and Invocation editing;
 adding/removing/retyping ports is a semantic edit with stable IDs, undo and
-mapped validation diagnostics. Removing a connected port reports the affected
+mapped validation diagnostics. Diagnostics carry stable node/port/direction or
+field keys, independently of human-readable labels. The shared validator collects
+bounded independent failures between validation phases and stops before dependent
+analysis can produce cascades. Resource lowering remains transactional and
+fail-fast. The editor displays each structured issue once with expected/actual
+values and repair guidance, and navigation rings its port or focuses the shared
+canvas field control without editing the document. See the
+[mapped diagnostics contract](../development/render-graph-authoring.md#mapped-diagnostics)
+for payload fields and limits. Removing a connected port reports the affected
 links and requires an explicit draft edit rather than silently retargeting them.
 Shader assignments open their source in the existing source editor. Stage
 interfaces remain inside the pipeline node instead of appearing as independently
 scheduled passes on the execution canvas. The editor provides explicit Apply
 Pipeline and Convert to Graphics Pipeline actions; Save publishes the draft. Layout-only edits do not compile; parameter edits
 follow declared runtime update paths; configuration/source edits build a candidate.
+
+Configuration-interface editing prepares a bounded package snapshot before
+publication. Existing row identities supply explicit input/output rename maps;
+array order never implies a rename. Preparation rewrites both ends of affected
+links before checking candidate endpoint types, including links between two
+instances of the same child. Removed or incompatible uses disconnect; compatible
+uses survive. Affected configuration output sources clear when incompatible,
+while their declarations and required-consumer flags remain stable. Repairs do
+not recursively change enclosing output contracts or alter pipeline declarations.
+All direct callers in every loaded graph file/configuration participate in the
+same document-history commit, undo/redo and multi-source save. Unaffected draft
+links and unchanged file bytes are preserved. Malformed graph JSON, ambiguous
+rename maps and package byte-limit failures reject without mutation. The dialog
+previews the same preparation before Apply, with bounded details in a scrollable
+area; Cancel makes no document edit. Canvas activation and the inspector use
+the same dialog and document command. Raw Source edits and changes to an
+instance's selected asset/configuration remain explicit, separately validated
+edits. See the [interface editing guide](../development/render-graph-authoring.md#edit-configuration-inputs-and-outputs)
+for the authoring workflow and identity restrictions.
+
+Canvas annotations are a read-only projection of the displayed draft. A bounded
+activity inspector mirrors observable-root selection (including nested effects,
+active cameras and the retained-subgraph input contract), with compiler-selection
+parity regressions. Standalone library inspection assumes every exposed output
+is requested. Structural uncertainty and import recursion produce Unknown rather
+than a false inactive claim; this projection never admits execution. Size labels
+reuse connection-check resource inference through writable targets and nested
+bindings. View-relative dimensions use the current World drawable reference,
+runtime integer-ceil rounding and extent bounds, or stay symbolic when that
+reference is unavailable. They do not describe the last presented generation.
+Port hover during a drag calls the existing connection pre-check, caches its
+result until the hovered endpoint changes, and displays its reason before drop.
+Annotations and hover state own no document history, compiler jobs or GPU state.
 
 Build, Preview and Apply to Session are explicit actions. Background compilation
 is an opt-in preference and never implicitly saves drafts or applies stale output.

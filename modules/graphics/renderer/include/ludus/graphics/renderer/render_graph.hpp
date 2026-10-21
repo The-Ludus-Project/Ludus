@@ -131,8 +131,12 @@ struct RenderGraphSceneDescription final
     bool HasMaterialInterface = false;                        ///< False preserves legacy flat-color submissions.
     bool AreErrorsAllowed = false;                            ///< Preview uses an explicit non-emissive error material.
     SceneShaderDiagnostics* DiagnosticsOrNull = nullptr; ///< Optional candidate diagnostic output, including rejection.
-    foundation::uint64 SourceGeneration =
-        0; ///< Caller scene revision, zero only for standalone diagnostic preparation.
+    /// Caller scene revision; also seeds graph sampling when a new extraction starts history.
+    /// Zero is reserved for standalone diagnostic preparation. Different revisions select different streams.
+    foundation::uint64 SourceGeneration = 0;
+    /// Selected ::ludus::content::render_graph_format::SCENE_DATA_* groups; Lights retain emitter emission
+    /// dependencies. Consumed before Update returns.
+    foundation::uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
 };
 /// Scene compatibility for a rendering role, independent of runtime culling.
 enum class RenderGraphCoverage : foundation::uint8
@@ -258,7 +262,8 @@ struct RenderGraphAllocationReport final
 /// performs no shader/pipeline creation and retains accepted resources through
 /// actual RHI completion. A failed/pending scene replacement preserves the last
 /// drawable scene. Resize/import changes require a separately initialized graph;
-/// no stale target is silently resized or reinterpreted. No history profile yet.
+/// no stale target is silently resized or reinterpreted. Ray passes retain bounded progressive
+/// history for the current drawable extraction; general raster history profiles are unsupported.
 class RenderGraph final
 {
 public:
@@ -321,6 +326,13 @@ public:
     [[nodiscard]] RenderGraphReport GetReport() const noexcept;
     /// Return the revision of the last Ready extraction, or zero when none exists.
     [[nodiscard]] foundation::uint64 GetDrawableSceneRevision() const noexcept;
+    /// True when the current drawable ray scene has not reached its submission sample budget.
+    /// False for an empty/raster-only graph or after the bounded ray history target is reached.
+    /// Accepted submissions count even while their producer is pending; finish producers and
+    /// export consumers before rendering again. This owner-thread query never waits or submits.
+    /// A published scene/camera/size replacement starts new progress; pending/failed candidates
+    /// preserve the drawable scene's progress. Shader failures do not establish valid samples.
+    [[nodiscard]] bool HasPendingSamples() const noexcept;
     /// Return the valid completed producer's scene revision, or zero while pending/invalid.
     /// This identifies exported pixels independently of candidate/drawable reports;
     /// platform presentation and external consumer completion remain caller-owned.

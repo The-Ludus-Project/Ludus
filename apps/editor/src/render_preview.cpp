@@ -47,6 +47,7 @@ rhi::DeviceDescription MakeViewportDeviceDescription() noexcept
 {
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
+    description.Preferred.RayQueries = true;
     // Two retained GPU generations, 80 caster views, and direct-lighting material versions.
     // These are explicit admission budgets, not allocations or inferred native limits.
     description.Storage.ResourcesPerKind = 4096;
@@ -506,6 +507,16 @@ void RenderPreview::Stop() noexcept
         Q_EMIT Stopped();
     }
 }
+void RenderPreview::SetForceRaster(bool shouldForceRaster)
+{
+    if (mShouldForceRaster == shouldForceRaster)
+    {
+        return;
+    }
+    mShouldForceRaster = shouldForceRaster;
+    Q_EMIT RendererPreferenceChanged(shouldForceRaster);
+    Q_EMIT NavigationChanged();
+}
 void RenderPreview::SetStatisticsVisible(bool isVisible)
 {
     if (isVisible == mIsStatisticsVisible)
@@ -833,7 +844,12 @@ void RenderPreview::SetPresentationVisible(bool isVisible) noexcept
 }
 void RenderPreview::Resize(int32 width, int32 height)
 {
-    mDrawableSize = QSize(width, height);
+    const QSize size(width, height);
+    if (mDrawableSize != size)
+    {
+        mDrawableSize = size;
+        Q_EMIT DrawableSizeChanged(size);
+    }
     if (width <= 0 || height <= 0)
     {
         return;
@@ -972,6 +988,7 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("reference"), Reference_},
             {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
             {QStringLiteral("statistics"), mIsStatisticsVisible},
+            {QStringLiteral("forceRaster"), mShouldForceRaster},
             {QStringLiteral("x"), OrbitCenter_.X},
             {QStringLiteral("y"), OrbitCenter_.Y},
             {QStringLiteral("z"), OrbitCenter_.Z},
@@ -1096,6 +1113,7 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     static_cast<void>(TryParsePreviewShading(state.value(QStringLiteral("shading")).toString(), shading));
     SetShading(shading);
     SetStatisticsVisible(state.value(QStringLiteral("statistics")).toBool(false));
+    SetForceRaster(state.value(QStringLiteral("forceRaster")).toBool(false));
     SetLookSensitivity(static_cast<float32>(number(QStringLiteral("lookSensitivity"), 1)));
     navigationChanged();
     // An empty project reset supplies no saved pose to preserve when the first scene arrives.

@@ -1,5 +1,6 @@
 #include "internal/backend.h"
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/base/compiler.h>
 
 #include "internal/gpu_scope_backend.h"
 #include "internal/measurement.h"
@@ -63,26 +64,56 @@ struct RasterAccess final
         outIndex.mElement = location.Element;
     }
     template <typename T>
-    static foundation::uint64 Owner(T handle) noexcept
+    static LUDUS_INLINE foundation::uint64 Owner(T handle) noexcept
     {
-        return handle.Owner;
+        if constexpr (requires { handle.mOwner; } == true)
+        {
+            return handle.mOwner;
+        }
+        else
+        {
+            return handle.Owner;
+        }
     }
     template <typename T>
-    static foundation::uint64 Generation(T handle) noexcept
+    static LUDUS_INLINE foundation::uint64 Generation(T handle) noexcept
     {
-        return handle.Generation;
+        if constexpr (requires { handle.mGeneration; } == true)
+        {
+            return handle.mGeneration;
+        }
+        else
+        {
+            return handle.Generation;
+        }
     }
     template <typename T>
-    static foundation::usize Slot(T handle) noexcept
+    static LUDUS_INLINE foundation::usize Slot(T handle) noexcept
     {
-        return handle.Slot == 0 ? RASTER_INVALID : handle.Slot - 1;
+        if constexpr (requires { handle.mSlot; } == true)
+        {
+            return handle.mSlot == 0 ? RASTER_INVALID : handle.mSlot - 1;
+        }
+        else
+        {
+            return handle.Slot == 0 ? RASTER_INVALID : handle.Slot - 1;
+        }
     }
     template <typename T>
-    static void Set(T& handle, const RasterIdentity& identity) noexcept
+    static LUDUS_INLINE void Set(T& outHandle, const RasterIdentity& identity) noexcept
     {
-        handle.Owner = identity.Owner;
-        handle.Slot = static_cast<foundation::uint32>(identity.Slot + 1);
-        handle.Generation = identity.Generation;
+        if constexpr (requires { outHandle.mOwner; } == true)
+        {
+            outHandle.mOwner = identity.Owner;
+            outHandle.mSlot = static_cast<foundation::uint32>(identity.Slot + 1);
+            outHandle.mGeneration = identity.Generation;
+        }
+        else
+        {
+            outHandle.Owner = identity.Owner;
+            outHandle.Slot = static_cast<foundation::uint32>(identity.Slot + 1);
+            outHandle.Generation = identity.Generation;
+        }
     }
 };
 } // namespace internal
@@ -264,9 +295,10 @@ void Dependencies(Record& record, RasterKind kind, bool retain) noexcept
         for (usize i = 0; i < layout.DescriptorCount; ++i)
         {
             const RasterBindingKind type = layout.GetDescriptorBinding(i).Kind;
-            reference(BufferBinding(type)    ? RasterKind::Buffer
-                      : TextureBinding(type) ? RasterKind::View
-                                             : RasterKind::Sampler,
+            reference(BufferBinding(type)                   ? RasterKind::Buffer
+                      : TextureBinding(type)                ? RasterKind::View
+                      : type == RasterBindingKind::RayScene ? RasterKind::RayScene
+                                                            : RasterKind::Sampler,
                       record.Set.Slots[i]);
         }
         reference(RasterKind::Layout, record.Set.Layout);
@@ -435,6 +467,11 @@ bool ValidBinding(const RasterBinding& binding) noexcept
     {
         return false;
     }
+    if (binding.Kind == RasterBindingKind::RayScene)
+    {
+        return binding.Visibility == RasterVisibility::Compute && binding.Count == 1 && binding.MinSize == 0 &&
+               binding.HasDynamicOffset == false && binding.HasPartialBinding == false;
+    }
     if (binding.Kind == RasterBindingKind::UniformBuffer)
     {
         return binding.MinSize > 0 && binding.MinSize <= 16384;
@@ -541,6 +578,18 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
     {
         return RasterStatus::Unsupported;
     }
+    bool hasRayScene = false;
+    for (usize entry = 0; entry < layout.Count; ++entry)
+    {
+        if (layout.Entries[entry].Kind == RasterBindingKind::RayScene)
+        {
+            if (hasRayScene == true)
+            {
+                return RasterStatus::Unsupported;
+            }
+            hasRayScene = true;
+        }
+    }
     uint32 totalUniforms = 0;
     uint32 totalSamplers = 0;
     for (usize entry = 0; entry < layout.Count; ++entry)
@@ -590,6 +639,10 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
     for (usize entry = 0; entry < layout.Count; ++entry)
     {
         const RasterBinding& binding = layout.Entries[entry];
+        if (binding.Kind == RasterBindingKind::RayScene && backend::RayLimits().InlineQueries == false)
+        {
+            return RasterStatus::Unsupported;
+        }
         if (binding.HasDynamicOffset == true)
         {
             if (binding.Kind == RasterBindingKind::UniformBuffer)
@@ -1572,7 +1625,9 @@ RasterStatus CreateBindingSnapshot(DeviceHandle device,
         const RasterBindingKind kind = layout.GetDescriptorBinding(i).Kind;
         const Record* resourceOrNull = BufferBinding(kind)    ? Resolve(entryOrNull->Buffer, RasterKind::Buffer)
                                        : TextureBinding(kind) ? Resolve(entryOrNull->Texture, RasterKind::View)
-                                                              : Resolve(entryOrNull->Sampler, RasterKind::Sampler);
+                                       : kind == RasterBindingKind::RayScene
+                                           ? Resolve(entryOrNull->Scene, RasterKind::RayScene)
+                                           : Resolve(entryOrNull->Sampler, RasterKind::Sampler);
         if (resourceOrNull == nullptr)
         {
             return RasterStatus::InvalidHandle;
@@ -1587,6 +1642,10 @@ RasterStatus CreateBindingSnapshot(DeviceHandle device,
                                                   ? RasterBindingKind::TextureStencil2D
                                                   : TextureBindingType(resourceOrNull->View.Dimension);
         if (TextureBinding(kind) == true && (resourceOrNull->View.Attachment == true || textureType != kind))
+        {
+            return RasterStatus::InvalidDescription;
+        }
+        if (kind == RasterBindingKind::RayScene && (entryOrNull->Offset != 0 || entryOrNull->Size != 0))
         {
             return RasterStatus::InvalidDescription;
         }
@@ -1610,9 +1669,10 @@ RasterStatus CreateBindingSnapshot(DeviceHandle device,
                 return RasterStatus::InvalidDescription;
             }
         }
-        set.Slots[i] = BufferBinding(kind)    ? RasterAccess::Slot(entryOrNull->Buffer)
-                       : TextureBinding(kind) ? RasterAccess::Slot(entryOrNull->Texture)
-                                              : RasterAccess::Slot(entryOrNull->Sampler);
+        set.Slots[i] = BufferBinding(kind)                   ? RasterAccess::Slot(entryOrNull->Buffer)
+                       : TextureBinding(kind)                ? RasterAccess::Slot(entryOrNull->Texture)
+                       : kind == RasterBindingKind::RayScene ? RasterAccess::Slot(entryOrNull->Scene)
+                                                             : RasterAccess::Slot(entryOrNull->Sampler);
         set.Offsets[i] = entryOrNull->Offset;
         set.Sizes[i] = entryOrNull->Size;
     }

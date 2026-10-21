@@ -1697,6 +1697,12 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
             for (usize i = 0; i < layout.DescriptorCount; ++i)
             {
                 const RasterBinding& binding = layout.GetDescriptorBinding(i);
+                // Immutable scenes enter bindings only after their build completes.
+                // The retained snapshot owns their TLAS/BLAS through submission.
+                if (binding.Kind == RasterBindingKind::RayScene)
+                {
+                    continue;
+                }
                 const auto access = binding.Kind == RasterBindingKind::UniformBuffer ? GraphAccessMode::Uniform
                                     : binding.Kind == RasterBindingKind::StorageRead
                                         ? GraphAccessMode::StorageRead

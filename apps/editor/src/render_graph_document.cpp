@@ -1,6 +1,9 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_shader_creation.h"
+
+#include <ludus/foundation/strings/utf8.hpp>
 
 #include <QDir>
 #include <QFile>
@@ -256,7 +259,7 @@ bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& argu
                     return value.toObject().value(QStringLiteral("type")).toString();
                 }
             }
-            return {};
+            return direction == QStringLiteral("inputs") ? GetSceneBundlePortType(record, port) : QString{};
         };
         const QString identity = node.value(QStringLiteral("id")).toString();
         const auto isPreserved = [&node, &previous, &identity, &getType, outErrorOrNull](const QString& endpoint,
@@ -417,6 +420,59 @@ bool ConnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
     edge.insert(QStringLiteral("to"), arguments.at(1));
     edges.append(edge);
     inoutConfiguration.insert(QStringLiteral("edges"), edges);
+    return true;
+}
+
+bool ExpandSceneBundleEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    const QJsonArray nodes = inoutConfiguration.value(QStringLiteral("nodes")).toArray();
+    QJsonArray expanded;
+    for (const QJsonValueConstRef value : inoutConfiguration.value(QStringLiteral("edges")).toArray())
+    {
+        const QJsonObject edge = value.toObject();
+        const QString from = edge.value(QStringLiteral("from")).toString();
+        const QString to = edge.value(QStringLiteral("to")).toString();
+        bool isScene = false;
+        bool isSceneInput = false;
+        for (const QJsonValueConstRef entry : nodes)
+        {
+            const QJsonObject node = entry.toObject();
+            const QString identity = node.value(QStringLiteral("id")).toString();
+            isScene = isScene == true || (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Scene") &&
+                                          from == identity + QStringLiteral(".scene"));
+            if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+            {
+                for (const QJsonValueConstRef port : node.value(QStringLiteral("inputs")).toArray())
+                {
+                    isSceneInput =
+                        isSceneInput == true ||
+                        (port.toObject().value(QStringLiteral("type")).toString() == QStringLiteral("Scene") &&
+                         to == identity + QLatin1Char('.') + port.toObject().value(QStringLiteral("id")).toString());
+                }
+            }
+        }
+        if (isScene == true && isSceneInput == true &&
+            (from.section(QLatin1Char('.'), 0, 0) == arguments.at(0) ||
+             to.section(QLatin1Char('.'), 0, 0) == arguments.at(0)))
+        {
+            for (const QString& part :
+                 {QStringLiteral("geometry"), QStringLiteral("materials"), QStringLiteral("lights")})
+            {
+                expanded.append(QJsonObject{
+                    {QStringLiteral("from"), from.section(QLatin1Char('.'), 0, 0) + QLatin1Char('.') + part},
+                    {QStringLiteral("to"), to + QLatin1Char('_') + part}});
+            }
+        }
+        else
+        {
+            expanded.append(edge);
+        }
+    }
+    if (expanded.size() > RenderGraphDocument::MAX_EDGES)
+    {
+        return false;
+    }
+    inoutConfiguration.insert(QStringLiteral("edges"), expanded);
     return true;
 }
 
@@ -651,6 +707,7 @@ void RenderGraphDocument::adopt(const QString& packageRoot,
     mDraft = snapshot;
     mIsBuiltIn = isBuiltIn;
     mLastMove.clear();
+    mLastTextFile.clear();
     // A new document identity is the only reason to reset the monotonic revision.
     mHistory.Reset();
 }
@@ -664,6 +721,7 @@ void RenderGraphDocument::Reset()
     mSavedRevision = 0;
     mDraft = {};
     mLastMove.clear();
+    mLastTextFile.clear();
     mHistory.Reset();
 }
 
@@ -675,6 +733,16 @@ QStringList RenderGraphDocument::GetFiles(RenderGraphSource source) const
 QByteArray RenderGraphDocument::GetDraft(const QString& file) const
 {
     return mDraft.Files.value(file);
+}
+
+BorrowedView<const char> RenderGraphDocument::GetDraftView(const QString& file) const noexcept
+{
+    const QMap<QString, QByteArray>::const_iterator found = mDraft.Files.constFind(file);
+    if (found == mDraft.Files.cend())
+    {
+        return {};
+    }
+    return {found.value().constData(), static_cast<usize>(found.value().size())};
 }
 
 QByteArray RenderGraphDocument::GetSaved(const QString& file) const
@@ -708,7 +776,10 @@ bool RenderGraphDocument::GetGraph(const QString& file, QJsonObject& outGraph) c
     return true;
 }
 
-RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot& candidate, bool shouldMerge)
+RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot& candidate,
+                                                      bool shouldMerge,
+                                                      const RenderGraphTextState& beforeText,
+                                                      const RenderGraphTextState& afterText)
 {
     qsizetype total = 0;
     for (const QByteArray& bytes : candidate.Files)
@@ -723,11 +794,16 @@ RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot&
     {
         return RenderGraphDocumentStatus::Capacity;
     }
-    if (mHistory.Commit(mDraft, candidate, shouldMerge) == false)
+    RenderGraphSnapshot before = mDraft;
+    before.TextState = beforeText;
+    RenderGraphSnapshot after = candidate;
+    after.TextState = afterText;
+    if (mHistory.Commit(before, after, shouldMerge) == false)
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
-    mDraft = candidate;
+    mDraft = after;
+    mLastTextFile.clear();
     return RenderGraphDocumentStatus::Ok;
 }
 
@@ -769,6 +845,14 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     }
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    if (edit == &ConnectEdit || edit == &ReplaceConnectionEdit || edit == &ExpandSceneBundleEdit)
+    {
+        const RenderGraphDocumentStatus status = PrepareConnectedSceneShaders(candidate, mRootGraph, mPackageRoot);
+        if (status != RenderGraphDocumentStatus::Ok)
+        {
+            return status;
+        }
+    }
     return commit(candidate, shouldMerge);
 }
 
@@ -884,6 +968,12 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
         }
         return techniqueStatus;
     }
+    const RenderGraphDocumentStatus sceneStatus =
+        PrepareConnectedSceneShaders(candidate, mRootGraph, mPackageRoot, outErrorOrNull);
+    if (sceneStatus != RenderGraphDocumentStatus::Ok)
+    {
+        return sceneStatus;
+    }
     if (outErrorOrNull != nullptr)
     {
         outErrorOrNull->clear();
@@ -891,6 +981,25 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
     if (candidate == mDraft)
     {
         return RenderGraphDocumentStatus::Ok;
+    }
+    mLastMove.clear();
+    return commit(candidate, false);
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::EnableSceneMaterials(QString& outError)
+{
+    RenderGraphSnapshot candidate = mDraft;
+    RenderGraphDocumentStatus status = PrepareRenderGraphTechniques(candidate, mRootGraph, outError);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        return status;
+    }
+    const QString manifest =
+        mRootGraph.chopped(QStringLiteral(".lurender.json").size()) + QStringLiteral(".lushader.json");
+    status = ConvertSceneRayInterface(candidate, manifest, mPackageRoot, outError);
+    if (status != RenderGraphDocumentStatus::Ok || candidate == mDraft)
+    {
+        return status;
     }
     mLastMove.clear();
     return commit(candidate, false);
@@ -1052,6 +1161,13 @@ RenderGraphDocument::RemoveNode(const QString& file, const QString& configuratio
 }
 
 RenderGraphDocumentStatus
+RenderGraphDocument::ExpandSceneBundle(const QString& file, const QString& configuration, const QString& node)
+{
+    mLastMove.clear();
+    return editConfiguration(file, configuration, {node}, &ExpandSceneBundleEdit, false);
+}
+
+RenderGraphDocumentStatus
 RenderGraphDocument::Connect(const QString& file, const QString& configuration, const QString& from, const QString& to)
 {
     mLastMove.clear();
@@ -1115,14 +1231,100 @@ RenderGraphDocumentStatus RenderGraphDocument::SetText(const QString& file, cons
     return commit(candidate, false);
 }
 
+CodeEditStatus RenderGraphDocument::ApplyTextEdit(const QString& file,
+                                                  uint64 expectedRevision,
+                                                  const CodeTextEdit& edit,
+                                                  CodeTextSelection before,
+                                                  CodeTextSelection after,
+                                                  bool shouldMerge)
+{
+    if (expectedRevision != GetRevision())
+    {
+        return CodeEditStatus::Conflict;
+    }
+    if (mDraft.Files.contains(file) == false)
+    {
+        return CodeEditStatus::Unavailable;
+    }
+    const BorrowedView<const char> original = GetDraftView(file);
+    if (edit.Inserted.IsValid() == false || edit.StartBytes > original.GetSize() ||
+        edit.RemovedBytes > original.GetSize() - edit.StartBytes)
+    {
+        return CodeEditStatus::InvalidText;
+    }
+    const usize retainedBytes = original.GetSize() - edit.RemovedBytes;
+    if (retainedBytes > static_cast<usize>(MAX_FILE_BYTES) ||
+        edit.Inserted.GetSize() > static_cast<usize>(MAX_FILE_BYTES) - retainedBytes)
+    {
+        return CodeEditStatus::Capacity;
+    }
+    // Adapt bounded views to FoundationStrings' existing validation boundary;
+    // prefixes ending inside a UTF-8 scalar are rejected without allocating.
+    const auto isValidPrefix = [](BorrowedView<const char> bytes, usize count) {
+        if (count == 0)
+        {
+            return true;
+        }
+        Utf8View proof;
+        usize errorOffset = 0;
+        return ValidateUtf8({bytes.GetDataOrNull(), count}, proof, errorOffset) == StringStatus::Ok;
+    };
+    if (isValidPrefix(original, edit.StartBytes) == false ||
+        isValidPrefix(original, edit.StartBytes + edit.RemovedBytes) == false ||
+        isValidPrefix(edit.Inserted, edit.Inserted.GetSize()) == false || before.AnchorBytes > original.GetSize() ||
+        before.CaretBytes > original.GetSize() || isValidPrefix(original, before.AnchorBytes) == false ||
+        isValidPrefix(original, before.CaretBytes) == false)
+    {
+        return CodeEditStatus::InvalidText;
+    }
+    const usize newSize = retainedBytes + edit.Inserted.GetSize();
+    if (after.AnchorBytes > newSize || after.CaretBytes > newSize)
+    {
+        return CodeEditStatus::InvalidText;
+    }
+    QByteArray text = mDraft.Files.value(file);
+    text.replace(static_cast<isize>(edit.StartBytes),
+                 static_cast<isize>(edit.RemovedBytes),
+                 edit.Inserted.GetDataOrNull(),
+                 static_cast<isize>(edit.Inserted.GetSize()));
+    const BorrowedView<const char> result{text.constData(), static_cast<usize>(text.size())};
+    if (isValidPrefix(result, after.AnchorBytes) == false || isValidPrefix(result, after.CaretBytes) == false)
+    {
+        return CodeEditStatus::InvalidText;
+    }
+    if (text == mDraft.Files.value(file))
+    {
+        return CodeEditStatus::Ok;
+    }
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(file, text);
+    const bool canMerge = shouldMerge == true && mLastTextFile == file;
+    const RenderGraphDocumentStatus status = commit(candidate, canMerge, {file, before}, {file, after});
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mLastMove.clear();
+        mLastTextFile = file;
+        return CodeEditStatus::Ok;
+    }
+    return status == RenderGraphDocumentStatus::Capacity ? CodeEditStatus::Capacity : CodeEditStatus::Conflict;
+}
+
+void RenderGraphDocument::BreakTextGroup() noexcept
+{
+    mLastTextFile.clear();
+    mHistory.BreakGroup();
+}
+
 bool RenderGraphDocument::Undo()
 {
+    BreakTextGroup();
     mLastMove.clear();
     return mHistory.Undo(mDraft);
 }
 
 bool RenderGraphDocument::Redo()
 {
+    BreakTextGroup();
     mLastMove.clear();
     return mHistory.Redo(mDraft);
 }
@@ -1189,6 +1391,7 @@ RenderGraphDocumentStatus RenderGraphDocument::RefreshFromDisk(bool& outHasChang
 
 RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
 {
+    BreakTextGroup();
     outSavedFiles.clear();
     if (IsLoaded() == false)
     {

@@ -107,10 +107,10 @@ void RendererWorkspace::syncCanvasSelection(const QStringList& nodes)
 
 bool RendererWorkspace::CreateConfiguration(const QString& name)
 {
-    if (mDocument.IsLoaded() == false || hasPendingSourceText() == true || mSourceProblem.isEmpty() == false)
+    if (mDocument.IsLoaded() == false || mSourceProblem.isEmpty() == false)
     {
         mStatus->setText(
-            QStringLiteral("Open a graph and apply or revert pending Source edits before adding a configuration."));
+            QStringLiteral("Open a graph and resolve its external source conflict before adding a configuration."));
         return false;
     }
     const RenderGraphDocumentStatus status = mDocument.AddConfiguration(mSelectedFile, name);
@@ -146,9 +146,9 @@ void RendererWorkspace::promptCreateConfiguration()
 
 bool RendererWorkspace::CopySelectedNodes()
 {
-    if (hasPendingSourceText() == true || mSourceProblem.isEmpty() == false)
+    if (mSourceProblem.isEmpty() == false)
     {
-        mStatus->setText(QStringLiteral("Apply or revert pending Source edits before copying nodes."));
+        mStatus->setText(QStringLiteral("Resolve the external source conflict before copying nodes."));
         return false;
     }
     QVector<RenderGraphNodePosition> positions;
@@ -186,7 +186,7 @@ bool RendererWorkspace::PasteNodes(QPointF position)
     if (CanCreateSubgraph() == false)
     {
         mStatus->setText(
-            QStringLiteral("Select a configuration and apply or revert pending Source edits before pasting."));
+            QStringLiteral("Select a configuration and resolve external source conflicts before pasting."));
         return false;
     }
     const QMimeData* dataOrNull = QApplication::clipboard()->mimeData();
@@ -228,7 +228,7 @@ bool RendererWorkspace::PasteNodes(QPointF position)
 
 void RendererWorkspace::RemoveSelectedNodes()
 {
-    if (hasPendingSourceText() == true || mSourceProblem.isEmpty() == false)
+    if (mSourceProblem.isEmpty() == false)
     {
         return;
     }

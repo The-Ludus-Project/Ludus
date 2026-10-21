@@ -1,5 +1,6 @@
 #include "internal/main_window.h"
 #include "internal/audio_workspace.h"
+#include "internal/code_editor.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
@@ -159,6 +160,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::renderGraphCommands);
     connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderGraphErrors);
     connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::renderGraphCommands);
+    connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::RenderDocumentActions);
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* before, QWidget* after) {
         LastEditedField_ = nullptr;
         disconnect(FocusUndoConnection_);
@@ -166,6 +168,11 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
         if (auto* line = qobject_cast<QLineEdit*>(after))
         {
             FocusUndoConnection_ = connect(line, &QLineEdit::textChanged, this, &MainWindow::RenderDocumentActions);
+        }
+        else if (CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(after); codeOrNull != nullptr)
+        {
+            FocusUndoConnection_ =
+                connect(codeOrNull, &CodeEditor::HistoryAvailabilityChanged, this, &MainWindow::RenderDocumentActions);
         }
         else if (auto* plain = qobject_cast<QPlainTextEdit*>(after))
         {

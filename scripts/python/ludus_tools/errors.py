@@ -20,7 +20,7 @@ class ToolingError(Exception):
         self.code = code
         self.message = message
         # Optional authored-source mapping (package-relative source, configuration,
-        # node, line). Diagnostics list mapped compiler messages; both are copied
+        # node, line). Diagnostics list mapped validation or compiler messages; both are copied
         # into versioned JSON results and never contain machine-absolute paths.
         self.location = location
         self.diagnostics = diagnostics

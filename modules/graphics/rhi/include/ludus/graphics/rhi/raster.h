@@ -20,6 +20,18 @@ namespace internal
 /// Private access to portable resource identities; not an application API.
 struct RasterAccess;
 } // namespace internal
+/// Immutable TLAS and copied opacity table, including offscreen instances.
+/// Copies borrow identity; query batches and compute binding snapshots retain the
+/// exact TLAS and its BLAS versions until their accepted GPU uses complete.
+struct RaySceneHandle final
+{
+private:
+    ludus::foundation::uint64 mOwner = 0;
+    ludus::foundation::uint64 mGeneration = 0;
+    ludus::foundation::uint32 mSlot = 0;
+    /// Private registry access; applications cannot construct resource identities.
+    friend struct internal::RasterAccess;
+};
 /// Opaque buffer identity, scoped to a device, slot and non-wrapping generation.
 /// Copies do not transfer ownership. Destroy invalidates resolution immediately;
 /// binding/pipeline and submitted uses keep the underlying record alive.
@@ -362,6 +374,8 @@ enum class RasterBindingKind : ludus::foundation::uint8
     StorageRead,
     /// Read/write compute storage buffer range; shader write races remain kernel obligations.
     StorageReadWrite,
+    /// Immutable, fully built native TLAS; compute-stage ray queries only.
+    RayScene,
 };
 /// Shader stage visibility mask.
 enum class RasterVisibility : ludus::foundation::uint8
@@ -395,7 +409,7 @@ struct RasterBinding final
     /// Stages allowed to use this entry.
     RasterVisibility Visibility = RasterVisibility::Both;
     /// Minimum occupied uniform bytes or storage element stride from target reflection;
-    /// zero for textures/samplers. Storage ranges must contain at least one element.
+    /// zero for textures/samplers/ray scenes. Storage ranges contain at least one element.
     ludus::foundation::usize MinSize = 0;
     /// Add the packet offset for this binding to the snapshot buffer offset.
     /// Buffer bindings only; alignment and the final range are checked before encoding.
@@ -529,6 +543,9 @@ struct RasterBindingResource final
     SamplerHandle Sampler{};
     /// Zero-based descriptor array element; scalar entries require zero.
     ludus::foundation::uint32 ArrayElement = 0;
+    /// Ready native ray scene, retained by the snapshot through all accepted GPU uses.
+    /// RayScene entries require zero Offset/Size and no descriptor array or dynamic offset.
+    RaySceneHandle Scene{};
 };
 /// Borrowed generation-checked descriptor index belonging to one immutable snapshot.
 /// Copying does not retain the set. Resolve through GetBindingArrayElement before

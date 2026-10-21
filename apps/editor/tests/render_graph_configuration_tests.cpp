@@ -1,3 +1,4 @@
+#include "internal/code_editor.h"
 #include "internal/render_graph_configuration_editor.h"
 #include "internal/render_graph_live_build.h"
 #include "internal/render_graph_pipeline.h"
@@ -20,10 +21,15 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QStandardPaths>
+#include <QSysInfo>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -76,6 +82,79 @@ QJsonArray GetInputConnections(const RenderGraphDocument& document, const QStrin
     return result;
 }
 } // namespace
+
+TEST_CASE("multiline shader failures preserve the render graph editing area", "[editor][render-graph][layout]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    const QString package = MakePackage(project);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    QSplitter* splitter = workspace.findChild<QSplitter*>(QStringLiteral("renderGraphSplitter"));
+    QLabel* status = workspace.findChild<QLabel*>(QStringLiteral("renderGraphStatus"));
+    REQUIRE(views != nullptr);
+    REQUIRE(splitter != nullptr);
+    REQUIRE(status != nullptr);
+    SECTION("canvas at a compact window size")
+    {
+        workspace.resize(1000, 600);
+        views->setCurrentIndex(0);
+    }
+    SECTION("source at a regular window size")
+    {
+        workspace.resize(1280, 800);
+        views->setCurrentIndex(1);
+    }
+    workspace.show();
+    QCoreApplication::processEvents();
+    const QSize windowSize = workspace.size();
+    const int32 editingHeight = splitter->height();
+    const int32 statusHeightAllowance = status->fontMetrics().lineSpacing() * 3;
+    RenderGraphJobResult failure;
+    failure.Request.ProjectEpoch = 1;
+    failure.Request.Action = QStringLiteral("build");
+    failure.Code = QStringLiteral("RenderGraphBuildShader");
+    failure.Message = QStringLiteral("shader helper: Ludus shader build:\n");
+    for (int32 line = 0; line < 80; ++line)
+    {
+        failure.Message += QStringLiteral("shader.slang(4): error 30015: undefined identifier '<primitives>'.\n"
+                                          "    uint materialId = primitives[input.primitiveId].materialIndex;\n");
+    }
+    failure.Message += QStringLiteral("compilation ceased");
+    workspace.AcceptResult(failure);
+    QCoreApplication::processEvents();
+    CHECK(workspace.size() == windowSize);
+    CHECK(splitter->height() >= editingHeight - statusHeightAllowance);
+    if (views->currentIndex() == 1)
+    {
+        QPlainTextEdit* source = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
+        REQUIRE(source != nullptr);
+        CHECK(source->viewport()->height() > statusHeightAllowance);
+        source->selectAll();
+        QTest::keyClicks(source, QStringLiteral("// fix shader here"));
+        CHECK(source->toPlainText() == QStringLiteral("// fix shader here"));
+    }
+    CHECK(workspace.GetStatusText().contains(failure.Message) == true);
+    CHECK(status->textFormat() == Qt::PlainText);
+    CHECK(status->textInteractionFlags().testFlag(Qt::TextSelectableByMouse) == true);
+    QScrollArea* statusPanel = workspace.findChild<QScrollArea*>(QStringLiteral("renderGraphStatusPanel"));
+    REQUIRE(statusPanel != nullptr);
+    CHECK(statusPanel->height() <= statusHeightAllowance);
+    REQUIRE(statusPanel->verticalScrollBar()->maximum() > 0);
+    statusPanel->verticalScrollBar()->setValue(statusPanel->verticalScrollBar()->maximum());
+    CHECK(status->geometry().bottom() <= statusPanel->viewport()->rect().bottom());
+
+    // A shorter result releases the scroll range and leaves editing usable after resizing.
+    failure.Message = QStringLiteral("one shader error");
+    workspace.AcceptResult(failure);
+    workspace.resize(1100, 700);
+    QCoreApplication::processEvents();
+    CHECK(statusPanel->verticalScrollBar()->maximum() == 0);
+    CHECK(splitter->height() >= editingHeight - statusHeightAllowance - 100);
+}
 
 TEST_CASE("configuration interface UI creates connectable ports with undo and save",
           "[editor][render-graph][interface]")
@@ -198,6 +277,90 @@ TEST_CASE("configuration interface UI creates connectable ports with undo and sa
     edit->click();
     CHECK(document.GetRevision() == beforeInvalid);
     CHECK(document.GetDraft(library) == connected);
+}
+
+TEST_CASE("canvas interface editing previews repairs with Properties hidden", "[editor][render-graph][interface]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    const QString library = QStringLiteral("rasterize.lurender.json");
+    const QString configuration = QStringLiteral("ColorAndDepth");
+    REQUIRE(workspace.SelectNode(library, configuration, QStringLiteral("draw")) == true);
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    properties->hide();
+    workspace.resize(1200, 800);
+    workspace.show();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.fitInView(canvas.sceneRect(), Qt::KeepAspectRatio);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray child = document.GetDraft(library);
+    const QByteArray parent = document.GetDraft(ROOT_GRAPH);
+    const uint64 revision = document.GetRevision();
+    bool shouldApply = false;
+    const auto editDialog = [&]() {
+        RenderGraphConfigurationEditor* dialogOrNull =
+            qobject_cast<RenderGraphConfigurationEditor*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        CHECK(properties->isVisible() == false);
+        QTableWidget* inputs = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("configurationInputs"));
+        QTableWidget* outputs = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("configurationOutputs"));
+        // Rename a connected input and output. Original identities survive repeated keystrokes.
+        inputs->item(3, 0)->setText(QStringLiteral("intermediate"));
+        inputs->item(3, 0)->setText(QStringLiteral("target"));
+        outputs->item(1, 0)->setText(QStringLiteral("result"));
+        CHECK(dialogOrNull->GetInputRenames().value(QStringLiteral("color")) == QStringLiteral("target"));
+        CHECK(dialogOrNull->GetOutputRenames().value(QStringLiteral("color")) == QStringLiteral("result"));
+        const QString repairs =
+            dialogOrNull->findChild<QLabel*>(QStringLiteral("configurationInterfaceRepairs"))->text();
+        CHECK(repairs.contains(QStringLiteral("input.color")) == true);
+        CHECK(repairs.contains(QStringLiteral("raster.color")) == true);
+        CHECK(repairs.contains(QStringLiteral("raster.result")) == true);
+        CHECK(repairs.contains(QStringLiteral("one undo step")) == true);
+        CHECK(document.GetRevision() == revision);
+        CHECK(document.GetDraft(library) == child);
+        CHECK(document.GetDraft(ROOT_GRAPH) == parent);
+        if (shouldApply == true)
+        {
+            dialogOrNull->findChild<QPushButton*>(QStringLiteral("configurationApply"))->click();
+        }
+        else
+        {
+            dialogOrNull->reject();
+        }
+    };
+    const auto openFromCanvas = [&]() {
+        QTimer::singleShot(0, &canvas, editDialog);
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("input")) + QPointF(20, 10));
+        QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    };
+    openFromCanvas();
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(library) == child);
+    CHECK(document.GetDraft(ROOT_GRAPH) == parent);
+    shouldApply = true;
+    openFromCanvas();
+    CHECK(document.GetRevision() == revision + 1);
+    const QByteArray repairedChild = document.GetDraft(library);
+    const QByteArray repairedParent = document.GetDraft(ROOT_GRAPH);
+    CHECK(repairedChild.contains("input.target") == true);
+    CHECK(repairedParent.contains("raster.result") == true);
+    workspace.Undo();
+    CHECK(document.GetDraft(library) == child);
+    CHECK(document.GetDraft(ROOT_GRAPH) == parent);
+    workspace.Redo();
+    CHECK(document.GetDraft(library) == repairedChild);
+    CHECK(document.GetDraft(ROOT_GRAPH) == repairedParent);
+    REQUIRE(workspace.Save() == true);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(library) == repairedChild);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == repairedParent);
 }
 
 TEST_CASE("pipeline controls edit drafts without Apply and Save finishes the active cell",
@@ -692,4 +855,165 @@ TEST_CASE("canvas pipeline editing pairs resources and reports connected port er
     workspace.Undo();
     workspace.Undo();
     CHECK(document.GetDraft(ROOT_GRAPH) == original);
+}
+
+TEST_CASE("shader editing shares history across refresh and source switches", "[editor][render-graph][text]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString package = MakePackage(project);
+    const QString shader = QStringLiteral("editable.slang");
+    const QByteArray original = QByteArrayLiteral("float4 Shade() { return float4(1); }\n");
+    QFile file(QDir(package).filePath(shader));
+    REQUIRE(file.open(QIODevice::WriteOnly) == true);
+    REQUIRE(file.write(original) == original.size());
+    file.close();
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* sourceOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* editorOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceOrNull != nullptr);
+    REQUIRE(editorOrNull != nullptr);
+    sourceOrNull->setCurrentText(shader);
+    QSignalSpy draftChanges(&workspace, &RendererWorkspace::DocumentChanged);
+    editorOrNull->moveCursor(QTextCursor::End);
+    editorOrNull->insertPlainText(QStringLiteral("// drafted\n"));
+    CHECK(draftChanges.count() == 0); // Typing must not re-register the package's file watches.
+    const QByteArray edited = editorOrNull->toPlainText().toUtf8();
+    CHECK(workspace.IsDirty() == true);
+    CHECK(workspace.CanSave() == true);
+    CHECK(workspace.GetDocument().GetDraft(shader) == edited);
+    const QByteArray graph = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    REQUIRE(workspace.GetDocument().SetText(ROOT_GRAPH, graph + '\n') == RenderGraphDocumentStatus::Ok);
+    workspace.Undo(); // Refreshing other authored state must not erase focused text.
+    CHECK(editorOrNull->toPlainText().toUtf8() == edited);
+    sourceOrNull->setCurrentText(ROOT_GRAPH);
+    CHECK(workspace.GetDocument().GetDraft(shader) == edited);
+    sourceOrNull->setCurrentText(shader);
+    CHECK(editorOrNull->toPlainText().toUtf8() == edited);
+    QTabWidget* viewsOrNull = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(viewsOrNull != nullptr);
+    viewsOrNull->setCurrentIndex(0);
+    workspace.Undo();
+    CHECK(viewsOrNull->currentIndex() == 1);
+    CHECK(workspace.GetDocument().GetDraft(shader) == original);
+    CHECK(editorOrNull->toPlainText().toUtf8() == original);
+    editorOrNull->moveCursor(QTextCursor::End);
+    editorOrNull->insertPlainText(QStringLiteral("// saved without Apply\n"));
+    const QByteArray saved = editorOrNull->toPlainText().toUtf8();
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    CHECK(file.readAll() == saved);
+    CHECK(workspace.IsDirty() == false);
+    QTest::keyClicks(editorOrNull, QStringLiteral("more"));
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(shader) == saved);
+    CHECK(workspace.IsDirty() == false);
+}
+
+TEST_CASE("source capacity rejection restores accepted text without blocking navigation",
+          "[editor][render-graph][text]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* sourceOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* editorOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceOrNull != nullptr);
+    REQUIRE(editorOrNull != nullptr);
+    sourceOrNull->setCurrentText(ROOT_GRAPH);
+    const QByteArray original = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    editorOrNull->selectAll();
+    const QString oversized(RenderGraphDocument::MAX_FILE_BYTES + 1, QLatin1Char('x'));
+    editorOrNull->insertPlainText(oversized);
+    CHECK(editorOrNull->toPlainText().toUtf8() == original);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
+    CHECK(workspace.IsDirty() == false);
+    CHECK(workspace.GetDocument().CanUndo() == false);
+    sourceOrNull->setCurrentText(QStringLiteral("rasterize.lurender.json"));
+    CHECK(sourceOrNull->currentText() == QStringLiteral("rasterize.lurender.json"));
+}
+
+TEST_CASE("text admission rejects split scalars and stale revisions without history", "[editor][render-graph][text]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = QString::fromUtf8("😀text").toUtf8();
+    REQUIRE(document.SetText(ROOT_GRAPH, original) == RenderGraphDocumentStatus::Ok);
+    const uint64 revision = document.GetRevision();
+    const CodeTextEdit split{1, 1, {" ", 1}};
+    CHECK(document.ApplyTextEdit(ROOT_GRAPH, revision, split, {}, {}, false) == CodeEditStatus::InvalidText);
+    const CodeTextEdit valid{0, 4, {"x", 1}};
+    CHECK(document.ApplyTextEdit(ROOT_GRAPH, revision - 1, valid, {}, {}, false) == CodeEditStatus::Conflict);
+    CHECK(document.ApplyTextEdit(ROOT_GRAPH, revision, valid, {1, 1}, {}, false) == CodeEditStatus::InvalidText);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("bound source edit records an offscreen latency baseline", "[.benchmark][editor][render-graph][text]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString shader = QStringLiteral("large.slang");
+    QByteArray original;
+    const QByteArray line = QByteArrayLiteral("float4 Shade(float4 value) { return value; }\n");
+    while (original.size() + line.size() <= RenderGraphDocument::MAX_FILE_BYTES - 1)
+    {
+        original += line;
+    }
+    QFile file(QDir(package).filePath(shader));
+    REQUIRE(file.open(QIODevice::WriteOnly) == true);
+    REQUIRE(file.write(original) == original.size());
+    file.close();
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* sourcesOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* editorOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourcesOrNull != nullptr);
+    REQUIRE(editorOrNull != nullptr);
+    sourcesOrNull->setCurrentText(shader);
+    QTabWidget* viewsOrNull = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(viewsOrNull != nullptr);
+    viewsOrNull->setCurrentIndex(1);
+    workspace.resize(1200, 800);
+    workspace.show();
+    editorOrNull->GoToLine(editorOrNull->blockCount() / 2);
+    editorOrNull->moveCursor(QTextCursor::EndOfBlock);
+    QApplication::processEvents();
+    constexpr int32 SAMPLE_COUNT = 20;
+    QVector<int64> samples;
+    for (int32 sample = 0; sample < SAMPLE_COUNT; ++sample)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        QTest::keyClicks(editorOrNull, QStringLiteral("x"));
+        QApplication::processEvents();
+        samples.append(timer.nsecsElapsed());
+        workspace.Undo();
+        QApplication::processEvents();
+    }
+    // Small test sample, no production sorting/container facility is needed.
+    for (int32 index = 1; index < samples.size(); ++index)
+    {
+        for (int32 previous = index; previous > 0 && samples.at(previous) < samples.at(previous - 1); --previous)
+        {
+            samples.swapItemsAt(previous, previous - 1);
+        }
+    }
+    INFO("Offscreen input/model/event processing; excludes native compositor latency. System="
+         << QSysInfo::prettyProductName().toStdString() << "; Qt=" << qVersion());
+    INFO("Bytes=" << original.size() << "; p50 ns=" << samples.at(SAMPLE_COUNT / 2) << "; p95 ns=" << samples.last());
+    CHECK(workspace.GetDocument().GetDraft(shader) == original);
 }

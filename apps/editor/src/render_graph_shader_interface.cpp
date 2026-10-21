@@ -1,15 +1,159 @@
 #include "internal/render_graph_shader_interface.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <QDir>
+#include <QFile>
+#include <QFontDatabase>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QRegularExpression>
+#include <QScrollBar>
+#include <QShortcut>
 #include <QStringList>
+#include <QStringView>
+#include <QTextCursor>
+#include <QVBoxLayout>
 
 namespace ludus::editor
 {
 namespace
 {
+// These expressions index declarations in the bundled, renderer-owned Slang files.
+// They are a source view, not a general Slang parser or compiler reflection.
+QString ReadShaderApi(bool isScene)
+{
+    QFile file(isScene == true ? QStringLiteral(":/shader-api/scene_shader.slang")
+                               : QStringLiteral(":/shader-api/ray_shader.slang"));
+    return file.open(QIODevice::ReadOnly) == true ? QString::fromUtf8(file.readAll()) : QString{};
+}
+
+QString GetStructDeclaration(const QString& source, QStringView name)
+{
+    const QRegularExpression expression(
+        QStringLiteral("\\bstruct\\s+%1\\s*\\{[^}]*\\};").arg(QRegularExpression::escape(name.toString())));
+    return expression.match(source).captured();
+}
+
+QString
+DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, const QMap<QString, QByteArray>& sources)
+{
+    const QString stage = program.value(QStringLiteral("stage")).toString();
+    const QString input = program.value(QStringLiteral("input")).toString();
+    const QString output = program.value(QStringLiteral("output")).toString();
+    const QString function = program.value(QStringLiteral("function")).toString();
+    const bool isScene = output == QStringLiteral("Radiance") || output == QStringLiteral("ScenePayload");
+    const QString api = ReadShaderApi(isScene);
+    if (api.isEmpty() == true)
+    {
+        return QStringLiteral("Shader API unavailable: bundled callback declarations are missing.");
+    }
+    QStringList lines{QStringLiteral("// %1 (%2)").arg(program.value(QStringLiteral("id")).toString(), stage)};
+    if (isScene == true)
+    {
+        lines.append(
+            QStringLiteral("// Scene materials enabled.\n"
+                           "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
+                           "// Author lighting and bounce policy in your callbacks."));
+        lines.append(
+            QStringLiteral("%1 %2(\n    SceneContext scene,\n    %3 %4,\n    inout RayQueryContext queries%5);")
+                .arg(stage == QStringLiteral("ray_generation") ? QStringLiteral("float3") : QStringLiteral("void"),
+                     function,
+                     input,
+                     stage == QStringLiteral("ray_generation") ? QStringLiteral("launch")
+                     : stage == QStringLiteral("miss")         ? QStringLiteral("ray")
+                                                               : QStringLiteral("hit"),
+                     stage == QStringLiteral("ray_generation") ? QString{}
+                                                               : QStringLiteral(",\n    inout ScenePayload payload")));
+    }
+    else
+    {
+        lines.append(QStringLiteral("%1 %2(%3 input);")
+                         .arg(output == QStringLiteral("Ray") ? QStringLiteral("Ray") : QStringLiteral("float3"),
+                              function,
+                              input));
+    }
+    lines.append(GetStructDeclaration(api, input));
+    if (isScene == false)
+    {
+        lines.append(
+            QStringLiteral("// Legacy ray interface. Return linear RGB; no automatic lighting.\n"
+                           "// For full material properties, right-click the RayTracingPipeline on the canvas\n"
+                           "// and choose Enable Scene Materials. Original callbacks are preserved through adapters."));
+        if (stage == QStringLiteral("closest_hit"))
+        {
+            lines.append(QStringLiteral("// Closest-hit material tint: return input.Color.xyz; Color.w is reserved."));
+        }
+        if (input != QStringLiteral("Ray"))
+        {
+            lines.append(GetStructDeclaration(api, QStringLiteral("Ray")));
+        }
+        return lines.join(QStringLiteral("\n\n"));
+    }
+    const QRegularExpression structures(QStringLiteral("\\bstruct\\s+(\\w+)\\s*\\{[^}]*\\};"));
+    QRegularExpressionMatchIterator structureMatches = structures.globalMatch(api);
+    while (structureMatches.hasNext() == true)
+    {
+        const QRegularExpressionMatch match = structureMatches.next();
+        if (match.captured(1) != input)
+        {
+            lines.append(match.captured());
+        }
+    }
+    QStringList payloadFiles;
+    for (const QJsonValueConstRef entry : techniques)
+    {
+        const QJsonObject technique = entry.toObject();
+        if (technique.value(stage).toString() != program.value(QStringLiteral("id")).toString())
+        {
+            continue;
+        }
+        const QString payload = QDir::cleanPath(
+            technique.value(QStringLiteral("scene_interface")).toObject().value(QStringLiteral("payload")).toString());
+        if (payloadFiles.contains(payload) == true)
+        {
+            continue;
+        }
+        payloadFiles.append(payload);
+        const QString declaration =
+            GetStructDeclaration(QString::fromUtf8(sources.value(payload)), QStringLiteral("ScenePayload"));
+        lines.append(declaration.isEmpty() == false
+                         ? QStringLiteral("// %1\n%2").arg(payload, declaration)
+                         : QStringLiteral("// ScenePayload declaration unavailable: %1").arg(payload));
+    }
+    if (payloadFiles.isEmpty() == true)
+    {
+        lines.append(
+            QStringLiteral("// ScenePayload declaration unavailable: no scene_interface payload is assigned."));
+    }
+    QStringList functions{
+        QStringLiteral("uint TraceAndShade(\n    SceneContext scene,\n    inout RayQueryContext queries,\n"
+                       "    Ray ray,\n    inout ScenePayload payload);")};
+    const QRegularExpression signatures(QStringLiteral("^\\w+ [A-Z]\\w*\\([^)]*\\)(?=\\s*\\{)"),
+                                        QRegularExpression::MultilineOption);
+    QRegularExpressionMatchIterator signatureMatches = signatures.globalMatch(api);
+    while (signatureMatches.hasNext() == true)
+    {
+        functions.append(signatureMatches.next().captured() + QLatin1Char(';'));
+    }
+    lines.append(functions.join(QLatin1Char('\n')));
+    const QRegularExpression constants(QStringLiteral("^static const [^;]+;"), QRegularExpression::MultilineOption);
+    QRegularExpressionMatchIterator constantMatches = constants.globalMatch(api);
+    QStringList constantDeclarations;
+    while (constantMatches.hasNext() == true)
+    {
+        constantDeclarations.append(constantMatches.next().captured());
+    }
+    lines.append(constantDeclarations.join(QLatin1Char('\n')));
+    return lines.join(QStringLiteral("\n\n"));
+}
+
 QString DescribeSchema(const QJsonArray& schemas, const QString& identity)
 {
     QStringList lines{identity};
@@ -43,7 +187,8 @@ QString DescribeSchema(const QJsonArray& schemas, const QString& identity)
 }
 } // namespace
 
-QString DescribeShaderInterface(const QByteArray& manifest, const QString& sourceFile)
+QString
+DescribeShaderInterface(const QByteArray& manifest, const QString& sourceFile, const QMap<QString, QByteArray>& sources)
 {
     const QJsonDocument document = QJsonDocument::fromJson(manifest);
     if (document.isObject() == false)
@@ -67,18 +212,7 @@ QString DescribeShaderInterface(const QByteArray& manifest, const QString& sourc
             stage == QStringLiteral("miss"))
         {
             descriptions.append(
-                QStringLiteral(
-                    "%1 — %2 (%3)\nInput: %4\nOutput: %5\n"
-                    "Scene callbacks receive SceneContext and inout RayQueryContext. Raygen drives TraceAndShade; "
-                    "closest-hit/miss share your ScenePayload. Read materials with EvaluateMaterial and sources with "
-                    "GetLightInfo. SelectLight/SampleIncidentLight and TestVisibility provide proposals and queries; "
-                    "your shaders own NEE, MIS and bounce policy. Legacy Ray/Color programs retain their original "
-                    "signatures.")
-                    .arg(program.value(QStringLiteral("id")).toString(),
-                         program.value(QStringLiteral("function")).toString(),
-                         stage,
-                         program.value(QStringLiteral("input")).toString(),
-                         output));
+                DescribeRayInterface(program, root.value(QStringLiteral("techniques")).toArray(), sources));
             continue;
         }
         if (stage != QStringLiteral("vertex") && stage != QStringLiteral("fragment"))
@@ -134,5 +268,74 @@ QString DescribeShaderInterface(const QByteArray& manifest, const QString& sourc
     return descriptions.isEmpty() == true
                ? QStringLiteral("No shader program declares this source in the draft build manifest.")
                : descriptions.join(QStringLiteral("\n\n"));
+}
+QWidget* CreateShaderInterfaceView(QPlainTextEdit* textView, QWidget* parent)
+{
+    QWidget* page = new QWidget(parent);
+    QVBoxLayout* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(new QLabel(QStringLiteral("Shader API"), page));
+    QHBoxLayout* searchRow = new QHBoxLayout;
+    QLineEdit* search = new QLineEdit(page);
+    search->setObjectName(QStringLiteral("shaderApiSearch"));
+    search->setPlaceholderText(QStringLiteral("Find type, field, or function"));
+    search->setAccessibleName(QStringLiteral("Find in shader API"));
+    search->setClearButtonEnabled(true);
+    QPushButton* next = new QPushButton(QStringLiteral("Next"), page);
+    next->setObjectName(QStringLiteral("shaderApiFindNext"));
+    searchRow->addWidget(search, 1);
+    searchRow->addWidget(next);
+    layout->addLayout(searchRow);
+    textView->setObjectName(QStringLiteral("renderGraphSourceInterface"));
+    textView->setReadOnly(true);
+    textView->setLineWrapMode(QPlainTextEdit::NoWrap);
+    textView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    textView->setAccessibleName(QStringLiteral("Shader API declarations"));
+    layout->addWidget(textView, 1);
+    const auto find = [textView, search](bool shouldRestart) {
+        if (shouldRestart == true)
+        {
+            textView->moveCursor(QTextCursor::Start);
+        }
+        search->setToolTip({});
+        if (search->text().isEmpty() == true)
+        {
+            return;
+        }
+        if (textView->find(search->text()) == false)
+        {
+            textView->moveCursor(QTextCursor::Start);
+            const bool hasMatch = textView->find(search->text());
+            search->setToolTip(hasMatch == true ? QString{} : QStringLiteral("No matching declaration."));
+        }
+    };
+    QObject::connect(search, &QLineEdit::textChanged, page, [find]() { find(true); });
+    QObject::connect(search, &QLineEdit::returnPressed, page, [find]() { find(false); });
+    QObject::connect(next, &QPushButton::clicked, page, [find]() { find(false); });
+    QShortcut* shortcut = new QShortcut(QKeySequence::Find, page);
+    shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    QObject::connect(shortcut, &QShortcut::activated, page, [search]() {
+        search->setFocus();
+        search->selectAll();
+    });
+    return page;
+}
+
+void UpdateShaderInterfaceView(QPlainTextEdit& inoutTextView, const QString& source, const QString& declarations)
+{
+    const bool isSameSource = inoutTextView.property("shaderApiSource").toString() == source;
+    if (isSameSource == true && inoutTextView.toPlainText() == declarations)
+    {
+        return;
+    }
+    const foundation::int32 verticalPosition = inoutTextView.verticalScrollBar()->value();
+    const foundation::int32 horizontalPosition = inoutTextView.horizontalScrollBar()->value();
+    inoutTextView.setPlainText(declarations);
+    inoutTextView.setProperty("shaderApiSource", source);
+    if (isSameSource == true)
+    {
+        inoutTextView.verticalScrollBar()->setValue(verticalPosition);
+        inoutTextView.horizontalScrollBar()->setValue(horizontalPosition);
+    }
 }
 } // namespace ludus::editor

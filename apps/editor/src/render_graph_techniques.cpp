@@ -44,6 +44,21 @@ QString GetTechniqueIdentity(const QJsonObject& node)
            mode;
 }
 
+QJsonObject NormalizeTriangleRecipe(QJsonObject recipe)
+{
+    const QJsonObject defaults{{QStringLiteral("max_recursion"), 1},
+                               {QStringLiteral("payload_bytes"), 0},
+                               {QStringLiteral("attribute_bytes"), TRIANGLE_ATTRIBUTE_BYTES}};
+    for (QJsonObject::const_iterator field = defaults.constBegin(); field != defaults.constEnd(); ++field)
+    {
+        if (recipe.contains(field.key()) == false)
+        {
+            recipe.insert(field.key(), field.value());
+        }
+    }
+    return recipe;
+}
+
 QJsonObject MakeTechnique(const QJsonObject& node, const QString& identity)
 {
     const QStringList stages = GetTechniqueStages(identity);
@@ -68,16 +83,8 @@ QJsonObject MakeTechnique(const QJsonObject& node, const QString& identity)
     if (identity == RAY_TECHNIQUE)
     {
         // Match the triangle profile's automatic limits; do not change authored overrides.
-        const QJsonObject defaults{{QStringLiteral("max_recursion"), 1},
-                                   {QStringLiteral("payload_bytes"), 0},
-                                   {QStringLiteral("attribute_bytes"), TRIANGLE_ATTRIBUTE_BYTES}};
-        for (QJsonObject::const_iterator field = defaults.constBegin(); field != defaults.constEnd(); ++field)
-        {
-            if (recipe.contains(field.key()) == false)
-            {
-                recipe.insert(field.key(), field.value());
-            }
-        }
+        const QJsonObject defaults = NormalizeTriangleRecipe({});
+        recipe = NormalizeTriangleRecipe(recipe);
         if (recipe != defaults)
         {
             return {}; // Unsupported drafts keep the execution-profile diagnostic.
@@ -141,7 +148,10 @@ void AppendRecipes(QJsonObject& inoutTechnique, const QJsonArray& additions)
         {
             QJsonObject recipe = existing.toObject();
             identities.append(recipe.take(QStringLiteral("id")).toString());
-            hasRecipe = hasRecipe == true || recipe == addition;
+            const bool isEquivalent = inoutTechnique.value(QStringLiteral("id")).toString() == RAY_TECHNIQUE
+                                          ? NormalizeTriangleRecipe(recipe) == NormalizeTriangleRecipe(addition)
+                                          : recipe == addition;
+            hasRecipe = hasRecipe == true || isEquivalent == true;
         }
         if (hasRecipe == false)
         {

@@ -4,10 +4,9 @@
 #include "renderer_surface_functions.slang"
 
 // GPU preview ports Ludus's frozen RGB transport, not the CPU transport loop.
-// Thanks to Sven Woop, Carsten Benthin and Ingo Wald, "Watertight Ray/Triangle
-// Intersection", JCGT 2(1) (2013), section 3, for permuted/sheared
-// triangle tests (https://jcgt.org/published/0002/01/05/paper.pdf); this FP32 BVH
-// variant does not claim arbitrary thin-geometry robustness or CPU-double parity.
+// Thanks to Khronos Group, Vulkan Ray Traversal, Ray Query,
+// https://docs.vulkan.org/spec/latest/chapters/raytraversal.html: native traversal
+// produces candidates; the shared fixed-mip material alpha test accepts them.
 // Thanks to John K. Salmon et al., "Parallel Random Numbers: As Easy as 1, 2, 3",
 // SC11 (2011), section 4.3, for Philox4x32-10
 // (https://www.thesalmons.org/john/random123/papers/random123sc11.pdf).
@@ -29,7 +28,7 @@ LUDUS_SHADER_BINDING(0) cbuffer Parameters
     uint4 Counts;     // triangles, nodes, emitters, analytic lights
     uint4 Sampling;   // key lo, key hi, flags (reverse/infinite/center), target
     float4 Environment;
-    float4 Options; // secondary range, exposure, reserved
+    float4 Options; // secondary range, exposure, material count bits, scene data group bits
     float4 BoundsMinimumWorld;
     float4 BoundsMaximumWorld;
     uint4 SurfaceLayout; // surface stride, analytic offset, private kernel ABI, see renderer_gpu_preview_layout.h,
@@ -41,8 +40,10 @@ float4 SceneValue(uint index)
     return asfloat(sceneWords[index]);
 }
 LUDUS_SHADER_BINDING(2) RWStructuredBuffer<float4> accumulation; // sum/count, compensation/error
-LUDUS_SHADER_BINDING(3) RWStructuredBuffer<float4> colors;       // Encoded RGB and binary32-exact pixel index.
-LUDUS_SHADER_BINDING(4) StructuredBuffer<uint4> textureWords;
+LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_COLORS_BINDING)
+RWStructuredBuffer<float4> colors; // Encoded RGB and binary32-exact pixel index.
+LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_TEXELS_BINDING) StructuredBuffer<uint4> textureWords;
+LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING) RaytracingAccelerationStructure rayScene;
 // Mirrors the CPU reference path's addresses: Scope is the 32-bit pixel index,
 // Event is the sample and dimensions follow LUDUS_PATH_RANDOM_* in
 // renderer_gpu_preview_layout.h. Host admission bounds depth, so every
@@ -117,130 +118,45 @@ struct Hit
     float DistanceWorld;
     float2 Barycentric;
 };
-bool Box(float3 originWorld, float3 directionWorld, float nearDistanceWorld, float farDistanceWorld, uint node)
-{
-    uint b = Offsets.x + node * 3;
-    float3 boundsMinimumWorld = SceneValue(b).xyz;
-    float3 boundsMaximumWorld = SceneValue(b + 1).xyz;
-    for (uint axis = 0; axis < 3; ++axis)
-    {
-        if (directionWorld[axis] == 0)
-        {
-            if (originWorld[axis] < boundsMinimumWorld[axis] || originWorld[axis] > boundsMaximumWorld[axis])
-                return false;
-        }
-        else
-        {
-            float a = (boundsMinimumWorld[axis] - originWorld[axis]) / directionWorld[axis];
-            float c = (boundsMaximumWorld[axis] - originWorld[axis]) / directionWorld[axis];
-            nearDistanceWorld = max(nearDistanceWorld, min(a, c));
-            farDistanceWorld = min(farDistanceWorld, max(a, c));
-            if (nearDistanceWorld > farDistanceWorld)
-                return false;
-        }
-    }
-    return true;
-}
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
-bool Intersect(uint t,
-               float3 originWorld,
-               float3 directionWorld,
-               float nearDistanceWorld,
-               float farDistanceWorld,
-               out float outDistanceWorld,
-               out float2 outBarycentric)
-{
-    uint z = 0;
-    if (abs(directionWorld.y) > abs(directionWorld.x))
-        z = 1;
-    if (abs(directionWorld.z) > abs(directionWorld[z]))
-        z = 2;
-    uint x = (z + 1) % 3;
-    uint y = (x + 1) % 3;
-    if (directionWorld[z] < 0)
-    {
-        uint swap = x;
-        x = y;
-        y = swap;
-    }
-    float3 a = SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS).xyz - originWorld;
-    float3 b = SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 1).xyz - originWorld;
-    float3 c = SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 2).xyz - originWorld;
-    float sx = directionWorld[x] / directionWorld[z];
-    float sy = directionWorld[y] / directionWorld[z];
-    float sz = 1 / directionWorld[z];
-    float ax = a[x] - sx * a[z];
-    float ay = a[y] - sy * a[z];
-    float bx = b[x] - sx * b[z];
-    float by = b[y] - sy * b[z];
-    float cx = c[x] - sx * c[z];
-    float cy = c[y] - sy * c[z];
-    float e0 = bx * cy - by * cx;
-    float e1 = cx * ay - cy * ax;
-    float e2 = ax * by - ay * bx;
-    float determinant = e0 + e1 + e2;
-    outDistanceWorld = 0;
-    outBarycentric = 0;
-    if ((min(e0, min(e1, e2)) < 0 && max(e0, max(e1, e2)) > 0) || determinant == 0)
-        return false;
-    outDistanceWorld = (e0 * a[z] + e1 * b[z] + e2 * c[z]) * sz / determinant;
-    outBarycentric = float2(e1, e2) / determinant;
-    if (outDistanceWorld < nearDistanceWorld || outDistanceWorld > farDistanceWorld)
-        return false;
-    if (asuint(Surface(t, 5).z) != 0 &&
-        Texture(t, TexcoordUv(t, outBarycentric)).w * Surface(t, 2).w * InterpolateTriangle(t, 13, outBarycentric).w <
-            Surface(t, 1).y)
-        return false;
-    return true;
-}
 Hit Trace(float3 originWorld,
           float3 directionWorld,
           float nearDistanceWorld,
           float farDistanceWorld,
-          bool visibility = false)
+          bool isVisibility = false)
 {
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
     hit.DistanceWorld = farDistanceWorld;
     hit.Barycentric = 0;
-    if (Counts.y == 0)
-        return hit;
-    uint stack[64];
-    uint pending = 1;
-    stack[0] = 0;
-    while (pending != 0)
+    RayDesc ray;
+    ray.Origin = originWorld;
+    ray.Direction = directionWorld;
+    ray.TMin = nearDistanceWorld;
+    ray.TMax = farDistanceWorld;
+    uint flags = RAY_FLAG_FORCE_NON_OPAQUE;
+    if (isVisibility == true)
+        flags |= RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(rayScene, flags, LUDUS_GPU_PREVIEW_RAY_MASK, ray);
+    while (query.Proceed() == true)
     {
-        uint node = stack[--pending];
-        uint b = Offsets.x + node * 3;
-        if (!Box(originWorld, directionWorld, nearDistanceWorld, hit.DistanceWorld, node))
+        if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
             continue;
-        uint4 range = asuint(SceneValue(b + 2));
-        if (range.y == 0)
-        {
-            if (pending > 62)
-            {
-                hit.Triangle = LUDUS_GPU_PREVIEW_FAILED_TRIANGLE;
-                return hit;
-            }
-            stack[pending++] = asuint(SceneValue(b).w);
-            stack[pending++] = asuint(SceneValue(b + 1).w);
+        uint triangle = asuint(SceneValue(Offsets.y + query.CandidatePrimitiveIndex()).x);
+        float2 barycentric = query.CandidateTriangleBarycentrics();
+        if (asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) != 0 &&
+            Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
+                    InterpolateTriangle(triangle, LUDUS_GPU_PREVIEW_VERTEX_COLOR_WORD, barycentric).w <
+                Surface(triangle, 1).y)
             continue;
-        }
-        for (uint i = range.x; i < range.x + range.y; ++i)
-        {
-            uint t = asuint(SceneValue(Offsets.y + i).x);
-            float distance;
-            float2 uv;
-            if (Intersect(t, originWorld, directionWorld, nearDistanceWorld, hit.DistanceWorld, distance, uv) &&
-                (distance < hit.DistanceWorld || (distance == hit.DistanceWorld && t < hit.Triangle)))
-            {
-                hit.Triangle = t;
-                hit.DistanceWorld = distance;
-                hit.Barycentric = uv;
-                if (visibility)
-                    return hit;
-            }
-        }
+        query.CommitNonOpaqueTriangleHit();
+    }
+    if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+    {
+        hit.Triangle = asuint(SceneValue(Offsets.y + query.CommittedPrimitiveIndex()).x);
+        hit.DistanceWorld = query.CommittedRayT();
+        hit.Barycentric = query.CommittedTriangleBarycentrics();
     }
     return hit;
 }

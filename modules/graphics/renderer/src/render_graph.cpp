@@ -1,5 +1,6 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 
+#include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
 
@@ -415,6 +416,11 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
         hasCameraRoute[pass.Camera] =
             hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
+        if ((pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
+            (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
+        {
+            return Status::InvalidDescription;
+        }
         if (pass.Program == format::Technique::RayTracing)
         {
             ++rayPassCount;
@@ -647,6 +653,7 @@ struct RenderGraph::State final
         StaticArray<bool, format::MAX_PASSES> HasViews{};
         usize MeshCount = 0;
         uint64 Revision = 0;
+        uint32 SubmittedRaySamples = 0;
         ~Scene() noexcept
         {
             if (OwnerOrNull != nullptr)
@@ -899,6 +906,11 @@ struct RenderGraph::State final
         {
             HasValidOutput = submitted == Status::Ready && RecordingStatus == Status::Ready;
             OutputRevision = HasValidOutput == true ? RecordingRevision : 0;
+            if (HasValidOutput == true && HasRaySetup == true &&
+                Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET)
+            {
+                ++Current->SubmittedRaySamples;
+            }
         }
         return RecordingStatus == Status::Ready ? submitted : RecordingStatus;
     }
@@ -1275,12 +1287,11 @@ Status RenderGraph::Poll() noexcept
         {
             if (state.HasRaySetup == false)
             {
-                constexpr usize RAY_CPU_BYTES = usize{256} * 1024 * 1024;
-                constexpr usize RAY_GPU_BYTES = usize{256} * 1024 * 1024;
-                status = state.Contexts[i].EnableTriangleRayPipeline(state.Programs.RayCompute,
-                                                                     state.Programs.RayImageVertex,
-                                                                     state.Programs.RayImageFragment,
-                                                                     {RAY_CPU_BYTES, RAY_GPU_BYTES, 1});
+                status = state.Contexts[i].EnableTriangleRayPipeline(
+                    state.Programs.RayCompute,
+                    state.Programs.RayImageVertex,
+                    state.Programs.RayImageFragment,
+                    {internal::GRAPH_RAY_CPU_BYTES, internal::GRAPH_RAY_GPU_BYTES, 1});
                 if (IsAccepted(status) == false)
                 {
                     return status;
@@ -1688,15 +1699,15 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     }
     const StaticArray<format::Resource, format::MAX_RESOURCES>& preparingResources =
         state.Resizing.Get() != nullptr ? state.Resizing->Resources : state.Resources;
-    const RenderGraphSceneDescription rayScene{
-        meshes,
-        items,
-        sceneInputsOrNull != nullptr && state.Programs.HasSceneShaderInterface == true ? *sceneInputsOrNull
-                                                                                       : SceneShaderInputs{},
-        state.Programs.HasSceneShaderInterface,
-        policy == RenderGraphCoveragePolicy::DiagnosticColor,
-        &state.Report.SceneDiagnostics,
-        sceneRevision};
+    RenderGraphSceneDescription rayScene{meshes,
+                                         items,
+                                         sceneInputsOrNull != nullptr && state.Programs.HasSceneShaderInterface == true
+                                             ? *sceneInputsOrNull
+                                             : SceneShaderInputs{},
+                                         state.Programs.HasSceneShaderInterface,
+                                         policy == RenderGraphCoveragePolicy::DiagnosticColor,
+                                         &state.Report.SceneDiagnostics,
+                                         sceneRevision};
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         if (state.Passes[pass].Program != format::Technique::RayTracing)
@@ -1704,6 +1715,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             continue;
         }
         const format::Pass& operation = state.Passes[pass];
+        rayScene.SceneData = operation.SceneData;
         const Status created =
             candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
                                                   state.Device,
@@ -1758,6 +1770,11 @@ RenderGraphReport RenderGraph::GetReport() const noexcept
 uint64 RenderGraph::GetDrawableSceneRevision() const noexcept
 {
     return mState.Get() == nullptr || mState->Current.Get() == nullptr ? 0 : mState->Current->Revision;
+}
+bool RenderGraph::HasPendingSamples() const noexcept
+{
+    return mState.Get() != nullptr && mState->Current.Get() != nullptr && mState->HasRaySetup == true &&
+           mState->Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET;
 }
 uint64 RenderGraph::GetOutputSceneRevision() const noexcept
 {
@@ -1932,6 +1949,11 @@ Status RenderGraph::ConfirmSubmission(rhi::SubmissionToken completion) noexcept
         state.Producer = completion;
         state.HasValidOutput = state.RecordingStatus == Status::Ready && submitted != Status::Failed;
         state.OutputRevision = state.HasValidOutput == true ? state.RecordingRevision : 0;
+        if (state.HasValidOutput == true && state.HasRaySetup == true &&
+            state.Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET)
+        {
+            ++state.Current->SubmittedRaySamples;
+        }
         state.HasExternalRecording = false;
         return state.RecordingStatus == Status::Ready ? submitted : state.RecordingStatus;
     }

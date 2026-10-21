@@ -44,8 +44,8 @@ class MappedDiagnosticTests(unittest.TestCase):
         with self.assertRaises(ToolingError) as caught:
             graph.compile_graph(self.graph)
         self.assertEqual('RenderGraphPort', caught.exception.code)
-        self.assertEqual({'source': 'rasterize.lurender.json', 'configuration': 'ColorAndDepth'},
-                         caught.exception.location)
+        self.assertEqual({'source': 'rasterize.lurender.json', 'configuration': 'ColorAndDepth',
+                          'node': 'draw', 'port': 'missing', 'direction': 'input'}, caught.exception.location)
 
     def test_expanded_instance_error_maps_to_its_owner_and_nested_path(self):
         self.edit('rasterize.lurender.json', lambda v: v['configurations'][0]['nodes'][0].update(depth_load='Load'))
@@ -53,7 +53,8 @@ class MappedDiagnosticTests(unittest.TestCase):
             graph.compile_graph(self.graph)
         self.assertEqual('RenderGraphInitialization', caught.exception.code)
         self.assertEqual({'source': 'rasterize.lurender.json', 'configuration': 'ColorAndDepth',
-                          'node': 'draw', 'instance': 'Main/raster/draw'}, caught.exception.location)
+                          'node': 'draw', 'instance': 'Main/raster/draw', 'port': 'depth',
+                          'direction': 'input', 'field': 'depth_load'}, caught.exception.location)
 
     def test_document_field_error_maps_to_its_configuration_before_import(self):
         def initialized(value):
@@ -310,7 +311,7 @@ def parse_runtime(data):
     offset += 64
     result = {'magic': magic, 'version': version, 'interface': interface, 'generation': generation,
               'resources': [take(8 if version >= 4 else 6) for _ in range(resources)], 'cameras': [take(1) for _ in range(cameras)],
-              'passes': [take(9) for _ in range(passes)], 'uniform_values': values,
+              'passes': [take(10 if version >= 5 else 9) for _ in range(passes)], 'uniform_values': values,
               'bindings': [take(5) for _ in range(bindings)], 'blocks': [take(3) for _ in range(blocks)],
               'fields': [take(5) for _ in range(fields)], 'stages': []}
     for _ in range(stages):

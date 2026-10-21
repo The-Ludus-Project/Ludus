@@ -5,6 +5,7 @@ from .errors import ToolingError
 from .operations import locate_project, resolve_project
 from .project_setup import executable, preset_for, read_object, spirv_validator
 from .sdkstore import SdkStore
+from .shader_tools import REPAIR_MESSAGE, required_shader_tools, verify_translator
 
 
 def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compiler=None,
@@ -43,7 +44,7 @@ def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compile
     cache = preset.get("cacheVariables", {})
     value = document(read(Path(manifest)), str(manifest))
     validate_manifest(value)
-    profiles = value["profiles"]
+    required = required_shader_tools(value)
 
     def configured_tool(key, fallback):
         name = cache.get(key)
@@ -75,20 +76,20 @@ def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compile
         try:
             return executable(path)
         except ToolingError as error:
-            raise ToolingError(error.code, f"{error.message} Use Project > Repair Project Setup to check "
-                               "the prepared shader tools.") from error
+            raise ToolingError(error.code, REPAIR_MESSAGE) from error
 
     compiler = Path(compiler) if compiler else configured_tool("LUDUS_SLANG_COMPILER", lambda: managed_tool("slang/bin/slangc"))
     options = {"helper": helper, "compiler": prepared_executable(compiler)}
-    if validator or any(profile in profiles for profile in ("spirv", "glsl")):
+    if validator or "validator" in required:
         def managed_validator():
             if tooling_root is None:
                 return managed_tool("spirv-tools/spirv-val")
             return spirv_validator(tooling_root)
         options["validator"] = prepared_executable(Path(validator) if validator else configured_tool("LUDUS_SPIRV_VALIDATOR", managed_validator))
-    if spirv_cross or "glsl" in profiles:
+    if spirv_cross or "spirv_cross" in required:
         options["spirv_cross"] = prepared_executable(Path(spirv_cross) if spirv_cross else configured_tool(
             "LUDUS_SPIRV_CROSS", lambda: managed_tool("spirv-cross/bin/spirv-cross")))
+        verify_translator(options["spirv_cross"], helper / "spirv_cross_toolchain.json")
 
     targets = {path: path.resolve() for path in (resolved.resolution.prefix, *options.values())}
     def check_unchanged():

@@ -32,6 +32,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
 #include <QWheelEvent>
 
 #include <catch2/catch_approx.hpp>
@@ -701,4 +702,22 @@ TEST_CASE("Right drag vertical input preserves the rendered horizontal camera ax
     CHECK(rightClip.X > 0);
     CHECK(rightClip.Y == Catch::Approx(0).margin(0.00001));
     CHECK(rightClip.W == Catch::Approx(0).margin(0.00001));
+}
+
+TEST_CASE("Force raster is a saved local viewport preference", "[editor][viewport][selection]")
+{
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    QToolButton* buttonOrNull = viewport.findChild<QToolButton*>(QStringLiteral("viewportForceRaster"));
+    REQUIRE(buttonOrNull != nullptr);
+    CHECK(preview.ShouldForceRaster() == false);
+    buttonOrNull->click();
+    CHECK(preview.ShouldForceRaster() == true);
+    CHECK(preview.Navigation().value(QStringLiteral("forceRaster")).toBool() == true);
+    RenderPreview restored;
+    restored.RestoreNavigation(preview.Navigation());
+    CHECK(restored.ShouldForceRaster() == true);
+    preview.RestoreNavigation({});
+    CHECK(preview.ShouldForceRaster() == false);
+    CHECK(buttonOrNull->isChecked() == false);
 }

@@ -1,3 +1,4 @@
+#include "internal/code_editor.h"
 #include "internal/main_window.h"
 
 #include "internal/audio_workspace.h"
@@ -116,10 +117,18 @@ void MainWindow::RenderDocumentActions()
     auto* focus = QApplication::focusWidget();
     auto* line = qobject_cast<QLineEdit*>(focus);
     auto* plain = qobject_cast<QPlainTextEdit*>(focus);
+    CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(focus);
     if (line != nullptr)
     {
         UndoAction_->setEnabled(line->isEnabled() && line->isReadOnly() == false && line->isUndoAvailable());
         RedoAction_->setEnabled(line->isEnabled() && line->isReadOnly() == false && line->isRedoAvailable());
+    }
+    else if (codeOrNull != nullptr)
+    {
+        UndoAction_->setEnabled(codeOrNull->isEnabled() == true && codeOrNull->isReadOnly() == false &&
+                                codeOrNull->CanUndo() == true);
+        RedoAction_->setEnabled(codeOrNull->isEnabled() == true && codeOrNull->isReadOnly() == false &&
+                                codeOrNull->CanRedo() == true);
     }
     else if (plain != nullptr)
     {
@@ -149,13 +158,19 @@ void MainWindow::OnUndoRequested()
     {
         return;
     }
-    if (auto* line = qobject_cast<QLineEdit*>(QApplication::focusWidget()))
+    CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(QApplication::focusWidget());
+    if (codeOrNull != nullptr)
     {
-        line->undo();
+        codeOrNull->Undo();
     }
-    else if (auto* plain = qobject_cast<QPlainTextEdit*>(QApplication::focusWidget()))
+    else if (QLineEdit* lineOrNull = qobject_cast<QLineEdit*>(QApplication::focusWidget()); lineOrNull != nullptr)
     {
-        plain->undo();
+        lineOrNull->undo();
+    }
+    else if (QPlainTextEdit* plainOrNull = qobject_cast<QPlainTextEdit*>(QApplication::focusWidget());
+             plainOrNull != nullptr)
+    {
+        plainOrNull->undo();
     }
     else if (getActiveWorkspaceOrNull() == World_)
     {
@@ -183,13 +198,19 @@ void MainWindow::OnRedoRequested()
     {
         return;
     }
-    if (auto* line = qobject_cast<QLineEdit*>(QApplication::focusWidget()))
+    CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(QApplication::focusWidget());
+    if (codeOrNull != nullptr)
     {
-        line->redo();
+        codeOrNull->Redo();
     }
-    else if (auto* plain = qobject_cast<QPlainTextEdit*>(QApplication::focusWidget()))
+    else if (QLineEdit* lineOrNull = qobject_cast<QLineEdit*>(QApplication::focusWidget()); lineOrNull != nullptr)
     {
-        plain->redo();
+        lineOrNull->redo();
+    }
+    else if (QPlainTextEdit* plainOrNull = qobject_cast<QPlainTextEdit*>(QApplication::focusWidget());
+             plainOrNull != nullptr)
+    {
+        plainOrNull->redo();
     }
     else if (getActiveWorkspaceOrNull() == World_)
     {

@@ -1749,25 +1749,30 @@ those end-to-end checks are complete.
 
 ## GPU-resident progressive preview
 
-`Renderer::EnableGpuPreview` explicitly enables an optional GPU-compute BVH path before mesh
+`Renderer::EnableGpuPreview` explicitly enables an optional native-ray-query GPU path before mesh
 and material creation. It requires negotiated compute, storage buffers and
 StorageVertex support. Cook `renderer_gpu_preview.slang` as compute and
 `renderer_gpu_preview_image.slang` as raster with the installed shader helper;
-pass their independently reflected descriptors. WebGL2 rejects this path with
+pass their independently reflected descriptors. Native Metal cooking requires the
+pinned SPIRV-Cross translator. WebGPU and WebGL2 reject this path with
 `Unsupported`. The first acceptance covers native Metal; other backends require
 their own pixel qualification. There is no CPU transport/readback fallback and
-this path does not request native ray queries.
+native BLAS/TLAS traversal is required; there is no software BVH fallback.
 
 CPU setup freezes the existing snapshot, retained normals/UVs/materials and one
 retained RGBA8 texture mip, builds the static median BVH, and packs GPU buffers.
 Shared texture content is packed once, in a separate read-only buffer so the
 geometry/BVH and texel payload each respect the R4 storage-range limit. `BeginGpuPreview` then owns that immutable
-scene independently of caller snapshot/mesh/material owners. No per-pixel CPU
+scene independently of caller snapshot/mesh/material owners. Native world-triangle
+BLAS and identity-instance TLAS builds preserve the packed primitive mapping; empty
+Worlds use an empty TLAS. Bindings publish after native builds reach Ready and retain
+the exact structure versions through GPU completion. No per-pixel CPU
 path, ray, intersection or accumulation arrays are created for GPU setup.
 The retained-input setup machinery is shared with RT1; selecting its CPU-oracle
 input retention internally does not execute its CPU tracing loop.
 
-A compute dispatch performs closest/visibility BVH queries, opacity filtering,
+A compute dispatch performs closest/visibility native acceleration-structure queries,
+shared material opacity filtering,
 RGB GGX/Lambert sampling, analytic-light/emissive-triangle/constant-environment sampling, MIS,
 roulette and compensated accumulation. It uses RT1's addressed Philox dimensions
 and world-space origin error allowance. A second ordered GDI pass draws pixel
@@ -1782,13 +1787,18 @@ reports completed dispatches, not observed valid sample counts or convergence.
 The explicit quality profile admits at most four live jobs, 4096 requested
 samples, depth eight, the reference secondary-distance/camera bounds and a fixed
 texture mip. It has no denoising, motion history, transmission, spectral transport,
-coating model or native acceleration structure. Up to 128 authored directional,
+coating model. Native acceleration structures are mandatory. Up to 128 authored directional,
 point and spot lights are admitted without dropping entries. Baked/shadow atlas
 inputs reject with `Unsupported`; lighting comes from the admitted
 emissive surfaces and caller-supplied constant environment. This is a finite-depth
 preview of the prepared RGB profile, not general PBRT fidelity. FP32 BVH triangle
 intersection remains subject to thin/near-edge precision qualification. The
 existing native-query Staircase2 parity gap remains independent of this path.
+
+The GPU budget also charges native structure inputs, BLAS/TLAS storage and build
+scratch conservatively until the preview retires. Native ray capability rejection
+preserves ordinary raster rendering. Mixed-hardware projects select an authored
+raster graph on unsupported devices; see [renderer selection](../development/render-graph-authoring.md#support-developers-and-players-without-rt-hardware).
 
 Enable-time CPU budget covers retained renderer geometry, preview state, BVH and
 packing/zero-initialization scratch. RHI-retained source texels/registries and

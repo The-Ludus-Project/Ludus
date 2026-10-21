@@ -935,6 +935,20 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     frameAll->setToolTip(QStringLiteral("Fit all visible geometry in the viewport (Home)."));
     controls->addWidget(frameAll);
     connect(frameAll, &QToolButton::clicked, preview, &RenderPreview::FrameAll);
+    QToolButton* forceRaster = new QToolButton(this);
+    forceRaster->setObjectName(QStringLiteral("viewportForceRaster"));
+    forceRaster->setText(QStringLiteral("Force raster"));
+    forceRaster->setCheckable(true);
+    forceRaster->setChecked(preview->ShouldForceRaster());
+    forceRaster->setAccessibleName(QStringLiteral("Force raster renderer"));
+    forceRaster->setToolTip(QStringLiteral("Use raster even when hardware raytracing is available. "
+                                           "Unchecked selects automatically from the current GPU and API."));
+    controls->addWidget(forceRaster);
+    connect(forceRaster, &QToolButton::toggled, preview, &RenderPreview::SetForceRaster);
+    connect(preview, &RenderPreview::RendererPreferenceChanged, forceRaster, [forceRaster](bool shouldForceRaster) {
+        const QSignalBlocker blocker(forceRaster);
+        forceRaster->setChecked(shouldForceRaster);
+    });
     QToolButton* statistics = new QToolButton(this);
     statistics->setObjectName(QStringLiteral("viewportStatistics"));
     statistics->setText(QStringLiteral("Stats"));
@@ -1157,7 +1171,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->Layout->addWidget(mState->GraphViewOrNull, 1);
     mState->ControlsOrNull->insertWidget(0, mState->GraphViewOrNull->TakeControls(this), 1);
     findChild<QComboBox*>(QStringLiteral("viewportShading"))->hide();
-    for (const QString& name : {QStringLiteral("viewportLiveShaders"), QStringLiteral("viewportStatistics")})
+    for (const QString& name : {QStringLiteral("viewportLiveShaders")})
     {
         QToolButton* buttonOrNull = findChild<QToolButton*>(name);
         if (buttonOrNull != nullptr)
@@ -1165,6 +1179,12 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             buttonOrNull->hide();
         }
     }
+    QToolButton* statistics = findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
+    LUDUS_REQUIRE(statistics != nullptr);
+    statistics->setToolTip(QStringLiteral("Show delivered-image FPS, active CPU work, GPU device time and elapsed "
+                                          "readback/conversion latency. Times average the last 30 samples; "
+                                          "FPS falls to zero when idle. GPU shows n/a without timestamps."));
+    updateStatistics();
     if (wasRunning == true)
     {
         static_cast<void>(Preview_->Start());
@@ -1238,6 +1258,12 @@ void PreviewViewport::ClearFrame(const QString& text)
 }
 QString PreviewViewport::GetStatisticsText() const
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->GraphViewOrNull != nullptr)
+    {
+        return mState->GraphViewOrNull->GetStatisticsText();
+    }
+#endif
     return mState->StatisticsText;
 }
 QString PreviewViewport::GetShaderStatusText() const
@@ -1269,6 +1295,13 @@ void PreviewViewport::updateShaderStatus()
 }
 void PreviewViewport::updateStatistics()
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->GraphViewOrNull != nullptr)
+    {
+        mState->GraphViewOrNull->SetStatisticsVisible(Preview_->IsStatisticsVisible());
+        return;
+    }
+#endif
     const QString text =
         Preview_->IsStatisticsVisible() == true ? FormatViewportStatistics(Preview_->GetStatistics()) : QString();
     if (text == mState->StatisticsText)

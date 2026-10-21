@@ -16,16 +16,6 @@ private:
     /// Private registry access; applications cannot construct resource identities.
     friend struct internal::RasterAccess;
 };
-/// Immutable TLAS and copied opacity table, including offscreen instances.
-/// Copies borrow identity; accepted query batches retain the scene until completion.
-struct RaySceneHandle final
-{
-private:
-    ludus::foundation::uint64 Owner = 0, Generation = 0;
-    ludus::foundation::uint32 Slot = 0;
-    /// Private registry access; applications cannot construct resource identities.
-    friend struct internal::RasterAccess;
-};
 /// Native query compute program with the fixed RT0 ray/hit/opacity ABI.
 /// This profile uses SPIR-V RayQueryKHR or MSL 2.4 intersection_query; ordinary
 /// raster shaders retain their existing target. Dedicated ray pipelines are absent.
@@ -51,7 +41,7 @@ private:
 /// does not establish ray support. Browser backends expose an unavailable profile.
 struct RayCapabilities final
 {
-    /// Native immutable triangle BLAS/TLAS build operations.
+    /// Native immutable triangle BLAS/TLAS builds on an admitted hardware ray device.
     bool StaticTriangles = false;
     /// Nearest accepted hit and early-exit accepted visibility with opacity filtering.
     bool InlineQueries = false;
@@ -127,7 +117,7 @@ struct RaySceneDescription final
 {
     /// Borrowed ordered instances; returned hit indices address this exact order.
     const RayInstanceDescription* Instances = nullptr;
-    /// Positive count, at most RayCapabilities::MaxInstances.
+    /// Count up to RayCapabilities::MaxInstances; zero creates an empty scene.
     ludus::foundation::usize Count = 0;
     /// Explicit TLAS/table/scratch budget in bytes, excluding retained BLAS versions.
     ludus::foundation::usize ByteBudget = 0;

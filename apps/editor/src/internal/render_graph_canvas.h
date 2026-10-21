@@ -8,12 +8,17 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QPointF>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 #include <QVector>
 
 QT_BEGIN_NAMESPACE
 class QGraphicsPathItem;
+class QGraphicsRectItem;
+class QGraphicsEllipseItem;
+class QGraphicsSimpleTextItem;
+class QGraphicsTextItem;
 class QGraphicsScene;
 class QShowEvent;
 class QRubberBand;
@@ -93,6 +98,10 @@ class RenderGraphCanvas final : public QGraphicsView
 public:
     static constexpr foundation::int32 MAX_COORDINATE = RenderGraphDocument::MAX_COORDINATE;
 
+    /// Expand available Scene members; connected members remain visible when collapsed.
+    void SetSceneBundleExpanded(const QString& node, bool isExpanded);
+    /// Current per-canvas expansion preference for this configuration and node.
+    [[nodiscard]] bool IsSceneBundleExpanded(const QString& node) const;
     explicit RenderGraphCanvas(const RenderGraphDocument& document, QWidget* parentOrNull = nullptr);
     ~RenderGraphCanvas() override;
     RenderGraphCanvas(const RenderGraphCanvas&) = delete;
@@ -102,6 +111,9 @@ public:
     void ShowConfiguration(const QString& file, const QString& configuration);
     /// Re-read the draft after any document change, keeping the view and selection.
     void Rebuild();
+    /// Current World drawable reference in physical pixels; empty means unavailable.
+    /// Refreshes size annotations without changing drafts, selection, layout or undo history.
+    void SetReferenceSize(const QSize& size);
     [[nodiscard]] const QString& GetFile() const noexcept
     {
         return mFile;
@@ -125,6 +137,14 @@ public:
     /// Scroll the node into view without changing the current zoom or selection.
     void RevealNode(const QString& node);
     [[nodiscard]] QStringList GetSelectedNodes() const;
+    /// Remove the display marker and accessibility description without changing graph state.
+    void ClearDiagnostic();
+    /// Reveal a diagnostic's authored node/interface and ring its exact port when present.
+    /// Missing ports fall back to their owner. Display only; cleared by the next rebuild.
+    /// Returns false when no displayed owner exists; never changes document/history.
+    [[nodiscard]] bool ShowDiagnostic(const QJsonObject& location, const QString& description);
+    /// Current display marker, empty after a rebuild or when its owner is absent.
+    [[nodiscard]] QJsonObject GetDiagnosticLocation() const;
 
     /// Gesture entry points shared by mouse handling and tests. A gesture moves every
     /// selected node live in the view and reports the final positions once in EndDrag.
@@ -181,14 +201,19 @@ private:
     [[nodiscard]] QString portAt(QPointF position, bool& outIsOutput) const;
     [[nodiscard]] QString edgeAt(QPointF position, QString& outTo) const;
     void cancelLink();
+    void refreshFeedback();
+    void updateLinkFeedback(QPointF position);
     void fitGraph();
     void zoomAt(foundation::float64 factor, QPointF position);
 
     const RenderGraphDocument& mDocument;
     QGraphicsScene* mScene;
+    QGraphicsRectItem* mDiagnosticMarkerOrNull = nullptr;
+    QJsonObject mDiagnosticLocation;
     QString mFile;
     QString mConfiguration;
     QHash<QString, NodeView*> mNodes;
+    QStringList mExpandedSceneBundles;
     QVector<EdgeView*> mEdges;
     QStringList mDragNodes;
     QHash<QString, QPointF> mDragOrigins;
@@ -196,6 +221,11 @@ private:
     QPointF mPressPosition;
     QString mLinkFrom;
     QGraphicsPathItem* mLinkPreviewOrNull = nullptr;
+    QGraphicsTextItem* mLinkHintOrNull = nullptr;
+    QGraphicsEllipseItem* mLinkPortOrNull = nullptr;
+    QString mLinkPortTooltip;
+    QString mLinkEndpoint;
+    QSize mReferenceSize;
     QRubberBand* mSelectionBox;
     QPoint mSelectionStart;
     QPoint mPanPosition;

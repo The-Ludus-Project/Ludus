@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMap>
 #include <QStringList>
 
 QT_BEGIN_NAMESPACE
@@ -33,7 +34,12 @@ public:
     /// Return candidate input records; does not change the document.
     [[nodiscard]] QJsonArray GetInputs() const;
     /// Return candidate output records, including sources and required-consumer flags.
+    /// Input sources retain original row identities for the document's rename transaction.
     [[nodiscard]] QJsonArray GetOutputs() const;
+    /// Explicit old-to-new identities retained by rows; removal/addition is never guessed as a rename.
+    [[nodiscard]] QMap<QString, QString> GetInputRenames() const;
+    /// Return old-to-new output identities; new rows and removed rows contribute no rename.
+    [[nodiscard]] QMap<QString, QString> GetOutputRenames() const;
     /// Keep the dialog open and display a rejected edit's reason beside its controls.
     void ShowError(const QString& message);
 
@@ -42,13 +48,16 @@ Q_SIGNALS:
 
 private:
     [[nodiscard]] QTableWidget* createTable(bool isOutput);
-    void addPort(QTableWidget& inoutTable, const QJsonObject& port, bool isOutput);
+    void
+    addPort(QTableWidget& inoutTable, const QJsonObject& port, bool isOutput, const QString& originalIdentity = {});
     void refreshSources();
     const RenderGraphDocument& mDocument;
+    QString mFile;
     QJsonObject mConfiguration;
     foundation::int32 mVersion;
     QTableWidget* mInputs;
     QTableWidget* mOutputs;
     QLabel* mError;
+    QLabel* mRepairs;
 };
 } // namespace ludus::editor

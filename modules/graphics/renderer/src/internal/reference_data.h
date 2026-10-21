@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/content/render_graph_format/scene_data.h>
+
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 
@@ -16,6 +18,8 @@
 
 namespace ludus::graphics::renderer::internal
 {
+/// Shared addressed-random domain for reference captures and authored triangle-ray graph jobs.
+inline constexpr foundation::uint32 REFERENCE_RANDOM_DOMAIN = 0x52543031;
 namespace math = foundation::math;
 using namespace foundation;
 struct ReferenceMeshData final
@@ -142,6 +146,7 @@ struct ReferenceJob final
     ReferenceSceneData Scene;
     Array<ReferenceSurfaceData> FlatSurfaces;
     uint64 SourceGeneration = 0;
+    uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     Array<math::Vector4> ShaderEmitters;
     Array<uint8> ShaderTextureBytes;
     Array<ReferenceAccumulator> Pixels;

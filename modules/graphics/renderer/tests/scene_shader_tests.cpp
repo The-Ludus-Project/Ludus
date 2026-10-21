@@ -1,6 +1,7 @@
 #include "../src/internal/render_graph_ray_scene.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/addressed_random.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -44,6 +45,41 @@ struct SceneFixture final
     }
 };
 } // namespace
+TEST_CASE("Graph ray jobs initialize their random key from the requested seed", "[scene-shader][random]")
+{
+    SceneFixture fixture;
+    internal::ReferenceMeshData mesh;
+    for (const math::Vector3 position : fixture.Positions)
+    {
+        REQUIRE(mesh.Positions.TryAdd(position) == true);
+    }
+    for (const uint32 index : fixture.Indices)
+    {
+        REQUIRE(mesh.Indices.TryAdd(index) == true);
+    }
+    const internal::GraphRaySceneInput input{&mesh, {}, {1, 1, 1}, 1};
+    constexpr uint64 SEED_COUNT = 2;
+    uint64 previousKey = 0;
+    for (uint64 seed = 0; seed < SEED_COUNT; ++seed)
+    {
+        fixture.Camera.Seed = seed;
+        math::RandomKey expectedKey;
+        REQUIRE(math::TryMakeRandomKey(seed, internal::REFERENCE_RANDOM_DOMAIN, expectedKey) ==
+                math::MathStatus::Success);
+        core::UniquePtr<internal::ReferenceJob> job;
+        REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+                rhi::RasterStatus::Ready);
+        CHECK(job->Key.Value == expectedKey.Value);
+        job.Reset();
+        REQUIRE(internal::BuildGraphRayScene({&input, 1}, fixture.Camera, BUDGET, job) == rhi::RasterStatus::Ready);
+        CHECK(job->Key.Value == expectedKey.Value);
+        if (seed != 0)
+        {
+            CHECK(expectedKey.Value != previousKey);
+        }
+        previousKey = expectedKey.Value;
+    }
+}
 TEST_CASE("Scene shader triangles resolve independent mesh slots and instance overrides", "[scene-shader]")
 {
     SceneFixture fixture;
@@ -149,6 +185,43 @@ TEST_CASE("Emitter construction skips collapsed faces and computes transformed a
           rhi::RasterStatus::InvalidDescription);
 }
 
+TEST_CASE("Ray scene admission reports required and available CPU bytes and clears stale diagnostics", "[scene-shader]")
+{
+    SceneFixture fixture;
+    renderer::SceneShaderDiagnostics diagnostics;
+    fixture.Scene.DiagnosticsOrNull = &diagnostics;
+    core::UniquePtr<internal::ReferenceJob> job;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, 1, job) ==
+            rhi::RasterStatus::CapacityExceeded);
+    CHECK(job.Get() == nullptr);
+    CHECK(diagnostics.ExceededBudget == renderer::SceneMemoryBudget::CpuScene);
+    CHECK(diagnostics.RequiredBytes > sizeof(internal::ReferenceTriangle) * 2);
+    CHECK(diagnostics.AvailableBytes == 1);
+    const usize requiredBytes = static_cast<usize>(diagnostics.RequiredBytes);
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, requiredBytes - 1, job) ==
+            rhi::RasterStatus::CapacityExceeded);
+    CHECK(diagnostics.RequiredBytes == requiredBytes);
+    CHECK(diagnostics.AvailableBytes == requiredBytes - 1);
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, requiredBytes, job) ==
+            rhi::RasterStatus::Ready);
+    CHECK(diagnostics.ExceededBudget == renderer::SceneMemoryBudget::None);
+    CHECK(diagnostics.RequiredBytes == 0);
+    CHECK(diagnostics.AvailableBytes == 0);
+    CHECK(job->Scene.Triangles.GetSize() == 2);
+}
+
+TEST_CASE("Ray CPU byte estimation rejects overflow before reading triangle indices", "[scene-shader]")
+{
+    SceneFixture fixture;
+    constexpr usize CORNERS_PER_TRIANGLE = 3;
+    fixture.Mesh.Geometry.IndexCount = (~usize{0} / CORNERS_PER_TRIANGLE) * CORNERS_PER_TRIANGLE;
+    fixture.Mesh.MaterialSlots = {};
+    core::UniquePtr<internal::ReferenceJob> job;
+    CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+          rhi::RasterStatus::CapacityExceeded);
+    CHECK(job.Get() == nullptr);
+}
+
 TEST_CASE("Unassigned higher mesh slots retain defaults and expose candidate diagnostics", "[scene-shader]")
 {
     SceneFixture fixture;
@@ -191,4 +264,65 @@ TEST_CASE("HDR environments are copied and mesh power resolves using placed area
     CHECK(renderer::ResolveMeshEmissionPower({1, 1, 1}, 1, 0, false, emission) ==
           rhi::RasterStatus::InvalidDescription);
     CHECK(math::Abs(emission.X - .5F) < 1e-6F);
+}
+
+TEST_CASE("Scene bundle selection retains geometry and omits unrequested resources", "[scene-shader][bundle]")
+{
+    SceneFixture fixture;
+    StaticArray<uint8, 4> pixels{{255, 0, 0, 255}};
+    fixture.Materials[0].ColorTexture = {pixels.GetData(), pixels.GetSize(), 4, 1, 1, rhi::RasterFormat::Rgba8Srgb};
+    renderer::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = renderer::LightKind::Point;
+    fixture.Scene.Inputs.Lights = {&light, 1};
+    fixture.Scene.Inputs.Environment = {1, 1, 1};
+    core::UniquePtr<internal::ReferenceJob> job;
+    SECTION("Geometry only ignores invalid material and light inputs")
+    {
+        fixture.Materials[0].HasError = true;
+        fixture.Bindings[0] = 37;
+        light.SourceId = 0;
+        fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY;
+        REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+                rhi::RasterStatus::Ready);
+        CHECK(job->Scene.Triangles.GetSize() == 2);
+        CHECK(job->Scene.Triangles[1].Primitive == 1);
+        CHECK(job->FlatSurfaces[0].HasTexture == false);
+        CHECK(job->Description.LightCount == 0);
+        CHECK(job->Scene.Emitters.GetSize() == 0);
+        CHECK(job->Description.Environment.X == 0);
+        CHECK(job->SceneData == ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY);
+    }
+    SECTION("Materials include texture and emission but no light sampling resources")
+    {
+        fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY |
+                                  ::ludus::content::render_graph_format::SCENE_DATA_MATERIALS;
+        REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+                rhi::RasterStatus::Ready);
+        CHECK(job->FlatSurfaces[0].HasTexture == true);
+        CHECK(job->FlatSurfaces[1].Emission.Y == 3);
+        CHECK(job->Description.LightCount == 0);
+        CHECK(job->Scene.Emitters.GetSize() == 0);
+        CHECK(job->Description.Environment.X == 0);
+    }
+    SECTION("Lights retain emission dependencies without surface maps")
+    {
+        fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY |
+                                  ::ludus::content::render_graph_format::SCENE_DATA_LIGHTS;
+        REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+                rhi::RasterStatus::Ready);
+        CHECK(job->FlatSurfaces[0].HasTexture == false);
+        CHECK(job->FlatSurfaces[1].Bsdf.BaseColor.Y == 0);
+        CHECK(job->FlatSurfaces[1].Emission.Y == 3);
+        CHECK(job->Description.LightCount == 1);
+        CHECK(job->Scene.Emitters.GetSize() == 1);
+        CHECK(job->Description.Environment.X == 1);
+    }
+    SECTION("Invalid selection preserves the output")
+    {
+        fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_MATERIALS;
+        CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+              rhi::RasterStatus::InvalidDescription);
+        CHECK(job.Get() == nullptr);
+    }
 }

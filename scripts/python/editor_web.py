@@ -13,8 +13,8 @@ import subprocess
 import sys
 import tarfile
 import urllib.request
-import venv
 
+import managed_venv
 from web_package import EDITOR_MAXIMUM_MEMORY_PAGES, SDK_NOTICES, PORT_NOTICES, validate_wasm
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -205,8 +205,7 @@ def main() -> int:
     tools.mkdir(parents=True, exist_ok=True)
     native = json.loads((ROOT / "config/tool_versions.json").read_text())["managed"]
     host_tools = ROOT / "out/host-tools/venv"
-    if args.bootstrap and not (host_tools / "bin/cmake").is_file():
-        venv.EnvBuilder(with_pip=True).create(host_tools)
+    if args.bootstrap and (managed_venv.ensure(host_tools) or not (host_tools / "bin/cmake").is_file()):
         run([host_tools / "bin/python", "-m", "pip", "install", f"cmake=={native['cmake']}", f"ninja=={native['ninja']}"])
     cmake, ninja = host_tools / "bin/cmake", host_tools / "bin/ninja"
     sdk = ROOT / "out/host-tools/emsdk"
@@ -224,7 +223,7 @@ def main() -> int:
             shutil.move(str(extracted / ("qtbase-everywhere-src-" + qt_lock["qt"])), source)
         if not host.is_dir():
             installer = tools / "installer"
-            venv.EnvBuilder(with_pip=True).create(installer)
+            managed_venv.ensure(installer)
             run([installer / "bin/python", "-m", "pip", "install", f"aqtinstall=={qt_lock['aqtinstall']}"])
             os_name, arch = ("mac", "clang_64") if platform.system() == "Darwin" else ("linux", "linux_gcc_64")
             archives = ["qtbase"] + (["icu"] if os_name == "linux" else [])

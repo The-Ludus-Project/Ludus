@@ -25,7 +25,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -100,7 +100,7 @@ def lower_plan(package, configuration):
             color = operation['attachments']['color']
             pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']),
                 'Color': resources.index(color['resource']), 'Depth': ABSENT, 'ColorLoad': 'Clear', 'ColorStore': 'Store',
-                'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0})
+                'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA)})
             continue
         choices = [r for r in package['recipes'] if r['technique'] == operation['technique'] and
                    ('pipeline' not in operation or all(r['state'][key] == value
@@ -120,7 +120,7 @@ def lower_plan(package, configuration):
                              'Color': resources.index(color['resource']) if color else ABSENT,
                              'Depth': resources.index(depth), 'ColorLoad': color_load, 'ColorStore': color_store,
                              'DepthLoad': attachment['depth']['load'], 'DepthStore': attachment['depth']['store'],
-                             'AllowsRepeatedCoverage': 0})
+                             'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA)})
     return plan, resource_records, pass_records, cameras
 
 
@@ -128,7 +128,7 @@ STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 4
+PACKAGE_VERSION = 6
 MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
@@ -502,7 +502,7 @@ def encode_runtime_package(contents):
         data += u32(target)
     for p in contents['passes']:
         data += u32(PROGRAM_CODES[p['Program']], p['Camera'], p['Color'], p['Depth'], loads[p['ColorLoad']],
-                    stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'])
+                    stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'], p.get('SceneData', graph.scene_bundle.ALL_DATA))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:

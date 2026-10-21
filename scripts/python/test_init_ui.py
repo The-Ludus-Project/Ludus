@@ -147,7 +147,7 @@ class EditorSetupTests(unittest.TestCase):
 
     def test_preview_tools_follow_default_opt_out_and_host(self):
         root = engine.repo_root()
-        for host, tool_count in (("Linux", 2), ("Darwin", 1)):
+        for host, tool_count in (("Linux", 2), ("Darwin", 2)):
             with self.subTest(host=host), patch.object(init_editor.platform, "system", return_value=host):
                 preset = "macos-clang-development" if host == "Darwin" else "linux-clang-development"
                 for options, calls in (((), 1), (("--no-editor-preview",), 0), (("--no-editor",), 0)):
@@ -155,10 +155,13 @@ class EditorSetupTests(unittest.TestCase):
                         ["init", "--cli", preset, *([] if "--no-editor" in options else ["--with-editor"]), *options]))
                     with patch.object(engine, "run") as run:
                         init_editor.prepare_editor_preview(args, engine)
-                    self.assertEqual(run.call_count, calls)
+                    self.assertEqual(run.call_count, calls * (2 if host == "Darwin" else 1))
                     if calls:
-                        self.assertEqual(run.call_args.args[0],
+                        self.assertEqual(run.call_args_list[0].args[0],
                                          [engine.venv_python(root), root / "scripts/shader-probe", "bootstrap"])
+                        if host == "Darwin":
+                            self.assertEqual(run.call_args_list[1].args[0],
+                                             [engine.venv_python(root), root / "scripts/bootstrap-spirv-cross"])
                 tools = init_editor.preview_tool_args(root)
                 self.assertEqual(len(tools), tool_count)
                 self.assertIn("LUDUS_SLANG_COMPILER", tools[0])

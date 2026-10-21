@@ -129,6 +129,7 @@ class BuildTests(unittest.TestCase):
         client = self.helper / build.NATIVE_WORKER_HELPER
         client.write_text('native client')
         first, _ = build.tool_identity(self.helper, self.compiler, None, None, worker_socket='/unused/compiler.sock')
+        self.assertIn('generator/render_graph_diagnostics.py', first)
         client.write_text('changed native client')
         second, _ = build.tool_identity(self.helper, self.compiler, None, None, worker_socket='/unused/compiler.sock')
         self.assertNotEqual(first['helper/' + build.NATIVE_WORKER_HELPER],

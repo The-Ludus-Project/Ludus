@@ -1,6 +1,8 @@
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_canvas_feedback.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_resources.h"
+#include "internal/render_graph_scene_bundle.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -10,11 +12,13 @@
 #include <QContextMenuEvent>
 #include <QFocusEvent>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsSimpleTextItem>
+#include <QGraphicsTextItem>
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QKeySequence>
@@ -61,6 +65,14 @@ constexpr float64 MINIMUM_VIEW_SCALE = 0.01;
 constexpr float64 MAXIMUM_VIEW_SCALE = 8;
 constexpr int32 LABEL_POINT_SIZE = 9;
 constexpr int32 MAX_CYCLE_SEARCH_STEPS = 1024;
+constexpr float64 INACTIVE_OPACITY = 0.55;
+constexpr float64 FEEDBACK_HEIGHT = 40;
+constexpr float64 LINK_HINT_WIDTH = 340;
+constexpr float64 LINK_HINT_OFFSET = 16;
+constexpr QRgb LINK_ACCEPT_COLOR = 0xFF79D69E;
+constexpr QRgb LINK_REJECT_COLOR = 0xFFFF9A88;
+constexpr QRgb LABEL_COLOR = 0xFFD6DAE0;
+constexpr float64 NODE_ROW_GAP = 30;
 /// Reserved display key for configuration outputs; not a valid authored identifier.
 const QString OUTPUTS_NODE = QStringLiteral("#outputs");
 const QString INPUT_NODE = QStringLiteral("input");
@@ -144,7 +156,7 @@ QColor GetDomainColor(RenderGraphDomain domain)
 
 QColor GetTypeColor(const QString& type)
 {
-    if (type == QStringLiteral("Scene") || type == QStringLiteral("View"))
+    if (type.startsWith(QStringLiteral("Scene")) == true || type == QStringLiteral("View"))
     {
         return {120, 170, 230};
     }
@@ -224,11 +236,15 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
     if (IsPipelineNode(kind) == true)
     {
         ports.Inputs = ReadInterface(node.value(QStringLiteral("inputs")).toArray());
+        AppendSceneBundleInputs(ports.Inputs);
         ports.Outputs = ReadInterface(node.value(QStringLiteral("outputs")).toArray());
     }
     else if (kind == QStringLiteral("Scene"))
     {
-        ports.Outputs = {{QStringLiteral("scene"), QStringLiteral("Scene")}};
+        ports.Outputs = {{QStringLiteral("scene"), QStringLiteral("Scene")},
+                         {QStringLiteral("geometry"), QStringLiteral("SceneGeometry")},
+                         {QStringLiteral("materials"), QStringLiteral("SceneMaterials")},
+                         {QStringLiteral("lights"), QStringLiteral("SceneLights")}};
     }
     else if (kind == QStringLiteral("Camera"))
     {
@@ -398,6 +414,26 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
         return {QStringLiteral("TypeMismatch"),
                 QStringLiteral("%1 (%2) cannot connect to %3 (%4)").arg(from, sourceType, to, sinkType)};
     }
+    for (const RenderGraphPort& port : sinkPorts.Inputs)
+    {
+        if (port.Type != QStringLiteral("Scene"))
+        {
+            continue;
+        }
+        const QString bundle = sink + QLatin1Char('.') + port.Id;
+        const QString memberPrefix = bundle + QLatin1Char('_');
+        for (const QJsonValueConstRef value : edges)
+        {
+            const QString target = value.toObject().value(QStringLiteral("to")).toString();
+            if ((to == bundle && target.startsWith(memberPrefix) == true) ||
+                (to.startsWith(memberPrefix) == true && target == bundle))
+            {
+                return {QStringLiteral("MultipleWriters"),
+                        QStringLiteral("Expand the Scene bundle before connecting its members; disconnect the member "
+                                       "wires before reconnecting the full bundle.")};
+            }
+        }
+    }
     // The new edge makes `sink` depend on `source`; a path sink -> ... -> source closes a cycle.
     QStringList pending{sink};
     QSet<QString> visited;
@@ -436,6 +472,8 @@ struct RenderGraphCanvas::NodeView final
     QGraphicsRectItem* Frame;
     QHash<QString, QGraphicsEllipseItem*> InputItems;
     QHash<QString, QGraphicsEllipseItem*> OutputItems;
+    QGraphicsSimpleTextItem* ActivityLabelOrNull = nullptr;
+    QGraphicsSimpleTextItem* SizeLabelOrNull = nullptr;
     bool IsMovable = true;
 };
 
@@ -539,6 +577,7 @@ QJsonObject RenderGraphCanvas::configuration() const
 void RenderGraphCanvas::Rebuild()
 {
     const QStringList selected = GetSelectedNodes();
+    ClearDiagnostic();
     cancelLink();
     mIsDragging = false;
     mIsBoxSelecting = false;
@@ -590,7 +629,7 @@ void RenderGraphCanvas::Rebuild()
             break;
         }
     }
-    QHash<int32, int32> rows;
+    QHash<int32, float64> rows;
     int32 lastColumn = 0;
     // Identity and display title are distinct named strings.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
@@ -615,7 +654,8 @@ void RenderGraphCanvas::Rebuild()
                 }
             }
         }
-        const float64 height = HEADER_HEIGHT + static_cast<float64>(rowCount) * PORT_SPACING + NODE_PADDING;
+        const float64 height =
+            HEADER_HEIGHT + static_cast<float64>(rowCount) * PORT_SPACING + NODE_PADDING + FEEDBACK_HEIGHT;
         NodeView* view = new NodeView(mScene->addRect(QRectF(0, 0, NODE_WIDTH, height),
                                                       QPen(QColor::fromRgba(NODE_BORDER_COLOR), NODE_BORDER_WIDTH),
                                                       QColor::fromRgba(NODE_BACKGROUND_COLOR)));
@@ -633,6 +673,8 @@ void RenderGraphCanvas::Rebuild()
         QFont font = label->font();
         font.setBold(true);
         label->setFont(font);
+        label->setText(QFontMetricsF(font).elidedText(title, Qt::ElideRight, NODE_WIDTH - 2 * NODE_PADDING));
+        label->setToolTip(title);
         label->setBrush(Qt::white);
         label->setPos(NODE_PADDING, (HEADER_HEIGHT - label->boundingRect().height()) / 2);
         const auto addPort = [&view](const RenderGraphPort& port, qsizetype row, bool isOutput) {
@@ -665,6 +707,17 @@ void RenderGraphCanvas::Rebuild()
         {
             addPort(ports.Outputs.at(i), outputRows.value(ports.Outputs.at(i).Id, i), true);
         }
+        view->ActivityLabelOrNull = new QGraphicsSimpleTextItem(view->Frame);
+        view->SizeLabelOrNull = new QGraphicsSimpleTextItem(view->Frame);
+        for (QGraphicsSimpleTextItem* annotation : {view->ActivityLabelOrNull, view->SizeLabelOrNull})
+        {
+            QFont small = annotation->font();
+            small.setPointSize(LABEL_POINT_SIZE);
+            annotation->setFont(small);
+            annotation->setBrush(QColor::fromRgba(LABEL_COLOR));
+        }
+        view->ActivityLabelOrNull->setPos(NODE_PADDING, height - FEEDBACK_HEIGHT);
+        view->SizeLabelOrNull->setPos(NODE_PADDING, height - FEEDBACK_HEIGHT / 2);
         mNodes.insert(identity, view);
         return view;
     };
@@ -675,13 +728,55 @@ void RenderGraphCanvas::Rebuild()
         const QString kind = node.value(QStringLiteral("kind")).toString();
         RenderGraphNodePorts ports;
         const bool hasPorts = GetRenderGraphNodePorts(mDocument, node, ports);
+        if (IsSceneBundleExpanded(identity) == false)
+        {
+            const auto hideUnusedMembers =
+                [&edges, &identity, &record, &kind, &node](QVector<RenderGraphPort>& inoutPorts, bool isOutput) {
+                    for (qsizetype index = inoutPorts.size(); index > 0; --index)
+                    {
+                        const RenderGraphPort& port = inoutPorts.at(index - 1);
+                        if (IsSceneBundleMember(port) == false)
+                        {
+                            continue;
+                        }
+                        const bool isDerivedMember =
+                            kind == QStringLiteral("Scene") || GetSceneBundlePortType(node, port.Id).isEmpty() == false;
+                        if (isDerivedMember == false)
+                        {
+                            continue;
+                        }
+                        bool isConnected = false;
+                        for (const QJsonValueConstRef edge : edges)
+                        {
+                            isConnected =
+                                isConnected == true ||
+                                edge.toObject()
+                                        .value(isOutput == true ? QStringLiteral("from") : QStringLiteral("to"))
+                                        .toString() == identity + QLatin1Char('.') + port.Id;
+                        }
+                        if (isOutput == true)
+                        {
+                            for (const QJsonValueConstRef output : record.value(QStringLiteral("outputs")).toArray())
+                            {
+                                isConnected = isConnected == true ||
+                                              output.toObject().value(QStringLiteral("source")).toString() ==
+                                                  identity + QLatin1Char('.') + port.Id;
+                            }
+                        }
+                        if (isConnected == false)
+                        {
+                            inoutPorts.removeAt(index - 1);
+                        }
+                    }
+                };
+            hideUnusedMembers(ports.Inputs, false);
+            hideUnusedMembers(ports.Outputs, true);
+        }
         const int32 column = columns.value(identity);
         lastColumn = qMax(lastColumn, column);
-        const int32 row = rows.value(column);
-        rows.insert(column, row + 1);
-        const QPointF position = authored.contains(identity) == true
-                                     ? authored.value(identity)
-                                     : QPointF(column * COLUMN_SPACING, row * ROW_SPACING);
+        const float64 row = rows.value(column);
+        const QPointF position =
+            authored.contains(identity) == true ? authored.value(identity) : QPointF(column * COLUMN_SPACING, row);
         NodeView* view =
             addNode(identity,
                     identity + QStringLiteral(" : ") + kind +
@@ -691,6 +786,7 @@ void RenderGraphCanvas::Rebuild()
                     position,
                     IsPipelineNode(kind) == true ? node.value(QStringLiteral("outputs")).toArray() : QJsonArray{});
         view->Kind = kind;
+        rows.insert(column, row + qMax(ROW_SPACING, view->Frame->rect().height() + NODE_ROW_GAP));
     }
     const QVector<RenderGraphPort> inputs = ReadInterface(record.value(QStringLiteral("inputs")).toArray());
     if (inputs.isEmpty() == false)
@@ -752,6 +848,7 @@ void RenderGraphCanvas::Rebuild()
         }
     }
     updateEdges();
+    refreshFeedback();
     for (const QString& node : selected)
     {
         if (mNodes.contains(node) == true)
@@ -761,6 +858,219 @@ void RenderGraphCanvas::Rebuild()
     }
     updateSelection();
     mScene->setSceneRect(mScene->itemsBoundingRect().adjusted(-400, -400, 400, 400));
+}
+
+void RenderGraphCanvas::SetReferenceSize(const QSize& size)
+{
+    if (mReferenceSize != size)
+    {
+        mReferenceSize = size;
+        refreshFeedback();
+    }
+}
+
+void RenderGraphCanvas::refreshFeedback()
+{
+    QHash<QString, RenderGraphResourceFeedback> resourceCache;
+    const QJsonObject record = configuration();
+    const QHash<QString, RenderGraphActivityFeedback> activity =
+        InspectRenderGraphActivity(mDocument, mFile, mConfiguration);
+    const auto findSource = [&record](const QString& endpoint) {
+        if (endpoint.startsWith(OUTPUTS_NODE + QLatin1Char('.')) == true)
+        {
+            for (const QJsonValueConstRef value : record.value(QStringLiteral("outputs")).toArray())
+            {
+                const QJsonObject output = value.toObject();
+                if (output.value(QStringLiteral("id")).toString() == GetEndpointPort(endpoint))
+                {
+                    return output.value(QStringLiteral("source")).toString();
+                }
+            }
+        }
+        for (const QJsonValueConstRef value : record.value(QStringLiteral("edges")).toArray())
+        {
+            if (value.toObject().value(QStringLiteral("to")).toString() == endpoint)
+            {
+                return value.toObject().value(QStringLiteral("from")).toString();
+            }
+        }
+        return QString();
+    };
+    for (NodeView* view : std::as_const(mNodes))
+    {
+        const RenderGraphActivityFeedback state = activity.value(view->Id);
+        const bool isInterface = view->Domain == RenderGraphDomain::Interface;
+        view->Frame->setOpacity(
+            state.Activity == RenderGraphActivity::Inactive && isInterface == false ? INACTIVE_OPACITY : 1);
+        QString explanation = isInterface == true
+                                  ? QStringLiteral("Configuration interface. Library inspection assumes all exposed "
+                                                   "outputs are requested; caller instances can use fewer.")
+                                  : state.Explanation;
+        if (explanation.isEmpty() == true)
+        {
+            explanation = QStringLiteral("Activity unknown: the draft cannot be inspected within the authoring bounds. "
+                                         "Validate for diagnostics.");
+        }
+        const QString label = isInterface == true             ? QStringLiteral("Configuration interface")
+                              : state.Label.isEmpty() == true ? QStringLiteral("Activity unknown")
+                                                              : state.Label;
+        if (view->ActivityLabelOrNull != nullptr)
+        {
+            view->ActivityLabelOrNull->setText(QFontMetricsF(view->ActivityLabelOrNull->font())
+                                                   .elidedText(label, Qt::ElideRight, NODE_WIDTH - 2 * NODE_PADDING));
+            view->ActivityLabelOrNull->setToolTip(explanation);
+        }
+        QString sizeLabel;
+        QSet<QString> sizes;
+        QStringList resources;
+        for (bool isOutput : {true, false})
+        {
+            const QVector<RenderGraphPort>& ports = isOutput == true ? view->Ports.Outputs : view->Ports.Inputs;
+            for (const RenderGraphPort& port : ports)
+            {
+                const QString endpoint = view->Id + QLatin1Char('.') + port.Id;
+                const QString source = isOutput == true ? endpoint : findSource(endpoint);
+                QString tooltip = QStringLiteral("%1 : %2").arg(endpoint, port.Type);
+                if (isOutput == false)
+                {
+                    tooltip += source.isEmpty() == true ? QStringLiteral("\nUnconnected input")
+                                                        : QStringLiteral("\nSource: ") + source;
+                }
+                if (port.Type == QStringLiteral("ColorTexture") || port.Type == QStringLiteral("DepthTexture") ||
+                    port.Type == QStringLiteral("Texture") || port.Type == QStringLiteral("RenderSize"))
+                {
+                    if (resourceCache.contains(source) == false)
+                    {
+                        resourceCache.insert(
+                            source,
+                            DescribeRenderGraphResource(mDocument, mFile, mConfiguration, source, mReferenceSize));
+                    }
+                    const RenderGraphResourceFeedback resource = resourceCache.value(source);
+                    tooltip += QLatin1Char('\n') + resource.Description;
+                    resources.append(endpoint + QStringLiteral(": ") + resource.Description);
+                    sizes.insert(resource.SizeLabel);
+                    if (sizeLabel.isEmpty() == true)
+                    {
+                        sizeLabel = resource.SizeLabel;
+                    }
+                }
+                tooltip += QStringLiteral("\nRight-click to connect/disconnect; drag an output onto an input to check "
+                                          "compatibility or replace its source.");
+                QGraphicsEllipseItem* connectorOrNull =
+                    (isOutput == true ? view->OutputItems : view->InputItems).value(port.Id, nullptr);
+                if (connectorOrNull != nullptr)
+                {
+                    if (connectorOrNull == mLinkPortOrNull)
+                    {
+                        mLinkPortTooltip = tooltip;
+                    }
+                    else
+                    {
+                        connectorOrNull->setToolTip(tooltip);
+                    }
+                }
+            }
+        }
+        if (sizes.size() > 1)
+        {
+            sizeLabel = QStringLiteral("Mixed sizes (hover ports)");
+        }
+        view->Frame->setToolTip(view->Id + QStringLiteral(" : ") + view->Kind + QStringLiteral("\n") + explanation +
+                                QLatin1Char('\n') + resources.join(QLatin1Char('\n')));
+        if (view->SizeLabelOrNull != nullptr)
+        {
+            view->SizeLabelOrNull->setText(QFontMetricsF(view->SizeLabelOrNull->font())
+                                               .elidedText(sizeLabel, Qt::ElideRight, NODE_WIDTH - 2 * NODE_PADDING));
+            view->SizeLabelOrNull->setToolTip(resources.join(QLatin1Char('\n')));
+        }
+    }
+    for (EdgeView* edge : std::as_const(mEdges))
+    {
+        const NodeView* destinationOrNull = mNodes.value(GetEndpointNode(edge->To), nullptr);
+        edge->Path->setOpacity(destinationOrNull == nullptr ? 1 : destinationOrNull->Frame->opacity());
+    }
+}
+
+void RenderGraphCanvas::updateLinkFeedback(QPointF position)
+{
+    const auto positionHint = [this, position]() {
+        if (mLinkHintOrNull == nullptr)
+        {
+            return;
+        }
+        const QRectF visible = mapToScene(viewport()->rect())
+                                   .boundingRect()
+                                   .adjusted(NODE_PADDING, NODE_PADDING, -NODE_PADDING, -NODE_PADDING);
+        const QRectF hint = mLinkHintOrNull->boundingRect();
+        mLinkHintOrNull->setPos(
+            math::Max(visible.left(), math::Min(position.x() + LINK_HINT_OFFSET, visible.right() - hint.width())),
+            math::Max(visible.top(), math::Min(position.y() + LINK_HINT_OFFSET, visible.bottom() - hint.height())));
+    };
+    bool isOutput = false;
+    const QString endpoint = portAt(position, isOutput);
+    if (endpoint == mLinkEndpoint && mLinkHintOrNull != nullptr)
+    {
+        positionHint();
+        return;
+    }
+    mLinkEndpoint = endpoint;
+    if (mLinkPortOrNull != nullptr)
+    {
+        mLinkPortOrNull->setPen(QPen(QColor::fromRgba(NODE_BORDER_COLOR), 1));
+        mLinkPortOrNull->setToolTip(mLinkPortTooltip);
+        mLinkPortOrNull = nullptr;
+    }
+    QString message = QStringLiteral("Drop on an input port to connect or replace its source.");
+    QColor color = QColor::fromRgba(EDITABLE_EDGE_COLOR);
+    if (endpoint.isEmpty() == false && endpoint != mLinkFrom)
+    {
+        const RenderGraphLinkCheck check =
+            isOutput == true ? RenderGraphLinkCheck{QStringLiteral("Port"),
+                                                    QStringLiteral("Links end at an input; this is an output.")}
+                             : CheckRenderGraphLink(mDocument, mFile, mConfiguration, mLinkFrom, endpoint, true);
+        color = QColor::fromRgba(check.IsLegal() == true ? LINK_ACCEPT_COLOR : LINK_REJECT_COLOR);
+        message = check.IsLegal() == true
+                      ? QStringLiteral("Compatible: %1 → %2. Drop to connect or replace.").arg(mLinkFrom, endpoint)
+                      : check.Code + QStringLiteral(": ") + check.Reason;
+        NodeView* viewOrNull = mNodes.value(GetEndpointNode(endpoint), nullptr);
+        if (viewOrNull != nullptr)
+        {
+            mLinkPortOrNull = (isOutput == true ? viewOrNull->OutputItems : viewOrNull->InputItems)
+                                  .value(GetEndpointPort(endpoint), nullptr);
+            if (mLinkPortOrNull != nullptr)
+            {
+                mLinkPortTooltip = mLinkPortOrNull->toolTip();
+                mLinkPortOrNull->setToolTip(message);
+                mLinkPortOrNull->setPen(QPen(color, 2));
+            }
+        }
+    }
+    if (mLinkHintOrNull != nullptr)
+    {
+        mLinkHintOrNull->setHtml(
+            QStringLiteral("<p style=\"background-color:%1; color:%2;\">%3</p>")
+                .arg(QColor::fromRgba(NODE_BACKGROUND_COLOR).name(), color.name(), message.toHtmlEscaped()));
+        positionHint();
+    }
+    if (mLinkPreviewOrNull != nullptr)
+    {
+        mLinkPreviewOrNull->setPen(QPen(color, 2));
+    }
+}
+
+bool RenderGraphCanvas::IsSceneBundleExpanded(const QString& node) const
+{
+    return mExpandedSceneBundles.contains(mFile + QLatin1Char('#') + mConfiguration + QLatin1Char('/') + node);
+}
+void RenderGraphCanvas::SetSceneBundleExpanded(const QString& node, bool isExpanded)
+{
+    const QString key = mFile + QLatin1Char('#') + mConfiguration + QLatin1Char('/') + node;
+    mExpandedSceneBundles.removeAll(key);
+    if (isExpanded == true)
+    {
+        mExpandedSceneBundles.append(key);
+    }
+    ShowConfiguration(mFile, mConfiguration);
 }
 
 void RenderGraphCanvas::updateEdges()
@@ -866,6 +1176,66 @@ void RenderGraphCanvas::RevealNode(const QString& node)
             return;
         }
     }
+}
+
+void RenderGraphCanvas::ClearDiagnostic()
+{
+    delete mDiagnosticMarkerOrNull;
+    mDiagnosticMarkerOrNull = nullptr;
+    mDiagnosticLocation = {};
+    setAccessibleDescription({});
+}
+
+bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QString& description)
+{
+    ClearDiagnostic();
+    const bool isOutput = location.value(QStringLiteral("direction")).toString() == QStringLiteral("output");
+    const QString port = location.value(QStringLiteral("port")).toString();
+    QString owner = location.value(QStringLiteral("node")).toString();
+    if (owner.isEmpty() == true && port.isEmpty() == false)
+    {
+        owner = isOutput == true ? OUTPUTS_NODE : INPUT_NODE;
+    }
+    NodeView* viewOrNull = mNodes.value(owner, nullptr);
+    if (viewOrNull == nullptr)
+    {
+        return false;
+    }
+    mDiagnosticLocation = location;
+    setAccessibleDescription(description);
+    mDiagnosticMarkerOrNull = new QGraphicsRectItem(viewOrNull->Frame->rect(), viewOrNull->Frame);
+    mDiagnosticMarkerOrNull->setAcceptedMouseButtons(Qt::NoButton);
+    mDiagnosticMarkerOrNull->setPen(QPen(QColor::fromRgba(LINK_REJECT_COLOR), NODE_BORDER_WIDTH * 2));
+    mDiagnosticMarkerOrNull->setToolTip(description.toHtmlEscaped());
+    // Exposed outputs are consumers on the left side of the configuration output box.
+    const bool isOutputConnector = owner == OUTPUTS_NODE ? false : isOutput;
+    const QGraphicsEllipseItem* connectorOrNull =
+        (isOutputConnector == true ? viewOrNull->OutputItems : viewOrNull->InputItems).value(port, nullptr);
+    if (connectorOrNull != nullptr)
+    {
+        QGraphicsEllipseItem* ring = new QGraphicsEllipseItem(
+            connectorOrNull->rect().adjusted(-NODE_PADDING, -NODE_PADDING, NODE_PADDING, NODE_PADDING),
+            mDiagnosticMarkerOrNull);
+        ring->setPos(connectorOrNull->mapToItem(mDiagnosticMarkerOrNull, QPointF()));
+        ring->setAcceptedMouseButtons(Qt::NoButton);
+        ring->setPen(QPen(QColor::fromRgba(LINK_REJECT_COLOR), NODE_BORDER_WIDTH * 2));
+    }
+    QGraphicsSimpleTextItem* label = new QGraphicsSimpleTextItem(mDiagnosticMarkerOrNull);
+    const QString target = port.isEmpty() == false ? port : location.value(QStringLiteral("field")).toString();
+    label->setText(QFontMetricsF(label->font())
+                       .elidedText(QStringLiteral("Error: %1").arg(target.isEmpty() == true ? owner : target),
+                                   Qt::ElideRight,
+                                   NODE_WIDTH - NODE_PADDING * 2));
+    label->setBrush(QColor::fromRgba(LINK_REJECT_COLOR));
+    label->setPos(NODE_PADDING, viewOrNull->Frame->rect().bottom() + NODE_PADDING);
+    label->setToolTip(description.toHtmlEscaped());
+    ensureVisible(mDiagnosticMarkerOrNull->sceneBoundingRect().united(label->sceneBoundingRect()));
+    return true;
+}
+
+QJsonObject RenderGraphCanvas::GetDiagnosticLocation() const
+{
+    return mDiagnosticLocation;
 }
 
 void RenderGraphCanvas::updateSelection()
@@ -1046,7 +1416,19 @@ QString RenderGraphCanvas::edgeAt(QPointF position, QString& outTo) const
 
 void RenderGraphCanvas::cancelLink()
 {
+    if (mLinkPortOrNull != nullptr)
+    {
+        mLinkPortOrNull->setPen(QPen(QColor::fromRgba(NODE_BORDER_COLOR), 1));
+        mLinkPortOrNull->setToolTip(mLinkPortTooltip);
+        mLinkPortOrNull = nullptr;
+    }
+    if (mLinkHintOrNull != nullptr)
+    {
+        delete mLinkHintOrNull;
+        mLinkHintOrNull = nullptr;
+    }
     mLinkFrom.clear();
+    mLinkEndpoint.clear();
     if (mLinkPreviewOrNull != nullptr)
     {
         mScene->removeItem(mLinkPreviewOrNull);
@@ -1159,6 +1541,13 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         mLinkFrom = port;
         mLinkPreviewOrNull =
             mScene->addPath(MakeCurve(position, position), QPen(QColor::fromRgba(SELECTION_COLOR), 2, Qt::DashLine));
+        mLinkHintOrNull = new QGraphicsTextItem;
+        mScene->addItem(mLinkHintOrNull);
+        mLinkHintOrNull->setData(0, QStringLiteral("#link-feedback"));
+        mLinkHintOrNull->setTextWidth(LINK_HINT_WIDTH);
+        mLinkHintOrNull->setZValue(2);
+        mLinkHintOrNull->setAcceptedMouseButtons(Qt::NoButton);
+        updateLinkFeedback(position);
         event->accept();
         return;
     }
@@ -1252,6 +1641,7 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
     if (mLinkPreviewOrNull != nullptr)
     {
         mLinkPreviewOrNull->setPath(MakeCurve(GetPortPosition(mLinkFrom, true), position));
+        updateLinkFeedback(position);
         event->accept();
         return;
     }

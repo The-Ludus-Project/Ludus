@@ -13,6 +13,23 @@ namespace ludus::editor
                                                                const QJsonObject& previousNode,
                                                                const QString& manifestFile,
                                                                const QString& packageRoot);
+/// Generate the scene-aware callback and record its manifest input/output types.
+[[nodiscard]] QByteArray MakeSceneRaySource(QJsonObject& inoutProgram);
+/// True when the shared ray technique declares the scene-aware interface.
+[[nodiscard]] bool HasSceneRayInterface(const QJsonObject& manifest);
+/// Initialize scene callbacks for a new ray pipeline when no ray technique exists.
+/// Caller owns the unpublished candidate; existing techniques and sources are preserved.
+[[nodiscard]] RenderGraphDocumentStatus PrepareSceneRayDefaults(RenderGraphSnapshot& inoutSnapshot,
+                                                                QJsonObject& inoutManifest,
+                                                                const QJsonObject& node,
+                                                                const QString& packageRoot);
+/// Adapt the shared legacy ray technique, preserving original sources and callback behavior.
+/// Reuses program records and IDs, preserving graph references and authored admission budgets.
+/// Caller discards the unpublished candidate on failure.
+[[nodiscard]] RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSnapshot,
+                                                                 const QString& manifestFile,
+                                                                 const QString& packageRoot,
+                                                                 QString& outError);
 /// Reconcile complete pipeline declarations in the root import closure with its manifest.
 /// Preserves incomplete drafts and authored metadata; conflicts/capacity failures change no files.
 /// Call on an unpublished candidate so shader, graph and technique edits share one transaction.

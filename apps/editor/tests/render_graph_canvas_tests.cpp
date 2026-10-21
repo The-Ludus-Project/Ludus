@@ -18,12 +18,15 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsScene>
 #include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeySequence>
 #include <QMenu>
 #include <QNativeGestureEvent>
+#include <QPlainTextEdit>
 #include <QPointingDevice>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -741,18 +744,18 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
             CHECK(selector->findText(source) >= 0);
             CHECK(workspace.GetDocument().GetDraft(source).contains("ShaderMain") == true);
         }
-        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayHit") == true);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("SurfaceHit") == true);
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
         stage->setCurrentText(QStringLiteral("miss"));
         CHECK(workspace.GetSelectedShaderSources() == sources);
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
-        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("ShaderMain(Ray input)") == true);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("SceneContext scene, Ray ray,") == true);
         CHECK(editor->findChild<QTableWidget*>(QStringLiteral("shaders")) == shaders);
         stage->setCurrentText(QStringLiteral("closest_hit"));
         workspace.Undo();
-        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("ShaderMain(Ray input)") == true);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("SceneContext scene, Ray ray,") == true);
         workspace.Undo();
-        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayHit") == true);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("SurfaceHit") == true);
         workspace.Undo();
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
         CHECK(selector->findText(sources.last()) >= 0);
@@ -839,4 +842,241 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
         QApplication::sendEvent(canvas.viewport(), &context);
     }
+}
+
+TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidden",
+          "[editor][render-graph][canvas][scene-materials]")
+{
+    QTemporaryDir project;
+    const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/raytracing"));
+    const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
+    for (const QString& file : {ROOT_GRAPH,
+                                QStringLiteral("main_shaders/geometry.slang"),
+                                QStringLiteral("main_shaders/color.slang"),
+                                QStringLiteral("main_shaders/depth.slang"),
+                                QStringLiteral("main_shaders/generate.slang"),
+                                QStringLiteral("main_shaders/miss.slang"),
+                                QStringLiteral("main_shaders/closest.slang")})
+    {
+        WriteFile(QDir(package).filePath(file), ReadFile(source.filePath(file)));
+    }
+    QByteArray manifest = ReadFile(source.filePath(QStringLiteral("main.lushader.json.in")));
+    manifest.replace("@RG2_TEST_PROFILES@", "[\"metal\", \"wgsl\"]");
+    QJsonObject fullManifest = QJsonDocument::fromJson(manifest).object();
+    const QJsonArray programs = fullManifest.value(QStringLiteral("programs")).toArray();
+    QJsonObject budgets = fullManifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), programs.size());
+    budgets.insert(QStringLiteral("artifacts"),
+                   programs.size() * fullManifest.value(QStringLiteral("profiles")).toArray().size());
+    fullManifest.insert(QStringLiteral("budgets"), budgets);
+    manifest = EncodeCanonicalJson(fullManifest);
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    WriteFile(QDir(package).filePath(manifestFile), manifest);
+    RendererWorkspace workspace({});
+    workspace.resize(1400, 800);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&workspace) == true);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("trace")) == true);
+    QWidget inspectorHost;
+    static_cast<void>(workspace.TakeInspectorPanel(&inspectorHost));
+    inspectorHost.hide();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.resetTransform();
+    const QPointF position = canvas.GetNodePosition(QStringLiteral("trace"));
+    canvas.centerOn(position);
+    // Source text already belongs to the document while the presentation refresh is deferred.
+    QComboBox* sourceFileOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    QPlainTextEdit* sourceOrNull = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceFileOrNull != nullptr);
+    REQUIRE(sourceOrNull != nullptr);
+    const QString editedFile = QStringLiteral("main_shaders/closest.slang");
+    sourceFileOrNull->setCurrentText(editedFile);
+    const QByteArray originalSource = workspace.GetDocument().GetDraft(editedFile);
+    sourceOrNull->appendPlainText(QStringLiteral("// Preserve this accepted source edit."));
+    const QByteArray editedSource = workspace.GetDocument().GetDraft(editedFile);
+    REQUIRE(editedSource != originalSource);
+    REQUIRE(editedSource.contains("// Preserve this accepted source edit.") == true);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    const QByteArray before = workspace.GetDocument().GetDraft(manifestFile);
+    bool shouldExpand = false;
+    SECTION("explicit material migration") {}
+    SECTION("bundle expansion from the canvas")
+    {
+        shouldExpand = true;
+    }
+    QTimer::singleShot(0, &workspace, [&workspace, shouldExpand]() {
+        QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphNodeMenu"));
+        REQUIRE(menuOrNull != nullptr);
+        QAction* enable = menuOrNull->findChild<QAction*>(
+            shouldExpand == true ? QStringLiteral("renderGraphExpandSceneBundleAction")
+                                 : QStringLiteral("renderGraphEnableSceneMaterialsAction"));
+        REQUIRE(enable != nullptr);
+        REQUIRE(enable->isEnabled() == true);
+        enable->trigger();
+        menuOrNull->close();
+    });
+    const QPoint point = canvas.mapFromScene(position + QPointF(30, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QCoreApplication::sendEvent(canvas.viewport(), &context);
+    if (shouldExpand == true)
+    {
+        CHECK(canvas.IsSceneBundleExpanded(QStringLiteral("trace")) == true);
+        CHECK(canvas.GetPortPosition(QStringLiteral("trace.scene_geometry"), false).isNull() == false);
+        CHECK(canvas.GetPortPosition(QStringLiteral("scene.materials"), true).isNull() == false);
+        canvas.SetSceneBundleExpanded(QStringLiteral("trace"), false);
+        CHECK(canvas.GetPortPosition(QStringLiteral("trace.scene_geometry"), false).isNull() == false);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("trace.scene_lights") == true);
+    }
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(QJsonDocument::fromJson(workspace.GetDocument().GetDraft(manifestFile))
+              .object()
+              .value(QStringLiteral("budgets"))
+              .toObject() == budgets);
+    CHECK(workspace.GetDocument().GetDraft(manifestFile).contains("scene_interface") == true);
+    CHECK(workspace.GetSelectedShaderSources().size() == 3);
+    for (const QString& file : workspace.GetSelectedShaderSources())
+    {
+        CHECK(workspace.GetDocument().GetDraft(file).contains("SceneShaderMain") == true);
+    }
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(manifestFile) == before);
+    CHECK(workspace.GetDocument().GetDraft(editedFile) == editedSource);
+    workspace.Redo();
+    CHECK(workspace.GetDocument().GetDraft(manifestFile).contains("scene_interface") == true);
+    CHECK(workspace.GetDocument().GetDraft(editedFile).contains("// Preserve this accepted source edit.") == true);
+}
+
+TEST_CASE("diagnostic navigation rings the exact port without Properties or draft edits",
+          "[editor][render-graph][canvas][diagnostics]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 7);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->hide();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    RenderGraphDocument& document = workspace.GetDocument();
+    const uint64 revision = document.GetRevision();
+    const QByteArray bytes = document.GetDraft(ROOT_GRAPH);
+    const QJsonObject location{{QStringLiteral("source"), ROOT_GRAPH},
+                               {QStringLiteral("configuration"), DEFAULT_CONFIGURATION},
+                               {QStringLiteral("node"), QStringLiteral("raster")},
+                               {QStringLiteral("port"), QStringLiteral("depth")},
+                               {QStringLiteral("direction"), QStringLiteral("input")}};
+    RenderGraphJobResult result;
+    result.Request.ProjectEpoch = 7;
+    result.Request.InputIdentity = QByteArray("earlier source");
+    result.Code = QStringLiteral("RenderGraphUnboundInput");
+    result.Message = QStringLiteral("Unconnected depth");
+    result.Location = location;
+    result.Diagnostics = QJsonArray{QJsonObject{{QStringLiteral("code"), result.Code},
+                                                {QStringLiteral("message"), result.Message},
+                                                {QStringLiteral("severity"), QStringLiteral("error")},
+                                                {QStringLiteral("location"), location},
+                                                {QStringLiteral("expected"), QStringLiteral("DepthTexture")},
+                                                {QStringLiteral("actual"), QStringLiteral("unconnected")},
+                                                {QStringLiteral("repair"), QStringLiteral("Connect a depth target.")}}};
+    workspace.AcceptResult(result);
+    REQUIRE(workspace.GetDiagnosticCount() == 1);
+    REQUIRE(workspace.ActivateDiagnostic(0) == true);
+    CHECK(canvas.GetDiagnosticLocation() == location);
+    const auto hasRingAt = [&canvas](QPointF position) {
+        for (QGraphicsItem* item : canvas.scene()->items())
+        {
+            const QGraphicsEllipseItem* ringOrNull = qgraphicsitem_cast<QGraphicsEllipseItem*>(item);
+            if (ringOrNull != nullptr && ringOrNull->rect().width() > 20 &&
+                ringOrNull->mapToScene(ringOrNull->rect().center()) == position)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    CHECK(hasRingAt(canvas.GetPortPosition(QStringLiteral("raster.depth"), false)) == true);
+    workspace.AcceptResult(result);
+    CHECK(canvas.GetDiagnosticLocation().isEmpty() == true);
+    REQUIRE(workspace.ActivateDiagnostic(0) == true);
+    CHECK(canvas.accessibleDescription().contains(QStringLiteral("DepthTexture")) == true);
+    CHECK(canvas.accessibleDescription().contains(QStringLiteral("earlier source version")) == true);
+    CHECK(workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->isHidden() == true);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(ROOT_GRAPH) == bytes);
+    canvas.Rebuild();
+    CHECK(canvas.GetDiagnosticLocation().isEmpty() == true);
+    CHECK(canvas.accessibleDescription().isEmpty() == true);
+    CHECK(canvas.ShowDiagnostic(QJsonObject{{QStringLiteral("node"), QStringLiteral("deleted")}}, {}) == false);
+    canvas.ShowConfiguration(LIBRARY, QStringLiteral("ColorAndDepth"));
+    REQUIRE(canvas.ShowDiagnostic(QJsonObject{{QStringLiteral("port"), QStringLiteral("color")},
+                                              {QStringLiteral("direction"), QStringLiteral("output")}},
+                                  QStringLiteral("Choose a matching output source.")) == true);
+    CHECK(hasRingAt(canvas.GetPortPosition(QStringLiteral("#outputs.color"), false)) == true);
+    CHECK(document.GetRevision() == revision);
+}
+
+TEST_CASE("field diagnostics open the shared canvas editor at the highlighted control",
+          "[editor][render-graph][canvas][diagnostics]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 7);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->hide();
+    QString field = QStringLiteral("depth_load");
+    QString file = LIBRARY;
+    QString configuration = QStringLiteral("ColorAndDepth");
+    QString node = QStringLiteral("draw");
+    SECTION("legacy attachment load") {}
+    SECTION("ray launch field on a hidden tab")
+    {
+        field = QStringLiteral("invocation.dimensions");
+        node = QStringLiteral("raytracingpipeline");
+    }
+    SECTION("shader assignments on a hidden tab")
+    {
+        field = QStringLiteral("shaders");
+        node = QStringLiteral("raytracingpipeline");
+    }
+    if (node == QStringLiteral("raytracingpipeline"))
+    {
+        QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+        REQUIRE(kinds != nullptr);
+        kinds->setCurrentText(QStringLiteral("RayTracingPipeline"));
+        workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
+        file = ROOT_GRAPH;
+        configuration = DEFAULT_CONFIGURATION;
+    }
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    RenderGraphJobResult result;
+    result.Request.ProjectEpoch = 7;
+    result.Code = QStringLiteral("RenderGraphInitialization");
+    result.Message = QStringLiteral("Choose Clear");
+    result.Location = QJsonObject{{QStringLiteral("source"), file},
+                                  {QStringLiteral("configuration"), configuration},
+                                  {QStringLiteral("node"), node},
+                                  {QStringLiteral("field"), field}};
+    workspace.AcceptResult(result);
+    bool hasHighlightedField = false;
+    QTimer::singleShot(0, &workspace, [&hasHighlightedField, field]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        for (QWidget* control : dialogOrNull->findChildren<QWidget*>())
+        {
+            if (control->property("isRenderGraphDiagnosticTarget").toBool() == true)
+            {
+                hasHighlightedField = true;
+                CHECK(control->isVisible() == true);
+                CHECK((control->property("renderGraphField").toString() == field ||
+                       control->objectName() == QStringLiteral("renderGraphField_") + field));
+            }
+        }
+        dialogOrNull->reject();
+    });
+    REQUIRE(workspace.ActivateDiagnostic(0) == true);
+    CHECK(hasHighlightedField == true);
+    CHECK(workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->isHidden() == true);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
 }

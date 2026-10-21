@@ -3,6 +3,7 @@
 // https://pbr-book.org/4ed/Light_Sources/Light_Interface
 // separate discrete source choice from incident-light proposals and solid-angle PDFs.
 // No integrator, MIS weighting or bounce decision is performed in this module.
+#include "scene_data.h"
 #include "scene_shader_layout.h"
 static const uint SCENE_INTERFACE_VERSION = LUDUS_SCENE_SHADER_INTERFACE_VERSION;
 static const uint SCENE_INVALID_INDEX = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
@@ -38,6 +39,8 @@ struct SceneContext
     uint Version;
     uint2 Generation;
 };
+/// Renderer-initialized invocation state; forward the same value through all callbacks.
+/// Query budgets and automatic sampling advance together; do not reset or copy this state.
 struct RayQueryContext
 {
     uint SurfaceQueries;
@@ -45,6 +48,10 @@ struct RayQueryContext
     uint MaximumSurfaceQueries;
     uint MaximumVisibilityQueries;
     bool HasFailed;
+    uint2 RandomSeed;         ///< Renderer-initialized sampling key; forward unchanged between callbacks.
+    uint RandomPixel;         ///< Renderer-initialized linear pixel identity.
+    uint RandomSampleIndex;   ///< Renderer-initialized progressive sample identity.
+    uint NextRandomDimension; ///< Next automatic draw; shared across callbacks for this invocation.
 };
 struct SurfaceHit
 {
@@ -119,18 +126,29 @@ struct LightSample
     bool HasFiniteEndpoint;
     bool HasSample;
 };
+bool HasSceneData(SceneContext scene, uint groups)
+{
+    return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & groups) == groups;
+}
 uint GetEmitterCount(SceneContext scene)
 {
-    return scene.Version == SCENE_INTERFACE_VERSION ? asuint(Environment.w) : 0;
+    return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & SCENE_DATA_LIGHTS) != 0
+               ? asuint(Environment.w)
+               : 0;
 }
 uint GetMaterialCount(SceneContext scene)
 {
-    return scene.Version == SCENE_INTERFACE_VERSION ? asuint(Options.z) : 0;
+    return scene.Version == SCENE_INTERFACE_VERSION &&
+                   (asuint(Options.w) & (SCENE_DATA_MATERIALS | SCENE_DATA_LIGHTS)) != 0
+               ? asuint(Options.z)
+               : 0;
 }
 uint GetLightCount(SceneContext scene)
 {
-    return Counts.w + GetEmitterCount(scene) +
-           ((SurfaceLayout.w != 0 || HasPositiveComponent(Environment.xyz)) ? 1u : 0u);
+    return (asuint(Options.w) & SCENE_DATA_LIGHTS) != 0
+               ? Counts.w + GetEmitterCount(scene) +
+                     ((SurfaceLayout.w != 0 || HasPositiveComponent(Environment.xyz)) ? 1u : 0u)
+               : 0;
 }
 float4 GetEmitter(SceneContext scene, uint emitterIndex)
 {
@@ -319,6 +337,44 @@ float EvaluateLightSelectionPmf(SceneContext scene, uint lightIndex)
     uint count = GetLightCount(scene);
     return lightIndex < count ? 1.0 / float(count) : 0;
 }
+// Internal stream advancement shared by uniform draws and bounded source selection.
+static bool TryAdvanceSceneRandomDimension(inout RayQueryContext queries, out uint outDimension)
+{
+    outDimension = 0;
+    if (queries.HasFailed == true)
+        return false;
+    if (queries.NextRandomDimension > RANDOM_MAX_DIMENSION)
+    {
+        queries.HasFailed = true;
+        return false;
+    }
+    outDimension = queries.NextRandomDimension++;
+    return true;
+}
+/// Select a uniform scene source using the renderer-initialized invocation stream.
+/// Consumes one dimension for a nonempty source set. Empty sets return HasSample=false.
+/// Stream exhaustion or bounded-mapping failure latches queries.HasFailed.
+SelectedLight SelectLight(SceneContext scene, inout RayQueryContext queries)
+{
+    SelectedLight result = (SelectedLight)0;
+    uint count = GetLightCount(scene);
+    if (count == 0)
+        return result;
+    uint dimension;
+    if (TryAdvanceSceneRandomDimension(queries, dimension) == false)
+        return result;
+    result.HasSample =
+        TrySampleRandomBounded(queries.RandomSeed,
+                               PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension),
+                               count,
+                               result.LightIndex);
+    if (result.HasSample == false)
+        queries.HasFailed = true;
+    result.SelectionPmf = result.HasSample == true ? 1.0 / float(count) : 0;
+    return result;
+}
+/// Select a uniform scene source at an explicit random address, without advancing queries.
+/// Empty sets or invalid/exhausted bounded addresses return HasSample=false.
 SelectedLight SelectLight(SceneContext scene, RayLaunch launch, uint dimension)
 {
     SelectedLight result = (SelectedLight)0;
@@ -521,10 +577,51 @@ float EvaluateEnvironmentPdfSolidAngle(SceneContext scene, float3 directionWorld
     uint index = Counts.w + GetEmitterCount(scene);
     return EvaluateLightSelectionPmf(scene, index) / (4 * PI);
 }
+/// Draw a pseudorandom float in [0,1) at an explicit address, without advancing queries.
+/// @pre dimension is no greater than FoundationMath's RANDOM_MAX_DIMENSION.
 float SampleSceneRandom(RayLaunch launch, uint dimension)
 {
     uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
     return SampleRandomFloat01(launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension));
+}
+/// Draw a pseudorandom float in [0,1), advancing the renderer-owned invocation stream.
+/// Available in ray generation, closest-hit and miss with no ScenePayload fields.
+/// Forward the same queries through callbacks; do not reset or copy its state.
+/// Exhaustion latches HasFailed and returns zero, preventing sample publication.
+/// Explicit launch/dimension overloads address their own draws and do not advance this stream.
+float SampleSceneRandom(inout RayQueryContext queries)
+{
+    uint dimension;
+    if (TryAdvanceSceneRandomDimension(queries, dimension) == false)
+        return 0;
+    return SampleRandomFloat01(queries.RandomSeed,
+                               PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension));
+}
+/// Draw an unbiased uint in [minimumInclusive, maximumExclusive), consuming one stream dimension.
+/// Uses FoundationMath's bounded integer mapper, without float conversion or modulo bias.
+/// Empty/reversed ranges latch HasFailed without consuming a dimension and return zero.
+/// Stream or bounded-mapping exhaustion also latches HasFailed and returns zero.
+/// Zero on failure is not a valid sample; the renderer rejects the invocation's result.
+uint SampleSceneRandom(inout RayQueryContext queries, uint minimumInclusive, uint maximumExclusive)
+{
+    if (minimumInclusive >= maximumExclusive)
+    {
+        queries.HasFailed = true;
+        return 0;
+    }
+    uint dimension;
+    if (TryAdvanceSceneRandomDimension(queries, dimension) == false)
+        return 0;
+    uint offset;
+    if (TrySampleRandomBounded(queries.RandomSeed,
+                               PixelRandomAddress(queries.RandomPixel, queries.RandomSampleIndex, dimension),
+                               maximumExclusive - minimumInclusive,
+                               offset) == false)
+    {
+        queries.HasFailed = true;
+        return 0;
+    }
+    return minimumInclusive + offset;
 }
 void EvaluateStandardBsdf(MaterialSample material,
                           float3 viewDirectionWorld,

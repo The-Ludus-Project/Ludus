@@ -1,6 +1,6 @@
-"""Portable triangle ray pipelines lowered to GPU traversal and authored functions.
+"""Hardware triangle ray pipelines using native queries and authored functions.
 
-The renderer owns the packed BVH and its shader implementation. The graph owns
+The renderer owns native acceleration structures and the packed shading tables. The graph owns
 stage assignment, launch extent and publication. No CPU transport is selected.
 """
 from copy import deepcopy
@@ -10,7 +10,7 @@ TECHNIQUE = 'RendererTriangles.RayTracing'
 STAGES = ('ray_generation', 'miss', 'closest_hit')
 # Thanks to Microsoft, DirectX Raytracing Functional Spec, “Intersection Attributes”:
 # https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html#intersection-attributes
-# Triangle intersections supply float2 barycentrics. This portable compute profile
+# Triangle intersections supply float2 barycentrics. This native-query profile
 # retains that contract, but uses shader-local ScenePayload rather than a DXR payload.
 STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
 MAX_LOCAL_PAYLOAD_BYTES = 4096
@@ -20,8 +20,8 @@ COMPUTE_ID = 'GraphRayCompute'
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
-HELPERS = ('renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
-           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h')
+HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
+           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h', 'ray_shader.slang')
 
 
 def resolve_state(state):
@@ -32,23 +32,32 @@ def resolve_state(state):
 def lower(node, where, graph):
     assignments = {shader['stage']: shader['program'] for shader in node['shaders']}
     graph._require(set(assignments) == set(STAGES) and len(node['shaders']) == len(STAGES),
-                   'IncompletePipeline', where, 'triangle ray pipelines require one ray_generation, miss and closest_hit program')
+                   'IncompletePipeline', where, 'triangle ray pipelines require one ray_generation, miss and closest_hit program',
+                   field='shaders', expected=', '.join(STAGES), actual=', '.join(sorted(assignments)) or 'no stages',
+                   repair='Add the missing stages in Shaders and assign a build-manifest program to each.')
     graph._require(resolve_state(node['state']) == STATE, 'Capability', where,
                    'triangle ray profile derives recursion=1, native payload=0 bytes and triangle barycentrics=8 bytes. '
                    'Use automatic Pipeline State (state: {}) or matching advanced overrides. '
-                   'Customize ScenePayload in the scene interface; custom intersection attributes require an unsupported procedural profile')
+                   'Customize ScenePayload in the scene interface; custom intersection attributes require an unsupported procedural profile',
+                   field='state', expected=STATE, actual=resolve_state(node['state']),
+                   repair='Reset advanced ray state overrides to automatic.')
     types = {port['id']: port['type'] for port in node['inputs']}
     mappings = {}
     for aspect, kind in (('scene', 'Scene'), ('view', 'View'), ('color', 'ColorTexture')):
         choices = [identity for identity, value in types.items() if value == kind]
-        graph._require(len(choices) == 1, 'IncompletePipeline', where, f'exactly one {kind} input required')
+        graph._require(len(choices) == 1, 'IncompletePipeline', where, f'exactly one {kind} input required',
+                       field='inputs', expected=f'one {kind} input', actual=f'{len(choices)} inputs',
+                       repair=f'Add or retain exactly one {kind} input in the pipeline editor.')
         mappings[aspect] = choices[0]
     unsupported = sorted(set(types) - set(mappings.values()))
     descriptions = ', '.join(f"'{identity}' ({types[identity]})" for identity in unsupported)
     graph._require(not unsupported, 'Capability', where,
                    f"Unsupported ray pipeline inputs: {descriptions}. This triangle ray profile accepts only "
                    'Scene, View and ColorTexture. Remove the extra input declarations and their wires; '
-                   'if exposed by a subgraph, also remove the matching interface inputs and parent wires.')
+                   'if exposed by a subgraph, also remove the matching interface inputs and parent wires.',
+                   port=unsupported[0] if unsupported else None, direction='input',
+                   expected='Scene, View, ColorTexture', actual=descriptions,
+                   repair='Remove unsupported pipeline inputs and their wires; also update exposed subgraph interfaces.')
     graph._require(len(node['outputs']) == 1, 'Capability', where,
                    f"Triangle ray profile requires one color output; found {len(node['outputs'])}. "
                    'Keep one ColorTexture writable resource in the pipeline editor.')
@@ -87,29 +96,7 @@ def expand_programs(programs, technique, snapshot, helper, build):
 #define LUDUS_RENDER_GRAPH_RAY_PIPELINE 1
 #include "_ludus_ray/renderer_gpu_preview.slang"
 static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
-struct Ray
-{
-    float3 OriginWorld;
-    float MinDistanceWorld;
-    float3 DirectionWorld;
-    float MaxDistanceWorld;
-};
-struct RayLaunch
-{
-    uint2 PositionPixel;
-    uint2 ExtentPixel;
-    Ray CameraRay;
-};
-struct RayHit
-{
-    Ray IncomingRay;
-    float3 PositionWorld;
-    float DistanceWorld;
-    float3 NormalWorld;
-    uint Primitive;
-    float2 Barycentric;
-    float4 Color;
-};
+#include "_ludus_ray/ray_shader.slang"
 '''
     for source in sorted({program['source'] for program in selected.values()}):
         wrapper += '#include "' + source + '"\n'
@@ -161,14 +148,14 @@ struct RayHit
         wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe)
     result = {identity: deepcopy(program) for identity, program in programs.items() if program['stage'] not in STAGES}
     result[COMPUTE_ID] = {'id': COMPUTE_ID, 'stage': 'compute', 'source': selected['ray_generation']['source'],
-                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper}
+                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True}
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
         # Use the same renderer-owned image recipe; its interface is validated by the runtime.
         source = '#include "_ludus_ray/' + image_recipe['source'] + '"\n'
         suffix = 'VertexOutput rgEntry(VertexInput value) { return ' + function + '(value); }' if stage == 'vertex' else 'float4 rgEntry(VertexOutput value) : SV_Target0 { return ' + function + '(value); }'
         source += '[shader("' + stage + '")]\n' + suffix + '\n'
         result[identity] = {'id': identity, 'stage': stage, 'source': selected['ray_generation']['source'],
-                            'function': function, 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': source}
+                            'function': function, 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': source, 'native_ray_profile': True}
     build.require(not set(result) & {program['id'] for program in selected.values()}, 'Schema', 'ray programs', 'reserved linked program identity')
     build.require(snapshot.total <= build.MAX_BYTES and len(snapshot.files) <= build.MAX_FILES, 'Capacity', 'ray sources', 'source snapshot limits exceeded')
     return result
@@ -182,8 +169,8 @@ def check_interface(program, result, build):
         build.require(interface.get('workgroup') == [64, 1, 1] and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries] ==
                       [(0, 'UniformBuffer', 224), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
-                       (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16)],
-                      'ShaderInterface', program['id'], 'ray compute reflection differs from renderer BVH ABI')
+                       (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)],
+                      'ShaderInterface', program['id'], 'ray query reflection differs from the native renderer ABI')
     elif program['id'] == IMAGE_VERTEX_ID:
         build.require([(entry['binding'], entry['kind'], entry['size']) for entry in entries] == [(0, 'UniformBuffer', 16)]
                       and [(value['location'], value['format']) for value in interface['inputs']] == [(0, 'Float2'), (1, 'Float4')],
@@ -237,6 +224,10 @@ float3 EvaluateGraphRay(uint pixel)
     launch.IsOrthographic = CameraPositionWorld.w != 0;
     launch.SampleIndex = uint(accumulation[pixel * 2].w);
     launch.Seed = Sampling.xy;
+    queries.RandomSeed = launch.Seed;
+    queries.RandomPixel = pixel;
+    queries.RandomSampleIndex = launch.SampleIndex;
+    queries.NextRandomDimension = 0;
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
     float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
     float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));

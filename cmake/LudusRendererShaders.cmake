@@ -10,7 +10,8 @@ function(ludus_get_renderer_shader_roots out_directory out_includes)
     if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/shaders/recipes.json")
         get_filename_component(root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
         set(directory "${root}/modules/graphics/renderer/shaders")
-        set(includes "${root}/modules/foundation/math/shaders"
+        set(includes "${root}/modules/content/render_graph_format/include/ludus/content/render_graph_format"
+                     "${root}/modules/foundation/math/shaders"
                      "${root}/modules/graphics/rhi/shaders"
                      "${root}/modules/graphics/renderer/include/ludus/graphics/renderer")
     endif()
@@ -45,6 +46,10 @@ function(ludus_compile_renderer_shaders)
             string(JSON vertex GET "${recipes}" "${name}" vertex)
             string(JSON fragment GET "${recipes}" "${name}" fragment)
             set(stages RASTER VERTEX "${vertex}" FRAGMENT "${fragment}")
+        endif()
+        string(JSON native_rays ERROR_VARIABLE native_error GET "${recipes}" "${name}" native_ray_queries)
+        if(NOT native_error AND native_rays)
+            list(APPEND stages NATIVE_RAY_QUERIES)
         endif()
         ludus_compile_shader(TARGET "${RENDERER_TARGET}" NAME "${name}"
             SOURCE "${directory}/${source}" ${stages} INCLUDES ${includes} DEPENDS "${manifest}")

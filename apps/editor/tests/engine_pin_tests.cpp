@@ -335,6 +335,19 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
     CHECK(controller.State().SetupProblem.isEmpty());
     CHECK_FALSE(notice->isVisible());
 
+    // A graph build can detect a new tool dependency while an older read-only setup
+    // check is running. Preserve that newer problem until a fresh verification succeeds.
+    check->click();
+    const QString renderingProblem = QStringLiteral("Rendering tools need preparation.");
+    controller.ReportProjectSetupProblem(renderingProblem);
+    REQUIRE(QTest::qWaitFor([&controller]() { return controller.Caps().CanCloseImmediately; }, 10000));
+    CHECK(controller.State().SetupProblem == renderingProblem);
+    CHECK(notice->isVisible() == true);
+    check->click();
+    REQUIRE(QTest::qWaitFor([&controller]() { return controller.Caps().CanCloseImmediately; }, 10000));
+    CHECK(controller.State().SetupProblem.isEmpty() == true);
+    CHECK(notice->isVisible() == false);
+
     REQUIRE(QFile::remove(directory.filePath(QStringLiteral("ready"))));
     check->click();
     REQUIRE(QTest::qWaitFor(

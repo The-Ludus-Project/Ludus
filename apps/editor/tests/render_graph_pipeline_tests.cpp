@@ -4,6 +4,7 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_shader_interface.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -403,7 +404,7 @@ TEST_CASE("legacy raster conversion retains shader state and resource ports", "[
     RenderGraphNodePorts after;
     REQUIRE(GetRenderGraphNodePorts(document, original, before) == true);
     REQUIRE(GetRenderGraphNodePorts(document, node, after) == true);
-    CHECK(before.Inputs.size() == after.Inputs.size());
+    CHECK(after.Inputs.size() == before.Inputs.size() + 3);
     CHECK(before.Outputs.size() == after.Outputs.size());
     CHECK(node.value(QStringLiteral("shaders")).toArray().size() == 2);
     REQUIRE(document.Undo() == true);
@@ -624,7 +625,7 @@ TEST_CASE("pipeline shader creation reuses programs and preserves edited sources
     CHECK(document.GetRevision() == revision);
 }
 
-TEST_CASE("configuration interface edits protect internal and containing graph links",
+TEST_CASE("configuration interface removals repair internal and containing graph links",
           "[editor][render-graph][interface]")
 {
     QTemporaryDir project;
@@ -635,18 +636,30 @@ TEST_CASE("configuration interface edits protect internal and containing graph l
     const QJsonArray inputs = record.value(QStringLiteral("inputs")).toArray();
     const QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
     const QByteArray original = document.GetDraft(LIBRARY);
-    const uint64 revision = document.GetRevision();
+    const QByteArray parent = document.GetDraft(ROOT_GRAPH);
     QString error;
     QJsonArray changedInputs = inputs;
     changedInputs.removeAt(0);
-    CHECK(document.ReplaceConfigurationInterface(LIBRARY, configuration, changedInputs, outputs, error) ==
-          RenderGraphDocumentStatus::InvalidEdit);
-    CHECK(error.isEmpty() == false);
+    REQUIRE(document.ReplaceConfigurationInterface(LIBRARY, configuration, changedInputs, outputs, error) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(GetConfiguration(document, LIBRARY, configuration).value(QStringLiteral("edges")).toArray().size() == 3);
+    CHECK(
+        GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("edges")).toArray().size() ==
+        5);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(LIBRARY) == original);
+    CHECK(document.GetDraft(ROOT_GRAPH) == parent);
     QJsonArray changedOutputs = outputs;
     changedOutputs.removeAt(changedOutputs.size() - 1); // color is consumed by the root Export.
-    CHECK(document.ReplaceConfigurationInterface(LIBRARY, configuration, inputs, changedOutputs, error) ==
-          RenderGraphDocumentStatus::InvalidEdit);
-    CHECK(error.contains(QStringLiteral("Disconnect")) == true);
+    REQUIRE(document.ReplaceConfigurationInterface(LIBRARY, configuration, inputs, changedOutputs, error) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(
+        GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("edges")).toArray().size() ==
+        5);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(LIBRARY) == original);
+    CHECK(document.GetDraft(ROOT_GRAPH) == parent);
+    const uint64 revision = document.GetRevision();
     changedOutputs = outputs;
     QJsonObject output = changedOutputs.at(0).toObject();
     output.insert(QStringLiteral("source"), QStringLiteral("draw.color")); // depth cannot expose color.
@@ -681,6 +694,412 @@ TEST_CASE("configuration interface edits protect internal and containing graph l
     }
     REQUIRE(document.Undo() == true);
     CHECK(document.GetDraft(LIBRARY) == original);
+}
+
+namespace
+{
+QString MakeInterfacePackage(const QTemporaryDir& project)
+{
+    const QString package = project.path();
+    const QMap<QString, QByteArray> sources{{QStringLiteral("child.lurender.json"), QByteArrayLiteral(R"JSON({
+          "version":2,"id":"Child","default":"Default","configurations":[{
+            "id":"Default","inputs":[{"id":"color","type":"ColorTexture"},{"id":"other","type":"ColorTexture"}],
+            "outputs":[{"id":"color","type":"ColorTexture","source":"input.color","required":true}],
+            "nodes":[{"id":"size","kind":"RenderSize","extent":"Texture"},
+                     {"id":"work","kind":"ComputePipeline","inputs":[{"id":"color","type":"ColorTexture"},{"id":"other","type":"ColorTexture"}],"outputs":[]}],
+            "edges":[{"from":"input.color","to":"size.texture"},{"from":"input.color","to":"work.color"},
+                     {"from":"input.other","to":"work.other"},{"from":"unrelated.missing","to":"work.missing"}]
+          }]})JSON")},
+                                            {QStringLiteral("caller.lurender.json"), QByteArrayLiteral(R"JSON({
+          "version":2,"id":"Caller","default":"Default","configurations":[{
+            "id":"Default","inputs":[{"id":"color","type":"ColorTexture"}],
+            "outputs":[{"id":"exposed","type":"ColorTexture","source":"first.color","required":true}],
+            "nodes":[{"id":"first","kind":"Subgraph","asset":"child.lurender.json","configuration":"Default"},
+                     {"id":"second","kind":"Subgraph","asset":"child.lurender.json","configuration":"Default"},
+                     {"id":"output","kind":"Export","type":"ColorTexture"},
+                     {"id":"size","kind":"RenderSize","extent":"Texture"}],
+            "edges":[{"from":"input.color","to":"first.color"},{"from":"first.color","to":"second.color"},
+                     {"from":"second.color","to":"output.texture"},{"from":"first.color","to":"size.texture"},
+                     {"from":"unrelated.missing","to":"other.missing"}]
+          }]})JSON")},
+                                            {ROOT_GRAPH, QByteArrayLiteral(R"JSON({
+          "version":2,"id":"Root","default":"Default","configurations":[{
+            "id":"Default","inputs":[],"outputs":[],
+            "nodes":[{"id":"wrapper","kind":"Subgraph","asset":"caller.lurender.json","configuration":"Default"},
+                     {"id":"output","kind":"Export","type":"ColorTexture"}],
+            "edges":[{"from":"wrapper.exposed","to":"output.texture"}]
+          }]})JSON")}};
+    for (QMap<QString, QByteArray>::const_iterator source = sources.constBegin(); source != sources.constEnd();
+         ++source)
+    {
+        QFile file(QDir(package).filePath(source.key()));
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        REQUIRE(file.write(source.value()) == source.value().size());
+    }
+    return package;
+}
+QMap<QString, QByteArray> ReadDrafts(const RenderGraphDocument& document)
+{
+    QMap<QString, QByteArray> drafts;
+    for (const QString& file : document.GetFiles())
+    {
+        drafts.insert(file, document.GetDraft(file));
+    }
+    return drafts;
+}
+QJsonArray RenamePorts(const QJsonArray& ports, const QMap<QString, QString>& renames, bool shouldChangeType = false)
+{
+    QJsonArray result;
+    for (const QJsonValueConstRef value : ports)
+    {
+        QJsonObject port = value.toObject();
+        const QString identity = port.value(QStringLiteral("id")).toString();
+        port.insert(QStringLiteral("id"), renames.value(identity, identity));
+        if (shouldChangeType == true && identity == QStringLiteral("color"))
+        {
+            port.insert(QStringLiteral("type"), QStringLiteral("DepthTexture"));
+        }
+        result.append(port);
+    }
+    return result;
+}
+} // namespace
+
+TEST_CASE("interface rename previews and repairs every caller with one history entry",
+          "[editor][render-graph][interface]")
+{
+    QTemporaryDir project;
+    const QString package = MakeInterfacePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString child = QStringLiteral("child.lurender.json");
+    const QString caller = QStringLiteral("caller.lurender.json");
+    // A second saved configuration and a separate source both instantiate the same child.
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(caller, graph) == true);
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    QJsonObject second = configurations.at(0).toObject();
+    second.insert(QStringLiteral("id"), QStringLiteral("Alternative"));
+    configurations.append(second);
+    graph.insert(QStringLiteral("configurations"), configurations);
+    REQUIRE(document.SetText(caller, EncodeCanonicalJson(graph)) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.SetText(ROOT_GRAPH, EncodeCanonicalJson(graph)) == RenderGraphDocumentStatus::Ok);
+    const QMap<QString, QByteArray> original = ReadDrafts(document);
+    const QJsonObject record = GetConfiguration(document, child, DEFAULT_CONFIGURATION);
+    // Explicit identity maps make swaps unambiguous and apply exactly once.
+    const QMap<QString, QString> inputRenames{{QStringLiteral("color"), QStringLiteral("other")},
+                                              {QStringLiteral("other"), QStringLiteral("color")}};
+    const QMap<QString, QString> outputRenames{{QStringLiteral("color"), QStringLiteral("result")}};
+    const QJsonArray inputs = RenamePorts(record.value(QStringLiteral("inputs")).toArray(), inputRenames);
+    const QJsonArray outputs = RenamePorts(record.value(QStringLiteral("outputs")).toArray(), outputRenames);
+    const uint64 revision = document.GetRevision();
+    QStringList repairs;
+    QString error;
+    REQUIRE(document.PreviewConfigurationInterface(child,
+                                                   DEFAULT_CONFIGURATION,
+                                                   inputs,
+                                                   outputs,
+                                                   repairs,
+                                                   error,
+                                                   inputRenames,
+                                                   outputRenames) == RenderGraphDocumentStatus::Ok);
+    CHECK(repairs.join(QLatin1Char('\n')).contains(QStringLiteral("Alternative")) == true);
+    CHECK(document.GetRevision() == revision);
+    CHECK(ReadDrafts(document) == original);
+    REQUIRE(document.ReplaceConfigurationInterface(child,
+                                                   DEFAULT_CONFIGURATION,
+                                                   inputs,
+                                                   outputs,
+                                                   error,
+                                                   inputRenames,
+                                                   outputRenames) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetRevision() == revision + 1);
+    const QJsonObject repairedChild = GetConfiguration(document, child, DEFAULT_CONFIGURATION);
+    CHECK(repairedChild.value(QStringLiteral("outputs"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("source"))
+              .toString() == QStringLiteral("input.other"));
+    CHECK(repairedChild.value(QStringLiteral("edges"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("from"))
+              .toString() == QStringLiteral("input.other"));
+    CHECK(repairedChild.value(QStringLiteral("edges"))
+              .toArray()
+              .at(2)
+              .toObject()
+              .value(QStringLiteral("from"))
+              .toString() == QStringLiteral("input.color"));
+    for (const QString& file : {caller, ROOT_GRAPH})
+    {
+        for (const QString& configuration : {DEFAULT_CONFIGURATION, QStringLiteral("Alternative")})
+        {
+            const QJsonObject repaired = GetConfiguration(document, file, configuration);
+            const QJsonArray edges = repaired.value(QStringLiteral("edges")).toArray();
+            REQUIRE(edges.size() == 5);
+            CHECK(edges.at(1).toObject().value(QStringLiteral("from")).toString() == QStringLiteral("first.result"));
+            CHECK(edges.at(1).toObject().value(QStringLiteral("to")).toString() == QStringLiteral("second.other"));
+            CHECK(edges.at(4).toObject().value(QStringLiteral("from")).toString() ==
+                  QStringLiteral("unrelated.missing"));
+            CHECK(repaired.value(QStringLiteral("outputs"))
+                      .toArray()
+                      .at(0)
+                      .toObject()
+                      .value(QStringLiteral("source"))
+                      .toString() == QStringLiteral("first.result"));
+        }
+    }
+    const QMap<QString, QByteArray> repaired = ReadDrafts(document);
+    REQUIRE(document.Undo() == true);
+    CHECK(ReadDrafts(document) == original);
+    REQUIRE(document.Redo() == true);
+    CHECK(ReadDrafts(document) == repaired);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    CHECK(saved.size() == 3);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(ReadDrafts(reopened) == repaired);
+    const uint64 unchanged = document.GetRevision();
+    REQUIRE(document.ReplaceConfigurationInterface(child,
+                                                   DEFAULT_CONFIGURATION,
+                                                   repairedChild.value(QStringLiteral("inputs")).toArray(),
+                                                   repairedChild.value(QStringLiteral("outputs")).toArray(),
+                                                   error) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetRevision() == unchanged);
+}
+
+TEST_CASE("interface editor retains input identity through swaps and source selection",
+          "[editor][render-graph][interface]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeInterfacePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString child = QStringLiteral("child.lurender.json");
+    RenderGraphConfigurationEditor editor(document, child, GetConfiguration(document, child, DEFAULT_CONFIGURATION));
+    QTableWidget* inputs = editor.findChild<QTableWidget*>(QStringLiteral("configurationInputs"));
+    QTableWidget* outputs = editor.findChild<QTableWidget*>(QStringLiteral("configurationOutputs"));
+    inputs->item(0, 0)->setText(QStringLiteral("other"));
+    inputs->item(1, 0)->setText(QStringLiteral("color"));
+    QComboBox* source = qobject_cast<QComboBox*>(outputs->cellWidget(0, 2));
+    REQUIRE(source != nullptr);
+    CHECK(source->currentText() == QStringLiteral("input.other"));
+    CHECK(source->currentData().toString() == QStringLiteral("input.color"));
+    source->setCurrentIndex(source->findText(QStringLiteral("input.color")));
+    CHECK(source->currentData().toString() == QStringLiteral("input.other"));
+    const QString repairs = editor.findChild<QLabel*>(QStringLiteral("configurationInterfaceRepairs"))->text();
+    CHECK(repairs.contains(QStringLiteral("input.other to input.color")) == true);
+    CHECK(repairs.contains(QStringLiteral("one undo step")) == true);
+    QString error;
+    REQUIRE(document.ReplaceConfigurationInterface(child,
+                                                   DEFAULT_CONFIGURATION,
+                                                   editor.GetInputs(),
+                                                   editor.GetOutputs(),
+                                                   error,
+                                                   editor.GetInputRenames(),
+                                                   editor.GetOutputRenames()) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetConfiguration(document, child, DEFAULT_CONFIGURATION)
+              .value(QStringLiteral("outputs"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("source"))
+              .toString() == QStringLiteral("input.color"));
+}
+
+TEST_CASE("interface type repair preserves compatible uses and outer contracts", "[editor][render-graph][interface]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeInterfacePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString child = QStringLiteral("child.lurender.json");
+    const QString caller = QStringLiteral("caller.lurender.json");
+    const QMap<QString, QByteArray> original = ReadDrafts(document);
+    const QJsonObject record = GetConfiguration(document, child, DEFAULT_CONFIGURATION);
+    const QJsonArray inputs = RenamePorts(record.value(QStringLiteral("inputs")).toArray(), {}, true);
+    const QJsonArray outputs = RenamePorts(record.value(QStringLiteral("outputs")).toArray(), {}, true);
+    QString error;
+    REQUIRE(document.ReplaceConfigurationInterface(child, DEFAULT_CONFIGURATION, inputs, outputs, error) ==
+            RenderGraphDocumentStatus::Ok);
+    const QJsonObject repaired = GetConfiguration(document, child, DEFAULT_CONFIGURATION);
+    const QJsonArray internalEdges = repaired.value(QStringLiteral("edges")).toArray();
+    REQUIRE(internalEdges.size() == 3);
+    CHECK(internalEdges.at(0).toObject().value(QStringLiteral("to")).toString() == QStringLiteral("size.texture"));
+    CHECK(repaired.value(QStringLiteral("outputs"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("source"))
+              .toString() == QStringLiteral("input.color"));
+    const QJsonObject parent = GetConfiguration(document, caller, DEFAULT_CONFIGURATION);
+    const QJsonArray parentEdges = parent.value(QStringLiteral("edges")).toArray();
+    REQUIRE(parentEdges.size() == 3);
+    CHECK(parentEdges.at(0).toObject().value(QStringLiteral("to")).toString() == QStringLiteral("second.color"));
+    CHECK(parentEdges.at(1).toObject().value(QStringLiteral("to")).toString() == QStringLiteral("size.texture"));
+    const QJsonObject exposed = parent.value(QStringLiteral("outputs")).toArray().at(0).toObject();
+    CHECK(exposed.value(QStringLiteral("source")).toString().isEmpty() == true);
+    CHECK(exposed.value(QStringLiteral("type")).toString() == QStringLiteral("ColorTexture"));
+    CHECK(exposed.value(QStringLiteral("required")).toBool() == true);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original.value(ROOT_GRAPH));
+    REQUIRE(document.Undo() == true);
+    CHECK(ReadDrafts(document) == original);
+    // Changing only the output type clears its old incompatible source too.
+    REQUIRE(document.ReplaceConfigurationInterface(child,
+                                                   DEFAULT_CONFIGURATION,
+                                                   record.value(QStringLiteral("inputs")).toArray(),
+                                                   outputs,
+                                                   error) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetConfiguration(document, child, DEFAULT_CONFIGURATION)
+              .value(QStringLiteral("outputs"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("source"))
+              .toString()
+              .isEmpty() == true);
+}
+
+TEST_CASE("interface repairs reject ambiguous maps malformed callers and byte overflow atomically",
+          "[editor][render-graph][interface]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeInterfacePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString child = QStringLiteral("child.lurender.json");
+    const QJsonObject record = GetConfiguration(document, child, DEFAULT_CONFIGURATION);
+    const QMap<QString, QString> renames{{QStringLiteral("color"), QStringLiteral("renamed")}};
+    const QJsonArray inputs = RenamePorts(record.value(QStringLiteral("inputs")).toArray(), renames);
+    const QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
+    QString error;
+    SECTION("ambiguous map")
+    {
+        const QMap<QString, QByteArray> original = ReadDrafts(document);
+        const uint64 revision = document.GetRevision();
+        REQUIRE(document.ReplaceConfigurationInterface(child,
+                                                       DEFAULT_CONFIGURATION,
+                                                       inputs,
+                                                       outputs,
+                                                       error,
+                                                       {{QStringLiteral("color"), QStringLiteral("renamed")},
+                                                        {QStringLiteral("other"), QStringLiteral("renamed")}}) ==
+                RenderGraphDocumentStatus::InvalidEdit);
+        CHECK(ReadDrafts(document) == original);
+        CHECK(document.GetRevision() == revision);
+    }
+    SECTION("old identity cannot be reused for a new port during a rename")
+    {
+        QJsonArray reused = inputs;
+        reused.append(record.value(QStringLiteral("inputs")).toArray().at(0));
+        const QMap<QString, QByteArray> original = ReadDrafts(document);
+        CHECK(document.ReplaceConfigurationInterface(child, DEFAULT_CONFIGURATION, reused, outputs, error, renames) ==
+              RenderGraphDocumentStatus::InvalidEdit);
+        CHECK(ReadDrafts(document) == original);
+    }
+    SECTION("unrelated malformed records remain byte-for-byte unchanged")
+    {
+        const QByteArray unrelated = QByteArrayLiteral("{\"configurations\":[null,17],\"version\":2}");
+        REQUIRE(document.SetText(ROOT_GRAPH, unrelated) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.ReplaceConfigurationInterface(child, DEFAULT_CONFIGURATION, inputs, outputs, error, renames) ==
+                RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetDraft(ROOT_GRAPH) == unrelated);
+    }
+    SECTION("malformed caller")
+    {
+        REQUIRE(document.SetText(ROOT_GRAPH, QByteArrayLiteral("{")) == RenderGraphDocumentStatus::Ok);
+        const QMap<QString, QByteArray> original = ReadDrafts(document);
+        const uint64 revision = document.GetRevision();
+        QStringList repairs{QStringLiteral("preserved")};
+        CHECK(document.PreviewConfigurationInterface(child,
+                                                     DEFAULT_CONFIGURATION,
+                                                     inputs,
+                                                     outputs,
+                                                     repairs,
+                                                     error,
+                                                     renames) == RenderGraphDocumentStatus::Malformed);
+        CHECK(repairs == QStringList{QStringLiteral("preserved")});
+        CHECK(error.contains(ROOT_GRAPH) == true);
+        CHECK(document.ReplaceConfigurationInterface(child, DEFAULT_CONFIGURATION, inputs, outputs, error, renames) ==
+              RenderGraphDocumentStatus::Malformed);
+        CHECK(ReadDrafts(document) == original);
+        CHECK(document.GetRevision() == revision);
+    }
+    SECTION("byte overflow")
+    {
+        QJsonObject graph;
+        REQUIRE(document.GetGraph(child, graph) == true);
+        graph.insert(QStringLiteral("padding"), QString());
+        const qsizetype used = QJsonDocument(graph).toJson(QJsonDocument::Compact).size();
+        graph.insert(QStringLiteral("padding"), QString(RenderGraphDocument::MAX_FILE_BYTES - used, QLatin1Char('x')));
+        REQUIRE(document.SetText(child, QJsonDocument(graph).toJson(QJsonDocument::Compact)) ==
+                RenderGraphDocumentStatus::Ok);
+        const QMap<QString, QByteArray> original = ReadDrafts(document);
+        const uint64 revision = document.GetRevision();
+        CHECK(document.ReplaceConfigurationInterface(child, DEFAULT_CONFIGURATION, inputs, outputs, error, renames) ==
+              RenderGraphDocumentStatus::Capacity);
+        CHECK(ReadDrafts(document) == original);
+        CHECK(document.GetRevision() == revision);
+    }
+    SECTION("remove and add is not guessed as a rename")
+    {
+        REQUIRE(document.ReplaceConfigurationInterface(child, DEFAULT_CONFIGURATION, inputs, outputs, error) ==
+                RenderGraphDocumentStatus::Ok);
+        CHECK(GetConfiguration(document, child, DEFAULT_CONFIGURATION)
+                  .value(QStringLiteral("outputs"))
+                  .toArray()
+                  .at(0)
+                  .toObject()
+                  .value(QStringLiteral("source"))
+                  .toString()
+                  .isEmpty() == true);
+        const QJsonArray edges =
+            GetConfiguration(document, QStringLiteral("caller.lurender.json"), DEFAULT_CONFIGURATION)
+                .value(QStringLiteral("edges"))
+                .toArray();
+        CHECK(edges.size() == 3);
+    }
+}
+
+TEST_CASE("interface repair preview bounds detail text without truncating the transaction",
+          "[editor][render-graph][interface]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeInterfacePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString child = QStringLiteral("child.lurender.json");
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(child, graph) == true);
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    QJsonObject record = configurations.at(0).toObject();
+    QJsonArray edges;
+    for (int32 index = 0; index < RenderGraphDocument::MAX_EDGES; ++index)
+    {
+        edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("input.color")},
+                                 {QStringLiteral("to"), QStringLiteral("work.color")}});
+    }
+    record.insert(QStringLiteral("edges"), edges);
+    configurations.replace(0, record);
+    graph.insert(QStringLiteral("configurations"), configurations);
+    REQUIRE(document.SetText(child, EncodeCanonicalJson(graph)) == RenderGraphDocumentStatus::Ok);
+    QJsonArray inputs = record.value(QStringLiteral("inputs")).toArray();
+    inputs.removeAt(0);
+    const QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
+    const QMap<QString, QByteArray> original = ReadDrafts(document);
+    QStringList repairs;
+    QString error;
+    REQUIRE(document.PreviewConfigurationInterface(child, DEFAULT_CONFIGURATION, inputs, outputs, repairs, error) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(repairs.size() == 129);
+    CHECK(repairs.last().contains(QStringLiteral("additional repairs")) == true);
+    CHECK(ReadDrafts(document) == original);
+    REQUIRE(document.ReplaceConfigurationInterface(child, DEFAULT_CONFIGURATION, inputs, outputs, error) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(GetConfiguration(document, child, DEFAULT_CONFIGURATION).value(QStringLiteral("edges")).toArray().isEmpty() ==
+          true);
+    REQUIRE(document.Undo() == true);
+    CHECK(ReadDrafts(document) == original);
 }
 
 TEST_CASE("configuration interfaces enforce graph version types and bounded unique names",
@@ -929,7 +1348,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
     const QString renamedSource = QStringLiteral("shader_Shader_trace_raygen.slang");
     CHECK(document.GetFiles().contains(originalSource) == false);
     CHECK(document.GetDraft(renamedSource) == authored);
-    CHECK(document.GetFiles().size() == initialFiles + 1);
+    CHECK(document.GetFiles().size() == initialFiles + 2);
     REQUIRE(document.Undo() == true);
     CHECK(document.GetDraft(originalSource) == authored);
     CHECK(document.GetFiles().contains(renamedSource) == false);
@@ -944,7 +1363,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
     node.insert(QStringLiteral("shaders"), shaders);
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
     CHECK(document.GetDraft(renamedSource) == authored);
-    CHECK(document.GetFiles().size() == initialFiles + 1);
+    CHECK(document.GetFiles().size() == initialFiles + 2);
     const QJsonArray programs =
         QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("programs")).toArray();
     const QJsonObject program = programs.last().toObject();
@@ -1245,26 +1664,6 @@ TEST_CASE("completing an imported ray pipeline registers its technique in the sa
     RenderGraphDocument reloaded;
     REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(GetRayTechnique(reloaded) == technique);
-
-    SECTION("an older package is repaired without changing graph or shader bytes")
-    {
-        // Restore programs while removing only the technique, as in existing editor-created packages.
-        QJsonObject manifest =
-            QJsonDocument::fromJson(reloaded.GetDraft(QStringLiteral("main.lushader.json"))).object();
-        QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
-        techniques.removeLast();
-        manifest.insert(QStringLiteral("techniques"), techniques);
-        REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(manifest)) ==
-                RenderGraphDocumentStatus::Ok);
-        const QByteArray graph = document.GetDraft(LIBRARY);
-        const uint64 beforeRepair = document.GetRevision();
-        REQUIRE(document.PrepareTechniques(error) == RenderGraphDocumentStatus::Ok);
-        CHECK(document.GetRevision() == beforeRepair + 1);
-        CHECK(GetRayTechnique(document) == technique);
-        CHECK(document.GetDraft(LIBRARY) == graph);
-        REQUIRE(document.Undo() == true);
-        CHECK(GetRayTechnique(document).isEmpty() == true);
-    }
 }
 
 TEST_CASE("pipeline technique conflicts and budgets preserve the complete draft",
@@ -1367,4 +1766,345 @@ TEST_CASE("graphics pipelines register missing techniques and retain authored re
     CHECK(recipes.last().toObject().value(QStringLiteral("cull")) == QStringLiteral("Back"));
     CHECK(recipes.first().toObject().value(QStringLiteral("id")) !=
           recipes.last().toObject().value(QStringLiteral("id")));
+}
+
+TEST_CASE("new ray shaders expose scene materials without manifest edits",
+          "[editor][render-graph][pipeline][scene-materials]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject node = MakeCompleteRayPipeline(QStringLiteral("materials"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QStringList originalFiles = document.GetFiles();
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject technique = GetRayTechnique(document);
+    const QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
+    CHECK(document.GetDraft(interface.value(QStringLiteral("payload")).toString()).contains("float3 Radiance;") ==
+          true);
+    const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+    for (const QJsonValueConstRef value :
+         QJsonDocument::fromJson(manifest).object().value(QStringLiteral("programs")).toArray())
+    {
+        const QJsonObject program = value.toObject();
+        const QString stage = program.value(QStringLiteral("stage")).toString();
+        if (technique.value(stage) != program.value(QStringLiteral("id")))
+        {
+            continue;
+        }
+        const QString source = program.value(QStringLiteral("source")).toString();
+        const QByteArray text = document.GetDraft(source);
+        CHECK(text.contains("SceneContext scene") == true);
+        const QString description = DescribeShaderInterface(manifest, source);
+        CHECK(description.contains(QStringLiteral("Scene materials enabled")) == true);
+        CHECK(description.contains(QStringLiteral("Legacy ray interface")) == false);
+        if (stage == QStringLiteral("closest_hit"))
+        {
+            CHECK(program.value(QStringLiteral("input")) == QStringLiteral("SurfaceHit"));
+            CHECK(text.contains("EvaluateMaterial(scene, hit)") == true);
+            CHECK(text.contains("material.BaseColor") == true);
+        }
+        if (stage == QStringLiteral("ray_generation"))
+        {
+            CHECK(program.value(QStringLiteral("output")) == QStringLiteral("Radiance"));
+            CHECK(text.contains("TraceAndShade(scene, queries, launch.CameraRay, payload)") == true);
+        }
+    }
+    SECTION("other ray stages remain authoring drafts")
+    {
+        QJsonObject pipeline = GetNode(document, QStringLiteral("materials"));
+        QJsonArray shaders = pipeline.value(QStringLiteral("shaders")).toArray();
+        shaders.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("anyHit")},
+                                   {QStringLiteral("stage"), QStringLiteral("any_hit")},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}});
+        pipeline.insert(QStringLiteral("shaders"), shaders);
+        REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, pipeline) == RenderGraphDocumentStatus::Ok);
+        const QJsonObject program = QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json")))
+                                        .object()
+                                        .value(QStringLiteral("programs"))
+                                        .toArray()
+                                        .last()
+                                        .toObject();
+        CHECK(program.value(QStringLiteral("input")).toString().isEmpty() == true);
+        CHECK(document.GetDraft(program.value(QStringLiteral("source")).toString()).contains("Authoring draft") ==
+              true);
+        REQUIRE(document.Undo() == true);
+    }
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles() == originalFiles);
+    REQUIRE(document.Redo() == true);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument loaded;
+    REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetRayTechnique(loaded) == technique);
+}
+
+TEST_CASE("legacy ray conversion preserves authored callbacks and is atomic",
+          "[editor][render-graph][pipeline][scene-materials]")
+{
+    QTemporaryDir project;
+    const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/raytracing"));
+    const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
+    for (const QString& file : {ROOT_GRAPH,
+                                QStringLiteral("main.lushader.json.in"),
+                                QStringLiteral("main_shaders/geometry.slang"),
+                                QStringLiteral("main_shaders/color.slang"),
+                                QStringLiteral("main_shaders/depth.slang"),
+                                QStringLiteral("main_shaders/generate.slang"),
+                                QStringLiteral("main_shaders/miss.slang"),
+                                QStringLiteral("main_shaders/closest.slang")})
+    {
+        QFile input(source.filePath(file));
+        REQUIRE(input.open(QIODevice::ReadOnly) == true);
+        QByteArray bytes = input.readAll();
+        bytes.replace("@RG2_TEST_PROFILES@", "[\"metal\", \"wgsl\"]");
+        REQUIRE(QDir().mkpath(QFileInfo(QDir(package).filePath(file)).absolutePath()) == true);
+        QFile output(QDir(package).filePath(file.endsWith(QStringLiteral(".in")) ? file.chopped(3) : file));
+        REQUIRE(output.open(QIODevice::WriteOnly) == true);
+        REQUIRE(output.write(bytes) == bytes.size());
+    }
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    const QByteArray originalManifest = document.GetDraft(manifestFile);
+    const QByteArray originalGraph = document.GetDraft(ROOT_GRAPH);
+    const QStringList originalFiles = document.GetFiles();
+    QMap<QString, QByteArray> originalSources;
+    for (const QString& file : originalFiles)
+    {
+        if (file.endsWith(QStringLiteral(".slang")) == true)
+        {
+            originalSources.insert(file, document.GetDraft(file));
+        }
+    }
+    CHECK(DescribeShaderInterface(originalManifest, QStringLiteral("main_shaders/closest.slang"))
+              .contains(QStringLiteral("material tint: return input.Color.xyz")) == true);
+    QString error;
+    const uint64 revision = document.GetRevision();
+    SECTION("connecting Scene enables the complete bundle in one undo step")
+    {
+        REQUIRE(document.Disconnect(ROOT_GRAPH,
+                                    DEFAULT_CONFIGURATION,
+                                    QStringLiteral("scene.scene"),
+                                    QStringLiteral("trace.scene")) == RenderGraphDocumentStatus::Ok);
+        const uint64 disconnected = document.GetRevision();
+        REQUIRE(document.Connect(ROOT_GRAPH,
+                                 DEFAULT_CONFIGURATION,
+                                 QStringLiteral("scene.scene"),
+                                 QStringLiteral("trace.scene")) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == disconnected + 1);
+        CHECK(GetRayTechnique(document).contains(QStringLiteral("scene_interface")) == true);
+        CHECK(QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
+                  .object()
+                  .value(QStringLiteral("configurations"))
+                  .toArray()
+                  .at(0)
+                  .toObject()
+                  .value(QStringLiteral("edges"))
+                  .toArray()
+                  .contains(QJsonObject{{QStringLiteral("from"), QStringLiteral("scene.scene")},
+                                        {QStringLiteral("to"), QStringLiteral("trace.scene")}}) == true);
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(manifestFile) == originalManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) != originalGraph);
+        REQUIRE(document.Redo() == true);
+        CHECK(QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
+                  .object()
+                  .value(QStringLiteral("configurations"))
+                  .toArray()
+                  .at(0)
+                  .toObject()
+                  .value(QStringLiteral("edges"))
+                  .toArray()
+                  .contains(QJsonObject{{QStringLiteral("from"), QStringLiteral("scene.scene")},
+                                        {QStringLiteral("to"), QStringLiteral("trace.scene")}}) == true);
+    }
+    SECTION("expansion preserves all groups and save reload keeps partial selection")
+    {
+        REQUIRE(document.ExpandSceneBundle(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("trace")) ==
+                RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == revision + 1);
+        const QJsonArray edges =
+            GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("edges")).toArray();
+        CHECK(edges.size() == 7);
+        QJsonObject trace;
+        for (const QJsonValueConstRef value :
+             GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray())
+        {
+            if (value.toObject().value(QStringLiteral("id")).toString() == QStringLiteral("trace"))
+            {
+                trace = value.toObject();
+            }
+        }
+        REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, trace, &error) ==
+                RenderGraphDocumentStatus::Ok);
+
+        CHECK(GetRayTechnique(document).contains(QStringLiteral("scene_interface")) == true);
+        CHECK(CheckRenderGraphLink(document,
+                                   ROOT_GRAPH,
+                                   DEFAULT_CONFIGURATION,
+                                   QStringLiteral("scene.scene"),
+                                   QStringLiteral("trace.scene"))
+                  .Code == QStringLiteral("MultipleWriters"));
+        REQUIRE(document.Disconnect(ROOT_GRAPH,
+                                    DEFAULT_CONFIGURATION,
+                                    QStringLiteral("scene.materials"),
+                                    QStringLiteral("trace.scene_materials")) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.Disconnect(ROOT_GRAPH,
+                                    DEFAULT_CONFIGURATION,
+                                    QStringLiteral("scene.lights"),
+                                    QStringLiteral("trace.scene_lights")) == RenderGraphDocumentStatus::Ok);
+        QStringList saved;
+        REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+        RenderGraphDocument loaded;
+        REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        CHECK(loaded.GetDraft(ROOT_GRAPH) == document.GetDraft(ROOT_GRAPH));
+        CHECK(loaded.GetDraft(ROOT_GRAPH).contains("trace.scene_geometry") == true);
+        CHECK(loaded.GetDraft(ROOT_GRAPH).contains("trace.scene_materials") == false);
+    }
+    SECTION("conversion")
+    {
+        const QJsonObject manifestBefore = QJsonDocument::fromJson(originalManifest).object();
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(error.isEmpty() == true);
+        CHECK(document.GetRevision() == revision + 1);
+        const QJsonObject technique = GetRayTechnique(document);
+        CHECK(technique.contains(QStringLiteral("scene_interface")) == true);
+        CHECK(technique.value(QStringLiteral("recipes")).toArray().size() == 1);
+        for (QMap<QString, QByteArray>::const_iterator file = originalSources.constBegin();
+             file != originalSources.constEnd();
+             ++file)
+        {
+            CHECK(document.GetDraft(file.key()) == file.value());
+        }
+        const QByteArray converted = document.GetDraft(manifestFile);
+        const QJsonObject manifestAfter = QJsonDocument::fromJson(converted).object();
+        CHECK(manifestAfter.value(QStringLiteral("budgets")) == manifestBefore.value(QStringLiteral("budgets")));
+        CHECK(manifestAfter.value(QStringLiteral("programs")).toArray().size() ==
+              manifestBefore.value(QStringLiteral("programs")).toArray().size());
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        for (const QJsonValueConstRef value :
+             QJsonDocument::fromJson(converted).object().value(QStringLiteral("programs")).toArray())
+        {
+            const QJsonObject program = value.toObject();
+            const QString stage = program.value(QStringLiteral("stage")).toString();
+            if (technique.value(stage) == program.value(QStringLiteral("id")))
+            {
+                const QByteArray adapter = document.GetDraft(program.value(QStringLiteral("source")).toString());
+                CHECK(adapter.contains("SceneShaderMain") == true);
+                if (stage == QStringLiteral("closest_hit"))
+                {
+                    CHECK(adapter.contains("input.Primitive = hit.TriangleIndex") == true);
+                    CHECK(adapter.contains("ShadeClosest(input)") == true);
+                }
+            }
+        }
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == revision + 1);
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(manifestFile) == originalManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        CHECK(document.GetFiles() == originalFiles);
+        REQUIRE(document.Redo() == true);
+        CHECK(document.GetDraft(manifestFile) == converted);
+        QStringList saved;
+        REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+        RenderGraphDocument loaded;
+        REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        CHECK(loaded.GetDraft(manifestFile) == converted);
+    }
+    SECTION("legacy technique repair preserves callback bytes")
+    {
+        const QJsonObject technique = GetRayTechnique(document);
+        QJsonObject manifest = QJsonDocument::fromJson(originalManifest).object();
+        QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+        techniques.removeLast();
+        manifest.insert(QStringLiteral("techniques"), techniques);
+        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+        const uint64 beforeRepair = document.GetRevision();
+        REQUIRE(document.PrepareTechniques(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == beforeRepair + 1);
+        const QJsonObject repaired = GetRayTechnique(document);
+        CHECK(repaired.value(QStringLiteral("ray_generation")) == technique.value(QStringLiteral("ray_generation")));
+        CHECK(repaired.value(QStringLiteral("miss")) == technique.value(QStringLiteral("miss")));
+        CHECK(repaired.value(QStringLiteral("closest_hit")) == technique.value(QStringLiteral("closest_hit")));
+        CHECK(repaired.contains(QStringLiteral("scene_interface")) == false);
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        for (QMap<QString, QByteArray>::const_iterator file = originalSources.constBegin();
+             file != originalSources.constEnd();
+             ++file)
+        {
+            CHECK(document.GetDraft(file.key()) == file.value());
+        }
+        REQUIRE(document.Undo() == true);
+        CHECK(GetRayTechnique(document).isEmpty() == true);
+    }
+    SECTION("malformed callback preserves every file")
+    {
+        QJsonObject manifest = QJsonDocument::fromJson(originalManifest).object();
+        QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+        for (qsizetype index = 0; index < programs.size(); ++index)
+        {
+            QJsonObject program = programs.at(index).toObject();
+            if (program.value(QStringLiteral("stage")).toString() == QStringLiteral("closest_hit"))
+            {
+                program.insert(QStringLiteral("input"), QStringLiteral("Ray"));
+                programs.replace(index, program);
+            }
+        }
+        manifest.insert(QStringLiteral("programs"), programs);
+        const QByteArray invalidManifest = EncodeCanonicalJson(manifest);
+        REQUIRE(document.SetText(manifestFile, invalidManifest) == RenderGraphDocumentStatus::Ok);
+        const uint64 invalidRevision = document.GetRevision();
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::InvalidEdit);
+        CHECK(error.isEmpty() == false);
+        CHECK(document.GetRevision() == invalidRevision);
+        CHECK(document.GetDraft(manifestFile) == invalidManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        CHECK(document.GetFiles() == originalFiles);
+    }
+    SECTION("conversion reuses full program and artifact budgets")
+    {
+        QJsonObject manifest = QJsonDocument::fromJson(originalManifest).object();
+        const QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+        QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+        budgets.insert(QStringLiteral("programs"), programs.size());
+        budgets.insert(QStringLiteral("artifacts"),
+                       programs.size() * manifest.value(QStringLiteral("profiles")).toArray().size());
+        manifest.insert(QStringLiteral("budgets"), budgets);
+        const QByteArray fullManifest = EncodeCanonicalJson(manifest);
+        REQUIRE(document.SetText(manifestFile, fullManifest) == RenderGraphDocumentStatus::Ok);
+        const uint64 conversionRevision = document.GetRevision();
+        REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Ok);
+        CHECK(error.isEmpty() == true);
+        CHECK(document.GetRevision() == conversionRevision + 1);
+        const QJsonObject converted = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+        CHECK(converted.value(QStringLiteral("budgets")).toObject() == budgets);
+        const QJsonArray convertedPrograms = converted.value(QStringLiteral("programs")).toArray();
+        REQUIRE(convertedPrograms.size() == programs.size());
+        for (qsizetype index = 0; index < programs.size(); ++index)
+        {
+            CHECK(convertedPrograms.at(index).toObject().value(QStringLiteral("id")) ==
+                  programs.at(index).toObject().value(QStringLiteral("id")));
+        }
+        CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
+        for (QMap<QString, QByteArray>::const_iterator file = originalSources.constBegin();
+             file != originalSources.constEnd();
+             ++file)
+        {
+            CHECK(document.GetDraft(file.key()) == file.value());
+        }
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(manifestFile) == fullManifest);
+        CHECK(document.GetFiles() == originalFiles);
+        REQUIRE(document.Redo() == true);
+        CHECK(QJsonDocument::fromJson(document.GetDraft(manifestFile)).object() == converted);
+        QStringList saved;
+        REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+        RenderGraphDocument loaded;
+        REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        CHECK(QJsonDocument::fromJson(loaded.GetDraft(manifestFile)).object() == converted);
+    }
 }

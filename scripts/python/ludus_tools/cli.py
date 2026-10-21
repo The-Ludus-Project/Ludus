@@ -718,7 +718,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 error["diagnostics"] = exc.diagnostics
             print(_json.dumps({"schema": 1, "error": error}))
         else:
-            print(f"error [{exc.code}]: {exc.message}", file=sys.stderr)
+            if exc.diagnostics:
+                for diagnostic in exc.diagnostics:
+                    print(f"{diagnostic.get('severity', 'error')} [{diagnostic.get('code', exc.code)}]: {diagnostic['message']}", file=sys.stderr)
+                    for label in ('expected', 'actual', 'repair'):
+                        if label in diagnostic:
+                            print(f"  {label.capitalize()}: {diagnostic[label]}", file=sys.stderr)
+            else:
+                print(f"error [{exc.code}]: {exc.message}", file=sys.stderr)
         return _exit_for_code(exc.code)
     except (OSError, ValueError) as exc:
         if getattr(args, "json", False):

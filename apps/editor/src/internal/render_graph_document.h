@@ -3,6 +3,9 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/borrowed_view.hpp>
+
+#include "internal/code_document.h"
 #include "internal/document_history.h"
 #include "internal/render_graph_source.h"
 
@@ -17,11 +20,23 @@
 
 namespace ludus::editor
 {
+/// Non-authoring cursor hint for the source transaction restored by Undo/Redo.
+struct RenderGraphTextState final
+{
+    QString File;
+    CodeTextSelection Selection;
+};
+
 /// Complete authored render-graph package content: package-relative path to bytes.
 struct RenderGraphSnapshot final
 {
     QMap<QString, QByteArray> Files;
-    [[nodiscard]] bool operator==(const RenderGraphSnapshot& other) const = default;
+    RenderGraphTextState TextState;
+    /// History cursor hints do not participate in authored equality or serialization.
+    [[nodiscard]] LUDUS_INLINE bool operator==(const RenderGraphSnapshot& other) const
+    {
+        return Files == other.Files;
+    }
 };
 
 /// Layout position of one node, in canvas units (presentation only; never compiled).
@@ -102,6 +117,8 @@ public:
     /// Package-relative files in the requested source version.
     [[nodiscard]] QStringList GetFiles(RenderGraphSource source = RenderGraphSource::Draft) const;
     [[nodiscard]] QByteArray GetDraft(const QString& file) const;
+    /// Borrow source bytes until the next document mutation; empty for missing files.
+    [[nodiscard]] foundation::BorrowedView<const char> GetDraftView(const QString& file) const noexcept;
     [[nodiscard]] QByteArray GetSaved(const QString& file) const;
     [[nodiscard]] bool IsFileDirty(const QString& file) const;
     [[nodiscard]] bool IsDirty() const;
@@ -129,6 +146,14 @@ public:
                                                           const QString& configuration,
                                                           const QJsonObject& node,
                                                           QString* outErrorOrNull = nullptr);
+    /// Unpack full Scene wires touching a node into typed members as one undoable edit.
+    /// Preserves the selected scene/data. Failure preserves all draft files. No disk writes.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ExpandSceneBundle(const QString& file, const QString& configuration, const QString& node);
+    /// Upgrade the package's shared ray technique to scene materials in one undoable edit.
+    /// Preserves original callbacks through adapters, program IDs and admission budgets.
+    /// Failure preserves draft/history and reports the required repair. No disk writes.
+    [[nodiscard]] RenderGraphDocumentStatus EnableSceneMaterials(QString& outError);
     /// Register complete pipelines from the root import closure in one undoable draft edit.
     /// Repairs older packages without changing shaders. Conflict/capacity failures preserve the draft.
     [[nodiscard]] RenderGraphDocumentStatus PrepareTechniques(QString& outError);
@@ -166,15 +191,34 @@ public:
     /// Failure preserves the draft. GUI thread only; package limits still apply.
     [[nodiscard]] RenderGraphDocumentStatus
     CreateSubgraph(const QString& file, const QString& configuration, const QString& node, const QString& name);
-    /// Replace a configuration's interface as one undoable edit. Rejects invalid names,
-    /// types, sources and changes that strand internal or containing-subgraph links.
-    /// Empty output sources are incomplete drafts. Failure preserves history and bytes
-    /// and describes the reason in outError. Save publishes; GUI thread only.
-    [[nodiscard]] RenderGraphDocumentStatus ReplaceConfigurationInterface(const QString& file,
-                                                                          const QString& configuration,
-                                                                          const QJsonArray& inputs,
-                                                                          const QJsonArray& outputs,
-                                                                          QString& outError);
+    /// Preview the same repair that ReplaceConfigurationInterface commits, without edits or writes.
+    /// Explicit rename maps carry old ID -> new ID, independently in each direction; omitted
+    /// maps treat names as identities and never guess renames from row order. Reports rewired
+    /// links and cleared incompatible/missing uses across the loaded package. Failure preserves
+    /// outRepairs and all draft/history bytes, and describes the reason in outError.
+    [[nodiscard]] RenderGraphDocumentStatus
+    PreviewConfigurationInterface(const QString& file,
+                                  const QString& configuration,
+                                  const QJsonArray& inputs,
+                                  const QJsonArray& outputs,
+                                  QStringList& outRepairs,
+                                  QString& outError,
+                                  const QMap<QString, QString>& inputRenames = {},
+                                  const QMap<QString, QString>& outputRenames = {}) const;
+    /// Replace a configuration interface and repair its internal links and every loaded caller
+    /// atomically in one undo step. Renames preserve compatible uses; removed/type-changed ports
+    /// disconnect only incompatible uses and clear affected configuration output sources while
+    /// retaining their declarations. Candidate sources use original input identities when renamed.
+    /// Invalid names/maps or explicitly incompatible new output sources reject without mutation.
+    /// Empty output sources are incomplete drafts. Save publishes; GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ReplaceConfigurationInterface(const QString& file,
+                                  const QString& configuration,
+                                  const QJsonArray& inputs,
+                                  const QJsonArray& outputs,
+                                  QString& outError,
+                                  const QMap<QString, QString>& inputRenames = {},
+                                  const QMap<QString, QString>& outputRenames = {});
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveNode(const QString& file, const QString& configuration, const QString& node);
     /// Add an edge, or set the declared configuration output's source for a #outputs.port
@@ -203,6 +247,20 @@ public:
     MoveNodes(const QString& file, const QString& configuration, const QVector<RenderGraphNodePosition>& positions);
     /// Replace an existing source's draft bytes (shader function, build manifest or graph text).
     [[nodiscard]] RenderGraphDocumentStatus SetText(const QString& file, const QByteArray& bytes);
+    /// Apply a UTF-8 replacement against the exact draft revision. Preserves draft,
+    /// history and cursor hints on rejection. Only adjacent text groups on the same
+    /// file may merge; structural edits, Save and history navigation end a group.
+    [[nodiscard]] CodeEditStatus ApplyTextEdit(const QString& file,
+                                               foundation::uint64 expectedRevision,
+                                               const CodeTextEdit& edit,
+                                               CodeTextSelection before,
+                                               CodeTextSelection after,
+                                               bool shouldMerge);
+    void BreakTextGroup() noexcept;
+    [[nodiscard]] LUDUS_INLINE const RenderGraphTextState& GetHistoryTextState() const noexcept
+    {
+        return mDraft.TextState;
+    }
 
     [[nodiscard]] bool CanUndo() const noexcept
     {
@@ -234,13 +292,25 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus RefreshFromDisk(bool& outHasChanged);
 
 private:
+    [[nodiscard]] RenderGraphDocumentStatus prepareConfigurationInterface(const QString& file,
+                                                                          const QString& configuration,
+                                                                          const QJsonArray& inputs,
+                                                                          const QJsonArray& outputs,
+                                                                          const QMap<QString, QString>& inputRenames,
+                                                                          const QMap<QString, QString>& outputRenames,
+                                                                          RenderGraphSnapshot& outSnapshot,
+                                                                          QStringList& outRepairs,
+                                                                          QString& outError) const;
     using EditFunction = bool (*)(QJsonObject& inoutConfiguration, const QStringList& arguments);
     [[nodiscard]] RenderGraphDocumentStatus editConfiguration(const QString& file,
                                                               const QString& configuration,
                                                               const QStringList& arguments,
                                                               EditFunction edit,
                                                               bool shouldMerge);
-    [[nodiscard]] RenderGraphDocumentStatus commit(const RenderGraphSnapshot& candidate, bool shouldMerge);
+    [[nodiscard]] RenderGraphDocumentStatus commit(const RenderGraphSnapshot& candidate,
+                                                   bool shouldMerge,
+                                                   const RenderGraphTextState& beforeText = {},
+                                                   const RenderGraphTextState& afterText = {});
     [[nodiscard]] RenderGraphDocumentStatus createPackage(QStringList& outSavedFiles);
     void
     adopt(const QString& packageRoot, const QString& rootGraph, const RenderGraphSnapshot& snapshot, bool isBuiltIn);
@@ -250,6 +320,7 @@ private:
     foundation::uint64 mSavedRevision = 0;
     RenderGraphSnapshot mDraft;
     QString mLastMove;
+    QString mLastTextFile;
     bool mIsBuiltIn = false;
     DocumentHistory<RenderGraphSnapshot, HISTORY_CAPACITY> mHistory;
 };

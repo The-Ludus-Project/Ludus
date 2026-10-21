@@ -64,7 +64,13 @@ bool RayMetalSizes(const MTLAccelerationStructureSizes& sizes,
 } // namespace
 RayCapabilities RayLimits() noexcept
 {
-    if (gDevice == nil || gQueue == nil || gDevice.supportsRaytracing == false)
+    // Thanks to Apple, "Boost your graphics performance with the M5 and A19 GPUs",
+    // Tech Talks, architecture overview (2:01), for the M3 hardware ray-traversal boundary:
+    // https://developer.apple.com/videos/play/tech-talks/111431/ .
+    // Apple GPU family 9 introduces hardware ray traversal. Older families can
+    // expose Metal ray APIs through shader execution and are deliberately excluded.
+    if (gDevice == nil || gQueue == nil || gDevice.supportsRaytracing == false ||
+        [gDevice supportsFamily:MTLGPUFamilyApple9] == false)
     {
         return {};
     }
@@ -77,6 +83,15 @@ RayCapabilities RayLimits() noexcept
         .MaxBufferBytes =
             gDevice.maxBufferLength < usize{64} * 1024 * 1024 ? gDevice.maxBufferLength : usize{64} * 1024 * 1024,
     };
+}
+void BindRayMetalScene(id<MTLComputeCommandEncoder> encoder, const RayMetalSceneBinding& description) noexcept
+{
+    const RayMetalScene& scene = gRayMetalScene[description.Scene];
+    [encoder setAccelerationStructure:scene.Structure atBufferIndex:description.Binding];
+    for (usize i = 0; i < scene.GeometryCount; ++i)
+    {
+        [encoder useResource:gRayMetalGeometry[scene.Geometries[i]].Structure usage:MTLResourceUsageRead];
+    }
 }
 RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) noexcept
 {
@@ -251,8 +266,9 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
 
     @autoreleasepool
     {
-        const usize instanceBytes = count * sizeof(MTLAccelerationStructureInstanceDescriptor),
-                    opacityBytes = scalarCount * sizeof(float32);
+        const usize instanceBytes =
+            (count == 0 ? usize{1} : count) * sizeof(MTLAccelerationStructureInstanceDescriptor);
+        const usize opacityBytes = scalarCount * sizeof(float32);
         if (instanceBytes > budget || opacityBytes > budget - instanceBytes)
         {
             return RasterStatus::CapacityExceeded;

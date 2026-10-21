@@ -3,7 +3,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
 # No downloads at configure/build time. Host tools remain separate from target
 # compilers, including when cross-compiling to wasm.
 function(ludus_compile_shader)
-    cmake_parse_arguments(PARSE_ARGV 0 SH "RASTER;NATIVE_BINDING_ARRAYS;RUNTIME_BINDING_ARRAYS" "TARGET;NAME;SOURCE;VERTEX;FRAGMENT;COMPUTE" "INCLUDES;DEFINES;DEPENDS")
+    cmake_parse_arguments(PARSE_ARGV 0 SH "RASTER;NATIVE_BINDING_ARRAYS;RUNTIME_BINDING_ARRAYS;NATIVE_RAY_QUERIES" "TARGET;NAME;SOURCE;VERTEX;FRAGMENT;COMPUTE" "INCLUDES;DEFINES;DEPENDS")
     if(SH_UNPARSED_ARGUMENTS OR NOT TARGET "${SH_TARGET}" OR
        NOT SH_NAME MATCHES "^[A-Za-z_][A-Za-z_0-9]*$" OR NOT SH_SOURCE OR (NOT SH_COMPUTE AND (NOT SH_VERTEX OR NOT SH_FRAGMENT)) OR (SH_COMPUTE AND (SH_VERTEX OR SH_FRAGMENT OR SH_RASTER)))
         message(FATAL_ERROR "ludus_compile_shader requires TARGET NAME SOURCE and either VERTEX/FRAGMENT or COMPUTE; optional RASTER INCLUDES DEFINES DEPENDS")
@@ -11,6 +11,12 @@ function(ludus_compile_shader)
     ludus_require_tool(LUDUS_SLANG_COMPILER "Shader compilation"
         "From the Ludus source repository root: ./scripts/shader-probe bootstrap" -version)
     set(backend_args)
+    if(SH_NATIVE_RAY_QUERIES)
+        if(NOT SH_COMPUTE OR EMSCRIPTEN)
+            message(FATAL_ERROR "NATIVE_RAY_QUERIES requires native compute; unsupported APIs need an authored raster configuration")
+        endif()
+        list(APPEND backend_args --native-ray-queries)
+    endif()
     if(SH_RASTER)
         list(APPEND backend_args --raster)
     endif()
@@ -52,6 +58,8 @@ function(ludus_compile_shader)
     if(SH_COMPUTE)
         if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
             set(backend_byproducts "${SH_NAME}.compute.metal" "compute.reflection.json")
+        elseif(SH_NATIVE_RAY_QUERIES)
+            set(backend_byproducts "${SH_NAME}.compute.spv" "compute.reflection.json")
         else()
             set(backend_byproducts "${SH_NAME}.compute.spv" "${SH_NAME}.compute.wgsl" "compute.reflection.json" "compute.wgsl.reflection.json")
         endif()
@@ -93,7 +101,7 @@ function(ludus_compile_shader)
     # Optional GLSL ES 3.00 (WebGL 2) backend artifact. Enabled only when the
     # pinned SPIR-V -> GLSL ES translator is provided; SPIR-V/WGSL builds are
     # unchanged otherwise. The browser build carries both WGSL and GLSL ES.
-    if(NOT SH_COMPUTE AND (SH_NATIVE_BINDING_ARRAYS OR EMSCRIPTEN OR (LUDUS_SPIRV_CROSS AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")))
+    if((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND (SH_NATIVE_BINDING_ARRAYS OR EMSCRIPTEN OR (LUDUS_SPIRV_CROSS AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))))
         ludus_require_tool(LUDUS_SPIRV_CROSS "GLSL ES shader translation"
             "From the Ludus source repository root: ./scripts/bootstrap-spirv-cross")
         ludus_require_file("${LUDUS_SPIRV_CROSS}.build.json" "GLSL ES shader translation"
@@ -102,7 +110,7 @@ function(ludus_compile_shader)
     set(cross_args)
     set(cross_depends)
     set(cross_byproducts)
-    if(NOT SH_COMPUTE AND LUDUS_SPIRV_CROSS AND (SH_NATIVE_BINDING_ARRAYS OR NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
+    if(LUDUS_SPIRV_CROSS AND ((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND (SH_NATIVE_BINDING_ARRAYS OR NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))))
         set(cross_lock "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/spirv_cross_toolchain.json")
         if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/spirv_cross_toolchain.json")
             set(cross_lock "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/spirv_cross_toolchain.json")
@@ -142,7 +150,7 @@ function(ludus_compile_shader)
         COMMAND "${Python3_EXECUTABLE}" "${driver}" --source "${source}" --output "${output}"
                 --name "${SH_NAME}" ${stage_args}
                 --lock "${lock}" --compiler "${LUDUS_SLANG_COMPILER}" ${backend_args} ${cross_args} ${args}
-        DEPENDS "${source}" "${driver}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/compile_raster.py" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/native_worker.py" "${lock}" "${LUDUS_SLANG_COMPILER}" ${backend_depends} ${cross_depends} ${SH_DEPENDS} ${native_worker_depends}
+        DEPENDS "${source}" "${driver}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/compile_raster.py" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/compile_graph_stage.py" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/native_worker.py" "${lock}" "${LUDUS_SLANG_COMPILER}" ${backend_depends} ${cross_depends} ${SH_DEPENDS} ${native_worker_depends}
         DEPFILE "${output}/shader.d"
         VERBATIM
     )

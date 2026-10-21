@@ -2,6 +2,7 @@
 
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/math/addressed_random.hpp>
 
 #include <new>
 
@@ -56,6 +57,10 @@ rhi::RasterStatus BuildGraphRayScene(BorrowedView<const GraphRaySceneInput> inpu
     }
     candidate->IsCpuOnly = true;
     candidate->Description = description;
+    if (math::TryMakeRandomKey(description.Seed, REFERENCE_RANDOM_DOMAIN, candidate->Key) != math::MathStatus::Success)
+    {
+        return Status::InvalidDescription;
+    }
     if (candidate->FlatSurfaces.TryEnsureCapacity(inputs.GetSize()) == false ||
         candidate->FlatSurfaces.TryResize(inputs.GetSize()) == false ||
         candidate->Scene.Instances.TryEnsureCapacity(inputs.GetSize()) == false ||

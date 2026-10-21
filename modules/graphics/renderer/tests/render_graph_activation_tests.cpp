@@ -85,6 +85,8 @@ struct PackageOptions final
     uint32 ViewNumerator = 0;
     uint32 ViewDenominator = 1;
     uint32 Backing = 0;
+    uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
+    format::Technique Program = format::Technique::ColorAndDepth;
     std::string_view PassName = "Scene/Opaque";
     bool HasDepthStages = true;
     /// Bind one Material {Float3 tint; Float32 gain} block to the color fragment at slot 0.
@@ -150,14 +152,14 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
         inoutWriter.WriteWord(options.Backing);
         inoutWriter.WriteWord(0);
         inoutWriter.WriteWord(aspect == 0 ? 1 : 0);
-        if (options.Version >= format::PACKAGE_VERSION)
+        if (options.Version >= format::VIEW_PACKAGE_VERSION)
         {
             inoutWriter.WriteWord(options.ViewNumerator);
             inoutWriter.WriteWord(options.ViewDenominator);
         }
     }
     inoutWriter.WriteWord(0);
-    for (const uint32 value : {static_cast<uint32>(format::Technique::ColorAndDepth),
+    for (const uint32 value : {static_cast<uint32>(options.Program),
                                0U,
                                0U,
                                1U,
@@ -168,6 +170,10 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
                                0U})
     {
         inoutWriter.WriteWord(value);
+    }
+    if (options.Version >= format::SCENE_PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(options.SceneData);
     }
     if (options.HasUniforms == false)
     {
@@ -932,8 +938,11 @@ TEST_CASE("runtime generation owns validated authored GPU pass names", "[rendere
 TEST_CASE("runtime packages preserve relative policies and decode fixed legacy versions",
           "[render-graph][activation][size]")
 {
-    for (const uint32 version :
-         {format::LEGACY_PACKAGE_VERSION, format::NAMED_PACKAGE_VERSION, format::PACKAGE_VERSION})
+    for (const uint32 version : {format::LEGACY_PACKAGE_VERSION,
+                                 format::NAMED_PACKAGE_VERSION,
+                                 format::VIEW_PACKAGE_VERSION,
+                                 format::SCENE_PACKAGE_VERSION,
+                                 format::PACKAGE_VERSION})
     {
         PackageOptions options;
         options.Version = version;
@@ -941,8 +950,8 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
         options.ViewDenominator = 2;
         const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
         const format::Resource& resource = package->GetPlan().Resources[0];
-        CHECK(resource.ViewNumerator == (version == format::PACKAGE_VERSION ? 1 : 0));
-        CHECK(resource.ViewDenominator == (version == format::PACKAGE_VERSION ? 2 : 1));
+        CHECK(resource.ViewNumerator == (version >= format::VIEW_PACKAGE_VERSION ? 1 : 0));
+        CHECK(resource.ViewDenominator == (version >= format::VIEW_PACKAGE_VERSION ? 2 : 1));
         CHECK(package->GetPlan().PassNames.IsEmpty() == (version == format::LEGACY_PACKAGE_VERSION));
     }
     PackageOptions invalid;
@@ -995,4 +1004,77 @@ TEST_CASE("resizing a staged generation requests its first extraction before act
     format::Resource resource{};
     REQUIRE(fixture.Activation.GetActiveOrNull()->GetResourceDescription(0, resource) == true);
     CHECK(resource.Width == 193);
+}
+
+TEST_CASE("runtime packages preserve scene selection and default legacy packages to full Scene",
+          "[render-graph][activation][bundle]")
+{
+    PackageOptions options;
+    options.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY;
+    CHECK(MakePackage(options)->GetPlan().Passes[0].SceneData ==
+          ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY);
+    options.Version = format::VIEW_PACKAGE_VERSION;
+    CHECK(MakePackage(options)->GetPlan().Passes[0].SceneData == ::ludus::content::render_graph_format::SCENE_DATA_ALL);
+    options.Version = format::PACKAGE_VERSION;
+    options.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_MATERIALS;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.SceneData = ~::ludus::content::render_graph_format::SCENE_DATA_ALL;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+}
+
+TEST_CASE("Renderer selection chooses raster on a device without native rays", "[render-graph][selection]")
+{
+    ActivationFixture fixture;
+    renderer::RenderGraphRenderer selected = renderer::RenderGraphRenderer::HardwareRayTracing;
+    REQUIRE(renderer::SelectRenderGraphRenderer(fixture.Device, renderer::RenderGraphPreference::Automatic, selected) ==
+            rhi::RasterStatus::Ready);
+    CHECK(selected == renderer::RenderGraphRenderer::Raster);
+    REQUIRE(renderer::SelectRenderGraphRenderer(fixture.Device,
+                                                renderer::RenderGraphPreference::ForceRaster,
+                                                selected) == rhi::RasterStatus::Ready);
+    CHECK(selected == renderer::RenderGraphRenderer::Raster);
+    selected = renderer::RenderGraphRenderer::HardwareRayTracing;
+    CHECK(renderer::SelectRenderGraphRenderer({}, renderer::RenderGraphPreference::Automatic, selected) ==
+          rhi::RasterStatus::InvalidHandle);
+    CHECK(selected == renderer::RenderGraphRenderer::HardwareRayTracing);
+    CHECK(renderer::SelectRenderGraphRenderer(fixture.Device,
+                                              static_cast<renderer::RenderGraphPreference>(255),
+                                              selected) == rhi::RasterStatus::InvalidDescription);
+    CHECK(selected == renderer::RenderGraphRenderer::HardwareRayTracing);
+}
+TEST_CASE("Selected raster activation preserves the drawable on an invalid selection", "[render-graph][selection]")
+{
+    ActivationFixture fixture;
+    REQUIRE(fixture.Activation.StageSelected(MakePackage({}), {}) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    fixture.Render();
+    rhi::reference::Completed = rhi::reference::Submitted;
+    const uint64 active = fixture.Activation.GetReport().ActiveGeneration;
+    CHECK(fixture.Activation.StageSelected({}, {}) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Activation.StageSelected(MakePackage({}), MakePackage({})) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == active);
+    CHECK(fixture.Activation.GetActiveOrNull()->GetOutputSceneRevision() == 1);
+    fixture.Render();
+}
+
+TEST_CASE("Unsupported native rays select raster without preparing the ray package", "[render-graph][selection]")
+{
+    ActivationFixture fixture;
+    PackageOptions rayOptions;
+    rayOptions.Program = format::Technique::RayTracing;
+    core::UniquePtr<renderer::RenderGraphPackage> ray = MakePackage(rayOptions);
+    REQUIRE(renderer::RequiresHardwareRayTracing(ray->GetPlan()) == true);
+    // This decoded candidate deliberately has no native ray shader. Selection must discard it
+    // before GPU preparation, rather than reporting a missing ray artifact or tracing in software.
+    REQUIRE(fixture.Activation.StageSelected(MakePackage({}), Move(ray)) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    fixture.Render();
+    rhi::reference::Completed = rhi::reference::Submitted;
+    CHECK(fixture.Activation.GetActiveOrNull()->GetOutputSceneRevision() == 1);
 }

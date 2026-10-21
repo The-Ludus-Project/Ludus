@@ -10,6 +10,20 @@ sys.path.insert(0,str(ROOT/'cmake/shaders'))
 from compile_raster import spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source
 
 class RasterReflectionTests(unittest.TestCase):
+    def test_native_ray_scene_is_scalar_compute_only(self):
+        document = {'parameters': [{'name': 'Scene', 'binding': {'kind': 'descriptorTableSlot', 'index': 5},
+                                    'type': {'kind': 'resource', 'baseShape': 'accelerationStructure'}}],
+                    'entryPoints': [{'stage': 'compute', 'threadGroupSize': [64, 1, 1],
+                                     'bindings': [{'name': 'Scene', 'binding': {'used': 1}}]}]}
+        interface = raster_interface(document, 'compute')
+        self.assertEqual(interface['entries'], [{'binding': 5, 'kind': 'RayScene', 'size': 0, 'name': 'Scene'}])
+        with self.assertRaises(RuntimeError):
+            raster_interface(document, 'fragment')
+        document['parameters'][0]['type'] = {'kind': 'array', 'elementCount': 2,
+                                           'elementType': {'kind': 'resource', 'baseShape': 'accelerationStructure'}}
+        with self.assertRaises(RuntimeError):
+            raster_interface(document, 'compute', native_arrays=True)
+
     def test_binding_slot_limit_matches_the_public_rhi_contract(self):
         import re
         from compile_raster import RASTER_BINDING_COUNT, RUNTIME_BINDING_LENGTH_SLOT, RUNTIME_BINDING_ARRAY_SLOT

@@ -1136,7 +1136,11 @@ class Operation:
             self._supervisor.captured_stdout = ""
             try:
                 self._check_release_cancel()
-                building = "--build" in argv or "--install" in argv or Path(argv[0]).name == "build" or "ctest" in Path(argv[0]).name
+                preparing = len(argv) > 1 and Path(argv[1]).name in ("shader-probe", "bootstrap-spirv-cross")
+                if preparing:
+                    self._writer.output("building", "stdout", "Preparing rendering tools…\n")
+                building = (preparing or "--build" in argv or "--install" in argv or
+                            Path(argv[0]).name == "build" or "ctest" in Path(argv[0]).name)
                 self._run_stage("building" if building else "configuring", list(argv), cwd, env,
                                 "BuildFailed" if building else "ConfigureFailed")
                 return self._supervisor.captured_stdout
@@ -1160,9 +1164,13 @@ class Operation:
                 profile = descriptor.preset if descriptor else default_profile()
                 env = engine_setup_environment(root, self._context.engine)
                 self._run_stage("configuring", [str(root / "scripts/init"), profile, "--preset-only", "--cli", "--no-system-install"], root, env, "ConfigureFailed")
+                from ludus_tools.shader_tools import preparation_steps
+                required = {"compiler", "spirv_cross"} if profile.startswith("macos-") else (
+                    {"compiler", "validator"} if descriptor and "GraphicsRhi" in descriptor.engine.components else set())
+                for _, command in preparation_steps(root, required):
+                    self._check_release_cancel()
+                    self._run_stage("building", command, root, env, "BuildFailed")
                 self._run_stage("building", [str(root / "scripts/build"), profile], root, env, "BuildFailed")
-                if descriptor and "GraphicsRhi" in descriptor.engine.components:
-                    self._run_stage("building", [str(root / "scripts/shader-probe"), "bootstrap"], root, env, "BuildFailed")
                 sdk = sdk or root / "out/install" / profile
                 self._run_stage("building", [str(self._context.engine.cmake(root)), "--install", str(root / "out/build" / profile), "--prefix", str(sdk)], root, env, "BuildFailed")
                 self._run_stage("building", [str(self._context.engine.venv_python(root)), str(root / "scripts/python/engine.py"),

@@ -23,6 +23,7 @@
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -581,6 +582,11 @@ TEST_CASE("RG3 Renderer workspace maps CLI errors and matches CLI plans", "[edit
     CHECK(failure.Location.value(QStringLiteral("instance")).toString() == QStringLiteral("Main/raster/draw"));
     CHECK(ReadFile(QDir(package).filePath(LIBRARY)) == library);
     REQUIRE(workspace.GetDiagnosticCount() == 1);
+    QTimer::singleShot(0, &workspace, []() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        dialogOrNull->reject();
+    });
     REQUIRE(workspace.ActivateDiagnostic(0) == true);
     CHECK(workspace.GetSelection() == QStringLiteral("rasterize.lurender.json#ColorAndDepth/draw"));
 
@@ -776,7 +782,7 @@ TEST_CASE("Renderer validation automatically captures external shader saves", "[
     CHECK(workspace.GetLastResult().Request.Revision == workspace.GetDocument().GetRevision());
 }
 
-TEST_CASE("Code editor handoff cancellation retains unapplied source text", "[editor][render-graph][source-editor]")
+TEST_CASE("Code editor handoff cancellation retains unsaved source draft", "[editor][render-graph][source-editor]")
 {
     QTemporaryDir project;
     const QString package = MakePackage(project);
@@ -814,9 +820,9 @@ TEST_CASE("Code editor handoff cancellation retains unapplied source text", "[ed
     });
     CHECK(workspace.OpenSourceInCodeEditor() == false);
     CHECK(sourceOrNull->toPlainText() == pending);
-    CHECK(workspace.GetDocument().GetDraft(shader) == original);
+    CHECK(workspace.GetDocument().GetDraft(shader) == pending.toUtf8());
     CHECK(ReadFile(QDir(package).filePath(shader)) == original);
-    CHECK(workspace.ReloadSourcesFromDisk() == false);
+    CHECK(workspace.ReloadSourcesFromDisk() == true);
     CHECK(sourceOrNull->toPlainText() == pending);
 }
 
@@ -1392,20 +1398,11 @@ TEST_CASE("Shader source exposes draft input fields and named outputs", "[editor
     selectorOrNull->setCurrentText(manifestFile);
     CHECK(interfaceOrNull->parentWidget()->isHidden() == true);
     sourceOrNull->setPlainText(QStringLiteral("{ broken manifest"));
-    QPushButton* applyOrNull = nullptr;
-    const QList<QPushButton*> buttons = workspace.findChildren<QPushButton*>();
-    for (QPushButton* button : buttons)
-    {
-        if (button->text() == QStringLiteral("Apply Text to Draft"))
-        {
-            applyOrNull = button;
-        }
-    }
-    REQUIRE(applyOrNull != nullptr);
-    applyOrNull->click();
     selectorOrNull->setCurrentText(QStringLiteral("main_shaders/color.slang"));
     CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("missing or invalid")) == true);
     workspace.Undo();
+    CHECK(selectorOrNull->currentText() == manifestFile);
+    selectorOrNull->setCurrentText(QStringLiteral("main_shaders/color.slang"));
     CHECK(interfaceOrNull->toPlainText().contains(QStringLiteral("Color : float4 → SV_Target0")) == true);
 }
 

@@ -15,6 +15,46 @@ namespace ludus::editor
 {
 using namespace foundation;
 
+int32 RenderGraphJobResult::GetDiagnosticCount() const
+{
+    const bool hasBatch = Diagnostics.isEmpty() == false && Code.isEmpty() == false &&
+                          Diagnostics.first().toObject().value(QStringLiteral("code")).toString() == Code;
+    return IsSuccessful == true ? 1 : static_cast<int32>(Diagnostics.size()) + (hasBatch == true ? 0 : 1);
+}
+
+QJsonObject RenderGraphJobResult::GetDiagnostic(int32 row) const
+{
+    if (row < 0 || row >= GetDiagnosticCount() || IsSuccessful == true)
+    {
+        return {};
+    }
+    const bool hasBatch = Diagnostics.isEmpty() == false && Code.isEmpty() == false &&
+                          Diagnostics.first().toObject().value(QStringLiteral("code")).toString() == Code;
+    if (hasBatch == true)
+    {
+        return Diagnostics.at(row).toObject();
+    }
+    return row == 0 ? QJsonObject{{QStringLiteral("code"), Code},
+                                  {QStringLiteral("severity"), QStringLiteral("error")},
+                                  {QStringLiteral("message"), Message},
+                                  {QStringLiteral("location"), Location}}
+                    : Diagnostics.at(row - 1).toObject();
+}
+
+QString DescribeRenderGraphDiagnostic(const QJsonObject& diagnostic)
+{
+    QString description = diagnostic.value(QStringLiteral("message")).toString();
+    for (const QString& key : {QStringLiteral("expected"), QStringLiteral("actual"), QStringLiteral("repair")})
+    {
+        const QString detail = diagnostic.value(key).toString();
+        if (detail.isEmpty() == false)
+        {
+            description += QStringLiteral("\n%1: %2").arg(key, detail);
+        }
+    }
+    return description;
+}
+
 RenderGraphJob::RenderGraphJob(QObject* parentOrNull) : QObject(parentOrNull) {}
 
 #if defined(Q_OS_WASM)

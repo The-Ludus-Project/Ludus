@@ -25,12 +25,17 @@
 /// contain no zero, and have at most MAX_PASS_NAME_BYTES bytes. No trailing bytes
 /// are permitted. Version 2 has no name table. Version 4 adds ViewNumerator and
 /// ViewDenominator after each resource's six legacy fields; versions 2/3 are fixed.
+/// Version 5 appends one SceneData mask to each pass; older versions imply all scene data.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 4;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 6;
+/// Last package version carrying explicit scene inputs with portable software ray traversal.
+inline constexpr foundation::uint32 SCENE_PACKAGE_VERSION = 5;
+/// Version with view-relative resources and implicit full-scene pass inputs.
+inline constexpr foundation::uint32 VIEW_PACKAGE_VERSION = 4;
 /// Version with pass names and fixed resource extents.
 inline constexpr foundation::uint32 NAMED_PACKAGE_VERSION = 3;
 /// Previous numeric-only runtime generation, accepted with fallback debug names.
@@ -62,8 +67,8 @@ inline constexpr foundation::usize HEADER_BYTES = HEADER_FIELD_COUNT * sizeof(fo
 inline constexpr foundation::usize RESOURCE_RECORD_BYTES = 8 * sizeof(foundation::uint32);
 /// Serialized camera record width; matches Camera's one field.
 inline constexpr foundation::usize CAMERA_RECORD_BYTES = sizeof(foundation::uint32);
-/// Serialized pass record width; matches Pass's nine fields.
-inline constexpr foundation::usize PASS_RECORD_BYTES = 9 * sizeof(foundation::uint32);
+/// Serialized pass record width; version 5 appends SceneData to the nine legacy fields.
+inline constexpr foundation::usize PASS_RECORD_BYTES = PASS_FIELD_COUNT * sizeof(foundation::uint32);
 /// Serialized uniform binding record width; matches UniformBinding's five fields.
 inline constexpr foundation::usize UNIFORM_BINDING_RECORD_BYTES = 5 * sizeof(foundation::uint32);
 /// Serialized uniform block record width; matches UniformBlock's three fields.

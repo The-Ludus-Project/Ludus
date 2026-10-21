@@ -46,6 +46,16 @@ struct SceneShaderInputs final
     foundation::uint32 EnvironmentHeight = 0; ///< Equirectangular height, zero for a constant.
     foundation::BorrowedView<const foundation::math::Vector3> EnvironmentPixels{}; ///< North-to-south HDR texels.
 };
+/// Ray preparation byte ceiling that rejected a candidate; independent of allocator failure.
+enum class SceneMemoryBudget : foundation::uint8
+{
+    None,               ///< No measured byte ceiling was exceeded.
+    CpuScene,           ///< Frozen triangles, BVH, surfaces, textures and environment setup.
+    CpuScratch,         ///< Fingerprint, packed upload data or pixel initialization scratch.
+    GpuPreview,         ///< Logical preview buffers/images, including retained preview jobs.
+    RhiResources,       ///< Device-wide logical resource bytes, including other live/retained resources.
+    DeviceStorageRange, ///< One buffer exceeds the device's storage binding byte range.
+};
 /// Candidate material/geometry diagnostics, separate from the last drawable scene.
 struct SceneShaderDiagnostics final
 {
@@ -54,6 +64,11 @@ struct SceneShaderDiagnostics final
     foundation::uint32 SkippedTriangles = 0; ///< Exactly zero-area source triangles excluded from traversal.
     foundation::uint32 ErrorMaterial = DEFAULT_SCENE_MATERIAL; ///< First erroneous global material index.
     foundation::uint64 ErrorSourceId = 0; ///< First erroneous instance, if binding resolution reached it.
+    SceneMemoryBudget ExceededBudget = SceneMemoryBudget::None; ///< First measured byte ceiling exceeded.
+    /// Candidate bytes required by ExceededBudget; zero when no byte ceiling was diagnosed.
+    foundation::uint64 RequiredBytes = 0;
+    /// Bytes available at the failed stage, after retained/setup usage; not total physical memory.
+    foundation::uint64 AvailableBytes = 0;
 };
 struct RenderGraphSceneDescription;
 } // namespace ludus::graphics::renderer

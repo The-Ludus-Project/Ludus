@@ -130,6 +130,22 @@ QString ValidatePorts(const QJsonArray& ports, const QString& direction)
         }
         identities.append(identity);
     }
+    for (const QJsonValueConstRef value : ports)
+    {
+        const QJsonObject port = value.toObject();
+        if (port.value(QStringLiteral("type")).toString() != QStringLiteral("Scene"))
+        {
+            continue;
+        }
+        for (const QString& part : {QStringLiteral("geometry"), QStringLiteral("materials"), QStringLiteral("lights")})
+        {
+            const QString member = port.value(QStringLiteral("id")).toString() + QLatin1Char('_') + part;
+            if (identities.contains(member) == true)
+            {
+                return QStringLiteral("Scene member ID %1 is reserved by its bundle.").arg(member);
+            }
+        }
+    }
     return {};
 }
 
@@ -141,6 +157,9 @@ QStringList GetCellChoices(const QString& field, const QString& kind, const QStr
         if (table == QStringLiteral("inputs"))
         {
             types += {QStringLiteral("Scene"),
+                      QStringLiteral("SceneGeometry"),
+                      QStringLiteral("SceneMaterials"),
+                      QStringLiteral("SceneLights"),
                       QStringLiteral("View"),
                       QStringLiteral("AccelerationStructure"),
                       QStringLiteral("Float32"),
@@ -265,6 +284,12 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
         QStringLiteral("New shaders create .slang sources automatically. "
                        "Renaming moves its source; stage edits reuse it. Edit sources in Source; Save writes files."),
         this);
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+    {
+        hint->setText(hint->text() +
+                      QStringLiteral(" New ray techniques expose materials through EvaluateMaterial(scene, hit). "
+                                     "For legacy ray pipelines, use Enable Scene Materials on the canvas."));
+    }
     hint->setWordWrap(true);
     layout->addWidget(hint);
 }
@@ -276,6 +301,7 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     QVBoxLayout* layout = new QVBoxLayout(panel);
     QTableWidget* table = new QTableWidget(panel);
     table->setObjectName(name);
+    table->setProperty("renderGraphField", name);
     table->setColumnCount(static_cast<int32>(fields.size()));
     table->setHorizontalHeaderLabels(fields);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
@@ -493,6 +519,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                 }
                 setProperty(values);
             });
+            row->setProperty("renderGraphField", name + QLatin1Char('.') + key);
             outForm.addRow(QStringLiteral("Launch size"), row);
         }
         else if (value.isBool() == true)
@@ -500,6 +527,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             QCheckBox* control = new QCheckBox(this);
             control->setChecked(value.toBool());
             connect(control, &QCheckBox::toggled, this, [setProperty](bool isChecked) { setProperty(isChecked); });
+            control->setProperty("renderGraphField", name + QLatin1Char('.') + key);
             outForm.addRow(key, control);
         }
         else if (value.isDouble() == true)
@@ -508,6 +536,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             control->setRange(0, MAX_PROPERTY_VALUE);
             control->setValue(value.toInt());
             connect(control, &QSpinBox::valueChanged, this, [setProperty](int32 number) { setProperty(number); });
+            control->setProperty("renderGraphField", name + QLatin1Char('.') + key);
             outForm.addRow(key, control);
         }
         else if (value.isArray() == true)
@@ -529,6 +558,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                 });
                 layout->addWidget(control);
             }
+            row->setProperty("renderGraphField", name + QLatin1Char('.') + key);
             outForm.addRow(key, row);
         }
         else
@@ -537,6 +567,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             connect(control, &QLineEdit::editingFinished, this, [setProperty, control]() {
                 setProperty(control->text());
             });
+            control->setProperty("renderGraphField", name + QLatin1Char('.') + key);
             outForm.addRow(key, control);
         }
     }
@@ -554,6 +585,7 @@ void RenderGraphPipelineEditor::addRayStateProperties(QFormLayout& outForm)
     outForm.addRow(explanation);
     QGroupBox* advanced = new QGroupBox(QStringLiteral("Advanced overrides"), this);
     advanced->setObjectName(QStringLiteral("renderGraphRayAdvanced"));
+    advanced->setProperty("renderGraphField", QStringLiteral("state"));
     advanced->setCheckable(true);
     advanced->setChecked(mNode.value(QStringLiteral("state")).toObject().isEmpty() == false);
     QVBoxLayout* advancedLayout = new QVBoxLayout(advanced);

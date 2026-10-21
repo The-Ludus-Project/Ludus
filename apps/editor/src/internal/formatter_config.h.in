@@ -1,0 +1,7 @@
+#pragma once
+// Generated from the reference tool pin; no duplicated version policy.
+namespace ludus::editor::formatter_config
+{
+inline constexpr const char* VERSION = "@editor_formatter_version@";
+inline constexpr const char* DEFAULT_PROGRAM = R"ludus(@editor_formatter_program@)ludus";
+}

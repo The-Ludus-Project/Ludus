@@ -2,6 +2,7 @@
 #include "rg2_raytracing.h"
 #include "rg2_scene_ray.h"
 
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -55,6 +56,7 @@ struct GraphGpuFixture final
     {
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
+        description.Preferred.RayQueries = true;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
             rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);
@@ -63,6 +65,11 @@ struct GraphGpuFixture final
             FAIL("Ray pipeline acceptance requires a GPU adapter");
         }
         REQUIRE(started == rhi::DeviceStatus::Ready);
+        rhi::RayCapabilities capabilities;
+        if (rhi::GetRayCapabilities(Device, capabilities) == rhi::RasterStatus::Unsupported)
+        {
+            SKIP("Hardware raytracing is unavailable; no software traversal is selected");
+        }
         Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
         Items[0].SourceId = 1;
         Items[0].Material.Color = {1, 0, 0, 1};
@@ -257,7 +264,25 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CheckSameStage(decoded.RayCompute, programs.RayCompute);
     CheckSameStage(decoded.RayImageVertex, programs.RayImageVertex);
     CheckSameStage(decoded.RayImageFragment, programs.RayImageFragment);
-    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, package->GetPlan(), decoded);
+    uint32 selection = format::SCENE_DATA_ALL;
+    SECTION("full Scene") {}
+    SECTION("Geometry only")
+    {
+        selection = format::SCENE_DATA_GEOMETRY;
+    }
+    SECTION("Geometry and Materials")
+    {
+        selection = format::SCENE_DATA_GEOMETRY | format::SCENE_DATA_MATERIALS;
+    }
+    SECTION("Geometry and Lights")
+    {
+        selection = format::SCENE_DATA_GEOMETRY | format::SCENE_DATA_LIGHTS;
+    }
+    format::Pass operation = package->GetPlan().Passes[0];
+    operation.SceneData = selection;
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    plan.Passes = {&operation, 1};
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, decoded);
     const uint64 started = time::NowTicks();
     while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
     {
@@ -345,6 +370,14 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CHECK(fixture.Graph.GetReport().Covered == 2);
     read();
     const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    if (selection != format::SCENE_DATA_ALL)
+    {
+        CHECK(fixture.Pixels[center] == ((selection & format::SCENE_DATA_MATERIALS) != 0 ? 188 : 0));
+        CHECK(fixture.Pixels[center + 1] == 0);
+        CHECK(fixture.Pixels[center + 2] == 0);
+        CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == ((selection & format::SCENE_DATA_LIGHTS) != 0 ? 188 : 0));
+        return;
+    }
     CHECK(fixture.Pixels[center] == 188);
     CHECK(fixture.Pixels[center + 2] == 0);
     CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == 188);
@@ -400,4 +433,24 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CHECK(fixture.Pixels[center] == 188);
     CHECK(fixture.Pixels[center + 1] == 0);
     CHECK(fixture.Pixels[center + 2] == 188);
+}
+
+TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-pipeline][activation]")
+{
+    filesystem::Directory directory;
+    REQUIRE(directory.Open(LUDUS_RG3_RAYTRACING_DIRECTORY).Succeeded() == true);
+    filesystem::File file;
+    REQUIRE(directory.OpenRead("rg2_raytracing.lurgrt", file).Succeeded() == true);
+    Array<uint8> bytes;
+    REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
+    const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
+    REQUIRE(read.Outcome.Succeeded() == true);
+    REQUIRE(read.BytesRead == bytes.GetSize());
+    renderer::RenderGraphPackage package;
+    REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    REQUIRE(TryWriteLittleEndian(format::SCENE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==
+            true);
+    renderer::RenderGraphPackage legacy;
+    CHECK(legacy.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::UnsupportedVersion);
+    CHECK(package.GetPlan().Passes[0].Program == format::Technique::RayTracing);
 }
