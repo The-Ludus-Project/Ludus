@@ -29,6 +29,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStandardPaths>
+#include <QSysInfo>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -856,7 +857,7 @@ TEST_CASE("canvas pipeline editing pairs resources and reports connected port er
     CHECK(document.GetDraft(ROOT_GRAPH) == original);
 }
 
-TEST_CASE("shader editing retains pending text across refresh and source switches", "[editor][render-graph][text]")
+TEST_CASE("shader editing shares history across refresh and source switches", "[editor][render-graph][text]")
 {
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
@@ -878,12 +879,12 @@ TEST_CASE("shader editing retains pending text across refresh and source switche
     sourceOrNull->setCurrentText(shader);
     QSignalSpy draftChanges(&workspace, &RendererWorkspace::DocumentChanged);
     editorOrNull->moveCursor(QTextCursor::End);
-    editorOrNull->insertPlainText(QStringLiteral("// pending\n"));
+    editorOrNull->insertPlainText(QStringLiteral("// drafted\n"));
     CHECK(draftChanges.count() == 0); // Typing must not re-register the package's file watches.
     const QByteArray edited = editorOrNull->toPlainText().toUtf8();
     CHECK(workspace.IsDirty() == true);
     CHECK(workspace.CanSave() == true);
-    CHECK(workspace.GetDocument().GetDraft(shader) == original);
+    CHECK(workspace.GetDocument().GetDraft(shader) == edited);
     const QByteArray graph = workspace.GetDocument().GetDraft(ROOT_GRAPH);
     REQUIRE(workspace.GetDocument().SetText(ROOT_GRAPH, graph + '\n') == RenderGraphDocumentStatus::Ok);
     workspace.Undo(); // Refreshing other authored state must not erase focused text.
@@ -892,7 +893,11 @@ TEST_CASE("shader editing retains pending text across refresh and source switche
     CHECK(workspace.GetDocument().GetDraft(shader) == edited);
     sourceOrNull->setCurrentText(shader);
     CHECK(editorOrNull->toPlainText().toUtf8() == edited);
+    QTabWidget* viewsOrNull = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(viewsOrNull != nullptr);
+    viewsOrNull->setCurrentIndex(0);
     workspace.Undo();
+    CHECK(viewsOrNull->currentIndex() == 1);
     CHECK(workspace.GetDocument().GetDraft(shader) == original);
     CHECK(editorOrNull->toPlainText().toUtf8() == original);
     editorOrNull->moveCursor(QTextCursor::End);
@@ -902,9 +907,13 @@ TEST_CASE("shader editing retains pending text across refresh and source switche
     REQUIRE(file.open(QIODevice::ReadOnly) == true);
     CHECK(file.readAll() == saved);
     CHECK(workspace.IsDirty() == false);
+    QTest::keyClicks(editorOrNull, QStringLiteral("more"));
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(shader) == saved);
+    CHECK(workspace.IsDirty() == false);
 }
 
-TEST_CASE("source capacity rejection retains text and cancels source switching and save",
+TEST_CASE("source capacity rejection restores accepted text without blocking navigation",
           "[editor][render-graph][text]")
 {
     QTemporaryDir project;
@@ -923,13 +932,88 @@ TEST_CASE("source capacity rejection retains text and cancels source switching a
     editorOrNull->selectAll();
     const QString oversized(RenderGraphDocument::MAX_FILE_BYTES + 1, QLatin1Char('x'));
     editorOrNull->insertPlainText(oversized);
-    sourceOrNull->setCurrentText(QStringLiteral("rasterize.lurender.json"));
-    CHECK(sourceOrNull->currentText() == ROOT_GRAPH);
-    CHECK(editorOrNull->toPlainText() == oversized);
-    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
-    CHECK(workspace.Save() == false);
-    CHECK(editorOrNull->toPlainText() == oversized);
-    CHECK(workspace.IsDirty() == true);
-    editorOrNull->undo();
     CHECK(editorOrNull->toPlainText().toUtf8() == original);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == original);
+    CHECK(workspace.IsDirty() == false);
+    CHECK(workspace.GetDocument().CanUndo() == false);
+    sourceOrNull->setCurrentText(QStringLiteral("rasterize.lurender.json"));
+    CHECK(sourceOrNull->currentText() == QStringLiteral("rasterize.lurender.json"));
+}
+
+TEST_CASE("text admission rejects split scalars and stale revisions without history", "[editor][render-graph][text]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = QString::fromUtf8("😀text").toUtf8();
+    REQUIRE(document.SetText(ROOT_GRAPH, original) == RenderGraphDocumentStatus::Ok);
+    const uint64 revision = document.GetRevision();
+    const CodeTextEdit split{1, 1, {" ", 1}};
+    CHECK(document.ApplyTextEdit(ROOT_GRAPH, revision, split, {}, {}, false) == CodeEditStatus::InvalidText);
+    const CodeTextEdit valid{0, 4, {"x", 1}};
+    CHECK(document.ApplyTextEdit(ROOT_GRAPH, revision - 1, valid, {}, {}, false) == CodeEditStatus::Conflict);
+    CHECK(document.ApplyTextEdit(ROOT_GRAPH, revision, valid, {1, 1}, {}, false) == CodeEditStatus::InvalidText);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("bound source edit records an offscreen latency baseline", "[.benchmark][editor][render-graph][text]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString shader = QStringLiteral("large.slang");
+    QByteArray original;
+    const QByteArray line = QByteArrayLiteral("float4 Shade(float4 value) { return value; }\n");
+    while (original.size() + line.size() <= RenderGraphDocument::MAX_FILE_BYTES - 1)
+    {
+        original += line;
+    }
+    QFile file(QDir(package).filePath(shader));
+    REQUIRE(file.open(QIODevice::WriteOnly) == true);
+    REQUIRE(file.write(original) == original.size());
+    file.close();
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* sourcesOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* editorOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourcesOrNull != nullptr);
+    REQUIRE(editorOrNull != nullptr);
+    sourcesOrNull->setCurrentText(shader);
+    QTabWidget* viewsOrNull = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(viewsOrNull != nullptr);
+    viewsOrNull->setCurrentIndex(1);
+    workspace.resize(1200, 800);
+    workspace.show();
+    editorOrNull->GoToLine(editorOrNull->blockCount() / 2);
+    editorOrNull->moveCursor(QTextCursor::EndOfBlock);
+    QApplication::processEvents();
+    constexpr int32 SAMPLE_COUNT = 20;
+    QVector<int64> samples;
+    for (int32 sample = 0; sample < SAMPLE_COUNT; ++sample)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        QTest::keyClicks(editorOrNull, QStringLiteral("x"));
+        QApplication::processEvents();
+        samples.append(timer.nsecsElapsed());
+        workspace.Undo();
+        QApplication::processEvents();
+    }
+    // Small test sample, no production sorting/container facility is needed.
+    for (int32 index = 1; index < samples.size(); ++index)
+    {
+        for (int32 previous = index; previous > 0 && samples.at(previous) < samples.at(previous - 1); --previous)
+        {
+            samples.swapItemsAt(previous, previous - 1);
+        }
+    }
+    INFO("Offscreen input/model/event processing; excludes native compositor latency. System="
+         << QSysInfo::prettyProductName().toStdString() << "; Qt=" << qVersion());
+    INFO("Bytes=" << original.size() << "; p50 ns=" << samples.at(SAMPLE_COUNT / 2) << "; p95 ns=" << samples.last());
+    CHECK(workspace.GetDocument().GetDraft(shader) == original);
 }

@@ -214,11 +214,26 @@ set(editor_profiling_sources
 add_library(ludus_editor_code STATIC
     src/internal/code_editor.h src/code_editor.cpp
     src/internal/code_editor_panel.h src/code_editor_panel.cpp
-    src/internal/code_syntax_highlighter.h src/code_syntax_highlighter.cpp)
+    src/internal/code_syntax_highlighter.h src/code_syntax_highlighter.cpp
+    src/internal/code_document.h src/internal/code_edit_scope.h
+    src/internal/code_text.h src/code_text.cpp
+    src/internal/code_document_controller.h src/code_document_controller.cpp
+    src/internal/code_formatter.h src/code_formatter.cpp)
+file(READ "${PROJECT_SOURCE_DIR}/config/tool_versions.json" editor_tool_versions)
+string(JSON editor_formatter_version GET "${editor_tool_versions}" minimum clang-format)
+get_filename_component(editor_compiler_directory "${CMAKE_CXX_COMPILER}" DIRECTORY)
+set(editor_formatter_program "${editor_compiler_directory}/clang-format${CMAKE_EXECUTABLE_SUFFIX}")
+if(EMSCRIPTEN)
+    set(editor_formatter_program "")
+endif()
+configure_file(src/internal/formatter_config.h.in
+    generated/ludus_editor_formatter_config.h @ONLY)
+target_include_directories(ludus_editor_code PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set_target_properties(ludus_editor_code PROPERTIES AUTOMOC ON)
 target_include_directories(ludus_editor_code PRIVATE src)
 target_compile_definitions(ludus_editor_code PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
-target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets PRIVATE Ludus::FoundationBase)
+target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationContainers
+    PRIVATE Ludus::FoundationBase)
 ludus_apply_project_defaults(ludus_editor_code)
 
 # --- Editor application ------------------------------------------------------
@@ -419,9 +434,12 @@ endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
-    add_executable(ludus_code_editor_tests tests/main.cpp tests/code_editor_tests.cpp)
+    add_executable(ludus_code_editor_tests tests/main.cpp tests/code_editor_tests.cpp tests/code_document_tests.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
+    target_compile_definitions(ludus_code_editor_tests PRIVATE
+        "LUDUS_FORMATTER_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/formatter_fixture.py\"")
     target_link_libraries(ludus_code_editor_tests PRIVATE ludus_editor_code Qt6::Test
         Ludus::FoundationBase Catch2::Catch2)
     ludus_apply_project_defaults(ludus_code_editor_tests)
@@ -807,3 +825,16 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     set_tests_properties(ludus_render_graph_live_build_tests PROPERTIES LABELS "editor;shader" TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
+
+# Source bindings share the package document; formatter/input code stays generic.
+foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_configuration_tests)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE src/internal/render_graph_code_document.h src/render_graph_code_document.cpp)
+    endif()
+endforeach()
+foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_configuration_tests
+                        ludus_render_graph_pipeline_tests ludus_render_graph_live_build_tests)
+    if(TARGET ${target})
+        target_link_libraries(${target} PRIVATE Ludus::FoundationStrings)
+    endif()
+endforeach()

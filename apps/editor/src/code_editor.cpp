@@ -2,16 +2,20 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include "internal/code_edit_scope.h"
 #include "internal/code_syntax_highlighter.h"
 
 #include <QAction>
 #include <QColor>
 #include <QContextMenuEvent>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QFontDatabase>
+#include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenu>
+#include <QMimeData>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPalette>
@@ -71,7 +75,9 @@ private:
 
 CodeEditor::CodeEditor(QWidget* parentOrNull)
     : QPlainTextEdit(parentOrNull), mGutter(new CodeEditorGutter(this)),
-      mHighlighter(new CodeSyntaxHighlighter(document()))
+      mHighlighter(new CodeSyntaxHighlighter(document())),
+      mFormatAction(new QAction(QStringLiteral("Format Document"), this)),
+      mChooseFormatterAction(new QAction(QStringLiteral("Choose Formatter..."), this))
 {
     setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     setLineWrapMode(QPlainTextEdit::NoWrap);
@@ -82,6 +88,8 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this]() { mSelectionUpdate.start(0); });
     connect(document(), &QTextDocument::contentsChanged, this, [this]() { mSelectionUpdate.start(0); });
     connect(this, &QPlainTextEdit::blockCountChanged, this, &CodeEditor::updateGutterWidth);
+    connect(this, &QPlainTextEdit::undoAvailable, this, &CodeEditor::HistoryAvailabilityChanged);
+    connect(this, &QPlainTextEdit::redoAvailable, this, &CodeEditor::HistoryAvailabilityChanged);
     connect(this, &QPlainTextEdit::updateRequest, this, [this](const QRect& rectangle, int32 verticalDelta) {
         if (verticalDelta != 0)
         {
@@ -113,6 +121,15 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     addShortcut(QStringLiteral("Delete Lines"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_K), [this]() {
         DeleteLines();
     });
+    mFormatAction->setObjectName(QStringLiteral("codeEditorFormat"));
+    mFormatAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
+    mFormatAction->setShortcutContext(Qt::WidgetShortcut);
+    mFormatAction->setEnabled(false);
+    mChooseFormatterAction->setEnabled(false);
+    addAction(mFormatAction);
+    addAction(mChooseFormatterAction);
+    connect(mFormatAction, &QAction::triggered, this, &CodeEditor::FormatRequested);
+    connect(mChooseFormatterAction, &QAction::triggered, this, &CodeEditor::ChooseFormatterRequested);
     updateGutterWidth();
 }
 
@@ -123,13 +140,137 @@ void CodeEditor::SetLanguage(CodeLanguage language)
     mSelectionUpdate.start(0);
 }
 
+void CodeEditor::SetDocumentHistory(bool shouldUseDocumentHistory)
+{
+    mShouldUseDocumentHistory = shouldUseDocumentHistory;
+    document()->setUndoRedoEnabled(shouldUseDocumentHistory == false);
+    Q_EMIT HistoryAvailabilityChanged();
+}
+
+void CodeEditor::SetHistoryAvailability(bool canUndo, bool canRedo)
+{
+    if (mCanUndo != canUndo || mCanRedo != canRedo)
+    {
+        mCanUndo = canUndo;
+        mCanRedo = canRedo;
+        Q_EMIT HistoryAvailabilityChanged();
+    }
+}
+
+bool CodeEditor::CanUndo() const
+{
+    return mShouldUseDocumentHistory == true ? mCanUndo : document()->isUndoAvailable();
+}
+
+bool CodeEditor::CanRedo() const
+{
+    return mShouldUseDocumentHistory == true ? mCanRedo : document()->isRedoAvailable();
+}
+
+void CodeEditor::Undo()
+{
+    if (isReadOnly() == true)
+    {
+        return;
+    }
+    if (mShouldUseDocumentHistory == true)
+    {
+        Q_EMIT UndoRequested();
+    }
+    else
+    {
+        undo();
+    }
+}
+
+void CodeEditor::Redo()
+{
+    if (isReadOnly() == true)
+    {
+        return;
+    }
+    if (mShouldUseDocumentHistory == true)
+    {
+        Q_EMIT RedoRequested();
+    }
+    else
+    {
+        redo();
+    }
+}
+
+void CodeEditor::SetCanFormat(bool canFormat)
+{
+    mFormatAction->setEnabled(canFormat);
+#if !defined(Q_OS_WASM)
+    mChooseFormatterAction->setEnabled(true);
+#endif
+}
+
+void CodeEditor::BeginEditOperation(CodeEditKind kind)
+{
+    Q_EMIT EditStarted(kind);
+}
+
+void CodeEditor::EndEditOperation()
+{
+    Q_EMIT EditFinished();
+}
+
 void CodeEditor::contextMenuEvent(QContextMenuEvent* event)
 {
-    QMenu* menu = createStandardContextMenu();
-    menu->addSeparator();
-    menu->addActions(actions());
-    menu->exec(event->globalPos());
-    delete menu;
+    if (mShouldUseDocumentHistory == false)
+    {
+        QMenu* menu = createStandardContextMenu();
+        menu->addSeparator();
+        menu->addActions(actions());
+        menu->exec(event->globalPos());
+        delete menu;
+        return;
+    }
+    QMenu menu(this);
+    const auto addCommand =
+        [&menu, this](const QString& label, QKeySequence::StandardKey key, bool isEnabled, const auto& operation) {
+            QAction* action = menu.addAction(label);
+            action->setShortcut(key);
+            action->setEnabled(isEnabled);
+            connect(action, &QAction::triggered, this, operation);
+        };
+    addCommand(QStringLiteral("Undo"), QKeySequence::Undo, CanUndo(), [this]() { Undo(); });
+    addCommand(QStringLiteral("Redo"), QKeySequence::Redo, CanRedo(), [this]() { Redo(); });
+    menu.addSeparator();
+    const bool hasSelection = textCursor().hasSelection();
+    addCommand(QStringLiteral("Cut"), QKeySequence::Cut, hasSelection == true && isReadOnly() == false, [this]() {
+        const CodeEditScope operation(*this);
+        cut();
+    });
+    addCommand(QStringLiteral("Copy"), QKeySequence::Copy, hasSelection, [this]() { copy(); });
+    addCommand(QStringLiteral("Paste"), QKeySequence::Paste, canPaste() == true && isReadOnly() == false, [this]() {
+        const CodeEditScope operation(*this);
+        paste();
+    });
+    addCommand(QStringLiteral("Select All"), QKeySequence::SelectAll, true, [this]() { selectAll(); });
+    menu.addSeparator();
+    menu.addActions(actions());
+    menu.exec(event->globalPos());
+}
+
+void CodeEditor::inputMethodEvent(QInputMethodEvent* event)
+{
+    const CodeEditScope operation(*this);
+    QPlainTextEdit::inputMethodEvent(event);
+}
+
+void CodeEditor::insertFromMimeData(const QMimeData* source)
+{
+    const CodeEditScope operation(*this);
+    QPlainTextEdit::insertFromMimeData(source);
+}
+
+void CodeEditor::focusOutEvent(QFocusEvent* event)
+{
+    QPlainTextEdit::focusOutEvent(event);
+    Q_EMIT EditBoundary();
 }
 
 int32 CodeEditor::getGutterWidth() const
@@ -342,6 +483,7 @@ void CodeEditor::IndentSelection(bool shouldOutdent)
     {
         return;
     }
+    const CodeEditScope operation(*this);
     QTextCursor current = textCursor();
     current.beginEditBlock();
     if (current.hasSelection() == false && shouldOutdent == false)
@@ -388,6 +530,7 @@ void CodeEditor::ToggleLineComment()
     {
         return;
     }
+    const CodeEditScope operation(*this);
     const QTextCursor lines = getSelectedLines();
     const int32 start = lines.selectionStart();
     const int32 end = lines.selectionEnd();
@@ -441,6 +584,7 @@ void CodeEditor::DuplicateLines()
     {
         return;
     }
+    const CodeEditScope operation(*this);
     QTextCursor lines = getSelectedLines();
     QString text = lines.selectedText();
     text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
@@ -457,6 +601,7 @@ void CodeEditor::MoveLines(bool shouldMoveDown)
     {
         return;
     }
+    const CodeEditScope operation(*this);
     QTextCursor lines = getSelectedLines();
     const int32 start = lines.selectionStart();
     const int32 end = lines.selectionEnd();
@@ -490,6 +635,7 @@ void CodeEditor::DeleteLines()
     {
         return;
     }
+    const CodeEditScope operation(*this);
     QTextCursor lines = getSelectedLines();
     const QTextBlock last = document()->findBlock(lines.selectionEnd());
     if (last.next().isValid() == true)
@@ -518,6 +664,33 @@ void CodeEditor::GoToLine(int32 line)
 
 void CodeEditor::keyPressEvent(QKeyEvent* event)
 {
+    if (event->matches(QKeySequence::Undo) == true)
+    {
+        Undo();
+        return;
+    }
+    if (event->matches(QKeySequence::Redo) == true)
+    {
+        Redo();
+        return;
+    }
+    CodeEditKind kind = CodeEditKind::Command;
+    if (event->modifiers() == Qt::NoModifier || event->modifiers() == Qt::ShiftModifier)
+    {
+        if (event->key() == Qt::Key_Backspace)
+        {
+            kind = CodeEditKind::Backspace;
+        }
+        else if (event->key() == Qt::Key_Delete)
+        {
+            kind = CodeEditKind::Delete;
+        }
+        else if (event->text().isEmpty() == false && event->text().at(0).isPrint() == true)
+        {
+            kind = CodeEditKind::Typing;
+        }
+    }
+    const CodeEditScope operation(*this, kind);
     if (isReadOnly() == false && event->modifiers() == Qt::NoModifier && event->key() == Qt::Key_Tab)
     {
         IndentSelection();

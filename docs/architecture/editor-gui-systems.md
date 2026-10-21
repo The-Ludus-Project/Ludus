@@ -66,7 +66,10 @@ Keep the implementation private to the editor. Portable request/result/edit
 values must not expose Qt objects or enter the installed engine SDK. Add a
 scripting provider when its workflow needs it; language selection supplies
 comment syntax, highlighting, indentation and service capabilities, rather than
-forking the editor. This is not a general plugin or widget framework.
+forking the editor. The implemented document identity/edit/selection seam is
+Qt-free; the native formatter's owned process buffers and XML decoder remain
+private Qt adapters and convert at that seam. This is not a general plugin or
+widget framework.
 
 ### Editing and document transactions
 
@@ -81,15 +84,30 @@ completion and formatting each form one group. Route undo/redo through the
 document owner, without competing widget and workspace histories. IME preedit
 is temporary until committed. Dirty drafts survive conflicting external saves.
 
-The first foundation slice retains the existing Renderer Source contract:
-Qt owns undo within the focused pending text buffer; **Apply Text to Draft**
-(or a source switch, Save or the existing World-edit debounce) creates a
-render-graph document revision, and **Revert Text** restores that draft. This is transitional, not completion of
-the unified history target. Pending text and its source identity must survive
-view refresh and must be captured before switching source. Existing package
-admission limits, explicit Save and external-conflict checks remain authoritative.
-A later document-adapter increment must integrate coalesced source edits with
-package history before claiming unified source/canvas undo.
+The implemented adapter (`CodeDocumentHost`) uses Qt-free UTF-8 byte edits,
+selection ranges and an identity containing project epoch, source binding and the
+owner's monotonic revision. `CodeDocumentController` maps Qt UTF-16 input deltas
+into that contract. The render-graph adapter commits them immediately to the
+existing package history; Qt's competing undo stack is disabled while bound.
+Keyboard, context-menu and shell undo all route to that owner. A different
+single-file/script document can implement the same host without graph or shader
+dependencies.
+
+Typing coalesces while adjacent, within one second and within a word boundary;
+navigation, focus/source changes, Save and commands break groups. Line commands,
+Replace All and formatting each commit once. Undo/redo restores the relevant
+source and directed selection; those view hints are excluded from authored
+content equality and serialization. IME preedit creates no history until commit.
+UTF-8 scalar boundaries, UTF-16 surrogate pairs and CRLF units are mapped
+explicitly. Existing BOMs and untouched source bytes survive ordinary edits.
+New lines follow CRLF when the source uses it; mixed endings are otherwise left
+as authored.
+
+Admission checks precede publication. Invalid text, stale revisions and source
+capacity failures restore the last accepted view, preserving the draft/history.
+Save alone publishes files; it retains the existing package bounds and external
+conflict checks. Expensive tree/interface/watch refreshes are coalesced at the
+existing debounce; draft revisions and Undo availability update immediately.
 
 ### Language intelligence and formatting
 
@@ -111,10 +129,32 @@ The Shader API pane is a reference view, not a second semantic authority.
 Hover appears after a short dwell and shows type/signature and documentation.
 Completion supports explicit invocation, member triggers, keyboard selection,
 replacement ranges, optional additional edits and bounded documentation.
-Formatting is language-specific: qualify pinned `clang-format` against Slang
-fixtures and project configuration, then support explicit Format Document before
-optional format-on-save. Future script languages supply their own formatter.
-Formatting preserves selection/scroll and applies only to its captured revision.
+Explicit **Format Document** is implemented for native shader sources. The
+process adapter checks the exact `clang-format` pin from
+`config/tool_versions.json`, reads the captured source through stdin and requests
+replacement XML. `--assume-filename` locates project `.clang-format` configuration;
+include sorting and qualifier rewriting are disabled to keep this formatting
+profile conservative. It does not pass `-i`, invoke a shell or save files. A
+missing/wrong tool, incomplete parse or process failure leaves the draft intact.
+Use **Choose Formatter...** to configure its executable; normal editing needs no
+tool. No process is launched until formatting is explicitly requested.
+
+One request runs at a time, with a ten-second deadline, an independent 8 MiB
+encoded-output limit and 8 KiB diagnostic limit; decoded text must fit the
+document owner's existing source limit. XML replacement decoding yields between
+two-millisecond slices. Ordered nonoverlapping UTF-8 scalar ranges map the
+current directed selection, and publication preserves scroll. An edit, Undo,
+project replacement or source rebinding invalidates the captured identity;
+rebinding cancels work. Cancellation/failure never adds history. A successful
+change is one document undo group; an unchanged result adds none. Tool profiles,
+captured values and result application are shared seams for later script
+formatters, although this first decoder speaks clang-format replacement XML.
+There is no format-on-save or script formatter yet.
+
+Slang formatting remains a C++-syntax clang-format profile. Regression fixtures
+exercise Unicode, CRLF, project style, attributes and common shader constructs;
+they cannot establish correctness for every Slang extension. Compile/validate a
+shader after changing it, including after formatting.
 
 Every asynchronous request records project epoch, document identity/revision,
 shader-context identity and request identity. Validate them before publication,
@@ -158,10 +198,10 @@ these probes without concurrent build/analysis jobs before comparing changes.
 
 ### Incremental delivery
 
-1. Shared editing foundation and shader integration, preserving the existing
-   pending-buffer/draft contract; lexical coloring, commands and find/replace.
-2. Version-checked document adapter/unified text history and asynchronous
-   formatting, atomic undo, project configuration and stale-result rejection.
+1. Implemented: shared editing foundation and shader integration; lexical
+   coloring, commands and find/replace.
+2. Implemented: version-checked document adapter/unified text history and native
+   asynchronous formatting, atomic undo, project style and stale-result rejection.
 3. Slang context integration, unsaved overlays, hover, completion and diagnostics.
 4. Scripting workspace integration and its language provider.
 

@@ -191,7 +191,7 @@ TEST_CASE("Create Node menus author every supported type inside an empty library
     CHECK(QFileInfo::exists(QDir(package).filePath(library)) == false);
 }
 
-TEST_CASE("Create Node menu cancellation and pending text preserve the draft", "[editor][render-graph][node-menu]")
+TEST_CASE("Create Node menu cancellation preserves the current text draft", "[editor][render-graph][node-menu]")
 {
     QTemporaryDir project;
     const QString package = MakePackage(project);
@@ -200,11 +200,9 @@ TEST_CASE("Create Node menu cancellation and pending text preserve the draft", "
     REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
     workspace.SetLivePreview(false);
     static_cast<void>(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), {}));
-    bool hasPendingText = false;
     SECTION("cancel menu") {}
-    SECTION("pending Source text")
+    SECTION("accepted Source edit")
     {
-        hasPendingText = true;
         QPlainTextEdit* sourceOrNull = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
         REQUIRE(sourceOrNull != nullptr);
         sourceOrNull->appendPlainText(QStringLiteral(" "));
@@ -218,7 +216,7 @@ TEST_CASE("Create Node menu cancellation and pending text preserve the draft", "
     QContextMenuEvent context(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
     QCoreApplication::sendEvent(canvas.viewport(), &context);
     REQUIRE(observation.HasMenu == true);
-    CHECK(observation.IsEnabled == (hasPendingText == false));
+    CHECK(observation.IsEnabled == true);
     CHECK(observation.HasSelection == false);
     CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == before);
     CHECK(workspace.GetDocument().GetRevision() == revision);

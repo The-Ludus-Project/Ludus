@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include "internal/code_edit_scope.h"
 #include "internal/code_editor.h"
 
 #include <QCheckBox>
@@ -151,6 +152,7 @@ void CodeEditorPanel::replaceText()
     {
         return;
     }
+    const CodeEditScope operation(*mEditor);
     QTextCursor cursor = mEditor->textCursor();
     const Qt::CaseSensitivity sensitivity =
         mIsCaseSensitive->isChecked() == true ? Qt::CaseSensitive : Qt::CaseInsensitive;
@@ -170,6 +172,7 @@ void CodeEditorPanel::replaceAll()
     {
         return;
     }
+    const CodeEditScope operation(*mEditor);
     QTextDocument::FindFlags flags;
     if (mIsCaseSensitive->isChecked() == true)
     {
