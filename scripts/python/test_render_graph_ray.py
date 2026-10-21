@@ -393,10 +393,13 @@ void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout
 }
 ''')
             result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
-                                         compiler=os.environ['LUDUS_RG1_SLANG'])
+                                         compiler=os.environ['LUDUS_RG1_SLANG'],
+                                         spirv_cross=os.environ['LUDUS_RG1_CROSS'])
             package = build.verify_package(Path(result['package']))
-            self.assertEqual({'metal', 'wgsl'}, {r['profile'] for r in package['recipes']
-                                               if r['technique'] == ray.TECHNIQUE})
+            self.assertEqual({'metal'}, {r['profile'] for r in package['recipes']
+                                        if r['technique'] == ray.TECHNIQUE})
+            self.assertEqual({'metal', 'wgsl'}, set(package['profiles']))
+            self.assertEqual({'ray_tracing': ['metal']}, package['capability_profiles'])
 
     def test_automatic_limits_compile_to_concrete_state_and_retain_prior_package_on_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
