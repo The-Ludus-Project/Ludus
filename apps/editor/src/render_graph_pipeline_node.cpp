@@ -60,6 +60,7 @@ QJsonObject MakePipelineNode(const QString& kind, const QString& identity)
     {
         // Omitted limits are derived by the selected execution profile.
         state = {};
+        invocation = {{QStringLiteral("dimensions"), QStringLiteral("ColorTarget")}};
     }
     return {{QStringLiteral("id"), identity},
             {QStringLiteral("kind"), kind},

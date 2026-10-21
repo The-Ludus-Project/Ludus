@@ -93,7 +93,7 @@ The version-2 node fields are:
 | `outputs` | Up to eight `{id, type, target, format, load, store}` records; `target` names a same-type input carrying the previous resource version |
 | `shaders` | Up to sixteen `{id, stage, program}` records; `program` references an explicitly declared build-manifest program, not a guessed source filename |
 | `state` | Graphics topology/cull/front/depth comparison/depth writes/blending/samples; compute `group_size`; ray tracing recursion/payload/attribute bounds |
-| `invocation` | Graphics mode, vertex layout, material family and Scene/View input names; compute dispatch or ray launch `dimensions` |
+| `invocation` | Graphics mode, vertex layout, material family and Scene/View input names; compute dispatch `dimensions`; ray launch `dimensions` as `"ColorTarget"` or explicit `[width, height, 1]` |
 
 Input types include Scene, View, ColorTexture, DepthTexture, Buffer,
 AccelerationStructure, Float32, Float2, Float3, Float4 and UInt32. Outputs are
@@ -195,12 +195,43 @@ count.
 Declare exactly one input each of type Scene, View and ColorTexture, and one
 RGBA8Unorm color output naming that color input as its `target`, with `Clear` and
 `Store`. In the editor, add the color through **Writable Resources**; its paired
-input and target association are automatic. Port names are authored, not fixed. Set invocation `dimensions` to the
-color target's exact `[width, height, 1]`. Feed Scene and Camera into those inputs,
+input and target association are automatic. Port names are authored, not fixed.
+New ray nodes use **Invocation > Launch size > Match color target**
+(`"dimensions": "ColorTarget"`). The compiler derives `[width, height, 1]` from
+the connected writable color target separately for each graph instance; the
+Plan lists the resolved launch dimensions. Reusing the subgraph with a different
+target extent requires no edit to its ray node. Existing explicit dimensions
+remain supported and are preserved when opening or saving a graph. To keep an
+explicit launch size, select **Explicit size** and enter the color target's exact
+`[width, height, 1]`; a mismatch reports both sizes and the target's identity.
+The same launch-size controls are available from the canvas node editor with
+Properties hidden. Feed Scene and Camera into those inputs,
 the target into both Camera's designated target and the ray node, and the ray
 color output into Export. Use a single-sample offscreen target. Raster and ray
 versions of a renderer can be separate configurations; do not branch physical
 writes from the same attachment version.
+
+An execution plan includes only dependencies of Export/Present operations,
+root configuration outputs, and explicit active-camera routing obligations.
+Disconnected pipeline/subgraph drafts do not require shader assignments, bound
+inputs or execution-profile support until a live route consumes them. Inside a
+retained subgraph, only consumed interface output branches and explicit effects
+are expanded. A retained subgraph still requires its declared interface inputs;
+an unused interface output does not change the selected pipeline's attachment or
+shader contract. Nested Export/Present operations and active cameras are explicit
+effects and are retained even without an interface-output consumer.
+
+All saved configurations still receive structural validation: malformed fields,
+missing ports, type-mismatched wires, duplicate incoming connections, import
+recursion and cycles remain errors, including on unused branches. Required-output
+consumer checks apply to retained subgraphs and live consumers. Library inspection
+can report an incomplete draft's interface without requiring execution-ready inputs.
+Compilation never removes or rewrites unused authored nodes, ports or wires.
+
+This target-derived launch mode uses the existing fixed target extents. Shared
+size expressions, view-relative full/half resolution presets, runtime resize and
+adaptive resolution are not implemented by this mode; the World viewport still
+follows the target/resize limitations documented below.
 
 The profile admits one ray invocation per configuration and the existing graph
 mesh/item limits. It rejects native ray payloads, recursive tracing, additional hit groups,

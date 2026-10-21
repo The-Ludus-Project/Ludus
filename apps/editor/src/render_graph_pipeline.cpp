@@ -442,7 +442,60 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             mNode.insert(name, record);
             publishEdit();
         };
-        if (value.isBool() == true)
+        if (name == QStringLiteral("invocation") && key == QStringLiteral("dimensions") &&
+            mNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+        {
+            QWidget* row = new QWidget(this);
+            QVBoxLayout* layout = new QVBoxLayout(row);
+            QComboBox* mode = new QComboBox(row);
+            mode->setObjectName(QStringLiteral("rayLaunchSizeMode"));
+            mode->addItems({QStringLiteral("Match color target"), QStringLiteral("Explicit size")});
+            const bool isAutomatic = value.toString() == QStringLiteral("ColorTarget");
+            mode->setCurrentIndex(isAutomatic == true ? 0 : 1);
+            layout->addWidget(mode);
+            QWidget* dimensions = new QWidget(row);
+            QHBoxLayout* dimensionLayout = new QHBoxLayout(dimensions);
+            for (int32 dimension = 0; dimension < DIMENSION_COUNT; ++dimension)
+            {
+                QSpinBox* control = new QSpinBox(dimensions);
+                control->setObjectName(QStringLiteral("rayLaunchDimension%1").arg(dimension));
+                control->setRange(1, MAX_PROPERTY_VALUE);
+                control->setValue(value.isArray() == true ? value.toArray().at(dimension).toInt() : 1);
+                connect(control, &QSpinBox::valueChanged, this, [setProperty, dimensions](int32) {
+                    QJsonArray values;
+                    for (const QSpinBox* field : dimensions->findChildren<QSpinBox*>())
+                    {
+                        values.append(field->value());
+                    }
+                    setProperty(values);
+                });
+                dimensionLayout->addWidget(control);
+            }
+            dimensions->setVisible(isAutomatic == false);
+            layout->addWidget(dimensions);
+            QLabel* help = new QLabel(
+                QStringLiteral("Match color target derives [width, height, 1] from the connected writable color "
+                               "target in each graph instance. Explicit size must match that target."),
+                row);
+            help->setWordWrap(true);
+            layout->addWidget(help);
+            connect(mode, &QComboBox::currentIndexChanged, this, [setProperty, dimensions](int32 index) {
+                dimensions->setVisible(index != 0);
+                if (index == 0)
+                {
+                    setProperty(QStringLiteral("ColorTarget"));
+                    return;
+                }
+                QJsonArray values;
+                for (const QSpinBox* field : dimensions->findChildren<QSpinBox*>())
+                {
+                    values.append(field->value());
+                }
+                setProperty(values);
+            });
+            outForm.addRow(QStringLiteral("Launch size"), row);
+        }
+        else if (value.isBool() == true)
         {
             QCheckBox* control = new QCheckBox(this);
             control->setChecked(value.toBool());

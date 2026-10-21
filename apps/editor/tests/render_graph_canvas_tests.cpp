@@ -562,6 +562,16 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         CHECK(workspace.GetDocument().GetRevision() == stateRevision + 2);
         CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("attribute_bytes") == false);
         CHECK(advanced->isChecked() == false);
+        QComboBox* launchMode = editor->findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
+        REQUIRE(launchMode != nullptr);
+        CHECK(launchMode->currentText() == QStringLiteral("Match color target"));
+        const uint64 sizeRevision = workspace.GetDocument().GetRevision();
+        launchMode->setCurrentIndex(1);
+        CHECK(workspace.GetDocument().GetRevision() == sizeRevision + 1);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("ColorTarget") == false);
+        launchMode->setCurrentIndex(0);
+        CHECK(workspace.GetDocument().GetRevision() == sizeRevision + 2);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("ColorTarget") == true);
         QPushButton* addShader = editor->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
         REQUIRE(addShader != nullptr);
         QTableWidget* shaders = editor->findChild<QTableWidget*>(QStringLiteral("shaders"));

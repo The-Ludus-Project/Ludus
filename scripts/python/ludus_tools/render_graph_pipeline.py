@@ -40,6 +40,7 @@ def new_node(kind, identity):
                       'material': 'DefaultOpaque', 'scene': 'scene', 'view': 'view'}
     elif kind == 'RayTracingPipeline':
         state = {}  # The selected ray profile supplies its limits unless explicitly overridden.
+        invocation = {'dimensions': 'ColorTarget'}
     return {'id': identity, 'kind': kind, 'inputs': [], 'outputs': [], 'shaders': [],
             'state': state, 'invocation': invocation}
 
@@ -149,7 +150,8 @@ def validate(node, where, graph):
             if field in state:
                 _check_field(graph._integer, state[field], f'Pipeline State → {field} (bytes)', where, graph, 0, 4096)
         _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
-        _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
+        if invocation['dimensions'] != 'ColorTarget':
+            _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
 
 
 def _dimensions(values, where, graph, field):

@@ -293,8 +293,7 @@ class RenderGraphTests(unittest.TestCase):
         self.node(value, "camera")["active"] = True
         self.write(value)
         plan = graph.compile_graph(self.path)
-        self.assertEqual(2, len(plan["cameras"]))
-        self.assertIsNone(plan["cameras"][1]["target"])
+        self.assertEqual(1, len(plan["cameras"]))
 
     def test_present_requires_designated_imported_surface(self):
         value = self.read()
@@ -362,8 +361,12 @@ class RenderGraphTests(unittest.TestCase):
         self.config(value)["nodes"].insert(-1, second)
         self.config(value)["edges"] += [{"from": e["from"], "to": "second." + e["to"].split(".")[1]}
                                       for e in list(self.config(value)["edges"]) if e["to"].startswith("raster.")]
+        self.config(value)['nodes'].append({'id': 'depth_output', 'kind': 'Export', 'type': 'DepthTexture'})
+        self.config(value)['edges'].append({'from': 'second.depth', 'to': 'depth_output.texture'})
         self.write(value)
         self.fails("MultipleWriters")
+        self.config(value)['nodes'] = [node for node in self.config(value)['nodes'] if node['id'] != 'depth_output']
+        self.config(value)['edges'] = [edge for edge in self.config(value)['edges'] if edge['to'] != 'depth_output.texture']
         for edge in self.config(value)["edges"]:
             if edge["to"] in ("second.color", "second.depth"):
                 edge["from"] = "raster." + edge["to"].split(".")[1]
@@ -384,6 +387,8 @@ class RenderGraphTests(unittest.TestCase):
         self.config(value)["edges"] += [
             {"from": "scene.scene", "to": "second.scene"}, {"from": "camera.view", "to": "second.view"},
             {"from": "raster.color", "to": "second.color"}, {"from": "raster.depth", "to": "second.depth"}]
+        self.config(value)['nodes'].append({'id': 'depth_output', 'kind': 'Export', 'type': 'DepthTexture'})
+        self.config(value)['edges'].append({'from': 'second.depth', 'to': 'depth_output.texture'})
         self.write(value)
         self.fails("StaleVersion")
 
