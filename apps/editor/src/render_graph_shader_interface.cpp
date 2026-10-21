@@ -58,6 +58,10 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     if (isScene == true)
     {
         lines.append(
+            QStringLiteral("// Scene materials enabled.\n"
+                           "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
+                           "// Author lighting and bounce policy in your callbacks."));
+        lines.append(
             QStringLiteral("%1 %2(\n    SceneContext scene,\n    %3 %4,\n    inout RayQueryContext queries%5);")
                 .arg(stage == QStringLiteral("ray_generation") ? QStringLiteral("float3") : QStringLiteral("void"),
                      function,
@@ -78,6 +82,14 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     lines.append(GetStructDeclaration(api, input));
     if (isScene == false)
     {
+        lines.append(
+            QStringLiteral("// Legacy ray interface. Return linear RGB; no automatic lighting.\n"
+                           "// For full material properties, right-click the RayTracingPipeline on the canvas\n"
+                           "// and choose Enable Scene Materials. Original callbacks are preserved through adapters."));
+        if (stage == QStringLiteral("closest_hit"))
+        {
+            lines.append(QStringLiteral("// Closest-hit material tint: return input.Color.xyz; Color.w is reserved."));
+        }
         if (input != QStringLiteral("Ray"))
         {
             lines.append(GetStructDeclaration(api, QStringLiteral("Ray")));

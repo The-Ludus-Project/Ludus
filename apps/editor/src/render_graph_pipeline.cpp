@@ -265,6 +265,12 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
         QStringLiteral("New shaders create .slang sources automatically. "
                        "Renaming moves its source; stage edits reuse it. Edit sources in Source; Save writes files."),
         this);
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+    {
+        hint->setText(hint->text() +
+                      QStringLiteral(" New ray techniques expose materials through EvaluateMaterial(scene, hit). "
+                                     "For legacy ray pipelines, use Enable Scene Materials on the canvas."));
+    }
     hint->setWordWrap(true);
     layout->addWidget(hint);
 }

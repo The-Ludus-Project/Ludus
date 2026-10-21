@@ -86,7 +86,29 @@ or exhausted manifest budgets preserve the draft and explain the repair.
 Incomplete shader tables remain authoring drafts. Name/file conflicts or incompatible references
 preserve the draft. Templates are starting points: vertex/fragment interfaces use
 the manifest schemas; ray-generation, miss and closest-hit functions use the
-renderer’s triangle ray interfaces. Other stages remain authoring drafts subject
+renderer’s triangle ray interfaces. A new ray technique uses scene-aware callbacks:
+closest-hit receives `SurfaceHit` and `SceneContext`, and its template demonstrates
+`MaterialSample material = EvaluateMaterial(scene, hit)` and `material.BaseColor`.
+The editor creates the shared `ScenePayload` source and manifest interface alongside
+the callbacks. Raygen traces the camera ray once; the template displays material
+color and adds no lighting estimator.
+
+Existing ray techniques keep their interface and authored sources. For a legacy
+`ShaderMain(RayHit input)`, material tint is `input.Color.xyz`; full material
+parameters are unavailable through `RayHit`. Select the ray pipeline and choose
+**Enable Scene Materials** in its canvas context menu or Properties. This upgrades
+the package's shared ray technique and all references in one undoable draft edit.
+Adapters call the original shaders without rewriting their sources. Open the new
+closest-hit adapter through **View Shaders** and replace its legacy callback call
+with `EvaluateMaterial(scene, hit)` to author shading with full material properties.
+The conversion requires three additional manifest program slots and their profile
+artifacts; capacity failures
+preserve the draft. **Save** publishes the payload, adapters and manifest together.
+The Source interface panel describes the active interface and available material
+fields. See [scene-aware ray shaders](#author-scene-aware-ray-shaders) for callback
+and material contracts.
+
+Other stages remain authoring drafts subject
 to the execution limits below. Changing stage creates a new matching program and
 retains the previous source for reuse. Removing a shader row retains its program and source for reuse.
 

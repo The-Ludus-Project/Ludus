@@ -741,18 +741,18 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
             CHECK(selector->findText(source) >= 0);
             CHECK(workspace.GetDocument().GetDraft(source).contains("ShaderMain") == true);
         }
-        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayHit") == true);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("SurfaceHit") == true);
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
         stage->setCurrentText(QStringLiteral("miss"));
         CHECK(workspace.GetSelectedShaderSources() == sources);
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
-        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("ShaderMain(Ray input)") == true);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("SceneContext scene, Ray ray,") == true);
         CHECK(editor->findChild<QTableWidget*>(QStringLiteral("shaders")) == shaders);
         stage->setCurrentText(QStringLiteral("closest_hit"));
         workspace.Undo();
-        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("ShaderMain(Ray input)") == true);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("SceneContext scene, Ray ray,") == true);
         workspace.Undo();
-        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayHit") == true);
+        CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("SurfaceHit") == true);
         workspace.Undo();
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
         CHECK(selector->findText(sources.last()) >= 0);
@@ -839,4 +839,65 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
         QApplication::sendEvent(canvas.viewport(), &context);
     }
+}
+
+TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidden",
+          "[editor][render-graph][canvas][scene-materials]")
+{
+    QTemporaryDir project;
+    const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/raytracing"));
+    const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
+    for (const QString& file : {ROOT_GRAPH,
+                                QStringLiteral("main_shaders/geometry.slang"),
+                                QStringLiteral("main_shaders/color.slang"),
+                                QStringLiteral("main_shaders/depth.slang"),
+                                QStringLiteral("main_shaders/generate.slang"),
+                                QStringLiteral("main_shaders/miss.slang"),
+                                QStringLiteral("main_shaders/closest.slang")})
+    {
+        WriteFile(QDir(package).filePath(file), ReadFile(source.filePath(file)));
+    }
+    QByteArray manifest = ReadFile(source.filePath(QStringLiteral("main.lushader.json.in")));
+    manifest.replace("@RG2_TEST_PROFILES@", "[\"metal\", \"wgsl\"]");
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    WriteFile(QDir(package).filePath(manifestFile), manifest);
+    RendererWorkspace workspace({});
+    workspace.resize(1400, 800);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&workspace) == true);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("trace")) == true);
+    QWidget inspectorHost;
+    static_cast<void>(workspace.TakeInspectorPanel(&inspectorHost));
+    inspectorHost.hide();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.resetTransform();
+    const QPointF position = canvas.GetNodePosition(QStringLiteral("trace"));
+    canvas.centerOn(position);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    const QByteArray before = workspace.GetDocument().GetDraft(manifestFile);
+    QTimer::singleShot(0, &workspace, [&workspace]() {
+        QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphNodeMenu"));
+        REQUIRE(menuOrNull != nullptr);
+        QAction* enable = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEnableSceneMaterialsAction"));
+        REQUIRE(enable != nullptr);
+        REQUIRE(enable->isEnabled() == true);
+        enable->trigger();
+        menuOrNull->close();
+    });
+    const QPoint point = canvas.mapFromScene(position + QPointF(30, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QCoreApplication::sendEvent(canvas.viewport(), &context);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(workspace.GetDocument().GetDraft(manifestFile).contains("scene_interface") == true);
+    CHECK(workspace.GetSelectedShaderSources().size() == 3);
+    for (const QString& file : workspace.GetSelectedShaderSources())
+    {
+        CHECK(workspace.GetDocument().GetDraft(file).contains("SceneShaderMain") == true);
+    }
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(manifestFile) == before);
+    workspace.Redo();
+    CHECK(workspace.GetDocument().GetDraft(manifestFile).contains("scene_interface") == true);
 }

@@ -301,6 +301,7 @@ private:
     [[nodiscard]] QByteArray getBuildIdentity(RenderGraphSource source = RenderGraphSource::Draft) const;
     void scheduleLiveBuild();
     void refreshWatchedSources();
+    void enableSceneMaterials();
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);
     void prepareDefaultPreview();

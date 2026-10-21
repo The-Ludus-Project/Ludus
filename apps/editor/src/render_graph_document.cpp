@@ -896,6 +896,25 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
     return commit(candidate, false);
 }
 
+RenderGraphDocumentStatus RenderGraphDocument::EnableSceneMaterials(QString& outError)
+{
+    RenderGraphSnapshot candidate = mDraft;
+    RenderGraphDocumentStatus status = PrepareRenderGraphTechniques(candidate, mRootGraph, outError);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        return status;
+    }
+    const QString manifest =
+        mRootGraph.chopped(QStringLiteral(".lurender.json").size()) + QStringLiteral(".lushader.json");
+    status = ConvertSceneRayInterface(candidate, manifest, mPackageRoot, outError);
+    if (status != RenderGraphDocumentStatus::Ok || candidate == mDraft)
+    {
+        return status;
+    }
+    mLastMove.clear();
+    return commit(candidate, false);
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::PrepareTechniques(QString& outError)
 {
     RenderGraphSnapshot candidate = mDraft;
