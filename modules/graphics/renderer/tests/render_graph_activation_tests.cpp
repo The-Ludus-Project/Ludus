@@ -85,6 +85,7 @@ struct PackageOptions final
     uint32 ViewNumerator = 0;
     uint32 ViewDenominator = 1;
     uint32 Backing = 0;
+    uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     std::string_view PassName = "Scene/Opaque";
     bool HasDepthStages = true;
     /// Bind one Material {Float3 tint; Float32 gain} block to the color fragment at slot 0.
@@ -150,7 +151,7 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
         inoutWriter.WriteWord(options.Backing);
         inoutWriter.WriteWord(0);
         inoutWriter.WriteWord(aspect == 0 ? 1 : 0);
-        if (options.Version >= format::PACKAGE_VERSION)
+        if (options.Version >= format::VIEW_PACKAGE_VERSION)
         {
             inoutWriter.WriteWord(options.ViewNumerator);
             inoutWriter.WriteWord(options.ViewDenominator);
@@ -168,6 +169,10 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
                                0U})
     {
         inoutWriter.WriteWord(value);
+    }
+    if (options.Version >= format::PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(options.SceneData);
     }
     if (options.HasUniforms == false)
     {
@@ -932,8 +937,10 @@ TEST_CASE("runtime generation owns validated authored GPU pass names", "[rendere
 TEST_CASE("runtime packages preserve relative policies and decode fixed legacy versions",
           "[render-graph][activation][size]")
 {
-    for (const uint32 version :
-         {format::LEGACY_PACKAGE_VERSION, format::NAMED_PACKAGE_VERSION, format::PACKAGE_VERSION})
+    for (const uint32 version : {format::LEGACY_PACKAGE_VERSION,
+                                 format::NAMED_PACKAGE_VERSION,
+                                 format::VIEW_PACKAGE_VERSION,
+                                 format::PACKAGE_VERSION})
     {
         PackageOptions options;
         options.Version = version;
@@ -941,8 +948,8 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
         options.ViewDenominator = 2;
         const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
         const format::Resource& resource = package->GetPlan().Resources[0];
-        CHECK(resource.ViewNumerator == (version == format::PACKAGE_VERSION ? 1 : 0));
-        CHECK(resource.ViewDenominator == (version == format::PACKAGE_VERSION ? 2 : 1));
+        CHECK(resource.ViewNumerator == (version >= format::VIEW_PACKAGE_VERSION ? 1 : 0));
+        CHECK(resource.ViewDenominator == (version >= format::VIEW_PACKAGE_VERSION ? 2 : 1));
         CHECK(package->GetPlan().PassNames.IsEmpty() == (version == format::LEGACY_PACKAGE_VERSION));
     }
     PackageOptions invalid;
@@ -995,4 +1002,20 @@ TEST_CASE("resizing a staged generation requests its first extraction before act
     format::Resource resource{};
     REQUIRE(fixture.Activation.GetActiveOrNull()->GetResourceDescription(0, resource) == true);
     CHECK(resource.Width == 193);
+}
+
+TEST_CASE("runtime packages preserve scene selection and default legacy packages to full Scene",
+          "[render-graph][activation][bundle]")
+{
+    PackageOptions options;
+    options.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY;
+    CHECK(MakePackage(options)->GetPlan().Passes[0].SceneData ==
+          ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY);
+    options.Version = format::VIEW_PACKAGE_VERSION;
+    CHECK(MakePackage(options)->GetPlan().Passes[0].SceneData == ::ludus::content::render_graph_format::SCENE_DATA_ALL);
+    options.Version = format::PACKAGE_VERSION;
+    options.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_MATERIALS;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.SceneData = ~::ludus::content::render_graph_format::SCENE_DATA_ALL;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
 }

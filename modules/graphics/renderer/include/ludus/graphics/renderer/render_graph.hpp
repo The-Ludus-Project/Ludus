@@ -133,6 +133,9 @@ struct RenderGraphSceneDescription final
     SceneShaderDiagnostics* DiagnosticsOrNull = nullptr; ///< Optional candidate diagnostic output, including rejection.
     foundation::uint64 SourceGeneration =
         0; ///< Caller scene revision, zero only for standalone diagnostic preparation.
+    /// Selected ::ludus::content::render_graph_format::SCENE_DATA_* groups; Lights retain emitter emission
+    /// dependencies. Consumed before Update returns.
+    foundation::uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
 };
 /// Scene compatibility for a rendering role, independent of runtime culling.
 enum class RenderGraphCoverage : foundation::uint8

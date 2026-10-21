@@ -1,5 +1,6 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_shader_creation.h"
 
 #include <QDir>
@@ -256,7 +257,7 @@ bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& argu
                     return value.toObject().value(QStringLiteral("type")).toString();
                 }
             }
-            return {};
+            return direction == QStringLiteral("inputs") ? GetSceneBundlePortType(record, port) : QString{};
         };
         const QString identity = node.value(QStringLiteral("id")).toString();
         const auto isPreserved = [&node, &previous, &identity, &getType, outErrorOrNull](const QString& endpoint,
@@ -417,6 +418,59 @@ bool ConnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
     edge.insert(QStringLiteral("to"), arguments.at(1));
     edges.append(edge);
     inoutConfiguration.insert(QStringLiteral("edges"), edges);
+    return true;
+}
+
+bool ExpandSceneBundleEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    const QJsonArray nodes = inoutConfiguration.value(QStringLiteral("nodes")).toArray();
+    QJsonArray expanded;
+    for (const QJsonValueConstRef value : inoutConfiguration.value(QStringLiteral("edges")).toArray())
+    {
+        const QJsonObject edge = value.toObject();
+        const QString from = edge.value(QStringLiteral("from")).toString();
+        const QString to = edge.value(QStringLiteral("to")).toString();
+        bool isScene = false;
+        bool isSceneInput = false;
+        for (const QJsonValueConstRef entry : nodes)
+        {
+            const QJsonObject node = entry.toObject();
+            const QString identity = node.value(QStringLiteral("id")).toString();
+            isScene = isScene == true || (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Scene") &&
+                                          from == identity + QStringLiteral(".scene"));
+            if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+            {
+                for (const QJsonValueConstRef port : node.value(QStringLiteral("inputs")).toArray())
+                {
+                    isSceneInput =
+                        isSceneInput == true ||
+                        (port.toObject().value(QStringLiteral("type")).toString() == QStringLiteral("Scene") &&
+                         to == identity + QLatin1Char('.') + port.toObject().value(QStringLiteral("id")).toString());
+                }
+            }
+        }
+        if (isScene == true && isSceneInput == true &&
+            (from.section(QLatin1Char('.'), 0, 0) == arguments.at(0) ||
+             to.section(QLatin1Char('.'), 0, 0) == arguments.at(0)))
+        {
+            for (const QString& part :
+                 {QStringLiteral("geometry"), QStringLiteral("materials"), QStringLiteral("lights")})
+            {
+                expanded.append(QJsonObject{
+                    {QStringLiteral("from"), from.section(QLatin1Char('.'), 0, 0) + QLatin1Char('.') + part},
+                    {QStringLiteral("to"), to + QLatin1Char('_') + part}});
+            }
+        }
+        else
+        {
+            expanded.append(edge);
+        }
+    }
+    if (expanded.size() > RenderGraphDocument::MAX_EDGES)
+    {
+        return false;
+    }
+    inoutConfiguration.insert(QStringLiteral("edges"), expanded);
     return true;
 }
 
@@ -769,6 +823,14 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     }
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    if (edit == &ConnectEdit || edit == &ReplaceConnectionEdit || edit == &ExpandSceneBundleEdit)
+    {
+        const RenderGraphDocumentStatus status = PrepareConnectedSceneShaders(candidate, mRootGraph, mPackageRoot);
+        if (status != RenderGraphDocumentStatus::Ok)
+        {
+            return status;
+        }
+    }
     return commit(candidate, shouldMerge);
 }
 
@@ -883,6 +945,12 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
             *outErrorOrNull = techniqueError;
         }
         return techniqueStatus;
+    }
+    const RenderGraphDocumentStatus sceneStatus =
+        PrepareConnectedSceneShaders(candidate, mRootGraph, mPackageRoot, outErrorOrNull);
+    if (sceneStatus != RenderGraphDocumentStatus::Ok)
+    {
+        return sceneStatus;
     }
     if (outErrorOrNull != nullptr)
     {
@@ -1068,6 +1136,13 @@ RenderGraphDocument::RemoveNode(const QString& file, const QString& configuratio
 {
     mLastMove.clear();
     return editConfiguration(file, configuration, {node}, &RemoveNodeEdit, false);
+}
+
+RenderGraphDocumentStatus
+RenderGraphDocument::ExpandSceneBundle(const QString& file, const QString& configuration, const QString& node)
+{
+    mLastMove.clear();
+    return editConfiguration(file, configuration, {node}, &ExpandSceneBundleEdit, false);
 }
 
 RenderGraphDocumentStatus

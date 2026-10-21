@@ -404,7 +404,7 @@ TEST_CASE("legacy raster conversion retains shader state and resource ports", "[
     RenderGraphNodePorts after;
     REQUIRE(GetRenderGraphNodePorts(document, original, before) == true);
     REQUIRE(GetRenderGraphNodePorts(document, node, after) == true);
-    CHECK(before.Inputs.size() == after.Inputs.size());
+    CHECK(after.Inputs.size() == before.Inputs.size() + 3);
     CHECK(before.Outputs.size() == after.Outputs.size());
     CHECK(node.value(QStringLiteral("shaders")).toArray().size() == 2);
     REQUIRE(document.Undo() == true);
@@ -1883,6 +1883,87 @@ TEST_CASE("legacy ray conversion preserves authored callbacks and is atomic",
               .contains(QStringLiteral("material tint: return input.Color.xyz")) == true);
     QString error;
     const uint64 revision = document.GetRevision();
+    SECTION("connecting Scene enables the complete bundle in one undo step")
+    {
+        REQUIRE(document.Disconnect(ROOT_GRAPH,
+                                    DEFAULT_CONFIGURATION,
+                                    QStringLiteral("scene.scene"),
+                                    QStringLiteral("trace.scene")) == RenderGraphDocumentStatus::Ok);
+        const uint64 disconnected = document.GetRevision();
+        REQUIRE(document.Connect(ROOT_GRAPH,
+                                 DEFAULT_CONFIGURATION,
+                                 QStringLiteral("scene.scene"),
+                                 QStringLiteral("trace.scene")) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == disconnected + 1);
+        CHECK(GetRayTechnique(document).contains(QStringLiteral("scene_interface")) == true);
+        CHECK(QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
+                  .object()
+                  .value(QStringLiteral("configurations"))
+                  .toArray()
+                  .at(0)
+                  .toObject()
+                  .value(QStringLiteral("edges"))
+                  .toArray()
+                  .contains(QJsonObject{{QStringLiteral("from"), QStringLiteral("scene.scene")},
+                                        {QStringLiteral("to"), QStringLiteral("trace.scene")}}) == true);
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(manifestFile) == originalManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) != originalGraph);
+        REQUIRE(document.Redo() == true);
+        CHECK(QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
+                  .object()
+                  .value(QStringLiteral("configurations"))
+                  .toArray()
+                  .at(0)
+                  .toObject()
+                  .value(QStringLiteral("edges"))
+                  .toArray()
+                  .contains(QJsonObject{{QStringLiteral("from"), QStringLiteral("scene.scene")},
+                                        {QStringLiteral("to"), QStringLiteral("trace.scene")}}) == true);
+    }
+    SECTION("expansion preserves all groups and save reload keeps partial selection")
+    {
+        REQUIRE(document.ExpandSceneBundle(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("trace")) ==
+                RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == revision + 1);
+        const QJsonArray edges =
+            GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("edges")).toArray();
+        CHECK(edges.size() == 7);
+        QJsonObject trace;
+        for (const QJsonValueConstRef value :
+             GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray())
+        {
+            if (value.toObject().value(QStringLiteral("id")).toString() == QStringLiteral("trace"))
+            {
+                trace = value.toObject();
+            }
+        }
+        REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, trace, &error) ==
+                RenderGraphDocumentStatus::Ok);
+
+        CHECK(GetRayTechnique(document).contains(QStringLiteral("scene_interface")) == true);
+        CHECK(CheckRenderGraphLink(document,
+                                   ROOT_GRAPH,
+                                   DEFAULT_CONFIGURATION,
+                                   QStringLiteral("scene.scene"),
+                                   QStringLiteral("trace.scene"))
+                  .Code == QStringLiteral("MultipleWriters"));
+        REQUIRE(document.Disconnect(ROOT_GRAPH,
+                                    DEFAULT_CONFIGURATION,
+                                    QStringLiteral("scene.materials"),
+                                    QStringLiteral("trace.scene_materials")) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.Disconnect(ROOT_GRAPH,
+                                    DEFAULT_CONFIGURATION,
+                                    QStringLiteral("scene.lights"),
+                                    QStringLiteral("trace.scene_lights")) == RenderGraphDocumentStatus::Ok);
+        QStringList saved;
+        REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+        RenderGraphDocument loaded;
+        REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        CHECK(loaded.GetDraft(ROOT_GRAPH) == document.GetDraft(ROOT_GRAPH));
+        CHECK(loaded.GetDraft(ROOT_GRAPH).contains("trace.scene_geometry") == true);
+        CHECK(loaded.GetDraft(ROOT_GRAPH).contains("trace.scene_materials") == false);
+    }
     SECTION("conversion")
     {
         const QJsonObject manifestBefore = QJsonDocument::fromJson(originalManifest).object();

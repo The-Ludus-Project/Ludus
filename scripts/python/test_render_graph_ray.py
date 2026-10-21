@@ -38,6 +38,117 @@ class RayPipelineTests(unittest.TestCase):
         self.assertEqual(self.node, operation['pipeline'])
         self.assertEqual(self.document, json.loads(self.path.read_text()))
 
+    def connect_members(self, members):
+        configuration = self.document['configurations'][0]
+        configuration['edges'] = [edge for edge in configuration['edges'] if not edge['to'].startswith('trace.scene')]
+        configuration['edges'] += [{'from': 'scene.' + part, 'to': 'trace.scene_' + part} for part in members]
+
+    def test_scene_bundle_defaults_and_selected_members_reach_numeric_plan(self):
+        from ludus_tools import render_graph_execution as execution
+        operation = self.compile()['passes'][0]
+        self.assertEqual(7, operation['scene_data'])
+        for members, expected in ((('geometry',), 1), (('geometry', 'materials'), 3),
+                                  (('geometry', 'lights'), 5), (('geometry', 'materials', 'lights'), 7)):
+            with self.subTest(members=members):
+                self.connect_members(members)
+                plan = self.compile()
+                operation = plan['passes'][0]
+                self.assertEqual(expected, operation['scene_data'])
+                _, _, passes, _ = execution.lower_plan({'plans': [plan]}, 'Default')
+                self.assertEqual(expected, passes[0]['SceneData'])
+                self.assertEqual('Main/scene', operation['scene'])
+
+    def test_scene_component_outputs_are_values_and_never_texture_targets(self):
+        self.connect_members(('geometry', 'materials'))
+        configuration = self.document['configurations'][0]
+        child = {'version': 2, 'id': 'Source', 'default': 'Default', 'configurations': [{
+            'id': 'Default', 'inputs': [], 'nodes': [{'id': 'scene', 'kind': 'Scene'}], 'edges': [],
+            'outputs': [{'id': part, 'type': 'Scene' + part.title(), 'source': 'scene.' + part, 'required': False}
+                        for part in ('geometry', 'materials')]}]}
+        (self.path.parent / 'source.lurender.json').write_bytes(graph.canonical_asset(child))
+        configuration['nodes'] = [node if node['id'] != 'scene' else
+            {'id': 'scene', 'kind': 'Subgraph', 'asset': 'source.lurender.json', 'configuration': 'Default'}
+            for node in configuration['nodes']]
+        self.assertEqual(3, self.compile()['passes'][0]['scene_data'])
+        color = next(node for node in configuration['nodes'] if node['id'] == 'color')
+        color['type'] = 'SceneGeometry'
+        with self.assertRaises(ToolingError):
+            self.compile()
+
+    def test_scene_bundle_rejects_mixed_origins_and_missing_geometry(self):
+        self.connect_members(('materials',))
+        with self.assertRaisesRegex(ToolingError, 'Geometry'):
+            self.compile()
+        self.connect_members(('geometry', 'materials'))
+        configuration = self.document['configurations'][0]
+        configuration['nodes'].append({'id': 'other', 'kind': 'Scene'})
+        configuration['edges'][-1]['from'] = 'other.materials'
+        with self.assertRaisesRegex(ToolingError, 'same Scene generation'):
+            self.compile()
+
+    def test_scene_bundle_rejects_full_and_partial_wires_even_on_unused_pass(self):
+        self.connect_members(('geometry',))
+        configuration = self.document['configurations'][0]
+        configuration['edges'].append({'from': 'scene.scene', 'to': 'trace.scene'})
+        self.path.write_bytes(graph.canonical_asset(self.document))
+        with self.assertRaisesRegex(ToolingError, 'full Scene'):
+            graph.load_library(self.path)
+
+    def test_scene_bundle_conflicts_join_independent_wiring_diagnostics(self):
+        self.connect_members(('geometry',))
+        configuration = self.document['configurations'][0]
+        configuration['edges'].append({'from': 'scene.scene', 'to': 'trace.scene'})
+        next(edge for edge in configuration['edges'] if edge['to'] == 'trace.view')['from'] = 'color.texture'
+        with self.assertRaises(ToolingError) as caught:
+            self.compile()
+        issues = caught.exception.diagnostics
+        self.assertEqual(['RenderGraphTypeMismatch', 'RenderGraphMultipleWriters'],
+                         [issue['code'] for issue in issues])
+        self.assertEqual('trace', issues[1]['location']['node'])
+        self.assertEqual('scene', issues[1]['location']['port'])
+        self.assertEqual('input', issues[1]['location']['direction'])
+        self.assertIn('disconnect', issues[1]['repair'])
+
+    def test_scene_members_preserve_maximum_length_bundle_names(self):
+        name = 's' * 63
+        self.node['inputs'][0]['id'] = name
+        configuration = self.document['configurations'][0]
+        configuration['edges'][0] = {'from': 'scene.geometry', 'to': 'trace.' + name + '_geometry'}
+        self.assertEqual(1, self.compile()['passes'][0]['scene_data'])
+
+    def test_malformed_scene_port_ids_report_a_schema_error(self):
+        for identity in ([], {}, 1, None):
+            with self.subTest(identity=identity):
+                self.node['inputs'][0]['id'] = identity
+                with self.assertRaises(ToolingError):
+                    self.compile()
+
+    def test_scene_bundle_reserves_derived_port_ids(self):
+        self.node['inputs'].append({'id': 'scene_geometry', 'type': 'SceneGeometry', 'required': False})
+        with self.assertRaisesRegex(ToolingError, 'reserved'):
+            self.compile()
+
+    def test_scene_members_forward_through_typed_subgraph_ports(self):
+        import copy
+        self.connect_members(('geometry', 'materials'))
+        parent = self.document['configurations'][0]
+        child = copy.deepcopy(self.document)
+        child['id'] = 'Child'
+        child_configuration = child['configurations'][0]
+        child_configuration['inputs'] = [{'id': part, 'type': 'Scene' + part.title()}
+                                         for part in ('geometry', 'materials')]
+        for edge in child_configuration['edges']:
+            if edge['from'].startswith('scene.'):
+                edge['from'] = 'input.' + edge['from'].split('.')[1]
+        child_configuration['nodes'] = [node for node in child_configuration['nodes'] if node['kind'] != 'Scene']
+        (self.path.parent / 'child.lurender.json').write_bytes(graph.canonical_asset(child))
+        parent['nodes'] = [{'id': 'scene', 'kind': 'Scene'},
+                           {'id': 'child', 'kind': 'Subgraph', 'asset': 'child.lurender.json', 'configuration': 'Default'}]
+        parent['edges'] = [{'from': 'scene.' + part, 'to': 'child.' + part} for part in ('geometry', 'materials')]
+        plan = self.compile()
+        self.assertEqual(3, plan['passes'][0]['scene_data'])
+        self.assertEqual('Main/scene', plan['passes'][0]['scene'])
+
     def test_automatic_and_partial_ray_state_preserve_source_and_resolve_identically(self):
         self.assertEqual({}, pipeline.new_node('RayTracingPipeline', 'trace')['state'])
         for state in ({}, {'attribute_bytes': 8}, {'payload_bytes': 0}, dict(ray.STATE)):

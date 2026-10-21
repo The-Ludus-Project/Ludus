@@ -192,3 +192,64 @@ TEST_CASE("HDR environments are copied and mesh power resolves using placed area
           rhi::RasterStatus::InvalidDescription);
     CHECK(math::Abs(emission.X - .5F) < 1e-6F);
 }
+
+TEST_CASE("Scene bundle selection retains geometry and omits unrequested resources", "[scene-shader][bundle]")
+{
+    SceneFixture fixture;
+    StaticArray<uint8, 4> pixels{{255, 0, 0, 255}};
+    fixture.Materials[0].ColorTexture = {pixels.GetData(), pixels.GetSize(), 4, 1, 1, rhi::RasterFormat::Rgba8Srgb};
+    renderer::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = renderer::LightKind::Point;
+    fixture.Scene.Inputs.Lights = {&light, 1};
+    fixture.Scene.Inputs.Environment = {1, 1, 1};
+    core::UniquePtr<internal::ReferenceJob> job;
+    SECTION("Geometry only ignores invalid material and light inputs")
+    {
+        fixture.Materials[0].HasError = true;
+        fixture.Bindings[0] = 37;
+        light.SourceId = 0;
+        fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY;
+        REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+                rhi::RasterStatus::Ready);
+        CHECK(job->Scene.Triangles.GetSize() == 2);
+        CHECK(job->Scene.Triangles[1].Primitive == 1);
+        CHECK(job->FlatSurfaces[0].HasTexture == false);
+        CHECK(job->Description.LightCount == 0);
+        CHECK(job->Scene.Emitters.GetSize() == 0);
+        CHECK(job->Description.Environment.X == 0);
+        CHECK(job->SceneData == ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY);
+    }
+    SECTION("Materials include texture and emission but no light sampling resources")
+    {
+        fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY |
+                                  ::ludus::content::render_graph_format::SCENE_DATA_MATERIALS;
+        REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+                rhi::RasterStatus::Ready);
+        CHECK(job->FlatSurfaces[0].HasTexture == true);
+        CHECK(job->FlatSurfaces[1].Emission.Y == 3);
+        CHECK(job->Description.LightCount == 0);
+        CHECK(job->Scene.Emitters.GetSize() == 0);
+        CHECK(job->Description.Environment.X == 0);
+    }
+    SECTION("Lights retain emission dependencies without surface maps")
+    {
+        fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY |
+                                  ::ludus::content::render_graph_format::SCENE_DATA_LIGHTS;
+        REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+                rhi::RasterStatus::Ready);
+        CHECK(job->FlatSurfaces[0].HasTexture == false);
+        CHECK(job->FlatSurfaces[1].Bsdf.BaseColor.Y == 0);
+        CHECK(job->FlatSurfaces[1].Emission.Y == 3);
+        CHECK(job->Description.LightCount == 1);
+        CHECK(job->Scene.Emitters.GetSize() == 1);
+        CHECK(job->Description.Environment.X == 1);
+    }
+    SECTION("Invalid selection preserves the output")
+    {
+        fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_MATERIALS;
+        CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+              rhi::RasterStatus::InvalidDescription);
+        CHECK(job.Get() == nullptr);
+    }
+}

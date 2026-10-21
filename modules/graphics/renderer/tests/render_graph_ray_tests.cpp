@@ -257,7 +257,25 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CheckSameStage(decoded.RayCompute, programs.RayCompute);
     CheckSameStage(decoded.RayImageVertex, programs.RayImageVertex);
     CheckSameStage(decoded.RayImageFragment, programs.RayImageFragment);
-    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, package->GetPlan(), decoded);
+    uint32 selection = format::SCENE_DATA_ALL;
+    SECTION("full Scene") {}
+    SECTION("Geometry only")
+    {
+        selection = format::SCENE_DATA_GEOMETRY;
+    }
+    SECTION("Geometry and Materials")
+    {
+        selection = format::SCENE_DATA_GEOMETRY | format::SCENE_DATA_MATERIALS;
+    }
+    SECTION("Geometry and Lights")
+    {
+        selection = format::SCENE_DATA_GEOMETRY | format::SCENE_DATA_LIGHTS;
+    }
+    format::Pass operation = package->GetPlan().Passes[0];
+    operation.SceneData = selection;
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    plan.Passes = {&operation, 1};
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, decoded);
     const uint64 started = time::NowTicks();
     while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
     {
@@ -345,6 +363,14 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CHECK(fixture.Graph.GetReport().Covered == 2);
     read();
     const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    if (selection != format::SCENE_DATA_ALL)
+    {
+        CHECK(fixture.Pixels[center] == ((selection & format::SCENE_DATA_MATERIALS) != 0 ? 188 : 0));
+        CHECK(fixture.Pixels[center + 1] == 0);
+        CHECK(fixture.Pixels[center + 2] == 0);
+        CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == ((selection & format::SCENE_DATA_LIGHTS) != 0 ? 188 : 0));
+        return;
+    }
     CHECK(fixture.Pixels[center] == 188);
     CHECK(fixture.Pixels[center + 2] == 0);
     CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == 188);

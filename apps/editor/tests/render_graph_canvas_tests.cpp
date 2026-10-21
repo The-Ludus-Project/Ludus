@@ -887,10 +887,18 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     canvas.centerOn(position);
     const uint64 revision = workspace.GetDocument().GetRevision();
     const QByteArray before = workspace.GetDocument().GetDraft(manifestFile);
-    QTimer::singleShot(0, &workspace, [&workspace]() {
+    bool shouldExpand = false;
+    SECTION("explicit material migration") {}
+    SECTION("bundle expansion from the canvas")
+    {
+        shouldExpand = true;
+    }
+    QTimer::singleShot(0, &workspace, [&workspace, shouldExpand]() {
         QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphNodeMenu"));
         REQUIRE(menuOrNull != nullptr);
-        QAction* enable = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEnableSceneMaterialsAction"));
+        QAction* enable = menuOrNull->findChild<QAction*>(
+            shouldExpand == true ? QStringLiteral("renderGraphExpandSceneBundleAction")
+                                 : QStringLiteral("renderGraphEnableSceneMaterialsAction"));
         REQUIRE(enable != nullptr);
         REQUIRE(enable->isEnabled() == true);
         enable->trigger();
@@ -899,6 +907,15 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     const QPoint point = canvas.mapFromScene(position + QPointF(30, 10));
     QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
     QCoreApplication::sendEvent(canvas.viewport(), &context);
+    if (shouldExpand == true)
+    {
+        CHECK(canvas.IsSceneBundleExpanded(QStringLiteral("trace")) == true);
+        CHECK(canvas.GetPortPosition(QStringLiteral("trace.scene_geometry"), false).isNull() == false);
+        CHECK(canvas.GetPortPosition(QStringLiteral("scene.materials"), true).isNull() == false);
+        canvas.SetSceneBundleExpanded(QStringLiteral("trace"), false);
+        CHECK(canvas.GetPortPosition(QStringLiteral("trace.scene_geometry"), false).isNull() == false);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("trace.scene_lights") == true);
+    }
     CHECK(workspace.GetDocument().GetRevision() == revision + 1);
     CHECK(QJsonDocument::fromJson(workspace.GetDocument().GetDraft(manifestFile))
               .object()

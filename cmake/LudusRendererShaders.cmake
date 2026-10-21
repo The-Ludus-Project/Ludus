@@ -10,7 +10,8 @@ function(ludus_get_renderer_shader_roots out_directory out_includes)
     if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/shaders/recipes.json")
         get_filename_component(root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
         set(directory "${root}/modules/graphics/renderer/shaders")
-        set(includes "${root}/modules/foundation/math/shaders"
+        set(includes "${root}/modules/content/render_graph_format/include/ludus/content/render_graph_format"
+                     "${root}/modules/foundation/math/shaders"
                      "${root}/modules/graphics/rhi/shaders"
                      "${root}/modules/graphics/renderer/include/ludus/graphics/renderer")
     endif()

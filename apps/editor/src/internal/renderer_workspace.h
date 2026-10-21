@@ -302,6 +302,7 @@ private:
     void scheduleLiveBuild();
     void refreshWatchedSources();
     void enableSceneMaterials();
+    void expandSceneBundle(bool isExpanded);
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);
     void prepareDefaultPreview();
