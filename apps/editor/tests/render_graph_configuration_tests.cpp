@@ -200,6 +200,90 @@ TEST_CASE("configuration interface UI creates connectable ports with undo and sa
     CHECK(document.GetDraft(library) == connected);
 }
 
+TEST_CASE("canvas interface editing previews repairs with Properties hidden", "[editor][render-graph][interface]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    const QString library = QStringLiteral("rasterize.lurender.json");
+    const QString configuration = QStringLiteral("ColorAndDepth");
+    REQUIRE(workspace.SelectNode(library, configuration, QStringLiteral("draw")) == true);
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    properties->hide();
+    workspace.resize(1200, 800);
+    workspace.show();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.fitInView(canvas.sceneRect(), Qt::KeepAspectRatio);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray child = document.GetDraft(library);
+    const QByteArray parent = document.GetDraft(ROOT_GRAPH);
+    const uint64 revision = document.GetRevision();
+    bool shouldApply = false;
+    const auto editDialog = [&]() {
+        RenderGraphConfigurationEditor* dialogOrNull =
+            qobject_cast<RenderGraphConfigurationEditor*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        CHECK(properties->isVisible() == false);
+        QTableWidget* inputs = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("configurationInputs"));
+        QTableWidget* outputs = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("configurationOutputs"));
+        // Rename a connected input and output. Original identities survive repeated keystrokes.
+        inputs->item(3, 0)->setText(QStringLiteral("intermediate"));
+        inputs->item(3, 0)->setText(QStringLiteral("target"));
+        outputs->item(1, 0)->setText(QStringLiteral("result"));
+        CHECK(dialogOrNull->GetInputRenames().value(QStringLiteral("color")) == QStringLiteral("target"));
+        CHECK(dialogOrNull->GetOutputRenames().value(QStringLiteral("color")) == QStringLiteral("result"));
+        const QString repairs =
+            dialogOrNull->findChild<QLabel*>(QStringLiteral("configurationInterfaceRepairs"))->text();
+        CHECK(repairs.contains(QStringLiteral("input.color")) == true);
+        CHECK(repairs.contains(QStringLiteral("raster.color")) == true);
+        CHECK(repairs.contains(QStringLiteral("raster.result")) == true);
+        CHECK(repairs.contains(QStringLiteral("one undo step")) == true);
+        CHECK(document.GetRevision() == revision);
+        CHECK(document.GetDraft(library) == child);
+        CHECK(document.GetDraft(ROOT_GRAPH) == parent);
+        if (shouldApply == true)
+        {
+            dialogOrNull->findChild<QPushButton*>(QStringLiteral("configurationApply"))->click();
+        }
+        else
+        {
+            dialogOrNull->reject();
+        }
+    };
+    const auto openFromCanvas = [&]() {
+        QTimer::singleShot(0, &canvas, editDialog);
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("input")) + QPointF(20, 10));
+        QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    };
+    openFromCanvas();
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(library) == child);
+    CHECK(document.GetDraft(ROOT_GRAPH) == parent);
+    shouldApply = true;
+    openFromCanvas();
+    CHECK(document.GetRevision() == revision + 1);
+    const QByteArray repairedChild = document.GetDraft(library);
+    const QByteArray repairedParent = document.GetDraft(ROOT_GRAPH);
+    CHECK(repairedChild.contains("input.target") == true);
+    CHECK(repairedParent.contains("raster.result") == true);
+    workspace.Undo();
+    CHECK(document.GetDraft(library) == child);
+    CHECK(document.GetDraft(ROOT_GRAPH) == parent);
+    workspace.Redo();
+    CHECK(document.GetDraft(library) == repairedChild);
+    CHECK(document.GetDraft(ROOT_GRAPH) == repairedParent);
+    REQUIRE(workspace.Save() == true);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(library) == repairedChild);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == repairedParent);
+}
+
 TEST_CASE("pipeline controls edit drafts without Apply and Save finishes the active cell",
           "[editor][render-graph][save-preview]")
 {

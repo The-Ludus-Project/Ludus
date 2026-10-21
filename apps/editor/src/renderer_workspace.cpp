@@ -2813,30 +2813,33 @@ void RendererWorkspace::editConfigurationInterface()
         const uint64 epoch = mEpoch;
         const QString packageRoot = mDocument.GetPackageRoot();
         RenderGraphConfigurationEditor editor(mDocument, file, record, this);
-        connect(
-            &editor,
-            &RenderGraphConfigurationEditor::ApplyRequested,
-            this,
-            [this, &editor, file, configuration, revision, epoch, packageRoot]() {
-                if (mDocument.GetRevision() != revision || mEpoch != epoch || mDocument.GetPackageRoot() != packageRoot)
-                {
-                    editor.ShowError(QStringLiteral("The graph changed while this dialog was open. Cancel and "
-                                                    "reopen it to edit the current interface."));
-                    return;
-                }
-                QString error;
-                const RenderGraphDocumentStatus status = mDocument.ReplaceConfigurationInterface(file,
-                                                                                                 configuration,
-                                                                                                 editor.GetInputs(),
-                                                                                                 editor.GetOutputs(),
-                                                                                                 error);
-                if (status != RenderGraphDocumentStatus::Ok)
-                {
-                    editor.ShowError(error.isEmpty() == true ? DescribeStatus(status) : error);
-                    return;
-                }
-                editor.accept();
-            });
+        connect(&editor,
+                &RenderGraphConfigurationEditor::ApplyRequested,
+                this,
+                [this, &editor, file, configuration, revision, epoch, packageRoot]() {
+                    if (mDocument.GetRevision() != revision || mEpoch != epoch ||
+                        mDocument.GetPackageRoot() != packageRoot)
+                    {
+                        editor.ShowError(QStringLiteral("The graph changed while this dialog was open. Cancel and "
+                                                        "reopen it to edit the current interface."));
+                        return;
+                    }
+                    QString error;
+                    const RenderGraphDocumentStatus status =
+                        mDocument.ReplaceConfigurationInterface(file,
+                                                                configuration,
+                                                                editor.GetInputs(),
+                                                                editor.GetOutputs(),
+                                                                error,
+                                                                editor.GetInputRenames(),
+                                                                editor.GetOutputRenames());
+                    if (status != RenderGraphDocumentStatus::Ok)
+                    {
+                        editor.ShowError(error.isEmpty() == true ? DescribeStatus(status) : error);
+                        return;
+                    }
+                    editor.accept();
+                });
         if (editor.exec() == QDialog::Accepted && mDocument.GetRevision() != revision)
         {
             documentEdited(RenderGraphDocumentStatus::Ok);
