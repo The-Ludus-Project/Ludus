@@ -138,6 +138,8 @@ public:
                                                 foundation::uint32 height,
                                                 graphics::renderer::ViewDescription& outView,
                                                 QString& outError) const;
+    /// Restore saved viewport preferences on the GUI thread. An empty state resets preferences
+    /// without suppressing automatic framing of the first subsequently loaded scene.
     void RestoreNavigation(const QJsonObject& state);
     /// Delegate GPU frame production to the project graph; this owner keeps scene/navigation
     /// and device lifetime, without preparing or drawing a second built-in scene.

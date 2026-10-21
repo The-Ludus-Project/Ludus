@@ -224,8 +224,16 @@ public:
     /// unedited default is shown (when this build has one), otherwise GetRuntimePackagePath().
     [[nodiscard]] QString GetPreviewPackagePath() const;
     [[nodiscard]] QString GetStatusText() const;
-    /// Source refresh, preflight or extraction failure preventing a new World frame; empty after recovery.
+    /// Current source, build or extraction diagnostic, even while another graph keeps rendering.
     [[nodiscard]] QString GetRenderProblem() const;
+    /// Failure that prevents scene preparation. Source/build errors are nonfatal while the
+    /// prebuilt default prepares or a previously accepted graph remains active.
+    [[nodiscard]] QString GetScenePreparationProblem() const;
+    /// True while the viewport requests the engine default, including its pending first frame.
+    [[nodiscard]] LUDUS_INLINE bool IsUsingDefaultRenderer() const noexcept
+    {
+        return mIsDefaultPreview;
+    }
 
     /// Node canvas over the selected configuration (RG3b).
     [[nodiscard]] RenderGraphCanvas& GetCanvas() noexcept
@@ -295,6 +303,7 @@ private:
     void refreshWatchedSources();
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);
+    void prepareDefaultPreview();
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
@@ -379,6 +388,7 @@ private:
     bool mShouldPreviewAfterWorker = false;
     RenderGraphSource mSourceAfterWorker = RenderGraphSource::Draft;
     bool mIsWorldRenderingEnabled = false;
+    bool mIsDefaultPreview = false;
     bool mHasPendingSourceChange = false;
     QString mBuildProblem;
     QString mSourceProblem;

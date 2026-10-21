@@ -159,6 +159,14 @@ void WorldGraphView::refreshStatus()
     {
         text = mPreview.GetDisplayStatus();
     }
+    if (mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
+    {
+        if (text.isEmpty() == false)
+        {
+            text += QLatin1Char('\n');
+        }
+        text += QStringLiteral("Engine default renderer fallback.");
+    }
     mStatus->setText(text);
     mStatus->setVisible(text.isEmpty() == false);
 }

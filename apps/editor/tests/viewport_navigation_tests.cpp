@@ -59,7 +59,7 @@ RenderScene MakeNavigationScene()
     mesh.Positions = {{-0.5F, -0.5F, -0.5F}, {0.5F, 0.5F, 0.5F}};
     scene.Meshes.push_back(mesh);
     scene.Textures.push_back({});
-    scene.Surfaces.push_back({});
+    scene.Surfaces.push_back({ .Texture = 0 });
     PreviewObject object;
     object.Id = QStringLiteral("selected-cube");
     object.Texture = 0;
@@ -76,6 +76,31 @@ RenderScene MakeNavigationScene()
     return scene;
 }
 } // namespace
+TEST_CASE("Empty project navigation frames the first scene while saved navigation is preserved",
+          "[editor][navigation][fallback]")
+{
+    RenderScene scene = MakeNavigationScene();
+    scene.Meshes[0].Positions = {{-100, -100, -100}, {100, 100, 100}};
+    RenderPreview preview;
+    preview.RestoreNavigation({});
+    const float64 initialDistance = preview.Navigation().value(QStringLiteral("distance")).toDouble();
+    REQUIRE(preview.SetScene(scene) == true);
+    CHECK(preview.Navigation().value(QStringLiteral("distance")).toDouble() > initialDistance);
+    preview.Fly({1, 0, 0}, 1, 10);
+    const QJsonObject saved = preview.Navigation();
+    RenderPreview restored;
+    restored.RestoreNavigation(saved);
+    REQUIRE(restored.SetScene(scene) == true);
+    const QJsonObject actual = restored.Navigation();
+    CHECK(actual.value(QStringLiteral("eyeX")).toDouble() ==
+          Catch::Approx(saved.value(QStringLiteral("eyeX")).toDouble()));
+    CHECK(actual.value(QStringLiteral("eyeY")).toDouble() ==
+          Catch::Approx(saved.value(QStringLiteral("eyeY")).toDouble()));
+    CHECK(actual.value(QStringLiteral("eyeZ")).toDouble() ==
+          Catch::Approx(saved.value(QStringLiteral("eyeZ")).toDouble()));
+    CHECK(restored.GetFocusDistance() == Catch::Approx(preview.GetFocusDistance()));
+}
+
 TEST_CASE("Detaching an authored viewport camera preserves its pose lens and visible image", "[editor][navigation]")
 {
     RenderPreview preview;

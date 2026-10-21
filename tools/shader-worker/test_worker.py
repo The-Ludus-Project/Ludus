@@ -70,7 +70,7 @@ project(NativeShaderRecipes LANGUAGES CXX)
 include("{ROOT / 'cmake/LudusShaders.cmake'}")
 include("{ROOT / 'cmake/LudusRendererShaders.cmake'}")
 add_library(recipe STATIC dummy.cpp)
-ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_composite renderer_lit)
+ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_composite renderer_lit renderer_gpu_preview)
 ''')
             command = [str(args.cmake), '-S', str(recipes), '-B', str(root / 'recipe-build'), '-G', 'Ninja',
                 '-DCMAKE_MAKE_PROGRAM=' + str(args.ninja), '-DPython3_EXECUTABLE=' + sys.executable,
@@ -100,6 +100,27 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             bound_options['helper'] = bound_helper
             if sys.platform != 'darwin':
                 bound_options['validator'] = args.validator
+            # Mirror the installed helper bundle with its renderer/math/RHI-owned sources.
+            for relative in ('modules/graphics/renderer/shaders', 'modules/foundation/math/shaders',
+                             'modules/graphics/rhi/shaders',
+                             'modules/graphics/renderer/include/ludus/graphics/renderer'):
+                for source_file in (ROOT / relative).iterdir():
+                    if source_file.suffix in ('.slang', '.h') or source_file.name == 'recipes.json':
+                        (bound_helper / source_file.name).write_bytes(source_file.read_bytes())
+            # Both graph ray profiles wrap the renderer compute kernel. Compile through
+            # the real native API: nested annotated entry points used to hang Slang's
+            # parameter transform, despite the offline compiler accepting these sources.
+            for fixture in ('raytracing', 'scene_ray'):
+                ray_sources = root / fixture
+                shutil.copytree(ROOT / 'tests/sdk_consumer/rg2' / fixture, ray_sources)
+                template = (ray_sources / 'main.lushader.json.in').read_text()
+                manifest = ray_sources / 'main.lushader.json'
+                manifest.write_text(template.replace('@RG2_TEST_PROFILES@', json.dumps(profiles)))
+                native_ray = render_graph_reload.rebuild(manifest, root / (fixture + '-native'),
+                    root / (fixture + '-native.lurgrt'), worker_socket=str(endpoint), **bound_options)
+                offline_ray = render_graph_reload.rebuild(manifest, root / (fixture + '-offline'),
+                    root / (fixture + '-offline.lurgrt'), **bound_options)
+                assert native_ray['runtime']['interface_identity'] == offline_ray['runtime']['interface_identity']
             native_bound = render_graph_reload.rebuild(bound / 'main.lushader.json', root / 'bound-native', root / 'bound-native.lurgrt',
                 worker_socket=str(endpoint), **bound_options)
             legacy_bound = render_graph_reload.rebuild(bound / 'main.lushader.json', root / 'bound-legacy', root / 'bound-legacy.lurgrt', **bound_options)

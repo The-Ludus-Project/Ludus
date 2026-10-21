@@ -556,8 +556,9 @@ the editor uses it for any project that has no graph of its own.
    the editor embeds the same copy. Showing the default writes nothing to the
    project.
 2. **Open a World.** Its viewport renders through the project's graph automatically. When
-   there is no project graph, it uses the engine default generation cooked with the editor;
-   opening the project writes nothing. The **Render Preview** panel mirrors the same graph
+   the project graph has not produced a usable generation yet, it uses the engine default
+   generation cooked with the editor. The viewport labels this fallback; it needs no project
+   shader compilation. Opening the project writes nothing. The **Render Preview** panel mirrors the same graph
    output and is optional. Camera navigation and scene edits feed that graph directly.
 3. **Edit it.** Change anything: move a node on the canvas, edit a selected node's
    field in **Properties**, or apply shader text in the **Source** view. The first edit turns the
@@ -584,6 +585,11 @@ the editor uses it for any project that has no graph of its own.
    Saved external shader edits are watched too, including editors that replace files on save.
    Validation or compilation failure keeps the last working World preview and reports the
    failing source in the Error List; invalid drafts can still be saved and corrected.
+   On a first build failure or shader-worker timeout, the engine default continues rendering
+   the current scene and camera. The diagnostic remains visible, but does not cancel scene
+   loading. A successful project generation replaces the fallback only when ready.
+   Generated ray wrappers own their compute entry point; the included renderer kernel is
+   an ordinary helper, avoiding nested entry-point lowering in the native shader compiler.
    No worker socket or shader paths need to be entered when the project's SDK is configured.
    **Build & Preview** explicitly builds the current draft without saving; **Live Preview**
    pauses/resumes automatic builds of saved sources. Changing the preview configuration
@@ -593,8 +599,9 @@ the editor uses it for any project that has no graph of its own.
 `graphs/<name>/`, then makes it active in the World viewport. **Customize in Project**
 copies the engine default into `graphs/Main/`. At project opening, `graphs/Main/main.lurender.json`
 has priority; otherwise the first `graphs/<name>/main.lurender.json` in name order is used.
-With no such graph, the engine default is used. A malformed project graph reports an error
-rather than silently substituting the default. Opening a library in an existing package keeps
+With no such graph, the engine default is used. A malformed project graph reports its
+error; the viewport explicitly labels its engine-default fallback until a usable project
+generation is ready. Fallback rendering leaves the authored sources unchanged. Opening a library in an existing package keeps
 its `main.lurender.json` as the execution root while editing the library.
 
 The viewport's output selector lists **Final output** and every attachment of the active
