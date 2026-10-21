@@ -1,6 +1,7 @@
 #include "../src/internal/render_graph_ray_scene.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/addressed_random.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -44,6 +45,41 @@ struct SceneFixture final
     }
 };
 } // namespace
+TEST_CASE("Graph ray jobs initialize their random key from the requested seed", "[scene-shader][random]")
+{
+    SceneFixture fixture;
+    internal::ReferenceMeshData mesh;
+    for (const math::Vector3 position : fixture.Positions)
+    {
+        REQUIRE(mesh.Positions.TryAdd(position) == true);
+    }
+    for (const uint32 index : fixture.Indices)
+    {
+        REQUIRE(mesh.Indices.TryAdd(index) == true);
+    }
+    const internal::GraphRaySceneInput input{&mesh, {}, {1, 1, 1}, 1};
+    constexpr uint64 SEED_COUNT = 2;
+    uint64 previousKey = 0;
+    for (uint64 seed = 0; seed < SEED_COUNT; ++seed)
+    {
+        fixture.Camera.Seed = seed;
+        math::RandomKey expectedKey;
+        REQUIRE(math::TryMakeRandomKey(seed, internal::REFERENCE_RANDOM_DOMAIN, expectedKey) ==
+                math::MathStatus::Success);
+        core::UniquePtr<internal::ReferenceJob> job;
+        REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+                rhi::RasterStatus::Ready);
+        CHECK(job->Key.Value == expectedKey.Value);
+        job.Reset();
+        REQUIRE(internal::BuildGraphRayScene({&input, 1}, fixture.Camera, BUDGET, job) == rhi::RasterStatus::Ready);
+        CHECK(job->Key.Value == expectedKey.Value);
+        if (seed != 0)
+        {
+            CHECK(expectedKey.Value != previousKey);
+        }
+        previousKey = expectedKey.Value;
+    }
+}
 TEST_CASE("Scene shader triangles resolve independent mesh slots and instance overrides", "[scene-shader]")
 {
     SceneFixture fixture;

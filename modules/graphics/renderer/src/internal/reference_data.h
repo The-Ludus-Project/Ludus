@@ -18,6 +18,8 @@
 
 namespace ludus::graphics::renderer::internal
 {
+/// Shared addressed-random domain for reference captures and authored triangle-ray graph jobs.
+inline constexpr foundation::uint32 REFERENCE_RANDOM_DOMAIN = 0x52543031;
 namespace math = foundation::math;
 using namespace foundation;
 struct ReferenceMeshData final

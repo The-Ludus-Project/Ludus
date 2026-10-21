@@ -2,6 +2,8 @@
 // Included only by renderer.cpp: captured jobs retain the existing snapshot,
 // mesh and material incarnations, while RHI retains accepted native work.
 
+#include "reference_data.h"
+
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/hash/hash.hpp>
@@ -673,7 +675,8 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     {
         job->Lights[i] = lights.Lights[i];
     }
-    if (math::TryMakeRandomKey(description.Seed, 0x52543031, job->Key) != math::MathStatus::Success)
+    if (math::TryMakeRandomKey(description.Seed, internal::REFERENCE_RANDOM_DOMAIN, job->Key) !=
+        math::MathStatus::Success)
     {
         return Status::InvalidDescription;
     }

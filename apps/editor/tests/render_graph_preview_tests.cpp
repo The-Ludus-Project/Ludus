@@ -578,6 +578,62 @@ TEST_CASE("RG3b preview publishes only complete frames and matches the live path
     preview.Detach();
 }
 
+TEST_CASE("Ray preview advances stochastic samples without a scene edit and raster preview becomes idle",
+          "[editor][render-graph][preview][progressive]")
+{
+    DeviceFixture device({}, true);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    if (automatic != renderer::RenderGraphRenderer::HardwareRayTracing)
+    {
+        SKIP("Native ray queries are unavailable on this host");
+    }
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    RenderGraphExtraction extraction = MakeExtraction({1, 0, 0, 1}, 1);
+    extraction.View.OrthographicCamera = true;
+    preview.SetExtraction(extraction);
+    QSignalSpy presented(&preview, &RenderGraphPreview::FramePresented);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    const bool hasFirstFrame = TickUntil(preview, [&]() { return presented.count() >= 1; });
+    INFO(preview.GetDisplayStatus().toStdString());
+    REQUIRE(hasFirstFrame == true);
+    const QImage first = preview.GetImage();
+    const uint64 rayGeneration = preview.GetPresentedGeneration();
+    REQUIRE(TickUntil(preview, [&]() { return presented.count() >= 2; }) == true);
+    const QImage second = preview.GetImage();
+    CHECK(second != first);
+    CHECK(preview.GetPresentedGeneration() == rayGeneration);
+    CHECK(preview.GetPresentedRevision() == 1);
+    // Repeating the same extraction revision must not restart history at sample zero.
+    preview.SetExtraction(extraction);
+    REQUIRE(TickUntil(preview, [&]() { return presented.count() >= 3; }) == true);
+    CHECK(preview.GetImage() != second);
+    CHECK(preview.GetPresentedRevision() == 1);
+    // Identical inputs isolate a history restart from geometric changes caused by camera movement.
+    extraction.Revision = 2;
+    preview.SetExtraction(extraction);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 2; }) == true);
+    CHECK(preview.GetImage() != first);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() != rayGeneration; }) == true);
+    const qsizetype rasterFrames = presented.count();
+    const QImage raster = preview.GetImage();
+    constexpr usize IDLE_TICKS = 16;
+    for (usize tick = 0; tick < IDLE_TICKS; ++tick)
+    {
+        preview.Tick();
+    }
+    CHECK(presented.count() == rasterFrames);
+    CHECK(preview.GetImage() == raster);
+    preview.Detach();
+}
+
 TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[editor][render-graph][preview]")
 {
     DeviceFixture device;

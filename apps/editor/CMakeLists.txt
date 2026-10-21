@@ -687,6 +687,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
         set(editor_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/render-graph-host/raytracing")
         file(COPY "${editor_ray_source}/" DESTINATION "${editor_ray_staged}" PATTERN "*.in" EXCLUDE)
+        # A stochastic ray fixture proves the editor schedules multiple samples of one revision.
+        set(progressive_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/scene_ray")
+        set(progressive_staged "${CMAKE_CURRENT_BINARY_DIR}/progressive-ray-inputs")
         set(RG2_TEST_PROFILES "[\"spirv\", \"wgsl\"]")
         if(APPLE)
             set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
@@ -697,6 +700,14 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${editor_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RAY_GRAPH_FIXTURE=\"${editor_renderer_ray_RUNTIME_PACKAGE}\"")
+        file(COPY "${progressive_source}/" DESTINATION "${progressive_staged}" PATTERN "*.in" EXCLUDE)
+        configure_file("${progressive_source}/main.lushader.json.in" "${progressive_staged}/main.lushader.json" @ONLY)
+        configure_file("${progressive_source}/main_shaders/progressive_closest.slang"
+            "${progressive_staged}/main_shaders/closest.slang" COPYONLY)
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_progressive_ray
+            MANIFEST "${progressive_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE=\"${editor_progressive_ray_RUNTIME_PACKAGE}\"")
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)
