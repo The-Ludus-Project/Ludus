@@ -101,6 +101,13 @@ class RayPipelineTests(unittest.TestCase):
         configuration['edges'][0] = {'from': 'scene.geometry', 'to': 'trace.' + name + '_geometry'}
         self.assertEqual(1, self.compile()['passes'][0]['scene_data'])
 
+    def test_malformed_scene_port_ids_report_a_schema_error(self):
+        for identity in ([], {}, 1, None):
+            with self.subTest(identity=identity):
+                self.node['inputs'][0]['id'] = identity
+                with self.assertRaises(ToolingError):
+                    self.compile()
+
     def test_scene_bundle_reserves_derived_port_ids(self):
         self.node['inputs'].append({'id': 'scene_geometry', 'type': 'SceneGeometry', 'required': False})
         with self.assertRaisesRegex(ToolingError, 'reserved'):

@@ -64,13 +64,6 @@ def validate(node, where, graph):
     graph._enum(node['kind'], KINDS, where)
     ports = {}
     targets = {}
-    _check_field(graph._list, node['inputs'], 'inputs', where, graph, MAX_PORTS)
-    declared = {port.get('id') for port in node['inputs'] if type(port) is dict}
-    for port in node['inputs']:
-        if type(port) is dict and port.get('type') == 'Scene':
-            for part in graph.scene_bundle.PARTS:
-                graph._require(port.get('id', '') + '_' + part not in declared, 'DuplicateIdentity', where,
-                               f"Scene member ID {port.get('id')}_{part} is reserved by its bundle.")
     for direction in ('inputs', 'outputs'):
         _check_field(graph._list, node[direction], direction, where, graph, MAX_PORTS)
         identities = set()
@@ -116,6 +109,11 @@ def validate(node, where, graph):
                 graph._require(port['store'] in ('Store', 'Discard'), 'Schema', where,
                                f"Output '{port['id']}' has unknown Store operation '{port['store']}'. "
                                'Choose Store or Discard in Writable Resources.')
+    for identity, kind in ports.items():
+        if kind == 'Scene':
+            for part in graph.scene_bundle.PARTS:
+                graph._require(identity + '_' + part not in ports, 'DuplicateIdentity', where,
+                               f"Scene member ID {identity}_{part} is reserved by its bundle.")
     _check_field(graph._list, node['shaders'], 'Shaders', where, graph, MAX_SHADERS)
     identities = set()
     stages = set()
