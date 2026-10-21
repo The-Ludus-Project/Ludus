@@ -618,6 +618,25 @@ scheduled passes on the execution canvas. The editor provides explicit Apply
 Pipeline and Convert to Graphics Pipeline actions; Save publishes the draft. Layout-only edits do not compile; parameter edits
 follow declared runtime update paths; configuration/source edits build a candidate.
 
+Configuration-interface editing prepares a bounded package snapshot before
+publication. Existing row identities supply explicit input/output rename maps;
+array order never implies a rename. Preparation rewrites both ends of affected
+links before checking candidate endpoint types, including links between two
+instances of the same child. Removed or incompatible uses disconnect; compatible
+uses survive. Affected configuration output sources clear when incompatible,
+while their declarations and required-consumer flags remain stable. Repairs do
+not recursively change enclosing output contracts or alter pipeline declarations.
+All direct callers in every loaded graph file/configuration participate in the
+same document-history commit, undo/redo and multi-source save. Unaffected draft
+links and unchanged file bytes are preserved. Malformed graph JSON, ambiguous
+rename maps and package byte-limit failures reject without mutation. The dialog
+previews the same preparation before Apply, with bounded details in a scrollable
+area; Cancel makes no document edit. Canvas activation and the inspector use
+the same dialog and document command. Raw Source edits and changes to an
+instance's selected asset/configuration remain explicit, separately validated
+edits. See the [interface editing guide](../development/render-graph-authoring.md#edit-configuration-inputs-and-outputs)
+for the authoring workflow and identity restrictions.
+
 Build, Preview and Apply to Session are explicit actions. Background compilation
 is an opt-in preference and never implicitly saves drafts or applies stale output.
 Jobs capture project epoch, document/dependency revisions, target and request ID;

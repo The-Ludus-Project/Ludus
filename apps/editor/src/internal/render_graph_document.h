@@ -166,15 +166,34 @@ public:
     /// Failure preserves the draft. GUI thread only; package limits still apply.
     [[nodiscard]] RenderGraphDocumentStatus
     CreateSubgraph(const QString& file, const QString& configuration, const QString& node, const QString& name);
-    /// Replace a configuration's interface as one undoable edit. Rejects invalid names,
-    /// types, sources and changes that strand internal or containing-subgraph links.
-    /// Empty output sources are incomplete drafts. Failure preserves history and bytes
-    /// and describes the reason in outError. Save publishes; GUI thread only.
-    [[nodiscard]] RenderGraphDocumentStatus ReplaceConfigurationInterface(const QString& file,
-                                                                          const QString& configuration,
-                                                                          const QJsonArray& inputs,
-                                                                          const QJsonArray& outputs,
-                                                                          QString& outError);
+    /// Preview the same repair that ReplaceConfigurationInterface commits, without edits or writes.
+    /// Explicit rename maps carry old ID -> new ID, independently in each direction; omitted
+    /// maps treat names as identities and never guess renames from row order. Reports rewired
+    /// links and cleared incompatible/missing uses across the loaded package. Failure preserves
+    /// outRepairs and all draft/history bytes, and describes the reason in outError.
+    [[nodiscard]] RenderGraphDocumentStatus
+    PreviewConfigurationInterface(const QString& file,
+                                  const QString& configuration,
+                                  const QJsonArray& inputs,
+                                  const QJsonArray& outputs,
+                                  QStringList& outRepairs,
+                                  QString& outError,
+                                  const QMap<QString, QString>& inputRenames = {},
+                                  const QMap<QString, QString>& outputRenames = {}) const;
+    /// Replace a configuration interface and repair its internal links and every loaded caller
+    /// atomically in one undo step. Renames preserve compatible uses; removed/type-changed ports
+    /// disconnect only incompatible uses and clear affected configuration output sources while
+    /// retaining their declarations. Candidate sources use original input identities when renamed.
+    /// Invalid names/maps or explicitly incompatible new output sources reject without mutation.
+    /// Empty output sources are incomplete drafts. Save publishes; GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ReplaceConfigurationInterface(const QString& file,
+                                  const QString& configuration,
+                                  const QJsonArray& inputs,
+                                  const QJsonArray& outputs,
+                                  QString& outError,
+                                  const QMap<QString, QString>& inputRenames = {},
+                                  const QMap<QString, QString>& outputRenames = {});
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveNode(const QString& file, const QString& configuration, const QString& node);
     /// Add an edge, or set the declared configuration output's source for a #outputs.port
@@ -234,6 +253,15 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus RefreshFromDisk(bool& outHasChanged);
 
 private:
+    [[nodiscard]] RenderGraphDocumentStatus prepareConfigurationInterface(const QString& file,
+                                                                          const QString& configuration,
+                                                                          const QJsonArray& inputs,
+                                                                          const QJsonArray& outputs,
+                                                                          const QMap<QString, QString>& inputRenames,
+                                                                          const QMap<QString, QString>& outputRenames,
+                                                                          RenderGraphSnapshot& outSnapshot,
+                                                                          QStringList& outRepairs,
+                                                                          QString& outError) const;
     using EditFunction = bool (*)(QJsonObject& inoutConfiguration, const QStringList& arguments);
     [[nodiscard]] RenderGraphDocumentStatus editConfiguration(const QString& file,
                                                               const QString& configuration,

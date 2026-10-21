@@ -7,6 +7,8 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QSignalBlocker>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -21,6 +23,7 @@ constexpr int32 DIALOG_HEIGHT = 460;
 constexpr int32 TYPE_COLUMN = 1;
 constexpr int32 SOURCE_COLUMN = 2;
 constexpr int32 REQUIRED_COLUMN = 3;
+constexpr int32 REPAIRS_HEIGHT = 144;
 
 QJsonArray ReadPorts(const QTableWidget& table, bool isOutput)
 {
@@ -46,8 +49,8 @@ RenderGraphConfigurationEditor::RenderGraphConfigurationEditor(const RenderGraph
                                                                const QString& file,
                                                                const QJsonObject& configuration,
                                                                QWidget* parentOrNull)
-    : QDialog(parentOrNull), mDocument(document), mConfiguration(configuration), mVersion(1),
-      mInputs(createTable(false)), mOutputs(createTable(true)), mError(new QLabel(this))
+    : QDialog(parentOrNull), mDocument(document), mFile(file), mConfiguration(configuration), mVersion(1),
+      mInputs(createTable(false)), mOutputs(createTable(true)), mError(new QLabel(this)), mRepairs(new QLabel(this))
 {
     QJsonObject graph;
     if (document.GetGraph(file, graph) == true)
@@ -89,7 +92,7 @@ RenderGraphConfigurationEditor::RenderGraphConfigurationEditor(const RenderGraph
             configuration.value(isOutput == true ? QStringLiteral("outputs") : QStringLiteral("inputs")).toArray();
         for (const QJsonValueConstRef port : ports)
         {
-            addPort(*table, port.toObject(), isOutput);
+            addPort(*table, port.toObject(), isOutput, port.toObject().value(QStringLiteral("id")).toString());
         }
         add->setEnabled(table->rowCount() < MAX_CONFIGURATION_PORTS);
         connect(add, &QPushButton::clicked, this, [this, table, isOutput, add]() {
@@ -130,11 +133,21 @@ RenderGraphConfigurationEditor::RenderGraphConfigurationEditor(const RenderGraph
         });
     }
     connect(mInputs, &QTableWidget::itemChanged, this, [this]() { refreshSources(); });
+    connect(mOutputs, &QTableWidget::itemChanged, this, [this]() { refreshSources(); });
     layout->addWidget(tabs);
     mError->setObjectName(QStringLiteral("configurationInterfaceError"));
     mError->setTextFormat(Qt::PlainText);
     mError->setWordWrap(true);
     layout->addWidget(mError);
+    mRepairs->setObjectName(QStringLiteral("configurationInterfaceRepairs"));
+    mRepairs->setTextFormat(Qt::PlainText);
+    mRepairs->setWordWrap(true);
+    mRepairs->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    QScrollArea* repairs = new QScrollArea(this);
+    repairs->setWidget(mRepairs);
+    repairs->setWidgetResizable(true);
+    repairs->setMaximumHeight(REPAIRS_HEIGHT);
+    layout->addWidget(repairs);
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Apply)->setObjectName(QStringLiteral("configurationApply"));
     connect(buttons->button(QDialogButtonBox::Apply),
@@ -165,12 +178,17 @@ QTableWidget* RenderGraphConfigurationEditor::createTable(bool isOutput)
     return table;
 }
 
-void RenderGraphConfigurationEditor::addPort(QTableWidget& inoutTable, const QJsonObject& port, bool isOutput)
+void RenderGraphConfigurationEditor::addPort(QTableWidget& inoutTable,
+                                             const QJsonObject& port,
+                                             bool isOutput,
+                                             const QString& originalIdentity)
 {
     const bool hasBlockedSignals = inoutTable.blockSignals(true);
     const int32 row = inoutTable.rowCount();
     inoutTable.insertRow(row);
-    inoutTable.setItem(row, 0, new QTableWidgetItem(port.value(QStringLiteral("id")).toString()));
+    QTableWidgetItem* name = new QTableWidgetItem(port.value(QStringLiteral("id")).toString());
+    name->setData(Qt::UserRole, originalIdentity);
+    inoutTable.setItem(row, 0, name);
     QComboBox* type = new QComboBox(&inoutTable);
     type->addItems(GetConfigurationPortTypes(mVersion, isOutput));
     const QString authoredType = port.value(QStringLiteral("type")).toString();
@@ -186,6 +204,7 @@ void RenderGraphConfigurationEditor::addPort(QTableWidget& inoutTable, const QJs
         const QString endpoint = port.value(QStringLiteral("source")).toString();
         source->addItem(endpoint.isEmpty() == true ? QStringLiteral("Unconnected") : endpoint, endpoint);
         inoutTable.setCellWidget(row, SOURCE_COLUMN, source);
+        connect(source, &QComboBox::currentIndexChanged, this, [this]() { refreshSources(); });
         QTableWidgetItem* required = new QTableWidgetItem;
         required->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
         required->setCheckState(port.value(QStringLiteral("required")).toBool() == true ? Qt::Checked : Qt::Unchecked);
@@ -204,20 +223,25 @@ void RenderGraphConfigurationEditor::refreshSources()
     {
         QComboBox* type = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, TYPE_COLUMN));
         QComboBox* source = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, SOURCE_COLUMN));
+        const QSignalBlocker blocker(source);
         const QString previous = source->currentData().toString();
         source->clear();
         source->addItem(QStringLiteral("Unconnected"), QString());
-        const auto addSource = [source, type](const QString& endpoint, const QString& candidateType) {
+        const auto addSource = [source,
+                                type](const QString& endpoint, const QString& candidateType, const QString& origin) {
             if (type->currentText() == candidateType)
             {
-                source->addItem(endpoint, endpoint);
+                source->addItem(endpoint, origin);
             }
         };
-        for (const QJsonValueConstRef value : inputs)
+        for (int32 inputRow = 0; inputRow < mInputs->rowCount(); ++inputRow)
         {
-            const QJsonObject input = value.toObject();
-            addSource(QStringLiteral("input.") + input.value(QStringLiteral("id")).toString(),
-                      input.value(QStringLiteral("type")).toString());
+            const QJsonObject input = inputs.at(inputRow).toObject();
+            const QString original = mInputs->item(inputRow, 0)->data(Qt::UserRole).toString();
+            const QString identity = input.value(QStringLiteral("id")).toString();
+            addSource(QStringLiteral("input.") + identity,
+                      input.value(QStringLiteral("type")).toString(),
+                      QStringLiteral("input.") + (original.isEmpty() == true ? identity : original));
         }
         for (const QJsonValueConstRef node : nodes)
         {
@@ -226,8 +250,9 @@ void RenderGraphConfigurationEditor::refreshSources()
             {
                 for (const RenderGraphPort& port : ports.Outputs)
                 {
-                    addSource(node.toObject().value(QStringLiteral("id")).toString() + QLatin1Char('.') + port.Id,
-                              port.Type);
+                    const QString endpoint =
+                        node.toObject().value(QStringLiteral("id")).toString() + QLatin1Char('.') + port.Id;
+                    addSource(endpoint, port.Type, endpoint);
                 }
             }
         }
@@ -241,6 +266,21 @@ void RenderGraphConfigurationEditor::refreshSources()
         }
         source->setCurrentIndex(qMax(0, selected));
     }
+    QStringList repairs;
+    QString error;
+    const RenderGraphDocumentStatus status =
+        mDocument.PreviewConfigurationInterface(mFile,
+                                                mConfiguration.value(QStringLiteral("id")).toString(),
+                                                GetInputs(),
+                                                GetOutputs(),
+                                                repairs,
+                                                error,
+                                                GetInputRenames(),
+                                                GetOutputRenames());
+    mRepairs->setText(status != RenderGraphDocumentStatus::Ok ? error
+                      : repairs.isEmpty() == true ? QStringLiteral("No existing links need repair.")
+                                                  : QStringLiteral("Apply will repair these uses in one undo step:\n") +
+                                                        repairs.join(QLatin1Char('\n')));
 }
 
 QJsonArray RenderGraphConfigurationEditor::GetInputs() const
@@ -251,6 +291,32 @@ QJsonArray RenderGraphConfigurationEditor::GetInputs() const
 QJsonArray RenderGraphConfigurationEditor::GetOutputs() const
 {
     return ReadPorts(*mOutputs, true);
+}
+
+namespace
+{
+QMap<QString, QString> ReadRenames(const QTableWidget& table)
+{
+    QMap<QString, QString> renames;
+    for (int32 row = 0; row < table.rowCount(); ++row)
+    {
+        const QString previous = table.item(row, 0)->data(Qt::UserRole).toString();
+        const QString next = table.item(row, 0)->text().trimmed();
+        if (previous.isEmpty() == false && previous != next)
+        {
+            renames.insert(previous, next);
+        }
+    }
+    return renames;
+}
+} // namespace
+QMap<QString, QString> RenderGraphConfigurationEditor::GetInputRenames() const
+{
+    return ReadRenames(*mInputs);
+}
+QMap<QString, QString> RenderGraphConfigurationEditor::GetOutputRenames() const
+{
+    return ReadRenames(*mOutputs);
 }
 
 void RenderGraphConfigurationEditor::ShowError(const QString& message)

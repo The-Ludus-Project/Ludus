@@ -1750,9 +1750,14 @@ to open the same dialog.
 - Select rows and choose **Remove Selected** to remove ports. Names must begin
   with an ASCII letter and contain at most 63 letters, digits, `_` or `-`.
   Each direction supports up to eight ports. Types follow the graph's version.
-- Choose **Apply** to commit both tables as one undoable draft edit; **Cancel**
-  discards the dialog's edits. **Save** publishes the draft. Rejected edits keep
-  the dialog open with an explanation and preserve the document.
+- Review the repair preview beneath the tables. Renaming an existing row preserves
+  compatible links inside the child and at every instance in the loaded package,
+  including callers in other files or configurations. Removing a row or changing
+  its type disconnects affected incompatible links. Compatible uses stay connected.
+- Choose **Apply** to commit the interface and all listed caller repairs as one
+  undoable draft edit; **Cancel** discards the dialog's edits. **Save** publishes
+  all changed sources. Rejected edits keep the dialog open with an explanation
+  and preserve the document.
 
 The grey input/output boxes appear as soon as their first ports are applied.
 Drag configuration input ports to pass inputs; drag pass outputs to configuration
@@ -1763,11 +1768,25 @@ new wire onto it replaces that source in one undo step. Type or cycle rejection
 preserves the previous source. Unconnected outputs are incomplete
 drafts and must be connected before validation/build succeeds.
 
-Disconnect affected internal and containing-subgraph links before removing,
-renaming or changing the type of a connected port. The dialog checks those
-references across the loaded package. Removing a producing node retains its
-configuration output declarations as unconnected ports. Editing interfaces does
-not change which GPU pipeline kinds the runtime profile can execute.
+When a changed port invalidates a configuration output's source, repair clears
+the source and retains that output's name, type and **Requires consumer** flag.
+This leaves a visible incomplete draft for reconnection; it does not propagate
+a different output type through further enclosing interfaces. Removing a
+producing node likewise retains its configuration outputs as unconnected ports.
+
+Edit an existing row's name to rename it. Removing a row and adding a different
+name creates a new identity and disconnects the removed port's uses. Swapping
+two existing row names is supported; reusing a renamed port's old name for a new
+row, or renaming over a removed row's old name, needs separate Apply steps to
+avoid ambiguous identities. Source choices track the original row while showing
+its candidate name. The preview lists at most 128 repair details, with a count
+of any remaining repairs; Apply includes them all.
+
+Repair covers direct references to this configuration in the loaded package.
+Malformed graph JSON blocks caller inspection until its Source is fixed. Raw
+Source edits and changing a Subgraph's selected asset/configuration do not run
+interface repair. Editing interfaces does not change the admitted GPU pipeline
+profile or rewrite pipeline port declarations.
 
 Before a link reaches the draft, the canvas checks it against the configuration
 and rejects it with the shared validator's error name and a reason in the status
