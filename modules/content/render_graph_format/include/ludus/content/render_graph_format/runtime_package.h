@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/content/render_graph_format/plan.h>
@@ -25,16 +26,19 @@
 /// contain no zero, and have at most MAX_PASS_NAME_BYTES bytes. No trailing bytes
 /// are permitted. Version 2 has no name table. Version 4 adds ViewNumerator and
 /// ViewDenominator after each resource's six legacy fields; versions 2/3 are fixed.
-/// Version 7 inserts a storage count and that many four-word StorageBuffer records
+/// Version 8 inserts a storage count and that many four-word StorageBuffer records
 /// after stage records and before pass names. Version 6 has native-query ray stages.
 /// Version 5 appends one SceneData mask to each pass; older versions imply all scene data.
+/// Version 7 admits additional raster shader-pair IDs and stage roles; record widths are unchanged.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 7;
-/// Native-query packages before structured storage; retain decoding compatibility.
+inline constexpr foundation::uint32 PACKAGE_VERSION = 8;
+/// First generation supporting independent raster shader pairs, without storage records.
+inline constexpr foundation::uint32 INDEPENDENT_PROGRAM_PACKAGE_VERSION = 7;
+/// First generation using native hardware ray traversal.
 inline constexpr foundation::uint32 NATIVE_RAY_PACKAGE_VERSION = 6;
 /// Last package version carrying explicit scene inputs with portable software ray traversal.
 inline constexpr foundation::uint32 SCENE_PACKAGE_VERSION = 5;
@@ -56,11 +60,27 @@ inline constexpr foundation::usize MAX_ARTIFACT_BYTES = foundation::usize{2} * 1
 inline constexpr foundation::usize MAX_ENTRY_BYTES = 63;
 /// Legacy and scene callback compute roles plus shared image stages.
 inline constexpr foundation::usize RAY_STAGE_ROLE_COUNT = 4;
-/// Raster stage pairs plus admitted ray-stage roles.
-inline constexpr foundation::usize STAGE_ROLE_COUNT =
+/// Legacy stage-role prefix, including ray roles whose IDs remain stable.
+inline constexpr foundation::usize LEGACY_STAGE_ROLE_COUNT =
     RASTER_TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT + RAY_STAGE_ROLE_COUNT;
+/// Additional vertex/fragment roles; each pair follows its compiled technique ID.
+inline constexpr foundation::usize ADDITIONAL_RASTER_STAGE_COUNT =
+    ADDITIONAL_RASTER_TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT;
+/// All admitted stage roles, including independent raster pairs.
+inline constexpr foundation::usize STAGE_ROLE_COUNT = LEGACY_STAGE_ROLE_COUNT + ADDITIONAL_RASTER_STAGE_COUNT;
+/// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
+/// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,
+                                                                          foundation::usize stage) noexcept
+{
+    const foundation::usize index = static_cast<foundation::usize>(technique);
+    return index < LEGACY_TECHNIQUE_COUNT
+               ? index * TECHNIQUE_STAGE_COUNT + stage
+               : LEGACY_STAGE_ROLE_COUNT + (index - LEGACY_TECHNIQUE_COUNT) * TECHNIQUE_STAGE_COUNT + stage;
+}
 /// Largest stage table: one artifact per role and target.
-inline constexpr foundation::usize MAX_STAGES = STAGE_ROLE_COUNT * SHADER_TARGET_COUNT;
+inline constexpr foundation::usize MAX_STAGES =
+    (MAX_AUTHORED_TECHNIQUES * TECHNIQUE_STAGE_COUNT + RAY_STAGE_ROLE_COUNT) * SHADER_TARGET_COUNT;
 /// Renderer static vertex/instance interface: position plus four transform rows and color.
 inline constexpr foundation::usize STATIC_INPUT_COUNT = 6;
 /// Fixed uint32 fields before the identities.

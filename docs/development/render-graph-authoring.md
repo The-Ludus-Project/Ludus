@@ -81,8 +81,16 @@ program name with a matching stage. New sources appear immediately in **Source**
 assignments form one undo step. Completing an executable graphics or triangle ray
 pipeline also registers its technique and pipeline recipe in the root manifest
 in that same undo step, including pipelines in imported subgraphs. Recipe edits
-retain existing recipes; conflicting program selections for a shared technique
-or exhausted manifest budgets preserve the draft and explain the repair.
+retain existing recipes. Graphics passes in the same package can select different
+vertex/fragment programs, including separate functions in one `.slang` source.
+The editor registers an independent technique within the material/mode family
+when a pair differs; legacy Raster assignments remain unchanged. In Shaders,
+select the desired program IDs. To share one source with different entry points,
+register separate programs in the manifest with the same `source` and different
+`function` values, then select those programs on the nodes. The compiler preserves
+these choices in both compiled headers and runtime packages. Exhausted manifest
+budgets preserve the draft and explain the repair. Ray callbacks still share the
+single bounded ray technique.
 Incomplete shader tables remain authoring drafts. Name/file conflicts or incompatible references
 preserve the draft. Templates are starting points: vertex/fragment interfaces use
 the manifest schemas; ray-generation, miss and closest-hit functions use the
@@ -92,6 +100,20 @@ closest-hit receives `SurfaceHit` and `SceneContext`, and its template demonstra
 The editor creates the shared `ScenePayload` source and manifest interface alongside
 the callbacks. Raygen traces the camera ray once; the template displays material
 color and adds no lighting estimator.
+
+For a scene-aware ray pipeline, **Properties → Scene query budgets** sets the
+maximum **Surface queries** (1–8) and **Visibility queries** (0–16) per camera
+sample. The same controls are available from the canvas node's **Edit Node**
+dialog with Properties hidden. Surface queries include the camera intersection;
+camera plus one BSDF ray for direct-light MIS needs at least two. Visibility
+queries count shadow tests; zero permits none. Exceeding either budget rejects
+the sample rather than committing partial lighting.
+
+These budgets belong to the package's shared ray technique, so changing them
+affects every scene-aware ray pipeline using it, including imported subgraphs.
+Completed edits update the existing manifest interface as one undoable change;
+**Save** publishes it and updates Live Preview. Legacy pipelines first need
+**Enable Scene Materials**, described below.
 
 Existing ray techniques keep their interface and authored sources. For a legacy
 `ShaderMain(RayHit input)`, material tint is `input.Color.xyz`; full material
@@ -916,6 +938,7 @@ time measurements average the last 30 completed samples:
 - **Readback** measures elapsed time from requesting the output copy until its
   CPU display image is ready, including asynchronous copy waits, polling cadence
   and image conversion. It excludes the earlier graph render and final Qt paint.
+  Shared-device GPU snapshots report zero because they perform no CPU readback.
 
 Pending or failed output copies do not publish successful frame samples or erase
 last-completed time averages. Device replacement clears the graph series. These
@@ -939,8 +962,17 @@ Limits:
   widget scales a fixed output and preserves its aspect ratio. Connect its targets to a
   view-relative RenderSize to resize their resource instances with the drawable view;
   neither path rewrites project data.
-- Graph output uses the existing asynchronous GPU readback path. Navigation remains live,
-  but this is not the Qt shared-texture presentation path; no zero-copy performance is claimed.
+- On macOS Metal and shared-device Linux Vulkan, exported color output is copied on the GPU into
+  three bounded display slots and sampled directly by Qt Quick. Native read leases retain
+  each slot through Qt submission and consumer completion; graph activation and resize do
+  not overwrite the last displayed image. Pending or failed replacements preserve it.
+  Ordinary color navigation performs no CPU pixel readback or image conversion. Depth
+  visualization, transient debug attachments and the explicit offscreen fallback retain asynchronous readback; the
+  texture inspector reads only its selected attachment.
+- Submitted producer, display-copy and readback work is polled at 1 ms while pending.
+  Navigation changes, completed frames and returned display slots coalesce immediate
+  owner-thread wakes; the 16 ms fallback clock is not a delay between pipeline stages.
+  A GPU display snapshot adds a device-side copy, so this is not a zero-copy claim.
 - Opening or saving an unedited default writes nothing. Project loading never bootstraps
   tools or repairs an SDK. Missing tools are build diagnostics; use project setup to repair them.
 
@@ -1777,11 +1809,12 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h` (layout version 6, with
-native-only ray roles, structured storage records, per-pass Scene data masks, view-relative size policies, pass
-names, uniform binding/block/field records and GLSL ES block names; raster packages
-from versions 2 through 5 remain readable, with versions 2 through 4 implying full
-Scene data. Older software-ray packages require recooking). `emit-runtime`
+`ludus/content/render_graph_format/runtime_package.h` (layout version 8, with
+independent raster shader pairs, native-only ray roles, structured storage records,
+per-pass Scene data masks, view-relative size policies, pass names, uniform
+binding/block/field records and GLSL ES block names; native-ray packages from
+versions 6 and 7 and raster packages from versions 2 through 7 remain readable,
+with versions 2 through 4 implying full Scene data. Older software-ray packages require recooking). `emit-runtime`
 headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
 interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to
 `ludus_compile_render_graph`; it sets `<NAME>_RUNTIME_PACKAGE` to the cooked file.

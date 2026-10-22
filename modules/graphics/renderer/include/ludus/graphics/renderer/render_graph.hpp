@@ -4,6 +4,7 @@
 
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/scene_shader.hpp>
@@ -72,6 +73,15 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription RayCompute{};          ///< Linked authored triangle ray functions and BVH traversal.
     rhi::RasterShaderDescription RayImageVertex{};      ///< Renderer-owned GPU-produced pixel presentation.
     rhi::RasterShaderDescription RayImageFragment{};    ///< Renderer-owned color copy; no host pixel transfer.
+    /// Independent raster stage pairs in numeric technique order after the legacy roles.
+    /// Index (Program - LEGACY_TECHNIQUE_COUNT) * TECHNIQUE_STAGE_COUNT selects a
+    /// vertex description; the following entry is its fragment description. All
+    /// artifact/input/binding storage is borrowed through initialization/preparation,
+    /// with the same lifetime contract as ColorVertex and ColorFragment.
+    foundation::StaticArray<rhi::RasterShaderDescription,
+                            content::render_graph_format::ADDITIONAL_RASTER_TECHNIQUE_COUNT *
+                                content::render_graph_format::TECHNIQUE_STAGE_COUNT>
+        AdditionalRasterStages{};
     bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
 };
 /// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.

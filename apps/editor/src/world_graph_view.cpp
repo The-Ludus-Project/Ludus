@@ -135,6 +135,7 @@ void WorldGraphView::refreshStatistics()
         FormatGraphViewportStatistics(mPreview.GetStatistics(), deviceStatistics, foundation::time::Now().Nanoseconds));
     mStatistics->adjustSize();
     mStatistics->raise();
+    Q_EMIT StatisticsChanged();
 }
 void WorldGraphView::ClearFrame()
 {
@@ -182,8 +183,8 @@ void WorldGraphView::refreshFrame()
             mImage = mPreview.GetImage();
             ++mPresentedFrames;
         }
-        refreshStatus();
     }
+    refreshStatus();
     update();
 }
 void WorldGraphView::refreshStatus()
@@ -219,6 +220,7 @@ void WorldGraphView::refreshStatus()
     }
     mStatus->setText(text);
     mStatus->setVisible(text.isEmpty() == false);
+    Q_EMIT StatusChanged(text);
 }
 void WorldGraphView::paintEvent(QPaintEvent*)
 {

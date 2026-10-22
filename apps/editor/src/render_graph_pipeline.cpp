@@ -294,6 +294,48 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     layout->addWidget(hint);
 }
 
+void RenderGraphPipelineEditor::AddSceneQueryBudgets(const RenderGraphSceneQueryBudgets& budgets)
+{
+    QGroupBox* group = new QGroupBox(QStringLiteral("Scene query budgets"), this);
+    group->setObjectName(QStringLiteral("renderGraphSceneQueryBudgets"));
+    QFormLayout* form = new QFormLayout(group);
+    QSpinBox* surface = new QSpinBox(group);
+    surface->setObjectName(QStringLiteral("renderGraphSurfaceQueries"));
+    surface->setRange(RenderGraphSceneQueryBudgets::MIN_SURFACE_QUERIES,
+                      RenderGraphSceneQueryBudgets::MAX_SURFACE_QUERIES);
+    surface->setValue(budgets.SurfaceQueries);
+    surface->setKeyboardTracking(false);
+    surface->setToolTip(QStringLiteral("Maximum closest-hit queries per camera sample, including the camera ray. "
+                                       "Camera plus one BSDF ray for MIS requires at least two."));
+    form->addRow(QStringLiteral("Surface queries"), surface);
+    QSpinBox* visibility = new QSpinBox(group);
+    visibility->setObjectName(QStringLiteral("renderGraphVisibilityQueries"));
+    visibility->setRange(RenderGraphSceneQueryBudgets::MIN_VISIBILITY_QUERIES,
+                         RenderGraphSceneQueryBudgets::MAX_VISIBILITY_QUERIES);
+    visibility->setValue(budgets.VisibilityQueries);
+    visibility->setKeyboardTracking(false);
+    visibility->setToolTip(
+        QStringLiteral("Maximum shadow visibility queries per camera sample. "
+                       "Zero permits no visibility queries; exceeding a budget rejects the sample."));
+    form->addRow(QStringLiteral("Visibility queries"), visibility);
+    QLabel* hint = new QLabel(QStringLiteral("Shared by all scene-aware ray pipelines in this package. "
+                                             "Save publishes changes."),
+                              group);
+    hint->setWordWrap(true);
+    form->addRow(hint);
+    const auto publishBudgets = [this, surface, visibility]() {
+        const RenderGraphSceneQueryBudgets edited
+        {
+            .SurfaceQueries = surface->value(),
+            .VisibilityQueries = visibility->value(),
+        };
+        Q_EMIT SceneQueryBudgetsEdited(edited);
+    };
+    connect(surface, &QSpinBox::editingFinished, this, publishBudgets);
+    connect(visibility, &QSpinBox::editingFinished, this, publishBudgets);
+    static_cast<QVBoxLayout*>(layout())->addWidget(group);
+}
+
 QTableWidget*
 RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& fields, const QStringList& defaults)
 {

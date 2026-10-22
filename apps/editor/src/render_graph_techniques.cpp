@@ -135,6 +135,58 @@ bool HaveMatchingPrograms(const QJsonObject& left, const QJsonObject& right)
     return true;
 }
 
+bool HasProgramConflict(const QString& identity,
+                        const QJsonObject& request,
+                        const QJsonArray& techniques,
+                        const QMap<QString, QJsonObject>& requests)
+{
+    if (requests.contains(identity) == true && HaveMatchingPrograms(requests.value(identity), request) == false)
+    {
+        return true;
+    }
+    for (const QJsonValueConstRef existing : techniques)
+    {
+        const QJsonObject technique = existing.toObject();
+        if (technique.value(QStringLiteral("id")).toString() == identity &&
+            HaveMatchingPrograms(technique, request) == false)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+QString ResolveGraphicsTechnique(const QJsonObject& request,
+                                 const QJsonArray& techniques,
+                                 const QMap<QString, QJsonObject>& requests)
+{
+    QString family = request.value(QStringLiteral("id")).toString();
+    // Preserve matching authored pairs, including stable IDs after program renames.
+    for (const QJsonValueConstRef existing : techniques)
+    {
+        const QJsonObject technique = existing.toObject();
+        const QString identity = technique.value(QStringLiteral("id")).toString();
+        if ((identity == family || identity.startsWith(family + QLatin1Char('.')) == true) &&
+            HaveMatchingPrograms(technique, request) == true &&
+            HasProgramConflict(identity, request, techniques, requests) == false)
+        {
+            return identity;
+        }
+    }
+    if (HasProgramConflict(family, request, techniques, requests) == false)
+    {
+        return family;
+    }
+    const QString base = family + QLatin1Char('.') + request.value(QStringLiteral("vertex")).toString() +
+                         QLatin1Char('.') + request.value(QStringLiteral("fragment")).toString();
+    QString identity = base;
+    for (qsizetype suffix = 2; HasProgramConflict(identity, request, techniques, requests) == true; ++suffix)
+    {
+        identity = base + QLatin1Char('_') + QString::number(suffix);
+    }
+    return identity;
+}
+
 void AppendRecipes(QJsonObject& inoutTechnique, const QJsonArray& additions)
 {
     QJsonArray recipes = inoutTechnique.value(QStringLiteral("recipes")).toArray();
@@ -203,13 +255,20 @@ PrepareRenderGraphTechniques(RenderGraphSnapshot& inoutSnapshot, const QString& 
                         files.append(asset);
                     }
                 }
-                const QString identity = GetTechniqueIdentity(node);
+                QString identity = GetTechniqueIdentity(node);
                 if (kind == QStringLiteral("Raster"))
                 {
                     legacyTechniques.append(identity);
                     continue;
                 }
-                const QJsonObject request = identity.isEmpty() == true ? QJsonObject{} : MakeTechnique(node, identity);
+                QJsonObject request = identity.isEmpty() == true ? QJsonObject{} : MakeTechnique(node, identity);
+                if (kind == QStringLiteral("GraphicsPipeline") && request.isEmpty() == false)
+                {
+                    identity = ResolveGraphicsTechnique(request,
+                                                        manifest.value(QStringLiteral("techniques")).toArray(),
+                                                        requests);
+                    request.insert(QStringLiteral("id"), identity);
+                }
                 if (request.isEmpty() == true)
                 {
                     continue;

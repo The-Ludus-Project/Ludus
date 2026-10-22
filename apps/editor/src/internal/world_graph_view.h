@@ -39,6 +39,12 @@ public:
     /// Number of complete images received by this display.
     [[nodiscard]] foundation::uint64 GetPresentedFrames() const noexcept;
 
+Q_SIGNALS:
+    /// Refreshed overlay text, also consumed by the shared-device presentation.
+    void StatisticsChanged();
+    /// Current authoring/progress diagnostic, shared with the GPU viewport overlay.
+    void StatusChanged(const QString& text);
+
 protected:
     void paintEvent(QPaintEvent*) override;
 

@@ -8,6 +8,11 @@
 
 namespace ludus::editor
 {
+const foundation::int32 RenderGraphSceneQueryBudgets::MIN_SURFACE_QUERIES = LUDUS_EDITOR_MIN_SURFACE_QUERIES;
+const foundation::int32 RenderGraphSceneQueryBudgets::MAX_SURFACE_QUERIES = LUDUS_EDITOR_MAX_SURFACE_QUERIES;
+const foundation::int32 RenderGraphSceneQueryBudgets::MIN_VISIBILITY_QUERIES = LUDUS_EDITOR_MIN_VISIBILITY_QUERIES;
+const foundation::int32 RenderGraphSceneQueryBudgets::MAX_VISIBILITY_QUERIES = LUDUS_EDITOR_MAX_VISIBILITY_QUERIES;
+
 namespace
 {
 constexpr qsizetype ADAPTER_PROGRAM_BASE_LENGTH = 40;
@@ -39,13 +44,117 @@ QJsonObject MakeSceneInterface(RenderGraphSnapshot& inoutSnapshot, const QString
     inoutSnapshot.Files.insert(payload,
                                "#pragma once\n// Shared by the scene-aware ray callbacks.\n"
                                "struct ScenePayload\n{\n    float3 Radiance;\n};\n");
+    const RenderGraphSceneQueryBudgets budgets;
     return QJsonObject{{QStringLiteral("version"), 1},
                        {QStringLiteral("payload"), payload},
-                       {QStringLiteral("surface_queries"), 1},
-                       {QStringLiteral("visibility_queries"), 1}};
+                       {QStringLiteral("surface_queries"), budgets.SurfaceQueries},
+                       {QStringLiteral("visibility_queries"), budgets.VisibilityQueries}};
+}
+
+qsizetype FindSceneRayTechnique(const QJsonArray& techniques)
+{
+    qsizetype result = -1;
+    for (qsizetype index = 0; index < techniques.size(); ++index)
+    {
+        if (techniques.at(index).toObject().value(QStringLiteral("id")) == RAY_TECHNIQUE)
+        {
+            if (result >= 0)
+            {
+                return -1;
+            }
+            result = index;
+        }
+    }
+    return result;
+}
+
+bool AreSceneQueryBudgetsValid(const RenderGraphSceneQueryBudgets& budgets)
+{
+    return budgets.SurfaceQueries >= RenderGraphSceneQueryBudgets::MIN_SURFACE_QUERIES &&
+           budgets.SurfaceQueries <= RenderGraphSceneQueryBudgets::MAX_SURFACE_QUERIES &&
+           budgets.VisibilityQueries >= RenderGraphSceneQueryBudgets::MIN_VISIBILITY_QUERIES &&
+           budgets.VisibilityQueries <= RenderGraphSceneQueryBudgets::MAX_VISIBILITY_QUERIES;
 }
 
 } // namespace
+
+bool RenderGraphDocument::GetSceneQueryBudgets(RenderGraphSceneQueryBudgets& outBudgets) const
+{
+    const QString manifestFile =
+        mRootGraph.chopped(QStringLiteral(".lurender.json").size()) + QStringLiteral(".lushader.json");
+    const QJsonObject manifest = QJsonDocument::fromJson(GetDraft(manifestFile)).object();
+    const QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    const qsizetype index = FindSceneRayTechnique(techniques);
+    if (index < 0)
+    {
+        return false;
+    }
+    const QJsonObject interface = techniques.at(index).toObject().value(QStringLiteral("scene_interface")).toObject();
+    const QJsonValue surface = interface.value(QStringLiteral("surface_queries"));
+    const QJsonValue visibility = interface.value(QStringLiteral("visibility_queries"));
+    const RenderGraphSceneQueryBudgets budgets
+    {
+        .SurfaceQueries = surface.toInt(),
+        .VisibilityQueries = visibility.toInt(),
+    };
+    if (interface.value(QStringLiteral("version")) != QJsonValue(1) || surface.isDouble() == false ||
+        visibility.isDouble() == false ||
+        surface.toDouble() != static_cast<foundation::float64>(budgets.SurfaceQueries) ||
+        visibility.toDouble() != static_cast<foundation::float64>(budgets.VisibilityQueries) ||
+        AreSceneQueryBudgetsValid(budgets) == false)
+    {
+        return false;
+    }
+    outBudgets = budgets;
+    return true;
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::SetSceneQueryBudgets(const RenderGraphSceneQueryBudgets& budgets,
+                                                                    QString& outError)
+{
+    if (AreSceneQueryBudgetsValid(budgets) == false)
+    {
+        outError =
+            QStringLiteral("Surface queries must be %1–%2 and visibility queries %3–%4. The draft was preserved.")
+                .arg(RenderGraphSceneQueryBudgets::MIN_SURFACE_QUERIES)
+                .arg(RenderGraphSceneQueryBudgets::MAX_SURFACE_QUERIES)
+                .arg(RenderGraphSceneQueryBudgets::MIN_VISIBILITY_QUERIES)
+                .arg(RenderGraphSceneQueryBudgets::MAX_VISIBILITY_QUERIES);
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    const QString manifestFile =
+        mRootGraph.chopped(QStringLiteral(".lurender.json").size()) + QStringLiteral(".lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(GetDraft(manifestFile)).object();
+    QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    const qsizetype index = FindSceneRayTechnique(techniques);
+    QJsonObject technique = index >= 0 ? techniques.at(index).toObject() : QJsonObject();
+    QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
+    if (index < 0 || interface.value(QStringLiteral("version")) != QJsonValue(1))
+    {
+        outError = QStringLiteral("Query budgets require one scene-aware ray technique. Enable Scene Materials first; "
+                                  "repair an invalid or duplicate technique in Source. The draft was preserved.");
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    if (interface.value(QStringLiteral("surface_queries")) == QJsonValue(budgets.SurfaceQueries) &&
+        interface.value(QStringLiteral("visibility_queries")) == QJsonValue(budgets.VisibilityQueries))
+    {
+        outError.clear();
+        return RenderGraphDocumentStatus::Ok;
+    }
+    interface.insert(QStringLiteral("surface_queries"), budgets.SurfaceQueries);
+    interface.insert(QStringLiteral("visibility_queries"), budgets.VisibilityQueries);
+    technique.insert(QStringLiteral("scene_interface"), interface);
+    techniques.replace(index, technique);
+    manifest.insert(QStringLiteral("techniques"), techniques);
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(manifestFile, EncodeCanonicalJson(manifest));
+    mLastMove.clear();
+    const RenderGraphDocumentStatus status = commit(candidate, false);
+    outError = status == RenderGraphDocumentStatus::Ok
+                   ? QString()
+                   : QStringLiteral("Query budgets exceed the document's source limits. The draft was preserved.");
+    return status;
+}
 
 bool HasSceneRayInterface(const QJsonObject& manifest)
 {

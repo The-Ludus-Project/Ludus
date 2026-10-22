@@ -8,6 +8,7 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 
+#include "internal/graph_display_frames.h"
 #include "internal/render_graph_targets.h"
 #include "internal/render_scene.h"
 #include "internal/texture_inspection.h"
@@ -75,7 +76,7 @@ enum class RenderGraphPreviewLoad : foundation::uint8
 // RG3b trusted in-editor preview of a cooked render-graph generation. It owns one
 // RenderGraphActivation on the existing editor viewport device (borrowed from the World
 // RenderPreview), feeds it the World extraction, renders the active generation's exported
-// color and copies it to a QImage without waiting for the GPU. The presented image changes
+// color into retained GPU display snapshots (or an explicit CPU fallback). The presented image changes
 // only when a complete copy of an active generation's drawable frame arrives: a pending,
 // failed, coverage-rejected or restart-requiring candidate, a lost device or a failed copy keep
 // the last drawable view. Export consumers (the copy) always finish before a Poll that may
@@ -135,7 +136,14 @@ public:
     /// Completed output statistics; retained while preparation is pending or fails, reset on Detach.
     [[nodiscard]] const GraphViewportStatistics& GetStatistics() const noexcept;
 
-    /// Last complete frame of an active generation; null before the first one.
+    /// Select shared-device GPU snapshots; CPU readback remains the explicit offscreen fallback.
+    void SetDirectPresentation(bool shouldPresentDirectly) noexcept;
+    [[nodiscard]] bool HasPendingWork() const noexcept;
+    /// True when the last published frame is a GPU snapshot; false for depth/readback display.
+    [[nodiscard]] bool HasGpuFrame() const noexcept;
+    [[nodiscard]] GraphDisplayFrames& GetDisplayFrames() noexcept;
+
+    /// Last complete CPU fallback frame; direct presentation publishes through GetDisplayFrames.
     [[nodiscard]] const QImage& GetImage() const noexcept
     {
         return mImage;
@@ -188,7 +196,7 @@ public:
 Q_SIGNALS:
     void PreparingSubmission();
     void SubmissionRecorded();
-    /// A new complete frame replaced GetImage.
+    /// A new complete GPU snapshot or CPU fallback image replaced the presented frame.
     void FramePresented();
     /// Activation or candidate state changed; the status text may differ.
     void Changed();
@@ -203,6 +211,8 @@ private:
     void tick();
     void advance();
     void finishCopy();
+    void finishDisplayCopy();
+    void publishFrame(bool isGpuFrame = false);
     [[nodiscard]] bool beginInspection();
     void finishInspection();
     void setStatus(const QString& text);

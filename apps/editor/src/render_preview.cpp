@@ -391,6 +391,7 @@ bool RenderPreview::AdmitDevice(const rhi::NativeDeviceDescription& native)
     Frames_ = 0;
     restartResources();
     mFramePump.Start();
+    Q_EMIT Changed();
     return true;
 #else
     static_cast<void>(native);

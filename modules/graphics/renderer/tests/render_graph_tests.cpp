@@ -1061,3 +1061,40 @@ TEST_CASE("Graph storage rejects invalid descriptors and budgets before allocati
     CHECK(storage.GetCount() == 0);
     CHECK(storage.GetBytes() == 0);
 }
+
+TEST_CASE("independent opaque shader pairs draw both retained passes", "[render-graph]")
+{
+    GraphFixture fixture;
+    constexpr usize MULTI_RESOURCE_COUNT = RESOURCE_COUNT * 2;
+    constexpr usize MULTI_PASS_COUNT = PASS_COUNT * 2;
+    constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
+    StaticArray<format::Resource, MULTI_RESOURCE_COUNT> resources{};
+    for (usize i = 0; i < RESOURCE_COUNT; ++i)
+    {
+        resources[i] = fixture.Resources[i];
+        resources[i + RESOURCE_COUNT] = fixture.Resources[i];
+        resources[i + RESOURCE_COUNT].Backing += RESOURCE_COUNT;
+    }
+    StaticArray<format::Pass, MULTI_PASS_COUNT> passes{{fixture.Passes[0], fixture.Passes[0]}};
+    passes[0].AllowsRepeatedCoverage = 1;
+    passes[1].AllowsRepeatedCoverage = 1;
+    passes[1].Program = GBUFFER_PROGRAM;
+    passes[1].Color += RESOURCE_COUNT;
+    passes[1].Depth += RESOURCE_COUNT;
+    renderer::RenderGraphPlan plan = fixture.MakePlan();
+    plan.Description.ResourceCount = MULTI_RESOURCE_COUNT;
+    plan.Description.PassCount = MULTI_PASS_COUNT;
+    plan.Resources = {resources.GetData(), resources.GetSize()};
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    renderer::RenderGraphPrograms programs = fixture.MakePrograms();
+    programs.AdditionalRasterStages[0] = programs.ColorVertex;
+    programs.AdditionalRasterStages[1] = programs.ColorFragment;
+    programs.AdditionalRasterStages[1].Artifact.Wgsl = "independent gbuffer fragment fixture";
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Ready);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    CHECK(report.Conflicting == 0);
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Draws == MULTI_PASS_COUNT);
+}

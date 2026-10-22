@@ -26,7 +26,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -34,7 +34,40 @@ PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStatic
 PROGRAM_CODES = {name: code for code, name in enumerate(PROGRAMS.values())}
 PROGRAM_MEMBERS = {'ColorAndDepth': 'Color', 'DepthOnly': 'Depth', 'MaskedColorAndDepth': 'MaskedColor',
                    'MaskedDepthOnly': 'MaskedDepth', 'RayTracing': 'RayImage'}
+# Preserve the five historical program IDs. Additional bounded raster pairs carry
+# their coverage family in the low position of each four-role variant group.
+LEGACY_PROGRAM_COUNT = len(PROGRAMS)
+RASTER_FAMILY_COUNT = LEGACY_PROGRAM_COUNT - 1
+MAX_AUTHORED_TECHNIQUES = build.LIMITS['configurations']
+LEGACY_STAGE_ROLE_COUNT = 12
+for variant in range(1, MAX_AUTHORED_TECHNIQUES):
+    for family, base in enumerate(tuple(PROGRAM_MEMBERS)[:RASTER_FAMILY_COUNT]):
+        name = base + 'Variant' + str(variant)
+        code = LEGACY_PROGRAM_COUNT + (variant - 1) * RASTER_FAMILY_COUNT + family
+        PROGRAM_CODES[name] = code
 VISIBILITY = {'Vertex': 1, 'Fragment': 2, 'Both': 3}
+
+
+def program_roles(package):
+    """Assign deterministic bounded shader-pair slots within each coverage family."""
+    result = dict(PROGRAMS)
+    for identity, base in PROGRAMS.items():
+        if base == 'RayTracing':
+            continue
+        variants = sorted({recipe['technique'] for recipe in package.get('recipes', [])
+                           if recipe['technique'].startswith(identity + '.')})
+        build.require(len(variants) < MAX_AUTHORED_TECHNIQUES, 'Capacity', identity,
+                      'too many independent shader pairs for one raster family')
+        result.update({technique: base + 'Variant' + str(index + 1) for index, technique in enumerate(variants)})
+    return result
+
+
+def program_member(program, stage):
+    """C++ member expression of one cooked stage; declaration names stay separate."""
+    code = PROGRAM_CODES[program]
+    if code >= LEGACY_PROGRAM_COUNT:
+        return 'AdditionalRasterStages[' + str((code - LEGACY_PROGRAM_COUNT) * 2 + (stage == 'fragment')) + ']'
+    return 'RayCompute' if stage == 'compute' else PROGRAM_MEMBERS[program] + stage.title()
 
 
 def resolve_generation(path):
@@ -50,6 +83,7 @@ def resolve_generation(path):
 
 
 def lower_plan(package, configuration):
+    roles = program_roles(package)
     plans = [p for p in package['plans'] if p['configuration'] == configuration]
     build.require(len(plans) == 1, 'Configuration', configuration, 'one declared root configuration required')
     plan = plans[0]
@@ -60,8 +94,9 @@ def lower_plan(package, configuration):
                   'one triangle ray invocation is admitted per configuration')
     build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Export', 'Present') for p in plan['passes']) and
                   all((p['kind'] == 'RayTracing' and p['technique'] == ray.TECHNIQUE) or (p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
-                      p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] and
-                      p['technique'] in PROGRAMS and p['vertex_layout'] == 'RendererStatic') for p in rasters),
+                      (p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] or
+                       p['technique'].startswith(graph.MATERIALS[p['material']] + '.' + p['configuration'] + '.')) and
+                      p['technique'] in roles and p['vertex_layout'] == 'RendererStatic') for p in rasters),
                   'Configuration', configuration, 'unqualified operation/layout/material/technique')
     build.require(0 < len(rasters) <= MAX_PASSES and 0 < len(resources) <= MAX_RESOURCES and len(cameras) <= MAX_CAMERAS,
                   'Capacity', configuration, 'Renderer execution limits exceeded')
@@ -117,11 +152,21 @@ def lower_plan(package, configuration):
         color_load = color['load'] if color else ('Load' if color_defined[physical] else 'Discard')
         color_store = color['store'] if color else ('Store' if color_defined[physical] else 'Discard')
         color_defined[physical] = color_store == 'Store' and (color_load == 'Clear' or color_load == 'Load' and color_defined[physical])
-        pass_records.append({'Program': PROGRAMS[operation['technique']], 'Camera': cameras.index(operation['view']),
+        pass_records.append({'Program': roles[operation['technique']], 'Camera': cameras.index(operation['view']),
                              'Color': resources.index(color['resource']) if color else ABSENT,
                              'Depth': resources.index(depth), 'ColorLoad': color_load, 'ColorStore': color_store,
                              'DepthLoad': attachment['depth']['load'], 'DepthStore': attachment['depth']['store'],
                              'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA)})
+    # Distinct explicitly authored shader pairs represent deliberate passes (for
+    # example GBuffer and beauty), rather than an accidental duplicate scene route.
+    for operation, record in zip(rasters, pass_records):
+        if operation['kind'] != 'Raster':
+            continue
+        peers = [peer for peer in rasters if peer['kind'] == 'Raster' and
+                 peer['view'] == operation['view'] and peer['material'] == operation['material'] and
+                 peer['configuration'] == operation['configuration']]
+        if len(peers) > 1 and len({peer['technique'] for peer in peers}) == len(peers):
+            record['AllowsRepeatedCoverage'] = 1
     return plan, resource_records, pass_records, cameras
 
 
@@ -129,7 +174,7 @@ STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 7
+PACKAGE_VERSION = 8
 MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
@@ -143,7 +188,9 @@ def role(program, stage):
     """Numeric StageRole: two consecutive roles (vertex, fragment) per program."""
     if program == 'RayTracing':
         return {'compute': 8, 'vertex': 9, 'fragment': 10}[stage]
-    return PROGRAM_CODES[program] * 2 + (0 if stage == 'vertex' else 1)
+    code = PROGRAM_CODES[program]
+    return (code * 2 if code < LEGACY_PROGRAM_COUNT else
+            LEGACY_STAGE_ROLE_COUNT + (code - LEGACY_PROGRAM_COUNT) * 2) + (stage == 'fragment')
 
 
 def _lower_uniforms(package, stages):
@@ -241,12 +288,13 @@ def _runtime_contents(path, configuration):
                   'use an explicitly authored --renderer-static build manifest')
     plan, resources, passes, cameras = lower_plan(package, configuration)
     stages = {}
+    roles = program_roles(package)
     vertex_schemas = []
     selected_techniques = set(plan['techniques'])
     if ray.TECHNIQUE in selected_techniques:
         selected_techniques.add('DefaultStaticOpaque.ColorAndDepth')
     for technique in sorted(selected_techniques):
-        program_name = PROGRAMS[technique]
+        program_name = roles[technique]
         recipes = [r for r in package['recipes'] if r['technique'] == technique]
         for recipe in recipes:
             if technique != ray.TECHNIQUE:
@@ -382,6 +430,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                     continue
                 if field == 'Target':
                     cells.append('format::ShaderTarget::' + TARGET_NAMES[item])
+                elif field == 'Program' and PROGRAM_CODES[item] >= LEGACY_PROGRAM_COUNT:
+                    cells.append('static_cast<format::Technique>(' + str(PROGRAM_CODES[item]) + ')')
                 elif isinstance(item, str):
                     cells.append('format::' + kinds[field] + '::' + item)
                 else:
@@ -438,20 +488,21 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '    const rhi::RasterShaderDescription& compositeFragment) noexcept', '{', '    renderer::RenderGraphPrograms result;']
     if contents.get('scene_interface', False):
         lines.append('    result.HasSceneShaderInterface = true;')
-    for program_name in PROGRAMS.values():
+    for program_name in PROGRAM_CODES:
         for stage in (('compute', 'vertex', 'fragment') if program_name == 'RayTracing' else ('vertex', 'fragment')):
-            member = 'RayCompute' if stage == 'compute' else PROGRAM_MEMBERS[program_name] + stage.title()
+            member = program_member(program_name, stage)
+            declaration = member if PROGRAM_CODES[program_name] < LEGACY_PROGRAM_COUNT else program_name + stage.title()
             keys = [key for key in artifact_labels if key[0] == program_name and key[1] == stage]
             if not keys:
                 continue
             lines.append('    result.' + member + '.Artifact.Stage = rhi::ShaderStage::' + stage.title() + ';')
             if stage == 'vertex':
                 input_values = [{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}] if program_name == 'RayTracing' else STATIC_INPUTS
-                constant = member.upper() + '_INPUT_COUNT'
+                constant = declaration.upper() + '_INPUT_COUNT'
                 lines += [f'    static constexpr foundation::usize {constant} = {len(input_values)};',
-                          f'    static constexpr foundation::StaticArray<rhi::RasterShaderInput, {constant}> {member}Inputs', '{', '        {']
+                          f'    static constexpr foundation::StaticArray<rhi::RasterShaderInput, {constant}> {declaration}Inputs', '{', '        {']
                 lines += ['            {' + str(value['location']) + ', rhi::RasterVertexFormat::' + value['format'] + '},' for value in input_values]
-                lines += ['        },', '    };', f'    result.{member}.Inputs = {member}Inputs.AsSpan();']
+                lines += ['        },', '    };', f'    result.{member}.Inputs = {declaration}Inputs.AsSpan();']
             if program_name == 'RayTracing':
                 lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ');']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
@@ -459,12 +510,12 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 stage_bindings = [{'slot': entry['binding'], 'kind': entry['kind'], 'visibility': 'Compute', 'size': entry['size']}
                                   for entry in contents['artifacts'][keys[0]]['descriptor']['interface']['entries']]
             if stage_bindings:
-                constant = member.upper() + '_BINDING_COUNT'
+                constant = declaration.upper() + '_BINDING_COUNT'
                 lines += [f'    static constexpr foundation::usize {constant} = {len(stage_bindings)};',
-                          f'    static constexpr foundation::StaticArray<rhi::RasterBinding, {constant}> {member}Bindings', '{', '        {']
+                          f'    static constexpr foundation::StaticArray<rhi::RasterBinding, {constant}> {declaration}Bindings', '{', '        {']
                 lines += ['            {' + str(b['slot']) + ', rhi::RasterBindingKind::' + b.get('kind', 'UniformBuffer') + ', rhi::RasterVisibility::' +
                           b['visibility'] + ', ' + str(b['size']) + '},' for b in stage_bindings]
-                lines += ['        },', '    };', f'    result.{member}.Bindings = {member}Bindings.AsSpan();']
+                lines += ['        },', '    };', f'    result.{member}.Bindings = {declaration}Bindings.AsSpan();']
             for key in sorted(keys, key=lambda k: TARGET_CODES[k[2]]):
                 label, item = artifact_labels[key]
                 field = TARGET_FIELDS[key[2]]

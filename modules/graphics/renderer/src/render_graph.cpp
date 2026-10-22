@@ -40,7 +40,7 @@ constexpr usize MAX_COMPONENTS = 4;
 /// Largest packed uniform bytes of one technique: every slot at its largest block.
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
 constexpr usize NO_SET = ~usize{0};
-constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::Technique::RayTracing);
+constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::TECHNIQUE_COUNT - 1);
 constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
 bool IsAccepted(Status status) noexcept
 {
@@ -48,12 +48,14 @@ bool IsAccepted(Status status) noexcept
 }
 bool IsColorTechnique(format::Technique technique) noexcept
 {
-    return technique == format::Technique::ColorAndDepth || technique == format::Technique::MaskedColorAndDepth ||
+    return format::GetTechniqueFamily(technique) == format::Technique::ColorAndDepth ||
+           format::GetTechniqueFamily(technique) == format::Technique::MaskedColorAndDepth ||
            technique == format::Technique::RayTracing;
 }
 bool IsMaskedTechnique(format::Technique technique) noexcept
 {
-    return technique == format::Technique::MaskedColorAndDepth || technique == format::Technique::MaskedDepthOnly;
+    return format::GetTechniqueFamily(technique) == format::Technique::MaskedColorAndDepth ||
+           format::GetTechniqueFamily(technique) == format::Technique::MaskedDepthOnly;
 }
 /// Whether a technique's authored family covers the item's declared static coverage contract.
 bool IsCompatible(format::Technique technique, const RenderGraphItem& item, const RenderGraphMesh& mesh) noexcept
@@ -213,6 +215,13 @@ const rhi::RasterShaderDescription&
 GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::ShaderStage stage) noexcept
 {
     const bool isVertex = stage == rhi::ShaderStage::Vertex;
+    const usize index = static_cast<usize>(technique);
+    if (index >= format::LEGACY_TECHNIQUE_COUNT)
+    {
+        return programs
+            .AdditionalRasterStages[(index - format::LEGACY_TECHNIQUE_COUNT) * format::TECHNIQUE_STAGE_COUNT +
+                                    (isVertex == true ? 0 : 1)];
+    }
     switch (technique)
     {
         case format::Technique::ColorAndDepth:
@@ -491,6 +500,15 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
+    }
+    usize usedCount = 0;
+    for (const bool hasProgram : isUsed)
+    {
+        usedCount += hasProgram == true ? 1 : 0;
+    }
+    if (usedCount > format::MAX_AUTHORED_TECHNIQUES)
+    {
+        return Status::Unsupported;
     }
     return ValidateUniforms(plan, isUsed);
 }

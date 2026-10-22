@@ -94,10 +94,6 @@ enum DocumentView : int32
 };
 const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
 const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
-#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-/// Preview service period, about one 60 Hz display refresh.
-constexpr int32 PREVIEW_INTERVAL_MILLISECONDS = 16;
-#endif
 
 /// Paints the last presented preview frame, letterboxed to its aspect ratio.
 class PreviewImage final : public QWidget
@@ -792,8 +788,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, &RendererWorkspace::renderPreview);
     mTextureViewerOrNull->SetPreview(mPreviewOrNull);
-    mPreviewTimer.setInterval(PREVIEW_INTERVAL_MILLISECONDS);
-    connect(&mPreviewTimer, &QTimer::timeout, this, &RendererWorkspace::ServicePreview);
+    connect(&mPreviewPump, &ViewportFramePump::WorkRequested, this, &RendererWorkspace::ServicePreview);
+    connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, &mPreviewPump, &ViewportFramePump::Wake);
+    connect(mPreviewOrNull, &RenderGraphPreview::Changed, &mPreviewPump, &ViewportFramePump::Wake);
+    connect(&mPreviewOrNull->GetDisplayFrames(),
+            &GraphDisplayFrames::CapacityAvailable,
+            &mPreviewPump,
+            &ViewportFramePump::Wake);
 #endif
     connect(mLayoutX, &QSpinBox::editingFinished, this, [this]() {
         if (mSelectedNode.isEmpty() == false)
@@ -2136,6 +2137,29 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
     {
         RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, &inoutParent);
+        if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+        {
+            RenderGraphSceneQueryBudgets budgets;
+            if (mDocument.GetSceneQueryBudgets(budgets) == true)
+            {
+                editor->AddSceneQueryBudgets(budgets);
+                connect(editor,
+                        &RenderGraphPipelineEditor::SceneQueryBudgetsEdited,
+                        this,
+                        [this, editor](const RenderGraphSceneQueryBudgets& candidate) {
+                            QString error;
+                            const RenderGraphDocumentStatus status = mDocument.SetSceneQueryBudgets(candidate, error);
+                            if (status != RenderGraphDocumentStatus::Ok)
+                            {
+                                mStatus->setText(error);
+                                renderInspector();
+                                Q_EMIT NodeFieldsChanged(nullptr);
+                                return;
+                            }
+                            documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
+                        });
+            }
+        }
         connect(editor, &RenderGraphPipelineEditor::Edited, this, [this, editor](const QJsonObject& candidate) {
             QString error;
             const RenderGraphDocumentStatus status =
@@ -3290,7 +3314,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
     {
         return;
     }
-    mPreviewTimer.stop();
+    mPreviewPump.Stop();
     if (mPreviewSourceOrNull != nullptr)
     {
         disconnect(mPreviewSourceOrNull, nullptr, this, nullptr);
@@ -3315,12 +3339,12 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
             mPreviewOrNull->SetForceRaster(shouldForceRaster);
             if (mPreviewSourceOrNull->HasDevice() == true)
             {
-                mPreviewTimer.start();
+                mPreviewPump.Start();
             }
         });
         // Release generations before RenderPreview destroys the shared device.
         connect(mPreviewSourceOrNull, &RenderPreview::DeviceStopping, this, [this]() {
-            mPreviewTimer.stop();
+            mPreviewPump.Stop();
             mPreviewOrNull->Detach();
             mPreviewDeviceSerial = 0;
             if (mIsDefaultPreview == true)
@@ -3339,19 +3363,21 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
         });
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, &mPreviewPump, &ViewportFramePump::Wake);
         connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
-            if (mPreviewSourceOrNull->HasDevice() == true && mPreviewTimer.isActive() == false)
+            if (mPreviewSourceOrNull->HasDevice() == true)
             {
-                mPreviewTimer.start();
+                mPreviewPump.Start();
+                mPreviewPump.Wake();
             }
         });
         if (mPreviewSourceOrNull->HasDevice() == true)
         {
-            mPreviewTimer.start();
+            mPreviewPump.Start();
         }
 #endif
         connect(mPreviewSourceOrNull, &QObject::destroyed, this, [this]() {
-            mPreviewTimer.stop();
+            mPreviewPump.Stop();
             mPreviewSourceOrNull = nullptr;
             mCanvas->SetReferenceSize({});
             mPreviewDeviceSerial = 0;
@@ -3395,7 +3421,7 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
     }
     if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true)
     {
-        mPreviewTimer.start();
+        mPreviewPump.Start();
     }
     ServicePreview();
     return loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting;
@@ -3478,10 +3504,11 @@ void RendererWorkspace::ServicePreview()
     }
     constexpr foundation::float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
     preview.Tick(static_cast<foundation::float64>(preparationTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND);
+    mPreviewPump.SetProducerPending(preview.HasPendingWork());
     if (mPreviewSourceOrNull == nullptr || mPreviewSourceOrNull->HasDevice() == false ||
         preview.GetTargetSize().isEmpty() == true)
     {
-        mPreviewTimer.stop();
+        mPreviewPump.Stop();
     }
 #endif
 }

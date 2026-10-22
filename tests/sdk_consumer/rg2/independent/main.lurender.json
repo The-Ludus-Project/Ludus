@@ -1,0 +1,111 @@
+{
+  "configurations": [
+    {
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "raster.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "raster.view"
+        },
+        {
+          "from": "depth.texture",
+          "to": "raster.depth"
+        },
+        {
+          "from": "color.texture",
+          "to": "raster.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "gbuffer.color",
+          "to": "output.color"
+        },
+        {
+          "from": "scene.scene",
+          "to": "gbuffer.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "gbuffer.view"
+        },
+        {
+          "from": "raster.color",
+          "to": "gbuffer.color"
+        },
+        {
+          "from": "raster.depth",
+          "to": "gbuffer.depth"
+        }
+      ],
+      "id": "Default",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Presentation",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": true,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": true,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "Depth32Float",
+          "id": "depth",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "DepthTexture"
+        },
+        {
+          "asset": "rasterize.lurender.json",
+          "configuration": "ColorAndDepth",
+          "id": "raster",
+          "kind": "Subgraph"
+        },
+        {
+          "id": "output",
+          "kind": "Present"
+        },
+        {
+          "asset": "rasterize.lurender.json",
+          "configuration": "GBuffer",
+          "id": "gbuffer",
+          "kind": "Subgraph"
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "default": "Default",
+  "id": "Main",
+  "version": 1
+}

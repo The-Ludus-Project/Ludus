@@ -131,6 +131,29 @@ A shared program's stage cannot change while other assignments or techniques
 still require its previous stage. These edits share one undo/redo transaction;
 Save checks external changes before publishing file moves.
 
+Raster coverage family and shader-pair identity are separate. The historical
+`DefaultStaticOpaque.ColorAndDepth` and other family/mode records retain their
+numeric runtime IDs. Additional explicitly assigned pairs use separate manifest
+records under that family, such as
+`DefaultStaticOpaque.ColorAndDepth.Geometry.GBuffer`; the suffix is a stable
+identifier and may retain an older name after program renaming. The builder
+resolves each GraphicsPipeline by its exact stage program IDs and validates its
+complete recipe. Different entry points in one source are distinct programs.
+Legacy Raster nodes continue to select their unsuffixed records.
+
+Numeric plan version 5 and runtime package version 7 carry bounded additional
+raster pair/stage slots, preserving the earlier role IDs and record widths.
+The existing eight-technique manifest budget still applies. Older native ray
+packages (version 6) and supported older raster packages remain readable; older
+versions cannot carry extended roles. Uniform bindings are keyed by the exact
+pair, while material eligibility is checked against its coverage family. Built-in
+color/depth geometry parity checks remain on their historical pairs; independent
+pairs own their vertex functions and make no implicit depth-parity guarantee.
+Distinct same-family/mode shader passes for one view explicitly permit repeated
+scene coverage. Duplicate routes using the same pair retain duplicate-coverage
+rejection. Driver preparation and generation publication keep their existing
+Pending/Ready/failure transaction.
+
 Unused, untouched generated templates left by earlier editor versions are
 reclaimed during pipeline edits. Edited or shared sources are preserved.
 The manifest is also the registry for unfinished shader drafts: programs need
@@ -988,8 +1011,8 @@ declare in-place read/write versions; input-only ports declare reads. Offline
 lowering checks unique allocations, complete wiring, reflected names, access and
 identical element strides across carried targets. Numeric StorageBuffer records
 remain separate from image resources and from CPU-visible per-draw uniforms.
-Runtime package version 7 carries these records after stages and before pass names;
-version 6 remains readable without storage. Storage changes do not change the host
+Runtime package version 8 carries these records after stages and before pass names;
+versions 6 and 7 remain readable without storage. Storage changes do not change the host
 vertex/uniform interface identity, but activation creates a fresh job and history.
 
 The per-job storage owner validates bounded checked sizes and device ranges,

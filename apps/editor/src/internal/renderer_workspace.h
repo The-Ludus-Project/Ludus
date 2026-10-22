@@ -17,6 +17,7 @@
 #include "internal/render_graph_live_build.h"
 #include "internal/render_graph_source.h"
 #include "internal/render_graph_source_watch.h"
+#include "internal/viewport_frame_pump.h"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -413,7 +414,7 @@ private:
     /// Renderer tab texture viewer; null in builds without the native GPU preview.
     TextureViewer* mTextureViewerOrNull = nullptr;
     QTimer mSourceEditDebounce;
-    QTimer mPreviewTimer;
+    ViewportFramePump mPreviewPump;
     foundation::uint64 mPreviewDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;
     QByteArray mPreviewSceneIdentity;

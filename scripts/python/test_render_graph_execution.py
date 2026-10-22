@@ -47,6 +47,62 @@ class ExecutionTests(unittest.TestCase):
     def package(self):
         return build.verify_package(Path(self.run_build()['package']))
 
+    def test_independent_same_family_passes_keep_distinct_entry_points_in_both_emitters(self):
+        from ludus_tools import render_graph_pipeline as pipeline
+        manifest = self.value()
+        base = manifest['techniques'][0]
+        program = copy.deepcopy(next(p for p in manifest['programs'] if p['id'] == base['fragment']))
+        program.update(id='GBuffer', function='GBufferMain')
+        manifest['programs'].append(program)
+        # Two functions in the same source remain different compiled stage programs.
+        source = self.manifest.parent / program['source']
+        source.write_text(source.read_text() + '\nfloat4 GBufferMain(RasterVarying value) { return float4(0, 1, 0, 1); }\n')
+        variant = copy.deepcopy(base)
+        variant.update(id=base['id'] + '.' + base['vertex'] + '.GBuffer', fragment='GBuffer')
+        manifest['techniques'].append(variant)
+        manifest['budgets'].update(configurations=8, programs=32, artifacts=128, pipelines=64)
+        self.manifest.write_bytes(build.encoded(manifest))
+        library = self.graph.parent / 'rasterize.lurender.json'
+        document = json.loads(library.read_text())
+        configuration = copy.deepcopy(document['configurations'][0])
+        configuration['id'] = 'GBuffer'
+        node = pipeline.migrate_raster(configuration['nodes'][0], base)
+        node['shaders'][1]['program'] = 'GBuffer'
+        configuration['nodes'] = [node]
+        document['version'] = 2
+        document['configurations'].append(configuration)
+        library.write_bytes(graph.canonical_asset(document))
+        document = json.loads(self.graph.read_text())
+        configuration = document['configurations'][0]
+        configuration['nodes'].extend([
+            graph._target('gbufferColor', 'ColorTexture'), graph._target('gbufferDepth', 'DepthTexture'),
+            {'id': 'gbuffer', 'kind': 'Subgraph', 'asset': 'rasterize.lurender.json', 'configuration': 'GBuffer'},
+            {'id': 'gbufferOutput', 'kind': 'Export', 'type': 'ColorTexture'}])
+        configuration['edges'].extend([
+            {'from': 'scene.scene', 'to': 'gbuffer.scene'}, {'from': 'camera.view', 'to': 'gbuffer.view'},
+            {'from': 'gbufferColor.texture', 'to': 'gbuffer.color'},
+            {'from': 'gbufferDepth.texture', 'to': 'gbuffer.depth'},
+            {'from': 'gbuffer.color', 'to': 'gbufferOutput.texture'}])
+        self.graph.write_bytes(graph.canonical_asset(document))
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        self.assertEqual({'ColorAndDepth', 'ColorAndDepthVariant1'}, {p['Program'] for p in contents['passes']})
+        self.assertTrue(all(p['AllowsRepeatedCoverage'] == 1 for p in contents['passes']))
+        colors = [item['bytes'] for key, item in contents['artifacts'].items()
+                  if key[1:] == ('fragment', 'metal')]
+        self.assertEqual(2, len(colors))
+        self.assertNotEqual(colors[0], colors[1])
+        runtime = execution.encode_runtime_package(contents)
+        self.assertEqual(execution.PACKAGE_VERSION, struct.unpack_from('<I', runtime, 4)[0])
+        header = self.root / 'independent.h'
+        execution.emit_runtime(self.output, header, name='IndependentGraph')
+        text = header.read_text()
+        self.assertIn('static_cast<format::Technique>(5)', text)
+        self.assertIn('result.AdditionalRasterStages[1].Artifact.Msl', text)
+        self.assertIn('GBufferMain(value)', text)
+        self.assertIn('PSMain(value)', text)
+        self.assertEqual(runtime, execution.encode_runtime_package(execution._runtime_contents(self.output, 'Default')))
+
     def test_large_linked_shader_uses_character_initializers_without_losing_bytes(self):
         self.run_build()
         contents = execution._runtime_contents(self.output, 'Default')

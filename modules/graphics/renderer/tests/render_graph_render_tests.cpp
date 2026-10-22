@@ -3,6 +3,7 @@
 #include "rg2_bound.h"
 #include "rg2_depth.h"
 #include "rg2_depth_display.h"
+#include "rg2_independent.h"
 #include "rg2_masked_color.h"
 #include "rg2_masked_depth.h"
 #include "rg2_offscreen.h"
@@ -1000,4 +1001,33 @@ TEST_CASE("Native compiler publications reload a running renderer without losing
                 << ",\"maximum_delivery_service_ns\":" << maximumServiceNanoseconds << "}\n";
     }
     activation.Reset();
+}
+
+TEST_CASE("independent entry points render different colors in one graph", "[render-graph][gpu][independent]")
+{
+    GraphGpuFixture fixture;
+    core::UniquePtr<renderer::RenderGraphPackage> package;
+    renderer::RenderGraphPlan plan = packages::rg2_independent::MakePlan();
+    renderer::RenderGraphPrograms programs =
+        packages::rg2_independent::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                shaders::renderer_composite::Fragment());
+    SECTION("compiled header") {}
+    SECTION("runtime package")
+    {
+        constexpr PackageLocation LOCATION{LUDUS_RG3_INDEPENDENT_DIRECTORY, "rg2_independent.lurgrt"};
+        package = LoadPackage(LOCATION);
+        plan = package->GetPlan();
+        programs = package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    }
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Ready);
+    fixture.Update(1);
+    fixture.Render();
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr usize SAMPLE_OFFSET_PIXEL = WIDTH / 16;
+    constexpr usize LEFT = (HEIGHT / 2 * WIDTH + WIDTH / 2 - SAMPLE_OFFSET_PIXEL) * CHANNEL_COUNT;
+    constexpr usize RIGHT = (HEIGHT / 2 * WIDTH + WIDTH / 2 + SAMPLE_OFFSET_PIXEL) * CHANNEL_COUNT;
+    CHECK(fixture.Pixels[LEFT] > 0);
+    CHECK(fixture.Pixels[LEFT + 1] == 0);
+    CHECK(fixture.Pixels[RIGHT] == 0);
+    CHECK(fixture.Pixels[RIGHT + 1] > 0);
 }

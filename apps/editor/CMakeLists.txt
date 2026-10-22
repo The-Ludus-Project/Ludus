@@ -27,6 +27,26 @@ else()
 endif()
 
 # --- Qt discovery (local to the enabled editor only) -------------------------
+# Keep UI bounds and document admission tied to the owning build-service policy.
+find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+set(scene_query_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_ray.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${scene_query_policy}")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -c
+        "import json,sys; sys.path.insert(0, sys.argv[1]); from ludus_tools.render_graph_ray import SCENE_QUERY_LIMITS; print(json.dumps(SCENE_QUERY_LIMITS))"
+        "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE scene_query_status OUTPUT_VARIABLE scene_query_limits ERROR_VARIABLE scene_query_error)
+if(NOT scene_query_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read scene query limits: ${scene_query_error}")
+endif()
+set(scene_query_definitions)
+foreach(limit MIN_SURFACE_QUERIES MAX_SURFACE_QUERIES MIN_VISIBILITY_QUERIES MAX_VISIBILITY_QUERIES)
+    string(JSON scene_query_limit GET "${scene_query_limits}" "${limit}")
+    list(APPEND scene_query_definitions "LUDUS_EDITOR_${limit}=${scene_query_limit}")
+endforeach()
+set_source_files_properties(src/render_graph_scene_authoring.cpp
+    PROPERTIES COMPILE_DEFINITIONS "${scene_query_definitions}")
+
 # Use APIs available in Qt 6.4; require at least 6.4. Core/Gui/Widgets only, as
 # native system libraries or the pinned source-built WebAssembly Qt.
 # Qt is installed only by opted-in editor setup;
@@ -66,6 +86,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources src/internal/offscreen_frame_reader.h src/offscreen_frame_reader.cpp)
     # RG3b trusted render-graph preview reads exported color back through the same frame reader.
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
+        src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
     # The Renderer tab's texture viewer reads any graph attachment (colour or depth) back the same way.
