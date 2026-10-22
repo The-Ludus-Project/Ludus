@@ -275,8 +275,11 @@ def validate_manifest(value):
             continue
         keys(technique, ('id', 'configuration', 'vertex', 'fragment', 'recipes'), 'technique')
         require(type(technique['configuration']) is str and
-                technique['id'] in (family + '.' + technique['configuration'] for family in graph.MATERIALS.values()),
-                'Schema', 'technique', 'RG0 material-family technique identity required')
+                any((technique['id'] == family + '.' + technique['configuration'] or
+                    (type(technique['id']) is str and technique['id'].startswith(family + '.' + technique['configuration'] + '.') and
+                     len(technique['id'].split('.')) == 4 and all(re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', part) for part in technique['id'].split('.')[2:])))
+                    for family in graph.MATERIALS.values()),
+                'Schema', 'technique', 'material/mode identity with optional explicit vertex.fragment program suffix required')
         enum(technique['configuration'], graph.MODES, 'configuration')
         require(technique['id'] not in techniques, 'Schema', technique['id'], 'duplicate configuration')
         for stage in ('vertex', 'fragment'):
@@ -723,6 +726,22 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     for plan in plans:
         require(all(digest(snapshot.files[d['source']]) == d['sha256'] for d in plan['dependencies']),
                 'Stale', plan['configuration'], 'graph changed during plan compilation')
+        # Pipeline stage IDs select a pair within the coverage family. Legacy Raster
+        # operations keep selecting the unsuffixed family technique.
+        for operation in plan['passes']:
+            node = operation.get('pipeline', {})
+            if node.get('kind') != 'GraphicsPipeline':
+                continue
+            assigned = {shader['stage']: shader['program'] for shader in node['shaders']}
+            base = operation['technique']
+            candidates = [identity for identity, technique in techniques.items()
+                          if (identity == base or identity.startswith(base + '.')) and
+                          all(technique[stage] == assigned[stage] for stage in ('vertex', 'fragment')) and
+                          any(all(recipe[key] == value for key, value in node['state'].items())
+                              for recipe in technique['recipes'])]
+            if candidates:
+                operation['technique'] = min(candidates, key=lambda identity: (identity != base, identity))
+        plan['techniques'] = sorted({operation['technique'] for operation in plan['passes'] if 'technique' in operation})
         for missing in sorted(set(plan['techniques']) - techniques.keys()):
             operation = next(item for item in plan['passes'] if item.get('technique') == missing)
             fail('Configuration', operation['source'] + '#' + operation['id'],

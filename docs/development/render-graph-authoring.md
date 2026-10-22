@@ -81,8 +81,16 @@ program name with a matching stage. New sources appear immediately in **Source**
 assignments form one undo step. Completing an executable graphics or triangle ray
 pipeline also registers its technique and pipeline recipe in the root manifest
 in that same undo step, including pipelines in imported subgraphs. Recipe edits
-retain existing recipes; conflicting program selections for a shared technique
-or exhausted manifest budgets preserve the draft and explain the repair.
+retain existing recipes. Graphics passes in the same package can select different
+vertex/fragment programs, including separate functions in one `.slang` source.
+The editor registers an independent technique within the material/mode family
+when a pair differs; legacy Raster assignments remain unchanged. In Shaders,
+select the desired program IDs. To share one source with different entry points,
+register separate programs in the manifest with the same `source` and different
+`function` values, then select those programs on the nodes. The compiler preserves
+these choices in both compiled headers and runtime packages. Exhausted manifest
+budgets preserve the draft and explain the repair. Ray callbacks still share the
+single bounded ray technique.
 Incomplete shader tables remain authoring drafts. Name/file conflicts or incompatible references
 preserve the draft. Templates are starting points: vertex/fragment interfaces use
 the manifest schemas; ray-generation, miss and closest-hit functions use the

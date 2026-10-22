@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
+
 #include <ludus/content/render_graph_format/scene_data.h>
 #include <ludus/foundation/base/types.h>
 
@@ -11,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 4;
+inline constexpr foundation::uint32 VERSION = 5;
 /// Maximum authored passes in one admitted configuration.
 inline constexpr foundation::usize MAX_PASSES = 16;
 /// Maximum logical resources; depth may alias a color allocation's private aspect.
@@ -22,10 +24,19 @@ inline constexpr foundation::usize MAX_CAMERAS = 8;
 inline constexpr foundation::usize MAX_ITEMS = 128;
 /// Largest supported mesh table in one scene replacement.
 inline constexpr foundation::usize MAX_MESHES = 32;
-/// Explicit finite technique count; no output-connectivity specialization.
-inline constexpr foundation::usize TECHNIQUE_COUNT = 5;
+/// Legacy program roles, including the one ray role; their numeric IDs remain stable.
+inline constexpr foundation::usize LEGACY_TECHNIQUE_COUNT = 5;
+/// Maximum authored techniques, matching the build-manifest configuration bound.
+inline constexpr foundation::usize MAX_AUTHORED_TECHNIQUES = 8;
+/// Number of additional shader pairs per raster coverage family.
+inline constexpr foundation::usize ADDITIONAL_VARIANTS_PER_FAMILY = MAX_AUTHORED_TECHNIQUES - 1;
 /// Number of raster stage pairs; ray traversal uses separate compute/image roles.
 inline constexpr foundation::usize RASTER_TECHNIQUE_COUNT = 4;
+/// Additional raster roles encode family as (role - LEGACY_TECHNIQUE_COUNT) modulo RASTER_TECHNIQUE_COUNT.
+inline constexpr foundation::usize ADDITIONAL_RASTER_TECHNIQUE_COUNT =
+    RASTER_TECHNIQUE_COUNT * ADDITIONAL_VARIANTS_PER_FAMILY;
+/// Bounded shader-pair slots, independent of how many graph passes reuse a pair.
+inline constexpr foundation::usize TECHNIQUE_COUNT = LEGACY_TECHNIQUE_COUNT + ADDITIONAL_RASTER_TECHNIQUE_COUNT;
 /// One ray invocation per configuration; current and pending scenes share four GPU job slots.
 inline constexpr foundation::usize MAX_RAY_PASSES = 1;
 /// Number of shader stages (vertex and fragment) of one technique.
@@ -50,7 +61,10 @@ inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 inline constexpr foundation::usize PASS_FIELD_COUNT = 10;
 /// Resource or input index absent from the declared plan.
 inline constexpr foundation::uint32 ABSENT = ~foundation::uint32{0};
-/// Exact compiled program role, independent of graph instance and viewport size.
+/// Compiled shader-pair role, independent of graph instance and viewport size.
+/// Values below LEGACY_TECHNIQUE_COUNT name the historical pairs. Additional
+/// raster pairs occupy [LEGACY_TECHNIQUE_COUNT, TECHNIQUE_COUNT); GetTechniqueFamily
+/// returns their coverage family. Numeric plans select these bounded values explicitly.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
 enum class Technique : foundation::uint32
 {
@@ -60,6 +74,15 @@ enum class Technique : foundation::uint32
     MaskedDepthOnly,     ///< Separately authored masked coverage function plus identical masked geometry path.
     RayTracing,          ///< Authored triangle ray generation/miss/closest-hit functions, lowered to GPU BVH traversal.
 };
+/// Return the coverage family of a bounded compiled shader-pair role; no allocation.
+/// @pre The numeric role is less than TECHNIQUE_COUNT.
+[[nodiscard]] LUDUS_INLINE constexpr Technique GetTechniqueFamily(Technique technique) noexcept
+{
+    const foundation::usize index = static_cast<foundation::usize>(technique);
+    return index < LEGACY_TECHNIQUE_COUNT
+               ? technique
+               : static_cast<Technique>((index - LEGACY_TECHNIQUE_COUNT) % RASTER_TECHNIQUE_COUNT);
+}
 /// Logical image aspect; physical depth is owned by its Backing allocation.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
 enum class Aspect : foundation::uint32
