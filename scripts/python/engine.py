@@ -18,9 +18,10 @@ import tempfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Iterator, Sequence
 
 from formatting import FormattingError, format_source
+import init_cache
 import init_progress
 import init_terminal
 import managed_venv
@@ -372,6 +373,36 @@ def tool_env(root: Path) -> dict[str, str]:
     return env
 
 
+def managed_package_versions(root: Path, package_names: Sequence[str]) -> dict[str, str]:
+    """Installed versions of ``package_names`` in the managed environment, from one interpreter start.
+
+    A package that is not installed maps to an empty string; an unusable
+    environment returns an empty mapping.
+    """
+    python = venv_python(root)
+    if not python.exists():
+        return {}
+    script = (
+        "import json, sys\n"
+        "from importlib import metadata\n"
+        "result = {}\n"
+        "for name in sys.argv[1:]:\n"
+        "    try:\n"
+        "        result[name] = metadata.version(name)\n"
+        "    except metadata.PackageNotFoundError:\n"
+        "        result[name] = ''\n"
+        "print(json.dumps(result))\n"
+    )
+    return_code, output = capture_command_quiet([python, "-c", script, *package_names], cwd=root)
+    if return_code != 0 or not output:
+        return {}
+    try:
+        versions = json.loads(output.splitlines()[-1])
+    except ValueError:
+        return {}
+    return {name: str(versions.get(name, "")) for name in package_names} if isinstance(versions, dict) else {}
+
+
 def managed_package_version(root: Path, package_name: str) -> str:
     python = venv_python(root)
     if not python.exists():
@@ -453,8 +484,19 @@ def create_or_update_venv(root: Path) -> None:
         raise EngineError(str(exc)) from exc
 
 
+MANAGED_PACKAGES = ("cmake", "ninja", "conan")
+
+
 def install_managed_tools(root: Path, versions: dict[str, dict[str, str]]) -> None:
     managed = versions["managed"]
+    installed = managed_package_versions(root, MANAGED_PACKAGES)
+    is_installed = (all(installed.get(name) == managed[name] for name in MANAGED_PACKAGES)
+                    and all(managed_executable(root, name).exists() for name in MANAGED_PACKAGES))
+    if is_installed and not init_cache.is_forced():
+        # The pins are exact, so pip would only reinstall the same versions.
+        init_progress.up_to_date(f"pinned CMake {managed['cmake']}, Ninja {managed['ninja']} and "
+                                 f"Conan {managed['conan']} are already installed")
+        return
     packages = [
         f"cmake=={managed['cmake']}",
         f"ninja=={managed['ninja']}",
@@ -635,6 +677,31 @@ def probe_macos_sdk(root: Path, sdk: Path, libcxx: Path) -> tuple[int, str]:
             cwd=root, input_text=source, timeout=30)
 
 
+def macos_sdk_probe_inputs(root: Path, sdk: Path, libcxx: Path) -> dict[str, object]:
+    """What the SDK compile-link probe depends on: the compiler binary, the SDK and the libc++ headers."""
+    compiler = clang_cxx(root).resolve()
+    try:
+        status = compiler.stat()
+        compiler_identity: object = [str(compiler), status.st_size, status.st_mtime_ns]
+    except OSError:
+        compiler_identity = "missing"
+    return {"compiler": compiler_identity, "sdk": str(sdk),
+            "sdk_settings": init_cache.file_digest(sdk / "SDKSettings.json"), "libcxx": str(libcxx),
+            "libcxx_config": init_cache.file_digest(libcxx / "__config")}
+
+
+def probe_macos_sdk_once(root: Path, sdk: Path, libcxx: Path) -> tuple[int, str]:
+    """``probe_macos_sdk``, skipped while the compiler, SDK and headers match the last success."""
+    stamp = init_cache.stamp_path(root, "macos-sdk-probe")
+    inputs = macos_sdk_probe_inputs(root, sdk, libcxx)
+    if init_cache.is_current(stamp, inputs):
+        return 0, ""
+    code, output = probe_macos_sdk(root, sdk, libcxx)
+    if code == 0:
+        init_cache.record(stamp, inputs)
+    return code, output
+
+
 def configure_macos_sdk(root: Path, llvm_major: int) -> None:
     """Select and link a macOS SDK that the pinned Clang ``llvm_major`` can compile and link with."""
     explicit = os.environ.get("SDKROOT", "")
@@ -656,7 +723,7 @@ def configure_macos_sdk(root: Path, llvm_major: int) -> None:
     candidates = [Path(sdk).resolve()] if explicit else macos_sdk_candidates(Path(sdk))
     failures = []
     for candidate in candidates:
-        code, output = probe_macos_sdk(root, candidate, libcxx)
+        code, output = probe_macos_sdk_once(root, candidate, libcxx)
         if code == 0:
             link_or_replace_symlink(root / "out/host-tools/macos-sdk", candidate)
             link_or_replace_symlink(root / "out/host-tools/libcxx-include", libcxx)
@@ -688,13 +755,29 @@ def native_profile_contents(root: Path) -> str:
     return text
 
 
+# First output lines of version probes, keyed by the resolved executable, its
+# size and modification time, and the probe arguments. Setup asks for the same
+# tool versions several times (system check, toolchain shims, doctor); an
+# executable replaced by a package install gets a new key and is probed again.
+_version_probes: dict[tuple[object, ...], str] = {}
+
+
 def executable_version(path: str, args: Sequence[str], root: Path) -> str:
     if not path:
         return ""
+    resolved = path if os.path.isabs(path) else (shutil.which(path) or path)
+    try:
+        status = os.stat(resolved)
+        key: tuple[object, ...] | None = (os.path.realpath(resolved), status.st_size, status.st_mtime_ns, tuple(args))
+    except OSError:
+        key = None
+    if key is not None and key in _version_probes:
+        return _version_probes[key]
     return_code, output = capture_command_quiet([path, *args], cwd=root)
-    if return_code != 0 or not output:
-        return ""
-    return output.splitlines()[0]
+    version = output.splitlines()[0] if return_code == 0 and output else ""
+    if key is not None:
+        _version_probes[key] = version
+    return version
 
 
 def system_tool_statuses(root: Path, versions: dict[str, dict[str, str]]) -> list[ToolStatus]:
@@ -752,10 +835,11 @@ def managed_tool_statuses(root: Path, versions: dict[str, dict[str, str]]) -> li
     ]
 
     statuses: list[ToolStatus] = []
+    installed = managed_package_versions(root, [package_name for _, _, package_name in specs])
     for label, executable, package_name in specs:
         path = managed_executable(root, executable)
         expected = managed[package_name]
-        package_version = managed_package_version(root, package_name)
+        package_version = installed.get(package_name, "")
         found = path.exists() and bool(package_version)
         statuses.append(
             ToolStatus(
@@ -1121,7 +1205,7 @@ def system_prerequisites_need_install(root: Path, versions: dict[str, dict[str, 
 def install_ubuntu_system_prerequisites(root: Path, versions: dict[str, dict[str, str]]) -> None:
     configure_system_tool_shims(root, versions)
     if not system_prerequisites_need_install(root, versions):
-        print("Ubuntu system prerequisites already satisfy Milestone 0.")
+        init_progress.up_to_date("Ubuntu system prerequisites are already installed")
         return
 
     if not host_supports_apt_install():
@@ -1259,12 +1343,50 @@ def export_local_recipes(root: Path, *, locked: bool = False) -> None:
                 f"#{revision}. Run ./init.sh without --locked to update conan.lock.")
 
 
+def conan_stamp_inputs(root: Path, presets: Sequence[str], profile_path: Path, *, locked: bool) -> dict[str, object]:
+    """Everything a Conan step reads: per-preset bootstrap fingerprints, profile, recipes and cache."""
+    return {
+        "presets": {preset: preset_bootstrap_fingerprint(root, preset) for preset in presets},
+        "profile": init_cache.file_digest(Path(profile_path)),
+        "recipes": {recipe: init_cache.tree_digest(root / recipe) for recipe in LOCAL_CONAN_RECIPES},
+        "locked": locked,
+        "conan_home": str(conan_home(root)),
+    }
+
+
+def conan_outputs_exist(root: Path, presets: Sequence[str]) -> bool:
+    """Every preset has its generated toolchain and a current bootstrap marker, and the cache exists."""
+    if not (conan_home(root) / "p").is_dir():
+        return False
+    return all((root / "out" / "conan" / preset / "conan_toolchain.cmake").is_file()
+               and bootstrap_marker_is_current(root, preset) for preset in presets)
+
+
+def conan_step_is_current(root: Path, presets: Sequence[str], profile_path: Path, *, locked: bool) -> bool:
+    """Whether the Conan step can be skipped; any doubt (unreadable inputs) means it runs."""
+    try:
+        return conan_outputs_exist(root, presets) and init_cache.is_current(
+            init_cache.stamp_path(root, "conan"), conan_stamp_inputs(root, presets, profile_path, locked=locked))
+    except (EngineError, OSError):
+        return False
+
+
+def record_conan_step(root: Path, presets: Sequence[str], profile_path: Path, *, locked: bool) -> None:
+    try:
+        init_cache.record(init_cache.stamp_path(root, "conan"),
+                          conan_stamp_inputs(root, presets, profile_path, locked=locked))
+    except (EngineError, OSError) as error:
+        # Only the next run's skip is lost; this run's installs succeeded.
+        print(f"Could not record the Conan inputs; the next ./init.sh repeats the Conan step: {error}")
+
+
 def prepare_conan_artifacts(
     root: Path,
     versions: dict[str, dict[str, str]],
     presets: Sequence[str],
     *,
     locked: bool = False,
+    after_host_tools: Callable[[], None] | None = None,
 ) -> None:
     if locked and not (root / "conan.lock").is_file():
         raise EngineError("Locked initialization requires the committed conan.lock")
@@ -1278,7 +1400,13 @@ def prepare_conan_artifacts(
     install_managed_tools(root, versions)
     validate_managed_tools(root, versions)
     profile_path = install_conan_profile(root)
+    if after_host_tools is not None:
+        after_host_tools()
     init_progress.begin("conan")
+    if conan_step_is_current(root, presets, profile_path, locked=locked):
+        init_progress.up_to_date("Conan dependencies for " + ", ".join(presets) +
+                                 " already match conan.lock, the profile and the local recipes")
+        return
     # Exporting makes this checkout's recipe revisions the latest in the cache,
     # so a shared cache must not interleave another checkout's export before
     # this one resolves its lock and installs.
@@ -1295,6 +1423,8 @@ def prepare_conan_artifacts(
             init_progress.detail(index, len(presets), "conan install " + preset)
             conan_install_for_preset(root, profile_path, preset, locked=locked)
         init_progress.detail(len(presets), len(presets), "Conan dependencies ready")
+        # Recorded after the lock update, so the stamp names the conan.lock that was installed.
+        record_conan_step(root, presets, profile_path, locked=locked)
 
 
 def cmake_cache_value(cache_path: Path, name: str) -> str | None:
@@ -1447,15 +1577,99 @@ def configure_needs_fresh_cache(root: Path, preset: str) -> bool:
     return any(entry in cache_text for entry in stale_package_cache_entries) or bool(cmake_cache_repair_reasons(root, preset))
 
 
-def cmake_configure(root: Path, preset: str, extra_args: Sequence[str] = ()) -> None:
+# Environment variables that CMakeLists.txt reads while configuring.
+CONFIGURE_ENVIRONMENT = ("CI", "LUDUS_ENABLE_CCACHE", "LUDUS_CCACHE_SHARE_CHECKOUTS", "CC", "CXX", "CFLAGS",
+                         "CXXFLAGS", "LDFLAGS", "SDKROOT")
+CONFIGURE_STAMP_NAME = ".ludus-init-configure.json"
+COMPILER_CACHE_DEFINITION = "-DLUDUS_ENABLE_CCACHE="
+BOOLEAN_TRUE_WORDS = frozenset({"1", "ON", "YES", "TRUE", "Y"})
+BOOLEAN_FALSE_WORDS = frozenset({"0", "OFF", "NO", "FALSE", "N", "IGNORE", ""})
+
+
+def configure_stamp_inputs(root: Path, preset: str, argv: Sequence[object]) -> dict[str, object]:
+    """What one CMake configure reads beyond the files its build re-checks on every run."""
+    from init_options import read_options
+    # The ccache choice is passed only for a new build tree and then kept in
+    # the cache (checked by ``cache_matches_definitions``); LUDUS_ENABLE_CCACHE
+    # in the environment below still forces a configure when it changes.
+    arguments = [str(argument) for argument in argv if not str(argument).startswith(COMPILER_CACHE_DEFINITION)]
+    return {
+        "argv": arguments,
+        "presets": init_cache.file_digest(root / "CMakePresets.json"),
+        "user_presets": init_cache.file_digest(root / "CMakeUserPresets.json"),
+        "options": read_options(root, preset),
+        "toolchain": init_cache.file_digest(root / "out" / "conan" / preset / "conan_toolchain.cmake"),
+        "environment": {name: os.environ.get(name, "") for name in CONFIGURE_ENVIRONMENT},
+    }
+
+
+def cache_value_matches(actual: str, requested: str) -> bool:
+    if actual == requested:
+        return True
+    words = (actual.upper(), requested.upper())
+    return (all(word in BOOLEAN_TRUE_WORDS for word in words)
+            or all(word in BOOLEAN_FALSE_WORDS or word.endswith("-NOTFOUND") for word in words))
+
+
+def cache_matches_definitions(cache_path: Path, argv: Sequence[object]) -> bool:
+    """Whether every ``-DNAME=VALUE`` (or ``-DNAME:TYPE=VALUE``) in ``argv`` is already in the cache."""
+    for argument in map(str, argv):
+        if not argument.startswith("-D") or "=" not in argument:
+            continue
+        name, _, requested = argument[len("-D"):].partition("=")
+        actual = cmake_cache_value(cache_path, name.partition(":")[0])
+        if actual is None or not cache_value_matches(actual, requested):
+            return False
+    return True
+
+
+def codemodel_replies_cover_queries(build_dir: Path) -> bool:
+    """Whether the newest File API reply answers every client query, so a configure can be skipped."""
+    query_dir = build_dir / ".cmake" / "api" / "v1" / "query"
+    clients = sorted(path.name for path in query_dir.glob("client-*")) if query_dir.is_dir() else []
+    if not clients:
+        return True
+    indexes = sorted((build_dir / ".cmake" / "api" / "v1" / "reply").glob("index-*.json"))
+    if not indexes:
+        return False
+    try:
+        reply = json.loads(indexes[-1].read_text(encoding="utf-8")).get("reply", {})
+    except (OSError, ValueError, AttributeError):
+        return False
+    return all(client in reply for client in clients)
+
+
+def configure_is_current(root: Path, preset: str, argv: Sequence[object]) -> bool:
+    """Whether the last init configure of ``preset`` used the same inputs and its build files still exist.
+
+    The generated build reruns CMake on its own when a CMakeLists.txt, an
+    included module or the Git HEAD changes, so init only has to configure
+    when something outside those files changed: its arguments, the presets,
+    the saved init options, the Conan toolchain or the configure environment.
+    """
+    build_dir = build_dir_for_preset(root, preset)
+    cache_path = build_dir / "CMakeCache.txt"
+    if not cache_path.is_file() or not (build_dir / "build.ninja").is_file():
+        return False
+    if configure_needs_fresh_cache(root, preset) or not cache_matches_definitions(cache_path, argv):
+        return False
+    if not codemodel_replies_cover_queries(build_dir):
+        return False
+    return init_cache.is_current(build_dir / CONFIGURE_STAMP_NAME, configure_stamp_inputs(root, preset, argv))
+
+
+def cmake_configure(root: Path, preset: str, extra_args: Sequence[str] = (), *, reuse_current_cache: bool = False) -> None:
+    """Configure ``preset``; with ``reuse_current_cache``, skip when ``configure_is_current`` holds."""
     from init_options import read_options
     from init_editor import preview_tool_args
     options = read_options(root, preset)
     if options.get("LUDUS_EDITOR_RENDER_PREVIEW", False):
         extra_args = [*preview_tool_args(root), *extra_args]
-    request_codemodel(build_dir_for_preset(root, preset))
+    build_dir = build_dir_for_preset(root, preset)
+    request_codemodel(build_dir)
     args: list[object] = [cmake(root)]
-    if configure_needs_fresh_cache(root, preset):
+    is_fresh = configure_needs_fresh_cache(root, preset)
+    if is_fresh:
         print(f"Refreshing stale CMake cache for {preset}.")
         args.append("--fresh")
     args.extend(["-U", "Catch2_DIR", "--preset", preset])
@@ -1464,10 +1678,22 @@ def cmake_configure(root: Path, preset: str, extra_args: Sequence[str] = ()) -> 
         # direct CMake invocation opted out in the existing cache.
         args.append("-DLUDUS_USE_INIT_OPTIONS=ON")
     args.extend(extra_args)
+    if reuse_current_cache:
+        from init_editor import compiler_cache_args
+        args.extend(compiler_cache_args(root, preset, sys.modules[__name__]))
+    stamp = build_dir / CONFIGURE_STAMP_NAME
+    if reuse_current_cache and not is_fresh and configure_is_current(root, preset, args):
+        init_progress.up_to_date(f"the {preset} CMake cache already matches this setup; "
+                                 "the build reruns CMake if a CMake file changes")
+        return
+    # A configure that fails or uses other arguments must not leave an old stamp behind.
+    init_cache.forget([stamp])
     run(args, cwd=root, env=tool_env(root))
     if preset.startswith("macos-"):
-        (build_dir_for_preset(root, preset) / ".ludus-macos-toolchain.json").write_text(
+        (build_dir / ".ludus-macos-toolchain.json").write_text(
             json.dumps(macos_toolchain_identity(root), sort_keys=True) + "\n")
+    if reuse_current_cache:
+        init_cache.record(stamp, configure_stamp_inputs(root, preset, args))
 
 
 def cmake_build(root: Path, preset: str, extra_args: Sequence[str] = ()) -> None:
@@ -1565,7 +1791,9 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
     else:
         if platform.system() == "Darwin":
             configure_system_tool_shims(root, versions)
-            if system_prerequisites_need_install(root, versions):
+            if not system_prerequisites_need_install(root, versions):
+                init_progress.up_to_date("the pinned Homebrew LLVM and Python are already installed")
+            else:
                 brew = shutil.which("brew")
                 formulae = [formula for formula, _ in homebrew_llvm_formulae(llvm_major_version(versions))]
                 if not brew:
@@ -1582,11 +1810,25 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
         presets = HOST_PRESETS
     from init_options import save_options
     save_options(root, presets, args)
-    prepare_conan_artifacts(root, versions, presets, locked=args.locked)
     from init_editor import prepare_editor_preview
-    if args.with_editor and args.with_editor_preview:
-        init_progress.begin("preview_tools")
-    prepare_editor_preview(args, sys.modules[__name__])
+    preparation = None
+
+    def start_preview_tools() -> None:
+        # Shader tools only need the managed Python, so they download and
+        # verify in the background while Conan runs; the editor step waits.
+        nonlocal preparation
+        preparation = prepare_editor_preview(args, sys.modules[__name__])
+
+    try:
+        prepare_conan_artifacts(root, versions, presets, locked=args.locked, after_host_tools=start_preview_tools)
+        return run_remaining_init_steps(args, root, preset, presets, run_validation, painter, preparation)
+    finally:
+        if preparation is not None:
+            preparation.cancel()
+
+
+def run_remaining_init_steps(args: argparse.Namespace, root: Path, preset: str, presets: Sequence[str],
+                             run_validation: bool, painter: init_terminal.Painter, preparation) -> int:
     init_progress.begin("cmake_caches")
     repair_existing_cmake_caches(root, presets)
     if args.with_rad_debugger:
@@ -1602,7 +1844,7 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
 
     if getattr(args, "with_editor", False):
         from init_editor import setup_editor
-        setup_editor(args, sys.modules[__name__])
+        setup_editor(args, sys.modules[__name__], preparation=preparation)
 
     if getattr(args, "run_tests", False) and not run_validation:
         init_progress.begin("tests")
