@@ -381,3 +381,41 @@ class MaterialUniformLayoutTests(unittest.TestCase):
         self.assertEqual(uniform_shape(value),'Float4')
         value['elementType']['scalarType']='uint32'
         self.assertEqual(uniform_shape(value),'Opaque')
+
+class NativeStorageRecordTests(unittest.TestCase):
+    def test_records_require_native_profile_and_match_reflected_offsets(self):
+        data = RasterReflectionTests.compute_fixture(self)
+        fields = [{'name': 'Weight', 'type': {'kind': 'scalar', 'scalarType': 'float32'},
+                   'binding': {'kind': 'uniform', 'offset': 0, 'size': 4}},
+                  {'name': 'Sample', 'type': {'kind': 'vector', 'elementCount': 4,
+                                            'elementType': {'kind': 'scalar', 'scalarType': 'uint32'}},
+                   'binding': {'kind': 'uniform', 'offset': 16, 'size': 16}}]
+        data['parameters'][0]['type']['resultType'] = {'kind': 'struct', 'name': 'Reservoir', 'fields': fields}
+        with self.assertRaises(RuntimeError):
+            raster_interface(data, 'compute')
+        interface = raster_interface(data, 'compute', structured_records=True)
+        self.assertEqual(32, interface['entries'][0]['size'])
+        self.assertEqual('uint32', interface['entries'][0]['fields'][1]['scalar'])
+        fields[1]['binding']['offset'] = 4
+        with self.assertRaisesRegex(RuntimeError, 'differs from std430'):
+            raster_interface(data, 'compute', structured_records=True)
+
+    def test_binary_array_stride_must_match_the_reflected_element(self):
+        from compile_raster import verify_storage_record_strides
+        def instruction(opcode, *operands):
+            return [((len(operands) + 1) << 16) | opcode, *operands]
+        def binary(stride):
+            words = [0x07230203, 0x00010300, 0, 10, 0]
+            words += instruction(71, 5, 33, 6)  # variable binding
+            words += instruction(71, 5, 34, 0)  # group zero
+            words += instruction(71, 2, 6, stride)  # runtime array stride
+            words += instruction(29, 2, 1)  # runtime array of a record
+            words += instruction(30, 3, 2)  # block containing the array
+            words += instruction(32, 4, 12, 3)  # StorageBuffer pointer to block
+            words += instruction(59, 4, 5, 12)  # resource variable
+            return struct.pack('<' + 'I' * len(words), *words)
+        interface = {'entries': [{'binding': 6, 'kind': 'StorageReadWrite', 'size': 32, 'fields': []}]}
+        verify_storage_record_strides(binary(32), interface)
+        for invalid in (binary(16), binary(32)[:-1], b''):
+            with self.assertRaises(RuntimeError):
+                verify_storage_record_strides(invalid, interface)

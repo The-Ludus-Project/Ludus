@@ -767,6 +767,86 @@ and its [raygen source](../../tests/sdk_consumer/rg2/scene_ray/main_shaders/gene
 That acceptance shader exercises scene data and queries without implementing NEE
 or bounce transport, so it is also a minimal place to start authoring.
 
+### Create structured reservoir buffers
+
+Native triangle-ray pipelines can bind up to two graph-owned structured buffers.
+Add **StructuredBuffer** nodes from the canvas Add Node menu (or Properties).
+Each node exposes `buffer: Buffer`. Edit **stride** in bytes and **count** through
+**Edit Node** on the canvas; the same fields appear in Properties. `ColorTarget`
+allocates one element per resolved output pixel, including view-relative resize;
+a positive integer allocates a fixed element count. A new node starts with a
+16-byte stride and `ColorTarget` count.
+
+For each buffer, add a `Buffer` input to the RayTracingPipeline and connect the
+node's `buffer` output. The input ID is the shader binding name, for example
+`ReservoirA` or `ReservoirB`. A read-only input uses `StructuredBuffer<T>`.
+To write, add a paired writable `Buffer` output with format `Bytes`, **Load** and
+**Store**; it uses `RWStructuredBuffer<T>`. These outputs name updated versions of
+the same allocation. Subgraph interfaces can forward them. One allocation cannot
+occupy two input ports of the same invocation.
+
+Declare the element schema and matching bindings in the package's build manifest
+(`main.lushader.json`, editable in the graph's source editor). For example:
+
+```json
+{
+  "id": "Reservoir",
+  "role": "Storage",
+  "fields": [
+    {"id": "Sample", "type": "Float4"},
+    {"id": "Weights", "type": "Float4"}
+  ]
+}
+```
+
+Add bindings to the ray program(s) that use them:
+
+```json
+"bindings": [
+  {"id": "ReservoirA", "schema": "Reservoir", "slot": 6, "access": "ReadWrite"},
+  {"id": "ReservoirB", "schema": "Reservoir", "slot": 7, "access": "ReadWrite"}
+]
+```
+
+Slots 6 and 7 are the user storage slots; slots 0–5 belong to the renderer. The
+builder merges identical declarations shared by ray callbacks and rejects
+conflicting names, slots, schemas or access. Storage fields support `Float32`, `UInt32`, `Int32` and their two-, three-
+and four-component vector forms (`Float2`…`Float4`, `UInt2`…`UInt4`, `Int2`…`Int4`).
+Nested structs, arrays, matrices and resource-valued fields are rejected. Generated declarations are visible to all linked callbacks. Set both
+nodes' stride to **32** for this example. Reflection on every carried native
+target must agree with each node's stride, binding name and access. Prefer
+`Float4` fields for layouts shared across targets. Every declared buffer must be
+connected and used; missing or additional reflected bindings fail the build.
+
+Your scene ray-generation callback can now read and write typed records:
+
+```slang
+uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+Reservoir previous = ReservoirA[pixel];
+Reservoir current = previous;
+current.Weights.x += 1;
+ReservoirB[pixel] = current;
+```
+
+Both buffers start completely zeroed. Contents persist across progressive
+samples of the same accepted extraction. Alternate A/B in the shader using
+`launch.SampleIndex` when implementing temporal ping-pong; the graph does not
+swap bindings. A scene, camera, extent or shader-generation replacement allocates
+fresh storage with new history. Pending or failed replacements retain the old
+job's buffers and drawable output. Buffers retire through the RHI with their
+last GPU uses. Their total allocation and zero-upload scratch count against the
+existing preparation/GPU budgets, and each range must fit the device storage limit.
+
+The shader owns index bounds and race freedom. Keep writes to disjoint elements;
+reading another pixel's current-dispatch writes has no global synchronization.
+The first dispatch must handle zero history. Fixed counts are not automatically
+large enough for pixel indexing. Strides are multiples of four up to 4096 bytes;
+counts are at most 16,777,216 elements. This profile binds storage only to native
+triangle-ray compute, with one ray invocation per configuration. Arbitrary
+compute/raster storage, host uploads, buffer exports and history across extraction
+replacement remain unsupported. The [two-reservoir GPU fixture](../../tests/sdk_consumer/rg2/storage_ray/reservoir.slang)
+checks alternating writes, persistence and replacement reset.
+
 ## Start customizing the renderer
 
 You don't need to create a render graph first. The engine ships a default one, and
@@ -1025,6 +1105,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | Scene | None | Outputs `scene: Scene`; declares a future scene-snapshot binding |
 | Camera | `active`, `role` (`Presentation` or `Offscreen`), `target_type` | Input `target` of the specified texture type; output `view: View`. An inactive camera may leave target unbound and needs no route, but cannot drive a raster pass |
 | Target | `type`, `format`, `extent: [width, height]` or `"RenderSize"`, `samples`, `imported`, `initialized`, `presentation` | Optional `size: RenderSize` input; outputs `texture` of the specified texture type; names physical resource version 0 |
+| StructuredBuffer (version 2) | `stride` in bytes, `count` as a positive integer or `"ColorTarget"` | Outputs zero-initialized `buffer: Buffer`; native ray storage follows the [reservoir workflow](#create-structured-reservoir-buffers) |
 | RenderSize (version 2) | Fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | Optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
 | Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
 | Subgraph | `asset`, `configuration` | Selected asset interface defines its input/output ports |
@@ -1728,11 +1809,12 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h` (layout version 6, with
-native-only ray roles, per-pass Scene data masks, view-relative size policies, pass
-names, uniform binding/block/field records and GLSL ES block names; raster packages
-from versions 2 through 5 remain readable, with versions 2 through 4 implying full
-Scene data. Older software-ray packages require recooking). `emit-runtime`
+`ludus/content/render_graph_format/runtime_package.h` (layout version 8, with
+independent raster shader pairs, native-only ray roles, structured storage records,
+per-pass Scene data masks, view-relative size policies, pass names, uniform
+binding/block/field records and GLSL ES block names; native-ray packages from
+versions 6 and 7 and raster packages from versions 2 through 7 remain readable,
+with versions 2 through 4 implying full Scene data. Older software-ray packages require recooking). `emit-runtime`
 headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
 interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to
 `ludus_compile_render_graph`; it sets `<NAME>_RUNTIME_PACKAGE` to the cooked file.

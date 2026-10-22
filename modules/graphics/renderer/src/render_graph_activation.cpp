@@ -141,8 +141,11 @@ struct RenderGraphPackage::State final
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
     StaticArray<BorrowedView<const char>, format::MAX_PASSES> PassNames{};
     bool HasPassNames = false;
+    StaticArray<format::StorageBuffer, format::MAX_STORAGE_BUFFERS> StorageBuffers{};
+    usize StorageBufferCount = 0;
     bool HasRelativeSizes = false;
     bool HasSceneData = false;
+    bool HasNativeRay = false;
     bool HasIndependentPrograms = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
@@ -168,6 +171,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     for (uint32 stage = 0; stage < stageCount; ++stage)
     {
         const uint32 role = inoutReader.ReadWord();
+        if (HasNativeRay == false && role >= static_cast<uint32>(format::StageRole::RayCompute))
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
         const uint32 target = inoutReader.ReadWord();
         const uint32 inputCount = inoutReader.ReadWord();
         const uint32 entryBytes = inoutReader.ReadWord();
@@ -463,15 +470,17 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
-         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
-    candidate->HasIndependentPrograms = version >= format::PACKAGE_VERSION;
+    candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
+    candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->Header.Version = format::VERSION;
     candidate->Header.ResourceCount = reader.ReadWord();
     candidate->Header.PassCount = reader.ReadWord();
@@ -515,6 +524,65 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     if (status != RenderGraphPackageStatus::Ready)
     {
         return status;
+    }
+    if (version >= format::PACKAGE_VERSION)
+    {
+        candidate->StorageBufferCount = reader.ReadWord();
+        if (candidate->StorageBufferCount > format::MAX_STORAGE_BUFFERS)
+        {
+            return RenderGraphPackageStatus::CapacityExceeded;
+        }
+        for (usize i = 0; i < candidate->StorageBufferCount; ++i)
+        {
+            format::StorageBuffer& storage = candidate->StorageBuffers[i];
+            storage.Slot = reader.ReadWord();
+            storage.Stride = reader.ReadWord();
+            storage.Count = reader.ReadWord();
+            storage.IsReadOnly = reader.ReadWord();
+            constexpr uint32 WORD_BYTES = sizeof(uint32);
+            if (reader.IsOk() == false || storage.Slot < format::FIRST_STORAGE_SLOT ||
+                storage.Slot >= format::FIRST_STORAGE_SLOT + format::MAX_STORAGE_BUFFERS || storage.Stride == 0 ||
+                storage.Stride > format::MAX_STORAGE_STRIDE || storage.Stride % WORD_BYTES != 0 ||
+                storage.Count > format::MAX_STORAGE_ELEMENTS || storage.IsReadOnly > 1 ||
+                (i != 0 && candidate->StorageBuffers[i - 1].Slot >= storage.Slot))
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+        }
+        if (candidate->StorageBufferCount != 0)
+        {
+            bool hasRay = false;
+            for (usize i = 0; i < candidate->Header.PassCount; ++i)
+            {
+                hasRay = hasRay == true || candidate->Passes[i].Program == format::Technique::RayTracing;
+            }
+            if (hasRay == false)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+            for (const format::StageRole role : {format::StageRole::RayCompute, format::StageRole::SceneRayCompute})
+            {
+                const usize index = static_cast<usize>(role);
+                rhi::RasterShaderDescription description;
+                SetRenderGraphRayInterface(description, rhi::ShaderStage::Compute);
+                for (usize i = 0; i < description.Bindings.size(); ++i)
+                {
+                    candidate->Bindings[index][i] = description.Bindings[i];
+                }
+                const usize base = description.Bindings.size();
+                for (usize i = 0; i < candidate->StorageBufferCount; ++i)
+                {
+                    const format::StorageBuffer& storage = candidate->StorageBuffers[i];
+                    candidate->Bindings[index][base + i] = {storage.Slot,
+                                                            storage.IsReadOnly == 1
+                                                                ? rhi::RasterBindingKind::StorageRead
+                                                                : rhi::RasterBindingKind::StorageReadWrite,
+                                                            rhi::RasterVisibility::Compute,
+                                                            storage.Stride};
+                }
+                candidate->BindingCounts[index] = base + candidate->StorageBufferCount;
+            }
+        }
     }
     if (version >= format::NAMED_PACKAGE_VERSION)
     {
@@ -577,7 +645,8 @@ RenderGraphPlan RenderGraphPackage::GetPlan() const noexcept
             {state.UniformFields.GetData(), state.Header.UniformFieldCount},
             state.HasPassNames == true
                 ? BorrowedView<const BorrowedView<const char>>{state.PassNames.GetData(), state.Header.PassCount}
-                : BorrowedView<const BorrowedView<const char>>{}};
+                : BorrowedView<const BorrowedView<const char>>{},
+            {state.StorageBuffers.GetData(), state.StorageBufferCount}};
 }
 RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescription& compositeVertex,
                                                     const rhi::RasterShaderDescription& compositeFragment,

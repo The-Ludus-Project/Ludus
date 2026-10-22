@@ -584,6 +584,8 @@ struct RenderGraph::State final
     // Only the validated active prefix is copied and read; unused capacity has no stage.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
+    StaticArray<format::StorageBuffer, format::MAX_STORAGE_BUFFERS> StorageBuffers{};
+    usize StorageBufferCount = 0;
     StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
     StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
     /// Uniform range of each binding: its largest carried block, matching the stage MinSize.
@@ -1060,6 +1062,16 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     candidate->Header = plan.Description;
     candidate->Target = target;
     candidate->Programs = programs;
+    if (plan.StorageBuffers.IsValid() == false || plan.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
+        (plan.StorageBuffers.IsEmpty() == false && isUsed[static_cast<usize>(format::Technique::RayTracing)] == false))
+    {
+        return Status::InvalidDescription;
+    }
+    candidate->StorageBufferCount = plan.StorageBuffers.GetSize();
+    for (usize i = 0; i < candidate->StorageBufferCount; ++i)
+    {
+        candidate->StorageBuffers[i] = plan.StorageBuffers[i];
+    }
     candidate->IsUsed = isUsed;
     candidate->PoolOrNull = poolOrNull;
     candidate->Allocation.IsPooled = poolOrNull != nullptr;
@@ -1309,7 +1321,10 @@ Status RenderGraph::Poll() noexcept
                     state.Programs.RayCompute,
                     state.Programs.RayImageVertex,
                     state.Programs.RayImageFragment,
-                    {internal::GRAPH_RAY_CPU_BYTES, internal::GRAPH_RAY_GPU_BYTES, 1});
+                    {internal::GRAPH_RAY_CPU_BYTES,
+                     internal::GRAPH_RAY_GPU_BYTES,
+                     1,
+                     {state.StorageBuffers.GetData(), state.StorageBufferCount}});
                 if (IsAccepted(status) == false)
                 {
                     return status;
