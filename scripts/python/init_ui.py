@@ -414,17 +414,17 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             # Open the progress window where the selector was.
             candidate.window_geometry = f"+{window.winfo_x()}+{window.winfo_y()}"
             selection = candidate
-            window.destroy()
+            window.quit()
 
         footer = build_footer(ttk, window, theme, "Enter to initialize · Esc to cancel")
         footer.grid(row=2, column=0, sticky="ew")
         buttons = ttk.Frame(footer, style="Workspace.TFrame")
         buttons.grid(row=1, column=1, sticky="e", padx=footer.buttons_padding)
-        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="left", padx=(0, space(init_theme.SPACE_SMALL)))
+        ttk.Button(buttons, text="Cancel", command=window.quit).pack(side="left", padx=(0, space(init_theme.SPACE_SMALL)))
         initialize = ttk.Button(buttons, text="Initialize", style="Primary.TButton", command=accept)
         initialize.pack(side="left")
-        window.protocol("WM_DELETE_WINDOW", window.destroy)
-        window.bind("<Escape>", lambda _event: window.destroy())
+        window.protocol("WM_DELETE_WINDOW", window.quit)
+        window.bind("<Escape>", lambda _event: window.quit())
         window.bind("<Return>", accept)
         window.bind("<KP_Enter>", accept)
         refresh()
@@ -433,11 +433,10 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         initialize.focus_set()
         window.mainloop()
     finally:
-        # Also release Tk when a callback/building the form fails.
-        try:
-            window.destroy()
-        except tk.TclError:
-            pass
+        # Also release Tk when a callback/building the form fails. The root
+        # is hidden rather than destroyed: the progress window reuses it, and
+        # on macOS its interpreter must outlive every later Apple event.
+        init_theme.release_root(window)
     return selection
 
 

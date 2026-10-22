@@ -352,10 +352,9 @@ class SetupWindow:
                     pass
             if self.process is not None and self.process.stdout is not None:
                 self.process.stdout.close()
-            try:
-                self.window.destroy()
-            except self.tk.TclError:
-                pass
+            # Hide rather than destroy, so the Tcl interpreter that macOS
+            # Apple events use stays valid until the process exits.
+            init_theme.release_root(self.window)
         if self.progress.outcome == init_progress.CANCELLED:
             return CANCELLED_EXIT_CODE
         if self.exit_code is None:

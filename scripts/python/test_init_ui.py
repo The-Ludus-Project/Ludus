@@ -17,6 +17,7 @@ import engine
 import init_editor
 import init_ui
 import init_options
+import init_theme
 
 BACKGROUND_START_TIMEOUT_SECONDS = 10
 BACKGROUND_POLL_SECONDS = 0.01
@@ -340,19 +341,26 @@ class EditorSetupTests(unittest.TestCase):
                 preview.assert_called_once_with(args, engine)
 
 
+# How long after mainloop starts each window test acts, and when it gives up.
+DRIVE_DELAY_MILLISECONDS = 100
+WINDOW_TIMEOUT_MILLISECONDS = 20000
+
+
 @unittest.skipUnless(os.environ.get("LUDUS_TEST_GUI") == "1", "requires a desktop display")
 class WindowTests(unittest.TestCase):
     def select(self, action, *options):
-        import tkinter as tk
-        real_tk = tk.Tk
+        real_create_root = init_theme.create_root
         errors = []
+        timed_out = []
 
-        def create_window(*arguments, **options):
-            window = real_tk(*arguments, **options)
+        def create_window(tk, **keywords):
+            # The selector reuses the root of an earlier window in this process,
+            # so drive whatever root it gets instead of wrapping tk.Tk.
+            window = real_create_root(tk, **keywords)
 
             def on_error(*error):
                 errors.append(error)
-                window.destroy()
+                window.quit()
 
             window.report_callback_exception = on_error
 
@@ -362,13 +370,20 @@ class WindowTests(unittest.TestCase):
                     return children + [child for widget in children for child in descendants(widget)]
                 action(window, descendants(window))
 
-            window.after(100, drive)
+            def give_up():
+                # A window that ignores the action must fail this test, not hang the suite.
+                timed_out.append(True)
+                window.quit()
+
+            window.after(DRIVE_DELAY_MILLISECONDS, drive)
+            window.after(WINDOW_TIMEOUT_MILLISECONDS, give_up)
             return window
 
         args = init_ui.apply_defaults(engine.make_parser().parse_args(["init", "--gui", *options]))
-        with patch.object(tk, "Tk", side_effect=create_window):
+        with patch.object(init_theme, "create_root", side_effect=create_window):
             result = init_ui.select_options(args, engine)
         self.assertEqual(errors, [])
+        self.assertEqual(timed_out, [], "the selector did not close after the test's action")
         return result
 
     def test_initialize_preserves_supplied_options(self):
