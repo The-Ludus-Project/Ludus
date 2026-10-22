@@ -62,7 +62,8 @@ bool IsValid(const Request& request) noexcept
         request.Files.GetSize() > MAX_SOURCE_FILES || IsTextValid(request.Source) == false ||
         IsTextValid(request.Entry) == false || request.Entry.GetSize() > MAX_ENTRY_BYTES ||
         filesystem::ValidPath(GetText(request.Source)) == false ||
-        static_cast<uint8>(request.OutputTarget) > static_cast<uint8>(Target::Metal) ||
+        static_cast<uint8>(request.OutputTarget) > static_cast<uint8>(Target::SpirvRayQuery) ||
+        (request.OutputTarget == Target::SpirvRayQuery && request.EntryStage != Stage::Compute) ||
         static_cast<uint8>(request.EntryStage) > static_cast<uint8>(Stage::Compute))
     {
         return false;

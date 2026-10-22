@@ -303,7 +303,7 @@ private:
     void openProjectGraph();
     void showDocument(const RenderGraphDocument& document);
     [[nodiscard]] QByteArray getBuildIdentity(RenderGraphSource source = RenderGraphSource::Draft) const;
-    void scheduleLiveBuild();
+    void scheduleLiveBuild(bool hasDebouncedSource = false);
     void refreshWatchedSources();
     void enableSceneMaterials();
     void expandSceneBundle(bool isExpanded);

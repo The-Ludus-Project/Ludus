@@ -2839,6 +2839,29 @@ implementation identity and the actual API-library digest alongside existing
 source/schema/tool identities. Native and command-line compiler cache entries are
 distinct; a worker replacement during a graph build is rejected.
 
+Graph native ray-query compute stages also use the persistent worker. Their explicit
+`Target::SpirvRayQuery` profile emits SPIR-V 1.5 with `spvRayQueryKHR`; the Metal
+adapter translates that output with the pinned SPIRV-Cross tool. This profile
+accepts compute stages only and uses a separate session from portable raster
+targets. An older worker rejects the new target rather than compiling it with
+the wrong profile. Rebuild/install the shader tools and restart the editor's
+worker when updating this implementation.
+
+Ray callback edits invalidate the linked compute stage. The image vertex and
+fragment stages track the renderer helper bundle independently of authored
+callbacks. Engine helper dependencies remain conservative; conditional authored
+includes still participate in invalidation even when disabled. Macros remain
+compile-time definitions. Returning to a previously compiled source variant can
+reuse its verified artifact cache entry.
+
+Each build hashes the compiler/helper contents afresh. Repeated tool validation
+within that build reuses a hash only when the newly opened file has the same
+device, inode, size, nanosecond modification time and change time. These stamps
+and hashes never persist between build jobs. Replacements, deleted files,
+symlink retargets and edits that restore modification time remain detectable;
+stale tools reject publication and discard new cache entries. Debounced file
+notifications queue their build without a second editor debounce.
+
 ### Portable artifacts and device compilation
 
 SPIR-V and DXIL are intermediate representations themselves. Slang's serialized
@@ -2857,6 +2880,30 @@ code format is introduced here. See the [Vulkan pipeline cache contract](https:/
 and [Slang's compilation API and sessions](https://docs.shader-slang.org/en/latest/compilation-api.html).
 
 ### Benchmark and acceptance
+
+`tools/shader-bench/macro_toggle.py` measures macro reloads on a copy of an existing
+shader package. Supply `--source` (the package directory), package-relative
+`--shader`, `--macro`, a new `--output`, the complete installed shader `--helper`
+bundle, `--compiler`, and any required `--spirv-cross`/`--validator`. Use
+`--worker-socket` for an already running private worker and `--python-path` to
+compare another checkout's tooling. For example:
+
+```sh
+python tools/shader-bench/macro_toggle.py \
+  --source /path/to/project/graphs/Main \
+  --shader main_shaders/closest.slang --macro DEBUG_LIGHT_SOURCES \
+  --helper /path/to/sdk/lib/cmake/Ludus/shaders \
+  --compiler /path/to/slangc --spirv-cross /path/to/spirv-cross \
+  --worker-socket /path/to/compiler.sock --output out/macro-toggle
+```
+
+Each sample starts a fresh CLI process and includes validation, shader building,
+runtime cooking and atomic runtime publication. Fresh-variant samples alternate
+the macro and add a unique harmless source comment to require compilation;
+cached-variant samples alternate the exact two previously built sources. Raw
+samples and medians are written to `report.json`. Worker startup, editor debounce
+and GPU pipeline activation are excluded, so these times alone do not establish
+save-to-present latency. The benchmark never edits its input package.
 
 `tools/shader-bench/benchmark.py` measures real CLI builds without a device. Run
 it once without `--worker` and once with `--worker /path/to/ludus-shader-worker`,

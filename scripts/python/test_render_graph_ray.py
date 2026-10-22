@@ -27,6 +27,22 @@ class RayPipelineTests(unittest.TestCase):
         self.path.write_bytes(graph.canonical_asset(self.document))
         return graph.compile_graph(self.path)
 
+    def test_ray_image_dependencies_exclude_callbacks_and_preserve_engine_helpers(self):
+        root = self.path.parent
+        (root / 'closest.slang').write_text('#include "shared.slang"\n// callback\n')
+        (root / 'shared.slang').write_text('// authored dependency\n')
+        snapshot = build.Snapshot(root)
+        engine = '_ludus_ray/image.slang'
+        snapshot.files[engine] = b'// image recipe\n'
+        snapshot.external[engine] = root / 'installed-image.slang'
+        image = {'id': ray.IMAGE_VERTEX_ID, 'ray_wrapper': '#include "' + engine + '"\n'}
+        compute = {'id': ray.COMPUTE_ID, 'ray_wrapper': image['ray_wrapper'] + '#include "closest.slang"\n'}
+        self.assertEqual([engine], ray.capture_program_closure(image, snapshot, build))
+        self.assertEqual(sorted([engine, 'closest.slang', 'shared.slang']),
+                         ray.capture_program_closure(compute, snapshot, build))
+        snapshot.load('closest.slang')
+        self.assertEqual([engine], ray.capture_program_closure(image, snapshot, build))
+
     def test_authored_stages_lower_to_ray_execution_and_camera_export(self):
         plan = self.compile()
         operation = next(value for value in plan['passes'] if value['kind'] == 'RayTracing')

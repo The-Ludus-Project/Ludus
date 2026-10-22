@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -68,6 +69,33 @@ TEST_CASE("Live shader builds debounce, retain only the newest edit and stop on 
     CHECK(requested.wait(600) == false);
     CHECK(requested.count() == 1);
 }
+TEST_CASE("Debounced source changes queue once without a second delay", "[editor][shader]")
+{
+    RenderGraphLiveBuild live;
+    QSignalSpy requested(&live, &RenderGraphLiveBuild::BuildRequested);
+    live.SetEnabled(true);
+    live.Schedule(QByteArrayLiteral("old"), true);
+    live.Schedule(QByteArrayLiteral("newest"), true);
+    CHECK(requested.count() == 0);
+    QCoreApplication::processEvents();
+    REQUIRE(requested.count() == 1);
+    live.MarkRequested(QByteArrayLiteral("newest"));
+    live.Schedule(QByteArrayLiteral("newest"), true);
+    QCoreApplication::processEvents();
+    CHECK(requested.count() == 1);
+    live.SetBusy(true);
+    live.Schedule(QByteArrayLiteral("pending"), true);
+    QCoreApplication::processEvents();
+    CHECK(requested.count() == 1);
+    live.SetBusy(false);
+    QCoreApplication::processEvents();
+    CHECK(requested.count() == 2);
+    live.Schedule(QByteArrayLiteral("cancelled"), true);
+    live.SetEnabled(false);
+    QCoreApplication::processEvents();
+    CHECK(requested.count() == 2);
+}
+
 TEST_CASE("Live shader build reset discards work from the previous document", "[editor][shader]")
 {
     RenderGraphLiveBuild live;
