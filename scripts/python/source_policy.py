@@ -262,6 +262,13 @@ def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str
                 if code[:match.start()].rstrip().endswith("*"):
                     continue
                 report(match.start(), "reuse the owning admission-limit constant instead of a duplicated capacity literal")
+        # int64 is long on Linux and long long on macOS. QJsonValue has int,
+        # qint64 and double constructors, so a long argument is ambiguous there
+        # and only the Linux editor build fails. Pass JSON integers as qint64.
+        json_value = (r"(?:\bQJsonValue\s*\(|\{\s*QStringLiteral\s*\([^()]*\)\s*,"
+                      r"|\b(?:insert|append|contains)\s*\((?:\s*QStringLiteral\s*\([^()]*\)\s*,)?)")
+        for match in re.finditer(json_value + r"\s*(static_cast<\s*(?:foundation::)?u?int64\s*>)", code):
+            report(match.start(1), "convert JSON integers with static_cast<qint64>; int64 is ambiguous for QJsonValue on Linux")
         for offset, _, message in pointer_findings(code):
             report(offset, message)
         for offset, _, message in reference_and_boolean_findings(code):

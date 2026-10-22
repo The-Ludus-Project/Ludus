@@ -35,6 +35,20 @@ class SourcePolicyTests(unittest.TestCase):
                      "modules/content/tests/native_saves_tests.cpp", "modules/example/source.cpp"]:
             self.assertFalse(violations(path, "constexpr usize MAX_BYTES = usize{32} * 1024 * 1024;", {1}))
 
+    def test_json_integers_are_qint64(self):
+        path = "apps/editor/src/viewport_trace.cpp"
+        for source in ['QJsonObject event{{QStringLiteral("tid"), static_cast<int64>(trackId)}};',
+                       "tracks.append(static_cast<uint64>(trackId));",
+                       'event.insert(QStringLiteral("id"), static_cast<foundation::int64>(id));',
+                       "tracks.contains(QJsonValue(static_cast<int64>(trackId)));"]:
+            with self.subTest(source=source):
+                self.assertTrue(violations(path, source, {1}))
+        for source in ['QJsonObject event{{QStringLiteral("tid"), static_cast<qint64>(trackId)}};',
+                       'const uint64 epoch = static_cast<uint64>(host.value(QStringLiteral("epoch")).toInteger());',
+                       "items.append(static_cast<int32>(index));"]:
+            with self.subTest(source=source):
+                self.assertFalse(violations(path, source, {1}))
+
     def test_nullable_variables_and_move_parameters(self):
         for source in ["Thing* value = nullptr;", "struct A { Thing* mValue{}; };", "Thing* const value = nullptr;",
                        "void Move(Thing&& inoutOther);", "void Move(Thing&& outOther);"]:
