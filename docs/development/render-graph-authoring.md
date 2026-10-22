@@ -576,6 +576,103 @@ buffer values. They establish the storage/ordering seam for an authored ReSTIR
 implementation; reservoir sampling, temporal reprojection and disocclusion logic
 remain shader policy.
 
+### Run the three-pass ReSTIR DI example
+
+The [ReSTIR DI package](../../tests/sdk_consumer/rg2/restir_di/main.lurender.json)
+adapts a mesh-emitter closest-hit estimator into three independently assigned
+closest-hit programs. Copy the package directory into your project, resolve
+`main.lushader.json.in` to `main.lushader.json` with your native profiles (for
+example, `"profiles": ["metal"]`), and build that manifest with the normal graph
+builder. Keep the shader helper files alongside the three entry sources.
+The package requires the ordered native-ray profile; it does not execute in a
+browser. Its raster declarations are the graph package's required static setup,
+not an additional lighting implementation.
+
+| Pipeline node | Closest-hit source | Shader slots and work |
+| --- | --- | --- |
+| `initial` | `main_shaders/initial.slang` | Generate eight mesh-light candidates and write initial RIS into scratch |
+| `temporal` | `main_shaders/temporal.slang` | Read old history, merge with this pixel's initial RIS, update scratch in place |
+| `shade` | `main_shaders/spatial.slang` | Read scratch neighbours, write history, test final visibility and output radiance |
+
+All three use `generate.slang` and `miss.slang`. The ray-generation callback
+copies `RayLaunch` into the shared payload and traces the camera ray once, so the
+closest-hit callbacks have the pixel/extent and current receiver. Misses clear
+the current pass's destination record. Emissive primary hits retain their authored
+emission; misses return black, matching the supplied direct-light estimator's
+registered-mesh-emitter scope. Analytic lights, environment lighting, indirect
+bounces and the old separate BSDF-light sampler are not included.
+
+Use **Buffer** nodes for this ordered profile. Its fixed shader resources are
+`RWStructuredBuffer<uint4> GraphBuffer0` and `GraphBuffer1`; this is distinct from
+the single-job **StructuredBuffer** schema profile. `reservoir.slang` defines a
+named logical `Reservoir` and explicitly encodes it into four sixteen-byte words
+per pixel, preserving full binary32 barycentrics and weights:
+
+| Word | Contents |
+| --- | --- |
+| 0 | Light triangle index, two barycentrics, finalized normalization weight |
+| 1 | Effective candidate count, receiver triangle index, two receiver barycentrics |
+| 2 | View direction in world space, layout/version tag |
+| 3 | Scene generation and image extent |
+
+The graph always connects **history first** and **scratch second**, binding them
+to `GraphBuffer0` and `GraphBuffer1` respectively. Its exact buffer-version wires
+are `history.buffer → initial.history → temporal.history → shade.history` and
+`reservoir.buffer → initial.reservoir → temporal.reservoir → shade.reservoir`.
+The equivalent color chain ends at `output.texture`. History persists through the
+frame boundary in the same allocation; no cyclic graph wire is needed. Do not
+swap the two buffer input positions between these particular passes. Temporal
+reuse writes only each invocation's own scratch record; spatial reuse reads only
+scratch while writing history. Thus neither pass races a neighbouring reader.
+
+The included target is 96 × 64, and **each** buffer has 393,216 bytes:
+`width × height × 64`. For a 1920 × 1080 target, allocate 132,710,400 bytes per
+buffer. These capacities are fixed, even if the Target uses a RenderSize input.
+Allocate for the largest intended extent or rebuild after increasing capacity.
+Every dispatch checks both buffers with `GetDimensions` before indexing; Metal
+supplies the SPIRV-Cross auxiliary length table from the bound storage ranges.
+Insufficient capacity fails
+the sample with the ray profile's magenta diagnostic instead of accessing beyond
+storage. Four-word records at 3840 × 2160 exceed the current 256 MiB per-buffer
+limit, so use a smaller extent or a separately designed compact layout. Merely
+changing `RESERVOIR_WORD_COUNT` does not change the encoding schema.
+
+The original emitter-selection and uniform/area-weighted triangle proposal modes
+remain in `emitter_sampling.slang`. All RIS densities use area measure:
+`q = emitterSelectionPmf × conditionalPdfArea`. The target is the luminance of
+`emission × BSDF × cosReceiver × cosEmitter / distanceSquared`, with a small
+positive floor to retain proposal support at other receivers. Visibility is
+excluded from selection and queried for the final selected sample. Initial
+normalization is `W = sum(target / q) / (M × target(selected))`; reuse streams
+`targetAtCurrentReceiver(selected) × source.W × source.M`, then normalizes again.
+The effective count is capped only after normalization, leaving finalized `W`
+unchanged. Reuse selection coins use FoundationMath addressed-random scopes
+separated by pass index, so they do not repeat the initial proposal stream.
+This is a bounded-history ReSTIR example, not a claim of improved
+performance or a full unbiased spatiotemporal reference implementation. The
+original light/BSDF power or balance MIS weights cannot be applied to these
+resampled light estimates; the example uses a light-only estimator with reservoir
+normalization. Debug emitter-index display is not part of these passes.
+
+Temporal reuse is deliberately conservative: generation, extent, layout tag,
+receiver triangle/barycentrics and view direction must match exactly. A zeroed
+buffer is empty history; `launch.SampleIndex` is not used as its validity flag.
+Moving the camera normally rejects that pixel's history and starts with fresh RIS.
+There is no motion-vector reprojection or history reuse across World generations.
+Spatial reuse checks the four immediate axial neighbours, matching material,
+normal cosine and world-space distance. The thresholds and history/candidate
+limits are named constants in `reservoir.slang`; tune distance in your scene's
+world units. Reprojection, denoising, reduction of correlations from overlapping history and more efficient light
+proposal generation are separate shader improvements. In particular, the retained
+distance-weighted proposal scans emitters/triangles for every initial candidate.
+
+Thanks to Benedikt Bitterli, Chris Wyman, Matt Pharr, Peter Shirley, Aaron Lefohn
+and Wojciech Jarosz, [*Spatiotemporal reservoir resampling for real-time ray tracing
+with dynamic direct lighting*, ACM TOG 39(4), 2020](https://doi.org/10.1145/3386569.3392481),
+and its [supplemental reservoir-combination algorithms](https://benedikt-bitterli.me/restir/bitterli20restir-supplemental.pdf).
+The authored source retains the supplied emitter-sampling attribution to Pharr,
+Jakob and Humphreys, PBRT 4e, Appendix A.2.
+
 ## Author scene-aware ray shaders
 
 The optional scene interface extends the portable triangle profile above with

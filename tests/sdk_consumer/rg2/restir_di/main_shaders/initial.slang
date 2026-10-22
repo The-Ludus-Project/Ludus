@@ -1,0 +1,53 @@
+#include "reservoir.slang"
+
+void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
+{
+    Reservoir result = MakeReceiverReservoir(scene, payload.Launch, hit);
+    float weightSum = 0;
+    MaterialSample material = EvaluateMaterial(scene, hit);
+    float3 surfaceEmission = EvaluateEmission(scene, hit, result.ViewDirectionWorld);
+    if (material.IsValid == true && any(surfaceEmission > 0) == false && GetEmitterCount(scene) > 0)
+    {
+        [loop] for (uint i = 0; i < INITIAL_CANDIDATE_COUNT; ++i)
+        {
+            uint emitterIndex;
+            float selectionPmf;
+            float totalEmitterWeight;
+            if (TrySelectEmitter(scene, hit, queries, emitterIndex, selectionPmf, totalEmitterWeight) == false)
+            {
+                break;
+            }
+            TriangleData triangle;
+            float conditionalPdfArea;
+            if (TrySampleEmitterTriangle(scene, emitterIndex, queries, triangle, conditionalPdfArea) == false)
+            {
+                queries.HasFailed = true;
+                break;
+            }
+            float u = SampleSceneRandom(queries);
+            float v = SampleSceneRandom(queries);
+            float root = sqrt(u);
+            float2 barycentric = float2(root * (1 - v), root * v);
+            float proposalPdfArea = selectionPmf * conditionalPdfArea;
+            if (isfinite(proposalPdfArea) == false || proposalPdfArea <= 0)
+            {
+                queries.HasFailed = true;
+                break;
+            }
+            float weight = EvaluateSampleTarget(scene, hit, triangle.TriangleIndex, barycentric) / proposalPdfArea;
+            StreamReservoir(triangle.TriangleIndex,
+                            barycentric,
+                            weight,
+                            1,
+                            SampleSceneRandom(queries),
+                            result,
+                            weightSum,
+                            queries);
+        }
+        FinalizeReservoir(scene, hit, weightSum, result, queries);
+    }
+    if (queries.HasFailed == false)
+    {
+        StoreReservoir(queries.RandomPixel, false, result);
+    }
+}

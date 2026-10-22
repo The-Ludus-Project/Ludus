@@ -1,6 +1,7 @@
 #include "renderer_composite.h"
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
+#include "rg2_restir_di.h"
 #include "rg2_scene_ray.h"
 #include "rg2_storage_ray.h"
 #include "rg2_visibility.h"
@@ -11,6 +12,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -1024,4 +1026,201 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
     CHECK(fixture.Graph.GetDrawableSceneRevision() == 4);
     read();
     CHECK(fixture.Pixels[rightBottom + 1] == 188);
+}
+
+TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale history", "[render-graph][gpu][restir]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_RESTIR_DIRECTORY, "rg2_restir_di.lurgrt"});
+    REQUIRE(package->GetPlan().Passes.GetSize() == 3);
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_restir_di::MakePrograms(shaders::renderer_composite::Vertex(),
+                                              shaders::renderer_composite::Fragment());
+    CheckSameStage(programs.RayCompute, compiled.RayCompute);
+    bool hasFullCapacity = true;
+    SECTION("complete reservoirs") {}
+    SECTION("undersized reservoirs fail before indexing")
+    {
+        hasFullCapacity = false;
+    }
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    StaticArray<format::Resource, format::MAX_RESOURCES> resources{};
+    for (usize i = 0; i < plan.Resources.GetSize(); ++i)
+    {
+        resources[i] = plan.Resources[i];
+        if (hasFullCapacity == false && resources[i].Kind == format::Aspect::Buffer)
+        {
+            resources[i].Width = sizeof(uint32) * 4;
+        }
+    }
+    plan.Resources = {resources.GetData(), plan.Resources.GetSize()};
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, programs);
+    const uint64 started = time::NowTicks();
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const auto wait = [&fixture, started](rhi::RasterStatus initial) {
+        rhi::RasterStatus result = initial;
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - started < TIMEOUT)
+        {
+            result = fixture.Graph.Poll();
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+    };
+    wait(status);
+    fixture.Indices = {{0, 2, 1}};
+    fixture.Cameras[0].OrthographicCamera = true;
+    constexpr usize MATERIAL_COUNT = 2;
+    StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> materials{};
+    materials[0].BaseColor = {1, 0, 0};
+    materials[1].Emission = {8, 8, 8};
+    materials[1].IsEmissionTwoSided = true;
+    uint32 receiverBinding = 0;
+    uint32 emitterBinding = 1;
+    StaticArray<renderer::RenderGraphMesh, MATERIAL_COUNT> meshes{};
+    meshes[0] = fixture.Meshes[0];
+    meshes[0].MaterialBindings = {&receiverBinding, 1};
+    meshes[1] = fixture.Meshes[0];
+    meshes[1].MaterialBindings = {&emitterBinding, 1};
+    constexpr usize ITEM_COUNT = 3;
+    StaticArray<renderer::RenderGraphItem, ITEM_COUNT> items{};
+    items[0] = fixture.Items[0];
+    items[1].SourceId = 2;
+    items[1].MeshIndex = 1;
+    items[1].MeshToWorld.Translation = {1, 0, -.4F};
+    items[2].SourceId = 3;
+    items[2].MeshToWorld.Translation.X = 5;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    const auto update = [&fixture, &meshes, &items, &inputs, &wait](uint64 revision) {
+        renderer::RenderGraphReport report;
+        wait(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                  {items.GetData(), items.GetSize()},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  revision,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report,
+                                  &inputs));
+    };
+    const auto read = [&fixture, &package, started, hasFullCapacity]() {
+        rhi::SubmissionToken completion;
+        REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+        rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - started < TIMEOUT)
+        {
+            result = rhi::GetStatus(fixture.Device, completion);
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        uint32 resource = 0;
+        for (uint32 index = 0; index < package->GetPlan().Resources.GetSize(); ++index)
+        {
+            if (package->GetPlan().Resources[index].IsExported == 1)
+            {
+                resource = index;
+            }
+        }
+        rhi::TextureHandle texture;
+        rhi::TextureAspect aspect;
+        REQUIRE(fixture.Graph.GetExport(resource, texture, aspect) == rhi::RasterStatus::Ready);
+        rhi::ReadbackTicket ticket;
+        result = rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, WIDTH * 4, ticket);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - started < TIMEOUT)
+        {
+            result = rhi::GetStatus(fixture.Device, ticket);
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CopyReadback(fixture.Device, ticket, fixture.Pixels.GetData(), fixture.Pixels.GetSize()) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+        // Shader failure is magenta. Check the whole image, including miss/boundary invocations.
+        for (usize pixel = 0; pixel < WIDTH * HEIGHT; ++pixel)
+        {
+            constexpr usize CHANNEL_COUNT = 4;
+            const usize address = pixel * CHANNEL_COUNT;
+            const bool isFailureColor = fixture.Pixels[address] == 255 && fixture.Pixels[address + 1] == 0 &&
+                                        fixture.Pixels[address + 2] == 255;
+            CHECK(isFailureColor == (hasFullCapacity == false));
+        }
+    };
+    update(1);
+    if (hasFullCapacity == false)
+    {
+        read();
+        return;
+    }
+    // Independent deterministic area quadrature of the CPU reference BSDF.
+    renderer::ReferenceBsdf reference;
+    reference.BaseColor = materials[0].BaseColor;
+    reference.Roughness = materials[0].Roughness;
+    constexpr uint32 QUADRATURE_SIDE = 32;
+    float32 expectedRed = 0;
+    const math::Vector3 receiverPositionWorld{1.0F / static_cast<float32>(WIDTH),
+                                              -1.0F / static_cast<float32>(HEIGHT),
+                                              .5F};
+    for (uint32 row = 0; row < QUADRATURE_SIDE; ++row)
+    {
+        for (uint32 column = 0; column < QUADRATURE_SIDE; ++column)
+        {
+            const float32 root = math::Sqrt((static_cast<float32>(row) + .5F) / static_cast<float32>(QUADRATURE_SIDE));
+            const float32 v = (static_cast<float32>(column) + .5F) / static_cast<float32>(QUADRATURE_SIDE);
+            const float32 first = root * (1 - v);
+            const float32 second = root * v;
+            const math::Vector3 endpointWorld{.5F + .5F * first + second, -.5F + first, .1F};
+            const math::Vector3 differenceWorld = endpointWorld - receiverPositionWorld;
+            const float32 distanceSquaredWorld = math::Dot(differenceWorld, differenceWorld);
+            const float32 distanceWorld = math::Sqrt(distanceSquaredWorld);
+            const math::Vector3 directionWorld = differenceWorld / distanceWorld;
+            renderer::ReferenceBsdfEvaluation evaluation;
+            REQUIRE(renderer::EvaluateReferenceBsdf(reference, {0, 0, -1}, {0, 0, -1}, directionWorld, evaluation) ==
+                    rhi::RasterStatus::Ready);
+            const float32 cosine = -directionWorld.Z;
+            expectedRed += materials[1].Emission.X * evaluation.Value.X * cosine * cosine / distanceSquaredWorld;
+        }
+    }
+    expectedRed *= .5F / static_cast<float32>(QUADRATURE_SIDE * QUADRATURE_SIDE);
+    constexpr usize FRAME_COUNT = 16;
+    float32 measuredRed = 0;
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+    {
+        read();
+        CHECK(fixture.Pixels[center] > 0);
+        CHECK(fixture.Pixels[center] > fixture.Pixels[center + 1]);
+        CHECK(fixture.Pixels[GetPixel(0, 0)] == 0);
+        constexpr float32 MAXIMUM_CHANNEL = 255;
+        const float32 mapped = math::DecodeSrgb(static_cast<float32>(fixture.Pixels[center]) / MAXIMUM_CHANNEL);
+        measuredRed += mapped / (1 - mapped);
+    }
+    measuredRed /= static_cast<float32>(FRAME_COUNT);
+    INFO("area quadrature=" << expectedRed << ", decoded GPU mean=" << measuredRed);
+    constexpr float32 RELATIVE_ENERGY_TOLERANCE = .2F;
+    CHECK(math::Abs(measuredRed - expectedRed) < RELATIVE_ENERGY_TOLERANCE * expectedRed);
+    // A displaced opaque copy blocks every receiver-to-light ray but not the camera ray.
+    items[2].MeshToWorld.Translation = {.5F, 0, -.2F};
+    update(2);
+    read();
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 1] == 0);
+    CHECK(fixture.Pixels[center + 2] == 0);
+    // Buffers survive replacement: stale emitter samples must not relight this frame.
+    materials[1].Emission = {0, 0, 0};
+    update(3);
+    read();
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 1] == 0);
+    CHECK(fixture.Pixels[center + 2] == 0);
+    materials[0].Emission = {2, 1, 0};
+    materials[0].IsEmissionTwoSided = true;
+    update(4);
+    read();
+    CHECK(fixture.Pixels[center] == 213);
+    CHECK(fixture.Pixels[center + 1] == 188);
+    CHECK(fixture.Pixels[center + 2] == 0);
+    fixture.Cameras[0].WorldToClip.Columns[3].X = -2;
+    update(5);
+    read();
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 1] == 0);
+    CHECK(fixture.Pixels[center + 2] == 0);
 }

@@ -205,6 +205,15 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_ordered_ray_RUNTIME_PACKAGE PARENT_PATH ordered_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_ORDERED_RAY_DIRECTORY="${ordered_ray_package_directory}")
+    set(restir_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/restir_di")
+    set(restir_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/restir_di")
+    file(COPY "${restir_source}/" DESTINATION "${restir_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${restir_source}/main.lushader.json.in" "${restir_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_restir_di
+        MANIFEST "${restir_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_restir_di_RUNTIME_PACKAGE PARENT_PATH restir_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_RESTIR_DIRECTORY="${restir_package_directory}")
     set(storage_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/storage_ray")
     set(storage_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/storage_ray")
     file(COPY "${scene_ray_source}/" DESTINATION "${storage_ray_staged}" PATTERN "*.in" EXCLUDE)
