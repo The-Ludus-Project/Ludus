@@ -271,6 +271,12 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
     {
         node.insert(QStringLiteral("bytes"), static_cast<int32>(content::render_graph_format::RAY_BUFFER_WORD_BYTES));
     }
+    else if (kind == QStringLiteral("StructuredBuffer"))
+    {
+        constexpr int32 DEFAULT_STORAGE_STRIDE = 16;
+        node.insert(QStringLiteral("stride"), DEFAULT_STORAGE_STRIDE);
+        node.insert(QStringLiteral("count"), QStringLiteral("ColorTarget"));
+    }
     else if (kind == QStringLiteral("Target"))
     {
         node.insert(QStringLiteral("type"), QStringLiteral("ColorTexture"));
@@ -469,6 +475,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("Camera"),
                         QStringLiteral("Target"),
                         QStringLiteral("Buffer"),
+                        QStringLiteral("StructuredBuffer"),
                         QStringLiteral("RenderSize"),
                         QStringLiteral("GraphicsPipeline"),
                         QStringLiteral("ComputePipeline"),
@@ -1579,7 +1586,7 @@ void RendererWorkspace::refreshWatchedSources()
         if (ReloadSourcesFromDisk() == true)
         {
             setProblem(mSourceProblem, {});
-            scheduleLiveBuild();
+            scheduleLiveBuild(true);
         }
         else
         {
@@ -1887,11 +1894,11 @@ QByteArray RendererWorkspace::getBuildIdentity(RenderGraphSource source) const
     return ComputeRenderGraphBuildIdentity(mDocument, mConfiguration->currentText(), source);
 }
 
-void RendererWorkspace::scheduleLiveBuild()
+void RendererWorkspace::scheduleLiveBuild(bool hasDebouncedSource)
 {
     if (mIsRendering == false && mDocument.IsLoaded() == true)
     {
-        mLiveBuild.Schedule(getBuildIdentity(RenderGraphSource::Saved));
+        mLiveBuild.Schedule(getBuildIdentity(RenderGraphSource::Saved), hasDebouncedSource);
     }
 }
 
@@ -2236,6 +2243,23 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 replaceSelectedField(name, isChecked);
             });
             outFields.addRow(name, check);
+        }
+        else if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("StructuredBuffer") &&
+                 name == QStringLiteral("count"))
+        {
+            const QString value = field.value().isString() == true ? field.value().toString()
+                                                                   : QString::number(field.value().toInteger());
+            QLineEdit* line = new QLineEdit(value, &inoutParent);
+            line->setObjectName(QStringLiteral("renderGraphField_count"));
+            line->setToolTip(QStringLiteral(
+                "ColorTarget gives one element per output pixel, or enter a positive fixed element count."));
+            connect(line, &QLineEdit::editingFinished, this, [this, line]() {
+                bool isNumber = false;
+                const int32 count = line->text().toInt(&isNumber);
+                replaceSelectedField(QStringLiteral("count"),
+                                     isNumber == true ? QJsonValue(count) : QJsonValue(line->text()));
+            });
+            outFields.addRow(name, line);
         }
         else if (name == QStringLiteral("extent"))
         {

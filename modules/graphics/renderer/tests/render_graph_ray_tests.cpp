@@ -2,6 +2,7 @@
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_scene_ray.h"
+#include "rg2_storage_ray.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
@@ -449,7 +450,7 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     REQUIRE(read.BytesRead == bytes.GetSize());
     renderer::RenderGraphPackage package;
     REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
-    // Version 5 lacks the three per-pass words added in version 8.
+    // Versions 6 through 8 lack the three per-pass words added in version 9.
     uint32 resourceCount = 0;
     uint32 cameraCount = 0;
     constexpr usize RESOURCE_COUNT_OFFSET = 2 * sizeof(uint32);
@@ -460,6 +461,15 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     const usize extension = format::HEADER_BYTES + resourceCount * format::RESOURCE_RECORD_BYTES +
                             cameraCount * format::CAMERA_RECORD_BYTES + LEGACY_PASS_FIELDS * sizeof(uint32);
     bytes.RemoveRange(extension, extension + (format::PASS_FIELD_COUNT - LEGACY_PASS_FIELDS) * sizeof(uint32));
+    REQUIRE(TryWriteLittleEndian(format::STORAGE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==
+            true);
+    renderer::RenderGraphPackage storageGeneration;
+    REQUIRE(storageGeneration.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    constexpr usize WORD_BYTES = sizeof(uint32);
+    const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
+    const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
+    const usize storageCountOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
+    bytes.RemoveRange(storageCountOffset, storageCountOffset + WORD_BYTES);
     REQUIRE(TryWriteLittleEndian(format::NATIVE_RAY_PACKAGE_VERSION,
                                  {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) == true);
     renderer::RenderGraphPackage hardware;
@@ -560,4 +570,80 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
             REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
         }
     }
+}
+
+TEST_CASE("Two graph reservoirs retain alternating shader writes and reset on replacement",
+          "[render-graph][gpu][ray-pipeline][storage]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_STORAGE_RAY_DIRECTORY, "rg2_storage_ray.lurgrt"});
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(plan.StorageBuffers.GetSize() == 2);
+    CHECK(plan.StorageBuffers[0].Count == 0);
+    CHECK(plan.StorageBuffers[0].Stride == 32);
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_storage_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                shaders::renderer_composite::Fragment());
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, decoded);
+    const uint64 started = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    fixture.Cameras[0].OrthographicCamera = true;
+    const auto update = [&fixture](uint64 revision) {
+        renderer::RenderGraphReport report;
+        rhi::RasterStatus result = fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                                        {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                                        {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                                        revision,
+                                                        renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report);
+        const uint64 beginning = time::NowTicks();
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = fixture.Graph.Poll();
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+    };
+    const auto render = [&fixture]() {
+        rhi::SubmissionToken completion;
+        REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+        const uint64 beginning = time::NowTicks();
+        rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = rhi::GetStatus(fixture.Device, completion);
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        rhi::TextureHandle texture;
+        rhi::TextureAspect aspect;
+        REQUIRE(fixture.Graph.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
+        rhi::ReadbackTicket ticket;
+        result =
+            rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, usize{WIDTH} * 4, ticket);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = rhi::GetStatus(fixture.Device, ticket);
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CopyReadback(fixture.Device, ticket, fixture.Pixels.GetData(), fixture.Pixels.GetSize()) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+        return fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2)];
+    };
+    update(1);
+    const uint8 first = render();
+    const uint8 second = render();
+    const uint8 third = render();
+    CHECK(first > 0);
+    CHECK(second > first);
+    CHECK(third > second);
+    update(2);
+    CHECK(render() == first);
 }

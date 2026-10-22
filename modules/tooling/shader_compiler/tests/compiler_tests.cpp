@@ -110,6 +110,83 @@ TEST_CASE("Native shader compiler emits each portable target from one snapshot",
         CHECK(result.Reflection.IsEmpty() == false);
     }
 }
+TEST_CASE("Native shader compiler supports ray queries and invalidates macro edits", "[shader][compiler]")
+{
+    compiler::Compiler worker;
+    REQUIRE(worker.Initialize() == compiler::Status::Ready);
+    Fixture fixture;
+    fixture.Files[0].Text = View(R"(
+#include "surface.slang"
+RaytracingAccelerationStructure Scene;
+RWStructuredBuffer<float4> Results;
+[numthreads(1, 1, 1)]
+void ComputeMain()
+{
+    RayDesc ray;
+    ray.Origin = float3(0, 0, 0);
+    ray.Direction = float3(0, 0, 1);
+    ray.TMin = 0;
+    ray.TMax = 1;
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(Scene, RAY_FLAG_NONE, 255, ray);
+    while (query.Proceed()) {}
+    Results[0] = GetColor() * float(query.CommittedStatus() + 1);
+}
+)");
+    fixture.Files[1].Text = View(R"(
+#define DEBUG_COLOR
+float4 GetColor()
+{
+#if defined(DEBUG_COLOR)
+    return float4(1, 0, 0, 1);
+#else
+    return float4(0, 1, 0, 1);
+#endif
+}
+)");
+    fixture.Request.Entry = View("ComputeMain");
+    fixture.Request.EntryStage = compiler::Stage::Compute;
+    fixture.Request.OutputTarget = compiler::Target::SpirvRayQuery;
+    compiler::Result first;
+    const compiler::Status compiled = worker.Compile(fixture.Request, first);
+    INFO(std::string_view(reinterpret_cast<const char*>(first.Diagnostics.GetData()), first.Diagnostics.GetSize()));
+    REQUIRE(compiled == compiler::Status::Ready);
+    REQUIRE(first.Artifact.GetSize() > 7);
+    CHECK(first.Artifact[5] == 5); // SPIR-V 1.5, little-endian version word.
+    CHECK(first.Artifact[6] == 1);
+    fixture.Files[1].Text = View("float4 GetColor() { return float4(0,1,0,1); }");
+    compiler::Result changed;
+    REQUIRE(worker.Compile(fixture.Request, changed) == compiler::Status::Ready);
+    CHECK(std::string_view(reinterpret_cast<const char*>(first.Artifact.GetData()), first.Artifact.GetSize()) !=
+          std::string_view(reinterpret_cast<const char*>(changed.Artifact.GetData()), changed.Artifact.GetSize()));
+    fixture.Request.EntryStage = compiler::Stage::Fragment;
+    CHECK(worker.Compile(fixture.Request, changed) == compiler::Status::InvalidRequest);
+    fixture.Request.EntryStage = compiler::Stage::Compute;
+    fixture.Files[1].Text = View("invalid shader");
+    CHECK(worker.Compile(fixture.Request, changed) == compiler::Status::CompileFailed);
+    CHECK(changed.Artifact.IsEmpty() == true);
+}
+
+TEST_CASE("Native shader compiler separates portable and ray query session profiles", "[shader][compiler]")
+{
+    compiler::Compiler worker;
+    REQUIRE(worker.Initialize() == compiler::Status::Ready);
+    Fixture fixture;
+    fixture.Files[0].Text =
+        View("RWStructuredBuffer<float> Values; [numthreads(1,1,1)] void ComputeMain() { Values[0] = 1; }");
+    fixture.Request.Entry = View("ComputeMain");
+    fixture.Request.EntryStage = compiler::Stage::Compute;
+    for (const compiler::Target target :
+         {compiler::Target::SpirvRayQuery, compiler::Target::Spirv, compiler::Target::SpirvRayQuery})
+    {
+        fixture.Request.OutputTarget = target;
+        compiler::Result result;
+        REQUIRE(worker.Compile(fixture.Request, result) == compiler::Status::Ready);
+        REQUIRE(result.Artifact.GetSize() > 7);
+        CHECK(result.Artifact[5] == (target == compiler::Target::SpirvRayQuery ? 5 : 3));
+    }
+}
+
 TEST_CASE("Native shader client copies requests and supports cancellation and recovery",
           "[shader][client][.native-client]")
 {

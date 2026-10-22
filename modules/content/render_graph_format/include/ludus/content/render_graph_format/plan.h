@@ -138,12 +138,32 @@ struct Resource final
 {
     foundation::uint32 Width;               ///< Positive pixel width, or Buffer byte capacity (multiple of 16).
     foundation::uint32 Height;              ///< Positive physical height.
-    Aspect Kind;                            ///< Color or depth aspect.
+    Aspect Kind;                            ///< Color, depth or persistent raw storage.
     foundation::uint32 Backing;             ///< Index of the color/private-depth allocation owner; may name itself.
     foundation::uint32 IsSurface;           ///< Zero or one; owner is the acquired presentation surface.
     foundation::uint32 IsExported;          ///< Zero or one; output may be leased after producer completion.
     foundation::uint32 ViewNumerator = 0;   ///< Zero selects fixed Width/Height; otherwise scale numerator.
     foundation::uint32 ViewDenominator = 1; ///< Positive scale denominator; both components at most MAX_TARGET_EXTENT.
+};
+/// Maximum named structured buffers in one native triangle-ray invocation.
+inline constexpr foundation::usize MAX_STORAGE_BUFFERS = 2;
+/// First user storage slot; lower slots belong to the renderer's ray interface.
+inline constexpr foundation::uint32 FIRST_STORAGE_SLOT = 6;
+/// Maximum reflected element stride, in bytes.
+inline constexpr foundation::uint32 MAX_STORAGE_STRIDE = 4096;
+/// Maximum fixed or per-pixel element count admitted by authoring.
+inline constexpr foundation::uint32 MAX_STORAGE_ELEMENTS = 16 * 1024 * 1024;
+/// Number of serialized uint32 fields in a structured storage record.
+inline constexpr foundation::usize STORAGE_BUFFER_FIELD_COUNT = 4;
+/// Graph-owned, zero-initialized structured storage for one ray job. Contents persist
+/// across dispatches and reset with scene/camera/extent/generation replacement.
+/// Buffers are private to that job; no host upload, export or implicit ping-pong.
+struct StorageBuffer final
+{
+    foundation::uint32 Slot; ///< Unique shader slot in [FIRST_STORAGE_SLOT, FIRST_STORAGE_SLOT + MAX_STORAGE_BUFFERS).
+    foundation::uint32 Stride;     ///< Reflected element bytes, positive multiple of four, at most MAX_STORAGE_STRIDE.
+    foundation::uint32 Count;      ///< Fixed element count; zero means one element per resolved color-target pixel.
+    foundation::uint32 IsReadOnly; ///< One for StructuredBuffer, zero for RWStructuredBuffer.
 };
 /// Required destination for one active camera, verified independently of pass coverage.
 struct Camera final
@@ -207,6 +227,7 @@ struct Header final
     foundation::uint32 UniformBlockCount;   ///< Bounded per-target block table size.
     foundation::uint32 UniformFieldCount;   ///< Bounded per-target field table size.
 };
+static_assert(sizeof(StorageBuffer) == sizeof(foundation::uint32) * STORAGE_BUFFER_FIELD_COUNT);
 static_assert(sizeof(Resource) == sizeof(foundation::uint32) * 8);
 static_assert(sizeof(Pass) == sizeof(foundation::uint32) * PASS_FIELD_COUNT);
 static_assert(sizeof(Camera) == sizeof(foundation::uint32));

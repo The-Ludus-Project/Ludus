@@ -845,7 +845,8 @@ generated header names each field's offset. Renderer packs them with the selecte
 backend's target layout, deduplicates equal value sets into immutable uniform
 buffers and binding snapshots, and keeps equal sets instanced. Values are runtime
 data: changing them republishes an extraction, never a shader configuration.
-Per-view values, matrices, arrays, textures and storage remain unqualified.
+Per-view values, matrices, arrays and raster texture/storage bindings remain unqualified.
+Native ray storage uses the separate graph-owned interface described below.
 
 An explicitly authored `DefaultMasked` raster material selects
 `DefaultStaticMasked` techniques. Its DepthOnly fragment is a separately authored
@@ -1005,7 +1006,7 @@ See [native worker setup, limits, workflow and measurements](../development/rend
 
 ## Ordered ray sequences and persistent storage
 
-Numeric plan version 6 and runtime package version 8 append a callback-set index
+Numeric plan version 6 and runtime package version 9 append a callback-set index
 and two persistent buffer-resource indices to each pass. Buffer resources use the
 existing resource table with an explicit Buffer aspect: Width is byte capacity,
 Height is one, and view scaling/export/surface flags are forbidden. Serialized
@@ -1035,3 +1036,27 @@ The [authoring guide](../development/render-graph-authoring.md#order-ray-passes-
 owns capacity, reset, ping-pong, editor and scheduling instructions. This change
 provides ordered storage access, without selecting a ReSTIR estimator or claiming
 qualification of arbitrary authored reservoir algorithms.
+### Structured storage in the native ray profile
+
+Native triangle-ray jobs admit two named structured buffers in user slots 6/7.
+Authored `StructuredBuffer` nodes own stride and fixed/per-color-pixel count;
+pipeline input names match manifest storage bindings. Paired Load/Store outputs
+declare in-place read/write versions; input-only ports declare reads. Offline
+lowering checks unique allocations, complete wiring, reflected names, access and
+identical element strides across carried targets. Numeric StorageBuffer records
+remain separate from image resources and from CPU-visible per-draw uniforms.
+Runtime package version 8 carries these records after stages and before pass names;
+versions 6 and 7 remain readable without storage. Storage changes do not change the host
+vertex/uniform interface identity, but activation creates a fresh job and history.
+
+The per-job storage owner validates bounded checked sizes and device ranges,
+uploads complete zeroed bytes and retains distinct physical allocations until
+release. Its buffers participate in compute binding snapshots, in-place versions
+and History roots of each RHI graph. Total GPU allocation and peak zero-upload
+scratch obey existing budgets; the RHI additionally enforces resource limits.
+Storage is private to current/pending scene jobs, so failed or pending replacement
+cannot mutate the current job. Replacement scene/camera/extent/generation starts
+fresh storage; RHI retirement protects outstanding producer uses on release.
+Shader code owns bounds and races, including ping-pong choice and zero-history
+handling. This adds no global dispatch synchronization, buffer exports or arbitrary
+compute/raster execution. See the [authoring workflow](../development/render-graph-authoring.md#create-structured-reservoir-buffers).

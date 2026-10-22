@@ -27,6 +27,22 @@ class RayPipelineTests(unittest.TestCase):
         self.path.write_bytes(graph.canonical_asset(self.document))
         return graph.compile_graph(self.path)
 
+    def test_ray_image_dependencies_exclude_callbacks_and_preserve_engine_helpers(self):
+        root = self.path.parent
+        (root / 'closest.slang').write_text('#include "shared.slang"\n// callback\n')
+        (root / 'shared.slang').write_text('// authored dependency\n')
+        snapshot = build.Snapshot(root)
+        engine = '_ludus_ray/image.slang'
+        snapshot.files[engine] = b'// image recipe\n'
+        snapshot.external[engine] = root / 'installed-image.slang'
+        image = {'id': ray.IMAGE_VERTEX_ID, 'ray_wrapper': '#include "' + engine + '"\n'}
+        compute = {'id': ray.COMPUTE_ID, 'ray_wrapper': image['ray_wrapper'] + '#include "closest.slang"\n'}
+        self.assertEqual([engine], ray.capture_program_closure(image, snapshot, build))
+        self.assertEqual(sorted([engine, 'closest.slang', 'shared.slang']),
+                         ray.capture_program_closure(compute, snapshot, build))
+        snapshot.load('closest.slang')
+        self.assertEqual([engine], ray.capture_program_closure(image, snapshot, build))
+
     def test_authored_stages_lower_to_ray_execution_and_camera_export(self):
         plan = self.compile()
         operation = next(value for value in plan['passes'] if value['kind'] == 'RayTracing')
@@ -491,7 +507,7 @@ class OrderedRayTests(unittest.TestCase):
         passes = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
         self.assertEqual(['Main/initial', 'Main/temporal', 'Main/shade'], [p['id'] for p in passes])
         self.assertEqual([(0, 1), (1, 2), (2, 3)],
-                         [(p['buffers'][0]['input_version'], p['buffers'][0]['output_version']) for p in passes])
+                         [(p['persistent_buffers'][0]['input_version'], p['persistent_buffers'][0]['output_version']) for p in passes])
         self.assertIn('Main/initial', passes[1]['dependencies'])
         self.assertIn('Main/temporal', passes[2]['dependencies'])
         variants = [list(ray.program_tuple(p['pipeline'])) for p in reversed(passes)]
@@ -500,8 +516,15 @@ class OrderedRayTests(unittest.TestCase):
         self.assertEqual([2, 1, 0], [record['RayProgram'] for record in records])
         self.assertEqual(['Color', 'Buffer', 'Buffer'], [record['Kind'] for record in resources])
         self.assertTrue(all(record['Buffer0'] == 1 and record['Buffer1'] == 2 for record in records))
-        self.assertTrue(all(plan['resources'][use['resource']]['initialized'] for p in passes for use in p['buffers']))
+        self.assertTrue(all(plan['resources'][use['resource']]['initialized'] for p in passes for use in p['persistent_buffers']))
         self.assertEqual(self.document, json.loads(self.path.read_text()))
+
+    def test_typed_job_storage_cannot_share_an_ordered_buffer_pass(self):
+        buffer = next(node for node in self.configuration['nodes'] if node['kind'] == 'Buffer')
+        buffer.pop('bytes')
+        buffer.update(kind='StructuredBuffer', stride=16, count=1)
+        with self.assertRaisesRegex(ToolingError, 'storage profiles cannot share'):
+            self.compile()
 
     def test_persistent_writers_require_explicit_previous_version(self):
         edge = next(edge for edge in self.configuration['edges'] if edge['to'] == 'temporal.history')

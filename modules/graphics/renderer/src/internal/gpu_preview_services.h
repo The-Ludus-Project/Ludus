@@ -350,6 +350,11 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
                 return Accepted(status) ? Status::Pending : (inoutJob.Setup = status);
             }
         }
+        const Status storageStatus = inoutJob.Storage.Poll();
+        if (storageStatus != Status::Ready)
+        {
+            return Accepted(storageStatus) == true ? Status::Pending : (inoutJob.Setup = storageStatus);
+        }
         if (inoutJob.IsNativeSceneCreated == false)
         {
             if (inoutJob.HasNativeGeometry == true)
@@ -399,8 +404,13 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
                  {LUDUS_GPU_PREVIEW_TEXELS_BINDING, inoutJob.Texels, 0, inoutJob.TexelBytes},
                  { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = inoutJob.NativeScene }}};
             const Status created = [&]() noexcept {
-                const usize count = inoutState.HasPersistentBuffers == true ? LUDUS_GRAPH_COMPUTE_BINDING_COUNT
-                                                                            : LUDUS_GPU_PREVIEW_BINDING_COUNT;
+                const usize count = inoutState.HasPersistentBuffers == true
+                                        ? LUDUS_GRAPH_COMPUTE_BINDING_COUNT
+                                        : LUDUS_GPU_PREVIEW_BINDING_COUNT + inoutJob.Storage.GetCount();
+                for (usize index = 0; index < inoutJob.Storage.GetCount(); ++index)
+                {
+                    bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + index] = inoutJob.Storage.GetBinding(index);
+                }
                 for (usize slot = 0; inoutState.HasPersistentBuffers == true && slot < internal::GPU_GRAPH_BUFFER_COUNT;
                      ++slot)
                 {
@@ -493,6 +503,7 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
         job.GraphBuffers[bufferIndex] = {};
         job.HasOwnedGraphBuffers[bufferIndex] = false;
     }
+    job.Storage.Reset();
     static_cast<void>(rhi::Destroy(Device, job.ImageBindings));
     static_cast<void>(rhi::Destroy(Device, job.NativeScene));
     static_cast<void>(rhi::Destroy(Device, job.NativeGeometry));
@@ -599,8 +610,12 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         return status == Status::Ready ? Status::Unsupported : status;
     }
     // Frozen kernel ABI: consume independently cooked target reflection, never invent it.
-    const bool hasPersistentBuffers = compute.Bindings.size() == LUDUS_GRAPH_COMPUTE_BINDING_COUNT;
-    if ((hasPersistentBuffers == false && compute.Bindings.size() != GPU_COMPUTE_BINDINGS.GetSize()) ||
+    namespace format = content::render_graph_format;
+    const bool hasPersistentBuffers =
+        options.StorageBuffers.IsEmpty() == true && compute.Bindings.size() == LUDUS_GRAPH_COMPUTE_BINDING_COUNT;
+    if (options.StorageBuffers.IsValid() == false || options.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
+        (hasPersistentBuffers == false &&
+         compute.Bindings.size() != GPU_COMPUTE_BINDINGS.GetSize() + options.StorageBuffers.GetSize()) ||
         compute.WorkgroupSize[0] != LUDUS_GPU_PREVIEW_GROUP_WIDTH || compute.WorkgroupSize[1] != 1 ||
         compute.WorkgroupSize[2] != 1)
     {
@@ -615,11 +630,32 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
             return Status::InvalidDescription;
         }
     }
-    for (usize index = GPU_COMPUTE_BINDINGS.GetSize(); index < compute.Bindings.size(); ++index)
+    for (usize index = GPU_COMPUTE_BINDINGS.GetSize(); hasPersistentBuffers == true && index < compute.Bindings.size();
+         ++index)
     {
         const rhi::RasterBinding& binding = compute.Bindings[index];
         if (binding.Binding != index || binding.Kind != rhi::RasterBindingKind::StorageReadWrite ||
             binding.Visibility != rhi::RasterVisibility::Compute || binding.MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES)
+        {
+            return Status::InvalidDescription;
+        }
+    }
+    for (usize i = 0; i < options.StorageBuffers.GetSize(); ++i)
+    {
+        const format::StorageBuffer& storage = options.StorageBuffers[i];
+        const rhi::RasterBinding& binding = compute.Bindings[GPU_COMPUTE_BINDINGS.GetSize() + i];
+        constexpr uint32 WORD_BYTES = sizeof(uint32);
+        if (storage.Slot < format::FIRST_STORAGE_SLOT ||
+            storage.Slot >= format::FIRST_STORAGE_SLOT + format::MAX_STORAGE_BUFFERS || storage.Stride == 0 ||
+            storage.Stride > format::MAX_STORAGE_STRIDE || storage.Stride % WORD_BYTES != 0 ||
+            storage.Count > format::MAX_STORAGE_ELEMENTS || storage.IsReadOnly > 1 ||
+            (i != 0 && options.StorageBuffers[i - 1].Slot >= storage.Slot) || binding.Binding != storage.Slot ||
+            binding.MinSize != storage.Stride ||
+            binding.Kind != (storage.IsReadOnly == 1 ? rhi::RasterBindingKind::StorageRead
+                                                     : rhi::RasterBindingKind::StorageReadWrite) ||
+            binding.Visibility != rhi::RasterVisibility::Compute || binding.HasDynamicOffset == true ||
+            binding.Count != 1 || binding.IsRuntimeSized == true || binding.HasPartialBinding == true ||
+            binding.Indexing != rhi::RasterBindingIndexing::Constant)
         {
             return Status::InvalidDescription;
         }
@@ -641,6 +677,16 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     core::UniquePtr<GpuPreviewState> state(allocation);
     state->Options = options;
     state->HasPersistentBuffers = hasPersistentBuffers;
+    for (usize i = 0; i < options.StorageBuffers.GetSize(); ++i)
+    {
+        state->StorageDescriptions[i] = options.StorageBuffers[i];
+    }
+    state->Options.StorageBuffers = {state->StorageDescriptions.GetData(), options.StorageBuffers.GetSize()};
+    state->ComputeBindingCount = compute.Bindings.size();
+    for (usize i = 0; i < compute.Bindings.size(); ++i)
+    {
+        state->ComputeBindings[i] = compute.Bindings[i];
+    }
     status = EnableReferenceRendering(
         {},
         {ReferenceTraversal::CpuOracle, options.CpuByteBudget - sizeof(GpuPreviewState), 0, 1});
@@ -722,11 +768,9 @@ Status Renderer::PollGpuPreview() noexcept
                 }
                 if (status == Status::Ready)
                 {
-                    status = [&]() noexcept {
-                        rhi::RasterShaderDescription description;
-                        SetRenderGraphRayInterface(description, rhi::ShaderStage::Compute, state.HasPersistentBuffers);
-                        return rhi::CreateBindingLayout(mState->Device, description.Bindings, state.ComputeLayout);
-                    }();
+                    status = rhi::CreateBindingLayout(mState->Device,
+                                                      {state.ComputeBindings.GetData(), state.ComputeBindingCount},
+                                                      state.ComputeLayout);
                     created = Accepted(status);
                 }
                 break;
@@ -1124,6 +1168,17 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                         {},
                                         frame.Texture);
         }
+    }
+    if (Accepted(status) == true)
+    {
+        status = job.Storage.Initialize(mState->Device,
+                                        state.Options.StorageBuffers,
+                                        job.Width,
+                                        job.Height,
+                                        {scratch - uploadBytes - pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES,
+                                         state.Options.GpuByteBudget - state.GpuBytes});
+        job.GpuBytes += job.Storage.GetBytes();
+        state.GpuBytes += job.Storage.GetBytes();
     }
     if (Accepted(status) == true)
     {

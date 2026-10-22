@@ -30,6 +30,10 @@ struct RenderGraphPlan final
     /// Optional authored names, one per Passes entry, copied during Initialize. Nonempty UTF-8,
     /// shorter than rhi::GPU_SCOPE_NAME_BYTES. Empty table uses a generic label with a stable ordinal identity.
     foundation::BorrowedView<const foundation::BorrowedView<const char>> PassNames{};
+    /// Native ray storage descriptors, copied during Initialize. Empty for legacy/raster plans.
+    // Keep partial aggregate callers warning-clean when this optional field is omitted.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const content::render_graph_format::StorageBuffer> StorageBuffers{};
 };
 /// Resolve one fixed or view-relative resource without GPU work. Relative dimensions
 /// use ceil(reference * numerator / denominator), with a minimum of one pixel.
@@ -49,9 +53,10 @@ ResolveRenderGraphResource(const content::render_graph_format::Resource& resourc
 /// for shared static mesh ownership; that pair never rasterizes the ray scene.
 /// Artifact/reflection storage remains immutable and alive until Initialize/Poll
 /// reaches Ready; generated package headers provide static storage.
-/// Each selected vertex uses the six Renderer flat locations. Stage bindings, when
-/// present, are read-only uniform buffers that exactly match the plan's uniform
-/// binding records. A depth-only stage pair shares its family's exact geometry
+/// Each selected vertex uses the six Renderer flat locations. Raster stage bindings,
+/// when present, are read-only uniform buffers that exactly match the plan's uniform
+/// binding records. Ray compute can additionally bind the plan's StorageBuffers
+/// at user slots 6/7. A depth-only stage pair shares its family's exact geometry
 /// stage; the masked depth fragment is a separately authored coverage function.
 struct RenderGraphPrograms final
 {

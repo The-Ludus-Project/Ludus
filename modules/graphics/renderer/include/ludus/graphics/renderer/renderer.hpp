@@ -376,7 +376,11 @@ public:
     /// reject; no software traversal or CPU rendering fallback is selected.
     /// Copies options; positive budgets and finite exposure are required. Owner-thread,
     /// between frames. Failure preserves the previous disabled state. Pending owns
-    /// setup and requires PollGpuPreview; Reset releases it. CPU input retention
+    /// setup and requires PollGpuPreview; Reset releases it.
+    /// Optional options.StorageBuffers extend the compute ABI in user slots 6/7;
+    /// descriptors are copied. Every job owns independent zero-initialized storage,
+    /// retained across dispatches and retired on job release. Stride/access must
+    /// match the supplied shader; checked byte counts obey CPU/GPU/device budgets. CPU input retention
     /// must be disabled before enable; it is enabled internally without CPU tracing.
     [[nodiscard]] rhi::RasterStatus EnableGpuPreview(const rhi::RasterShaderDescription& compute,
                                                      const rhi::RasterShaderDescription& vertex,

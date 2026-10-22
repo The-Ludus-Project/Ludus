@@ -246,6 +246,13 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           buffer.Size,
                                           rhi::RasterVisibility::Compute};
     }
+    status = job.Storage.AppendUses(graph,
+                                    {computeUses.GetData() + computeUseCount, computeUses.GetSize() - computeUseCount});
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    computeUseCount += job.Storage.GetCount();
     const rhi::ComputeDispatch dispatch{
         state.ComputePipeline,
         job.ComputeBindings,

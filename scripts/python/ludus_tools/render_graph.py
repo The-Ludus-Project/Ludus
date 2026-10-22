@@ -24,6 +24,7 @@ import sys
 from .errors import ToolingError
 from .render_graph_diagnostics import DiagnosticBatch, make_error
 from . import render_graph_pipeline as pipeline
+from . import render_graph_buffers as buffers
 from . import render_graph_scene as scene_bundle
 from . import render_graph_ray as ray
 
@@ -134,6 +135,9 @@ def _validate_extent(extent, where):
 def _validate_node(node, where):
     _require(type(node) is dict, "Schema", where, "node object required")
     kind = node.get("kind")
+    if kind == 'StructuredBuffer':
+        buffers.validate_node(node, where, sys.modules[__name__])
+        return
     if kind in pipeline.KINDS:
         pipeline.validate(node, where, sys.modules[__name__])
         return
@@ -220,12 +224,12 @@ def _validate_document(value, where):
         nodes = set()
         for node in config["nodes"]:
             _require(type(node) is dict, "Schema", location, "node object required")
-            _require(value["version"] == 2 or node.get("kind") not in pipeline.KINDS,
-                     "Version", location, "pipeline nodes require document version 2")
+            _require(value["version"] == 2 or node.get("kind") not in (*pipeline.KINDS, "StructuredBuffer"),
+                     "Version", location, "pipeline and structured buffer nodes require document version 2")
             _require(value['version'] == 2 or (node.get('kind') != 'RenderSize' and node.get('extent') != 'RenderSize'),
                      'Version', location, 'shared render sizes require document version 2')
             _validate_node(node, location + "/" + str(node.get("id", "node"))
-                           if node.get("kind") in (*pipeline.KINDS, 'RenderSize') else location)
+                           if node.get("kind") in (*pipeline.KINDS, 'RenderSize', 'StructuredBuffer') else location)
             _require(node["id"] not in nodes, "DuplicateIdentity", location, node["id"])
             nodes.add(node["id"])
         for edge in config["edges"]:
@@ -442,7 +446,7 @@ class _Library:
             return {}, {"scene": "Scene", **scene_bundle.TYPES}
         if kind == "Camera":
             return {"target": node["target_type"]}, {"view": "View"}
-        if kind == "Buffer":
+        if kind in ("Buffer", "StructuredBuffer"):
             return {}, {'buffer': 'Buffer'}
         if kind == "Target":
             return ({'size': 'RenderSize'} if node['extent'] == 'RenderSize' else {}), {"texture": node["type"]}
@@ -708,6 +712,10 @@ class _Compiler:
                 outputs["scene"] = _Value("Scene", origin=where)
                 outputs.update({part: _Value(kind, origin=where, scene_data=1 << scene_bundle.PARTS.index(part))
                                 for part, kind in scene_bundle.TYPES.items()})
+            elif kind == 'StructuredBuffer':
+                self.resources[where] = {'type': 'Buffer', 'stride': node['stride'], 'count': node['count']}
+                self.latest[where] = 0
+                outputs['buffer'] = _Value('Buffer', origin=where, resource=where, defined=True)
             elif kind == "Buffer":
                 self.resources[where] = {'type': 'Buffer', 'format': 'Bytes', 'extent': [node['bytes'], 1],
                                          'samples': 1, 'imported': False, 'initialized': True, 'presentation': False}
@@ -771,8 +779,11 @@ class _Compiler:
                 buffer_uses = []
                 buffer_outputs = {}
                 for slot, port in enumerate(port for port in authored_pipeline['inputs'] if port['type'] == 'Buffer'):
-                    identity = port['id']
-                    output = next(port for port in authored_pipeline['outputs'] if port['target'] == identity)
+                    identity = 'buffer:' + port['id']
+                    if 'stride' in self.resources[inputs[identity].resource]:
+                        continue
+                    output = next((port for port in authored_pipeline['outputs'] if port['target'] == input_mapping[identity]), None)
+                    _require(output is not None, 'Capability', where, 'each persistent Buffer input requires a paired Load/Store Buffer output')
                     written = self.write(inputs[identity], {identity + '_load': 'Load', identity + '_store': 'Store'},
                                          identity, where, ())
                     buffer_uses.append({'resource': written.resource, 'slot': slot,
@@ -781,16 +792,37 @@ class _Compiler:
                 _require(len({use['resource'] for use in buffer_uses}) == len(buffer_uses), 'MultipleWriters', where,
                          'one physical buffer cannot occupy both buffer inputs of a pass')
                 value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
+                storage = {}
+                storage_outputs = {}
+                for name in sorted(set(inputs) - {'scene', 'view', 'color'}):
+                    buffer = inputs[name]
+                    if 'stride' not in self.resources[buffer.resource]:
+                        continue
+                    _require(buffer.defined, 'Initialization', where, 'storage reads require defined input contents')
+                    _require(buffer.resource not in {use['resource'] for use in storage.values()},
+                             'MultipleWriters', where, 'one physical buffer cannot occupy two shader ports')
+                    writable = name in output_mapping
+                    updated = buffer
+                    if writable:
+                        _require(self.latest[buffer.resource] == buffer.version, 'ResourceVersion', where,
+                                 'storage write must consume the latest buffer version')
+                        self.latest[buffer.resource] += 1
+                        updated = _Value('Buffer', origin=where, resource=buffer.resource,
+                                         version=self.latest[buffer.resource], defined=True, producer=where)
+                        storage_outputs[output_mapping[name]] = updated
+                    storage[input_mapping[name]] = {'resource': buffer.resource, 'input_version': buffer.version,
+                                     'output_version': updated.version, 'access': 'ReadWrite' if writable else 'Read'}
+                _require(not buffer_uses or not storage, 'Capability', where, 'Buffer and StructuredBuffer storage profiles cannot share a pass')
                 self.techniques.add(ray.TECHNIQUE)
                 self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
                     'technique': ray.TECHNIQUE, 'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
                     'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
                     'scene': inputs['scene'].origin, 'scene_data': inputs['scene'].scene_data, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
-                    'dimensions': expected_dimensions, 'buffers': buffer_uses,
+                    'dimensions': expected_dimensions, 'persistent_buffers': buffer_uses, 'buffers': storage,
                     'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
-                outputs = {output_mapping['color']: value, **buffer_outputs}
+                outputs = {output_mapping['color']: value, **buffer_outputs, **storage_outputs}
             elif kind == "Raster":
                 _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera",
                          port=input_mapping['view'] if authored_pipeline is not None else 'view', direction='input',
@@ -882,7 +914,8 @@ class _Compiler:
         used_resources = {root['resource'] for root in self.roots}
         used_resources.update(attachment['resource'] for operation in self.passes
                               for attachment in operation.get('attachments', {}).values())
-        used_resources.update(use['resource'] for operation in self.passes for use in operation.get('buffers', []))
+        used_resources.update(use['resource'] for operation in self.passes for use in operation.get('persistent_buffers', []))
+        used_resources.update(use['resource'] for operation in self.passes for use in operation.get('buffers', {}).values())
         self.resources = {identity: resource for identity, resource in self.resources.items() if identity in used_resources}
 
 
@@ -978,6 +1011,8 @@ def dump_plan(plan):
             lines.append(f"    scene: {entry['scene']}; view: {entry['view']}; technique: {entry['technique']}")
         if entry['kind'] == 'RayTracing':
             lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
+        for name, use in entry.get('buffers', {}).items():
+            lines.append(f"    {name}: {use['resource']}@{use['input_version']} -> @{use['output_version']} ({use['access']})")
         for aspect, attachment in entry.get("attachments", {}).items():
             lines.append(f"    {aspect}: {attachment['resource']}@{attachment['input_version']} -> "
                          f"@{attachment['output_version']} {attachment['load']}/{attachment['store']} "

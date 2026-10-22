@@ -228,6 +228,10 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
+    if (options.Version >= format::STORAGE_PACKAGE_VERSION)
+    {
+        writer.WriteWord(0);
+    }
     if (options.Version >= format::NAMED_PACKAGE_VERSION)
     {
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
@@ -271,6 +275,7 @@ Array<uint8> MakeMultiTargetPackageBytes(std::string_view vertexSpirv, bool hasF
     }
     WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::Wgsl, FRAGMENT_TEXT, "FragmentMain");
     WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::GlslEs, GLSL_TEXT, "main");
+    writer.WriteWord(0);
     writer.WriteWord(static_cast<uint32>(PackageOptions{}.PassName.size()));
     writer.WritePadded(PackageOptions{}.PassName);
     return Move(writer.Bytes);
@@ -751,6 +756,7 @@ TEST_CASE("RG3 runtime packages carry GLSL ES block names and reject malformed u
                    FRAGMENT_TEXT,
                    "FragmentMain",
                    blockTarget == format::ShaderTarget::Wgsl ? block : std::string_view{});
+        writer.WriteWord(0);
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
         writer.WritePadded(options.PassName);
         return Move(writer.Bytes);
@@ -949,7 +955,8 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::VIEW_PACKAGE_VERSION,
                                  format::SCENE_PACKAGE_VERSION,
                                  format::NATIVE_RAY_PACKAGE_VERSION,
-                                 format::INDEPENDENT_RASTER_PACKAGE_VERSION,
+                                 format::INDEPENDENT_PROGRAM_PACKAGE_VERSION,
+                                 format::STORAGE_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1090,42 +1097,55 @@ TEST_CASE("Unsupported native rays select raster without preparing the ray packa
 TEST_CASE("runtime independent shader pairs decode with their own stage and binding tables",
           "[render-graph][activation]")
 {
-    constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
-    PackageOptions options;
-    options.Program = GBUFFER_PROGRAM;
-    options.HasDepthStages = false;
-    options.HasUniforms = true;
-    PackageWriter writer;
-    WritePlan(writer, options, 4);
-    // WritePlan's uniform fixture starts with the legacy color program. Retarget
-    // that serialized binding explicitly; the rest of its layout is unchanged.
-    const usize bindingOffset = format::HEADER_BYTES + 2 * format::RESOURCE_RECORD_BYTES + format::CAMERA_RECORD_BYTES +
-                                format::PASS_RECORD_BYTES;
-    writer.Bytes[bindingOffset] = static_cast<uint8>(format::LEGACY_TECHNIQUE_COUNT);
-    const format::StageRole vertexRole = static_cast<format::StageRole>(format::GetRasterStageRole(GBUFFER_PROGRAM, 0));
-    const format::StageRole fragmentRole =
-        static_cast<format::StageRole>(format::GetRasterStageRole(GBUFFER_PROGRAM, 1));
-    for (const format::ShaderTarget target : {format::ShaderTarget::Wgsl, format::ShaderTarget::Metal})
+    for (const uint32 version :
+         {format::INDEPENDENT_PROGRAM_PACKAGE_VERSION, format::STORAGE_PACKAGE_VERSION, format::PACKAGE_VERSION})
     {
-        WriteStage(writer, vertexRole, target, VERTEX_TEXT, "GBufferVertex");
-        WriteStage(writer, fragmentRole, target, FRAGMENT_TEXT, "GBufferFragment");
+        constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
+        PackageOptions options;
+        options.Version = version;
+        options.Program = GBUFFER_PROGRAM;
+        options.HasDepthStages = false;
+        options.HasUniforms = true;
+        PackageWriter writer;
+        WritePlan(writer, options, 4);
+        // WritePlan's uniform fixture starts with the legacy color program. Retarget
+        // that serialized binding explicitly; the rest of its layout is unchanged.
+        constexpr usize LEGACY_PASS_FIELDS = 10;
+        const usize passBytes =
+            (version < format::PACKAGE_VERSION ? LEGACY_PASS_FIELDS : format::PASS_FIELD_COUNT) * sizeof(uint32);
+        const usize bindingOffset =
+            format::HEADER_BYTES + 2 * format::RESOURCE_RECORD_BYTES + format::CAMERA_RECORD_BYTES + passBytes;
+        writer.Bytes[bindingOffset] = static_cast<uint8>(format::LEGACY_TECHNIQUE_COUNT);
+        const format::StageRole vertexRole =
+            static_cast<format::StageRole>(format::GetRasterStageRole(GBUFFER_PROGRAM, 0));
+        const format::StageRole fragmentRole =
+            static_cast<format::StageRole>(format::GetRasterStageRole(GBUFFER_PROGRAM, 1));
+        for (const format::ShaderTarget target : {format::ShaderTarget::Wgsl, format::ShaderTarget::Metal})
+        {
+            WriteStage(writer, vertexRole, target, VERTEX_TEXT, "GBufferVertex");
+            WriteStage(writer, fragmentRole, target, FRAGMENT_TEXT, "GBufferFragment");
+        }
+        if (version >= format::STORAGE_PACKAGE_VERSION)
+        {
+            writer.WriteWord(0);
+        }
+        writer.WriteWord(static_cast<uint32>(options.PassName.size()));
+        writer.WritePadded(options.PassName);
+        renderer::RenderGraphPackage package;
+        REQUIRE(package.Decode({writer.Bytes.GetData(), writer.Bytes.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        CHECK(package.GetPlan().Passes[0].Program == GBUFFER_PROGRAM);
+        const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
+        CHECK(programs.ColorFragment.Artifact.Wgsl.empty() == true);
+        CHECK(programs.AdditionalRasterStages[0].Artifact.WgslEntry == "GBufferVertex");
+        CHECK(programs.AdditionalRasterStages[1].Artifact.WgslEntry == "GBufferFragment");
+        REQUIRE(programs.AdditionalRasterStages[1].Bindings.size() == 1);
+        CHECK(programs.AdditionalRasterStages[1].Bindings[0].MinSize == METAL_MATERIAL_BYTES);
+        // Old formats must never reinterpret an extended role as a legacy program.
+        writer.Bytes[sizeof(uint32)] = static_cast<uint8>(format::NATIVE_RAY_PACKAGE_VERSION);
+        renderer::RenderGraphPackage legacy;
+        CHECK(legacy.Decode({writer.Bytes.GetData(), writer.Bytes.GetSize()}) ==
+              renderer::RenderGraphPackageStatus::Malformed);
+        CHECK(legacy.IsLoaded() == false);
     }
-    writer.WriteWord(static_cast<uint32>(options.PassName.size()));
-    writer.WritePadded(options.PassName);
-    renderer::RenderGraphPackage package;
-    REQUIRE(package.Decode({writer.Bytes.GetData(), writer.Bytes.GetSize()}) ==
-            renderer::RenderGraphPackageStatus::Ready);
-    CHECK(package.GetPlan().Passes[0].Program == GBUFFER_PROGRAM);
-    const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
-    CHECK(programs.ColorFragment.Artifact.Wgsl.empty() == true);
-    CHECK(programs.AdditionalRasterStages[0].Artifact.WgslEntry == "GBufferVertex");
-    CHECK(programs.AdditionalRasterStages[1].Artifact.WgslEntry == "GBufferFragment");
-    REQUIRE(programs.AdditionalRasterStages[1].Bindings.size() == 1);
-    CHECK(programs.AdditionalRasterStages[1].Bindings[0].MinSize == METAL_MATERIAL_BYTES);
-    // Old formats must never reinterpret an extended role as a legacy program.
-    writer.Bytes[sizeof(uint32)] = static_cast<uint8>(format::NATIVE_RAY_PACKAGE_VERSION);
-    renderer::RenderGraphPackage legacy;
-    CHECK(legacy.Decode({writer.Bytes.GetData(), writer.Bytes.GetSize()}) ==
-          renderer::RenderGraphPackageStatus::Malformed);
-    CHECK(legacy.IsLoaded() == false);
 }

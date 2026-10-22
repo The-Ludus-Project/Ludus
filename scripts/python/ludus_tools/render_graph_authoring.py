@@ -31,7 +31,7 @@ def _schemas(package):
 
 def _field_key(schema, field):
     # Vertex/varying identity includes its interface placement; uniform identity is id/type.
-    if schema['role'] == 'Uniform':
+    if schema['role'] in ('Uniform', 'Storage'):
         return field['type']
     return field['type'], field['semantic'], field['location']
 
