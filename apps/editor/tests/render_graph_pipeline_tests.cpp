@@ -2293,3 +2293,84 @@ TEST_CASE("legacy ray conversion preserves authored callbacks and is atomic",
         CHECK(QJsonDocument::fromJson(loaded.GetDraft(manifestFile)).object() == converted);
     }
 }
+
+TEST_CASE("independent graphics shaders coexist with a legacy raster in one package",
+          "[editor][render-graph][pipeline][technique]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString configuration = QStringLiteral("ColorAndDepth");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    const QJsonArray originalTechniques = manifest.value(QStringLiteral("techniques")).toArray();
+    QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+    QJsonObject fragment = programs.at(1).toObject();
+    fragment.insert(QStringLiteral("id"), QStringLiteral("GBuffer"));
+    fragment.insert(QStringLiteral("function"), QStringLiteral("GBufferMain"));
+    programs.append(fragment);
+    manifest.insert(QStringLiteral("programs"), programs);
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    constexpr int32 PROGRAM_BUDGET = 4;
+    budgets.insert(QStringLiteral("programs"), PROGRAM_BUDGET);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(manifest)) ==
+            RenderGraphDocumentStatus::Ok);
+    const QJsonObject original =
+        GetConfiguration(document, LIBRARY, configuration).value(QStringLiteral("nodes")).toArray().first().toObject();
+    QJsonObject node;
+    REQUIRE(MigrateRasterNode(original, manifest, node) == true);
+    node.insert(QStringLiteral("id"), QStringLiteral("gbuffer"));
+    QJsonArray shaders = node.value(QStringLiteral("shaders")).toArray();
+    QJsonObject shader = shaders.at(1).toObject();
+    shader.insert(QStringLiteral("program"), QStringLiteral("GBuffer"));
+    shaders.replace(1, shader);
+    node.insert(QStringLiteral("shaders"), shaders);
+    REQUIRE(document.AddNode(LIBRARY,
+                             configuration,
+                             MakePipelineNode(QStringLiteral("GraphicsPipeline"), QStringLiteral("gbuffer"))) ==
+            RenderGraphDocumentStatus::Ok);
+    bool hasIdentityCollision = false;
+    SECTION("legacy raster") {}
+    SECTION("converted graphics pipeline")
+    {
+        QJsonObject converted;
+        REQUIRE(MigrateRasterNode(original, manifest, converted) == true);
+        REQUIRE(document.ApplyPipeline(LIBRARY, configuration, converted) == RenderGraphDocumentStatus::Ok);
+    }
+    SECTION("stable technique ID already belongs to a renamed pair")
+    {
+        QJsonArray existing = manifest.value(QStringLiteral("techniques")).toArray();
+        QJsonObject renamed = existing.first().toObject();
+        renamed.insert(QStringLiteral("id"), QStringLiteral("DefaultStaticOpaque.ColorAndDepth.Geometry.GBuffer"));
+        existing.append(renamed);
+        manifest.insert(QStringLiteral("techniques"), existing);
+        REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(manifest)) ==
+                RenderGraphDocumentStatus::Ok);
+        hasIdentityCollision = true;
+    }
+    const QJsonValue expectedDraw =
+        GetConfiguration(document, LIBRARY, configuration).value(QStringLiteral("nodes")).toArray().first();
+    const QByteArray before = document.GetDraft(QStringLiteral("main.lushader.json"));
+    QString error;
+    REQUIRE(document.ApplyPipeline(LIBRARY, configuration, node, &error) == RenderGraphDocumentStatus::Ok);
+    manifest = QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    const QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    REQUIRE(techniques.size() == originalTechniques.size() + (hasIdentityCollision == true ? 2 : 1));
+    CHECK(techniques.first() == originalTechniques.first());
+    CHECK(techniques.last().toObject().value(QStringLiteral("id")) ==
+          (hasIdentityCollision == true ? QStringLiteral("DefaultStaticOpaque.ColorAndDepth.Geometry.GBuffer_2")
+                                        : QStringLiteral("DefaultStaticOpaque.ColorAndDepth.Geometry.GBuffer")));
+    CHECK(techniques.last().toObject().value(QStringLiteral("fragment")) == QStringLiteral("GBuffer"));
+    CHECK(GetConfiguration(document, LIBRARY, configuration).value(QStringLiteral("nodes")).toArray().first() ==
+          expectedDraw);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == before);
+    REQUIRE(document.Redo() == true);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reloaded.GetDraft(QStringLiteral("main.lushader.json")) ==
+          document.GetDraft(QStringLiteral("main.lushader.json")));
+}

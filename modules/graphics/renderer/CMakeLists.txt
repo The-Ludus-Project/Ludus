@@ -131,7 +131,7 @@ if(TARGET ludus_renderer_render_tests)
         set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
     endif()
     # bound: per-draw uniform values; masked_color/masked_depth: authored masked coverage parity.
-    foreach(kind surface offscreen depth bound masked_color masked_depth)
+    foreach(kind surface offscreen depth bound masked_color masked_depth independent)
         set(input "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}")
         set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${kind}")
         file(COPY "${input}/" DESTINATION "${staged}" PATTERN "*.in" EXCLUDE)
@@ -139,6 +139,9 @@ if(TARGET ludus_renderer_render_tests)
         ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_${kind}
             MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
     endforeach()
+    cmake_path(GET rg2_independent_RUNTIME_PACKAGE PARENT_PATH rg3_independent_directory)
+    target_compile_definitions(ludus_renderer_render_tests PRIVATE
+        LUDUS_RG3_INDEPENDENT_DIRECTORY="${rg3_independent_directory}")
     # RG3 loads the same cooked surface generation at runtime and compares pixels with its header.
     cmake_path(GET rg2_surface_RUNTIME_PACKAGE PARENT_PATH rg3_surface_directory)
     cmake_path(GET rg2_bound_RUNTIME_PACKAGE PARENT_PATH rg3_bound_directory)
