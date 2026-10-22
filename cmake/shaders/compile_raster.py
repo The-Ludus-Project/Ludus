@@ -142,7 +142,10 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         descriptors = [b for b in bindings if b.get('kind') == 'descriptorTableSlot']
         if metal and not descriptors:
             native_kinds = ('constantBuffer', 'shaderResource') if stage == 'compute' else ('constantBuffer', 'shaderResource', 'samplerState')
-            descriptors = [b for b in bindings if b.get('kind') in native_kinds]
+            # Metal buffers also carry zero-count shaderResource metadata.
+            # Only the occupied native category identifies their descriptor.
+            descriptors = [b for b in bindings if b.get('kind') in native_kinds
+                           and (stage != 'compute' or b.get('count', 1) != 0)]
         if len(descriptors) != 1 or descriptors[0].get('space', 0) != 0:
             raise RuntimeError('Raster resources require one descriptor in group/set zero')
         index = descriptors[0]['index']
