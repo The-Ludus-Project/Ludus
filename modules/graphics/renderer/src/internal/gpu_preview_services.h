@@ -1,11 +1,14 @@
 #pragma once
 
+#include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/renderer/render_graph.hpp>
 
 #include <cstring>
 
+#include "gpu_preview_graph.h"
 #include "gpu_preview_ray.h"
 #include "render_graph_ray_scene.h"
 #include "scene_memory.h"
@@ -438,7 +441,7 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
         {
             const usize pixels = usize(inoutJob.Width) * inoutJob.Height;
             StaticArray<rhi::RasterBindingResource,
-                        LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
+                        LUDUS_GRAPH_COMPUTE_BINDING_COUNT + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT>
                 bindings{
                     {{0, inoutJob.Parameters, 0, sizeof(internal::GpuPreviewUniform)},
                      {1, inoutJob.Data, 0, inoutJob.DataBytes},
@@ -446,28 +449,44 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
                      {LUDUS_GPU_PREVIEW_COLORS_BINDING, inoutJob.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
                      {LUDUS_GPU_PREVIEW_TEXELS_BINDING, inoutJob.Texels, 0, inoutJob.TexelBytes},
                      { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = inoutJob.NativeScene }}};
-            for (usize i = 0; i < inoutJob.Storage.GetCount(); ++i)
-            {
-                bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + i] = inoutJob.Storage.GetBinding(i);
-            }
-            usize bindingCount = LUDUS_GPU_PREVIEW_BINDING_COUNT + inoutJob.Storage.GetCount();
-            if (inoutState.HasVisibilityBuffer == true)
-            {
-                bindings[bindingCount++] =
+            const Status created = [&]() noexcept {
+                usize count = inoutState.HasPersistentBuffers == true
+                                  ? LUDUS_GRAPH_COMPUTE_BINDING_COUNT
+                                  : LUDUS_GPU_PREVIEW_BINDING_COUNT + inoutJob.Storage.GetCount();
+                for (usize index = 0; index < inoutJob.Storage.GetCount(); ++index)
                 {
-                    .Binding = LUDUS_GRAPH_VISIBILITY_BINDING,
-                    .Texture = inoutJob.VisibilityView,
-                };
-                bindings[bindingCount++] =
+                    bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + index] = inoutJob.Storage.GetBinding(index);
+                }
+                for (usize slot = 0; inoutState.HasPersistentBuffers == true && slot < internal::GPU_GRAPH_BUFFER_COUNT;
+                     ++slot)
                 {
-                    .Binding = LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING,
-                    .Texture = inoutJob.VisibilityDepthView,
-                };
-            }
-            const Status created = rhi::CreateBindingSet(device,
-                                                         inoutState.ComputeLayout,
-                                                         {bindings.GetData(), bindingCount},
-                                                         inoutJob.ComputeBindings);
+                    const GpuPreviewGraphBuffer& buffer = inoutJob.GraphBuffers[slot];
+                    const Status ready = rhi::GetStatus(device, buffer.Buffer);
+                    if (ready != Status::Ready)
+                    {
+                        return ready;
+                    }
+                    bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + slot] =
+                        {static_cast<uint32>(LUDUS_GPU_PREVIEW_BINDING_COUNT + slot), buffer.Buffer, 0, buffer.Size};
+                }
+                if (inoutState.HasVisibilityBuffer == true)
+                {
+                    bindings[count++] =
+                    {
+                        .Binding = LUDUS_GRAPH_VISIBILITY_BINDING,
+                        .Texture = inoutJob.VisibilityView,
+                    };
+                    bindings[count++] =
+                    {
+                        .Binding = LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING,
+                        .Texture = inoutJob.VisibilityDepthView,
+                    };
+                }
+                return rhi::CreateBindingSet(device,
+                                             inoutState.ComputeLayout,
+                                             {bindings.GetData(), count},
+                                             inoutJob.ComputeBindings);
+            }();
             if (Accepted(created) == false)
             {
                 return inoutJob.Setup = created;
@@ -535,6 +554,15 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
 {
     GpuPreviewRecord& job = GpuPreview->Jobs[slot];
     static_cast<void>(rhi::Destroy(Device, job.ComputeBindings));
+    for (usize bufferIndex = 0; bufferIndex < internal::GPU_GRAPH_BUFFER_COUNT; ++bufferIndex)
+    {
+        if (job.HasOwnedGraphBuffers[bufferIndex] == true)
+        {
+            static_cast<void>(rhi::Destroy(Device, job.GraphBuffers[bufferIndex].Buffer));
+        }
+        job.GraphBuffers[bufferIndex] = {};
+        job.HasOwnedGraphBuffers[bufferIndex] = false;
+    }
     job.Storage.Reset();
     static_cast<void>(rhi::Destroy(Device, job.VisibilityView));
     static_cast<void>(rhi::Destroy(Device, job.VisibilityDepthView));
@@ -570,7 +598,7 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
 }
 void Renderer::State::RetireGpuPreviews() noexcept
 {
-    for (usize i = 0; i < 4; ++i)
+    for (usize i = 0; i < internal::GPU_PREVIEW_JOB_COUNT; ++i)
     {
         GpuPreviewRecord& job = GpuPreview->Jobs[i];
         if (job.Used && job.Owned == false && job.Frames[0].Owned == false && job.Frames[1].Owned == false)
@@ -589,7 +617,7 @@ void Renderer::State::ClearGpuPreview() noexcept
     {
         return;
     }
-    for (usize i = 0; i < 4; ++i)
+    for (usize i = 0; i < internal::GPU_PREVIEW_JOB_COUNT; ++i)
     {
         if (GpuPreview->Jobs[i].Used)
         {
@@ -645,11 +673,17 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     // Frozen kernel ABI: consume independently cooked target reflection, never invent it.
     namespace format = content::render_graph_format;
-    const usize storageBindingCount = GPU_COMPUTE_BINDINGS.GetSize() + options.StorageBuffers.GetSize();
     const bool hasVisibilityBuffer =
-        compute.Bindings.size() == storageBindingCount + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT;
+        compute.Bindings.size() >= LUDUS_GRAPH_VISIBILITY_BINDING_COUNT &&
+        compute.Bindings[compute.Bindings.size() - LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT].Kind ==
+            rhi::RasterBindingKind::Texture2D;
+    const usize visibilityBindingCount = hasVisibilityBuffer == true ? LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT : 0;
+    const usize bufferBindingCount = compute.Bindings.size() - visibilityBindingCount;
+    const usize storageBindingCount = GPU_COMPUTE_BINDINGS.GetSize() + options.StorageBuffers.GetSize();
+    const bool hasPersistentBuffers =
+        options.StorageBuffers.IsEmpty() == true && bufferBindingCount == LUDUS_GRAPH_COMPUTE_BINDING_COUNT;
     if (options.StorageBuffers.IsValid() == false || options.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
-        (compute.Bindings.size() != storageBindingCount && hasVisibilityBuffer == false) ||
+        (hasPersistentBuffers == false && bufferBindingCount != storageBindingCount) ||
         compute.WorkgroupSize[0] != LUDUS_GPU_PREVIEW_GROUP_WIDTH || compute.WorkgroupSize[1] != 1 ||
         compute.WorkgroupSize[2] != 1)
     {
@@ -660,6 +694,16 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         const ludus::graphics::rhi::RasterBinding& a = compute.Bindings[i];
         const rhi::RasterBinding& b = GPU_COMPUTE_BINDINGS[i];
         if (a.Binding != b.Binding || a.Kind != b.Kind || a.Visibility != b.Visibility || a.MinSize != b.MinSize)
+        {
+            return Status::InvalidDescription;
+        }
+    }
+    for (usize index = GPU_COMPUTE_BINDINGS.GetSize(); hasPersistentBuffers == true && index < bufferBindingCount;
+         ++index)
+    {
+        const rhi::RasterBinding& binding = compute.Bindings[index];
+        if (binding.Binding != index || binding.Kind != rhi::RasterBindingKind::StorageReadWrite ||
+            binding.Visibility != rhi::RasterVisibility::Compute || binding.MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES)
         {
             return Status::InvalidDescription;
         }
@@ -688,7 +732,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         for (usize i = 0; i < LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT; ++i)
         {
-            const rhi::RasterBinding& actual = compute.Bindings[storageBindingCount + i];
+            const rhi::RasterBinding& actual = compute.Bindings[bufferBindingCount + i];
             const rhi::RasterBinding& expected = GPU_VISIBILITY_BINDINGS[LUDUS_GPU_PREVIEW_BINDING_COUNT + i];
             if (actual.Binding != expected.Binding || actual.Kind != expected.Kind ||
                 actual.Visibility != expected.Visibility || actual.MinSize != expected.MinSize ||
@@ -715,6 +759,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     core::UniquePtr<GpuPreviewState> state(allocation);
     state->Options = options;
+    state->HasPersistentBuffers = hasPersistentBuffers;
     for (usize i = 0; i < options.StorageBuffers.GetSize(); ++i)
     {
         state->StorageDescriptions[i] = options.StorageBuffers[i];
@@ -908,7 +953,8 @@ Status Renderer::PollGpuPreview() noexcept
 Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                  const ReferenceCaptureDescription& description,
                                  renderer::GpuPreview& outOutput,
-                                 const RenderGraphSceneDescription* graphSceneOrNull) noexcept
+                                 const RenderGraphSceneDescription* graphSceneOrNull,
+                                 const GpuPreviewGraphInvocation* invocationOrNull) noexcept
 {
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
@@ -938,6 +984,14 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         return Status::Unsupported;
     }
     internal::GpuPreviewState& state = *mState->GpuPreview;
+    if (invocationOrNull != nullptr && (state.HasPersistentBuffers == false ||
+                                        invocationOrNull->Program >= content::render_graph_format::MAX_RAY_PASSES ||
+                                        invocationOrNull->Buffers.IsValid() == false ||
+                                        (invocationOrNull->Buffers.GetSize() != 0 &&
+                                         invocationOrNull->Buffers.GetSize() != internal::GPU_GRAPH_BUFFER_COUNT)))
+    {
+        return Status::InvalidDescription;
+    }
     usize slot = 0;
     status = FreeSlot(state.Jobs, slot);
     if (status != Status::Ready)
@@ -1062,6 +1116,19 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         return Status::CapacityExceeded;
     }
+    for (usize bufferIndex = 0; state.HasPersistentBuffers == true && bufferIndex < internal::GPU_GRAPH_BUFFER_COUNT;
+         ++bufferIndex)
+    {
+        const bool shouldCreatePrivateBuffer = invocationOrNull == nullptr ||
+                                               invocationOrNull->Buffers.IsEmpty() == true ||
+                                               (invocationOrNull->Buffers[bufferIndex].Buffer == rhi::BufferHandle{} &&
+                                                invocationOrNull->Buffers[bufferIndex].Size == 0);
+        if (shouldCreatePrivateBuffer == true &&
+            foundation::TryAdd(gpuBytes, usize{LUDUS_GPU_PREVIEW_VECTOR_BYTES}, gpuBytes) == false)
+        {
+            return Status::CapacityExceeded;
+        }
+    }
     const usize gpuRemaining = state.Options.GpuByteBudget - state.GpuBytes;
     if (gpuBytes > gpuRemaining)
     {
@@ -1137,6 +1204,10 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     job.Info.TargetSamples = description.TargetSamples;
     job.Info.SceneFingerprintLow = scene->Scene.FingerprintLow;
     job.Info.SceneFingerprintHigh = scene->Scene.FingerprintHigh;
+    if (invocationOrNull != nullptr)
+    {
+        uniform.Sampling[2] |= invocationOrNull->Program << LUDUS_GRAPH_PASS_INDEX_SHIFT;
+    }
     uniform.Options.Y = state.Options.Exposure;
     const math::Vector4 dimensions{float32(job.Width), float32(job.Height), 0, 0};
     status = rhi::CreateBuffer(mState->Device,
@@ -1217,6 +1288,30 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
             state.GpuBytes += nativeBytes;
         }
     }
+    for (usize bufferIndex = 0; Accepted(status) == true && state.HasPersistentBuffers == true &&
+                                bufferIndex < internal::GPU_GRAPH_BUFFER_COUNT;
+         ++bufferIndex)
+    {
+        GpuPreviewGraphBuffer buffer = invocationOrNull != nullptr && invocationOrNull->Buffers.IsEmpty() == false
+                                           ? invocationOrNull->Buffers[bufferIndex]
+                                           : GpuPreviewGraphBuffer{};
+        if (buffer.Buffer == rhi::BufferHandle{} && buffer.Size == 0)
+        {
+            static constexpr StaticArray<uint8, LUDUS_GPU_PREVIEW_VECTOR_BYTES> ZERO_WORD{};
+            status = rhi::CreateBuffer(mState->Device,
+                                       {rhi::BufferRole::Storage, ZERO_WORD.GetSize()},
+                                       ZERO_WORD.AsSpan(),
+                                       buffer.Buffer);
+            buffer.Size = ZERO_WORD.GetSize();
+            job.HasOwnedGraphBuffers[bufferIndex] = Accepted(status);
+        }
+        else if (buffer.Size == 0 || buffer.Size % LUDUS_GPU_PREVIEW_VECTOR_BYTES != 0 ||
+                 buffer.Size > computeCaps.MaxStorageRange)
+        {
+            status = Status::InvalidDescription;
+        }
+        job.GraphBuffers[bufferIndex] = buffer;
+    }
     if (Accepted(status))
     {
         status = PollGpuJob(mState->Device, state, job);
@@ -1229,185 +1324,6 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     outOutput = Access::Make<renderer::GpuPreview>({mState->Owner, job.Generation, slot});
     return status;
 }
-namespace
-{
-Status BuildGpuGraph(rhi::DeviceHandle device,
-                     const GpuPreviewState& state,
-                     const GpuPreviewRecord& job,
-                     uint32 image,
-                     rhi::OrderedGraph& outGraph,
-                     const rhi::TextureHandle* targetOrNull = nullptr,
-                     const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept
-{
-    constexpr usize COLOR_BUFFER_INDEX = 3;
-    constexpr usize TEXEL_BUFFER_INDEX = 7;
-    constexpr usize BASE_COMPUTE_USE_COUNT = 5;
-    Status status = targetOrNull == nullptr ? rhi::CreateOrderedGraph(device, outGraph) : Status::Ready;
-    if (status != Status::Ready)
-    {
-        return status;
-    }
-    const rhi::BufferHandle buffers[]{job.Data,
-                                      job.Parameters,
-                                      job.Accumulation,
-                                      job.Colors,
-                                      state.Quad,
-                                      state.Indices,
-                                      job.ImageParameters,
-                                      job.Texels};
-    rhi::GraphVersion versions[8];
-    for (usize i = 0; i < 8; ++i)
-    {
-        status = rhi::ImportGraphBuffer(device, outGraph, buffers[i], versions[i]);
-        if (status != Status::Ready)
-        {
-            return status;
-        }
-    }
-    const rhi::TextureHandle target = targetOrNull != nullptr ? *targetOrNull : job.Frames[image].Texture;
-    rhi::RasterTextureState textureState;
-    status = rhi::GetTextureState(device, target, textureState);
-    if (status != Status::Ready)
-    {
-        return status;
-    }
-    rhi::GraphVersion texture, output, accumulation, colors;
-    status = rhi::ImportGraphTexture(device,
-                                     outGraph,
-                                     target,
-                                     textureState,
-                                     rhi::RasterTextureUse::SampledFragment,
-                                     texture);
-    if (status == Status::Ready)
-    {
-        status = rhi::NextGraphVersion(device, outGraph, texture, output);
-    }
-    if (status == Status::Ready)
-    {
-        status = rhi::NextGraphVersion(device, outGraph, versions[2], accumulation);
-    }
-    if (status == Status::Ready)
-    {
-        status = rhi::NextGraphVersion(device, outGraph, versions[COLOR_BUFFER_INDEX], colors);
-    }
-    if (status != Status::Ready)
-    {
-        return status;
-    }
-    const usize pixels = usize(job.Width) * job.Height;
-    // GraphUse initializes Visibility to Both for every unused nested element.
-    StaticArray<rhi::GraphUse, BASE_COMPUTE_USE_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS + 1>
-        computeUses{// NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
-                    {{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
-                     {versions[1],
-                      rhi::GraphAccessMode::Uniform,
-                      0,
-                      sizeof(internal::GpuPreviewUniform),
-                      rhi::RasterVisibility::Compute},
-                     {accumulation,
-                      rhi::GraphAccessMode::StorageReadWrite,
-                      0,
-                      pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES,
-                      rhi::RasterVisibility::Compute},
-                     {colors,
-                      rhi::GraphAccessMode::StorageReadWrite,
-                      0,
-                      pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES,
-                      rhi::RasterVisibility::Compute},
-                     {versions[TEXEL_BUFFER_INDEX],
-                      rhi::GraphAccessMode::StorageRead,
-                      0,
-                      job.TexelBytes,
-                      rhi::RasterVisibility::Compute}}};
-    status = job.Storage.AppendUses(outGraph, {computeUses.GetData() + BASE_COMPUTE_USE_COUNT, job.Storage.GetCount()});
-    if (status != Status::Ready)
-    {
-        return status;
-    }
-    if (visibilityOrNull != nullptr)
-    {
-        rhi::RasterTextureState visibilityState;
-        rhi::GraphVersion previous;
-        rhi::GraphVersion written;
-        status = rhi::GetTextureState(device, job.VisibilityTexture, visibilityState);
-        if (status == Status::Ready)
-        {
-            status = rhi::ImportGraphTexture(device,
-                                             outGraph,
-                                             job.VisibilityTexture,
-                                             visibilityState,
-                                             rhi::RasterTextureUse::SampledCompute,
-                                             previous);
-        }
-        if (status == Status::Ready)
-        {
-            status = visibilityOrNull->ProducerOrNull->AppendVisibilityView(visibilityOrNull->View,
-                                                                            outGraph,
-                                                                            visibilityOrNull->Attachment,
-                                                                            previous,
-                                                                            written);
-        }
-        if (status != Status::Ready)
-        {
-            return status;
-        }
-        computeUses[BASE_COMPUTE_USE_COUNT + job.Storage.GetCount()] = {written,
-                                                                        rhi::GraphAccessMode::Sampled,
-                                                                        0,
-                                                                        0,
-                                                                        rhi::RasterVisibility::Compute};
-    }
-    const rhi::ComputeDispatch dispatch{state.ComputePipeline,
-                                        job.ComputeBindings,
-                                        {(job.Width + 63) / 64, job.Height, 1}};
-    rhi::GraphPassDescription compute;
-    compute.Name = "GPU preview transport";
-    compute.Uses = computeUses.GetData();
-    compute.UseCount = BASE_COMPUTE_USE_COUNT + job.Storage.GetCount() + (visibilityOrNull != nullptr ? 1 : 0);
-    compute.Dispatch = &dispatch;
-    status = rhi::AddGraphPass(device, outGraph, compute);
-    if (status != Status::Ready)
-    {
-        return status;
-    }
-    constexpr usize QUAD_BYTES = sizeof(math::Vector2) * 4;
-    const rhi::RasterVertexSlice slices[]{{state.Quad, 0, QUAD_BYTES},
-                                          {job.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES}};
-    const rhi::RasterDraw
-        draw{state.ImagePipeline, job.ImageBindings, slices, state.Indices, 0, 6, 4, static_cast<uint32>(pixels)};
-    const rhi::GraphUse imageUses[]{{versions[4], rhi::GraphAccessMode::Vertex, 0, 32},
-                                    {colors, rhi::GraphAccessMode::Vertex, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
-                                    {versions[5], rhi::GraphAccessMode::Index, 0, 12},
-                                    {versions[6], rhi::GraphAccessMode::Uniform, 0, 16, rhi::RasterVisibility::Vertex},
-                                    {output, rhi::GraphAccessMode::ColorWrite}};
-    rhi::GraphPassDescription present;
-    present.Name = "GPU preview image";
-    present.Attachment.Color = target;
-    if (targetOrNull != nullptr)
-    {
-        present.Attachment.DepthStore = rhi::RasterStore::Discard;
-    }
-    present.Uses = imageUses;
-    present.UseCount = 5;
-    present.Draws = &draw;
-    present.DrawCount = 1;
-    status = rhi::AddGraphPass(device, outGraph, present);
-    if (status == Status::Ready)
-    {
-        status = rhi::AddGraphRoot(device, outGraph, accumulation, rhi::GraphRoot::History);
-    }
-    if (status == Status::Ready)
-    {
-        status = rhi::AddGraphRoot(device, outGraph, output, rhi::GraphRoot::Export);
-    }
-    rhi::GraphReport report;
-    if (status == Status::Ready)
-    {
-        status = rhi::CompileOrderedGraph(device, outGraph, report);
-    }
-    return status;
-}
-} // namespace
 Status Renderer::PrepareGpuPreviewGraph(renderer::GpuPreview job,
                                         rhi::TextureHandle target,
                                         rhi::OrderedGraph& outGraph,
@@ -1423,7 +1339,7 @@ Status Renderer::PrepareGpuPreviewGraph(renderer::GpuPreview job,
         return status;
     }
     internal::GpuPreviewState& state = *mState->GpuPreview;
-    constexpr usize JOB_COUNT = 4;
+    constexpr usize JOB_COUNT = internal::GPU_PREVIEW_JOB_COUNT;
     internal::GpuPreviewRecord* jobOrNull = Resolve(state.Jobs, JOB_COUNT, mState->Owner, job);
     if (jobOrNull == nullptr)
     {
@@ -1508,12 +1424,84 @@ Status Renderer::PrepareGpuPreviewGraph(renderer::GpuPreview job,
     {
         return status;
     }
-    status = BuildGpuGraph(mState->Device, state, *jobOrNull, 0, outGraph, &target, visibilityOrNull);
+    status = internal::BuildGpuGraph(mState->Device, state, *jobOrNull, 0, outGraph, &target, visibilityOrNull);
     if (status != Status::Ready)
     {
         static_cast<void>(rhi::DiscardOrderedGraph(mState->Device, outGraph));
     }
     return status;
+}
+Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::GpuPreview> jobs,
+                                                BorrowedView<const rhi::TextureHandle> targets,
+                                                rhi::OrderedGraph& outGraph,
+                                                const VisibilityRasterPass* visibilityOrNull) noexcept
+{
+    if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    Status status = RendererAdmission(mState->Device);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    if (jobs.IsValid() == false || targets.IsValid() == false || jobs.IsEmpty() == true ||
+        jobs.GetSize() != targets.GetSize() || jobs.GetSize() > content::render_graph_format::MAX_RAY_PASSES)
+    {
+        return Status::InvalidDescription;
+    }
+    if (visibilityOrNull != nullptr)
+    {
+        if (jobs.GetSize() != 1)
+        {
+            return Status::Unsupported;
+        }
+        return PrepareGpuPreviewGraph(jobs[0], targets[0], outGraph, visibilityOrNull);
+    }
+    if (mState->GpuPreview->HasVisibilityBuffer == true)
+    {
+        return Status::InvalidDescription;
+    }
+    StaticArray<const GpuPreviewRecord*, content::render_graph_format::MAX_RAY_PASSES> records{};
+    GpuPreviewState& state = *mState->GpuPreview;
+    for (usize index = 0; index < jobs.GetSize(); ++index)
+    {
+        GpuPreviewRecord* jobOrNull = Resolve(state.Jobs, internal::GPU_PREVIEW_JOB_COUNT, mState->Owner, jobs[index]);
+        if (jobOrNull == nullptr)
+        {
+            return Status::InvalidHandle;
+        }
+        for (usize earlier = 0; earlier < index; ++earlier)
+        {
+            if (records[earlier] == jobOrNull)
+            {
+                return Status::InvalidDescription;
+            }
+        }
+        status = PollGpuJob(mState->Device, state, *jobOrNull);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        rhi::TextureDescription description;
+        status = rhi::GetTextureDescription(mState->Device, targets[index], description);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        if (description.Width != jobOrNull->Width || description.Height != jobOrNull->Height ||
+            description.Attachment == false || description.Format != rhi::RasterFormat::Rgba8Unorm ||
+            description.SampleCount != 1)
+        {
+            return Status::InvalidDescription;
+        }
+        records[index] = jobOrNull;
+    }
+    return internal::BuildGpuGraphSequence(mState->Device,
+                                           state,
+                                           {records.GetData(), jobs.GetSize()},
+                                           targets,
+                                           outGraph);
 }
 Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
                                    rhi::SurfaceHandle surface,
@@ -1529,7 +1517,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
         return status;
     }
     internal::GpuPreviewState& state = *mState->GpuPreview;
-    internal::GpuPreviewRecord* job = Resolve(state.Jobs, 4, mState->Owner, handle);
+    internal::GpuPreviewRecord* job = Resolve(state.Jobs, internal::GPU_PREVIEW_JOB_COUNT, mState->Owner, handle);
     if (job == nullptr)
     {
         return Status::InvalidHandle;
@@ -1557,7 +1545,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
         return Status::IdentityExhausted;
     }
     rhi::OrderedGraph graph;
-    status = BuildGpuGraph(mState->Device, state, *job, frame, graph);
+    status = internal::BuildGpuGraph(mState->Device, state, *job, frame, graph);
     if (status == Status::Ready)
     {
         status = rhi::ExecuteOrderedGraph(mState->Device, surface, graph, completion);
@@ -1588,7 +1576,7 @@ Status Renderer::GetGpuPreviewInfo(renderer::GpuPreview handle, GpuPreviewInfo& 
         return admission;
     }
     internal::GpuPreviewState& state = *mState->GpuPreview;
-    internal::GpuPreviewRecord* job = Resolve(state.Jobs, 4, mState->Owner, handle);
+    internal::GpuPreviewRecord* job = Resolve(state.Jobs, internal::GPU_PREVIEW_JOB_COUNT, mState->Owner, handle);
     if (job == nullptr)
     {
         return Status::InvalidHandle;
@@ -1618,7 +1606,7 @@ Renderer::AcquireGpuPreviewFrame(renderer::GpuPreview handle, GpuPreviewFrame& f
         return Status::InvalidState;
     }
     internal::GpuPreviewState& state = *mState->GpuPreview;
-    internal::GpuPreviewRecord* job = Resolve(state.Jobs, 4, mState->Owner, handle);
+    internal::GpuPreviewRecord* job = Resolve(state.Jobs, internal::GPU_PREVIEW_JOB_COUNT, mState->Owner, handle);
     if (job == nullptr)
     {
         return Status::InvalidHandle;
@@ -1654,7 +1642,8 @@ Status Renderer::Release(renderer::GpuPreview& handle) noexcept
     {
         return admission;
     }
-    internal::GpuPreviewRecord* job = Resolve(mState->GpuPreview->Jobs, 4, mState->Owner, handle);
+    internal::GpuPreviewRecord* job =
+        Resolve(mState->GpuPreview->Jobs, internal::GPU_PREVIEW_JOB_COUNT, mState->Owner, handle);
     if (job == nullptr)
     {
         return Status::InvalidHandle;
@@ -1676,7 +1665,7 @@ Status Renderer::Release(GpuPreviewFrame& handle) noexcept
         return admission;
     }
     const usize slot = Access::Slot(handle);
-    if (Access::Owner(handle) != mState->Owner || slot >= 8)
+    if (Access::Owner(handle) != mState->Owner || slot >= internal::GPU_PREVIEW_JOB_COUNT * 2)
     {
         return Status::InvalidHandle;
     }

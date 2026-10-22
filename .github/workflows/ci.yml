@@ -537,6 +537,8 @@ jobs:
       - name: Test optional RAD tooling contracts
         run: python3 -m unittest discover -s scripts/python -p 'test_rad_debugger.py' -v
       - name: Test graphical and CLI initialization routing
+        # A window test that stops responding must fail the job, not hold the runner.
+        timeout-minutes: 10
         run: xvfb-run -a env LUDUS_TEST_GUI=1 python3 -m unittest discover -s scripts/python -p 'test_init*.py' -v
       - name: Test CI initialization and analysis contracts
         run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_quality test_ray_reference test_runtime_profile -v

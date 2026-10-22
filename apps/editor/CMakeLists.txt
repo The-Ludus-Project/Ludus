@@ -839,6 +839,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
         src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
         src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
+        src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
         src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp)
     set_target_properties(ludus_render_graph_configuration_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_configuration_tests PRIVATE src)
@@ -851,7 +852,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # https://cmake.org/cmake/help/v3.29/manual/cmake-generator-expressions.7.html#genex:COMPILE_ONLY
     target_link_libraries(ludus_render_graph_configuration_tests PRIVATE Ludus::RenderGraphFormat ludus_editor_core
         ludus_editor_code
-        Qt6::Widgets Qt6::Test Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2
+        Qt6::Widgets Qt6::Test Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationProfiling
+        Catch2::Catch2
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
         "$<COMPILE_ONLY:Ludus::Resources>")
     ludus_editor_add_default_render_graph(ludus_render_graph_configuration_tests)

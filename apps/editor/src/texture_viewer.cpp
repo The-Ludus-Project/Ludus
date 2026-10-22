@@ -259,7 +259,7 @@ void TextureViewer::refreshTargets()
                 mTargets);
             item->setData(NAME_ROLE, target.Name);
             item->setToolTip(DescribeTarget(target));
-            if (target.IsSurface == true)
+            if (target.IsSurface == true || target.IsBuffer == true)
             {
                 item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
             }

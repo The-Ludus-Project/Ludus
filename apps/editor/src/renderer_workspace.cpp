@@ -267,6 +267,10 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
         node.insert(QStringLiteral("role"), QStringLiteral("Offscreen"));
         node.insert(QStringLiteral("target_type"), QStringLiteral("ColorTexture"));
     }
+    else if (kind == QStringLiteral("Buffer"))
+    {
+        node.insert(QStringLiteral("bytes"), static_cast<int32>(content::render_graph_format::RAY_BUFFER_WORD_BYTES));
+    }
     else if (kind == QStringLiteral("StructuredBuffer"))
     {
         constexpr int32 DEFAULT_STORAGE_STRIDE = 16;
@@ -470,6 +474,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mNewKind->addItems({QStringLiteral("Scene"),
                         QStringLiteral("Camera"),
                         QStringLiteral("Target"),
+                        QStringLiteral("Buffer"),
                         QStringLiteral("StructuredBuffer"),
                         QStringLiteral("RenderSize"),
                         QStringLiteral("GraphicsPipeline"),
@@ -2371,7 +2376,13 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         {
             QSpinBox* spin = new QSpinBox(&inoutParent);
             spin->setObjectName(QStringLiteral("renderGraphField_") + name);
-            spin->setRange(1, MAX_EXTENT);
+            spin->setRange(1,
+                           name == QStringLiteral("bytes") ? content::render_graph_format::MAX_RAY_BUFFER_BYTES
+                                                           : MAX_EXTENT);
+            if (name == QStringLiteral("bytes"))
+            {
+                spin->setSingleStep(content::render_graph_format::RAY_BUFFER_WORD_BYTES);
+            }
             spin->setValue(field.value().toInt());
             connect(spin, &QSpinBox::editingFinished, this, [this, name, spin]() {
                 replaceSelectedField(name, spin->value());

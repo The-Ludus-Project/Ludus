@@ -12,6 +12,7 @@ namespace ludus::graphics::renderer
 {
 void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
                                 rhi::ShaderStage stage,
+                                bool hasPersistentBuffers,
                                 bool hasVisibilityBuffer) noexcept
 {
     using namespace foundation;
@@ -55,11 +56,41 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
          rhi::RasterVisibility::Compute,
          0},
     }};
+    static constexpr StaticArray<rhi::RasterBinding, LUDUS_GRAPH_COMPUTE_BINDING_COUNT> PERSISTENT_BINDINGS{
+        {{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Compute, PARAMETERS_BYTES},
+         {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+         {2, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+         {3, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+         {4, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+         {LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, rhi::RasterBindingKind::RayScene, rhi::RasterVisibility::Compute, 0},
+         {LUDUS_GRAPH_BUFFER0_BINDING,
+          rhi::RasterBindingKind::StorageReadWrite,
+          rhi::RasterVisibility::Compute,
+          VECTOR_BYTES},
+         {LUDUS_GRAPH_BUFFER1_BINDING,
+          rhi::RasterBindingKind::StorageReadWrite,
+          rhi::RasterVisibility::Compute,
+          VECTOR_BYTES}}};
+    static constexpr StaticArray<rhi::RasterBinding,
+                                 LUDUS_GRAPH_COMPUTE_BINDING_COUNT + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT>
+        PERSISTENT_VISIBILITY_BINDINGS{{PERSISTENT_BINDINGS[0],
+                                        PERSISTENT_BINDINGS[1],
+                                        PERSISTENT_BINDINGS[2],
+                                        PERSISTENT_BINDINGS[3],
+                                        PERSISTENT_BINDINGS[4],
+                                        PERSISTENT_BINDINGS[5],
+                                        PERSISTENT_BINDINGS[6],
+                                        PERSISTENT_BINDINGS[7],
+                                        VISIBILITY_BINDINGS[LUDUS_GPU_PREVIEW_BINDING_COUNT],
+                                        VISIBILITY_BINDINGS[LUDUS_GPU_PREVIEW_BINDING_COUNT + 1]}};
     inoutDescription.Artifact.Stage = stage;
     if (stage == rhi::ShaderStage::Compute)
     {
         inoutDescription.Bindings =
-            hasVisibilityBuffer == true ? VISIBILITY_BINDINGS.AsSpan() : COMPUTE_BINDINGS.AsSpan();
+            hasVisibilityBuffer == true
+                ? (hasPersistentBuffers == true ? PERSISTENT_VISIBILITY_BINDINGS.AsSpan()
+                                                : VISIBILITY_BINDINGS.AsSpan())
+                : (hasPersistentBuffers == true ? PERSISTENT_BINDINGS.AsSpan() : COMPUTE_BINDINGS.AsSpan());
         inoutDescription.WorkgroupSize[0] = WORKGROUP_WIDTH;
         inoutDescription.WorkgroupSize[1] = 1;
         inoutDescription.WorkgroupSize[2] = 1;
@@ -78,17 +109,16 @@ RenderGraphRayPass::~RenderGraphRayPass() noexcept
 {
     if (mContextOrNull != nullptr)
     {
-        static_cast<void>(rhi::DiscardOrderedGraph(mDevice, mGraph));
         static_cast<void>(mContextOrNull->Release(mJob));
     }
 }
 rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
-                                                 rhi::DeviceHandle device,
                                                  Snapshot snapshot,
                                                  const ViewDescription& camera,
                                                  foundation::uint32 width,
                                                  foundation::uint32 height,
-                                                 const RenderGraphSceneDescription* sceneOrNull) noexcept
+                                                 const RenderGraphSceneDescription* sceneOrNull,
+                                                 const GpuPreviewGraphInvocation* invocationOrNull) noexcept
 {
     if (mContextOrNull != nullptr)
     {
@@ -110,11 +140,11 @@ rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
     description.CenterRays = true;
     // A camera/scene edit restarts accumulation, but must not replay the same per-pixel stream.
     description.Seed = sceneOrNull != nullptr ? sceneOrNull->SourceGeneration : 0;
-    const rhi::RasterStatus status = inoutContext.BeginGpuPreview(snapshot, description, mJob, sceneOrNull);
+    const rhi::RasterStatus status =
+        inoutContext.BeginGpuPreview(snapshot, description, mJob, sceneOrNull, invocationOrNull);
     if (status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending)
     {
         mContextOrNull = &inoutContext;
-        mDevice = device;
     }
     return status;
 }
@@ -126,31 +156,5 @@ rhi::RasterStatus RenderGraphRayPass::Poll() noexcept
     }
     GpuPreviewInfo information;
     return mContextOrNull->GetGpuPreviewInfo(mJob, information);
-}
-rhi::RasterStatus RenderGraphRayPass::Prepare(rhi::TextureHandle target,
-                                              const VisibilityRasterPass* visibilityOrNull) noexcept
-{
-    if (mContextOrNull == nullptr)
-    {
-        return rhi::RasterStatus::InvalidState;
-    }
-    if (mIsPrepared == true)
-    {
-        return rhi::RasterStatus::Ready;
-    }
-    static_cast<void>(rhi::DiscardOrderedGraph(mDevice, mGraph));
-    const rhi::RasterStatus status = mContextOrNull->PrepareGpuPreviewGraph(mJob, target, mGraph, visibilityOrNull);
-    mIsPrepared = status == rhi::RasterStatus::Ready;
-    return status;
-}
-rhi::RasterStatus RenderGraphRayPass::Encode(rhi::SurfaceHandle surface) noexcept
-{
-    if (mIsPrepared == false)
-    {
-        return rhi::RasterStatus::NotReady;
-    }
-    const rhi::RasterStatus status = rhi::EncodeOrderedGraph(mDevice, surface, mGraph);
-    mIsPrepared = false;
-    return status;
 }
 } // namespace ludus::graphics::renderer::internal

@@ -145,12 +145,12 @@ void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& s
     for (const ViewportTraceSpan& span : snapshot.Spans)
     {
         const uint64 trackId = GetTrackId(span.Identity, span.Lane);
-        if (tracks.contains(QJsonValue(static_cast<int64>(trackId))) == false)
+        if (tracks.contains(QJsonValue(static_cast<qint64>(trackId))) == false)
         {
-            tracks.append(static_cast<int64>(trackId));
+            tracks.append(static_cast<qint64>(trackId));
             events.append(QJsonObject{
                 {QStringLiteral("pid"), VIEWPORT_PROCESS_ID},
-                {QStringLiteral("tid"), static_cast<int64>(trackId)},
+                {QStringLiteral("tid"), static_cast<qint64>(trackId)},
                 {QStringLiteral("ph"), QStringLiteral("M")},
                 {QStringLiteral("name"), QStringLiteral("thread_name")},
                 {QStringLiteral("args"),
@@ -162,7 +162,7 @@ void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& s
         }
         events.append(QJsonObject{
             {QStringLiteral("pid"), VIEWPORT_PROCESS_ID},
-            {QStringLiteral("tid"), static_cast<int64>(trackId)},
+            {QStringLiteral("tid"), static_cast<qint64>(trackId)},
             {QStringLiteral("ph"), QStringLiteral("X")},
             {QStringLiteral("cat"), QStringLiteral("editor.viewport.wall")},
             {QStringLiteral("name"), QString::fromUtf8(span.Name)},
@@ -171,9 +171,9 @@ void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& s
              static_cast<float64>(span.EndTicks - span.BeginTicks) / NANOSECONDS_PER_MICROSECOND},
             {QStringLiteral("args"),
              QJsonObject{
-                 {QStringLiteral("viewportId"), static_cast<int64>(span.Identity.ViewportId)},
-                 {QStringLiteral("frameId"), static_cast<int64>(span.Identity.FrameId)},
-                 {QStringLiteral("deviceSession"), static_cast<int64>(span.Identity.DeviceSession)},
+                 {QStringLiteral("viewportId"), static_cast<qint64>(span.Identity.ViewportId)},
+                 {QStringLiteral("frameId"), static_cast<qint64>(span.Identity.FrameId)},
+                 {QStringLiteral("deviceSession"), static_cast<qint64>(span.Identity.DeviceSession)},
                  {QStringLiteral("outcome"), QString::fromUtf8(span.Outcome)},
              }},
         });
@@ -184,9 +184,9 @@ void AppendViewportTrace(QJsonObject& inoutTrace, const ViewportTraceSnapshot& s
         QJsonObject{
             {QStringLiteral("clockRelationship"),
              QStringLiteral("CPU monotonic wall time; waits end when serviced, paint ends before compositor/scanout")},
-            {QStringLiteral("spanCount"), static_cast<int64>(snapshot.Spans.GetSize())},
-            {QStringLiteral("droppedSpans"), static_cast<int64>(snapshot.DroppedSpans)},
-            {QStringLiteral("capacity"), static_cast<int64>(MAX_VIEWPORT_TRACE_SPANS)},
+            {QStringLiteral("spanCount"), static_cast<qint64>(snapshot.Spans.GetSize())},
+            {QStringLiteral("droppedSpans"), static_cast<qint64>(snapshot.DroppedSpans)},
+            {QStringLiteral("capacity"), static_cast<qint64>(MAX_VIEWPORT_TRACE_SPANS)},
         });
 }
 ViewportFrameTrace::ViewportFrameTrace() noexcept

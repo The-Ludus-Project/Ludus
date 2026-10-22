@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -37,6 +38,9 @@ private:
 /// binding/pipeline and submitted uses keep the underlying record alive.
 struct BufferHandle final
 {
+    /// Compare device, generation and slot identity; this does not query resource readiness.
+    friend LUDUS_INLINE constexpr bool operator==(BufferHandle, BufferHandle) noexcept = default;
+
 private:
     ludus::foundation::uint64 Owner = 0;
     ludus::foundation::uint64 Generation = 0;
@@ -49,6 +53,9 @@ private:
 /// binding/pipeline and submitted uses keep the underlying record alive.
 struct TextureHandle final
 {
+    /// Compare device, generation and slot identity; this does not query resource readiness.
+    friend LUDUS_INLINE constexpr bool operator==(TextureHandle, TextureHandle) noexcept = default;
+
 private:
     ludus::foundation::uint64 Owner = 0;
     ludus::foundation::uint64 Generation = 0;

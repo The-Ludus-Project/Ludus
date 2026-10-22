@@ -498,3 +498,89 @@ void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout
 
 if __name__ == '__main__':
     unittest.main()
+
+class OrderedRayTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / 'source'
+        shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/ordered_ray', self.source)
+        self.path = self.source / 'main.lurender.json'
+        self.document = json.loads(self.path.read_text())
+        self.configuration = self.document['configurations'][0]
+
+    def compile(self):
+        self.path.write_bytes(graph.canonical_asset(self.document))
+        return graph.compile_graph(self.path)
+
+    def test_buffer_versions_order_distinct_callback_sets_and_retain_history(self):
+        from ludus_tools import render_graph_execution as execution
+        plan = self.compile()
+        passes = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual(['Main/initial', 'Main/temporal', 'Main/shade'], [p['id'] for p in passes])
+        self.assertEqual([(0, 1), (1, 2), (2, 3)],
+                         [(p['persistent_buffers'][0]['input_version'], p['persistent_buffers'][0]['output_version']) for p in passes])
+        self.assertIn('Main/initial', passes[1]['dependencies'])
+        self.assertIn('Main/temporal', passes[2]['dependencies'])
+        variants = [list(ray.program_tuple(p['pipeline'])) for p in reversed(passes)]
+        package = {'plans': [plan], 'recipes': [{'technique': ray.TECHNIQUE, 'ray_programs': variants}]}
+        _, resources, records, _ = execution.lower_plan(package, 'Default')
+        self.assertEqual([2, 1, 0], [record['RayProgram'] for record in records])
+        self.assertEqual(['Color', 'Buffer', 'Buffer'], [record['Kind'] for record in resources])
+        self.assertTrue(all(record['Buffer0'] == 1 and record['Buffer1'] == 2 for record in records))
+        self.assertTrue(all(plan['resources'][use['resource']]['initialized'] for p in passes for use in p['persistent_buffers']))
+        self.assertEqual(self.document, json.loads(self.path.read_text()))
+
+    def test_typed_job_storage_cannot_share_an_ordered_buffer_pass(self):
+        buffer = next(node for node in self.configuration['nodes'] if node['kind'] == 'Buffer')
+        buffer.pop('bytes')
+        buffer.update(kind='StructuredBuffer', stride=16, count=1)
+        with self.assertRaisesRegex(ToolingError, 'storage profiles cannot share'):
+            self.compile()
+
+    def test_persistent_writers_require_explicit_previous_version(self):
+        edge = next(edge for edge in self.configuration['edges'] if edge['to'] == 'temporal.history')
+        edge['from'] = 'history.buffer'
+        with self.assertRaisesRegex(ToolingError, 'multiple writes branch'):
+            self.compile()
+
+    def test_same_physical_buffer_cannot_occupy_both_slots(self):
+        edge = next(edge for edge in self.configuration['edges'] if edge['to'] == 'initial.reservoir')
+        edge['from'] = 'history.buffer'
+        with self.assertRaises(ToolingError):
+            self.compile()
+
+    def test_fixed_buffer_capacity_and_paired_load_store_are_checked(self):
+        buffer = next(node for node in self.configuration['nodes'] if node['kind'] == 'Buffer')
+        for size in (0, 15, 17, ray.MAX_BUFFER_BYTES + ray.BUFFER_WORD_BYTES):
+            with self.subTest(size=size):
+                buffer['bytes'] = size
+                with self.assertRaises(ToolingError):
+                    self.compile()
+        buffer['bytes'] = 16
+        initial = next(node for node in self.configuration['nodes'] if node['id'] == 'initial')
+        initial['outputs'][1]['load'] = 'Clear'
+        with self.assertRaisesRegex(ToolingError, 'Load/Store'):
+            self.compile()
+
+    @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
+                         'requires pinned native shader tools')
+    def test_distinct_node_programs_compile_and_encode_the_extended_runtime_profile(self):
+        from ludus_tools import render_graph_execution as execution
+        from test_render_graph_authoring import parse_runtime
+        manifest = self.source / 'main.lushader.json'
+        manifest.write_text((self.source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+        result = build.build_package(manifest, self.root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                     compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+        destination = self.root / 'ordered.lurgrt'
+        execution.cook_runtime(result['package'], destination)
+        parsed = parse_runtime(destination.read_bytes())
+        self.assertEqual(execution.PACKAGE_VERSION, parsed['version'])
+        self.assertEqual(3, len(parsed['passes']))
+        self.assertEqual({0, 1, 2}, {record[10] for record in parsed['passes']})
+        self.assertEqual({(1, 2)}, {record[11:] for record in parsed['passes']})
+        self.assertIn(execution.PERSISTENT_RAY_STAGE_ROLE, {stage['role'] for stage in parsed['stages']})
+        header = self.root / 'ordered.h'
+        execution.emit_runtime(result['package'], header)
+        self.assertIn('result.HasPersistentRayBuffers = true;', header.read_text())
