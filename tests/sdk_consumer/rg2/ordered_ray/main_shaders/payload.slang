@@ -1,1 +1,4 @@
-struct ScenePayload { float3 Radiance; };
+struct ScenePayload
+{
+    float3 Radiance;
+};

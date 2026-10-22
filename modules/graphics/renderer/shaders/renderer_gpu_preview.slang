@@ -607,11 +607,11 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
 #else
     if (sum.w < float(Sampling.w) && compensation.w == 0)
     {
-#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+#    if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
         float3 sample = EvaluateGraphRay(pixel);
-#else
+#    else
         float3 sample = Integrate(pixel, uint(sum.w));
-#endif
+#    endif
         if (any(!isfinite(sample)) || any(sample < 0))
             compensation.w = 1;
         else
