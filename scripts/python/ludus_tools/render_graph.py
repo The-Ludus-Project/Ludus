@@ -146,7 +146,7 @@ def _validate_node(node, where):
     if kind == "Camera":
         fields |= {"active", "role", "target_type"}
     elif kind == "Buffer":
-        fields |= {"bytes"}
+        fields |= ({"bytes_per_pixel", "extent"} if "bytes_per_pixel" in node else {"bytes"})
     elif kind == "Target":
         fields |= {"type", "format", "extent", "samples", "imported", "initialized", "presentation"}
     elif kind == 'RenderSize':
@@ -169,9 +169,14 @@ def _validate_node(node, where):
         _require(node["role"] != "Presentation" or node["target_type"] == "ColorTexture",
                  "TypeMismatch", where, "a presentation camera requires a color target")
     elif kind == "Buffer":
-        _integer(node['bytes'], ray.BUFFER_WORD_BYTES, ray.MAX_BUFFER_BYTES, where)
-        _require(node['bytes'] % ray.BUFFER_WORD_BYTES == 0, 'Capacity', where,
-                 'persistent buffer byte size must be a multiple of 16')
+        if 'bytes_per_pixel' in node:
+            _integer(node['bytes_per_pixel'], ray.BUFFER_WORD_BYTES, ray.MAX_BUFFER_PIXEL_BYTES, where)
+            _require(node['bytes_per_pixel'] % ray.BUFFER_WORD_BYTES == 0 and node['extent'] == 'RenderSize',
+                     'Capacity', where, 'pixel buffers require RenderSize and a stride multiple of 16')
+        else:
+            _integer(node['bytes'], ray.BUFFER_WORD_BYTES, ray.MAX_BUFFER_BYTES, where)
+            _require(node['bytes'] % ray.BUFFER_WORD_BYTES == 0, 'Capacity', where,
+                     'persistent buffer byte size must be a multiple of 16')
     elif kind == "Target":
         _enum(node["type"], TEXTURES, where)
         _enum(node["format"], FORMATS[node["type"]], where)
@@ -447,7 +452,7 @@ class _Library:
         if kind == "Camera":
             return {"target": node["target_type"]}, {"view": "View"}
         if kind in ("Buffer", "StructuredBuffer"):
-            return {}, {'buffer': 'Buffer'}
+            return ({'size': 'RenderSize'} if 'bytes_per_pixel' in node else {}), {'buffer': 'Buffer'}
         if kind == "Target":
             return ({'size': 'RenderSize'} if node['extent'] == 'RenderSize' else {}), {"texture": node["type"]}
         if kind == 'RenderSize':
@@ -717,8 +722,17 @@ class _Compiler:
                 self.latest[where] = 0
                 outputs['buffer'] = _Value('Buffer', origin=where, resource=where, defined=True)
             elif kind == "Buffer":
-                self.resources[where] = {'type': 'Buffer', 'format': 'Bytes', 'extent': [node['bytes'], 1],
+                capacity = node.get('bytes', 0)
+                if 'bytes_per_pixel' in node:
+                    capacity = inputs['size'].extent[0] * inputs['size'].extent[1] * node['bytes_per_pixel']
+                    _require(capacity <= ray.MAX_BUFFER_BYTES, 'Capacity', where,
+                             'pixel buffer exceeds storage capacity; reduce the connected RenderSize scale')
+                self.resources[where] = {'type': 'Buffer', 'format': 'Bytes', 'extent': [capacity, 1],
                                          'samples': 1, 'imported': False, 'initialized': True, 'presentation': False}
+                if 'bytes_per_pixel' in node:
+                    self.resources[where]['bytes_per_pixel'] = node['bytes_per_pixel']
+                    if inputs['size'].scale:
+                        self.resources[where]['view_scale'] = list(inputs['size'].scale)
                 self.latest[where] = 0
                 outputs['buffer'] = _Value('Buffer', origin=where, resource=where, defined=True)
             elif kind == "Target":
@@ -1076,9 +1090,11 @@ def _root_asset(output):
         {"id": "Default", "inputs": [], "outputs": [], "nodes": nodes, "edges": edges}]}
 
 
-def new_workspace(destination, *, output="presentation", renderer_static=False, profiles=None):
-    """Save a reusable raster asset and one example root in a new directory.
+def new_workspace(destination, *, output="presentation", renderer_static=False, profiles=None, template="raster"):
+    """Publish an editable raster or ReSTIR DI template in a new directory.
 
+    template selects raster (the default) or restir-di, whose native offscreen
+    package includes its shaders, settings and RenderSize-derived reservoirs.
     output is presentation, offscreen or depth. Creation never overwrites an
     existing directory; staged files are validated before publication and cleaned
     up on failure. This is graph source creation, not game-project/SDK setup.
@@ -1091,13 +1107,19 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     _enum(output, ("presentation", "offscreen", "depth"), "new graph")
     _require(renderer_static == (profiles is not None), "Schema", "new graph",
              "Renderer sources require --renderer-static and explicit --profiles together")
+    _enum(template, ("raster", "restir-di"), "new graph template")
     destination = Path(destination).absolute()
     files = [TemplateFile("rasterize.lurender.json", canonical_asset(_raster_asset()).decode()),
              TemplateFile("main.lurender.json", canonical_asset(_root_asset(output)).decode())]
+    if template == "restir-di":
+        _require(renderer_static and output == "offscreen", "Capability", "ReSTIR DI",
+                 "ReSTIR DI creates a native offscreen Renderer graph; select --renderer-static --output offscreen --profiles metal or spirv")
+        from .render_graph_templates import restir_files
+        files = [TemplateFile(path, text) for path, text in restir_files(profiles, sys.modules[__name__]).items()]
     staged = stage_project(files, destination)
     try:
         compile_graph(staged.staging / "main.lurender.json")
-        if renderer_static:
+        if renderer_static and template == "raster":
             from .render_graph_build import new_build_sources
             new_build_sources(staged.staging / "main.lurender.json",
                               renderer_static=True, profiles=profiles)

@@ -254,6 +254,10 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
     }
     else if (kind == QStringLiteral("Buffer") || kind == QStringLiteral("StructuredBuffer"))
     {
+        if (node.contains(QStringLiteral("bytes_per_pixel")) == true)
+        {
+            ports.Inputs = {{QStringLiteral("size"), QStringLiteral("RenderSize")}};
+        }
         ports.Outputs = {{QStringLiteral("buffer"), QStringLiteral("Buffer")}};
     }
     else if (kind == QStringLiteral("Target"))

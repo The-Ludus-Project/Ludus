@@ -32,11 +32,17 @@ bool RenderGraphCreation::Start(const ToolingPaths& tooling,
                                 const QString& projectRoot,
                                 const QString& name,
                                 uint64 epoch,
-                                QString& outError)
+                                QString& outError,
+                                const QString& templateIdentity)
 {
     if (mJob.IsActive() == true)
     {
         outError = QStringLiteral("Wait for graph creation to finish.");
+        return false;
+    }
+    if (templateIdentity != QStringLiteral("raster") && templateIdentity != QStringLiteral("restir-di"))
+    {
+        outError = QStringLiteral("Select a built-in render graph template.");
         return false;
     }
     const QString project = QFileInfo(projectRoot).canonicalFilePath();
@@ -74,6 +80,8 @@ bool RenderGraphCreation::Start(const ToolingPaths& tooling,
                          QStringLiteral("--output"),
                          QStringLiteral("offscreen"),
                          QStringLiteral("--renderer-static"),
+                         QStringLiteral("--template"),
+                         templateIdentity,
                          QStringLiteral("--profiles")};
 #if defined(Q_OS_MACOS)
     request.Arguments += {QStringLiteral("metal"), QStringLiteral("wgsl")};

@@ -163,10 +163,10 @@ class ExecutionTests(unittest.TestCase):
         data = execution.encode_runtime_package(contents)
         for index, resource in enumerate(contents['resources']):
             self.assertEqual((resource['ViewNumerator'], resource['ViewDenominator']), (1, 2))
-            self.assertEqual(struct.unpack_from('<8I', data, 104 + index * 32)[-2:], (1, 2))
+            self.assertEqual(struct.unpack_from('<9I', data, 104 + index * execution.RESOURCE_RECORD_BYTES)[6:8], (1, 2))
         destination = self.root / 'relative.h'
         execution.emit_runtime(self.output, destination, name='RelativeGraph')
-        self.assertIn('1, 2}', destination.read_text())
+        self.assertIn('1, 2, 0}', destination.read_text())
 
     def test_depth_only_export_has_explicit_technique_and_private_backing(self):
         self.graph = graph.new_workspace(self.root / 'depth', output='depth')
@@ -307,7 +307,7 @@ class ExecutionTests(unittest.TestCase):
         header = struct.unpack('<10I', data[:40])
         self.assertEqual(header[:2], (execution.PACKAGE_MAGIC, execution.PACKAGE_VERSION))
         self.assertEqual(header[5:9], (4, 1, 2, 4))
-        records = 104 + 8 * 4 * 2 + 4 + 13 * 4
+        records = 104 + execution.RESOURCE_RECORD_BYTES * 2 + 4 + 13 * 4
         self.assertEqual(struct.unpack('<5I', data[records:records + 20]), (0, 0, 2, 0, 4))
 
     def test_runtime_package_names_its_resources_in_record_order(self):

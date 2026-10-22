@@ -1,7 +1,7 @@
 {
   "version": 1,
   "id": "RendererStaticBuild",
-  "profiles": @RG2_TEST_PROFILES@,
+  "profiles": @LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@,
   "schemas": [
     {
       "id": "RendererStatic",
@@ -203,5 +203,53 @@
     "programs": 16,
     "artifacts": 64,
     "pipelines": 16
-  }
+  },
+  "settings": [
+    {
+      "id": "RESTIR_INITIAL_CANDIDATE_COUNT",
+      "label": "Initial candidates",
+      "type": "UInt32",
+      "value": 8,
+      "minimum": 1,
+      "maximum": 32
+    },
+    {
+      "id": "RESTIR_HISTORY_CANDIDATES",
+      "label": "History candidate limit",
+      "type": "UInt32",
+      "value": 128,
+      "minimum": 1,
+      "maximum": 1024
+    },
+    {
+      "id": "RESTIR_SPATIAL_NEIGHBOR_COUNT",
+      "label": "Spatial neighbours",
+      "type": "UInt32",
+      "value": 4,
+      "minimum": 0,
+      "maximum": 4
+    },
+    {
+      "id": "RESTIR_SPATIAL_NORMAL_COSINE",
+      "label": "Minimum normal cosine",
+      "type": "Float32",
+      "value": 0.95,
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "id": "RESTIR_SPATIAL_DISTANCE_WORLD",
+      "label": "Maximum neighbour distance (world units)",
+      "type": "Float32",
+      "value": 0.25,
+      "minimum": 0,
+      "maximum": 1000
+    },
+    {
+      "id": "IS_RESTIR_TEMPORAL_ENABLED",
+      "label": "Temporal reuse",
+      "type": "Bool",
+      "value": true
+    }
+  ]
 }

@@ -486,7 +486,7 @@ def cmd_render_graph(args) -> int:
         human = _json.dumps(payload, indent=2)
     elif args.graph_action == "new":
         path = render_graph.new_workspace(Path(args.destination), output=args.output,
-                    renderer_static=args.renderer_static, profiles=args.profiles)
+                    renderer_static=args.renderer_static, profiles=args.profiles, template=args.template)
         payload = {"created": str(path), "stage": "RG1" if args.renderer_static else "RG0"}
         human = f"Saved graph sources at {path}; build and cook before GPU execution."
     elif getattr(args, "library", False):
@@ -531,6 +531,8 @@ def build_parser() -> argparse.ArgumentParser:
     graphs = sub.add_parser("render-graph", help="graph contracts and offline shader packages (no GPU execution)").add_subparsers(dest="graph_action", required=True)
     new_graph = graphs.add_parser("new", help="save RasterizeGraph and a root graph in a new directory")
     new_graph.add_argument("destination")
+    new_graph.add_argument("--template", choices=("raster", "restir-di"), default="raster",
+                           help="built-in editable render graph template")
     new_graph.add_argument("--output", choices=("presentation", "offscreen", "depth"), default="presentation")
     new_graph.add_argument("--renderer-static", action="store_true", help="also create Renderer-compatible shader sources")
     new_graph.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl"),

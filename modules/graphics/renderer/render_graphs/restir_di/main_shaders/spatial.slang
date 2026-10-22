@@ -16,7 +16,7 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     {
         float weightSum = 0;
         MergeReservoir(scene, hit, current, SampleReuseRandom(payload.Launch, 0), result, weightSum, queries);
-        [loop] for (uint i = 0; i < SPATIAL_NEIGHBOR_COUNT; ++i)
+        [loop] for (uint i = 0; i < RESTIR_SPATIAL_NEIGHBOR_COUNT; ++i)
         {
             int2 offsetPixel = i < 2 ? int2(i == 0 ? -1 : 1, 0) : int2(0, i == 2 ? -1 : 1);
             int2 positionPixel = int2(payload.Launch.PositionPixel) + offsetPixel;

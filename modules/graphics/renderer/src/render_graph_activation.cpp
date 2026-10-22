@@ -144,6 +144,7 @@ struct RenderGraphPackage::State final
     StaticArray<format::StorageBuffer, format::MAX_STORAGE_BUFFERS> StorageBuffers{};
     usize StorageBufferCount = 0;
     bool HasRelativeSizes = false;
+    bool HasPixelBuffers = false;
     bool HasSceneData = false;
     bool HasNativeRay = false;
     bool HasIndependentPrograms = false;
@@ -409,6 +410,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
                 return RenderGraphPackageStatus::Malformed;
             }
         }
+        if (HasPixelBuffers == true)
+        {
+            resource.BytesPerPixel = inoutReader.ReadWord();
+        }
         if (aspect > MAX_ASPECT || (aspect == MAX_ASPECT && HasPersistentBuffers == false))
         {
             return RenderGraphPackageStatus::Malformed;
@@ -487,16 +492,18 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
-         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
-         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::PERSISTENT_PACKAGE_VERSION &&
+         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
-    candidate->HasPersistentBuffers = version >= format::PACKAGE_VERSION;
+    candidate->HasPersistentBuffers = version >= format::PERSISTENT_PACKAGE_VERSION;
+    candidate->HasPixelBuffers = version >= format::PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->Header.Version = format::VERSION;

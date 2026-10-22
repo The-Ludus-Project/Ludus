@@ -379,7 +379,9 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             if (resource.Backing != i || resource.IsSurface != 0 || resource.IsExported != 0 || resource.Height != 1 ||
                 resource.Width % format::RAY_BUFFER_WORD_BYTES != 0 || resource.Width > format::MAX_RAY_BUFFER_BYTES ||
-                resource.ViewNumerator != 0)
+                (resource.BytesPerPixel == 0 && resource.ViewNumerator != 0) ||
+                resource.BytesPerPixel > format::MAX_RAY_BUFFER_PIXEL_BYTES ||
+                resource.BytesPerPixel % format::RAY_BUFFER_WORD_BYTES != 0)
             {
                 return Status::InvalidDescription;
             }
@@ -400,6 +402,10 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             {
                 return Status::Unsupported;
             }
+        }
+        if (resource.BytesPerPixel != 0)
+        {
+            return Status::InvalidDescription;
         }
         const format::Resource& backing = plan.Resources[resource.Backing];
         if (backing.Backing != resource.Backing || backing.Width != resource.Width ||
@@ -568,6 +574,15 @@ bool IsExportBacking(BorrowedView<const format::Resource> resources, usize backi
     }
     return isExported;
 }
+Status CreateZeroedGraphBuffer(rhi::DeviceHandle device, uint32 capacity, rhi::BufferHandle& outBuffer) noexcept
+{
+    Array<uint8> zeros;
+    if (zeros.TryResize(capacity) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    return rhi::CreateBuffer(device, {rhi::BufferRole::Storage, capacity}, zeros.AsSpan(), outBuffer);
+}
 } // namespace
 Status ResolveRenderGraphResource(const format::Resource& resource,
                                   uint32 referenceWidth,
@@ -579,15 +594,15 @@ Status ResolveRenderGraphResource(const format::Resource& resource,
     {
         return Status::InvalidDescription;
     }
-    if (resource.Kind == format::Aspect::Buffer)
+    const bool isBuffer = resource.Kind == format::Aspect::Buffer;
+    if ((isBuffer == false && resource.BytesPerPixel != 0) ||
+        (isBuffer == true && (resource.Width == 0 || resource.Width > format::MAX_RAY_BUFFER_BYTES ||
+                              resource.Width % format::RAY_BUFFER_WORD_BYTES != 0 || resource.Height != 1 ||
+                              resource.BytesPerPixel > format::MAX_RAY_BUFFER_PIXEL_BYTES ||
+                              resource.BytesPerPixel % format::RAY_BUFFER_WORD_BYTES != 0 ||
+                              (resource.BytesPerPixel == 0 && resource.ViewNumerator != 0))))
     {
-        if (resource.Width == 0 || resource.Width > format::MAX_RAY_BUFFER_BYTES ||
-            resource.Width % format::RAY_BUFFER_WORD_BYTES != 0 || resource.Height != 1 || resource.ViewNumerator != 0)
-        {
-            return Status::InvalidDescription;
-        }
-        outResource = resource;
-        return Status::Ready;
+        return Status::InvalidDescription;
     }
     format::Resource resolved = resource;
     if (resource.ViewNumerator != 0)
@@ -604,8 +619,26 @@ Status ResolveRenderGraphResource(const format::Resource& resource,
         {
             return Status::CapacityExceeded;
         }
-        resolved.Width = static_cast<uint32>(width);
-        resolved.Height = static_cast<uint32>(height);
+        if (isBuffer == true)
+        {
+            const uint64 capacity = width * height * resource.BytesPerPixel;
+            if (capacity > format::MAX_RAY_BUFFER_BYTES)
+            {
+                return Status::CapacityExceeded;
+            }
+            resolved.Width = static_cast<uint32>(capacity);
+            resolved.Height = 1;
+        }
+        else
+        {
+            resolved.Width = static_cast<uint32>(width);
+            resolved.Height = static_cast<uint32>(height);
+        }
+    }
+    if (isBuffer == true)
+    {
+        outResource = resolved;
+        return Status::Ready;
     }
     if (resolved.Width == 0 || resolved.Height == 0)
     {
@@ -648,6 +681,7 @@ struct RenderGraph::State final
         uint32 Count = 0;
         StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
         StaticArray<rhi::TextureHandle, format::MAX_RESOURCES> Textures{};
+        StaticArray<rhi::BufferHandle, format::MAX_RESOURCES> Buffers{};
         StaticArray<bool, format::MAX_RESOURCES> IsPooled{};
         ~AttachmentReplacement() noexcept
         {
@@ -663,6 +697,7 @@ struct RenderGraph::State final
                 {
                     static_cast<void>(rhi::Destroy(Device, Textures[i]));
                 }
+                static_cast<void>(rhi::Destroy(Device, Buffers[i]));
             }
         }
     };
@@ -678,6 +713,12 @@ struct RenderGraph::State final
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
             const format::Resource resource = Resources[i];
+            if (Resizing->Buffers[i] != rhi::BufferHandle{})
+            {
+                const rhi::BufferHandle retired = Buffers[i];
+                Buffers[i] = Resizing->Buffers[i];
+                Resizing->Buffers[i] = retired;
+            }
             const rhi::TextureHandle texture = Textures[i];
             const bool isPooled = IsPooled[i];
             Resources[i] = Resizing->Resources[i];
@@ -932,6 +973,14 @@ struct RenderGraph::State final
         {
             for (usize i = 0; i < Resizing->Count; ++i)
             {
+                if (Resizing->Buffers[i] != rhi::BufferHandle{})
+                {
+                    const Status ready = rhi::GetStatus(Device, Resizing->Buffers[i]);
+                    if (ready != Status::Ready)
+                    {
+                        return ready;
+                    }
+                }
                 if (Resizing->Resources[i].Backing == i && Resizing->Resources[i].IsSurface == 0 &&
                     Resizing->Resources[i].Kind != format::Aspect::Buffer)
                 {
@@ -1168,7 +1217,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         return Status::InvalidDescription;
     }
     StaticArray<format::Resource, format::MAX_RESOURCES> resolvedResources{};
-    if (sourcePlan.Resources.IsValid() == false || sourcePlan.Resources.GetSize() > format::MAX_RESOURCES)
+    if (sourcePlan.Description.Version != format::VERSION || sourcePlan.Resources.IsValid() == false ||
+        sourcePlan.Resources.GetSize() > format::MAX_RESOURCES)
     {
         return Status::InvalidDescription;
     }
@@ -1334,15 +1384,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         }
         if (resource.Kind == format::Aspect::Buffer)
         {
-            Array<uint8> zeros;
-            if (zeros.TryResize(resource.Width) == false)
-            {
-                return Status::OutOfMemory;
-            }
-            status = rhi::CreateBuffer(device,
-                                       {rhi::BufferRole::Storage, resource.Width},
-                                       zeros.AsSpan(),
-                                       candidate->Buffers[i]);
+            status = CreateZeroedGraphBuffer(device, resource.Width, candidate->Buffers[i]);
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -1456,7 +1498,20 @@ Status RenderGraph::Resize(uint32 referenceWidth, uint32 referenceHeight) noexce
     const BorrowedView<const format::Resource> descriptions{resources.GetData(), state.Header.ResourceCount};
     for (usize i = 0; i < state.Header.ResourceCount; ++i)
     {
-        if (resources[i].Backing != i || resources[i].IsSurface == 1 || resources[i].Kind == format::Aspect::Buffer)
+        if (resources[i].Kind == format::Aspect::Buffer)
+        {
+            if (resources[i].Width != state.Resources[i].Width)
+            {
+                const Status allocated =
+                    CreateZeroedGraphBuffer(state.Device, resources[i].Width, candidate->Buffers[i]);
+                if (IsAccepted(allocated) == false)
+                {
+                    return allocated;
+                }
+            }
+            continue;
+        }
+        if (resources[i].Backing != i || resources[i].IsSurface == 1)
         {
             continue;
         }
@@ -1999,7 +2054,12 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         {
             if (indices[slot] != format::ABSENT)
             {
-                buffers[slot] = {state.Buffers[indices[slot]], state.Resources[indices[slot]].Width};
+                const uint32 index = indices[slot];
+                const rhi::BufferHandle buffer =
+                    state.Resizing.Get() != nullptr && state.Resizing->Buffers[index] != rhi::BufferHandle{}
+                        ? state.Resizing->Buffers[index]
+                        : state.Buffers[index];
+                buffers[slot] = {buffer, preparingResources[index].Width};
             }
         }
         const GpuPreviewGraphInvocation invocation{operation.RayProgram, {buffers.GetData(), buffers.GetSize()}};

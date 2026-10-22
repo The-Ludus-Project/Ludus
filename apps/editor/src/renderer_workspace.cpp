@@ -1,5 +1,6 @@
 #include "internal/render_graph_configuration_editor.h"
 #include "internal/render_graph_scene_bundle.h"
+#include "internal/render_graph_settings_editor.h"
 #include <ludus/content/render_graph_format/plan.h>
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -1038,26 +1039,55 @@ bool RendererWorkspace::PromptNewGraph()
         return false;
     }
     const uint64 epoch = mEpoch;
-    QInputDialog dialog(this);
+    QDialog dialog(this);
     dialog.setObjectName(QStringLiteral("newRenderGraphDialog"));
     dialog.setWindowTitle(QStringLiteral("New Render Graph"));
-    dialog.setLabelText(QStringLiteral("Graph name\n\nCreates an editable graph and shaders in:\n%1/<name>/\n\n"
-                                       "Use letters, numbers, - or _, starting with a letter.\n"
-                                       "The graph will render your World into a color image for preview.")
-                            .arg(QDir(mProjectRoot).filePath(QStringLiteral("graphs"))));
-    dialog.setTextValue(QStringLiteral("Main"));
-    dialog.setOkButtonText(QStringLiteral("Create"));
-    return dialog.exec() == QDialog::Accepted && epoch == mEpoch && CreateGraph(dialog.textValue().trimmed()) == true;
+    QFormLayout* fields = new QFormLayout(&dialog);
+    QLabel* destination = new QLabel(QStringLiteral("Creates editable graph and shader sources in:\n%1/<name>/")
+                                         .arg(QDir(mProjectRoot).filePath(QStringLiteral("graphs"))),
+                                     &dialog);
+    destination->setObjectName(QStringLiteral("newRenderGraphDestination"));
+    fields->addRow(destination);
+    QLineEdit* name = new QLineEdit(QStringLiteral("Main"), &dialog);
+    name->setObjectName(QStringLiteral("newRenderGraphName"));
+    fields->addRow(QStringLiteral("Name"), name);
+    QComboBox* graphTemplate = new QComboBox(&dialog);
+    graphTemplate->setObjectName(QStringLiteral("newRenderGraphTemplate"));
+    graphTemplate->addItem(QStringLiteral("Raster"), QStringLiteral("raster"));
+    graphTemplate->addItem(QStringLiteral("ReSTIR DI — mesh emitter lighting"), QStringLiteral("restir-di"));
+    fields->addRow(QStringLiteral("Template"), graphTemplate);
+    QLabel* description = new QLabel(&dialog);
+    description->setWordWrap(true);
+    fields->addRow(description);
+    const auto describe = [description, graphTemplate, &dialog]() {
+        description->setText(
+            graphTemplate->currentData().toString() == QStringLiteral("restir-di")
+                ? QStringLiteral(
+                      "Three ray passes with editable shader settings and automatically sized "
+                      "reservoirs. Uses emissive meshes and requires native ray tracing. Temporal reuse has no motion "
+                      "reprojection. Change settings through Properties or the canvas menu.")
+                : QStringLiteral("Render your World into a color image using editable raster shaders."));
+        dialog.adjustSize();
+    };
+    describe();
+    connect(graphTemplate, &QComboBox::currentIndexChanged, &dialog, describe);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Create"));
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    fields->addRow(buttons);
+    return dialog.exec() == QDialog::Accepted && epoch == mEpoch &&
+           CreateGraph(name->text().trimmed(), graphTemplate->currentData().toString()) == true;
 }
 
-bool RendererWorkspace::CreateGraph(const QString& name)
+bool RendererWorkspace::CreateGraph(const QString& name, const QString& templateIdentity)
 {
     if (IsJobActive() == true)
     {
         return false;
     }
     QString error;
-    if (mCreation.Start(mTooling, mProjectRoot, name, mEpoch, error) == false)
+    if (mCreation.Start(mTooling, mProjectRoot, name, mEpoch, error, templateIdentity) == false)
     {
         mStatus->setText(error);
         return false;
@@ -2102,6 +2132,7 @@ void RendererWorkspace::renderInspector()
             delete itemOrNull;
         }
     }
+    populateGraphSettings(*mFields, *mInspector);
     const QJsonObject node = mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
     QPushButton* remove = mInspector->findChild<QPushButton*>(QStringLiteral("renderGraphRemoveNode"));
     LUDUS_REQUIRE(remove != nullptr);
@@ -2275,6 +2306,11 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             });
             outFields.addRow(name, line);
         }
+        else if (name == QStringLiteral("extent") && node.contains(QStringLiteral("bytes_per_pixel")) == true)
+        {
+            outFields.addRow(QStringLiteral("Sizing"),
+                             new QLabel(QStringLiteral("From connected RenderSize"), &inoutParent));
+        }
         else if (name == QStringLiteral("extent"))
         {
             QWidget* row = new QWidget(&inoutParent);
@@ -2413,6 +2449,77 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             outFields.addRow(name, line);
         }
     }
+}
+
+void RendererWorkspace::populateGraphSettings(QFormLayout& outFields, QWidget& inoutParent)
+{
+    const QJsonArray settings = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile()))
+                                    .object()
+                                    .value(QStringLiteral("settings"))
+                                    .toArray();
+    if (settings.isEmpty() == true)
+    {
+        return;
+    }
+    RenderGraphSettingsEditor* editor = new RenderGraphSettingsEditor(settings, &inoutParent);
+    editor->setEnabled(CanCreateSubgraph());
+    connect(
+        editor,
+        &RenderGraphSettingsEditor::SettingEdited,
+        this,
+        [this, editor](const QString& identity, const QJsonValue& value) { setGraphSetting(identity, value, editor); });
+    outFields.addRow(QStringLiteral("Graph settings"), editor);
+}
+
+void RendererWorkspace::setGraphSetting(const QString& identity, const QJsonValue& value, QWidget* editOrigin)
+{
+    LUDUS_REQUIRE(editOrigin != nullptr);
+    if (CanCreateSubgraph() == false)
+    {
+        return;
+    }
+    const QString file = manifestFile();
+    QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(file)).object();
+    QJsonArray settings = manifest.value(QStringLiteral("settings")).toArray();
+    for (qsizetype i = 0; i < settings.size(); ++i)
+    {
+        QJsonObject setting = settings[i].toObject();
+        if (setting.value(QStringLiteral("id")).toString() != identity)
+        {
+            continue;
+        }
+        const QString type = setting.value(QStringLiteral("type")).toString();
+        const bool isBoolean = type == QStringLiteral("Bool") && value.isBool() == true;
+        const bool isNumber =
+            (type == QStringLiteral("Float32") || type == QStringLiteral("UInt32")) && value.isDouble() == true &&
+            value.toDouble() >= setting.value(QStringLiteral("minimum")).toDouble() &&
+            value.toDouble() <= setting.value(QStringLiteral("maximum")).toDouble() &&
+            (type != QStringLiteral("UInt32") || value.toDouble() == static_cast<float64>(value.toInteger()));
+        if ((isBoolean == false && isNumber == false) || setting.value(QStringLiteral("value")) == value)
+        {
+            return;
+        }
+        setting.insert(QStringLiteral("value"), value);
+        settings[i] = setting;
+        manifest.insert(QStringLiteral("settings"), settings);
+        documentEdited(mDocument.SetText(file, EncodeCanonicalJson(manifest)),
+                       mInspector->isAncestorOf(editOrigin) == false,
+                       editOrigin);
+        return;
+    }
+}
+
+void RendererWorkspace::editGraphSettingsOnCanvas()
+{
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("renderGraphSettingsDialog"));
+    dialog.setWindowTitle(QStringLiteral("Graph Settings"));
+    QFormLayout* fields = new QFormLayout(&dialog);
+    populateGraphSettings(*fields, dialog);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    fields->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    static_cast<void>(dialog.exec());
 }
 
 void RendererWorkspace::editNodeOnCanvas(const QString& diagnosticField)
@@ -2871,6 +2978,17 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
 {
     QMenu menu(this);
     menu.setObjectName(QStringLiteral("renderGraphNodeMenu"));
+    if (QJsonDocument::fromJson(mDocument.GetDraft(manifestFile()))
+            .object()
+            .value(QStringLiteral("settings"))
+            .toArray()
+            .isEmpty() == false)
+    {
+        QAction* settings = menu.addAction(QStringLiteral("Edit Graph Settings..."));
+        settings->setObjectName(QStringLiteral("renderGraphEditSettingsAction"));
+        settings->setEnabled(CanCreateSubgraph());
+        connect(settings, &QAction::triggered, this, &RendererWorkspace::editGraphSettingsOnCanvas);
+    }
     QAction* copy = menu.addAction(QStringLiteral("Copy Selected Nodes"));
     copy->setObjectName(QStringLiteral("renderGraphCopyNodes"));
     copy->setEnabled(mSelectedNodes.isEmpty() == false);
