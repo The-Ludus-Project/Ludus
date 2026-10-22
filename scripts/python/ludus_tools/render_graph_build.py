@@ -168,7 +168,9 @@ class Snapshot:
 
 
 def validate_manifest(value):
-    keys(value, ('version', 'id', 'profiles', 'schemas', 'programs', 'techniques', 'budgets'), 'build manifest')
+    keys(value, ('version', 'id', 'profiles', 'schemas', 'programs', 'techniques', 'budgets'), 'build manifest', ('settings',))
+    from . import render_graph_settings
+    render_graph_settings.validate(value.get('settings', []), sys.modules[__name__])
     require(type(value['version']) is int and value['version'] == VERSION, 'Schema', 'manifest', 'version 1 required')
     name(value['id'], 'manifest id')
     bounded_list(value['profiles'], 4, 'profiles')
@@ -334,7 +336,7 @@ def validate_manifest(value):
 def shader_source(program, schemas):
     """Generate declarations/bindings and entry wrapper; user source owns functions."""
     if 'ray_wrapper' in program:
-        return program['ray_wrapper']
+        return program.get('settings_source', '') + program['ray_wrapper']
     used = {program['input'], *(b['schema'] for b in program['bindings'])}
     if program['stage'] == 'vertex':
         used.add(program['output'])
@@ -365,7 +367,7 @@ def shader_source(program, schemas):
         result, suffix = ('float4', ' : SV_Target0') if program['output'] == 'Color' else ('void', '')
     lines += [result + ' rgEntry(' + program['input'] + ' value)' + suffix, '{',
               ('    return ' if result != 'void' else '    ') + program['function'] + '(value);', '}']
-    return '\n'.join(lines) + '\n'
+    return program.get('settings_source', '') + '\n'.join(lines) + '\n'
 
 
 def check_layout(program, schemas, result, raw):
@@ -825,6 +827,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
             closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
                                                                     sys.modules[__name__])
+    from . import render_graph_settings
+    for program in programs.values():
+        program['settings_source'] = render_graph_settings.shader_source(value.get('settings', []))
     counts['root_configurations'] = len(plans)
     counts['graph_configurations'] = sum(len(a['configurations']) for a in library.assets.values())
     require(counts['graph_configurations'] <= value['budgets']['configurations'], 'Capacity', 'graph configurations', 'closure configuration budget exceeded')

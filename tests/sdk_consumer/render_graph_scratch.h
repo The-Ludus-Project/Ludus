@@ -114,7 +114,7 @@ struct ScratchShape final
         const uint32 color = resources + 2 * i;
         for (const format::Aspect aspect : {format::Aspect::Color, format::Aspect::Depth})
         {
-            for (const uint32 word : {width, height, static_cast<uint32>(aspect), color, 0U, 0U, 0U, 1U})
+            for (const uint32 word : {width, height, static_cast<uint32>(aspect), color, 0U, 0U, 0U, 1U, 0U})
             {
                 WriteWord(bytes, word);
             }

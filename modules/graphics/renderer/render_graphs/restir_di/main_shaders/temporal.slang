@@ -13,7 +13,7 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     }
     float weightSum = 0;
     MergeReservoir(scene, hit, current, SampleReuseRandom(payload.Launch, 0), result, weightSum, queries);
-    if (HasMatchingIdentity(history, scene, payload.Launch) == true &&
+    if (IS_RESTIR_TEMPORAL_ENABLED == true && HasMatchingIdentity(history, scene, payload.Launch) == true &&
         HasMatchingTemporalReceiver(history, result) == true)
     {
         MergeReservoir(scene, hit, history, SampleReuseRandom(payload.Launch, 1), result, weightSum, queries);

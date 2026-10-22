@@ -11,12 +11,7 @@
 // conservative same-pixel temporal validation instead of motion reprojection.
 static const uint RESERVOIR_WORD_COUNT = 4;
 static const uint RESERVOIR_LAYOUT_TAG = 0x52444931u;
-static const uint INITIAL_CANDIDATE_COUNT = 8;
-static const uint MAXIMUM_HISTORY_CANDIDATES = 128;
-static const uint SPATIAL_NEIGHBOR_COUNT = 4;
 static const float MINIMUM_TARGET_RADIANCE_PER_AREA = 0.000001f;
-static const float MINIMUM_SPATIAL_NORMAL_COSINE = 0.95f;
-static const float MAXIMUM_SPATIAL_DISTANCE_WORLD = 0.25f;
 static const uint INITIAL_PASS_INDEX = 0;
 static const uint TEMPORAL_PASS_INDEX = 1;
 static const uint SPATIAL_PASS_INDEX = 2;
@@ -114,7 +109,7 @@ bool HasMatchingIdentity(Reservoir source, SceneContext scene, RayLaunch launch)
 {
     return source.LayoutTag == RESERVOIR_LAYOUT_TAG && all(source.SceneGeneration == scene.Generation) == true &&
            all(source.ExtentPixel == launch.ExtentPixel) == true &&
-           source.CandidateCount <= MAXIMUM_HISTORY_CANDIDATES && isfinite(source.Weight) == true && source.Weight >= 0;
+           source.CandidateCount <= RESTIR_HISTORY_CANDIDATES && isfinite(source.Weight) == true && source.Weight >= 0;
 }
 
 bool HasMatchingTemporalReceiver(Reservoir source, Reservoir current)
@@ -227,7 +222,7 @@ void FinalizeReservoir(SceneContext scene,
     float target = EvaluateSampleTarget(scene, receiver, inoutReservoir.TriangleIndex, inoutReservoir.Barycentric);
     inoutReservoir.Weight = weightSum / (float(inoutReservoir.CandidateCount) * target);
     // Cap represented history AFTER normalization; W must retain its finalized scale.
-    inoutReservoir.CandidateCount = min(inoutReservoir.CandidateCount, MAXIMUM_HISTORY_CANDIDATES);
+    inoutReservoir.CandidateCount = min(inoutReservoir.CandidateCount, RESTIR_HISTORY_CANDIDATES);
     if (isfinite(inoutReservoir.Weight) == false || inoutReservoir.Weight < 0)
     {
         queries.HasFailed = true;
@@ -267,8 +262,8 @@ bool CanReuseSpatialReceiver(SceneContext scene, SurfaceHit receiver, Reservoir 
     }
     float3 differenceWorld = neighbor.PositionWorld - receiver.PositionWorld;
     return dot(normalize(neighbor.ShadingNormalWorld), normalize(receiver.ShadingNormalWorld)) >=
-               MINIMUM_SPATIAL_NORMAL_COSINE &&
-           dot(differenceWorld, differenceWorld) <= MAXIMUM_SPATIAL_DISTANCE_WORLD * MAXIMUM_SPATIAL_DISTANCE_WORLD;
+               RESTIR_SPATIAL_NORMAL_COSINE &&
+           dot(differenceWorld, differenceWorld) <= RESTIR_SPATIAL_DISTANCE_WORLD * RESTIR_SPATIAL_DISTANCE_WORLD;
 }
 
 float3 ShadeReservoir(SceneContext scene, SurfaceHit receiver, Reservoir reservoir, inout RayQueryContext queries)

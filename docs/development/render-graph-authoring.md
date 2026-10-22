@@ -280,8 +280,9 @@ scene and the editor's last completed image; retired GPU resources follow the
 existing RHI completion/pool ledger. The editor reads physical viewport dimensions
 before its ordinary edit-preview cap, and updates target inspection dimensions
 only after publication. Resolution changes create fresh ray jobs and reset their
-accumulation. Graph-owned persistent buffers keep their fixed byte capacities and contents
-across resize. Shaders must validate capacity and invalidate incompatible history; foreign
+accumulation. Fixed-capacity graph buffers retain their contents across resize. Pixel buffers
+follow their connected RenderSize and stage zeroed replacement allocations when
+capacity changes. Shaders must validate capacity and invalidate incompatible history; foreign
 texture/history imports remain unsupported. See [ordered ray passes](#order-ray-passes-and-share-persistent-buffers).
 
 ## Execute a triangle ray pipeline
@@ -553,8 +554,12 @@ sequence. Resource and byte budgets still include all retained scenes/jobs.
 Buffers belong to the graph instance. They are zeroed once on creation, survive
 frames, camera/World replacements and attachment-only resize, and are released
 with the graph through normal GPU retirement. Shader edits that activate a new
-graph instance create fresh buffers. Capacity stays fixed on resize: allocate for
-the intended maximum extent or rebuild the graph with a larger capacity. The
+graph instance create fresh buffers. Fixed `bytes` capacities stay unchanged on
+resize: allocate for the intended maximum or rebuild with larger capacity. For
+automatic capacity, use `bytes_per_pixel` (a multiple of 16, at most 4096) and
+`extent: "RenderSize"`, then connect a size output to the buffer's `size` input.
+Pixel buffers stage zeroed replacements when capacity changes, publishing beside
+the matching attachments and scene. The
 shader owns history validation, reprojection, and reset metadata, including changes
 to scene generation, camera, extent or reservoir layout. A previous-frame resource
 is the persistent allocation's contents; do not draw a cyclic edge back into the
@@ -576,17 +581,45 @@ buffer values. They establish the storage/ordering seam for an authored ReSTIR
 implementation; reservoir sampling, temporal reprojection and disocclusion logic
 remain shader policy.
 
-### Run the three-pass ReSTIR DI example
+<a id="run-the-three-pass-restir-di-example"></a>
 
-The [ReSTIR DI package](../../tests/sdk_consumer/rg2/restir_di/main.lurender.json)
-adapts a mesh-emitter closest-hit estimator into three independently assigned
-closest-hit programs. Copy the package directory into your project, resolve
-`main.lushader.json.in` to `main.lushader.json` with your native profiles (for
-example, `"profiles": ["metal"]`), and build that manifest with the normal graph
-builder. Keep the shader helper files alongside the three entry sources.
-The package requires the ordered native-ray profile; it does not execute in a
-browser. Its raster declarations are the graph package's required static setup,
-not an additional lighting implementation.
+### Use the built-in ReSTIR DI template
+
+Choose **New Render Graph → Template → ReSTIR DI — mesh emitter lighting**.
+The editor creates a complete editable package under `graphs/<name>/`, opens it,
+and uses your World and camera when you build/preview or select it for rendering.
+The default New Render Graph choice remains Raster. ReSTIR DI requires native
+Metal or Vulkan ray tracing; it cannot execute in the browser.
+
+Change **Graph settings** in Properties, or right-click the canvas and choose
+**Edit Graph Settings...** with Properties hidden. Both use the same controls and
+undoable document edit. **Save** publishes changes, then rebuild (or let Live
+Preview rebuild the saved graph). Cancelling graph creation writes nothing;
+existing graph folders are never replaced. Created shaders belong to your project.
+
+| Setting | Default | Range |
+| --- | --- | --- |
+| Initial candidates | 8 | 1–32 |
+| History candidate limit | 128 | 1–1024 |
+| Temporal reuse | Enabled | Enabled/disabled |
+| Spatial neighbours | 4 | 0–4 |
+| Minimum normal cosine | 0.95 | 0–1 |
+| Maximum neighbour distance (world units) | 0.25 | 0–1000 |
+
+These are typed `settings` in the build manifest. The offline builder validates
+their ranges and emits shader constants, including them in stage/cache identity.
+They are compile-time settings, so changing one requires a shader rebuild and
+starts a new runtime generation with empty history. No shader text parsing is
+used to discover settings. You can also create the same template with the CLI:
+
+```bash
+ludus render-graph new graphs/Lighting --template restir-di --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for a Vulkan build. The canonical [template sources](../../modules/graphics/renderer/render_graphs/restir_di/main.lurender.json)
+and manifest are shipped with the SDK. Its raster declarations provide the graph
+package's required static setup; the three ray callbacks own direct lighting.
 
 | Pipeline node | Closest-hit source | Shader slots and work |
 | --- | --- | --- |
@@ -625,17 +658,25 @@ swap the two buffer input positions between these particular passes. Temporal
 reuse writes only each invocation's own scratch record; spatial reuse reads only
 scratch while writing history. Thus neither pass races a neighbouring reader.
 
-The included target is 96 × 64, and **each** buffer has 393,216 bytes:
-`width × height × 64`. For a 1920 × 1080 target, allocate 132,710,400 bytes per
-buffer. These capacities are fixed, even if the Target uses a RenderSize input.
-Allocate for the largest intended extent or rebuild after increasing capacity.
-Every dispatch checks both buffers with `GetDimensions` before indexing; Metal
-supplies the SPIRV-Cross auxiliary length table from the bound storage ranges.
-Insufficient capacity fails
-the sample with the ray profile's magenta diagnostic instead of accessing beyond
-storage. Four-word records at 3840 × 2160 exceed the current 256 MiB per-buffer
-limit, so use a smaller extent or a separately designed compact layout. Merely
-changing `RESERVOIR_WORD_COUNT` does not change the encoding schema.
+The template connects one view-relative **RenderSize** node to the output Target
+and both Buffer nodes. Each buffer declares `"extent": "RenderSize"` and
+`"bytes_per_pixel": 64`, with a `size` input; it has no fixed `bytes` field.
+The runtime computes **each** capacity as `ceil(width × scale) × ceil(height × scale) × 64`.
+For 1920 × 1080 at full scale this is 132,710,400 bytes per buffer. Change the
+RenderSize scale to change output resolution and both reservoirs together.
+
+Growing or shrinking capacity stages zeroed replacement buffers and matching ray
+jobs. They publish with the ready scene/output size; pending or failed preparation
+keeps the last drawable generation. An unchanged capacity retains its allocation,
+and the shaders' extent/scene/receiver checks still govern history reuse. Fixed
+Buffer nodes with a `bytes` capacity remain supported.
+
+Every dispatch checks buffer capacity with `GetDimensions`; Metal supplies the
+SPIRV-Cross auxiliary length table from the bound ranges. Four-word records at
+3840 × 2160 exceed the current 256 MiB per-buffer limit. Reduce the connected
+RenderSize scale (for example to 1/2); oversized requests fail without replacing
+the working view. Automatic sizing does not bypass resource budgets. Merely
+changing `RESERVOIR_WORD_COUNT` or buffer stride does not redesign the encoding.
 
 The original emitter-selection and uniform/area-weighted triangle proposal modes
 remain in `emitter_sampling.slang`. All RIS densities use area measure:
@@ -648,10 +689,10 @@ normalization is `W = sum(target / q) / (M × target(selected))`; reuse streams
 The effective count is capped only after normalization, leaving finalized `W`
 unchanged. Reuse selection coins use FoundationMath addressed-random scopes
 separated by pass index, so they do not repeat the initial proposal stream.
-This is a bounded-history ReSTIR example, not a claim of improved
+This is a bounded-history ReSTIR template, not a claim of improved
 performance or a full unbiased spatiotemporal reference implementation. The
 original light/BSDF power or balance MIS weights cannot be applied to these
-resampled light estimates; the example uses a light-only estimator with reservoir
+resampled light estimates; the template uses a light-only estimator with reservoir
 normalization. Debug emitter-index display is not part of these passes.
 
 Temporal reuse is deliberately conservative: generation, extent, layout tag,
@@ -1399,6 +1440,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | Scene | None | Outputs `scene: Scene`; declares a future scene-snapshot binding |
 | Camera | `active`, `role` (`Presentation` or `Offscreen`), `target_type` | Input `target` of the specified texture type; output `view: View`. An inactive camera may leave target unbound and needs no route, but cannot drive a raster pass |
 | Target | `type`, `format`, `extent: [width, height]` or `"RenderSize"`, `samples`, `imported`, `initialized`, `presentation` | Optional `size: RenderSize` input; outputs `texture` of the specified texture type; names physical resource version 0 |
+| Buffer | Fixed `bytes`, or `bytes_per_pixel` and `extent: "RenderSize"` | Optional `size: RenderSize` input; outputs shared persistent `buffer: Buffer` for [ordered ray passes](#order-ray-passes-and-share-persistent-buffers) |
 | StructuredBuffer (version 2) | `stride` in bytes, `count` as a positive integer or `"ColorTarget"` | Outputs zero-initialized `buffer: Buffer`; native ray storage follows the [reservoir workflow](#create-structured-reservoir-buffers) |
 | RenderSize (version 2) | Fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | Optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
 | Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
@@ -1551,6 +1593,16 @@ The closed version-1 `.lushader.json` source has these fields:
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
 | `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
+| `settings` (optional) | Up to 16 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
+
+Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
+`Float32`, or `Bool`; numeric settings also require `minimum` and `maximum` with
+`0 ≤ minimum ≤ value ≤ maximum ≤ 1,000,000`. UInt32 values/ranges must be JSON
+integers; Float32 numbers must be finite. Bool values are booleans and omit ranges.
+IDs are unique shader identifiers; labels are nonempty and at most 128 characters.
+The builder emits global `static const` declarations before authored stage sources
+and includes them in stage cache identity. They create no runtime uniform binding.
+Save/rebuild applies a changed value; undo/redo and source edits use the same manifest.
 
 Identifiers use 1–63 ASCII letters/digits/underscores and start with a letter;
 reserved C++/Slang/wrapper names reject. A field has `id` and `type`
@@ -2103,12 +2155,12 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h` (layout version 10, with
+`ludus/content/render_graph_format/runtime_package.h` (layout version 11, with
 independent raster shader pairs, native-only ray roles, structured storage records,
-optional visibility/depth reads, per-pass Scene data masks, view-relative size policies, pass names, uniform
+optional visibility/depth reads, per-pixel buffer strides, per-pass Scene data masks, view-relative size policies, pass names, uniform
 binding/block/field records and GLSL ES block names; native-ray packages from
-versions 6 through 9 with the current ray-image interface and raster packages from
-versions 2 through 9 remain readable, with versions 2 through 4 implying full Scene
+versions 6 through 10 with the current ray-image interface and raster packages from
+versions 2 through 10 remain readable, with versions 2 through 4 implying full Scene
 data. Older ray-image interfaces and software-ray packages require recooking). `emit-runtime`
 headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
 interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to

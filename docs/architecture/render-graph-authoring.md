@@ -268,8 +268,9 @@ contexts. They publish together only after readiness; the old scene/output remai
 available while pending or on failure. A newer request discards the unactivated
 set and its scene. GPU retirement and pooling remain in their existing owners.
 Fresh legacy ray jobs reset accumulation. Ordered ray sequences may bind graph-owned
-persistent uint4 buffers, whose fixed capacities and contents survive scene/camera/size
-replacement. Their shaders own history validation; external texture/history imports
+persistent uint4 buffers. Fixed capacities and their contents survive scene/camera/size
+replacement. Pixel-sized buffers follow a connected RenderSize policy and stage zeroed
+replacements when capacity changes. Their shaders own history validation; external texture/history imports
 remain outside the admitted profile. See the [ordered-ray contract](../development/render-graph-authoring.md#order-ray-passes-and-share-persistent-buffers). The editor supplies pre-render-scale physical viewport pixels,
 keeps its last completed image across replacement, and updates inspection metadata
 from the published resource descriptions.
@@ -1009,7 +1010,12 @@ See [native worker setup, limits, workflow and measurements](../development/rend
 Numeric plan version 6 and runtime package version 9 append a callback-set index
 and two persistent buffer-resource indices to each pass. Buffer resources use the
 existing resource table with an explicit Buffer aspect: Width is byte capacity,
-Height is one, and view scaling/export/surface flags are forbidden. Serialized
+Height is one, and export/surface flags are forbidden. Runtime package version 11
+and numeric plan version 8 add BytesPerPixel to each resource. Zero preserves fixed
+capacity; a positive aligned stride with a view policy resolves byte capacity from
+the scaled reference pixel count. Resizing stages buffers beside attachments and ray
+jobs and publishes them together only at readiness. Versions 9 and 10 remain readable
+with fixed-capacity buffers. Serialized
 widths derive from the field schema, with no host-padding copies. Earlier hardware
 package version 6 remains readable with callback zero and absent buffer slots.
 The persistent compute stage role independently selects the extended eight-binding
@@ -1034,8 +1040,11 @@ transaction that can roll back individual pixels.
 
 The [authoring guide](../development/render-graph-authoring.md#order-ray-passes-and-share-persistent-buffers)
 owns capacity, reset, ping-pong, editor and scheduling instructions. This change
-provides ordered storage access, without selecting a ReSTIR estimator or claiming
-qualification of arbitrary authored reservoir algorithms.
+provides ordered storage access without qualifying arbitrary authored reservoir
+algorithms. The renderer-owned [ReSTIR DI template](../development/render-graph-authoring.md#use-the-built-in-restir-di-template)
+uses that storage contract and manifest-owned typed shader constants. Template
+creation uses the shared transactional backend; Properties and canvas controls
+edit the same draft manifest and require Save/rebuild before activation.
 ### Structured storage in the native ray profile
 
 Native triangle-ray jobs admit two named structured buffers in user slots 6/7.

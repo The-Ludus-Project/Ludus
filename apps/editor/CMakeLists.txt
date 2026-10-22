@@ -47,6 +47,25 @@ endforeach()
 set_source_files_properties(src/render_graph_scene_authoring.cpp
     PROPERTIES COMPILE_DEFINITIONS "${scene_query_definitions}")
 
+# The settings form mirrors the build service's admission policy, not a second copy.
+set(graph_settings_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_settings.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${graph_settings_policy}")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -c
+        "import json,sys; sys.path.insert(0, sys.argv[1]); from ludus_tools import render_graph_settings as policy; print(json.dumps({key:getattr(policy,key) for key in ('MAX_SETTINGS','MAX_NUMERIC_VALUE','MAX_SETTING_LABEL_LENGTH')}))"
+        "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE graph_settings_status OUTPUT_VARIABLE graph_settings_limits ERROR_VARIABLE graph_settings_error)
+if(NOT graph_settings_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read graph settings limits: ${graph_settings_error}")
+endif()
+set(graph_settings_definitions)
+foreach(limit MAX_SETTINGS MAX_NUMERIC_VALUE MAX_SETTING_LABEL_LENGTH)
+    string(JSON graph_settings_limit GET "${graph_settings_limits}" "${limit}")
+    list(APPEND graph_settings_definitions "LUDUS_EDITOR_${limit}=${graph_settings_limit}")
+endforeach()
+set_source_files_properties(src/render_graph_settings_editor.cpp
+    PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
+
 # Use APIs available in Qt 6.4; require at least 6.4. Core/Gui/Widgets only, as
 # native system libraries or the pinned source-built WebAssembly Qt.
 # Qt is installed only by opted-in editor setup;
@@ -317,6 +336,8 @@ qt_add_executable(ludus_editor
     src/render_graph_job.cpp
     src/internal/render_graph_creation.h
     src/render_graph_creation.cpp
+    src/internal/render_graph_settings_editor.h
+    src/render_graph_settings_editor.cpp
     src/internal/render_graph_configuration_editor.h
     src/render_graph_configuration_editor.cpp
     src/render_graph_configuration_interface.cpp
@@ -560,6 +581,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_job.cpp
         src/internal/render_graph_creation.h
         src/render_graph_creation.cpp
+        src/internal/render_graph_settings_editor.h src/render_graph_settings_editor.cpp
         src/internal/render_graph_configuration_editor.h
         src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp
@@ -604,7 +626,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/recent_projects_tests.cpp
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp
-        tests/renderer_workspace_tests.cpp
+        tests/renderer_workspace_tests.cpp tests/render_graph_template_tests.cpp
         tests/render_graph_node_menu_tests.cpp
         tests/render_graph_rename_tests.cpp
         tests/render_graph_default_tests.cpp
@@ -828,7 +850,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
-        tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp
+        tests/main.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp
         src/internal/renderer_workspace.h src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
         src/render_graph_document.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp
@@ -839,6 +861,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_job.h src/render_graph_job.cpp
         src/internal/error_list.h src/error_list.cpp
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
+        src/internal/render_graph_settings_editor.h src/render_graph_settings_editor.cpp
         src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
         src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp

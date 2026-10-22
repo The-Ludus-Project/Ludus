@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 7;
+inline constexpr foundation::uint32 VERSION = 8;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -45,7 +45,9 @@ inline constexpr foundation::usize MAX_RAY_PASSES = 4;
 inline constexpr foundation::usize MAX_RAY_BUFFERS = 2;
 /// Byte width of one persistent buffer word, matching RWStructuredBuffer<uint4>.
 inline constexpr foundation::uint32 RAY_BUFFER_WORD_BYTES = 16;
-/// Maximum bytes in one fixed-capacity persistent buffer.
+/// Maximum logical bytes per RenderSize pixel in shared uint4 storage.
+inline constexpr foundation::uint32 MAX_RAY_BUFFER_PIXEL_BYTES = 4096;
+/// Maximum bytes in one persistent buffer, fixed or resolved per pixel.
 inline constexpr foundation::uint32 MAX_RAY_BUFFER_BYTES = 256 * 1024 * 1024;
 /// Number of shader stages (vertex and fragment) of one technique.
 inline constexpr foundation::usize TECHNIQUE_STAGE_COUNT = 2;
@@ -146,6 +148,7 @@ struct Resource final
     foundation::uint32 IsExported;          ///< Zero or one; output may be leased after producer completion.
     foundation::uint32 ViewNumerator = 0;   ///< Zero selects fixed Width/Height; otherwise scale numerator.
     foundation::uint32 ViewDenominator = 1; ///< Positive scale denominator; both components at most MAX_TARGET_EXTENT.
+    foundation::uint32 BytesPerPixel = 0;   ///< Buffer byte stride per RenderSize pixel; zero selects fixed capacity.
 };
 /// Maximum named structured buffers in one native triangle-ray invocation.
 inline constexpr foundation::usize MAX_STORAGE_BUFFERS = 2;
@@ -234,7 +237,9 @@ struct Header final
     foundation::uint32 UniformFieldCount;   ///< Bounded per-target field table size.
 };
 static_assert(sizeof(StorageBuffer) == sizeof(foundation::uint32) * STORAGE_BUFFER_FIELD_COUNT);
-static_assert(sizeof(Resource) == sizeof(foundation::uint32) * 8);
+/// Number of explicitly serialized resource fields in the current runtime layout.
+inline constexpr foundation::usize RESOURCE_FIELD_COUNT = 9;
+static_assert(sizeof(Resource) == sizeof(foundation::uint32) * RESOURCE_FIELD_COUNT);
 static_assert(sizeof(Pass) == sizeof(foundation::uint32) * PASS_FIELD_COUNT);
 static_assert(sizeof(Camera) == sizeof(foundation::uint32));
 static_assert(sizeof(UniformBinding) == sizeof(foundation::uint32) * 5);

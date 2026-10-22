@@ -451,6 +451,12 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     const usize extension = format::HEADER_BYTES + resourceCount * format::RESOURCE_RECORD_BYTES +
                             cameraCount * format::CAMERA_RECORD_BYTES + LEGACY_PASS_FIELDS * sizeof(uint32);
     bytes.RemoveRange(extension, extension + (format::PASS_FIELD_COUNT - LEGACY_PASS_FIELDS) * sizeof(uint32));
+    // Version 11 appends one per-pixel stride word to every resource. Remove in reverse order.
+    for (usize i = resourceCount; i > 0; --i)
+    {
+        const usize word = format::HEADER_BYTES + i * format::RESOURCE_RECORD_BYTES - sizeof(uint32);
+        bytes.RemoveRange(word, word + sizeof(uint32));
+    }
     REQUIRE(TryWriteLittleEndian(format::STORAGE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==
             true);
     renderer::RenderGraphPackage storageGeneration;
@@ -1054,10 +1060,12 @@ TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale h
         if (hasFullCapacity == false && resources[i].Kind == format::Aspect::Buffer)
         {
             resources[i].Width = sizeof(uint32) * 4;
+            resources[i].BytesPerPixel = 0;
+            resources[i].ViewNumerator = 0;
         }
     }
     plan.Resources = {resources.GetData(), plan.Resources.GetSize()};
-    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, programs);
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT);
     const uint64 started = time::NowTicks();
     constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
     const auto wait = [&fixture, started](rhi::RasterStatus initial) {
@@ -1196,6 +1204,33 @@ TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale h
     INFO("area quadrature=" << expectedRed << ", decoded GPU mean=" << measuredRed);
     constexpr float32 RELATIVE_ENERGY_TOLERANCE = .2F;
     CHECK(math::Abs(measuredRed - expectedRed) < RELATIVE_ENERGY_TOLERANCE * expectedRed);
+    // Resize both reservoirs with the output, and retain published dimensions while pending.
+    REQUIRE(fixture.Graph.Resize(WIDTH * 2, HEIGHT * 2) == rhi::RasterStatus::Pending);
+    for (uint32 i = 0; i < plan.Resources.GetSize(); ++i)
+    {
+        if (plan.Resources[i].Kind == format::Aspect::Buffer)
+        {
+            format::Resource description{};
+            REQUIRE(fixture.Graph.GetResourceDescription(i, description) == true);
+            CHECK(description.Width == WIDTH * HEIGHT * 64);
+        }
+    }
+    update(1);
+    for (uint32 i = 0; i < plan.Resources.GetSize(); ++i)
+    {
+        if (plan.Resources[i].Kind == format::Aspect::Buffer)
+        {
+            format::Resource description{};
+            REQUIRE(fixture.Graph.GetResourceDescription(i, description) == true);
+            CHECK(description.Width == WIDTH * HEIGHT * 64 * 4);
+        }
+    }
+    read();
+    CHECK(fixture.Graph.Resize(3840, 2160) == rhi::RasterStatus::CapacityExceeded);
+    read(); // A rejected oversized replacement keeps the last drawable generation.
+    REQUIRE(fixture.Graph.Resize(WIDTH, HEIGHT) == rhi::RasterStatus::Pending);
+    update(1);
+    read();
     // A displaced opaque copy blocks every receiver-to-light ray but not the camera ray.
     items[2].MeshToWorld.Translation = {.5F, 0, -.2F};
     update(2);

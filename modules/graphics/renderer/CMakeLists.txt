@@ -205,7 +205,7 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_ordered_ray_RUNTIME_PACKAGE PARENT_PATH ordered_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_ORDERED_RAY_DIRECTORY="${ordered_ray_package_directory}")
-    set(restir_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/restir_di")
+    set(restir_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di")
     set(restir_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/restir_di")
     file(COPY "${restir_source}/" DESTINATION "${restir_staged}" PATTERN "*.in" EXCLUDE)
     configure_file("${restir_source}/main.lushader.json.in" "${restir_staged}/main.lushader.json" @ONLY)

@@ -8,7 +8,7 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     float3 surfaceEmission = EvaluateEmission(scene, hit, result.ViewDirectionWorld);
     if (material.IsValid == true && any(surfaceEmission > 0) == false && GetEmitterCount(scene) > 0)
     {
-        [loop] for (uint i = 0; i < INITIAL_CANDIDATE_COUNT; ++i)
+        [loop] for (uint i = 0; i < RESTIR_INITIAL_CANDIDATE_COUNT; ++i)
         {
             uint emitterIndex;
             float selectionPmf;

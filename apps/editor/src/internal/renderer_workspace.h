@@ -86,10 +86,10 @@ public:
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
-    /// Create and open an offscreen Renderer graph in the selected project's
+    /// Create and open a built-in raster or restir-di offscreen Renderer template in the selected project's
     /// graphs/name directory. Completion is asynchronous through JobFinished.
     /// Existing files and the current draft are retained if creation fails.
-    [[nodiscard]] bool CreateGraph(const QString& name);
+    [[nodiscard]] bool CreateGraph(const QString& name, const QString& templateIdentity = QStringLiteral("raster"));
     /// Create an empty library and reference in the selected configuration, or rebind the
     /// selected Subgraph. Opens its Default configuration; Save publishes the draft.
     /// Failure/cancellation preserves sources. GUI thread only.
@@ -116,7 +116,7 @@ public:
     /// True when a project is bound and no job or creation is running, so New Graph and
     /// Open Graph can start.
     [[nodiscard]] bool CanCreateGraph() const;
-    /// Ask to save a dirty draft, then ask for a graph name and start CreateGraph. False
+    /// Ask to save a dirty draft, then choose a graph name/template and start CreateGraph. False
     /// when CanCreateGraph() is false, a prompt is cancelled or creation cannot start.
     [[nodiscard]] bool PromptNewGraph();
     /// Ask to save a dirty draft, then choose a root .lurender.json in the project and open
@@ -317,6 +317,9 @@ private:
     void populateNodeNameFields(QFormLayout& outFields, QWidget& inoutParent, QDialog* closeOnRenameOrNull = nullptr);
     [[nodiscard]] bool renameSelectedNode(const QString& name, QString& outError);
     void promptRenameNode();
+    void editGraphSettingsOnCanvas();
+    void populateGraphSettings(QFormLayout& outFields, QWidget& inoutParent);
+    void setGraphSetting(const QString& identity, const QJsonValue& value, QWidget* editOrigin);
     void editNodeOnCanvas(const QString& diagnosticField = {});
     void renderEdges();
     void renderSource();

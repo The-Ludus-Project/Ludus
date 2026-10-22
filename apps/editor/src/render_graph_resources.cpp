@@ -37,6 +37,7 @@ struct ResourceDescription final
     bool IsPresentation = false;
     int32 Stride = 0;
     QString Count{};
+    bool IsPersistent = false;
 };
 
 QJsonObject FindRecord(const QJsonArray& records, const QString& identity)
@@ -120,6 +121,20 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
     const QJsonObject node = FindRecord(context.Configuration.value(QStringLiteral("nodes")).toArray(), identity);
     const QString kind = node.value(QStringLiteral("kind")).toString();
     const QJsonValue extent = node.value(QStringLiteral("extent"));
+    if (kind == QStringLiteral("Buffer") && port == QStringLiteral("buffer"))
+    {
+        ResourceDescription result;
+        result.Type = QStringLiteral("Buffer");
+        result.Format = QStringLiteral("Bytes");
+        result.IsPersistent = true;
+        result.Stride = node.contains(QStringLiteral("bytes_per_pixel")) == true
+                            ? node.value(QStringLiteral("bytes_per_pixel")).toInt()
+                            : static_cast<int32>(content::render_graph_format::RAY_BUFFER_WORD_BYTES);
+        result.Count = node.contains(QStringLiteral("bytes_per_pixel")) == true
+                           ? QStringLiteral("RenderSize")
+                           : QString::number(node.value(QStringLiteral("bytes")).toInteger() / result.Stride);
+        return result;
+    }
     if (kind == QStringLiteral("StructuredBuffer") && port == QStringLiteral("buffer"))
     {
         ResourceDescription result;
@@ -391,14 +406,18 @@ RenderGraphResourceFeedback DescribeRenderGraphResource(const RenderGraphDocumen
     const ResourceDescription resource = ResolveResource(context, endpoint, remainingSteps);
     if (resource.Type == QStringLiteral("Buffer"))
     {
-        const QString count = resource.Count == QStringLiteral("ColorTarget")
-                                  ? QStringLiteral("one per output pixel")
+        const QString count = resource.Count == QStringLiteral("ColorTarget") ? QStringLiteral("one per output pixel")
+                              : resource.Count == QStringLiteral("RenderSize")
+                                  ? QStringLiteral("connected RenderSize pixels")
                                   : resource.Count + QStringLiteral(" elements");
         const QString label = QStringLiteral("%1 B × %2").arg(resource.Stride).arg(count);
         return {label,
-                label +
-                    QStringLiteral(
-                        "\nZeroed on preparation; retained across ray samples until scene/camera/extent replacement.")};
+                label + (resource.IsPersistent == true
+                             ? QStringLiteral(
+                                   "\nShared persistent storage. Pixel buffers follow RenderSize; resized allocations "
+                                   "start at zero. Shader metadata validates scene/camera history.")
+                             : QStringLiteral("\nZeroed on preparation; retained across ray samples until "
+                                              "scene/camera/extent replacement."))};
     }
     QString size;
     QString detail;

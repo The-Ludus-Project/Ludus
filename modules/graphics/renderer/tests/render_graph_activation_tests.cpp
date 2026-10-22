@@ -157,6 +157,10 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
             inoutWriter.WriteWord(options.ViewNumerator);
             inoutWriter.WriteWord(options.ViewDenominator);
         }
+        if (options.Version >= format::PACKAGE_VERSION)
+        {
+            inoutWriter.WriteWord(0);
+        }
     }
     inoutWriter.WriteWord(0);
     for (const uint32 value : {static_cast<uint32>(options.Program),
@@ -181,7 +185,7 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
         inoutWriter.WriteWord(format::ABSENT);
         inoutWriter.WriteWord(format::ABSENT);
     }
-    if (options.Version >= format::PACKAGE_VERSION)
+    if (options.Version >= format::VISIBILITY_PACKAGE_VERSION)
     {
         inoutWriter.WriteWord(format::ABSENT);
         inoutWriter.WriteWord(format::ABSENT);
@@ -963,6 +967,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::INDEPENDENT_PROGRAM_PACKAGE_VERSION,
                                  format::STORAGE_PACKAGE_VERSION,
                                  format::ORDERED_PACKAGE_VERSION,
+                                 format::VISIBILITY_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1106,6 +1111,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
     for (const uint32 version : {format::INDEPENDENT_PROGRAM_PACKAGE_VERSION,
                                  format::STORAGE_PACKAGE_VERSION,
                                  format::ORDERED_PACKAGE_VERSION,
+                                 format::VISIBILITY_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
@@ -1119,12 +1125,14 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::PACKAGE_VERSION           ? format::PASS_FIELD_COUNT
-                                 : version >= format::ORDERED_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 2
-                                                                              : LEGACY_PASS_FIELDS) *
+        const usize passBytes = (version >= format::VISIBILITY_PACKAGE_VERSION ? format::PASS_FIELD_COUNT
+                                 : version >= format::ORDERED_PACKAGE_VERSION  ? format::PASS_FIELD_COUNT - 2
+                                                                               : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
-        const usize bindingOffset =
-            format::HEADER_BYTES + 2 * format::RESOURCE_RECORD_BYTES + format::CAMERA_RECORD_BYTES + passBytes;
+        const usize bindingOffset = format::HEADER_BYTES +
+                                    2 * (version >= format::PACKAGE_VERSION ? format::RESOURCE_RECORD_BYTES
+                                                                            : format::RELATIVE_RESOURCE_RECORD_BYTES) +
+                                    format::CAMERA_RECORD_BYTES + passBytes;
         writer.Bytes[bindingOffset] = static_cast<uint8>(format::LEGACY_TECHNIQUE_COUNT);
         const format::StageRole vertexRole =
             static_cast<format::StageRole>(format::GetRasterStageRole(GBUFFER_PROGRAM, 0));

@@ -310,7 +310,7 @@ def parse_runtime(data):
     interface, generation = data[offset:offset + 32].hex(), data[offset + 32:offset + 64].hex()
     offset += 64
     result = {'magic': magic, 'version': version, 'interface': interface, 'generation': generation,
-              'resources': [take(8 if version >= 4 else 6) for _ in range(resources)], 'cameras': [take(1) for _ in range(cameras)],
+              'resources': [take(9 if version >= 11 else 8 if version >= 4 else 6) for _ in range(resources)], 'cameras': [take(1) for _ in range(cameras)],
               'passes': [take(15 if version >= 10 else 13 if version >= 9 else 10 if version >= 5 else 9) for _ in range(passes)], 'uniform_values': values,
               'bindings': [take(5) for _ in range(bindings)], 'blocks': [take(3) for _ in range(blocks)],
               'fields': [take(5) for _ in range(fields)], 'stages': []}

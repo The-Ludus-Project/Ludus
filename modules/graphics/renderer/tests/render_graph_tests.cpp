@@ -1098,3 +1098,28 @@ TEST_CASE("independent opaque shader pairs draw both retained passes", "[render-
     REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
     CHECK(rhi::reference::Draws == MULTI_PASS_COUNT);
 }
+
+TEST_CASE("pixel buffer resolution follows RenderSize and preserves outputs on capacity failure",
+          "[render-graph][size]")
+{
+    format::Resource resource{640 * 480 * 64, 1, format::Aspect::Buffer, 0, 0, 0, 1, 2, 64};
+    format::Resource resolved{};
+    REQUIRE(renderer::ResolveRenderGraphResource(resource, 193, 129, resolved) == rhi::RasterStatus::Ready);
+    CHECK(resolved.Width == 97 * 65 * 64);
+    CHECK(resolved.Height == 1);
+    CHECK(resolved.BytesPerPixel == 64);
+    const uint32 retained = resolved.Width;
+    CHECK(renderer::ResolveRenderGraphResource(resource, 0, 129, resolved) == rhi::RasterStatus::NotReady);
+    CHECK(resolved.Width == retained);
+    resource.ViewDenominator = 1;
+    CHECK(renderer::ResolveRenderGraphResource(resource, 3840, 2160, resolved) == rhi::RasterStatus::CapacityExceeded);
+    CHECK(resolved.Width == retained);
+    resource.BytesPerPixel = 3;
+    CHECK(renderer::ResolveRenderGraphResource(resource, 64, 64, resolved) == rhi::RasterStatus::InvalidDescription);
+    CHECK(resolved.Width == retained);
+    resource.BytesPerPixel = 0;
+    CHECK(renderer::ResolveRenderGraphResource(resource, 64, 64, resolved) == rhi::RasterStatus::InvalidDescription);
+    resource.ViewNumerator = 0;
+    REQUIRE(renderer::ResolveRenderGraphResource(resource, 1, 1, resolved) == rhi::RasterStatus::Ready);
+    CHECK(resolved.Width == resource.Width);
+}

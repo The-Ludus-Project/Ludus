@@ -47,12 +47,14 @@ struct RenderGraphPlan final
 };
 /// Resolve one fixed or view-relative resource without GPU work. Relative dimensions
 /// use ceil(reference * numerator / denominator), with a minimum of one pixel.
+/// Pixel buffers multiply the resolved pixel count by BytesPerPixel, returning capacity in Width.
 /// @param resource Authored fixed dimensions or a validated view-relative ratio; borrowed for the call.
 /// @param referenceWidth Drawable pixels, before render scale; zero suspends relative resolution.
 /// @param referenceHeight Drawable pixels, with the same contract as referenceWidth.
 /// @param outResource Resolved copy, unchanged on failure; its policy remains intact for later resizes.
 /// @return Ready on success; NotReady for a zero relative reference; InvalidDescription
-/// for malformed policies; CapacityExceeded above MAX_TARGET_EXTENT. Fixed resources ignore the reference.
+/// for malformed policies; CapacityExceeded above MAX_TARGET_EXTENT or MAX_RAY_BUFFER_BYTES.
+/// Fixed resources ignore the reference.
 [[nodiscard]] rhi::RasterStatus
 ResolveRenderGraphResource(const content::render_graph_format::Resource& resource,
                            foundation::uint32 referenceWidth,

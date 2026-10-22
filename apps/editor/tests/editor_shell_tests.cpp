@@ -251,6 +251,14 @@ bool ShowsLabel(const QWidget& root, const QString& text)
     return false;
 }
 
+// Node renaming exposes the name in an editor and the kind as a separate label.
+bool HasVisibleGraphNodeFields(const QWidget& root, const QString& identity, const QString& kind)
+{
+    const QLineEdit* nameOrNull = root.findChild<QLineEdit*>(QStringLiteral("renderGraphNodeName"));
+    return nameOrNull != nullptr && nameOrNull->isVisible() == true && nameOrNull->text() == identity &&
+           ShowsLabel(root, kind) == true;
+}
+
 /// Click a node on the canvas, as a user selects it.
 void ClickNode(RenderGraphCanvas& inoutCanvas, const QString& node)
 {
@@ -882,13 +890,13 @@ TEST_CASE("Properties follows the render-graph canvas selection", "[editor][layo
     RenderGraphCanvas& canvas = renderer->GetCanvas();
     ClickNode(canvas, QStringLiteral("color"));
     CHECK(renderer->GetSelection() == QStringLiteral("main.lurender.json#Default/color"));
-    CHECK(ShowsLabel(*properties, QStringLiteral("color (Target)")) == true);
+    CHECK(HasVisibleGraphNodeFields(*properties, QStringLiteral("color"), QStringLiteral("Target")) == true);
     QComboBox* format = properties->findChild<QComboBox*>(QStringLiteral("renderGraphField_format"));
     REQUIRE(format != nullptr);
     CHECK(format->isVisible() == true);
     ClickNode(canvas, QStringLiteral("camera"));
-    CHECK(ShowsLabel(*properties, QStringLiteral("camera (Camera)")) == true);
-    CHECK(ShowsLabel(*properties, QStringLiteral("color (Target)")) == false);
+    CHECK(HasVisibleGraphNodeFields(*properties, QStringLiteral("camera"), QStringLiteral("Camera")) == true);
+    CHECK(HasVisibleGraphNodeFields(*properties, QStringLiteral("color"), QStringLiteral("Target")) == false);
     QComboBox* role = properties->findChild<QComboBox*>(QStringLiteral("renderGraphField_role"));
     REQUIRE(role != nullptr);
     const int32 other = role->currentIndex() == 0 ? 1 : 0;
@@ -905,13 +913,13 @@ TEST_CASE("Properties follows the render-graph canvas selection", "[editor][layo
     REQUIRE(well.OpenDocument(renderer) == true);
     Settle();
     CHECK(CurrentProperties(window) == properties);
-    CHECK(ShowsLabel(*properties, QStringLiteral("camera (Camera)")) == true);
+    CHECK(HasVisibleGraphNodeFields(*properties, QStringLiteral("camera"), QStringLiteral("Camera")) == true);
     // Error List navigation selects the authored node, which Properties then shows.
     REQUIRE(renderer->SelectNode(QStringLiteral("rasterize.lurender.json"),
                                  QStringLiteral("ColorAndDepth"),
                                  QStringLiteral("draw")) == true);
     Settle();
-    CHECK(ShowsLabel(*properties, QStringLiteral("draw (Raster)")) == true);
+    CHECK(HasVisibleGraphNodeFields(*properties, QStringLiteral("draw"), QStringLiteral("Raster")) == true);
 }
 
 TEST_CASE("Live Preview and Cancel are shell commands over the Renderer document",

@@ -69,6 +69,18 @@
         {
           "from": "shade.color",
           "to": "output.texture"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "history.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "reservoir.size"
         }
       ],
       "id": "Default",
@@ -86,10 +98,7 @@
           "target_type": "ColorTexture"
         },
         {
-          "extent": [
-            96,
-            64
-          ],
+          "extent": "RenderSize",
           "format": "RGBA8Unorm",
           "id": "color",
           "imported": false,
@@ -107,12 +116,14 @@
         {
           "id": "history",
           "kind": "Buffer",
-          "bytes": 393216
+          "bytes_per_pixel": 64,
+          "extent": "RenderSize"
         },
         {
           "id": "reservoir",
           "kind": "Buffer",
-          "bytes": 393216
+          "bytes_per_pixel": 64,
+          "extent": "RenderSize"
         },
         {
           "id": "initial",
@@ -346,6 +357,17 @@
           "state": {},
           "invocation": {
             "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "scale": [
+              1,
+              1
+            ],
+            "reference": "View"
           }
         }
       ],

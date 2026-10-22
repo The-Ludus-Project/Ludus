@@ -198,10 +198,18 @@ TEST_CASE("Renderer creates a complete project-owned graph with New Graph", "[ed
     CHECK(createFirstOrNull->isVisible() == false);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
     QTimer::singleShot(0, &workspace, [&root]() {
-        QInputDialog* dialogOrNull = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
         REQUIRE(dialogOrNull != nullptr);
-        CHECK(dialogOrNull->labelText().contains(root + QStringLiteral("/graphs")) == true);
-        dialogOrNull->setTextValue(QStringLiteral("MyGraph"));
+        REQUIRE(dialogOrNull->findChild<QLabel*>(QStringLiteral("newRenderGraphDestination")) != nullptr);
+        CHECK(dialogOrNull->findChild<QLabel*>(QStringLiteral("newRenderGraphDestination"))
+                  ->text()
+                  .contains(root + QStringLiteral("/graphs")) == true);
+        QLineEdit* nameOrNull = dialogOrNull->findChild<QLineEdit*>(QStringLiteral("newRenderGraphName"));
+        REQUIRE(nameOrNull != nullptr);
+        nameOrNull->setText(QStringLiteral("MyGraph"));
+        QComboBox* templateOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("newRenderGraphTemplate"));
+        REQUIRE(templateOrNull != nullptr);
+        CHECK(templateOrNull->findData(QStringLiteral("restir-di")) >= 0);
         dialogOrNull->accept();
     });
     CHECK(workspace.PromptNewGraph() == true);

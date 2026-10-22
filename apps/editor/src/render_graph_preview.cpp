@@ -1030,7 +1030,8 @@ void RenderGraphPreview::advance()
         state.IsResizeRejected = IsAccepted(resized) == false;
         if (IsAccepted(resized) == false)
         {
-            setStatus(QStringLiteral("The requested render size was rejected (%1); the shown frame is kept.")
+            setStatus(QStringLiteral("The requested render size was rejected (%1); the shown frame is kept. Reduce the "
+                                     "connected RenderSize scale or fixed dimensions, then retry.")
                           .arg(DescribeRasterStatus(resized)));
             return;
         }
