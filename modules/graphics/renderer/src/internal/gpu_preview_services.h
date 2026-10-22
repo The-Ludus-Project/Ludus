@@ -1210,8 +1210,8 @@ Status BuildGpuGraph(rhi::DeviceHandle device,
     const usize pixels = usize(job.Width) * job.Height;
     constexpr usize BASE_COMPUTE_USE_COUNT = 5;
     // GraphUse initializes Visibility to Both for every unused nested element.
-    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<rhi::GraphUse, BASE_COMPUTE_USE_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS> computeUses{
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
         {{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
          {versions[1],
           rhi::GraphAccessMode::Uniform,
