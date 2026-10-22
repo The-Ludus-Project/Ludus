@@ -13,7 +13,9 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 6;
+inline constexpr foundation::uint32 VERSION = 7;
+/// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
+inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
 inline constexpr foundation::usize MAX_PASSES = 16;
 /// Maximum logical resources; depth may alias a color allocation's private aspect.
@@ -64,7 +66,7 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized uint32 fields in a current pass record.
-inline constexpr foundation::usize PASS_FIELD_COUNT = 13;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 15;
 /// Resource or input index absent from the declared plan.
 inline constexpr foundation::uint32 ABSENT = ~foundation::uint32{0};
 /// Compiled shader-pair role, independent of graph instance and viewport size.
@@ -187,6 +189,10 @@ struct Pass final
     foundation::uint32 RayProgram = 0;   ///< Callback-set selector in the cooked ray kernel; zero for raster.
     foundation::uint32 Buffer0 = ABSENT; ///< First persistent storage resource, or ABSENT for a private dummy.
     foundation::uint32 Buffer1 = ABSENT; ///< Second persistent storage resource, or ABSENT for a private dummy.
+    /// Optional RGBA8 visibility read; paired with VisibilityDepth and produced by the preceding raster pass.
+    foundation::uint32 Visibility = ABSENT;
+    /// Optional Depth32Float read, sharing Visibility's backing allocation, camera and scene generation.
+    foundation::uint32 VisibilityDepth = ABSENT;
 };
 /// One read-only uniform binding of a technique, filled per draw from logical values.
 /// Its values occupy [ValueOffset, ValueOffset + ValueCount) of each item's float32

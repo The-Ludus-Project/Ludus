@@ -25,6 +25,7 @@ def program_tuple(node):
 # Triangle intersections supply float2 barycentrics. This native-query profile
 # retains that contract, but uses shader-local ScenePayload rather than a DXR payload.
 STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
+VISIBILITY_SLOT = buffers.FIRST_SLOT + buffers.MAX_BUFFERS
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
 # One owner for build admission and the editor controls. Editor CMake reads this
@@ -42,7 +43,7 @@ IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
-           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h', 'ray_shader.slang')
+           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 
 
 def resolve_state(state):
@@ -64,7 +65,7 @@ def lower(node, where, graph):
                    repair='Reset advanced ray state overrides to automatic.')
     types = {port['id']: port['type'] for port in node['inputs']}
     mappings = {}
-    for aspect, kind in (('scene', 'Scene'), ('view', 'View'), ('color', 'ColorTexture')):
+    for aspect, kind in (('scene', 'Scene'), ('view', 'View')):
         choices = [identity for identity, value in types.items() if value == kind]
         graph._require(len(choices) == 1, 'IncompletePipeline', where, f'exactly one {kind} input required',
                        field='inputs', expected=f'one {kind} input', actual=f'{len(choices)} inputs',
@@ -73,11 +74,24 @@ def lower(node, where, graph):
     storage = {name for name, kind in types.items() if kind == 'Buffer'}
     graph._require(len(storage) <= buffers.MAX_BUFFERS, 'Capacity', where, 'at most two Buffer inputs supported')
     mappings.update({'buffer:' + name: name for name in storage})
+    colors = [port for port in node['outputs'] if port['type'] == 'ColorTexture']
+    graph._require(len(colors) == 1, 'Capability', where, 'ray pipelines require one color output')
+    mappings['color'] = colors[0]['target']
+    graph._require(types.get(mappings['color']) == 'ColorTexture', 'Capability', where, 'ray output requires color input')
+    color_reads = [identity for identity, kind in types.items() if kind == 'ColorTexture' and identity != mappings['color']]
+    depth_reads = [identity for identity, kind in types.items() if kind == 'DepthTexture']
+    graph._require((len(color_reads), len(depth_reads)) in ((0, 0), (1, 1)), 'Capability', where,
+                   'ray visibility input requires one read-only color and one depth texture; input declarations: ' +
+                   ', '.join(f"'{identity}' ({types[identity]})" for identity in color_reads + depth_reads) +
+                   '. Repair corresponding interface inputs and parent wires.')
+    if color_reads:
+        mappings['visibility'] = color_reads[0]
+        mappings['visibility_depth'] = depth_reads[0]
     unsupported = sorted(set(types) - set(mappings.values()))
     descriptions = ', '.join(f"'{identity}' ({types[identity]})" for identity in unsupported)
     graph._require(not unsupported, 'Capability', where,
                    f"Unsupported ray pipeline inputs: {descriptions}. This triangle ray profile accepts only "
-                   'Scene, View, ColorTexture and up to two Buffers. Remove the extra input declarations and their wires; '
+                   'Scene, View, ColorTexture, paired visibility/depth textures and up to two Buffers. Remove the extra input declarations and their wires; '
                    'if exposed by a subgraph, also remove the matching interface inputs and parent wires.',
                    port=unsupported[0] if unsupported else None, direction='input',
                    expected='Scene, View, ColorTexture', actual=descriptions,
@@ -186,7 +200,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe)
     result = {identity: deepcopy(program) for identity, program in programs.items() if program['stage'] not in STAGES}
     result[COMPUTE_ID] = {'id': COMPUTE_ID, 'stage': 'compute', 'source': selected['ray_generation']['source'],
-                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}}
+                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
         # Use the same renderer-owned image recipe; its interface is validated by the runtime.
         source = '#include "_ludus_ray/' + image_recipe['source'] + '"\n'
@@ -224,11 +238,11 @@ def check_interface(program, result, build):
         if program.get('persistent_ray_profile'):
             expected += [(6, 'StorageReadWrite', 16), (7, 'StorageReadWrite', 16)]
         build.require(interface.get('workgroup') == [64, 1, 1] and interface['inputs'] == [] and
-                      [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT] ==
-                      expected,
+                      [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
+                      expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []),
                       'ShaderInterface', program['id'], 'ray query reflection differs from the native renderer ABI')
         declared = program.get('storage_bindings', [])
-        extra = [entry for entry in entries if entry['binding'] >= buffers.FIRST_SLOT and not program.get('persistent_ray_profile')]
+        extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]
         build.require(len(extra) == len(declared) and all(
             entry['binding'] == binding['slot'] and entry['name'] == binding['id'] and
             entry['kind'] == ('StorageRead' if binding['access'] == 'Read' else 'StorageReadWrite') and
@@ -268,6 +282,8 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
 #include "_ludus_ray/scene_shader.slang"
 '''
     wrapper += storage_source
+    if interface.get('visibility_buffer', False):
+        wrapper += '#define LUDUS_RENDER_GRAPH_VISIBILITY_INPUTS 1\n#include "_ludus_ray/visibility_buffer.slang"\n'
     wrapper += '#include "' + interface['payload'] + '"\n'
     wrapper += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
     for source in sorted({program['source'] for program in selected.values()}):

@@ -158,7 +158,8 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                       uint32 image,
                       rhi::OrderedGraph graph,
                       GpuGraphResources& inoutResources,
-                      const rhi::TextureHandle* targetOrNull = nullptr) noexcept
+                      const rhi::TextureHandle* targetOrNull = nullptr,
+                      const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept
 {
     constexpr usize COLOR_BUFFER_INDEX = 3;
     Status status = Status::Ready;
@@ -202,7 +203,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         return status;
     }
     const usize pixels = usize(job.Width) * job.Height;
-    StaticArray<rhi::GraphUse, LUDUS_GRAPH_COMPUTE_BINDING_COUNT - 1> computeUses{
+    StaticArray<rhi::GraphUse, LUDUS_GRAPH_COMPUTE_BINDING_COUNT> computeUses{
         {{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
          {versions[1],
           rhi::GraphAccessMode::Uniform,
@@ -253,6 +254,35 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         return status;
     }
     computeUseCount += job.Storage.GetCount();
+    if (visibilityOrNull != nullptr)
+    {
+        rhi::RasterTextureState visibilityState;
+        rhi::GraphVersion previous;
+        rhi::GraphVersion written;
+        status = rhi::GetTextureState(device, job.VisibilityTexture, visibilityState);
+        if (status == Status::Ready)
+        {
+            status = rhi::ImportGraphTexture(device,
+                                             graph,
+                                             job.VisibilityTexture,
+                                             visibilityState,
+                                             rhi::RasterTextureUse::SampledCompute,
+                                             previous);
+        }
+        if (status == Status::Ready)
+        {
+            status = visibilityOrNull->ProducerOrNull->AppendVisibilityView(visibilityOrNull->View,
+                                                                            graph,
+                                                                            visibilityOrNull->Attachment,
+                                                                            previous,
+                                                                            written);
+        }
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        computeUses[computeUseCount++] = {written, rhi::GraphAccessMode::Sampled, 0, 0, rhi::RasterVisibility::Compute};
+    }
     const rhi::ComputeDispatch dispatch{
         state.ComputePipeline,
         job.ComputeBindings,
@@ -346,13 +376,14 @@ Status BuildGpuGraph(rhi::DeviceHandle device,
                      const GpuPreviewRecord& job,
                      uint32 image,
                      rhi::OrderedGraph& outGraph,
-                     const rhi::TextureHandle* targetOrNull) noexcept
+                     const rhi::TextureHandle* targetOrNull,
+                     const VisibilityRasterPass* visibilityOrNull) noexcept
 {
     Status status = targetOrNull == nullptr ? rhi::CreateOrderedGraph(device, outGraph) : Status::Ready;
     GpuGraphResources resources;
     if (status == Status::Ready)
     {
-        status = AppendGpuGraph(device, state, job, image, outGraph, resources, targetOrNull);
+        status = AppendGpuGraph(device, state, job, image, outGraph, resources, targetOrNull, visibilityOrNull);
     }
     if (status == Status::Ready)
     {

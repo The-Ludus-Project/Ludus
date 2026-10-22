@@ -404,6 +404,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                 triangle.Instance = static_cast<uint32>(surfaceIndex);
                 triangle.Primitive = static_cast<uint32>(primitive);
                 triangle.ShaderInstance = static_cast<uint32>(itemIndex);
+                triangle.ShaderDraw = item.MeshIndex;
                 triangle.ShaderMaterial = materialIndex;
                 triangle.ShaderSlot = static_cast<uint32>(slot);
                 triangle.ShaderMaterialKind = materialKind;

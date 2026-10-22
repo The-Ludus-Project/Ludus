@@ -175,9 +175,14 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     {
         inoutWriter.WriteWord(options.SceneData);
     }
-    if (options.Version >= format::PACKAGE_VERSION)
+    if (options.Version >= format::ORDERED_PACKAGE_VERSION)
     {
         inoutWriter.WriteWord(0);
+        inoutWriter.WriteWord(format::ABSENT);
+        inoutWriter.WriteWord(format::ABSENT);
+    }
+    if (options.Version >= format::PACKAGE_VERSION)
+    {
         inoutWriter.WriteWord(format::ABSENT);
         inoutWriter.WriteWord(format::ABSENT);
     }
@@ -957,6 +962,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::NATIVE_RAY_PACKAGE_VERSION,
                                  format::INDEPENDENT_PROGRAM_PACKAGE_VERSION,
                                  format::STORAGE_PACKAGE_VERSION,
+                                 format::ORDERED_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1097,8 +1103,10 @@ TEST_CASE("Unsupported native rays select raster without preparing the ray packa
 TEST_CASE("runtime independent shader pairs decode with their own stage and binding tables",
           "[render-graph][activation]")
 {
-    for (const uint32 version :
-         {format::INDEPENDENT_PROGRAM_PACKAGE_VERSION, format::STORAGE_PACKAGE_VERSION, format::PACKAGE_VERSION})
+    for (const uint32 version : {format::INDEPENDENT_PROGRAM_PACKAGE_VERSION,
+                                 format::STORAGE_PACKAGE_VERSION,
+                                 format::ORDERED_PACKAGE_VERSION,
+                                 format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
         PackageOptions options;
@@ -1111,8 +1119,10 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes =
-            (version < format::PACKAGE_VERSION ? LEGACY_PASS_FIELDS : format::PASS_FIELD_COUNT) * sizeof(uint32);
+        const usize passBytes = (version >= format::PACKAGE_VERSION           ? format::PASS_FIELD_COUNT
+                                 : version >= format::ORDERED_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 2
+                                                                              : LEGACY_PASS_FIELDS) *
+                                sizeof(uint32);
         const usize bindingOffset =
             format::HEADER_BYTES + 2 * format::RESOURCE_RECORD_BYTES + format::CAMERA_RECORD_BYTES + passBytes;
         writer.Bytes[bindingOffset] = static_cast<uint8>(format::LEGACY_TECHNIQUE_COUNT);

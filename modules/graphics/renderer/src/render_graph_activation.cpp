@@ -128,6 +128,7 @@ struct RenderGraphPackage::State final
     struct StageView final
     {
         bool IsPresent = false;
+        uint32 InputCount = 0;
         std::string_view Entry;
         std::string_view Text;
         Array<uint32> Words;
@@ -147,6 +148,7 @@ struct RenderGraphPackage::State final
     bool HasSceneData = false;
     bool HasNativeRay = false;
     bool HasIndependentPrograms = false;
+    bool HasVisibilityFields = false;
     bool HasPersistentBuffers = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
@@ -154,13 +156,14 @@ struct RenderGraphPackage::State final
     StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
     StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
     /// Stage binding requirements derived from the uniform records, one table per role.
+    static constexpr usize STAGE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS;
     // RasterBinding initializes Visibility to Both, including every nested array element.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
-    StaticArray<StaticArray<rhi::RasterBinding, format::UNIFORM_SLOT_COUNT>, format::STAGE_ROLE_COUNT> Bindings{};
+    StaticArray<StaticArray<rhi::RasterBinding, STAGE_BINDING_CAPACITY>, format::STAGE_ROLE_COUNT> Bindings{};
     StaticArray<usize, format::STAGE_ROLE_COUNT> BindingCounts{};
     StaticArray<uint8, format::IDENTITY_BYTES> InterfaceIdentity{};
     StaticArray<uint8, format::IDENTITY_BYTES> GenerationIdentity{};
-    StaticArray<rhi::RasterShaderInput, format::STATIC_INPUT_COUNT> Inputs{};
+    StaticArray<rhi::RasterShaderInput, format::VISIBILITY_INPUT_COUNT> Inputs{};
     StaticArray<StaticArray<StageView, format::SHADER_TARGET_COUNT>, format::STAGE_ROLE_COUNT> Stages{};
     RenderGraphPackageStatus DecodeRecords(ByteReader& inoutReader) noexcept;
     RenderGraphPackageStatus DecodeUniforms(ByteReader& inoutReader) noexcept;
@@ -194,7 +197,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
         const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
                                                 : role % format::TECHNIQUE_STAGE_COUNT == 0;
-        if (inputCount != (isVertex == true ? (isRayRole == true ? 1 : format::STATIC_INPUT_COUNT) : 0))
+        if (HasVisibilityFields == false && isVertex == true && isRayRole == true && inputCount == 2)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
+        if ((isVertex == false && inputCount != 0) || (isVertex == true && isRayRole == true && inputCount != 1) ||
+            (isVertex == true && isRayRole == false && inputCount != format::STATIC_INPUT_COUNT &&
+             (HasVisibilityFields == false || inputCount != format::VISIBILITY_INPUT_COUNT)))
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -204,13 +213,22 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             const uint32 inputFormat = inoutReader.ReadWord();
             const format::InputFormat expected =
                 input == 0 ? (isRayRole == true ? format::InputFormat::Float2 : format::InputFormat::Float3)
-                           : format::InputFormat::Float4;
+                : input >= format::STATIC_INPUT_COUNT ? format::InputFormat::Float2
+                                                      : format::InputFormat::Float4;
             if (location != input || inputFormat != static_cast<uint32>(expected))
             {
                 return RenderGraphPackageStatus::Malformed;
             }
         }
+        for (const StageView& other : Stages[role])
+        {
+            if (other.IsPresent == true && other.InputCount != inputCount)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+        }
         StageView& view = Stages[role][target];
+        view.InputCount = inputCount;
         for (uint32 block = 0; block < blockCount; ++block)
         {
             const uint32 slot = inoutReader.ReadWord();
@@ -439,6 +457,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
             pass.Buffer0 = inoutReader.ReadWord();
             pass.Buffer1 = inoutReader.ReadWord();
         }
+        pass.Visibility = HasVisibilityFields == true ? inoutReader.ReadWord() : format::ABSENT;
+        pass.VisibilityDepth = HasVisibilityFields == true ? inoutReader.ReadWord() : format::ABSENT;
         if (program > MAX_TECHNIQUE || (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) ||
             colorLoad > MAX_LOAD || depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
             (pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
@@ -487,18 +507,20 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
-         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
-         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
+         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
-    candidate->HasPersistentBuffers = version >= format::PACKAGE_VERSION;
+    candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
+    candidate->HasVisibilityFields = version >= format::PACKAGE_VERSION;
     candidate->Header.Version = format::VERSION;
     candidate->Header.ResourceCount = reader.ReadWord();
     candidate->Header.PassCount = reader.ReadWord();
@@ -598,7 +620,22 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
                                                             rhi::RasterVisibility::Compute,
                                                             storage.Stride};
                 }
-                candidate->BindingCounts[index] = base + candidate->StorageBufferCount;
+                usize bindingCount = base + candidate->StorageBufferCount;
+                bool hasVisibilityBuffer = false;
+                for (usize i = 0; i < candidate->Header.PassCount; ++i)
+                {
+                    hasVisibilityBuffer =
+                        hasVisibilityBuffer == true || candidate->Passes[i].Visibility != format::ABSENT;
+                }
+                if (hasVisibilityBuffer == true)
+                {
+                    SetRenderGraphRayInterface(description, rhi::ShaderStage::Compute, false, true);
+                    for (usize i = base; i < description.Bindings.size(); ++i)
+                    {
+                        candidate->Bindings[index][bindingCount++] = description.Bindings[i];
+                    }
+                }
+                candidate->BindingCounts[index] = bindingCount;
             }
         }
     }
@@ -625,9 +662,12 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     {
         return RenderGraphPackageStatus::Malformed;
     }
-    for (uint32 i = 0; i < format::STATIC_INPUT_COUNT; ++i)
+    for (uint32 i = 0; i < format::VISIBILITY_INPUT_COUNT; ++i)
     {
-        candidate->Inputs[i] = {i, i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4};
+        candidate->Inputs[i] = {i,
+                                i == 0                           ? rhi::RasterVertexFormat::Float3
+                                : i < format::STATIC_INPUT_COUNT ? rhi::RasterVertexFormat::Float4
+                                                                 : rhi::RasterVertexFormat::Float2};
     }
     if (version < format::NATIVE_RAY_PACKAGE_VERSION)
     {
@@ -680,6 +720,11 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         return result;
     }
     const State& state = *mState;
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        result.HasVisibilityBuffer =
+            result.HasVisibilityBuffer == true || state.Passes[pass].Visibility != format::ABSENT;
+    }
     StaticArray<rhi::RasterShaderDescription*, format::LEGACY_STAGE_ROLE_COUNT> members{{&result.ColorVertex,
                                                                                          &result.ColorFragment,
                                                                                          &result.DepthVertex,
@@ -721,7 +766,15 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         {
             if (isRayRole == false)
             {
-                description.Inputs = state.Inputs.AsSpan();
+                usize inputCount = 0;
+                for (const State::StageView& view : views)
+                {
+                    if (view.IsPresent == true)
+                    {
+                        inputCount = view.InputCount;
+                    }
+                }
+                description.Inputs = {state.Inputs.GetData(), inputCount};
             }
         }
         if (isRayRole == true)
@@ -736,7 +789,10 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                     ? rhi::ShaderStage::Compute
                 : isVertex == true ? rhi::ShaderStage::Vertex
                                    : rhi::ShaderStage::Fragment;
-            SetRenderGraphRayInterface(description, description.Artifact.Stage, isPersistentCompute);
+            SetRenderGraphRayInterface(description,
+                                       description.Artifact.Stage,
+                                       isPersistentCompute,
+                                       result.HasVisibilityBuffer);
         }
         if (state.BindingCounts[role] != 0)
         {

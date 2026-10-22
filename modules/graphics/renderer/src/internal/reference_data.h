@@ -65,6 +65,7 @@ struct ReferenceTriangle final
     float32 Area = 0;
     uint32 Instance = 0, Primitive = 0;
     uint32 ShaderInstance = 0;
+    uint32 ShaderDraw = 0;
     uint32 ShaderMaterial = DEFAULT_SCENE_MATERIAL;
     uint32 ShaderSlot = 0;
     uint32 ShaderMaterialKind = 0;

@@ -13,6 +13,16 @@
 
 namespace ludus::graphics::renderer
 {
+/// Fixed ordered-graph inputs: eight transport/image buffers, two textures and one instance stream.
+inline constexpr foundation::uint32 VISIBILITY_GRAPH_FIXED_RESOURCES = 11;
+/// Request at least this StorageLimits::ResourcesPerGraph before device creation to admit the
+/// full visibility profile: fixed inputs, both structured buffers and vertex/index buffers for every mesh.
+/// Smaller quotas remain legal, but preparation can report CapacityExceeded for larger scenes.
+inline constexpr foundation::uint32 VISIBILITY_GRAPH_RESOURCE_CAPACITY =
+    VISIBILITY_GRAPH_FIXED_RESOURCES +
+    static_cast<foundation::uint32>(content::render_graph_format::MAX_STORAGE_BUFFERS) +
+    2 * static_cast<foundation::uint32>(content::render_graph_format::MAX_MESHES);
+
 /// Numeric offline plan; all records are copied at initialization. Borrowed views
 /// must be valid for the call only. This is not a runtime graph/source parser.
 struct RenderGraphPlan final
@@ -82,6 +92,8 @@ struct RenderGraphPrograms final
                             content::render_graph_format::ADDITIONAL_RASTER_TECHNIQUE_COUNT *
                                 content::render_graph_format::TECHNIQUE_STAGE_COUNT>
         AdditionalRasterStages{};
+    /// Linked ray kernel reads the paired raster visibility/depth inputs declared by the plan.
+    bool HasVisibilityBuffer = false;
     bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent uint4 storage slots.
     bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
 };
@@ -90,10 +102,12 @@ struct RenderGraphPrograms final
 /// runtime decoders; the RHI independently checks actual native shader reflection.
 /// @param inoutDescription Receives binding metadata, and workgroup size for Compute.
 /// @param stage Compute for the linked ray kernel, Vertex/Fragment for the image recipe.
+/// @param hasVisibilityBuffer Adds paired unfiltered visibility/depth compute texture inputs.
 /// @param hasPersistentBuffers Use the extended two-buffer compute ABI; image stages are unchanged.
 void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
                                 rhi::ShaderStage stage,
-                                bool hasPersistentBuffers = false) noexcept;
+                                bool hasPersistentBuffers = false,
+                                bool hasVisibilityBuffer = false) noexcept;
 /// Declared geometry interface of an extracted draw item.
 enum class RenderGraphLayout : foundation::uint8
 {

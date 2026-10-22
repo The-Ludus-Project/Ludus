@@ -29,6 +29,7 @@
 /// Version 8 inserts a storage count and that many four-word StorageBuffer records
 /// after stage records and before pass names. Version 6 has native-query ray stages.
 /// Version 5 appends one SceneData mask to each pass; older versions imply all scene data.
+/// Version 10 appends visibility color/depth resource indices to every pass.
 /// Version 7 admits additional raster shader-pair IDs and stage roles; record widths are unchanged.
 /// Version 9 appends RayProgram, Buffer0 and Buffer1 to each pass and admits Buffer resources.
 /// Older records imply callback zero with no persistent buffers.
@@ -37,7 +38,9 @@ namespace ludus::content::render_graph_format
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 9;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 10;
+/// First generation with ordered callback selectors and persistent buffer references.
+inline constexpr foundation::uint32 ORDERED_PACKAGE_VERSION = 9;
 /// Structured-storage records with the previous ten-word pass layout.
 inline constexpr foundation::uint32 STORAGE_PACKAGE_VERSION = 8;
 /// First generation supporting independent raster shader pairs, without storage records.

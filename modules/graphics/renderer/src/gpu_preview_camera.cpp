@@ -24,7 +24,7 @@ struct GpuPreviewCameraUpdate::State final
     rhi::BindingSetHandle Bindings{};
     rhi::BindingLayoutHandle Layout{};
     StaticArray<rhi::RasterBindingResource,
-                LUDUS_GPU_PREVIEW_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
+                LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
         Resources{};
     usize BindingCount = 0;
     bool HasBindings = false;
@@ -45,7 +45,7 @@ Status GpuPreviewCameraUpdate::Prepare(rhi::DeviceHandle device,
 {
     if (camera.Depth != DepthConvention::Conventional || camera.InfiniteFar == true || bindings.IsValid() == false ||
         bindings.GetSize() < LUDUS_GPU_PREVIEW_BINDING_COUNT ||
-        bindings.GetSize() > LUDUS_GPU_PREVIEW_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS)
+        bindings.GetSize() > LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS)
     {
         return Status::InvalidDescription;
     }

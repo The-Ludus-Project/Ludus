@@ -12,7 +12,8 @@ namespace ludus::graphics::renderer
 {
 void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
                                 rhi::ShaderStage stage,
-                                bool hasPersistentBuffers) noexcept
+                                bool hasPersistentBuffers,
+                                bool hasVisibilityBuffer) noexcept
 {
     using namespace foundation;
     constexpr usize COMPUTE_BINDING_COUNT = LUDUS_GPU_PREVIEW_BINDING_COUNT;
@@ -42,6 +43,19 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
             {0, rhi::RasterVertexFormat::Float2},
         },
     };
+    static constexpr StaticArray<rhi::RasterBinding, LUDUS_GRAPH_VISIBILITY_BINDING_COUNT> VISIBILITY_BINDINGS{{
+        COMPUTE_BINDINGS[0],
+        COMPUTE_BINDINGS[1],
+        COMPUTE_BINDINGS[2],
+        COMPUTE_BINDINGS[3],
+        COMPUTE_BINDINGS[4],
+        COMPUTE_BINDINGS[5],
+        {LUDUS_GRAPH_VISIBILITY_BINDING, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Compute, 0},
+        {LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING,
+         rhi::RasterBindingKind::TextureDepth2D,
+         rhi::RasterVisibility::Compute,
+         0},
+    }};
     static constexpr StaticArray<rhi::RasterBinding, LUDUS_GRAPH_COMPUTE_BINDING_COUNT> PERSISTENT_BINDINGS{
         {{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Compute, PARAMETERS_BYTES},
          {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, VECTOR_BYTES},
@@ -57,13 +71,28 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
           rhi::RasterBindingKind::StorageReadWrite,
           rhi::RasterVisibility::Compute,
           VECTOR_BYTES}}};
+    static constexpr StaticArray<rhi::RasterBinding,
+                                 LUDUS_GRAPH_COMPUTE_BINDING_COUNT + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT>
+        PERSISTENT_VISIBILITY_BINDINGS{{PERSISTENT_BINDINGS[0],
+                                        PERSISTENT_BINDINGS[1],
+                                        PERSISTENT_BINDINGS[2],
+                                        PERSISTENT_BINDINGS[3],
+                                        PERSISTENT_BINDINGS[4],
+                                        PERSISTENT_BINDINGS[5],
+                                        PERSISTENT_BINDINGS[6],
+                                        PERSISTENT_BINDINGS[7],
+                                        VISIBILITY_BINDINGS[LUDUS_GPU_PREVIEW_BINDING_COUNT],
+                                        VISIBILITY_BINDINGS[LUDUS_GPU_PREVIEW_BINDING_COUNT + 1]}};
     inoutDescription.Artifact.Stage = stage;
     inoutDescription.Bindings = {};
     inoutDescription.Inputs = {};
     if (stage == rhi::ShaderStage::Compute)
     {
         inoutDescription.Bindings =
-            hasPersistentBuffers == true ? PERSISTENT_BINDINGS.AsSpan() : COMPUTE_BINDINGS.AsSpan();
+            hasVisibilityBuffer == true
+                ? (hasPersistentBuffers == true ? PERSISTENT_VISIBILITY_BINDINGS.AsSpan()
+                                                : VISIBILITY_BINDINGS.AsSpan())
+                : (hasPersistentBuffers == true ? PERSISTENT_BINDINGS.AsSpan() : COMPUTE_BINDINGS.AsSpan());
         inoutDescription.WorkgroupSize[0] = WORKGROUP_WIDTH;
         inoutDescription.WorkgroupSize[1] = 1;
         inoutDescription.WorkgroupSize[2] = 1;
