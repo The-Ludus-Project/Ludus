@@ -156,7 +156,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                       const GpuPreviewState& state,
                       const GpuPreviewRecord& job,
                       uint32 image,
-                      rhi::OrderedGraph& outGraph,
+                      rhi::OrderedGraph graph,
                       GpuGraphResources& inoutResources,
                       const rhi::TextureHandle* targetOrNull = nullptr) noexcept
 {
@@ -173,7 +173,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     StaticArray<rhi::GraphVersion, JOB_BUFFER_COUNT> versions{};
     for (usize i = 0; i < JOB_BUFFER_COUNT; ++i)
     {
-        status = inoutResources.ImportBuffer(device, outGraph, buffers[i], versions[i]);
+        status = inoutResources.ImportBuffer(device, graph, buffers[i], versions[i]);
         if (status != Status::Ready)
         {
             return status;
@@ -184,18 +184,18 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     rhi::GraphVersion output;
     rhi::GraphVersion accumulation;
     rhi::GraphVersion colors;
-    status = inoutResources.ImportTexture(device, outGraph, target, texture);
+    status = inoutResources.ImportTexture(device, graph, target, texture);
     if (status == Status::Ready)
     {
-        status = rhi::NextGraphVersion(device, outGraph, texture, output);
+        status = rhi::NextGraphVersion(device, graph, texture, output);
     }
     if (status == Status::Ready)
     {
-        status = rhi::NextGraphVersion(device, outGraph, versions[2], accumulation);
+        status = rhi::NextGraphVersion(device, graph, versions[2], accumulation);
     }
     if (status == Status::Ready)
     {
-        status = rhi::NextGraphVersion(device, outGraph, versions[COLOR_BUFFER_INDEX], colors);
+        status = rhi::NextGraphVersion(device, graph, versions[COLOR_BUFFER_INDEX], colors);
     }
     if (status != Status::Ready)
     {
@@ -230,10 +230,10 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         const GpuPreviewGraphBuffer& buffer = job.GraphBuffers[slot];
         rhi::GraphVersion previous;
         rhi::GraphVersion next;
-        status = inoutResources.ImportBuffer(device, outGraph, buffer.Buffer, previous);
+        status = inoutResources.ImportBuffer(device, graph, buffer.Buffer, previous);
         if (status == Status::Ready)
         {
-            status = rhi::NextGraphVersion(device, outGraph, previous, next);
+            status = rhi::NextGraphVersion(device, graph, previous, next);
         }
         if (status != Status::Ready)
         {
@@ -255,7 +255,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     compute.Uses = computeUses.GetData();
     compute.UseCount = computeUseCount;
     compute.Dispatch = &dispatch;
-    status = rhi::AddGraphPass(device, outGraph, compute);
+    status = rhi::AddGraphPass(device, graph, compute);
     if (status != Status::Ready)
     {
         return status;
@@ -291,10 +291,10 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     present.UseCount = imageUses.GetSize();
     present.Draws = &draw;
     present.DrawCount = 1;
-    status = rhi::AddGraphPass(device, outGraph, present);
+    status = rhi::AddGraphPass(device, graph, present);
     if (status == Status::Ready)
     {
-        status = rhi::AddGraphRoot(device, outGraph, accumulation, rhi::GraphRoot::History);
+        status = rhi::AddGraphRoot(device, graph, accumulation, rhi::GraphRoot::History);
     }
     inoutResources.SetTextureVersion(target, output);
     return status;
