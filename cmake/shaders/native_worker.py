@@ -29,6 +29,8 @@ def compile_stage(endpoint, args, lock, artifact, reflection, depfile):
     request = {'version': 1, 'identity': 1, 'source': Path(args.source).name, 'entry': args.name,
                'stage': {'vertex': 0, 'fragment': 1, 'compute': 2}[args.graph_stage],
                'target': {'spirv': 0, 'glsl': 0, 'wgsl': 1, 'metal': 2}[args.graph_target], 'files': files}
+    if getattr(args, 'native_ray_queries', False):
+        request['target'] = 3  # Native SPIR-V 1.5 query profile, also used before Metal translation.
     result = exchange(endpoint, request)
     if result.get('compiler') != lock['slang']['version']:
         raise RuntimeError('Native shader worker version differs from SDK pin')

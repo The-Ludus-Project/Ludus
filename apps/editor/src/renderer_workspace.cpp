@@ -1581,7 +1581,7 @@ void RendererWorkspace::refreshWatchedSources()
         if (ReloadSourcesFromDisk() == true)
         {
             setProblem(mSourceProblem, {});
-            scheduleLiveBuild();
+            scheduleLiveBuild(true);
         }
         else
         {
@@ -1889,11 +1889,11 @@ QByteArray RendererWorkspace::getBuildIdentity(RenderGraphSource source) const
     return ComputeRenderGraphBuildIdentity(mDocument, mConfiguration->currentText(), source);
 }
 
-void RendererWorkspace::scheduleLiveBuild()
+void RendererWorkspace::scheduleLiveBuild(bool hasDebouncedSource)
 {
     if (mIsRendering == false && mDocument.IsLoaded() == true)
     {
-        mLiveBuild.Schedule(getBuildIdentity(RenderGraphSource::Saved));
+        mLiveBuild.Schedule(getBuildIdentity(RenderGraphSource::Saved), hasDebouncedSource);
     }
 }
 

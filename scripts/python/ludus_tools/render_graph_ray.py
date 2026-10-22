@@ -182,6 +182,21 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     return result
 
 
+def capture_program_closure(program, snapshot, build):
+    """Capture literal roots in our generated wrapper and their bounded includes.
+
+    The image recipe has no dependency on authored ray callbacks. Engine helpers
+    remain conservative: shared C++/Slang headers contain native-only includes
+    outside the authored include grammar. All captured engine helpers participate
+    in each ray key; authored roots use Snapshot's normal validated closure.
+    """
+    roots = re.findall(r'^\s*#include "([^"\n]+)"', program['ray_wrapper'], re.M)
+    build.require(roots, 'Source', program['id'], 'generated ray wrapper has no source roots')
+    engine = set(snapshot.external)
+    authored = {path for root in roots if root not in engine for path in snapshot.shader_closure(root)}
+    return sorted(engine | authored)
+
+
 def check_interface(program, result, build):
     """Validate the frozen renderer ABI from independently reflected artifacts."""
     interface = result['interface']

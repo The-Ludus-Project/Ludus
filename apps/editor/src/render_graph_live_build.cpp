@@ -90,9 +90,10 @@ void RenderGraphLiveBuild::SetBusy(bool isBusy)
         schedule();
     }
 }
-void RenderGraphLiveBuild::Schedule(const QByteArray& identity)
+void RenderGraphLiveBuild::Schedule(const QByteArray& identity, bool hasDebouncedSource)
 {
     mCurrentIdentity = identity;
+    mHasDebouncedSource = hasDebouncedSource;
     schedule();
 }
 void RenderGraphLiveBuild::MarkRequested(const QByteArray& identity)
@@ -104,12 +105,13 @@ void RenderGraphLiveBuild::Reset()
     mTimer.stop();
     mCurrentIdentity.clear();
     mLastRequestedIdentity.clear();
+    mHasDebouncedSource = false;
 }
 void RenderGraphLiveBuild::schedule()
 {
     if (mIsEnabled == true && mCurrentIdentity.isEmpty() == false && mCurrentIdentity != mLastRequestedIdentity)
     {
-        mTimer.start();
+        mTimer.start(mHasDebouncedSource == true ? 0 : DEBOUNCE_MILLISECONDS);
     }
 }
 } // namespace ludus::editor

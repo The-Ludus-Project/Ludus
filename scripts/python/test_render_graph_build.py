@@ -135,6 +135,56 @@ class BuildTests(unittest.TestCase):
         self.assertNotEqual(first['helper/' + build.NATIVE_WORKER_HELPER],
                             second['helper/' + build.NATIVE_WORKER_HELPER])
 
+    def test_tool_hashes_reuse_content_only_within_an_unchanged_file_identity(self):
+        hashes = build.ToolFileHashes()
+        first = hashes(self.compiler)
+        alias = self.root / 'compiler-alias'
+        alias.symlink_to(self.compiler)
+        self.assertEqual(first, hashes(alias))
+        self.assertEqual(1, len(hashes.values))
+        stamp = self.compiler.stat()
+        self.compiler.write_bytes(b'x' * stamp.st_size)
+        os.utime(self.compiler, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertNotEqual(first, hashes(self.compiler))
+        replacement = self.root / 'replacement'
+        replacement.write_bytes(b'y' * stamp.st_size)
+        os.replace(replacement, self.compiler)
+        self.assertEqual(build.file_hash(self.compiler), hashes(alias))
+        alias.unlink()
+        alias.symlink_to(self.helper / build.HELPERS[0])
+        self.assertEqual(build.file_hash(alias), hashes(alias))
+        self.compiler.unlink()
+        with self.assertRaises(OSError):
+            hashes(self.compiler)
+
+    def test_late_tool_edit_rejects_publication_and_discards_new_cache_entries(self):
+        self.run_build()
+        prior = self.pointer()
+        previous_cache = {p.name for p in (self.output / 'cache').iterdir()}
+        source = self.graph.parent / 'main_shaders/color.slang'
+        source.write_text('// force a new stage\n')
+        original_atomic = build.atomic
+        def publish(path, data):
+            original_atomic(path, data)
+            if path.name == 'build-report.json':
+                stamp = self.compiler.stat()
+                self.compiler.write_bytes(b'x' * stamp.st_size)
+                os.utime(self.compiler, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with patch.object(build, 'atomic', side_effect=publish):
+            with self.assertRaisesRegex(ToolingError, 'changed before publication'):
+                self.run_build()
+        self.assertEqual(prior, self.pointer())
+        self.assertEqual(previous_cache, {p.name for p in (self.output / 'cache').iterdir()})
+
+    def test_unstable_tool_hash_also_removes_new_cache_entries(self):
+        cached = self.root / 'new-cache-entry'
+        cached.mkdir()
+        def unstable_hash(path):
+            raise ToolingError('RenderGraphBuildStale', 'tool changed while hashing')
+        with build.cache_writes({'compiler': self.compiler}, {'compiler': 'original'}, unstable_hash) as written:
+            written.append(cached)
+        self.assertFalse(cached.exists())
+
     def test_target_packing_is_independent_and_generated_cpp_is_documented(self):
         report = self.run_build()
         package = build.verify_package(Path(report['package']))

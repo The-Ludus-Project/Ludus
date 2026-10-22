@@ -23,7 +23,8 @@ public:
     explicit RenderGraphLiveBuild(QObject* parentOrNull = nullptr);
     void SetEnabled(bool isEnabled);
     void SetBusy(bool isBusy);
-    void Schedule(const QByteArray& identity);
+    /// Already debounced file notifications queue a build on the next event turn.
+    void Schedule(const QByteArray& identity, bool hasDebouncedSource = false);
     void MarkRequested(const QByteArray& identity);
     void Reset();
 Q_SIGNALS:
@@ -36,5 +37,6 @@ private:
     QByteArray mLastRequestedIdentity;
     bool mIsEnabled = false;
     bool mIsBusy = false;
+    bool mHasDebouncedSource = false;
 };
 } // namespace ludus::editor
