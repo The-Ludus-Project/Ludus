@@ -471,7 +471,7 @@ follows the instantiated color extent; adaptive resolution remains separate work
 
 The profile admits one ray invocation per configuration and the existing graph
 mesh/item limits. It rejects native ray payloads, recursive tracing, additional hit groups,
-any-hit/intersection/callable stages, extra resources, masked/transparent or
+any-hit/intersection/callable stages, resources beyond the optional visibility/depth pair, masked/transparent or
 deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
 aspect; no ray depth output is inferred. Ray preparation has renderer-owned
 256 MiB CPU and 256 MiB GPU limits across retained jobs; device storage limits can
@@ -567,7 +567,7 @@ The assigned programs now use these manifest input/output names and signatures:
 | closest_hit | SurfaceHit / ScenePayload | `void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)` |
 | miss | Ray / ScenePayload | `void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)` |
 
-Bindings remain empty: the linked wrapper supplies the scene resources, validates
+Bindings remain empty: the linked wrapper supplies the scene resources (and opt-in visibility/depth reads), validates
 the compute interface and records their RHI uses. The payload file defines one
 flat `struct ScenePayload` and no other declarations except `#pragma once` and
 comments. Fields can be float scalars/vectors/matrices, uint/int scalars/vectors,
@@ -667,6 +667,114 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing reflection-model primitives; no integrator or MIS |
+
+### Raster first hits and secondary rays
+
+The visibility profile rasterizes the first visible surface, then reconstructs it in
+an authored scene-aware ray callback. It stores identity rather than evaluated
+normals or material channels. One RGBA8Unorm color attachment and its private
+Depth32Float aspect are sufficient. This follows the indirection in Christopher A.
+Burns and Warren A. Hunt, [*The Visibility Buffer: A Cache-Friendly Approach to
+Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/).
+
+Extend the manifest's `RendererStatic` vertex schema with these two fields:
+
+| ID (example) | Type | Semantic | Location | Meaning |
+| --- | --- | --- | --- | --- |
+| `Primitive` | Float2 | TEXCOORD4 | 6 | Low/high 16-bit halves of the original mesh-local triangle index |
+| `DrawInstance` | Float2 | TEXCOORD5 | 7 | Mesh-table draw reference and original extraction item/instance index |
+
+The existing first six attributes stay unchanged. The renderer recognizes this
+eight-attribute interface and expands indexed triangle corners **only for this
+profile**. This costs additional mesh memory; ordinary six-attribute raster meshes
+keep their indexed representation. IDs do not depend on culling, batching order,
+physical draw-call numbers, material-slot packing, or native acceleration-structure
+primitive order. Draw/instance references are generation-local, not persistent IDs.
+
+Add matching Float2 fields to the varying schema at distinct locations, with
+`"interpolation": "Flat"`, and copy them through the vertex shader. These fields
+can use different names; location and type establish the vertex ABI. The compiler
+supplies the packing functions when `RendererStatic` has this visibility interface:
+
+```slang
+float4 ShaderMain(RasterVarying input)
+{
+    uint instanceIndex = uint(round(input.DrawInstance.y));
+    uint primitiveIndex = GetRasterPrimitiveIndex(input.Primitive);
+    return EncodeVisibility(instanceIndex, primitiveIndex);
+}
+```
+
+The standard encoding stores the primitive's low/middle/high bytes in RGB and
+`instanceIndex + 1` in A. All-zero clear denotes background. It admits 128 extraction
+instances and primitive indices through `0xffffff`; out-of-range IDs encode an
+invalid sentinel which reconstruction reports as failure. The draw reference need
+not occupy another channel: instance identity resolves its geometry and material
+bindings. Use opaque writes with no sRGB encoding, blending, filtering, mipmaps or
+MSAA resolve. Every channel is a normalized byte, not a floating-point bitcast of
+the whole integer.
+
+Add `"visibility_buffer": true` to the ray technique's existing `scene_interface`.
+On the ray node, add one read-only ColorTexture and one DepthTexture input and wire
+them from the raster's color/depth outputs. Their port names are authored. The ray
+node's color output still names its **separate** writable color input as `target`.
+The initial profile requires the visibility producer to be the immediately
+preceding opaque ColorAndDepth operation, using the same View and matching fixed
+or view-relative extents. Both producer aspects must Clear/Store. Its visibility
+shader pair has no authored uniform bindings. Masked/transmissive/deformed geometry,
+world-grid/overlay packets, multisampling and reverse/infinite depth remain outside
+this initial profile. A ray technique with the visibility ABI requires those
+paired inputs; a legacy ray technique does not acquire them implicitly.
+
+In raygen, reconstruct the surface before authoring secondary transport:
+
+```slang
+float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries)
+{
+    SurfaceHit hit;
+    uint status = LoadVisibilitySurface(scene, launch, inoutQueries, hit);
+    if (status == SCENE_QUERY_MISS)
+        return EvaluateEnvironment(scene, launch.CameraRay.DirectionWorld);
+    if (status != SCENE_QUERY_SURFACE)
+        return float3(-1);
+
+    MaterialSample material = EvaluateMaterial(scene, hit);
+    // Author your BSDF/light sampling here; this example traces a reflection.
+    float3 directionWorld = reflect(launch.CameraRay.DirectionWorld, material.ShadingNormalWorld);
+    Ray secondary = SpawnSurfaceRay(hit, directionWorld, launch.CameraRay.MaxDistanceWorld);
+    SurfaceHit secondaryHit;
+    uint secondaryStatus = TraceClosest(scene, inoutQueries, secondary, secondaryHit);
+    return secondaryStatus == SCENE_QUERY_MISS ? EvaluateEnvironment(scene, directionWorld) : float3(0);
+}
+```
+
+`LoadVisibilitySurface` loads exact texels, resolves instance/primitive through a
+sorted immutable indirection, unprojects stored depth, and computes barycentrics.
+It fills the incoming camera ray, distance and front-face state in addition to the
+attributes supplied by `GetSurfaceHit`. Background returns MISS; invalid IDs,
+depth or reconstruction latch query failure and return FAILURE. Reconstruction
+uses no ray query budget. `EvaluateMaterial` applies the triangle's slot and
+instance overrides; material identity is not duplicated in the image. Material
+sampling retains the scene interface's fixed-mip policy.
+
+SDK hosts should set
+`DeviceDescription.Storage.ResourcesPerGraph` to at least
+`renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY` before creating their device. The
+editor requests this budget. It covers fixed transport/image inputs plus each
+mesh's vertex/index buffers and both optional structured buffers; the default RHI quota can be sufficient for small
+fixtures but is not the full graph mesh limit. Quotas are admission ceilings,
+not eager allocations.
+
+Runtime preparation puts the raster producer and compute reader in one ordered
+RHI graph. Color and depth views, immutable scene resources and bindings are
+retained through submission completion. A new scene/camera generation prepares a
+replacement; rejection preserves the last drawable generation. No CPU readback or
+primary acceleration-structure query is used. The
+[source/SDK fixture](../../tests/sdk_consumer/rg2/visibility/main.lurender.json)
+and its [manifest](../../tests/sdk_consumer/rg2/visibility/main.lushader.json.in)
+exercise the complete path, including a secondary ray. Runtime package version 9
+adds the two optional read indices; older version-7/8 packages retain their existing
+behavior when decoded.
 
 SurfaceHit includes InstanceIndex, original mesh-local Primitive, source identity,
 MaterialIndex, SourceMaterialIndex, MaterialKind, MaterialSlot, EmitterIndex, barycentrics,
@@ -1809,7 +1917,7 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 `cook-runtime` accepts the same verified `--renderer-static` packages as
 `emit-runtime` and writes the same plan records, stages and CPU interface
 identity into a little-endian file described by
-`ludus/content/render_graph_format/runtime_package.h` (layout version 8, with
+`ludus/content/render_graph_format/runtime_package.h` (layout version 9, with
 independent raster shader pairs, native-only ray roles, structured storage records,
 per-pass Scene data masks, view-relative size policies, pass names, uniform
 binding/block/field records and GLSL ES block names; native-ray packages from

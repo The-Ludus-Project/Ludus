@@ -13,7 +13,9 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 5;
+inline constexpr foundation::uint32 VERSION = 6;
+/// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
+inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
 inline constexpr foundation::usize MAX_PASSES = 16;
 /// Maximum logical resources; depth may alias a color allocation's private aspect.
@@ -58,7 +60,7 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized uint32 fields in a current pass record.
-inline constexpr foundation::usize PASS_FIELD_COUNT = 10;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 12;
 /// Resource or input index absent from the declared plan.
 inline constexpr foundation::uint32 ABSENT = ~foundation::uint32{0};
 /// Compiled shader-pair role, independent of graph instance and viewport size.
@@ -177,6 +179,10 @@ struct Pass final
     foundation::uint32 AllowsRepeatedCoverage; ///< Zero or one; explicitly permits repeated rendering in a role/view.
     /// Selected SCENE_DATA_* groups. Geometry is mandatory; default preserves full-scene callers.
     foundation::uint32 SceneData = SCENE_DATA_ALL;
+    /// Optional RGBA8 visibility read; paired with VisibilityDepth and produced by the preceding raster pass.
+    foundation::uint32 Visibility = ABSENT;
+    /// Optional Depth32Float read, sharing Visibility's backing allocation, camera and scene generation.
+    foundation::uint32 VisibilityDepth = ABSENT;
 };
 /// One read-only uniform binding of a technique, filled per draw from logical values.
 /// Its values occupy [ValueOffset, ValueOffset + ValueCount) of each item's float32

@@ -311,7 +311,7 @@ def parse_runtime(data):
     offset += 64
     result = {'magic': magic, 'version': version, 'interface': interface, 'generation': generation,
               'resources': [take(8 if version >= 4 else 6) for _ in range(resources)], 'cameras': [take(1) for _ in range(cameras)],
-              'passes': [take(10 if version >= 5 else 9) for _ in range(passes)], 'uniform_values': values,
+              'passes': [take(12 if version >= 9 else 10 if version >= 5 else 9) for _ in range(passes)], 'uniform_values': values,
               'bindings': [take(5) for _ in range(bindings)], 'blocks': [take(3) for _ in range(blocks)],
               'fields': [take(5) for _ in range(fields)], 'stages': []}
     for _ in range(stages):
@@ -328,7 +328,7 @@ def parse_runtime(data):
         offset += artifact_bytes + (-artifact_bytes % 4)
         result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry,
                                  'artifact': artifact, 'blocks': names})
-    result['storage_buffers'] = [take(4) for _ in range(take(1)[0])] if version >= 7 else []
+    result['storage_buffers'] = [take(4) for _ in range(take(1)[0])] if version >= 8 else []
     result['pass_names'] = []
     if version >= 3:
         for _ in range(passes):

@@ -23,6 +23,7 @@
 #include "internal/gpu_preview_data.h"
 #include "internal/reference_data.h"
 #include "internal/uniform_set_table.h"
+#include "internal/visibility_buffer.h"
 
 namespace ludus::graphics::renderer
 {
@@ -265,6 +266,7 @@ struct Vertex final
     math::Vector4 Color;
     math::Vector2 MaterialUv1;
 };
+using internal::VisibilityVertex;
 struct Instance final
 {
     math::Vector4 Rows[4];
@@ -284,6 +286,23 @@ constexpr StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT> FLAT_ATT
     {3, 1, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
     {4, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
     {5, 1, 4 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+}};
+constexpr usize VISIBILITY_ATTRIBUTE_COUNT = 8;
+constexpr usize VISIBILITY_PRIMITIVE_LOCATION = 6;
+constexpr usize VISIBILITY_INSTANCE_LOCATION = 7;
+constexpr StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT> VISIBILITY_STREAMS{{
+    {sizeof(VisibilityVertex), false},
+    {sizeof(Instance), true},
+}};
+constexpr StaticArray<rhi::RasterVertexAttribute, VISIBILITY_ATTRIBUTE_COUNT> VISIBILITY_ATTRIBUTES{{
+    {0, 0, 0, rhi::RasterVertexFormat::Float3},
+    {1, 1, 0, rhi::RasterVertexFormat::Float4},
+    {2, 1, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {3, 1, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {4, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {5, 1, 4 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {VISIBILITY_PRIMITIVE_LOCATION, 0, sizeof(math::Vector3), rhi::RasterVertexFormat::Float2},
+    {VISIBILITY_INSTANCE_LOCATION, 1, sizeof(Instance) - sizeof(math::Vector4), rhi::RasterVertexFormat::Float2},
 }};
 /// Grid resources are private to one immutable prepared view; RHI retires submitted uses.
 struct WorldGridBuffers final
@@ -605,6 +624,7 @@ struct Renderer::State final
     rhi::BindingSetHandle Bindings{};
     /// Bound flat program layout (empty when unbound), its zero-filled defaults and per-draw sets.
     internal::FlatUniformLayout FlatUniforms;
+    bool HasVisibilityInputs = false;
     rhi::BufferHandle DefaultUniforms{};
     internal::UniformSetTable UniformSets;
     rhi::RasterPipelineHandle Opaque{}, Overlay{};
@@ -1060,7 +1080,8 @@ Status Renderer::Initialize(rhi::DeviceHandle device,
     }
     internal::FlatUniformLayout uniforms;
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        vertex.Inputs.size() != 6 || fragment.Inputs.empty() == false ||
+        (vertex.Inputs.size() != FLAT_ATTRIBUTE_COUNT && vertex.Inputs.size() != VISIBILITY_ATTRIBUTE_COUNT) ||
+        fragment.Inputs.empty() == false ||
         internal::MergeFlatUniformLayout(vertex.Bindings,
                                          fragment.Bindings,
                                          capabilities.UniformOffsetAlignment,
@@ -1069,10 +1090,12 @@ Status Renderer::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidDescription;
     }
-    for (usize i = 0; i < 6; ++i)
+    for (usize i = 0; i < vertex.Inputs.size(); ++i)
     {
         if (vertex.Inputs[i].Location != i ||
-            vertex.Inputs[i].Format != (i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4))
+            vertex.Inputs[i].Format != (i == 0                     ? rhi::RasterVertexFormat::Float3
+                                        : i < FLAT_ATTRIBUTE_COUNT ? rhi::RasterVertexFormat::Float4
+                                                                   : rhi::RasterVertexFormat::Float2))
         {
             return Status::InvalidDescription;
         }
@@ -1085,6 +1108,7 @@ Status Renderer::Initialize(rhi::DeviceHandle device,
     mState.Reset(state);
     state->Device = device;
     state->FlatUniforms = uniforms;
+    state->HasVisibilityInputs = vertex.Inputs.size() == VISIBILITY_ATTRIBUTE_COUNT;
     status = state->ReserveStorage(limits);
     if (status != Status::Ready)
     {
@@ -1125,8 +1149,11 @@ Status Renderer::Poll() noexcept
     {
         return state.Setup;
     }
-    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
-    const StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT>& attributes = FLAT_ATTRIBUTES;
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams =
+        state.HasVisibilityInputs == true ? VISIBILITY_STREAMS : FLAT_STREAMS;
+    const rhi::RasterVertexAttribute* attributes =
+        state.HasVisibilityInputs == true ? VISIBILITY_ATTRIBUTES.GetData() : FLAT_ATTRIBUTES.GetData();
+    const usize attributeCount = state.HasVisibilityInputs == true ? VISIBILITY_ATTRIBUTE_COUNT : FLAT_ATTRIBUTE_COUNT;
     for (;;)
     {
         Status status = Status::Ready;
@@ -1175,7 +1202,7 @@ Status Renderer::Poll() noexcept
                 {
                     status = rhi::CreateRasterPipeline(
                         state.Device,
-                        {state.Vertex, state.Fragment, state.Layout, streams, attributes, true},
+                        {state.Vertex, state.Fragment, state.Layout, streams, {attributes, attributeCount}, true},
                         state.Opaque);
                     ++state.Phase;
                 }
@@ -1184,10 +1211,15 @@ Status Renderer::Poll() noexcept
                 status = rhi::GetStatus(state.Device, state.Opaque);
                 if (status == Status::Ready)
                 {
-                    status = rhi::CreateRasterPipeline(
-                        state.Device,
-                        {state.Vertex, state.Fragment, state.Layout, streams, attributes, false, true},
-                        state.Overlay);
+                    status = rhi::CreateRasterPipeline(state.Device,
+                                                       {state.Vertex,
+                                                        state.Fragment,
+                                                        state.Layout,
+                                                        streams,
+                                                        {attributes, attributeCount},
+                                                        false,
+                                                        true},
+                                                       state.Overlay);
                     ++state.Phase;
                 }
                 break;
@@ -1269,8 +1301,12 @@ Status Renderer::PollViews() noexcept
     {
         return s.ViewsSetup;
     }
-    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
-    const StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT>& attributes = FLAT_ATTRIBUTES;
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams =
+        mState->HasVisibilityInputs == true ? VISIBILITY_STREAMS : FLAT_STREAMS;
+    const rhi::RasterVertexAttribute* attributes =
+        mState->HasVisibilityInputs == true ? VISIBILITY_ATTRIBUTES.GetData() : FLAT_ATTRIBUTES.GetData();
+    const usize attributeCount =
+        mState->HasVisibilityInputs == true ? VISIBILITY_ATTRIBUTE_COUNT : FLAT_ATTRIBUTE_COUNT;
     const rhi::RasterVertexStream quadStreams[]{{16, false}};
     const rhi::RasterVertexAttribute quadAttributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float4}};
     for (;;)
@@ -1317,7 +1353,12 @@ Status Renderer::PollViews() noexcept
             }
             if (status == Status::Ready)
             {
-                rhi::RasterPipelineDescription description{s.Vertex, s.Fragment, s.Layout, streams, attributes, true};
+                rhi::RasterPipelineDescription description{s.Vertex,
+                                                           s.Fragment,
+                                                           s.Layout,
+                                                           streams,
+                                                           {attributes, attributeCount},
+                                                           true};
                 description.DepthCompare = rhi::RasterDepthCompare::Greater;
                 status = rhi::CreateRasterPipeline(s.Device, description, s.SurfaceReverse);
                 ++s.ViewsPhase;
@@ -1333,7 +1374,7 @@ Status Renderer::PollViews() noexcept
                                                            s.Fragment,
                                                            s.Layout,
                                                            streams,
-                                                           attributes,
+                                                           {attributes, attributeCount},
                                                            s.ViewsPhase != 4,
                                                            s.ViewsPhase == 4};
                 description.Target = rhi::RasterTarget::Rgba8Unorm;
@@ -1383,6 +1424,10 @@ Status Renderer::PollViews() noexcept
 }
 Status Renderer::State::PrepareGridPipelines() noexcept
 {
+    if (HasVisibilityInputs == true)
+    {
+        return Status::Unsupported;
+    }
     const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
     const StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT>& attributes = FLAT_ATTRIBUTES;
     bool isPending = false;
@@ -1413,6 +1458,56 @@ Status Renderer::State::PrepareGridPipelines() noexcept
         isPending = isPending == true || status == Status::Pending;
     }
     return isPending == true ? Status::Pending : Status::Ready;
+}
+Status Renderer::AppendVisibilityView(PreparedView handle,
+                                      rhi::OrderedGraph& inoutGraph,
+                                      const rhi::RasterPassDescription& attachment,
+                                      rhi::GraphVersion previous,
+                                      rhi::GraphVersion& outWritten) noexcept
+{
+    const Status status = GetStatus(handle);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    State& state = *mState;
+    const State::ViewRecord& view = state.ViewRecords[Access::Slot(handle)];
+    if (state.HasVisibilityInputs == false || state.FlatUniforms.Count != 0 || view.Grid.Get() != nullptr ||
+        view.Depth != DepthConvention::Conventional || attachment.ColorLoad != rhi::RasterLoad::Clear ||
+        attachment.DepthLoad != rhi::RasterLoad::Clear || attachment.ColorStore != rhi::RasterStore::Store ||
+        attachment.DepthStore != rhi::RasterStore::Store)
+    {
+        return Status::Unsupported;
+    }
+    Array<internal::VisibilityDraw> draws;
+    if (draws.TryResize(view.DrawCount) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    for (usize index = 0; index < view.DrawCount; ++index)
+    {
+        const State::Packet& packet = view.Packets[index];
+        if (packet.Pass != Layer::Opaque || packet.MaterialSlot != NO_MATERIAL || packet.UniformSlot != NO_UNIFORM)
+        {
+            return Status::Unsupported;
+        }
+        const State::MeshRecord& mesh = state.MeshRecords[packet.MeshSlot];
+        draws[index] = {mesh.Vertices,
+                        mesh.Indices,
+                        mesh.VertexCount,
+                        mesh.IndexCount,
+                        packet.First,
+                        packet.Count,
+                        packet.MeshSlot};
+    }
+    const internal::VisibilityCommands commands{{draws.GetData(), draws.GetSize()},
+                                                view.Instances,
+                                                view.Visible,
+                                                sizeof(Instance),
+                                                state.TargetOpaque,
+                                                state.Bindings,
+                                                attachment};
+    return internal::AppendVisibilityCommands(state.Device, inoutGraph, commands, previous, outWritten);
 }
 Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription& description) noexcept
 {
@@ -1494,7 +1589,9 @@ Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription&
         }
         const auto& mesh = s.MeshRecords[packet.MeshSlot];
         const rhi::RasterVertexSlice slices[]{
-            {mesh.Vertices, 0, mesh.VertexCount * sizeof(Vertex)},
+            {mesh.Vertices,
+             0,
+             mesh.VertexCount * (s.HasVisibilityInputs == true ? sizeof(VisibilityVertex) : sizeof(Vertex))},
             {view.Instances, packet.First * sizeof(Instance), packet.Count * sizeof(Instance)}};
         const auto opaque = hdr       ? (view.Depth == DepthConvention::ReverseZ ? s.HdrFlat[1] : s.HdrFlat[0])
                             : surface ? (view.Depth == DepthConvention::ReverseZ ? s.SurfaceReverse : s.Opaque)
@@ -2830,10 +2927,30 @@ Status Renderer::CreateMesh(const MeshDescription& description, Mesh& output) no
             return status;
         }
     }
-    const auto vertexBytes = input.VertexCount * sizeof(Vertex), indexBytes = input.IndexCount * sizeof(uint32);
+    Array<VisibilityVertex> visibilityVertices;
+    Array<uint32> visibilityIndices;
+    const bool hasVisibilityInputs = mState->HasVisibilityInputs;
+    if (hasVisibilityInputs == true)
+    {
+        status = internal::ExpandVisibilityGeometry({input.Positions, input.VertexCount},
+                                                    {input.Indices, input.IndexCount},
+                                                    caps.MaxBufferSize,
+                                                    visibilityVertices,
+                                                    visibilityIndices);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+    }
+    const usize vertexBytes =
+        hasVisibilityInputs == true ? input.IndexCount * sizeof(VisibilityVertex) : input.VertexCount * sizeof(Vertex);
+    const usize indexBytes = input.IndexCount * sizeof(uint32);
+    const uint8* vertexData = hasVisibilityInputs == true ? reinterpret_cast<const uint8*>(visibilityVertices.GetData())
+                                                          : reinterpret_cast<const uint8*>(vertices.GetData());
+    const uint32* indexData = hasVisibilityInputs == true ? visibilityIndices.GetData() : input.Indices;
     status = rhi::CreateBuffer(mState->Device,
                                {rhi::BufferRole::Vertex, vertexBytes},
-                               {reinterpret_cast<const uint8*>(vertices.GetData()), vertexBytes},
+                               {vertexData, vertexBytes},
                                mesh.Vertices);
     if (Accepted(status) == false)
     {
@@ -2841,7 +2958,7 @@ Status Renderer::CreateMesh(const MeshDescription& description, Mesh& output) no
     }
     auto second = rhi::CreateBuffer(mState->Device,
                                     {rhi::BufferRole::Index32, indexBytes},
-                                    {reinterpret_cast<const uint8*>(input.Indices), indexBytes},
+                                    {reinterpret_cast<const uint8*>(indexData), indexBytes},
                                     mesh.Indices);
     if (Accepted(second) == false)
     {
@@ -2855,7 +2972,7 @@ Status Renderer::CreateMesh(const MeshDescription& description, Mesh& output) no
     mesh.Reference = core::Move(referenceMesh);
     mesh.Used = mesh.Owned = true;
     mesh.References = 0;
-    mesh.VertexCount = static_cast<uint32>(input.VertexCount);
+    mesh.VertexCount = static_cast<uint32>(hasVisibilityInputs == true ? input.IndexCount : input.VertexCount);
     mesh.IndexCount = static_cast<uint32>(input.IndexCount);
     mesh.Bounds = bounds;
     mesh.HasNormals = input.Normals != nullptr;
@@ -2931,6 +3048,13 @@ Status Renderer::CreateSnapshot(const SceneItem* items, usize count, Snapshot& o
     for (usize i = 0; i < count; ++i)
     {
         const auto& item = items[i];
+        constexpr uint32 MAX_VISIBILITY_REFERENCE = 0xffff;
+        if (mState->HasVisibilityInputs == true &&
+            (item.DrawIndex > MAX_VISIBILITY_REFERENCE || item.InstanceIndex > MAX_VISIBILITY_REFERENCE ||
+             Access::Owner(item.Surface) != 0 || Access::Owner(item.LodGeometry) != 0))
+        {
+            return Status::Unsupported;
+        }
         if (item.SourceId == 0 || math::IsFinite(item.Transform) == false ||
             (item.Pass != Layer::Opaque && item.Pass != Layer::Overlay) ||
             (Access::Owner(item.Surface) == 0 &&
@@ -3376,6 +3500,13 @@ Status Renderer::PrepareView(Snapshot handle,
                 candidate.Data.Color.Y *= candidate.Data.Color.W;
                 candidate.Data.Color.Z *= candidate.Data.Color.W;
             }
+            if (mState->HasVisibilityInputs == true)
+            {
+                candidate.Data.Eye = {static_cast<float32>(item.Input.DrawIndex),
+                                      static_cast<float32>(item.Input.InstanceIndex),
+                                      0,
+                                      0};
+            }
             candidate.Bounds =
                 ProjectBounds(item.Bounds,
                               pass == Layer::Opaque ? description.WorldToClip : description.OverlayToClip,
@@ -3809,8 +3940,12 @@ Status Renderer::PollLighting() noexcept
     }
     const rhi::RasterVertexStream quadStreams[]{{16, false}};
     const rhi::RasterVertexAttribute quadAttributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float4}};
-    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
-    const StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT>& attributes = FLAT_ATTRIBUTES;
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams =
+        mState->HasVisibilityInputs == true ? VISIBILITY_STREAMS : FLAT_STREAMS;
+    const rhi::RasterVertexAttribute* attributes =
+        mState->HasVisibilityInputs == true ? VISIBILITY_ATTRIBUTES.GetData() : FLAT_ATTRIBUTES.GetData();
+    const usize attributeCount =
+        mState->HasVisibilityInputs == true ? VISIBILITY_ATTRIBUTE_COUNT : FLAT_ATTRIBUTE_COUNT;
     rhi::RasterPipelineHandle* targets[]{&s.OutputPipelines[0],
                                          &s.OutputPipelines[1],
                                          &s.FlatShadow,
@@ -3849,7 +3984,7 @@ Status Renderer::PollLighting() noexcept
                            phase == 2 ? s.FlatShadowFragment : s.Fragment,
                            s.Layout,
                            streams,
-                           attributes,
+                           {attributes, attributeCount},
                            phase != 5,
                            phase == 5};
             description.Target = phase == 2 ? rhi::RasterTarget::Rgba8Unorm : rhi::RasterTarget::Rgba16Float;

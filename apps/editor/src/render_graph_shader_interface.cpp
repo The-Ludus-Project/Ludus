@@ -49,7 +49,24 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     const QString output = program.value(QStringLiteral("output")).toString();
     const QString function = program.value(QStringLiteral("function")).toString();
     const bool isScene = output == QStringLiteral("Radiance") || output == QStringLiteral("ScenePayload");
-    const QString api = ReadShaderApi(isScene);
+    QString api = ReadShaderApi(isScene);
+    for (const QJsonValueConstRef entry : techniques)
+    {
+        const QJsonObject technique = entry.toObject();
+        if (technique.value(stage).toString() == program.value(QStringLiteral("id")).toString() &&
+            technique.value(QStringLiteral("scene_interface"))
+                    .toObject()
+                    .value(QStringLiteral("visibility_buffer"))
+                    .toBool() == true)
+        {
+            QFile visibility(QStringLiteral(":/shader-api/visibility_buffer.slang"));
+            if (visibility.open(QIODevice::ReadOnly) == true)
+            {
+                api += QString::fromUtf8(visibility.readAll());
+            }
+            break;
+        }
+    }
     if (api.isEmpty() == true)
     {
         return QStringLiteral("Shader API unavailable: bundled callback declarations are missing.");

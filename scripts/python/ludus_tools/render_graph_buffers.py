@@ -78,6 +78,6 @@ def lower_bindings(plan, stages, build):
                         'Count': 0 if resource['count'] == 'ColorTarget' else resource['count'],
                         'IsReadOnly': int(use['access'] == 'Read')})
     for target in reflected:
-        build.require({entry['name'] for entry in target if entry['binding'] >= FIRST_SLOT} == set(uses),
+        build.require({entry['name'] for entry in target if FIRST_SLOT <= entry['binding'] < FIRST_SLOT + MAX_BUFFERS} == set(uses),
                       'ShaderInterface', 'ray storage', 'shader storage bindings must match connected Buffer ports exactly')
     return sorted(records, key=lambda value: value['Slot'])

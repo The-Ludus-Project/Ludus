@@ -89,7 +89,8 @@ def verify_native_ray_metal(code, interface):
     if len(scenes) != 1 or 'intersection_query<' not in code:
         raise RuntimeError('Native ray Metal artifact lacks a single TLAS/query interface')
     for binding in interface['entries']:
-        if '[[buffer(' + str(binding['binding']) + ')]]' not in code:
+        resource = 'texture' if binding['kind'] in ('Texture2D', 'TextureDepth2D') else 'buffer'
+        if '[[' + resource + '(' + str(binding['binding']) + ')]]' not in code:
             raise RuntimeError('Native ray Metal binding differs from target reflection')
     names = re.findall(r'kernel\s+void\s+(\w+)\s*\(', code)
     if len(names) != 1:

@@ -53,6 +53,16 @@ private:
     /// Grants the private renderer access to assign and validate this incarnation.
     friend struct internal::Access;
 };
+class Renderer;
+/// Borrowed ready visibility raster producer; consumed synchronously during graph preparation.
+/// Producer/view/attachment must match the ray job's scene/camera generation. Only opaque
+/// visibility-ABI views without uniforms, materials, overlays or grid are admitted.
+struct VisibilityRasterPass final
+{
+    Renderer* ProducerOrNull = nullptr;      ///< Valid producer; borrowed through graph preparation.
+    PreparedView View{};                     ///< Ready immutable view; its resources are copied into the ordered graph.
+    rhi::RasterPassDescription Attachment{}; ///< Paired color/depth attachment, Clear/Store in both aspects.
+};
 /// Immutable copied per-draw uniform blocks and binding snapshot of a bound flat program.
 /// Copies do not transfer ownership; Release detaches it and snapshots retain the exact version.
 struct UniformSet final
@@ -165,6 +175,10 @@ struct SceneItem final
     ludus::foundation::uint64 BakeSceneRevision = 0;
     /// Exact bake dependency revision; mismatch selects environment and dynamic direct lighting.
     ludus::foundation::uint64 BakeDependencyRevision = 0;
+    /// Visibility ABI draw/mesh reference, exact through 16-bit range; stable within the scene generation.
+    ludus::foundation::uint32 DrawIndex = 0;
+    /// Visibility ABI instance reference, exact through 16-bit range; graph uses its extraction item index.
+    ludus::foundation::uint32 InstanceIndex = 0;
 };
 /// Finite canonical clip transform: XY [-1,1], Z [0,1], Y up.
 struct ViewDescription final
@@ -416,9 +430,26 @@ public:
     /// submitted resources through completion. Job progress/preview frame leases are unaffected.
     /// @param job Ready GPU job; do not also AdvanceGpuPreview this job.
     /// @param target Borrowed attachment, cleared/stored in color; private depth is discarded.
+    /// @param visibilityOrNull Optional visibility producer, appended before the ray dispatch; source differs from
+    /// target.
     /// @param outGraph Null graph receives the commands. Failure preserves it and releases temporary leases.
     [[nodiscard]] rhi::RasterStatus
-    PrepareGpuPreviewGraph(GpuPreview job, rhi::TextureHandle target, rhi::OrderedGraph& outGraph) noexcept;
+    PrepareGpuPreviewGraph(GpuPreview job,
+                           rhi::TextureHandle target,
+                           rhi::OrderedGraph& outGraph,
+                           const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept;
+    /// Append one visibility-ABI view to an uncompiled graph between frames. No allocation survives
+    /// outside the graph; partial failure leaves the caller responsible for discarding the graph.
+    /// @param handle Ready opaque visibility view; no authored uniforms, materials or world grid.
+    /// @param inoutGraph Caller-owned uncompiled ordered graph on this renderer's device.
+    /// @param attachment RGBA8/private-depth attachment, Clear/Store in both aspects.
+    /// @param previous Imported version of attachment.Color.
+    /// @param outWritten Receives the next written version on success; preserved on failure.
+    [[nodiscard]] rhi::RasterStatus AppendVisibilityView(PreparedView handle,
+                                                         rhi::OrderedGraph& inoutGraph,
+                                                         const rhi::RasterPassDescription& attachment,
+                                                         rhi::GraphVersion previous,
+                                                         rhi::GraphVersion& outWritten) noexcept;
     /// Poll GPU completion and copy progress; no waiting or GPU-buffer readback.
     /// Ready/Pending copy progress; rejection preserves output. Owner-thread,
     /// between frames. Pending means creation or producer work is outstanding.

@@ -178,7 +178,8 @@ function(ludus_editor_add_shader_api target)
     qt_add_resources(${target} ludus_shader_api
         PREFIX "/shader-api" BASE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders"
         FILES "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/ray_shader.slang"
-              "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_shader.slang")
+              "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_shader.slang"
+              "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/visibility_buffer.slang")
 endfunction()
 
 # The default graph's authored sources, read-only inside the editor (also in builds

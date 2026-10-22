@@ -10,7 +10,9 @@
 // ray functions into the portable compute target with an explicit resource ABI.
 namespace ludus::graphics::renderer
 {
-void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, rhi::ShaderStage stage) noexcept
+void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
+                                rhi::ShaderStage stage,
+                                bool hasVisibilityBuffer) noexcept
 {
     using namespace foundation;
     constexpr usize COMPUTE_BINDING_COUNT = LUDUS_GPU_PREVIEW_BINDING_COUNT;
@@ -40,10 +42,24 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, 
             {1, rhi::RasterVertexFormat::Float4},
         },
     };
+    static constexpr StaticArray<rhi::RasterBinding, LUDUS_GRAPH_VISIBILITY_BINDING_COUNT> VISIBILITY_BINDINGS{{
+        COMPUTE_BINDINGS[0],
+        COMPUTE_BINDINGS[1],
+        COMPUTE_BINDINGS[2],
+        COMPUTE_BINDINGS[3],
+        COMPUTE_BINDINGS[4],
+        COMPUTE_BINDINGS[5],
+        {LUDUS_GRAPH_VISIBILITY_BINDING, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Compute, 0},
+        {LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING,
+         rhi::RasterBindingKind::TextureDepth2D,
+         rhi::RasterVisibility::Compute,
+         0},
+    }};
     inoutDescription.Artifact.Stage = stage;
     if (stage == rhi::ShaderStage::Compute)
     {
-        inoutDescription.Bindings = COMPUTE_BINDINGS.AsSpan();
+        inoutDescription.Bindings =
+            hasVisibilityBuffer == true ? VISIBILITY_BINDINGS.AsSpan() : COMPUTE_BINDINGS.AsSpan();
         inoutDescription.WorkgroupSize[0] = WORKGROUP_WIDTH;
         inoutDescription.WorkgroupSize[1] = 1;
         inoutDescription.WorkgroupSize[2] = 1;
@@ -111,7 +127,8 @@ rhi::RasterStatus RenderGraphRayPass::Poll() noexcept
     GpuPreviewInfo information;
     return mContextOrNull->GetGpuPreviewInfo(mJob, information);
 }
-rhi::RasterStatus RenderGraphRayPass::Prepare(rhi::TextureHandle target) noexcept
+rhi::RasterStatus RenderGraphRayPass::Prepare(rhi::TextureHandle target,
+                                              const VisibilityRasterPass* visibilityOrNull) noexcept
 {
     if (mContextOrNull == nullptr)
     {
@@ -122,7 +139,7 @@ rhi::RasterStatus RenderGraphRayPass::Prepare(rhi::TextureHandle target) noexcep
         return rhi::RasterStatus::Ready;
     }
     static_cast<void>(rhi::DiscardOrderedGraph(mDevice, mGraph));
-    const rhi::RasterStatus status = mContextOrNull->PrepareGpuPreviewGraph(mJob, target, mGraph);
+    const rhi::RasterStatus status = mContextOrNull->PrepareGpuPreviewGraph(mJob, target, mGraph, visibilityOrNull);
     mIsPrepared = status == rhi::RasterStatus::Ready;
     return status;
 }

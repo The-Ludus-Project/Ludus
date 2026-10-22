@@ -13,6 +13,7 @@
 
 #include <ludus/content/scene_format/luscn.h>
 
+#include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -54,6 +55,7 @@ rhi::DeviceDescription MakeViewportDeviceDescription() noexcept
     description.Storage.BindingDescriptors = 32768;
     description.Storage.DrawsPerFrame = 32768;
     description.Storage.DrawsPerPlan = 1024;
+    description.Storage.ResourcesPerGraph = rr::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
     description.Storage.HostBytes = usize{256} * 1024 * 1024;
     description.Storage.ResourceBytes = uint64{2} * 1024 * 1024 * 1024;
     description.RequiredProfile.Raster.MinBindings = 11;

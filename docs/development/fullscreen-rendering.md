@@ -2114,3 +2114,20 @@ and to Khronos for
 [Vulkan synchronization and fence ordering](https://docs.vulkan.org/spec/latest/chapters/synchronization.html).
 The adopted bridge uses one serialized shared queue; generalized external memory
 and cross-queue synchronization are separate future profiles.
+
+### Compute reads of raster attachments
+
+Compute-only layouts may bind one non-array `Texture2D` color view or
+`TextureDepth2D` depth view at each declared slot. These are unfiltered loads;
+compute samplers, other texture dimensions, stencil and texture arrays remain
+outside this profile. Slang uses `Texture2D<float4>` for color and
+`Texture2D<float>` for depth. Reflection must match the exact view kind.
+
+Declare the physical image version as `GraphAccessMode::Sampled` with
+`RasterVisibility::Compute`, and use `RasterTextureUse::SampledCompute` when that
+is the imported image's final consumer. The ordered graph checks the selected
+aspect's initialization, keeps its raster writer live, orders attachment writes
+before compute loads, and retains the views and backing through completion.
+Color initialization alone does not permit a depth load after depth Discard.
+See [raster first hits](render-graph-authoring.md#raster-first-hits-and-secondary-rays)
+for the renderer-owned visibility/depth integration.

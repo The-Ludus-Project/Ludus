@@ -27,7 +27,8 @@ public:
                                                foundation::uint32 height,
                                                const RenderGraphSceneDescription* sceneOrNull = nullptr) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
-    [[nodiscard]] rhi::RasterStatus Prepare(rhi::TextureHandle target) noexcept;
+    [[nodiscard]] rhi::RasterStatus Prepare(rhi::TextureHandle target,
+                                            const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept;
     [[nodiscard]] rhi::RasterStatus Encode(rhi::SurfaceHandle surface) noexcept;
     [[nodiscard]] LUDUS_INLINE bool IsPrepared() const noexcept
     {

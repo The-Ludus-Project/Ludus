@@ -765,10 +765,19 @@ class _Compiler:
                           f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
                          field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
                          actual=dimensions, repair='Choose Match color target in Invocation → Launch size.')
+                visibility_reads = {}
+                if 'visibility' in inputs:
+                    for aspect in ('visibility', 'visibility_depth'):
+                        source_value = inputs[aspect]
+                        resource = self.resources[source_value.resource]
+                        _require(source_value.defined and resource['extent'] == target['extent'] and
+                                 resource.get('view_scale') == target.get('view_scale') and resource['samples'] == 1,
+                                 'AttachmentMismatch', where, 'visibility/depth must be initialized and match the ray extent')
+                        visibility_reads[aspect] = {'resource': source_value.resource, 'input_version': source_value.version}
                 value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
                 storage = {}
                 storage_outputs = {}
-                for name in sorted(set(inputs) - {'scene', 'view', 'color'}):
+                for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth'}):
                     buffer = inputs[name]
                     _require(buffer.defined, 'Initialization', where, 'storage reads require defined input contents')
                     _require(buffer.resource not in {use['resource'] for use in storage.values()},
@@ -790,7 +799,7 @@ class _Compiler:
                     'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
                     'scene': inputs['scene'].origin, 'scene_data': inputs['scene'].scene_data, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
-                    'dimensions': expected_dimensions, 'buffers': storage,
+                    'dimensions': expected_dimensions, 'buffers': storage, **visibility_reads,
                     'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
                 outputs = {output_mapping['color']: value, **storage_outputs}
@@ -884,7 +893,8 @@ class _Compiler:
         # A target consulted only for sizing supplies metadata, not a GPU allocation.
         used_resources = {root['resource'] for root in self.roots}
         used_resources.update(attachment['resource'] for operation in self.passes
-                              for attachment in operation.get('attachments', {}).values())
+                              for attachment in (*operation.get('attachments', {}).values(),
+                                                 *(operation[key] for key in ('visibility', 'visibility_depth') if key in operation)))
         used_resources.update(use['resource'] for operation in self.passes for use in operation.get('buffers', {}).values())
         self.resources = {identity: resource for identity, resource in self.resources.items() if identity in used_resources}
 

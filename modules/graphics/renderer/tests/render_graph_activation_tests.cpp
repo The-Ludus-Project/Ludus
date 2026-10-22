@@ -175,6 +175,11 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     {
         inoutWriter.WriteWord(options.SceneData);
     }
+    if (options.Version >= format::PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(format::ABSENT);
+        inoutWriter.WriteWord(format::ABSENT);
+    }
     if (options.HasUniforms == false)
     {
         return;
@@ -222,7 +227,7 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
-    if (options.Version >= format::PACKAGE_VERSION)
+    if (options.Version >= format::STORAGE_PACKAGE_VERSION)
     {
         writer.WriteWord(0);
     }
@@ -950,6 +955,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::SCENE_PACKAGE_VERSION,
                                  format::NATIVE_RAY_PACKAGE_VERSION,
                                  format::INDEPENDENT_PROGRAM_PACKAGE_VERSION,
+                                 format::STORAGE_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1090,7 +1096,8 @@ TEST_CASE("Unsupported native rays select raster without preparing the ray packa
 TEST_CASE("runtime independent shader pairs decode with their own stage and binding tables",
           "[render-graph][activation]")
 {
-    for (const uint32 version : {format::INDEPENDENT_PROGRAM_PACKAGE_VERSION, format::PACKAGE_VERSION})
+    for (const uint32 version :
+         {format::INDEPENDENT_PROGRAM_PACKAGE_VERSION, format::STORAGE_PACKAGE_VERSION, format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
         PackageOptions options;
@@ -1102,8 +1109,10 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         WritePlan(writer, options, 4);
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
-        const usize bindingOffset = format::HEADER_BYTES + 2 * format::RESOURCE_RECORD_BYTES +
-                                    format::CAMERA_RECORD_BYTES + format::PASS_RECORD_BYTES;
+        const usize bindingOffset =
+            format::HEADER_BYTES + 2 * format::RESOURCE_RECORD_BYTES + format::CAMERA_RECORD_BYTES +
+            (version >= format::PACKAGE_VERSION ? format::PASS_RECORD_BYTES
+                                                : format::PASS_RECORD_BYTES - 2 * sizeof(uint32));
         writer.Bytes[bindingOffset] = static_cast<uint8>(format::LEGACY_TECHNIQUE_COUNT);
         const format::StageRole vertexRole =
             static_cast<format::StageRole>(format::GetRasterStageRole(GBUFFER_PROGRAM, 0));
@@ -1114,7 +1123,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
             WriteStage(writer, vertexRole, target, VERTEX_TEXT, "GBufferVertex");
             WriteStage(writer, fragmentRole, target, FRAGMENT_TEXT, "GBufferFragment");
         }
-        if (version >= format::PACKAGE_VERSION)
+        if (version >= format::STORAGE_PACKAGE_VERSION)
         {
             writer.WriteWord(0);
         }
