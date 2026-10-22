@@ -371,7 +371,7 @@ def _runtime_contents(path, configuration):
         build.require(is_ray or (all(e['kind'] == 'UniformBuffer' for e in descriptor['interface']['entries']) and
                       len(descriptor['interface']['entries']) == len(descriptor.get('layouts', []))),
                       'Configuration', program['id'], 'runtime profile admits only verified uniform bindings')
-        expected = ([{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}]
+        expected = (ray.IMAGE_INPUTS
                     if is_ray and stage == 'vertex' else stage_inputs(program) if stage == 'vertex' else [])
         build.require(stage != 'vertex' or is_ray or expected in (STATIC_INPUTS, VISIBILITY_INPUTS),
                       'Configuration', program['id'], 'unsupported static/visibility vertex interface')
@@ -552,7 +552,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 continue
             lines.append('    result.' + member + '.Artifact.Stage = rhi::ShaderStage::' + stage.title() + ';')
             if stage == 'vertex':
-                input_values = [{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}] if program_name == 'RayTracing' else stage_inputs(contents['artifacts'][keys[0]])
+                input_values = ray.IMAGE_INPUTS if program_name == 'RayTracing' else stage_inputs(contents['artifacts'][keys[0]])
                 constant = declaration.upper() + '_INPUT_COUNT'
                 lines += [f'    static constexpr foundation::usize {constant} = {len(input_values)};',
                           f'    static constexpr foundation::StaticArray<rhi::RasterShaderInput, {constant}> {declaration}Inputs', '{', '        {']
@@ -622,7 +622,7 @@ def encode_runtime_package(contents):
     for f in contents['fields']:
         data += u32(f['Binding'], TARGET_CODES[f['Target']], f['ValueOffset'], f['Components'], f['ByteOffset'])
     for (program_name, stage, target), item in stages:
-        inputs = ([{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}]
+        inputs = (ray.IMAGE_INPUTS
                   if program_name == 'RayTracing' and stage == 'vertex' else stage_inputs(item) if stage == 'vertex' else [])
         entry = item['entry'].encode()
         stage_role = (PERSISTENT_RAY_STAGE_ROLE if contents.get('persistent_buffers', False) else 11) if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)

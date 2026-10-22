@@ -4670,3 +4670,97 @@ Status Renderer::Release(ShadowAtlas& handle) noexcept
 
 #include "internal/gpu_preview_services.h"
 #include "internal/reference_services.h"
+
+namespace ludus::graphics::renderer
+{
+Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescription& camera, uint64 revision) noexcept
+{
+    internal::GpuPreviewRecord* jobOrNull =
+        Resolve(mState->GpuPreview->Jobs, internal::GPU_PREVIEW_JOB_COUNT, mState->Owner, handle);
+    if (jobOrNull == nullptr || jobOrNull->Setup != Status::Ready || jobOrNull->Info.Pending == true ||
+        jobOrNull->HasPendingCamera == true || jobOrNull->ComputeBindingsCreated == false)
+    {
+        return Status::NotReady;
+    }
+    internal::GpuPreviewRecord& job = *jobOrNull;
+    const usize pixels = usize(job.Width) * job.Height;
+    StaticArray<rhi::RasterBindingResource,
+                LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
+        bindings{{{0, job.Parameters, 0, sizeof(internal::GpuPreviewUniform)},
+                  {1, job.Data, 0, job.DataBytes},
+                  {2, job.Accumulation, 0, pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES},
+                  {LUDUS_GPU_PREVIEW_COLORS_BINDING, job.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
+                  {LUDUS_GPU_PREVIEW_TEXELS_BINDING, job.Texels, 0, job.TexelBytes},
+                  { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = job.NativeScene }}};
+    for (usize i = 0; i < job.Storage.GetCount(); ++i)
+    {
+        bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + i] = job.Storage.GetBinding(i);
+    }
+    for (usize i = 0; mState->GpuPreview->HasPersistentBuffers == true && i < internal::GPU_GRAPH_BUFFER_COUNT; ++i)
+    {
+        const GpuPreviewGraphBuffer& buffer = job.GraphBuffers[i];
+        bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + i] = {static_cast<uint32>(LUDUS_GPU_PREVIEW_BINDING_COUNT + i),
+                                                         buffer.Buffer,
+                                                         0,
+                                                         buffer.Size};
+    }
+    if (mState->GpuPreview->HasVisibilityBuffer == true)
+    {
+        const usize firstTexture = mState->GpuPreview->ComputeBindingCount - LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT;
+        bindings[firstTexture] = { .Binding = LUDUS_GRAPH_VISIBILITY_BINDING, .Texture = job.VisibilityView };
+        bindings[firstTexture + 1] =
+        {
+            .Binding = LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING,
+            .Texture = job.VisibilityDepthView,
+        };
+    }
+    if (sizeof(internal::GpuPreviewUniform) > mState->GpuPreview->Options.GpuByteBudget - mState->GpuPreview->GpuBytes)
+    {
+        return Status::CapacityExceeded;
+    }
+    const Status status = job.CameraUpdate.Prepare(mState->Device,
+                                                   job.Uniform,
+                                                   camera,
+                                                   revision,
+                                                   mState->GpuPreview->ComputeLayout,
+                                                   {bindings.GetData(), mState->GpuPreview->ComputeBindingCount});
+    job.HasPendingCamera = status == Status::Ready || status == Status::Pending;
+    if (job.HasPendingCamera == true)
+    {
+        job.GpuBytes += sizeof(internal::GpuPreviewUniform);
+        mState->GpuPreview->GpuBytes += sizeof(internal::GpuPreviewUniform);
+    }
+    else
+    {
+        job.CameraUpdate.Reset();
+    }
+    return status;
+}
+Status Renderer::pollGpuPreviewCamera(GpuPreview handle) noexcept
+{
+    return mState->GpuPreview->Jobs[Access::Slot(handle)].CameraUpdate.Poll();
+}
+void Renderer::commitGpuPreviewCamera(GpuPreview handle) noexcept
+{
+    internal::GpuPreviewRecord& job = mState->GpuPreview->Jobs[Access::Slot(handle)];
+    static_cast<void>(rhi::Destroy(mState->Device, job.ComputeBindings));
+    static_cast<void>(rhi::Destroy(mState->Device, job.Parameters));
+    job.CameraUpdate.Commit(job.Uniform, job.Parameters, job.ComputeBindings);
+    job.HasPendingCamera = false;
+    job.GpuBytes -= sizeof(internal::GpuPreviewUniform);
+    mState->GpuPreview->GpuBytes -= sizeof(internal::GpuPreviewUniform);
+    job.Info.CompletedSamples = 0;
+    job.Info.Complete = false;
+}
+void Renderer::discardGpuPreviewCamera(GpuPreview handle) noexcept
+{
+    internal::GpuPreviewRecord& job = mState->GpuPreview->Jobs[Access::Slot(handle)];
+    if (job.HasPendingCamera == true)
+    {
+        job.GpuBytes -= sizeof(internal::GpuPreviewUniform);
+        mState->GpuPreview->GpuBytes -= sizeof(internal::GpuPreviewUniform);
+        job.HasPendingCamera = false;
+    }
+    job.CameraUpdate.Reset();
+}
+} // namespace ludus::graphics::renderer

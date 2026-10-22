@@ -71,6 +71,7 @@
   },
   "renderer_gpu_preview_image": {
     "source": "renderer_gpu_preview_image.slang",
+    "fragment_storage": true,
     "vertex": "VertexMain",
     "fragment": "FragmentMain"
   },

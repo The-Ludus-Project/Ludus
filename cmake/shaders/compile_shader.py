@@ -260,6 +260,7 @@ def main():
     parser.add_argument('--worker-identity')
     parser.add_argument('--metal', action='store_true')
     parser.add_argument('--raster', action='store_true')
+    parser.add_argument('--fragment-storage', action='store_true')
     parser.add_argument('--native-ray-queries', action='store_true')
     parser.add_argument('--native-binding-arrays', action='store_true')
     parser.add_argument('--runtime-binding-arrays', action='store_true')
@@ -278,6 +279,8 @@ def main():
         raise RuntimeError('Slang version differs from SDK pin')
     if not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', args.name):
         raise RuntimeError('Invalid shader name')
+    if args.fragment_storage and not ((args.raster and not args.compute) or args.graph_stage == 'fragment'):
+        raise RuntimeError('Fragment storage requires raster stages')
     if args.runtime_binding_arrays and (not args.native_binding_arrays or not args.raster or args.metal):
         raise RuntimeError("Runtime binding arrays require native Vulkan raster stages")
     if args.graph_stage or args.graph_target:

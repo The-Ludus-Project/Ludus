@@ -802,10 +802,18 @@ sizes and storage binding lengths are multiples of four; binding offsets obey
 `GetComputeCapabilities().StorageOffsetAlignment`. Storage allocations obey `Raster.MaxBufferSize`; each bound range independently
 obeys `Compute.MaxStorageRange`. Layouts obey `Compute.MaxStorageBindings`,
 `Interface.MaxBindings` and each enabled per-stage descriptor count. Uniform buffers can also be read by
-compute. Each storage entry uses `StorageRead` or `StorageReadWrite`,
-`RasterVisibility::Compute`, and a reflected minimum element stride. Storage
-textures, raster-stage storage access and CPU update/upload of existing storage
-buffers remain deferred.
+compute. Compute storage entries use `StorageRead` or `StorageReadWrite`,
+`RasterVisibility::Compute`, and a reflected minimum element stride. Read-only
+`StorageRead` also admits `RasterVisibility::Fragment` on the compute/storage
+profile (Metal, Vulkan and WebGPU). Ordered raster passes declare that exact
+fragment read and receive compute-write-to-fragment-read synchronization. Vertex
+storage and raster storage writes remain unsupported; WebGL has no storage
+profile. The renderer's GPU image recipe uses fragment reads to present an image
+with constant draw geometry.
+Custom raster programs using this profile pass `RASTER FRAGMENT_STORAGE` to
+`ludus_compile_shader`; it emits native/WebGPU artifacts and omits the unsupported
+WebGL artifact. Built-in recipes declare this requirement in their manifest. Storage textures remain deferred; existing buffer
+updates follow the completion and lease rules of R8.
 
 Compute WGSL uniform verification also admits signed/unsigned 32-bit scalars
 and vectors, plus bounded fixed vec4 integer arrays. Their emitted alignment,

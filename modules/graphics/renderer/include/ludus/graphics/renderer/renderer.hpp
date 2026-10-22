@@ -39,6 +39,7 @@ namespace internal
 {
 /// Private access to renderer logical identities.
 struct Access;
+class RenderGraphRayPass;
 } // namespace internal
 /// Renderer-owned mesh incarnation; copies do not transfer ownership.
 struct Mesh final
@@ -433,7 +434,7 @@ public:
                     const GpuPreviewGraphInvocation* invocationOrNull = nullptr) noexcept;
     /// Dispatch one full-image GPU sample, shade/accumulate/tone-map on GPU, and
     /// rasterize GPU-produced colors into an available output texture. Ordered GDI
-    /// dependencies include compute-to-vertex and output export. Never reads rays,
+    /// dependencies include compute-to-fragment storage reads and output export. Never reads rays,
     /// radiance or pixels to host. Owner-thread, closed frame; completion starts null.
     /// NotReady means an earlier producer is pending or both output images are leased.
     /// Success publishes producing completion; acquired images are never overwritten.
@@ -720,6 +721,13 @@ private:
                                                             const ViewMapping& mapping,
                                                             const LightingOutput* lighting,
                                                             Presentation& output) noexcept;
+    /// Grants graph camera transactions access to staged GPU preview parameters.
+    friend class internal::RenderGraphRayPass;
+    [[nodiscard]] rhi::RasterStatus
+    prepareGpuPreviewCamera(GpuPreview job, const ViewDescription& camera, foundation::uint64 revision) noexcept;
+    [[nodiscard]] rhi::RasterStatus pollGpuPreviewCamera(GpuPreview job) noexcept;
+    void commitGpuPreviewCamera(GpuPreview job) noexcept;
+    void discardGpuPreviewCamera(GpuPreview job) noexcept;
     struct State;
     ludus::foundation::core::UniquePtr<State> mState;
 };

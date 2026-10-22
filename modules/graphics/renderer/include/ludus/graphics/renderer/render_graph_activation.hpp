@@ -190,13 +190,26 @@ public:
     /// Forward one extraction to the active graph and to a candidate whose pipelines are Ready.
     /// outReport describes the active graph (or the candidate when none is active). A candidate that
     /// rejects an extraction the active generation accepts becomes Failed. Inputs need only survive the call.
+    /// @param meshes Borrowed static geometry table, copied during a full extraction.
+    /// @param items Borrowed instances, transforms, material bindings and per-draw values.
+    /// @param cameras Complete generation-local camera table; consumed before return.
+    /// @param sceneRevision Nonzero identity for the requested drawable scene/view publication.
+    /// @param policy Whether unsupported coverage rejects or receives diagnostic color.
+    /// @param outReport Latest candidate diagnostics, independent of the retained drawable output.
+    /// Preflight rejection preserves it; coverage/preparation results replace it.
+    /// @param sceneInputsOrNull Optional borrowed material/light/environment inputs for a full extraction.
+    /// @param contentRevision Optional nonzero identity for all non-camera inputs. Reusing it promises
+    /// unchanged geometry, transforms, materials, lights, uniforms and coverage policy; only cameras
+    /// and sceneRevision may change. This reuses scene/acceleration buffers and resets camera history.
+    /// Zero always prepares a complete extraction. Resize and new generations also prepare in full.
     [[nodiscard]] rhi::RasterStatus Update(foundation::BorrowedView<const RenderGraphMesh> meshes,
                                            foundation::BorrowedView<const RenderGraphItem> items,
                                            foundation::BorrowedView<const ViewDescription> cameras,
                                            foundation::uint64 sceneRevision,
                                            RenderGraphCoveragePolicy policy,
                                            RenderGraphReport& outReport,
-                                           const SceneShaderInputs* sceneInputsOrNull = nullptr) noexcept;
+                                           const SceneShaderInputs* sceneInputsOrNull = nullptr,
+                                           foundation::uint64 contentRevision = 0) noexcept;
     /// Borrow the drawing generation's graph for Render/Encode/exports; null when none is active.
     /// The pointer changes when ActiveGeneration changes; never retain it across Poll.
     [[nodiscard]] RenderGraph* GetActiveOrNull() noexcept;

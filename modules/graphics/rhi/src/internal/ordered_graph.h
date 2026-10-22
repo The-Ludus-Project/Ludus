@@ -1292,15 +1292,18 @@ CheckDeclaredPacket(const GraphRecord& graph, const GraphPassRecord& pass, const
         {
             continue;
         }
-        const bool buffer = binding.Kind == RasterBindingKind::UniformBuffer;
-        const auto slot = buffer ? set.Slots[i] : At(RasterKind::View, set.Slots[i]).TextureSlot;
+        const bool isBuffer = BufferBinding(binding.Kind);
+        const usize slot = isBuffer == true ? set.Slots[i] : At(RasterKind::View, set.Slots[i]).TextureSlot;
+        const GraphAccessMode access = binding.Kind == RasterBindingKind::UniformBuffer ? GraphAccessMode::Uniform
+                                       : binding.Kind == RasterBindingKind::StorageRead ? GraphAccessMode::StorageRead
+                                                                                        : GraphAccessMode::Sampled;
         if (FindUse(graph,
                     pass,
-                    buffer ? RasterKind::Buffer : RasterKind::Texture,
+                    isBuffer == true ? RasterKind::Buffer : RasterKind::Texture,
                     slot,
-                    buffer ? GraphAccessMode::Uniform : GraphAccessMode::Sampled,
-                    buffer ? set.Offsets[i] + packet.BindingOffsets.Bytes[binding.Binding] : 0,
-                    buffer ? set.Sizes[i] : 0,
+                    access,
+                    isBuffer == true ? set.Offsets[i] + packet.BindingOffsets.Bytes[binding.Binding] : 0,
+                    isBuffer == true ? set.Sizes[i] : 0,
                     static_cast<uint8>(binding.Visibility)) == nullptr)
         {
             return RasterStatus::InvalidDescription;
@@ -1470,8 +1473,10 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
                     (use.Access == GraphAccessMode::Uniform && buffer.Role != BufferRole::Uniform) ||
                     (use.Access == GraphAccessMode::Indirect && buffer.Role != BufferRole::StorageIndirect) ||
                     ((use.Access == GraphAccessMode::StorageRead || use.Access == GraphAccessMode::StorageReadWrite) &&
-                     (pass.IsCompute == false || StorageRole(buffer.Role) == false ||
-                      use.Visibility != RasterVisibility::Compute)) ||
+                     (StorageRole(buffer.Role) == false ||
+                      (pass.IsCompute == true ? use.Visibility != RasterVisibility::Compute
+                                              : use.Access != GraphAccessMode::StorageRead ||
+                                                    use.Visibility != RasterVisibility::Fragment))) ||
                     (pass.IsCompute && use.Access != GraphAccessMode::Uniform &&
                      use.Access != GraphAccessMode::StorageRead && use.Access != GraphAccessMode::StorageReadWrite) ||
                     (use.Access == GraphAccessMode::Sampled || use.Access == GraphAccessMode::ColorWrite ||

@@ -84,3 +84,25 @@ TEST_CASE("Viewport GPU servicing cannot reenter through a nested event loop", "
     QTest::qWait(20);
     CHECK(calls == 1);
 }
+
+TEST_CASE("Completion polling suspends the fallback clock and coalesces queued wakes", "[editor][frame-pump]")
+{
+    ViewportFramePump pump;
+    pump.Start();
+    pump.SetProducerPending(true);
+    pump.Start();
+    int32 activeClocks = 0;
+    for (QTimer* timer : pump.findChildren<QTimer*>())
+    {
+        activeClocks += timer->isActive() == true ? 1 : 0;
+    }
+    CHECK(activeClocks == 1);
+    pump.SetProducerPending(false);
+    activeClocks = 0;
+    for (QTimer* timer : pump.findChildren<QTimer*>())
+    {
+        activeClocks += timer->isActive() == true ? 1 : 0;
+    }
+    CHECK(activeClocks == 1);
+    pump.Stop();
+}

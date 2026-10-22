@@ -479,7 +479,9 @@ bool ValidBinding(const RasterBinding& binding) noexcept
     if (binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite)
     {
         const ComputeCapabilities limits = backend::ComputeLimits();
-        return visibility == 4 && binding.MinSize > 0 && binding.MinSize % 4 == 0 &&
+        return (binding.Visibility == RasterVisibility::Compute ||
+                (binding.Kind == RasterBindingKind::StorageRead && binding.Visibility == RasterVisibility::Fragment)) &&
+               binding.MinSize > 0 && binding.MinSize % sizeof(uint32) == 0 &&
                binding.MinSize <= limits.MaxStorageRange;
     }
     return (binding.Visibility != RasterVisibility::Compute ||

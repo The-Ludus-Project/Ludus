@@ -197,7 +197,11 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
         const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
                                                 : role % format::TECHNIQUE_STAGE_COUNT == 0;
-        if ((isVertex == false && inputCount != 0) || (isVertex == true && isRayRole == true && inputCount != 2) ||
+        if (HasVisibilityFields == false && isVertex == true && isRayRole == true && inputCount == 2)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
+        if ((isVertex == false && inputCount != 0) || (isVertex == true && isRayRole == true && inputCount != 1) ||
             (isVertex == true && isRayRole == false && inputCount != format::STATIC_INPUT_COUNT &&
              (HasVisibilityFields == false || inputCount != format::VISIBILITY_INPUT_COUNT)))
         {
@@ -1150,7 +1154,8 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
                                      uint64 sceneRevision,
                                      RenderGraphCoveragePolicy policy,
                                      RenderGraphReport& outReport,
-                                     const SceneShaderInputs* sceneInputsOrNull) noexcept
+                                     const SceneShaderInputs* sceneInputsOrNull,
+                                     uint64 contentRevision) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -1162,7 +1167,8 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     if (state.Active.Get() != nullptr)
     {
         activeStatus =
-            state.Active->Graph.Update(meshes, items, cameras, sceneRevision, policy, outReport, sceneInputsOrNull);
+            state.Active->Graph
+                .Update(meshes, items, cameras, sceneRevision, policy, outReport, sceneInputsOrNull, contentRevision);
         isActiveAccepting = IsAccepted(activeStatus);
         if (isActiveAccepting == true)
         {
@@ -1176,7 +1182,8 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     Generation& candidate = *state.Candidate;
     RenderGraphReport candidateReport;
     const Status candidateStatus =
-        candidate.Graph.Update(meshes, items, cameras, sceneRevision, policy, candidateReport, sceneInputsOrNull);
+        candidate.Graph
+            .Update(meshes, items, cameras, sceneRevision, policy, candidateReport, sceneInputsOrNull, contentRevision);
     if (IsAccepted(candidateStatus) == true)
     {
         candidate.SceneRevision = sceneRevision;

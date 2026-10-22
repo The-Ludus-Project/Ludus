@@ -39,6 +39,7 @@ SCENE_QUERY_LIMITS = {
 
 COMPUTE_ID = 'GraphRayCompute'
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
+IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
@@ -206,7 +207,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         suffix = 'VertexOutput rgEntry(VertexInput value) { return ' + function + '(value); }' if stage == 'vertex' else 'float4 rgEntry(VertexOutput value) : SV_Target0 { return ' + function + '(value); }'
         source += '[shader("' + stage + '")]\n' + suffix + '\n'
         result[identity] = {'id': identity, 'stage': stage, 'source': selected['ray_generation']['source'],
-                            'function': function, 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': source, 'native_ray_profile': True}
+                            'function': function, 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': source, 'native_ray_profile': True, 'fragment_storage': stage == 'fragment'}
     build.require(not set(result) & {program['id'] for program in selected.values()}, 'Schema', 'ray programs', 'reserved linked program identity')
     build.require(snapshot.total <= build.MAX_BYTES and len(snapshot.files) <= build.MAX_FILES, 'Capacity', 'ray sources', 'source snapshot limits exceeded')
     return result
@@ -256,11 +257,13 @@ def check_interface(program, result, build):
             build.require(reflected == expected, 'ShaderInterface', binding['id'],
                           'structured buffer fields differ from the declared Storage schema')
     elif program['id'] == IMAGE_VERTEX_ID:
-        build.require([(entry['binding'], entry['kind'], entry['size']) for entry in entries] == [(0, 'UniformBuffer', 16)]
-                      and [(value['location'], value['format']) for value in interface['inputs']] == [(0, 'Float2'), (1, 'Float4')],
+        build.require(entries == [] and
+                      [{key: value for key, value in item.items() if key != 'name'} for item in interface['inputs']] == IMAGE_INPUTS,
                       'ShaderInterface', program['id'], 'ray image vertex interface differs from renderer ABI')
     else:
-        build.require(entries == [] and interface['inputs'] == [], 'ShaderInterface', program['id'], 'ray image fragment resources are unexpected')
+        build.require([(entry['binding'], entry['kind'], entry['size']) for entry in entries] ==
+                      [(0, 'UniformBuffer', 16), (1, 'StorageRead', 16)] and interface['inputs'] == [],
+                      'ShaderInterface', program['id'], 'ray image fragment resources differ from renderer ABI')
 
 
 def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source=''):
@@ -386,7 +389,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe):
                             '#define LUDUS_SCENE_RAY_INTERFACE 1\n#define LUDUS_GRAPH_PERSISTENT_PIPELINE 1')
     prefix += '[[vk::binding(6, 0)]] RWStructuredBuffer<uint4> GraphBuffer0;\n'
     prefix += '[[vk::binding(7, 0)]] RWStructuredBuffer<uint4> GraphBuffer1;\n'
-    prefix += 'uint GetGraphPassIndex() { return Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT; }\n'
+    prefix += 'uint GetGraphPassIndex() { return (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK; }\n'
     prefix += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
     # Shared type/helper includes are global and captured before entry-source namespaces.
     # Includes are compiler-resolved from the same immutable source snapshot.
