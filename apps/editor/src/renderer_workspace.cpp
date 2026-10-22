@@ -1398,7 +1398,7 @@ void RendererWorkspace::restoreSourceHistory()
         mSelectedFile = selection.File;
         mSelectedConfiguration = selection.Configuration;
         mSelectedNode = selection.Node;
-        mSelectedNodes = {selection.Node};
+        mSelectedNodes = selection.Node.isEmpty() == true ? QStringList{} : QStringList{selection.Node};
     }
     const RenderGraphTextState state = mDocument.GetHistoryTextState();
     if (state.File.isEmpty() == false)
@@ -3007,6 +3007,12 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
     createConfiguration->setObjectName(QStringLiteral("renderGraphAddConfiguration"));
     createConfiguration->setEnabled(mDocument.IsLoaded() == true);
     connect(createConfiguration, &QAction::triggered, this, &RendererWorkspace::promptCreateConfiguration);
+    QAction* removeConfiguration = menu.addAction(QStringLiteral("Delete Configuration"));
+    removeConfiguration->setObjectName(QStringLiteral("renderGraphDeleteConfiguration"));
+    removeConfiguration->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);
+    connect(removeConfiguration, &QAction::triggered, this, [this]() {
+        static_cast<void>(RemoveSelectedConfiguration());
+    });
     menu.addSeparator();
     const QJsonObject node = mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))

@@ -2552,6 +2552,15 @@ configurations. The new empty configuration opens immediately; its ports can be
 added through **Edit Inputs / Outputs...**. The existing asset default stays the
 same. Creation is one undo step, and Save publishes it.
 
+Choose **Delete Configuration** in the source-tree or canvas right-click menu to
+remove the selected configuration, including its nodes, connections, ports and
+layout. The tree also accepts Delete on a single configuration row. Deletion is
+one undo step; Undo restores the configuration and its selection, Redo removes
+it again, and Save publishes the deletion. At least one configuration must remain.
+Deleting the asset default makes the first remaining configuration its default.
+If a surviving Subgraph node in the loaded package references the configuration,
+deletion is rejected with the caller's location: remove or rebind that node first.
+
 Left-drag empty canvas space to box-select nodes. Shift-drag adds to the selection;
 Shift-click adds a node and Ctrl-click toggles one. **Select All** and **Escape**
 select or clear the group. Pan with middle-drag or hold Space while left-dragging;

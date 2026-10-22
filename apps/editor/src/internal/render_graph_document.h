@@ -28,7 +28,7 @@ struct RenderGraphTextState final
     CodeTextSelection Selection;
 };
 
-/// Non-authoring selection restored by a node rename's Undo/Redo on the GUI thread.
+/// Non-authoring selection restored by a structural edit's Undo/Redo on the GUI thread.
 struct RenderGraphNodeSelection final
 {
     QString File;
@@ -192,6 +192,13 @@ public:
     /// Add an empty named configuration to an existing file without changing its default.
     /// Unique ASCII identifiers are required. One undo step; failure preserves the draft.
     [[nodiscard]] RenderGraphDocumentStatus AddConfiguration(const QString& file, const QString& name);
+    /// Remove a configuration and all its contents as one undoable draft edit. Rejects
+    /// the last configuration and references from surviving loaded Subgraph nodes,
+    /// naming the required repair in outError. Removing the default selects the first
+    /// remaining configuration. Failure preserves sources/history; Save publishes.
+    /// GUI thread only. History restores the removed/surviving configuration selection.
+    [[nodiscard]] RenderGraphDocumentStatus
+    RemoveConfiguration(const QString& file, const QString& configuration, QString& outError);
     /// Copy authored nodes, their internal edges and displayed layout into a bounded payload.
     /// External connections and configuration interfaces are excluded. outPayload survives failure;
     /// outError describes a failure. GUI thread only.
@@ -292,7 +299,7 @@ public:
         return mDraft.TextState;
     }
 
-    /// Selection hint from the current rename transaction; empty for other edits.
+    /// Selection hint from the current structural transaction; empty for other edits.
     /// The document owns the returned reference until its next mutation.
     [[nodiscard]] LUDUS_INLINE const RenderGraphNodeSelection& GetHistoryNodeSelection() const noexcept
     {

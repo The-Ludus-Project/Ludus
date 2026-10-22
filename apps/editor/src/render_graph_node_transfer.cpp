@@ -262,6 +262,89 @@ RenderGraphDocumentStatus RenderGraphDocument::AddConfiguration(const QString& f
     return commit(candidate, false);
 }
 
+RenderGraphDocumentStatus
+RenderGraphDocument::RemoveConfiguration(const QString& file, const QString& configuration, QString& outError)
+{
+    outError = QStringLiteral("Select an existing configuration before deleting it.");
+    QJsonObject graph;
+    if (GetGraph(file, graph) == false)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    const qsizetype index = FindConfiguration(configurations, configuration);
+    if (index < 0)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    if (configurations.size() == 1)
+    {
+        outError =
+            QStringLiteral("Cannot delete the last configuration in %1. Add another configuration first.").arg(file);
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    for (const QString& source : GetFiles())
+    {
+        QJsonObject callerGraph;
+        if (GetGraph(source, callerGraph) == false)
+        {
+            continue;
+        }
+        const QJsonArray callers = callerGraph.value(QStringLiteral("configurations")).toArray();
+        for (const QJsonValueConstRef value : callers)
+        {
+            const QJsonObject caller = value.toObject();
+            const QString callerConfiguration = caller.value(QStringLiteral("id")).toString();
+            if (source == file && callerConfiguration == configuration)
+            {
+                continue;
+            }
+            for (const QJsonValueConstRef nodeValue : caller.value(QStringLiteral("nodes")).toArray())
+            {
+                const QJsonObject node = nodeValue.toObject();
+                if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph") &&
+                    node.value(QStringLiteral("asset")).toString() == file &&
+                    node.value(QStringLiteral("configuration")).toString() == configuration)
+                {
+                    outError = QStringLiteral("Cannot delete %1#%2: Subgraph %3#%4/%5 references it. "
+                                              "Remove or rebind that node first.")
+                                   .arg(file,
+                                        configuration,
+                                        source,
+                                        callerConfiguration,
+                                        node.value(QStringLiteral("id")).toString());
+                    return RenderGraphDocumentStatus::InvalidEdit;
+                }
+            }
+        }
+    }
+    configurations.removeAt(index);
+    graph.insert(QStringLiteral("configurations"), configurations);
+    if (graph.value(QStringLiteral("default")).toString() == configuration)
+    {
+        graph.insert(QStringLiteral("default"), configurations.first().toObject().value(QStringLiteral("id")));
+    }
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    const RenderGraphDocumentStatus status = commit(candidate,
+                                                    false,
+                                                    {},
+                                                    {},
+                                                    {file, configuration, {}},
+                                                    {file, graph.value(QStringLiteral("default")).toString(), {}});
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mLastMove.clear();
+        outError.clear();
+    }
+    else
+    {
+        outError = QStringLiteral(
+            "The configuration could not be deleted within the package limits. The draft was preserved.");
+    }
+    return status;
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::CopyNodes(const QString& file,
                                                          const QString& configuration,
                                                          const QStringList& nodes,
