@@ -31,6 +31,9 @@ struct ComputePipelineDescription final
 };
 /// One logical compute pass contains exactly one dispatch. Dependent dispatches
 /// need separate ordered graph passes. Shader-local races remain kernel obligations.
+/// @note On native Metal, storage-buffer GetDimensions uses the bound range's byte
+/// length, not the full allocation. Querying ranges beyond uint32 byte capacity
+/// returns Unsupported before dispatch; shaders must still bound their own indices.
 struct ComputeDispatch final
 {
     /// Ready immutable pipeline.

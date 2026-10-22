@@ -1,6 +1,8 @@
 #pragma once
 
 #include "profile.h"
+
+#include <ludus/foundation/base/checked_integer.hpp>
 // Private implementation included only by rhi_metal.mm: native device/frame
 // ownership remains in the existing backend translation unit.
 // Thanks to Apple, "Resource Fundamentals", Metal Programming Guide (retained
@@ -39,12 +41,30 @@ internal::StorageTable<RasterMetalShader> gRasterShaders;
 internal::StorageTable<internal::RasterLayout> gRasterLayouts;
 internal::StorageTable<internal::RasterSet> gRasterSets;
 internal::StorageTable<RasterMetalPipeline> gRasterPipelines;
-internal::StorageTable<id<MTLComputePipelineState>> gComputePipelines;
+// Thanks to KhronosGroup, SPIRV-Cross CompilerMSL::Options::buffer_size_buffer_index:
+// https://github.com/KhronosGroup/SPIRV-Cross/blob/main/spirv_msl.hpp
+// Its OpArrayLength lowering reads byte ranges indexed by native buffer slot.
+// Keep the reserved auxiliary slot separate from the public group-zero layout.
+constexpr uint32 METAL_BUFFER_SIZE_TABLE_SLOT = 25;
+using MetalBufferSizeTable = foundation::StaticArray<uint32, internal::RASTER_BINDINGS>;
+struct MetalComputePipeline final
+{
+    id<MTLComputePipelineState> ObjectOrNull = nil;
+    bool HasBufferSizeTable = false;
+};
+internal::StorageTable<MetalComputePipeline> gComputePipelines;
 internal::StorageTable<internal::ComputePipelineInfo> gComputeInfos;
 uint64 gRasterOrdinals[FRAMES]{};
 uint64 gRasterCompleted = 0;
 uint32 gRasterWidth = 0, gRasterHeight = 0;
 RasterPassDescription gRasterRegion{};
+bool IsMetalBufferSizeTable(id<MTLBinding> binding, ShaderStage stage) noexcept
+{
+    return stage == ShaderStage::Compute && binding.type == MTLBindingTypeBuffer &&
+           binding.index == METAL_BUFFER_SIZE_TABLE_SLOT && binding.access == MTLBindingAccessReadOnly &&
+           [binding.name isEqualToString:@"spvBufferSizeConstants"] == true &&
+           ((id<MTLBufferBinding>)binding).bufferDataSize <= sizeof(MetalBufferSizeTable);
+}
 bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
                          const internal::RasterShaderInfo& shader,
                          const internal::RasterPipelineInfo& pipeline) noexcept
@@ -61,6 +81,10 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
         if (shader.Stage == ShaderStage::Vertex && binding.type == MTLBindingTypeBuffer &&
             binding.index >= internal::RASTER_BINDINGS &&
             binding.index < internal::RASTER_BINDINGS + pipeline.StreamCount)
+        {
+            continue;
+        }
+        if (IsMetalBufferSizeTable(binding, shader.Stage) == true)
         {
             continue;
         }
@@ -295,6 +319,7 @@ struct MetalComputePreparation final : NativePreparationTask
     id<MTLDevice> DeviceOrNull = nil;
     RasterMetalShader Shader;
     internal::ComputePipelineInfo Info;
+    bool HasBufferSizeTable = false;
     id<MTLComputePipelineState> ObjectOrNull = nil;
     NSError* ErrorOrNull = nil;
     RasterStatus Outcome = RasterStatus::Failed;
@@ -307,7 +332,7 @@ struct MetalComputePreparation final : NativePreparationTask
     {
         if (Outcome == RasterStatus::Ready)
         {
-            gComputePipelines[ResourceSlot] = ObjectOrNull;
+            gComputePipelines[ResourceSlot] = {ObjectOrNull, HasBufferSizeTable};
             gComputeInfos[ResourceSlot] = Info;
         }
         else
@@ -368,6 +393,12 @@ RasterStatus MetalComputePreparation::Build() noexcept
 
             return RasterStatus::Failed;
         }
+        for (id<MTLBinding> binding in reflectionOrNull.bindings)
+        {
+            HasBufferSizeTable =
+                HasBufferSizeTable == true ||
+                (binding.used == true && IsMetalBufferSizeTable(binding, ShaderStage::Compute) == true);
+        }
         ObjectOrNull = pipelineOrNull;
         return RasterStatus::Ready;
     }
@@ -396,6 +427,21 @@ struct RayMetalSceneBinding final
 void BindRayMetalScene(id<MTLComputeCommandEncoder> encoder, const RayMetalSceneBinding& description) noexcept;
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
+    const MetalComputePipeline& pipeline = gComputePipelines[packet.Pipeline];
+    const internal::RasterSet& bindings = gRasterSets[packet.Set];
+    MetalBufferSizeTable bufferSizes{};
+    if (pipeline.HasBufferSizeTable == true)
+    {
+        for (usize i = 0; i < bindings.Description.Count; ++i)
+        {
+            const RasterBinding& entry = bindings.Description.Entries[i];
+            if ((entry.Kind == RasterBindingKind::StorageRead || entry.Kind == RasterBindingKind::StorageReadWrite) &&
+                foundation::TryIntegerCast(bindings.Sizes[i], bufferSizes[entry.Binding]) == false)
+            {
+                return RasterStatus::Unsupported;
+            }
+        }
+    }
     MTLComputePassDescriptor* description = [MTLComputePassDescriptor computePassDescriptor];
     ConfigurePassTiming(description);
     id<MTLComputeCommandEncoder> encoder = [gCommand computeCommandEncoderWithDescriptor:description];
@@ -404,7 +450,11 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     {
         return RasterStatus::OutOfMemory;
     }
-    [encoder setComputePipelineState:gComputePipelines[packet.Pipeline]];
+    [encoder setComputePipelineState:pipeline.ObjectOrNull];
+    if (pipeline.HasBufferSizeTable == true)
+    {
+        [encoder setBytes:bufferSizes.GetData() length:sizeof(bufferSizes) atIndex:METAL_BUFFER_SIZE_TABLE_SLOT];
+    }
     const auto& set = gRasterSets[packet.Set];
     const internal::RasterLayout& layout = set.Description;
     for (usize i = 0; i < layout.Count; ++i)
@@ -797,7 +847,7 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
             gRasterPipelines[slot] = {};
             break;
         case internal::RasterKind::ComputePipeline:
-            gComputePipelines[slot] = nil;
+            gComputePipelines[slot] = {};
             gComputeInfos[slot] = {};
             break;
         case internal::RasterKind::RayGeometry:
