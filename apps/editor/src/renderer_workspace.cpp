@@ -17,10 +17,11 @@
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/core.h>
-#include <ludus/foundation/profiling/profiling.hpp>
 
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include <ludus/foundation/profiling/profiling.hpp>
+
 #    include "editor_default_graph.h"
 #    include "editor_renderer_static.h"
 #    include "internal/render_graph_preview.h"
@@ -1349,6 +1350,14 @@ void RendererWorkspace::restoreSourceHistory()
 {
     mSourceEditDebounce.stop();
     mSourceController->BreakUndoGroup();
+    const RenderGraphNodeSelection selection = mDocument.GetHistoryNodeSelection();
+    if (selection.File.isEmpty() == false)
+    {
+        mSelectedFile = selection.File;
+        mSelectedConfiguration = selection.Configuration;
+        mSelectedNode = selection.Node;
+        mSelectedNodes = {selection.Node};
+    }
     const RenderGraphTextState state = mDocument.GetHistoryTextState();
     if (state.File.isEmpty() == false)
     {
@@ -2121,10 +2130,8 @@ void RendererWorkspace::renderInspector()
 void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inoutParent)
 {
     const QJsonObject node = selectedNode();
-    outFields.addRow(QStringLiteral("Node"),
-                     new QLabel(mSelectedNode + QStringLiteral(" (") + node.value(QStringLiteral("kind")).toString() +
-                                    QLatin1Char(')'),
-                                &inoutParent));
+    populateNodeNameFields(outFields, inoutParent);
+    outFields.addRow(QStringLiteral("Kind"), new QLabel(node.value(QStringLiteral("kind")).toString(), &inoutParent));
     if (HasSceneBundle(node) == true)
     {
         QPushButton* expand = new QPushButton(QStringLiteral("Expand Scene Bundle"), &inoutParent);
@@ -2403,7 +2410,8 @@ void RendererWorkspace::editNodeOnCanvas(const QString& diagnosticField)
     QScrollArea* scroll = new QScrollArea(&dialog);
     scroll->setWidgetResizable(true);
     layout->addWidget(scroll);
-    const auto refresh = [this, scroll]() {
+    const auto refresh = [this, scroll, &dialog]() {
+        dialog.setWindowTitle(QStringLiteral("Edit %1").arg(mSelectedNode));
         QWidget* previousOrNull = scroll->takeWidget();
         if (previousOrNull != nullptr)
         {
@@ -2917,6 +2925,10 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         edit->setObjectName(QStringLiteral("renderGraphEditNodeAction"));
         edit->setEnabled(CanCreateSubgraph());
         connect(edit, &QAction::triggered, this, [this]() { editNodeOnCanvas(); });
+        QAction* rename = menu.addAction(QStringLiteral("Rename Node..."));
+        rename->setObjectName(QStringLiteral("renderGraphRenameNodeAction"));
+        rename->setEnabled(CanCreateSubgraph());
+        connect(rename, &QAction::triggered, this, &RendererWorkspace::promptRenameNode);
     }
     QAction* editInterface = menu.addAction(QStringLiteral("Edit Inputs / Outputs..."));
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterfaceAction"));

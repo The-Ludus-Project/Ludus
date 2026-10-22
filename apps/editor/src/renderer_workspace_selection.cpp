@@ -1,14 +1,21 @@
 #include "internal/renderer_workspace.h"
 
+#include <ludus/foundation/base/core.h>
+
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMimeData>
+#include <QPushButton>
 #include <QShortcut>
 #include <QTabWidget>
 #include <QTreeWidget>
@@ -20,6 +27,97 @@ using namespace foundation;
 namespace
 {
 const QString NODE_MIME = QStringLiteral("application/x-ludus-render-graph-nodes");
+}
+
+void RendererWorkspace::populateNodeNameFields(QFormLayout& outFields,
+                                               QWidget& inoutParent,
+                                               QDialog* closeOnRenameOrNull)
+{
+    QWidget* row = new QWidget(&inoutParent);
+    QHBoxLayout* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 0, 0, 0);
+    QLineEdit* name = new QLineEdit(mSelectedNode, row);
+    name->setObjectName(QStringLiteral("renderGraphNodeName"));
+    name->setProperty("renderGraphField", QStringLiteral("id"));
+    name->setAccessibleName(QStringLiteral("Node name"));
+    name->setToolTip(QStringLiteral("Unique ASCII identifier starting with a letter; 'input' is reserved."));
+    QPushButton* rename = new QPushButton(QStringLiteral("Rename"), row);
+    rename->setObjectName(QStringLiteral("renderGraphRenameNode"));
+    rename->setAutoDefault(false);
+    layout->addWidget(name);
+    layout->addWidget(rename);
+    QLabel* error = new QLabel(&inoutParent);
+    error->setObjectName(QStringLiteral("renderGraphNodeNameError"));
+    error->setWordWrap(true);
+    const auto apply = [this, name, error, closeOnRenameOrNull]() {
+        QString message;
+        if (renameSelectedNode(name->text(), message) == false)
+        {
+            error->setText(message);
+            name->setFocus();
+        }
+        else if (closeOnRenameOrNull != nullptr)
+        {
+            closeOnRenameOrNull->accept();
+        }
+    };
+    connect(rename, &QPushButton::clicked, this, apply);
+    connect(name, &QLineEdit::returnPressed, this, apply);
+    connect(name, &QLineEdit::textChanged, error, &QLabel::clear);
+    outFields.addRow(QStringLiteral("Name"), row);
+    outFields.addRow(error);
+}
+
+bool RendererWorkspace::renameSelectedNode(const QString& name, QString& outError)
+{
+    if (CanCreateSubgraph() == false || selectedNode().isEmpty() == true || mSelectedNodes.size() != 1)
+    {
+        outError = QStringLiteral("Select one node and resolve source conflicts before renaming it.");
+        mStatus->setText(outError);
+        return false;
+    }
+    const QString previous = mSelectedNode;
+    const bool isExpanded = mCanvas->IsSceneBundleExpanded(previous);
+    const RenderGraphDocumentStatus status =
+        mDocument.RenameNode(mSelectedFile, mSelectedConfiguration, previous, name, outError);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(outError);
+        return false;
+    }
+    if (previous == name)
+    {
+        return true;
+    }
+    mSelectedNode = name;
+    mSelectedNodes = {name};
+    if (isExpanded == true)
+    {
+        mCanvas->SetSceneBundleExpanded(name, true);
+    }
+    documentEdited(status);
+    return true;
+}
+
+void RendererWorkspace::promptRenameNode()
+{
+    if (selectedNode().isEmpty() == true || CanCreateSubgraph() == false)
+    {
+        return;
+    }
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("renderGraphRenameNodeDialog"));
+    dialog.setWindowTitle(QStringLiteral("Rename %1").arg(mSelectedNode));
+    QFormLayout* form = new QFormLayout(&dialog);
+    populateNodeNameFields(*form, dialog, &dialog);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+    QLineEdit* name = dialog.findChild<QLineEdit*>(QStringLiteral("renderGraphNodeName"));
+    LUDUS_REQUIRE(name != nullptr);
+    name->selectAll();
+    name->setFocus();
+    dialog.exec();
 }
 
 void RendererWorkspace::setupGraphSelection()

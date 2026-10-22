@@ -28,6 +28,7 @@
 QT_BEGIN_NAMESPACE
 class QAction;
 class QComboBox;
+class QDialog;
 class QFormLayout;
 class QLabel;
 class QLineEdit;
@@ -313,6 +314,9 @@ private:
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
+    void populateNodeNameFields(QFormLayout& outFields, QWidget& inoutParent, QDialog* closeOnRenameOrNull = nullptr);
+    [[nodiscard]] bool renameSelectedNode(const QString& name, QString& outError);
+    void promptRenameNode();
     void editNodeOnCanvas(const QString& diagnosticField = {});
     void renderEdges();
     void renderSource();
