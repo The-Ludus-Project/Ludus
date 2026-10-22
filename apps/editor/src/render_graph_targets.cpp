@@ -95,7 +95,9 @@ bool ReadNames(const renderer::RenderGraphPlan& plan,
         const bool isDepth = entry.value(QStringLiteral("type")).toString() == QStringLiteral("DepthTexture");
         if (name.isEmpty() == true || seen.contains(name) == true || extent.size() != 2 ||
             extent.at(0).toInteger() != resource.Width || extent.at(1).toInteger() != resource.Height ||
-            isDepth != (resource.Kind == format::Aspect::Depth))
+            isDepth != (resource.Kind == format::Aspect::Depth) ||
+            (entry.value(QStringLiteral("type")).toString() == QStringLiteral("Buffer")) !=
+                (resource.Kind == format::Aspect::Buffer))
         {
             outProblem = QStringLiteral("the resource names file does not match texture %1").arg(i);
             return false;
@@ -227,6 +229,7 @@ RenderGraphTargetCatalogue MakeTargetCatalogue(const renderer::RenderGraphPlan& 
         target.Width = resource.Width;
         target.Height = resource.Height;
         target.IsDepth = resource.Kind == format::Aspect::Depth;
+        target.IsBuffer = resource.Kind == format::Aspect::Buffer;
         target.IsExported = resource.IsExported == 1;
         target.IsSurface = resource.IsSurface == 1;
         catalogue.Targets.append(target);
@@ -294,7 +297,7 @@ ResolveCanvasTargets(const RenderGraphTargetCatalogue& catalogue, const QString&
     };
     for (const RenderGraphTarget& target : catalogue.Targets)
     {
-        if (matches(target.Name) == true)
+        if (target.IsBuffer == false && matches(target.Name) == true)
         {
             AppendUnique(names, target.Name);
         }

@@ -4,14 +4,18 @@
 #include "reference_data.h"
 
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/gpu_preview.hpp>
+#include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/graph.h>
 
 namespace ludus::graphics::renderer::internal
 {
+inline constexpr usize GPU_PREVIEW_JOB_COUNT = 16; // Four passes, three retained scenes and retiring work.
+inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
 struct GpuPreviewUniform final
 {
     math::Matrix4 ClipToWorld;
@@ -52,6 +56,8 @@ struct GpuPreviewRecord final
     rhi::BufferHandle ImageParameters{};
     rhi::BindingSetHandle ComputeBindings{};
     rhi::BindingSetHandle ImageBindings{};
+    foundation::StaticArray<GpuPreviewGraphBuffer, GPU_GRAPH_BUFFER_COUNT> GraphBuffers{};
+    foundation::StaticArray<bool, GPU_GRAPH_BUFFER_COUNT> HasOwnedGraphBuffers{};
     GpuFrameRecord Frames[2];
     GpuPreviewInfo Info;
     uint32 Width = 0;
@@ -70,6 +76,7 @@ struct GpuPreviewState final
 {
     GpuPreviewOptions Options;
     bool IsGraphRayScene = false;
+    bool HasPersistentBuffers = false;
     uint32 Phase = 0;
     bool QuadCreated = false;
     bool IndicesCreated = false;
@@ -83,7 +90,7 @@ struct GpuPreviewState final
     rhi::RasterPipelineHandle ImagePipeline{};
     rhi::BufferHandle Quad{};
     rhi::BufferHandle Indices{};
-    GpuPreviewRecord Jobs[4];
+    GpuPreviewRecord Jobs[GPU_PREVIEW_JOB_COUNT];
     usize GpuBytes = 0;
 };
 } // namespace ludus::graphics::renderer::internal

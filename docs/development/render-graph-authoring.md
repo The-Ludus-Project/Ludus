@@ -280,8 +280,9 @@ scene and the editor's last completed image; retired GPU resources follow the
 existing RHI completion/pool ledger. The editor reads physical viewport dimensions
 before its ordinary edit-preview cap, and updates target inspection dimensions
 only after publication. Resolution changes create fresh ray jobs and reset their
-accumulation. The current profile has no persistent temporal/history imports;
-those remain rejected rather than retaining incompatible history across resize.
+accumulation. Graph-owned persistent buffers keep their fixed byte capacities and contents
+across resize. Shaders must validate capacity and invalidate incompatible history; foreign
+texture/history imports remain unsupported. See [ordered ray passes](#order-ray-passes-and-share-persistent-buffers).
 
 ## Execute a triangle ray pipeline
 
@@ -469,12 +470,12 @@ The target-derived launch mode uses each target's resolved extent, including
 [shared and view-relative render sizes](#share-render-sizes). Runtime launch coverage
 follows the instantiated color extent; adaptive resolution remains separate work.
 
-The profile admits one ray invocation per configuration and the existing graph
-mesh/item limits. It rejects native ray payloads, recursive tracing, additional hit groups,
-any-hit/intersection/callable stages, extra resources, masked/transparent or
+The profile admits up to four consecutive ray invocations per configuration and the existing graph
+mesh/item limits. Multiple invocations or persistent buffers require the scene callback interface. It rejects native ray payloads, recursive tracing, additional hit groups,
+any-hit/intersection/callable stages, resources beyond the two persistent buffer slots, masked/transparent or
 deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
 aspect; no ray depth output is inferred. Ray preparation has renderer-owned
-256 MiB CPU and 256 MiB GPU limits across retained jobs; device storage limits can
+2 GiB CPU and 2 GiB GPU limits across retained jobs; device storage limits can
 be tighter. The existing static opaque setup technique remains in the manifest
 for shared mesh/snapshot ownership and is never used to rasterize ray scene
 geometry. A complete source example is the
@@ -488,6 +489,87 @@ an acquired frame call `PrepareEncoding()` between frames before `Encode()`, the
 candidates preserve the last drawable scene; an exported color is valid only
 after its tracked producer completes. Shader changes continue through immutable
 packages and atomic graph activation.
+
+
+### Order ray passes and share persistent buffers
+
+Create up to four Ray Tracing Pipeline nodes for candidate generation, temporal reuse,
+spatial reuse and final shading. Give each node its own registered ray-generation,
+miss and closest-hit programs. They share the manifest's `scene_interface` payload
+and query budgets, while each invocation receives its selected callbacks. Callback
+sources are isolated in generated namespaces, so different files may use the same
+function names. Reusable type/helper headers are included globally; do not make a
+callback source depend on declarations hidden in another callback source. All ray
+nodes must form one consecutive sequence in the lowered execution plan; raster
+passes may precede or follow it.
+
+Add a **Buffer** node from the canvas Add Node menu or Properties. **Edit Node** on
+its canvas context menu edits the same byte-capacity field, with undo and explicit
+Save. A buffer starts with sixteen zero bytes. Set `bytes` to the required capacity,
+a positive multiple of sixteen, at most 256 MiB per buffer. For example, a
+96 × 64 image with one `uint4` per pixel needs:
+
+```json
+{"id": "reservoirs", "kind": "Buffer", "bytes": 98304}
+```
+
+In each ray node, add up to two **Buffer** Read Inputs. Pair each with a **Buffer**
+Writable Resource using `Bytes`, **Load**, and **Store**. Connect `reservoirs.buffer`
+to the first writer, then connect that writer's buffer output to the next pass's
+input. Continue through the sequence. Connect the color outputs in the same way
+and route the final color to Export. Branching two writers from an earlier version,
+within-frame cycles, and binding the same allocation in both slots of one pass are
+errors. Unconnected optional Buffer inputs are not an executable binding: remove
+an unused declaration. Missing slots receive private dummy storage.
+
+The first Buffer input in a node's input list binds `GraphBuffer0`; the second
+binds `GraphBuffer1`. Both are `RWStructuredBuffer<uint4>`, with sixteen-byte words.
+The compiler generates and checks their resource slots; author shaders do not
+write descriptor annotations. Pack a reservoir into as many words as its schema
+needs, using `asuint`/`asfloat` for floating values. Query `GetDimensions` and bound
+all indices against the allocation's word count. A simple storage access is:
+
+```slang
+uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+uint4 previous = GraphBuffer0[pixel];
+GraphBuffer1[pixel] = previous;
+```
+
+For spatial reuse, read neighbours from one allocation and write the other, then
+swap their input order in the next pass. Separate passes establish GPU visibility;
+there is no cross-thread synchronization between arbitrary pixels inside a dispatch.
+The graph conservatively declares both slots read/write, even if a particular
+callback only reads one. Native RHI dependencies track the final storage versions
+as history roots. The sequence compiles into one ordered graph, so shared resources
+are imported once and RAW/WAR/WAW hazards span every invocation. The default RHI
+logical-resource ceiling is 64; explicitly smaller device limits may reject a
+sequence. Resource and byte budgets still include all retained scenes/jobs.
+
+Buffers belong to the graph instance. They are zeroed once on creation, survive
+frames, camera/World replacements and attachment-only resize, and are released
+with the graph through normal GPU retirement. Shader edits that activate a new
+graph instance create fresh buffers. Capacity stays fixed on resize: allocate for
+the intended maximum extent or rebuild the graph with a larger capacity. The
+shader owns history validation, reprojection, and reset metadata, including changes
+to scene generation, camera, extent or reservoir layout. A previous-frame resource
+is the persistent allocation's contents; do not draw a cyclic edge back into the
+same frame's first pass.
+
+This profile executes every frame and presents that frame's radiance, without
+progressive averaging or a 4096-sample stop. `launch.SampleIndex` is a bit-preserved
+32-bit invocation counter that starts at zero with each new scene job and wraps;
+it is not a persistent-buffer validity flag. `HasPendingSamples()` stays true for
+this profile, so the editor continues to submit unchanged scenes. Finish the
+previous producer and export consumers before the next frame. Pending or failed
+candidate preparation cannot write the live buffers; GPU shader writes in an
+encoded frame are ordinary persistent effects and are not rolled back.
+
+The [ordered-ray fixture](../../tests/sdk_consumer/rg2/ordered_ray/main.lurender.json)
+and its [shaders](../../tests/sdk_consumer/rg2/ordered_ray/main_shaders/initial.slang)
+exercise independent callbacks, inter-pass writes and cross-frame accumulation of
+buffer values. They establish the storage/ordering seam for an authored ReSTIR
+implementation; reservoir sampling, temporal reprojection and disocclusion logic
+remain shader policy.
 
 ## Author scene-aware ray shaders
 
@@ -744,7 +826,8 @@ Your shader decides how to combine light samples with BSDF samples. In particula
 the terminal surface's NEE contribution has weight one if you never sample a
 competing BSDF continuation there. The engine does not apply that weight for you.
 
-Scene callbacks return unclamped linear RGB. GPU history accumulates it before
+Scene callbacks return unclamped linear RGB. For a single invocation without persistent
+buffers, GPU history accumulates it before
 the preview's exposure-one Reinhard/sRGB display conversion. Each scene/camera or
 shader generation starts new history, advancing up to 4096 samples. The editor
 continues submitting ray frames for an unchanged drawable extraction until that

@@ -599,6 +599,12 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
     uint pixel = positionPixel.y * Dimensions.x + positionPixel.x;
     float4 sum = accumulation[pixel * 2];
     float4 compensation = accumulation[pixel * 2 + 1];
+#if defined(LUDUS_GRAPH_PERSISTENT_PIPELINE)
+    float3 sample = EvaluateGraphRay(pixel);
+    compensation.w = any(isfinite(sample) == false) || any(sample < 0) ? 1 : 0;
+    accumulation[pixel * 2] = float4(sample, asfloat(asuint(sum.w) + 1));
+    float3 mean = sample;
+#else
     if (sum.w < float(Sampling.w) && compensation.w == 0)
     {
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
@@ -625,6 +631,7 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
         accumulation[pixel * 2 + 1] = compensation;
     }
     float3 mean = sum.w > 0 ? sum.xyz / sum.w : float3(0);
+#endif
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE) && !defined(LUDUS_SCENE_RAY_INTERFACE)
     colors[pixel] = float4(compensation.w != 0 ? float3(1, 0, 1) : saturate(mean), float(pixel));
 #else

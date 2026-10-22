@@ -251,6 +251,10 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
         ports.Inputs = {{QStringLiteral("target"), node.value(QStringLiteral("target_type")).toString()}};
         ports.Outputs = {{QStringLiteral("view"), QStringLiteral("View")}};
     }
+    else if (kind == QStringLiteral("Buffer"))
+    {
+        ports.Outputs = {{QStringLiteral("buffer"), QStringLiteral("Buffer")}};
+    }
     else if (kind == QStringLiteral("Target"))
     {
         if (node.value(QStringLiteral("extent")).toString() == QStringLiteral("RenderSize"))

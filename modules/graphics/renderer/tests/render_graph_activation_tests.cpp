@@ -175,6 +175,12 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     {
         inoutWriter.WriteWord(options.SceneData);
     }
+    if (options.Version >= format::PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(0);
+        inoutWriter.WriteWord(format::ABSENT);
+        inoutWriter.WriteWord(format::ABSENT);
+    }
     if (options.HasUniforms == false)
     {
         return;
@@ -943,6 +949,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::VIEW_PACKAGE_VERSION,
                                  format::SCENE_PACKAGE_VERSION,
                                  format::NATIVE_RAY_PACKAGE_VERSION,
+                                 format::INDEPENDENT_RASTER_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;

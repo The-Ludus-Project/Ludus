@@ -140,7 +140,10 @@ struct ScratchShape final
                                   static_cast<uint32>(format::Load::Clear),
                                   static_cast<uint32>(format::Store::Store),
                                   1U,
-                                  ::ludus::content::render_graph_format::SCENE_DATA_ALL})
+                                  ::ludus::content::render_graph_format::SCENE_DATA_ALL,
+                                  0U,
+                                  format::ABSENT,
+                                  format::ABSENT})
         {
             WriteWord(bytes, word);
         }

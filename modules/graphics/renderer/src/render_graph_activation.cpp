@@ -27,7 +27,7 @@ namespace format = content::render_graph_format;
 using Status = rhi::RasterStatus;
 namespace
 {
-constexpr uint32 MAX_ASPECT = static_cast<uint32>(format::Aspect::Depth);
+constexpr uint32 MAX_ASPECT = static_cast<uint32>(format::Aspect::Buffer);
 constexpr uint32 MAX_TECHNIQUE = static_cast<uint32>(format::TECHNIQUE_COUNT - 1);
 constexpr uint32 MAX_VISIBILITY = static_cast<uint32>(format::Visibility::Both);
 constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
@@ -144,6 +144,7 @@ struct RenderGraphPackage::State final
     bool HasRelativeSizes = false;
     bool HasSceneData = false;
     bool HasIndependentPrograms = false;
+    bool HasPersistentBuffers = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -175,13 +176,15 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         const uint32 blockCount = inoutReader.ReadWord();
         if (inoutReader.IsOk() == false || role >= format::STAGE_ROLE_COUNT ||
             (HasIndependentPrograms == false && role >= format::LEGACY_STAGE_ROLE_COUNT) ||
+            (role == static_cast<uint32>(format::StageRole::PersistentRayCompute) && HasPersistentBuffers == false) ||
             target >= format::SHADER_TARGET_COUNT || blockCount > format::UNIFORM_SLOT_COUNT ||
             (blockCount != 0 && target != static_cast<uint32>(format::ShaderTarget::GlslEs)))
         {
             return RenderGraphPackageStatus::Malformed;
         }
         const bool isRayRole =
-            role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT;
+            (role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT) ||
+            role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
         const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
                                                 : role % format::TECHNIQUE_STAGE_COUNT == 0;
         if (inputCount != (isVertex == true ? (isRayRole == true ? 2 : format::STATIC_INPUT_COUNT) : 0))
@@ -271,7 +274,15 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
         const bool hasLegacyCompute = Stages[static_cast<usize>(format::StageRole::RayCompute)][target].IsPresent;
-        const bool hasSceneCompute = Stages[static_cast<usize>(format::StageRole::SceneRayCompute)][target].IsPresent;
+        const bool hasPersistentCompute =
+            Stages[static_cast<usize>(format::StageRole::PersistentRayCompute)][target].IsPresent;
+        const bool hasSceneCompute = Stages[static_cast<usize>(format::StageRole::SceneRayCompute)][target].IsPresent ||
+                                     hasPersistentCompute == true;
+        if (hasPersistentCompute == true &&
+            Stages[static_cast<usize>(format::StageRole::SceneRayCompute)][target].IsPresent == true)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
         if (hasLegacyCompute == true && hasSceneCompute == true)
         {
             return RenderGraphPackageStatus::Malformed;
@@ -391,7 +402,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
                 return RenderGraphPackageStatus::Malformed;
             }
         }
-        if (aspect > MAX_ASPECT)
+        if (aspect > MAX_ASPECT || (aspect == MAX_ASPECT && HasPersistentBuffers == false))
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -415,6 +426,12 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         pass.AllowsRepeatedCoverage = inoutReader.ReadWord();
         pass.SceneData =
             HasSceneData == true ? inoutReader.ReadWord() : ::ludus::content::render_graph_format::SCENE_DATA_ALL;
+        if (HasPersistentBuffers == true)
+        {
+            pass.RayProgram = inoutReader.ReadWord();
+            pass.Buffer0 = inoutReader.ReadWord();
+            pass.Buffer1 = inoutReader.ReadWord();
+        }
         if (program > MAX_TECHNIQUE || (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) ||
             colorLoad > MAX_LOAD || depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
             (pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
@@ -463,15 +480,17 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
-         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::INDEPENDENT_RASTER_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
-    candidate->HasIndependentPrograms = version >= format::PACKAGE_VERSION;
+    candidate->HasIndependentPrograms = version >= format::INDEPENDENT_RASTER_PACKAGE_VERSION;
+    candidate->HasPersistentBuffers = version >= format::PACKAGE_VERSION;
     candidate->Header.Version = format::VERSION;
     candidate->Header.ResourceCount = reader.ReadWord();
     candidate->Header.PassCount = reader.ReadWord();
@@ -608,7 +627,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =
-            role < format::LEGACY_STAGE_ROLE_COUNT
+            role == static_cast<usize>(format::StageRole::PersistentRayCompute) ? result.RayCompute
+            : role < format::LEGACY_STAGE_ROLE_COUNT
                 ? *members[role]
                 : result.AdditionalRasterStages[role - format::LEGACY_STAGE_ROLE_COUNT];
         description.ShouldPrepareAsynchronously = shouldPrepareAsynchronously;
@@ -624,7 +644,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
             continue;
         }
         const bool isRayRole =
-            role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT;
+            (role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT) ||
+            role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
         const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
                                                 : role % format::TECHNIQUE_STAGE_COUNT == 0;
         description.Artifact.Stage = isVertex == true ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment;
@@ -637,14 +658,17 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         }
         if (isRayRole == true)
         {
-            const bool isSceneCompute = role == static_cast<usize>(format::StageRole::SceneRayCompute);
+            const bool isPersistentCompute = role == static_cast<usize>(format::StageRole::PersistentRayCompute);
+            const bool isSceneCompute =
+                role == static_cast<usize>(format::StageRole::SceneRayCompute) || isPersistentCompute == true;
+            result.HasPersistentRayBuffers = result.HasPersistentRayBuffers == true || isPersistentCompute == true;
             result.HasSceneShaderInterface = result.HasSceneShaderInterface == true || isSceneCompute == true;
             description.Artifact.Stage =
                 (role == static_cast<usize>(format::StageRole::RayCompute) || isSceneCompute == true)
                     ? rhi::ShaderStage::Compute
                 : isVertex == true ? rhi::ShaderStage::Vertex
                                    : rhi::ShaderStage::Fragment;
-            SetRenderGraphRayInterface(description, description.Artifact.Stage);
+            SetRenderGraphRayInterface(description, description.Artifact.Stage, isPersistentCompute);
         }
         if (state.BindingCounts[role] != 0)
         {

@@ -19,13 +19,13 @@ from . import render_graph_ray as ray
 MAX_PASSES = 16
 MAX_RESOURCES = 32
 MAX_CAMERAS = 8
-MAX_RAY_PASSES = 1
+MAX_RAY_PASSES = ray.MAX_RAY_PASSES
 MAX_UNIFORM_VALUES = 64
 MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -39,6 +39,7 @@ LEGACY_PROGRAM_COUNT = len(PROGRAMS)
 RASTER_FAMILY_COUNT = LEGACY_PROGRAM_COUNT - 1
 MAX_AUTHORED_TECHNIQUES = build.LIMITS['configurations']
 LEGACY_STAGE_ROLE_COUNT = 12
+PERSISTENT_RAY_STAGE_ROLE = LEGACY_STAGE_ROLE_COUNT + (MAX_AUTHORED_TECHNIQUES - 1) * RASTER_FAMILY_COUNT * 2
 for variant in range(1, MAX_AUTHORED_TECHNIQUES):
     for family, base in enumerate(tuple(PROGRAM_MEMBERS)[:RASTER_FAMILY_COUNT]):
         name = base + 'Variant' + str(variant)
@@ -90,7 +91,7 @@ def lower_plan(package, configuration):
     rasters = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
     cameras = sorted({p['view'] for p in rasters})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
-                  'one triangle ray invocation is admitted per configuration')
+                  'at most four triangle ray passes are admitted per configuration')
     build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Export', 'Present') for p in plan['passes']) and
                   all((p['kind'] == 'RayTracing' and p['technique'] == ray.TECHNIQUE) or (p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
                       (p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] or
@@ -100,6 +101,9 @@ def lower_plan(package, configuration):
     build.require(0 < len(rasters) <= MAX_PASSES and 0 < len(resources) <= MAX_RESOURCES and len(cameras) <= MAX_CAMERAS,
                   'Capacity', configuration, 'Renderer execution limits exceeded')
     build.require(len({p['scene'] for p in rasters}) == 1, 'Configuration', configuration, 'one World extraction per execution profile')
+    ray_positions = [index for index, operation in enumerate(rasters) if operation['kind'] == 'RayTracing']
+    build.require(not ray_positions or ray_positions == list(range(ray_positions[0], ray_positions[-1] + 1)),
+                  'Capability', configuration, 'ray passes must form one consecutive ordered sequence')
     backing = {r: r for r in resources}
     for operation in rasters:
         attachments = operation['attachments']
@@ -118,12 +122,12 @@ def lower_plan(package, configuration):
     resource_records = []
     for resource in resources:
         value = plan['resources'][resource]
-        build.require(value['format'] in ('RGBA8Unorm', 'Depth32Float') and value['samples'] == 1 and
-                      not value['initialized'] and (not value['imported'] or value['presentation']),
+        build.require(value['type'] == 'Buffer' or (value['format'] in ('RGBA8Unorm', 'Depth32Float') and value['samples'] == 1 and
+                      not value['initialized'] and (not value['imported'] or value['presentation'])),
                       'Configuration', resource, 'unqualified format/sample/import/history profile')
         parent = plan['resources'][backing[resource]]
         resource_records.append({'Width': value['extent'][0], 'Height': value['extent'][1],
-                                 'Kind': 'Color' if value['type'] == 'ColorTexture' else 'Depth',
+                                 'Kind': {'ColorTexture': 'Color', 'DepthTexture': 'Depth', 'Buffer': 'Buffer'}[value['type']],
                                  'Backing': resources.index(backing[resource]), 'IsSurface': int(parent['presentation']),
                                  'IsExported': int(resource in output_resources),
                                  'ViewNumerator': value.get('view_scale', [0, 1])[0],
@@ -133,9 +137,18 @@ def lower_plan(package, configuration):
     for operation in rasters:
         if operation['kind'] == 'RayTracing':
             color = operation['attachments']['color']
+            recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE]
+            variants = recipes[0].get('ray_programs', [list(ray.program_tuple(operation['pipeline']))]) if recipes else [list(ray.program_tuple(operation['pipeline']))]
+            variant = list(ray.program_tuple(operation['pipeline']))
+            build.require(variant in variants and all(recipe.get('ray_programs', variants) == variants for recipe in recipes),
+                          'Package', operation['id'], 'ray callback selection differs between target artifacts')
+            buffers = [ABSENT] * ray.MAX_BUFFERS
+            for use in operation.get('buffers', []):
+                buffers[use['slot']] = resources.index(use['resource'])
             pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']),
                 'Color': resources.index(color['resource']), 'Depth': ABSENT, 'ColorLoad': 'Clear', 'ColorStore': 'Store',
-                'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA)})
+                'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
+                'RayProgram': variants.index(variant), 'Buffer0': buffers[0], 'Buffer1': buffers[1]})
             continue
         choices = [r for r in package['recipes'] if r['technique'] == operation['technique'] and
                    ('pipeline' not in operation or all(r['state'][key] == value
@@ -155,7 +168,8 @@ def lower_plan(package, configuration):
                              'Color': resources.index(color['resource']) if color else ABSENT,
                              'Depth': resources.index(depth), 'ColorLoad': color_load, 'ColorStore': color_store,
                              'DepthLoad': attachment['depth']['load'], 'DepthStore': attachment['depth']['store'],
-                             'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA)})
+                             'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
+                             'RayProgram': 0, 'Buffer0': ABSENT, 'Buffer1': ABSENT})
     # Distinct explicitly authored shader pairs represent deliberate passes (for
     # example GBuffer and beauty), rather than an accidental duplicate scene route.
     for operation, record in zip(rasters, pass_records):
@@ -173,7 +187,7 @@ STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 7
+PACKAGE_VERSION = 8
 MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
@@ -354,7 +368,8 @@ def _runtime_contents(path, configuration):
     interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1', 'vertex_schema': vertex_schemas[0], 'inputs': STATIC_INPUTS, 'uniform_schemas': uniform_interface}
     scene_versions = {r.get('scene_interface_version', 0) for r in package['recipes'] if r['technique'] == ray.TECHNIQUE}
     build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
-    return {'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in package['recipes'])
+    return {'persistent_buffers': persistent, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'uniform_interface': uniform_interface,
@@ -483,6 +498,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '[[nodiscard]] LUDUS_INLINE renderer::RenderGraphPrograms MakePrograms(',
               '    const rhi::RasterShaderDescription& compositeVertex,',
               '    const rhi::RasterShaderDescription& compositeFragment) noexcept', '{', '    renderer::RenderGraphPrograms result;']
+    if contents.get('persistent_buffers', False):
+        lines.append('    result.HasPersistentRayBuffers = true;')
     if contents.get('scene_interface', False):
         lines.append('    result.HasSceneShaderInterface = true;')
     for program_name in PROGRAM_CODES:
@@ -501,7 +518,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 lines += ['            {' + str(value['location']) + ', rhi::RasterVertexFormat::' + value['format'] + '},' for value in input_values]
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {declaration}Inputs.AsSpan();']
             if program_name == 'RayTracing':
-                lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ');']
+                lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers);']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
             if stage_bindings:
                 constant = declaration.upper() + '_BINDING_COUNT'
@@ -539,7 +556,7 @@ def encode_runtime_package(contents):
     zero-padded to four bytes.
     """
     u32 = lambda *values: struct.pack('<' + 'I' * len(values), *values)
-    aspects = {'Color': 0, 'Depth': 1}
+    aspects = {'Color': 0, 'Depth': 1, 'Buffer': 2}
     loads, stores = {'Clear': 0, 'Load': 1, 'Discard': 2}, {'Store': 0, 'Discard': 1}
     stages = sorted(contents['artifacts'].items(), key=lambda item: item[1]['ordinal'])
     data = bytearray(u32(PACKAGE_MAGIC, PACKAGE_VERSION, len(contents['resources']), len(contents['passes']),
@@ -553,7 +570,7 @@ def encode_runtime_package(contents):
         data += u32(target)
     for p in contents['passes']:
         data += u32(PROGRAM_CODES[p['Program']], p['Camera'], p['Color'], p['Depth'], loads[p['ColorLoad']],
-                    stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'], p.get('SceneData', graph.scene_bundle.ALL_DATA))
+                    stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'], p.get('SceneData', graph.scene_bundle.ALL_DATA), p['RayProgram'], p['Buffer0'], p['Buffer1'])
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
@@ -564,7 +581,7 @@ def encode_runtime_package(contents):
         inputs = ([{'location': 0, 'format': 'Float2'}, {'location': 1, 'format': 'Float4'}]
                   if program_name == 'RayTracing' and stage == 'vertex' else STATIC_INPUTS if stage == 'vertex' else [])
         entry = item['entry'].encode()
-        stage_role = 11 if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)
+        stage_role = (PERSISTENT_RAY_STAGE_ROLE if contents.get('persistent_buffers', False) else 11) if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)
         data += u32(stage_role, TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
                     len(item['blocks']))
         for value in inputs:

@@ -21,6 +21,20 @@
 namespace ludus::graphics::renderer
 {
 struct RenderGraphSceneDescription;
+/// Borrowed persistent storage bound to one graph ray slot; the graph owns its lifetime.
+struct GpuPreviewGraphBuffer final
+{
+    rhi::BufferHandle Buffer{}; ///< Ready Storage buffer, retained by the immutable binding set.
+    foundation::usize Size = 0; ///< Full byte range, a positive multiple of sixteen.
+};
+/// One node's selection in an extended cooked ray kernel. Consumed during BeginGpuPreview.
+struct GpuPreviewGraphInvocation final
+{
+    foundation::uint32 Program = 0; ///< Cooked callback-set index below RenderGraphFormat::MAX_RAY_PASSES.
+    /// Zero or two slots. A null Buffer with zero Size requests a private zeroed dummy.
+    /// Non-null storage remains owned by the caller through job release and submitted completion.
+    foundation::BorrowedView<const GpuPreviewGraphBuffer> Buffers{};
+};
 namespace internal
 {
 /// Private access to renderer logical identities.
@@ -390,13 +404,15 @@ public:
     /// Ready/Pending publish ownership into a null output; rejection preserves it. All caller
     /// owners may detach after success. Changing camera/content/exposure creates a
     /// new job and restarts accumulation. Setup can allocate/upload; never shades.
+    /// @param invocationOrNull Optional extended-kernel program/storage selection; requires the persistent ABI.
     /// @param graphSceneOrNull Optional graph scene, consumed synchronously instead of Snapshot.
     /// Requires EnableTriangleRayPipeline. Material defaults/errors follow its declared policy.
     [[nodiscard]] rhi::RasterStatus
     BeginGpuPreview(Snapshot,
                     const ReferenceCaptureDescription&,
                     GpuPreview&,
-                    const RenderGraphSceneDescription* graphSceneOrNull = nullptr) noexcept;
+                    const RenderGraphSceneDescription* graphSceneOrNull = nullptr,
+                    const GpuPreviewGraphInvocation* invocationOrNull = nullptr) noexcept;
     /// Dispatch one full-image GPU sample, shade/accumulate/tone-map on GPU, and
     /// rasterize GPU-produced colors into an available output texture. Ordered GDI
     /// dependencies include compute-to-vertex and output export. Never reads rays,
@@ -415,6 +431,19 @@ public:
     /// @param outGraph Null graph receives the commands. Failure preserves it and releases temporary leases.
     [[nodiscard]] rhi::RasterStatus
     PrepareGpuPreviewGraph(GpuPreview job, rhi::TextureHandle target, rhi::OrderedGraph& outGraph) noexcept;
+    /// Compile a consecutive sequence of ready graph ray jobs into one ordered graph.
+    /// Owner thread, between frames. Jobs and targets have equal nonzero lengths (at most four).
+    /// Shared buffers and targets import once and advance explicit versions, preserving cross-pass
+    /// RAW/WAR/WAW dependencies. Storage history is retained across executions; no CPU readback.
+    /// Caller keeps jobs/targets alive through encoding and tracks actual frame completion before
+    /// rebuilding. The null output is unchanged on rejection; temporary graph leases are released.
+    /// @param jobs Ready jobs from this Renderer; never also AdvanceGpuPreview them.
+    /// @param targets Borrowed ready RGBA8 attachments with each job's exact extent.
+    /// @param outGraph Receives compiled commands on Ready; caller discards or encodes once.
+    [[nodiscard]] rhi::RasterStatus
+    PrepareGpuPreviewGraphSequence(foundation::BorrowedView<const GpuPreview> jobs,
+                                   foundation::BorrowedView<const rhi::TextureHandle> targets,
+                                   rhi::OrderedGraph& outGraph) noexcept;
     /// Poll GPU completion and copy progress; no waiting or GPU-buffer readback.
     /// Ready/Pending copy progress; rejection preserves output. Owner-thread,
     /// between frames. Pending means creation or producer work is outstanding.
