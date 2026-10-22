@@ -43,6 +43,7 @@ struct RenderGraphTarget final
     foundation::uint32 Width = 0;
     foundation::uint32 Height = 0;
     bool IsDepth = false;
+    bool IsBuffer = false; ///< Persistent storage has metadata but is not a texture-viewer image.
     bool IsExported = false;
     bool IsSurface = false; ///< Backed by the presentation surface; never inspectable.
     QStringList Uses;       ///< Human-readable uses, in execution order.

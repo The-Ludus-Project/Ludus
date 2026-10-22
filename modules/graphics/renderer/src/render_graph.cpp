@@ -4,6 +4,7 @@
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
 
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -359,6 +360,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     }
     uint32 surfaceOwner = format::ABSENT;
     usize rayPassCount = 0;
+    bool hasEndedRaySequence = false;
     StaticArray<bool, format::MAX_RESOURCES> colorDefined{};
     StaticArray<bool, format::MAX_RESOURCES> depthDefined{};
     StaticArray<bool, format::MAX_CAMERAS> hasCameraRoute{};
@@ -368,9 +370,20 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         const format::Resource& resource = plan.Resources[i];
         if (resource.Width == 0 || resource.Height == 0 || resource.Backing >= plan.Resources.GetSize() ||
             resource.IsSurface > 1 || resource.IsExported > 1 ||
-            (resource.Kind != format::Aspect::Color && resource.Kind != format::Aspect::Depth))
+            (resource.Kind != format::Aspect::Color && resource.Kind != format::Aspect::Depth &&
+             resource.Kind != format::Aspect::Buffer))
         {
             return Status::InvalidDescription;
+        }
+        if (resource.Kind == format::Aspect::Buffer)
+        {
+            if (resource.Backing != i || resource.IsSurface != 0 || resource.IsExported != 0 || resource.Height != 1 ||
+                resource.Width % format::RAY_BUFFER_WORD_BYTES != 0 || resource.Width > format::MAX_RAY_BUFFER_BYTES ||
+                resource.ViewNumerator != 0)
+            {
+                return Status::InvalidDescription;
+            }
+            continue;
         }
         if (resource.IsSurface == 1)
         {
@@ -432,6 +445,23 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         }
         if (pass.Program == format::Technique::RayTracing)
         {
+            if (hasEndedRaySequence == true || pass.RayProgram >= format::MAX_RAY_PASSES)
+            {
+                return Status::Unsupported;
+            }
+            const StaticArray<uint32, format::MAX_RAY_BUFFERS> buffers{{pass.Buffer0, pass.Buffer1}};
+            for (const uint32 buffer : buffers)
+            {
+                if (buffer != format::ABSENT &&
+                    (buffer >= plan.Resources.GetSize() || plan.Resources[buffer].Kind != format::Aspect::Buffer))
+                {
+                    return Status::InvalidDescription;
+                }
+            }
+            if (pass.Buffer0 != format::ABSENT && pass.Buffer0 == pass.Buffer1)
+            {
+                return Status::InvalidDescription;
+            }
             ++rayPassCount;
             if (rayPassCount > format::MAX_RAY_PASSES || pass.Color >= plan.Resources.GetSize() ||
                 pass.Depth != format::ABSENT || plan.Resources[pass.Color].Kind != format::Aspect::Color ||
@@ -444,6 +474,11 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             colorDefined[pass.Color] = true;
             depthDefined[pass.Color] = false;
             continue;
+        }
+        hasEndedRaySequence = rayPassCount != 0;
+        if (pass.RayProgram != 0 || pass.Buffer0 != format::ABSENT || pass.Buffer1 != format::ABSENT)
+        {
+            return Status::InvalidDescription;
         }
         const format::Resource& depth = plan.Resources[pass.Depth];
         if (depth.Kind != format::Aspect::Depth ||
@@ -544,6 +579,16 @@ Status ResolveRenderGraphResource(const format::Resource& resource,
     {
         return Status::InvalidDescription;
     }
+    if (resource.Kind == format::Aspect::Buffer)
+    {
+        if (resource.Width == 0 || resource.Width > format::MAX_RAY_BUFFER_BYTES ||
+            resource.Width % format::RAY_BUFFER_WORD_BYTES != 0 || resource.Height != 1 || resource.ViewNumerator != 0)
+        {
+            return Status::InvalidDescription;
+        }
+        outResource = resource;
+        return Status::Ready;
+    }
     format::Resource resolved = resource;
     if (resource.ViewNumerator != 0)
     {
@@ -591,6 +636,7 @@ struct RenderGraph::State final
     /// Uniform range of each binding: its largest carried block, matching the stage MinSize.
     StaticArray<usize, format::MAX_UNIFORM_BINDINGS> BindingBytes{};
     StaticArray<rhi::TextureHandle, format::MAX_RESOURCES> Textures{};
+    StaticArray<rhi::BufferHandle, format::MAX_RESOURCES> Buffers{};
     /// Backings leased from PoolOrNull and returned to it on destruction; exports never are.
     StaticArray<bool, format::MAX_RESOURCES> IsPooled{};
     RenderGraphAttachmentPool* PoolOrNull = nullptr;
@@ -666,6 +712,8 @@ struct RenderGraph::State final
         StaticArray<Snapshot, format::MAX_PASSES> Snapshots{};
         StaticArray<PreparedView, format::MAX_PASSES> Views{};
         StaticArray<internal::RenderGraphRayPass, format::MAX_PASSES> RayPasses{};
+        rhi::OrderedGraph RayGraph{};
+        bool IsRayGraphPrepared = false;
         StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
         StaticArray<StaticArray<SceneItem, format::MAX_ITEMS>, format::MAX_PASSES> Items{};
         StaticArray<usize, format::MAX_PASSES> Counts{};
@@ -678,6 +726,7 @@ struct RenderGraph::State final
         {
             if (OwnerOrNull != nullptr)
             {
+                static_cast<void>(rhi::DiscardOrderedGraph(OwnerOrNull->Device, RayGraph));
                 for (usize i = 0; i < OwnerOrNull->Header.PassCount; ++i)
                 {
                     Renderer& context = OwnerOrNull->Contexts[static_cast<usize>(OwnerOrNull->Passes[i].Program)];
@@ -762,7 +811,8 @@ struct RenderGraph::State final
         {
             for (usize i = 0; i < Resizing->Count; ++i)
             {
-                if (Resizing->Resources[i].Backing == i && Resizing->Resources[i].IsSurface == 0)
+                if (Resizing->Resources[i].Backing == i && Resizing->Resources[i].IsSurface == 0 &&
+                    Resizing->Resources[i].Kind != format::Aspect::Buffer)
                 {
                     const Status ready = rhi::GetStatus(Device, Resizing->Textures[i]);
                     if (ready != Status::Ready)
@@ -820,7 +870,6 @@ struct RenderGraph::State final
                 {
                     const Status created =
                         inoutScene.RayPasses[i].Initialize(context,
-                                                           Device,
                                                            inoutScene.Snapshots[i],
                                                            inoutScene.Cameras[Passes[i].Camera],
                                                            preparingResources[Passes[i].Color].Width,
@@ -888,12 +937,17 @@ struct RenderGraph::State final
             const format::Pass& operation = Passes[pass];
             if (operation.Program == format::Technique::RayTracing)
             {
-                if (Current->RayPasses[pass].IsPrepared() == false)
+                if (pass > 0 && Passes[pass - 1].Program == format::Technique::RayTracing)
+                {
+                    continue;
+                }
+                if (Current->IsRayGraphPrepared == false)
                 {
                     return RecordingStatus = Status::NotReady;
                 }
                 HasAttemptedDraw = true;
-                RecordingStatus = Current->RayPasses[pass].Encode(surface);
+                RecordingStatus = rhi::EncodeOrderedGraph(Device, surface, Current->RayGraph);
+                Current->IsRayGraphPrepared = false;
                 continue;
             }
             const uint32 backing = Resources[operation.Depth].Backing;
@@ -941,6 +995,7 @@ struct RenderGraph::State final
         Current.Reset();
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
+            static_cast<void>(rhi::Destroy(Device, Buffers[i]));
             // A pool reset early (a broken precondition, asserted there) no longer takes leases back.
             if (IsPooled[i] == true && internal::RenderGraphPoolAccess::IsBound(*PoolOrNull) == true)
             {
@@ -1001,6 +1056,15 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     if (status != Status::Ready)
     {
         return status;
+    }
+    for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
+    {
+        const format::Pass& pass = plan.Passes[passIndex];
+        if ((pass.Buffer0 != format::ABSENT || pass.Buffer1 != format::ABSENT || pass.RayProgram != 0) &&
+            programs.HasPersistentRayBuffers == false)
+        {
+            return Status::Unsupported;
+        }
     }
     StaticArray<bool, format::TECHNIQUE_COUNT> isUsed{};
     for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
@@ -1063,7 +1127,9 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     candidate->Target = target;
     candidate->Programs = programs;
     if (plan.StorageBuffers.IsValid() == false || plan.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
-        (plan.StorageBuffers.IsEmpty() == false && isUsed[static_cast<usize>(format::Technique::RayTracing)] == false))
+        (plan.StorageBuffers.IsEmpty() == false &&
+         (isUsed[static_cast<usize>(format::Technique::RayTracing)] == false ||
+          programs.HasPersistentRayBuffers == true)))
     {
         return Status::InvalidDescription;
     }
@@ -1133,6 +1199,23 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         const format::Resource& resource = candidate->Resources[i];
         if (resource.Backing != i || resource.IsSurface == 1)
         {
+            continue;
+        }
+        if (resource.Kind == format::Aspect::Buffer)
+        {
+            Array<uint8> zeros;
+            if (zeros.TryResize(resource.Width) == false)
+            {
+                return Status::OutOfMemory;
+            }
+            status = rhi::CreateBuffer(device,
+                                       {rhi::BufferRole::Storage, resource.Width},
+                                       zeros.AsSpan(),
+                                       candidate->Buffers[i]);
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
             continue;
         }
         const rhi::TextureDescription description = MakeAttachmentDescription(resource);
@@ -1242,7 +1325,7 @@ Status RenderGraph::Resize(uint32 referenceWidth, uint32 referenceHeight) noexce
     const BorrowedView<const format::Resource> descriptions{resources.GetData(), state.Header.ResourceCount};
     for (usize i = 0; i < state.Header.ResourceCount; ++i)
     {
-        if (resources[i].Backing != i || resources[i].IsSurface == 1)
+        if (resources[i].Backing != i || resources[i].IsSurface == 1 || resources[i].Kind == format::Aspect::Buffer)
         {
             continue;
         }
@@ -1360,7 +1443,9 @@ Status RenderGraph::Poll() noexcept
         {
             continue;
         }
-        const Status ready = rhi::GetStatus(state.Device, state.Textures[i]);
+        const Status ready = state.Resources[i].Kind == format::Aspect::Buffer
+                                 ? rhi::GetStatus(state.Device, state.Buffers[i])
+                                 : rhi::GetStatus(state.Device, state.Textures[i]);
         if (ready != Status::Ready)
         {
             return ready;
@@ -1490,7 +1575,9 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                         IsCompatible(operation.Program, item, mesh) == true)
                     {
                         ++compatibleCount;
-                        isRepeatedAllowed = isRepeatedAllowed == true && operation.AllowsRepeatedCoverage == 1;
+                        isRepeatedAllowed =
+                            isRepeatedAllowed == true && (operation.Program == format::Technique::RayTracing ||
+                                                          operation.AllowsRepeatedCoverage == 1);
                     }
                 }
                 RenderGraphCoverageRecord record;
@@ -1749,14 +1836,24 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         }
         const format::Pass& operation = state.Passes[pass];
         rayScene.SceneData = operation.SceneData;
-        const Status created =
-            candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
-                                                  state.Device,
-                                                  {},
-                                                  cameras[operation.Camera],
-                                                  preparingResources[operation.Color].Width,
-                                                  preparingResources[operation.Color].Height,
-                                                  &rayScene);
+        StaticArray<GpuPreviewGraphBuffer, format::MAX_RAY_BUFFERS> buffers{};
+        const StaticArray<uint32, format::MAX_RAY_BUFFERS> indices{{operation.Buffer0, operation.Buffer1}};
+        for (usize slot = 0; slot < indices.GetSize(); ++slot)
+        {
+            if (indices[slot] != format::ABSENT)
+            {
+                buffers[slot] = {state.Buffers[indices[slot]], state.Resources[indices[slot]].Width};
+            }
+        }
+        const GpuPreviewGraphInvocation invocation{operation.RayProgram, {buffers.GetData(), buffers.GetSize()}};
+        const Status created = candidate->RayPasses[pass].Initialize(
+            state.Contexts[static_cast<usize>(operation.Program)],
+            {},
+            cameras[operation.Camera],
+            preparingResources[operation.Color].Width,
+            preparingResources[operation.Color].Height,
+            &rayScene,
+            state.Programs.HasPersistentRayBuffers == true ? &invocation : nullptr);
         if (IsAccepted(created) == false)
         {
             outReport = state.Report;
@@ -1807,7 +1904,8 @@ uint64 RenderGraph::GetDrawableSceneRevision() const noexcept
 bool RenderGraph::HasPendingSamples() const noexcept
 {
     return mState.Get() != nullptr && mState->Current.Get() != nullptr && mState->HasRaySetup == true &&
-           mState->Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET;
+           (mState->Programs.HasPersistentRayBuffers == true ||
+            mState->Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET);
 }
 uint64 RenderGraph::GetOutputSceneRevision() const noexcept
 {
@@ -1838,18 +1936,35 @@ Status RenderGraph::PrepareEncoding() noexcept
             return completed == Status::Pending ? Status::NotReady : completed;
         }
     }
+    if (state.Current->IsRayGraphPrepared == true)
+    {
+        return Status::Ready;
+    }
+    StaticArray<GpuPreview, format::MAX_RAY_PASSES> jobs{};
+    StaticArray<rhi::TextureHandle, format::MAX_RAY_PASSES> targets{};
+    usize count = 0;
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
-        if (state.Passes[pass].Program != format::Technique::RayTracing ||
-            state.Current->RayPasses[pass].IsPrepared() == true)
+        if (state.Passes[pass].Program != format::Technique::RayTracing)
         {
             continue;
         }
-        const Status prepared = state.Current->RayPasses[pass].Prepare(state.Textures[state.Passes[pass].Color]);
+        jobs[count] = state.Current->RayPasses[pass].GetJob();
+        targets[count++] = state.Textures[state.Passes[pass].Color];
+    }
+    if (count != 0)
+    {
+        static_cast<void>(rhi::DiscardOrderedGraph(state.Device, state.Current->RayGraph));
+        const Status prepared =
+            state.Contexts[static_cast<usize>(format::Technique::RayTracing)].PrepareGpuPreviewGraphSequence(
+                {jobs.GetData(), count},
+                {targets.GetData(), count},
+                state.Current->RayGraph);
         if (prepared != Status::Ready)
         {
             return prepared;
         }
+        state.Current->IsRayGraphPrepared = true;
     }
     return Status::Ready;
 }
@@ -1941,8 +2056,7 @@ Status RenderGraph::Encode(rhi::SurfaceHandle surface) noexcept
     }
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
-        if (state.Passes[pass].Program == format::Technique::RayTracing &&
-            state.Current->RayPasses[pass].IsPrepared() == false)
+        if (state.Passes[pass].Program == format::Technique::RayTracing && state.Current->IsRayGraphPrepared == false)
         {
             return Status::NotReady;
         }
@@ -2052,7 +2166,8 @@ Status RenderGraph::GetResourceAllocation(uint32 resource,
     }
     const State& state = *mState;
     const format::Resource& logical = state.Resources[resource];
-    if (logical.IsSurface == 1 || state.Resources[logical.Backing].IsSurface == 1)
+    if (logical.Kind == format::Aspect::Buffer || logical.IsSurface == 1 ||
+        state.Resources[logical.Backing].IsSurface == 1)
     {
         return Status::Unsupported;
     }

@@ -734,18 +734,6 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     # Registered programs include authoring drafts. Only explicit techniques select
     # executable stages; unused callbacks must never be compiled as entry points.
     closures = {pid: snapshot.shader_closure(p['source']) for pid, p in programs.items()}
-    selected_programs = {technique[stage] for technique in techniques.values()
-                         for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))}
-    programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
-    if ray.TECHNIQUE in techniques:
-        require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
-                'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
-        require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
-                'Metal hardware raytracing requires the pinned --spirv-cross translator')
-        programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__], schemas)
-        for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
-            closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
-                                                                    sys.modules[__name__])
     # Build plans for every declared closed root configuration and preserve graph
     # imports in the same source snapshot used by shaders.
     graph_path = manifest.with_suffix('').with_suffix('.lurender.json')
@@ -789,12 +777,36 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             technique = techniques[operation['technique']]
             assigned = {shader['stage']: shader['program'] for shader in node['shaders']}
             stage_names = ray.STAGES if node['kind'] == 'RayTracingPipeline' else ('vertex', 'fragment')
-            require(assigned == {stage: technique[stage] for stage in stage_names},
+            require(node['kind'] == 'RayTracingPipeline' or assigned == {stage: technique[stage] for stage in stage_names},
                     'ShaderInterface', operation['id'], 'node shader assignments differ from the authored technique')
             state = ray.resolve_state(node['state']) if node['kind'] == 'RayTracingPipeline' else node['state']
             require(any(all((ray.resolve_state(recipe) if node['kind'] == 'RayTracingPipeline' else recipe)[key] == value
                             for key, value in state.items()) for recipe in technique['recipes']), 'Capability', operation['id'],
                     'no authored recipe matches the complete node-owned pipeline state')
+    variants = sorted({ray.program_tuple(operation['pipeline']) for plan in plans
+                       for operation in plan['passes'] if operation['kind'] == 'RayTracing'})
+    persistent = len(variants) > 1 or any(sum(operation['kind'] == 'RayTracing' for operation in plan['passes']) > 1 or
+                     any(resource['type'] == 'Buffer' and 'stride' not in resource for resource in plan['resources'].values()) for plan in plans)
+    require(len(variants) <= ray.MAX_RAY_PASSES, 'Capacity', 'ray programs', 'at most four distinct ray callback sets')
+    for variant in variants:
+        for stage, program_identity in zip(ray.STAGES, variant):
+            require(program_identity in programs and programs[program_identity]['stage'] == stage, 'ShaderInterface', program_identity,
+                    'unknown or wrong node-owned ray stage program')
+    require(not persistent or not any(operation.get('buffers') for plan in plans for operation in plan['passes']),
+            'Capability', 'ray storage', 'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
+    selected_programs = {technique[stage] for technique in techniques.values()
+                         for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))}
+    selected_programs.update(identity for variant in variants for identity in variant)
+    programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
+    if ray.TECHNIQUE in techniques:
+        require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
+                'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
+        require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
+                'Metal hardware raytracing requires the pinned --spirv-cross translator')
+        programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__], variants, persistent, schemas)
+        for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
+            closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
+                                                                    sys.modules[__name__])
     counts['root_configurations'] = len(plans)
     counts['graph_configurations'] = sum(len(a['configurations']) for a in library.assets.values())
     require(counts['graph_configurations'] <= value['budgets']['configurations'], 'Capacity', 'graph configurations', 'closure configuration budget exceeded')
@@ -855,6 +867,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                         record = {'technique': tid, 'profile': target, 'state': ray.resolve_state(technique['recipes'][0]),
                             'compute': entries[(ray.COMPUTE_ID, target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
                             'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
+                        record['ray_programs'] = [list(variant) for variant in variants]
+                        record['persistent_buffers'] = persistent
                         record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])

@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 5;
+inline constexpr foundation::uint32 VERSION = 6;
 /// Maximum authored passes in one admitted configuration.
 inline constexpr foundation::usize MAX_PASSES = 16;
 /// Maximum logical resources; depth may alias a color allocation's private aspect.
@@ -37,8 +37,14 @@ inline constexpr foundation::usize ADDITIONAL_RASTER_TECHNIQUE_COUNT =
     RASTER_TECHNIQUE_COUNT * ADDITIONAL_VARIANTS_PER_FAMILY;
 /// Bounded shader-pair slots, independent of how many graph passes reuse a pair.
 inline constexpr foundation::usize TECHNIQUE_COUNT = LEGACY_TECHNIQUE_COUNT + ADDITIONAL_RASTER_TECHNIQUE_COUNT;
-/// One ray invocation per configuration; current and pending scenes share four GPU job slots.
-inline constexpr foundation::usize MAX_RAY_PASSES = 1;
+/// Maximum consecutive ray invocations in one configuration.
+inline constexpr foundation::usize MAX_RAY_PASSES = 4;
+/// Read/write uint4 storage slots per ray invocation; shared across passes and frames.
+inline constexpr foundation::usize MAX_RAY_BUFFERS = 2;
+/// Byte width of one persistent buffer word, matching RWStructuredBuffer<uint4>.
+inline constexpr foundation::uint32 RAY_BUFFER_WORD_BYTES = 16;
+/// Maximum bytes in one fixed-capacity persistent buffer.
+inline constexpr foundation::uint32 MAX_RAY_BUFFER_BYTES = 256 * 1024 * 1024;
 /// Number of shader stages (vertex and fragment) of one technique.
 inline constexpr foundation::usize TECHNIQUE_STAGE_COUNT = 2;
 /// Number of artifact targets a generation may carry.
@@ -58,7 +64,7 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized uint32 fields in a current pass record.
-inline constexpr foundation::usize PASS_FIELD_COUNT = 10;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 13;
 /// Resource or input index absent from the declared plan.
 inline constexpr foundation::uint32 ABSENT = ~foundation::uint32{0};
 /// Compiled shader-pair role, independent of graph instance and viewport size.
@@ -87,8 +93,9 @@ enum class Technique : foundation::uint32
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
 enum class Aspect : foundation::uint32
 {
-    Color, ///< Linear RGBA8 color.
-    Depth, ///< Depth32Float private depth aspect.
+    Color,  ///< Linear RGBA8 color.
+    Depth,  ///< Depth32Float private depth aspect.
+    Buffer, ///< Zero-initialized persistent uint4 storage; Width is bytes and Height is one.
 };
 /// Initialization of the complete attachment, before viewport/scissor clipping.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
@@ -129,9 +136,9 @@ inline constexpr foundation::uint32 MAX_TARGET_EXTENT = 16384;
 /// No runtime native handle. Width/Height are resolved per instance before allocation.
 struct Resource final
 {
-    foundation::uint32 Width;               ///< Positive physical width.
+    foundation::uint32 Width;               ///< Positive pixel width, or Buffer byte capacity (multiple of 16).
     foundation::uint32 Height;              ///< Positive physical height.
-    Aspect Kind;                            ///< Color or depth aspect.
+    Aspect Kind;                            ///< Color, depth or persistent raw storage.
     foundation::uint32 Backing;             ///< Index of the color/private-depth allocation owner; may name itself.
     foundation::uint32 IsSurface;           ///< Zero or one; owner is the acquired presentation surface.
     foundation::uint32 IsExported;          ///< Zero or one; output may be leased after producer completion.
@@ -177,6 +184,9 @@ struct Pass final
     foundation::uint32 AllowsRepeatedCoverage; ///< Zero or one; explicitly permits repeated rendering in a role/view.
     /// Selected SCENE_DATA_* groups. Geometry is mandatory; default preserves full-scene callers.
     foundation::uint32 SceneData = SCENE_DATA_ALL;
+    foundation::uint32 RayProgram = 0;   ///< Callback-set selector in the cooked ray kernel; zero for raster.
+    foundation::uint32 Buffer0 = ABSENT; ///< First persistent storage resource, or ABSENT for a private dummy.
+    foundation::uint32 Buffer1 = ABSENT; ///< Second persistent storage resource, or ABSENT for a private dummy.
 };
 /// One read-only uniform binding of a technique, filled per draw from logical values.
 /// Its values occupy [ValueOffset, ValueOffset + ValueCount) of each item's float32

@@ -56,6 +56,9 @@ inline constexpr ludus::foundation::usize RUNTIME_BINDING_LENGTH_WORDS = 4;
 /// Native shader bytes of the immutable length record, excluding allocation padding.
 inline constexpr ludus::foundation::usize RUNTIME_BINDING_LENGTH_BYTES =
     sizeof(ludus::foundation::uint32) * RUNTIME_BINDING_LENGTH_WORDS;
+/// Default logical resource ceiling for an ordered plan, including four ray invocations.
+/// This is an admission limit; graph metadata remains lazily allocated under HostBytes.
+inline constexpr foundation::uint32 DEFAULT_GRAPH_RESOURCE_COUNT = 64;
 /// Copied R6 storage maxima and explicit byte budgets. Configure before startup.
 /// Counts are limits, not reservations; creation may fail under byte/allocation pressure.
 /// Defaults preserve the original general profiles. The fullscreen facade is separate.
@@ -87,7 +90,7 @@ struct StorageLimits final
     /// Maximum independently owned graph plans.
     ludus::foundation::uint32 Graphs = 4;
     /// Maximum imported/transient logical resources per graph.
-    ludus::foundation::uint32 ResourcesPerGraph = 16;
+    ludus::foundation::uint32 ResourcesPerGraph = DEFAULT_GRAPH_RESOURCE_COUNT;
     /// Maximum authored passes and resource versions per graph.
     ludus::foundation::uint32 PassesPerGraph = 32;
     /// Maximum semantic dependency entries per graph.

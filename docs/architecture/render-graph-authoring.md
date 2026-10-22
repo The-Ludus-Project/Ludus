@@ -267,8 +267,10 @@ stages an owned attachment set and a fresh scene using the existing pipeline
 contexts. They publish together only after readiness; the old scene/output remains
 available while pending or on failure. A newer request discards the unactivated
 set and its scene. GPU retirement and pooling remain in their existing owners.
-Fresh ray jobs reset accumulation; temporal/history imports remain outside the
-admitted profile. The editor supplies pre-render-scale physical viewport pixels,
+Fresh legacy ray jobs reset accumulation. Ordered ray sequences may bind graph-owned
+persistent uint4 buffers, whose fixed capacities and contents survive scene/camera/size
+replacement. Their shaders own history validation; external texture/history imports
+remain outside the admitted profile. See the [ordered-ray contract](../development/render-graph-authoring.md#order-ray-passes-and-share-persistent-buffers). The editor supplies pre-render-scale physical viewport pixels,
 keeps its last completed image across replacement, and updates inspection metadata
 from the published resource descriptions.
 
@@ -1002,6 +1004,38 @@ CPU-interface mismatch continues to mean RestartRequired. Portable shader
 compilation does not guarantee device pipeline readiness or remove driver work.
 See [native worker setup, limits, workflow and measurements](../development/render-graph-authoring.md#native-shader-worker-and-live-development-builds).
 
+## Ordered ray sequences and persistent storage
+
+Numeric plan version 6 and runtime package version 9 append a callback-set index
+and two persistent buffer-resource indices to each pass. Buffer resources use the
+existing resource table with an explicit Buffer aspect: Width is byte capacity,
+Height is one, and view scaling/export/surface flags are forbidden. Serialized
+widths derive from the field schema, with no host-padding copies. Earlier hardware
+package version 6 remains readable with callback zero and absent buffer slots.
+The persistent compute stage role independently selects the extended eight-binding
+ABI; legacy compute/image artifacts retain their existing ABI.
+
+The offline builder captures the node-owned callback sets and links a bounded
+selector into one compute kernel. Engine interface/payload types and reusable
+headers are global; unique callback sources occupy distinct namespaces. A job's
+immutable parameters select its callback set without changing shader artifacts
+or descriptor layouts per frame. The extended kernel writes current-frame
+radiance and advances a uint32 counter without a progressive-sampling stop.
+
+RenderGraph owns zero-initialized storage allocations alongside its attachment
+ledger. Scene candidates borrow those allocations during preparation, which does
+not encode writes. GPU command assembly belongs to the private compiled
+`gpu_preview_graph` component: one import/version ledger spans the consecutive
+sequence, and only final versions become export/history roots. RHI retains the
+actual resources and derives whole-buffer hazards; Renderer does not duplicate
+backend barriers or native lifetime state. Discarded/failed candidate preparation
+preserves the current generation and buffers. Encoded shader effects are not a
+transaction that can roll back individual pixels.
+
+The [authoring guide](../development/render-graph-authoring.md#order-ray-passes-and-share-persistent-buffers)
+owns capacity, reset, ping-pong, editor and scheduling instructions. This change
+provides ordered storage access, without selecting a ReSTIR estimator or claiming
+qualification of arbitrary authored reservoir algorithms.
 ### Structured storage in the native ray profile
 
 Native triangle-ray jobs admit two named structured buffers in user slots 6/7.

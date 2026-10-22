@@ -64,6 +64,9 @@ def lower_bindings(plan, stages, build):
     uses = operations[0].get('buffers', {}) if operations else {}
     reflected = [program['descriptor']['interface']['entries'] for (role, stage, _), program in stages.items()
                  if role == 'RayTracing' and stage == 'compute']
+    if any(entry['name'] == 'GraphBuffer0' for target in reflected for entry in target):
+        build.require(not uses, 'Capability', 'ray storage', 'ordered Buffer storage cannot share the structured job profile')
+        return []
     records = []
     for name, use in sorted(uses.items(), key=lambda item: item[0]):
         resource = plan['resources'][use['resource']]

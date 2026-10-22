@@ -307,7 +307,7 @@ class ExecutionTests(unittest.TestCase):
         header = struct.unpack('<10I', data[:40])
         self.assertEqual(header[:2], (execution.PACKAGE_MAGIC, execution.PACKAGE_VERSION))
         self.assertEqual(header[5:9], (4, 1, 2, 4))
-        records = 104 + 8 * 4 * 2 + 4 + 10 * 4
+        records = 104 + 8 * 4 * 2 + 4 + 13 * 4
         self.assertEqual(struct.unpack('<5I', data[records:records + 20]), (0, 0, 2, 0, 4))
 
     def test_runtime_package_names_its_resources_in_record_order(self):

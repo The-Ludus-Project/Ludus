@@ -1,4 +1,5 @@
 #include "renderer_composite.h"
+#include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_scene_ray.h"
 #include "rg2_storage_ray.h"
@@ -449,11 +450,126 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     REQUIRE(read.BytesRead == bytes.GetSize());
     renderer::RenderGraphPackage package;
     REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    // Versions 6 through 8 lack the three per-pass words added in version 9.
+    uint32 resourceCount = 0;
+    uint32 cameraCount = 0;
+    constexpr usize RESOURCE_COUNT_OFFSET = 2 * sizeof(uint32);
+    constexpr usize CAMERA_COUNT_OFFSET = 4 * sizeof(uint32);
+    REQUIRE(TryReadLittleEndian({bytes.GetData() + RESOURCE_COUNT_OFFSET, sizeof(uint32)}, resourceCount) == true);
+    REQUIRE(TryReadLittleEndian({bytes.GetData() + CAMERA_COUNT_OFFSET, sizeof(uint32)}, cameraCount) == true);
+    constexpr usize LEGACY_PASS_FIELDS = 10;
+    const usize extension = format::HEADER_BYTES + resourceCount * format::RESOURCE_RECORD_BYTES +
+                            cameraCount * format::CAMERA_RECORD_BYTES + LEGACY_PASS_FIELDS * sizeof(uint32);
+    bytes.RemoveRange(extension, extension + (format::PASS_FIELD_COUNT - LEGACY_PASS_FIELDS) * sizeof(uint32));
+    REQUIRE(TryWriteLittleEndian(format::STORAGE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==
+            true);
+    renderer::RenderGraphPackage storageGeneration;
+    REQUIRE(storageGeneration.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    constexpr usize WORD_BYTES = sizeof(uint32);
+    const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
+    const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
+    const usize storageCountOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
+    bytes.RemoveRange(storageCountOffset, storageCountOffset + WORD_BYTES);
+    REQUIRE(TryWriteLittleEndian(format::NATIVE_RAY_PACKAGE_VERSION,
+                                 {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) == true);
+    renderer::RenderGraphPackage hardware;
+    REQUIRE(hardware.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    CHECK(hardware.GetPlan().Passes[0].RayProgram == 0);
+    CHECK(hardware.GetPlan().Passes[0].Buffer0 == format::ABSENT);
+    CHECK(hardware.GetPlan().Passes[0].Buffer1 == format::ABSENT);
     REQUIRE(TryWriteLittleEndian(format::SCENE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==
             true);
     renderer::RenderGraphPackage legacy;
     CHECK(legacy.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::UnsupportedVersion);
     CHECK(package.GetPlan().Passes[0].Program == format::Technique::RayTracing);
+}
+
+TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames", "[render-graph][gpu][ray-history]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_ORDERED_RAY_DIRECTORY, "rg2_ordered_ray.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_ordered_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                shaders::renderer_composite::Fragment());
+    REQUIRE(decoded.HasPersistentRayBuffers == true);
+    REQUIRE(decoded.HasSceneShaderInterface == true);
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    constexpr usize GENERATION_COUNT = 2;
+    for (usize generation = 0; generation < GENERATION_COUNT; ++generation)
+    {
+        fixture.Graph.Reset();
+        rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, package->GetPlan(), decoded);
+        constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+        fixture.Cameras[0].OrthographicCamera = true;
+        renderer::RenderGraphReport report;
+        status = fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                      {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                      {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                      1,
+                                      renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                      report);
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+        constexpr usize FRAME_COUNT = 3;
+        constexpr StaticArray<uint8, FRAME_COUNT> EXPECTED_RED{{188, 213, 225}};
+        uint8 previousRed = 0;
+        for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+        {
+            rhi::SubmissionToken completion;
+            REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+            status = rhi::GetStatus(fixture.Device, completion);
+            while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+            {
+                status = rhi::GetStatus(fixture.Device, completion);
+            }
+            REQUIRE(status == rhi::RasterStatus::Ready);
+            rhi::TextureHandle texture;
+            rhi::TextureAspect aspect;
+            uint32 resource = 0;
+            for (uint32 index = 0; index < package->GetPlan().Resources.GetSize(); ++index)
+            {
+                if (package->GetPlan().Resources[index].IsExported == 1)
+                {
+                    resource = index;
+                }
+            }
+            status = fixture.Graph.GetExport(resource, texture, aspect);
+            while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+            {
+                status = fixture.Graph.GetExport(resource, texture, aspect);
+            }
+            REQUIRE(status == rhi::RasterStatus::Ready);
+            rhi::ReadbackTicket ticket;
+            status = rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, WIDTH * 4, ticket);
+            REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+            while (rhi::GetStatus(fixture.Device, ticket) == rhi::RasterStatus::Pending &&
+                   time::NowTicks() - beginning < TIMEOUT)
+            {
+            }
+            REQUIRE(rhi::CopyReadback(fixture.Device, ticket, fixture.Pixels.GetData(), fixture.Pixels.GetSize()) ==
+                    rhi::RasterStatus::Ready);
+            const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+            CHECK(fixture.Pixels[center] > previousRed);
+            CHECK(fixture.Pixels[center] == EXPECTED_RED[frame]);
+            CHECK(fixture.Graph.HasPendingSamples() == true);
+            CHECK(fixture.Pixels[center + 1] == 0);
+            CHECK(fixture.Pixels[center + 2] == 0);
+            previousRed = fixture.Pixels[center];
+            REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+        }
+    }
 }
 
 TEST_CASE("Two graph reservoirs retain alternating shader writes and reset on replacement",

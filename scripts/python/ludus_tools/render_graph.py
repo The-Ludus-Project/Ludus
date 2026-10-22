@@ -141,10 +141,12 @@ def _validate_node(node, where):
     if kind in pipeline.KINDS:
         pipeline.validate(node, where, sys.modules[__name__])
         return
-    _enum(kind, ("Scene", "Camera", "Target", "RenderSize", "Raster", "Subgraph", "Export", "Present"), where)
+    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "RenderSize", "Raster", "Subgraph", "Export", "Present"), where)
     fields = {"id", "kind"}
     if kind == "Camera":
         fields |= {"active", "role", "target_type"}
+    elif kind == "Buffer":
+        fields |= {"bytes"}
     elif kind == "Target":
         fields |= {"type", "format", "extent", "samples", "imported", "initialized", "presentation"}
     elif kind == 'RenderSize':
@@ -166,6 +168,10 @@ def _validate_node(node, where):
         _enum(node["target_type"], TEXTURES, where)
         _require(node["role"] != "Presentation" or node["target_type"] == "ColorTexture",
                  "TypeMismatch", where, "a presentation camera requires a color target")
+    elif kind == "Buffer":
+        _integer(node['bytes'], ray.BUFFER_WORD_BYTES, ray.MAX_BUFFER_BYTES, where)
+        _require(node['bytes'] % ray.BUFFER_WORD_BYTES == 0, 'Capacity', where,
+                 'persistent buffer byte size must be a multiple of 16')
     elif kind == "Target":
         _enum(node["type"], TEXTURES, where)
         _enum(node["format"], FORMATS[node["type"]], where)
@@ -440,8 +446,8 @@ class _Library:
             return {}, {"scene": "Scene", **scene_bundle.TYPES}
         if kind == "Camera":
             return {"target": node["target_type"]}, {"view": "View"}
-        if kind == "StructuredBuffer":
-            return {}, {"buffer": "Buffer"}
+        if kind in ("Buffer", "StructuredBuffer"):
+            return {}, {'buffer': 'Buffer'}
         if kind == "Target":
             return ({'size': 'RenderSize'} if node['extent'] == 'RenderSize' else {}), {"texture": node["type"]}
         if kind == 'RenderSize':
@@ -710,6 +716,11 @@ class _Compiler:
                 self.resources[where] = {'type': 'Buffer', 'stride': node['stride'], 'count': node['count']}
                 self.latest[where] = 0
                 outputs['buffer'] = _Value('Buffer', origin=where, resource=where, defined=True)
+            elif kind == "Buffer":
+                self.resources[where] = {'type': 'Buffer', 'format': 'Bytes', 'extent': [node['bytes'], 1],
+                                         'samples': 1, 'imported': False, 'initialized': True, 'presentation': False}
+                self.latest[where] = 0
+                outputs['buffer'] = _Value('Buffer', origin=where, resource=where, defined=True)
             elif kind == "Target":
                 self.resources[where] = {key: node[key] for key in
                     ("type", "format", "extent", "samples", "imported", "initialized", "presentation")}
@@ -765,11 +776,28 @@ class _Compiler:
                           f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
                          field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
                          actual=dimensions, repair='Choose Match color target in Invocation → Launch size.')
+                buffer_uses = []
+                buffer_outputs = {}
+                for slot, port in enumerate(port for port in authored_pipeline['inputs'] if port['type'] == 'Buffer'):
+                    identity = 'buffer:' + port['id']
+                    if 'stride' in self.resources[inputs[identity].resource]:
+                        continue
+                    output = next((port for port in authored_pipeline['outputs'] if port['target'] == input_mapping[identity]), None)
+                    _require(output is not None, 'Capability', where, 'each persistent Buffer input requires a paired Load/Store Buffer output')
+                    written = self.write(inputs[identity], {identity + '_load': 'Load', identity + '_store': 'Store'},
+                                         identity, where, ())
+                    buffer_uses.append({'resource': written.resource, 'slot': slot,
+                                        'input_version': inputs[identity].version, 'output_version': written.version})
+                    buffer_outputs[output['id']] = written
+                _require(len({use['resource'] for use in buffer_uses}) == len(buffer_uses), 'MultipleWriters', where,
+                         'one physical buffer cannot occupy both buffer inputs of a pass')
                 value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
                 storage = {}
                 storage_outputs = {}
                 for name in sorted(set(inputs) - {'scene', 'view', 'color'}):
                     buffer = inputs[name]
+                    if 'stride' not in self.resources[buffer.resource]:
+                        continue
                     _require(buffer.defined, 'Initialization', where, 'storage reads require defined input contents')
                     _require(buffer.resource not in {use['resource'] for use in storage.values()},
                              'MultipleWriters', where, 'one physical buffer cannot occupy two shader ports')
@@ -784,16 +812,17 @@ class _Compiler:
                         storage_outputs[output_mapping[name]] = updated
                     storage[input_mapping[name]] = {'resource': buffer.resource, 'input_version': buffer.version,
                                      'output_version': updated.version, 'access': 'ReadWrite' if writable else 'Read'}
+                _require(not buffer_uses or not storage, 'Capability', where, 'Buffer and StructuredBuffer storage profiles cannot share a pass')
                 self.techniques.add(ray.TECHNIQUE)
                 self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
                     'technique': ray.TECHNIQUE, 'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
                     'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
                     'scene': inputs['scene'].origin, 'scene_data': inputs['scene'].scene_data, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
-                    'dimensions': expected_dimensions, 'buffers': storage,
+                    'dimensions': expected_dimensions, 'persistent_buffers': buffer_uses, 'buffers': storage,
                     'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
-                outputs = {output_mapping['color']: value, **storage_outputs}
+                outputs = {output_mapping['color']: value, **buffer_outputs, **storage_outputs}
             elif kind == "Raster":
                 _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera",
                          port=input_mapping['view'] if authored_pipeline is not None else 'view', direction='input',
@@ -885,6 +914,7 @@ class _Compiler:
         used_resources = {root['resource'] for root in self.roots}
         used_resources.update(attachment['resource'] for operation in self.passes
                               for attachment in operation.get('attachments', {}).values())
+        used_resources.update(use['resource'] for operation in self.passes for use in operation.get('persistent_buffers', []))
         used_resources.update(use['resource'] for operation in self.passes for use in operation.get('buffers', {}).values())
         self.resources = {identity: resource for identity, resource in self.resources.items() if identity in used_resources}
 
