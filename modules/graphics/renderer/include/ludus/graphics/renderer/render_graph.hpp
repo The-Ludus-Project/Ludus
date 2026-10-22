@@ -82,6 +82,7 @@ struct RenderGraphPrograms final
                             content::render_graph_format::ADDITIONAL_RASTER_TECHNIQUE_COUNT *
                                 content::render_graph_format::TECHNIQUE_STAGE_COUNT>
         AdditionalRasterStages{};
+    bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent uint4 storage slots.
     bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
 };
 /// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.
@@ -89,7 +90,10 @@ struct RenderGraphPrograms final
 /// runtime decoders; the RHI independently checks actual native shader reflection.
 /// @param inoutDescription Receives binding metadata, and workgroup size for Compute.
 /// @param stage Compute for the linked ray kernel, Vertex/Fragment for the image recipe.
-void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, rhi::ShaderStage stage) noexcept;
+/// @param hasPersistentBuffers Use the extended two-buffer compute ABI; image stages are unchanged.
+void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
+                                rhi::ShaderStage stage,
+                                bool hasPersistentBuffers = false) noexcept;
 /// Declared geometry interface of an extracted draw item.
 enum class RenderGraphLayout : foundation::uint8
 {
@@ -359,7 +363,8 @@ public:
     /// Return the revision of the last Ready extraction, or zero when none exists.
     [[nodiscard]] foundation::uint64 GetDrawableSceneRevision() const noexcept;
     /// True when the current drawable ray scene has not reached its submission sample budget.
-    /// False for an empty/raster-only graph or after the bounded ray history target is reached.
+    /// Persistent ray sequences always return true so temporal work continues each frame.
+    /// False for an empty/raster-only graph or after a legacy ray history target is reached.
     /// Accepted submissions count even while their producer is pending; finish producers and
     /// export consumers before rendering again. This owner-thread query never waits or submits.
     /// A published scene/camera/size replacement starts new progress; pending/failed candidates
@@ -419,10 +424,10 @@ public:
     [[nodiscard]] rhi::RasterStatus GetExport(foundation::uint32 resource,
                                               rhi::TextureHandle& outTexture,
                                               rhi::TextureAspect& outAspect) const noexcept;
-    /// Borrow the allocation and aspect backing any logical resource that is not the presentation
+    /// Borrow the allocation and aspect backing a logical texture that is not the presentation
     /// surface, after producer completion, for read-only diagnostic consumers such as a texture
-    /// viewer. Unlike GetExport this admits transient attachments. It reports what the backing
-    /// allocation holds after the last completed frame: a backing shared by several logical
+    /// viewer. Persistent Buffer resources return Unsupported. Unlike GetExport this admits transient attachments. It
+    /// reports what the backing allocation holds after the last completed frame: a backing shared by several logical
     /// resources (a depth resource always shares its colour resource's allocation) shows the last
     /// write, and a subresource discarded by its final pass is undefined (check it with
     /// rhi::GetTextureState before reading). Transient allocations may be pooled and reused by

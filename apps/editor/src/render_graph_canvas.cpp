@@ -252,7 +252,7 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
         ports.Inputs = {{QStringLiteral("target"), node.value(QStringLiteral("target_type")).toString()}};
         ports.Outputs = {{QStringLiteral("view"), QStringLiteral("View")}};
     }
-    else if (kind == QStringLiteral("StructuredBuffer"))
+    else if (kind == QStringLiteral("Buffer") || kind == QStringLiteral("StructuredBuffer"))
     {
         ports.Outputs = {{QStringLiteral("buffer"), QStringLiteral("Buffer")}};
     }

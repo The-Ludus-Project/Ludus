@@ -44,10 +44,10 @@
 #define LUDUS_GRAPH_SAMPLE_TARGET 4096
 #define LUDUS_GRAPH_TEXTURE_CHANNELS 4
 
-// Low flags describe the scene/ray convention; high bits identify camera history.
+// Preserve camera/kernel flags and ordered invocation bits below camera history.
 #define LUDUS_GPU_PREVIEW_OPAQUE_FLAG 8
-#define LUDUS_GPU_PREVIEW_FLAGS_MASK 15
-#define LUDUS_GPU_PREVIEW_HISTORY_SHIFT 4
+#define LUDUS_GPU_PREVIEW_FLAGS_MASK 0x3ff
+#define LUDUS_GPU_PREVIEW_HISTORY_SHIFT 10
 #define LUDUS_GPU_PREVIEW_MAX_HISTORY_EPOCH 0x1fffff
 #define LUDUS_GPU_PREVIEW_RAY_MASK 255
 #define LUDUS_GPU_PREVIEW_VERTEX_COLOR_WORD 13
@@ -62,3 +62,10 @@
 #define LUDUS_GPU_PREVIEW_TEXELS_BINDING 4
 
 #define LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD 5
+
+// Extended graph ABI; low Sampling.z bits retain the camera/kernel flags.
+#define LUDUS_GRAPH_PASS_INDEX_SHIFT 8
+#define LUDUS_GRAPH_PASS_INDEX_MASK 3
+#define LUDUS_GRAPH_BUFFER0_BINDING 6
+#define LUDUS_GRAPH_BUFFER1_BINDING 7
+#define LUDUS_GRAPH_COMPUTE_BINDING_COUNT 8

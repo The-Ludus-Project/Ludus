@@ -276,7 +276,7 @@ PrepareRenderGraphTechniques(RenderGraphSnapshot& inoutSnapshot, const QString& 
                 const QString location = file + QLatin1Char('#') +
                                          configuration.value(QStringLiteral("id")).toString() + QLatin1Char('/') +
                                          node.value(QStringLiteral("id")).toString();
-                if (requests.contains(identity) == true &&
+                if (requests.contains(identity) == true && identity != RAY_TECHNIQUE &&
                     HaveMatchingPrograms(requests.value(identity), request) == false)
                 {
                     outError =

@@ -4540,8 +4540,8 @@ namespace ludus::graphics::renderer
 {
 Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescription& camera, uint64 revision) noexcept
 {
-    constexpr usize JOB_COUNT = 4;
-    internal::GpuPreviewRecord* jobOrNull = Resolve(mState->GpuPreview->Jobs, JOB_COUNT, mState->Owner, handle);
+    internal::GpuPreviewRecord* jobOrNull =
+        Resolve(mState->GpuPreview->Jobs, internal::GPU_PREVIEW_JOB_COUNT, mState->Owner, handle);
     if (jobOrNull == nullptr || jobOrNull->Setup != Status::Ready || jobOrNull->Info.Pending == true ||
         jobOrNull->HasPendingCamera == true)
     {
@@ -4561,17 +4561,24 @@ Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescriptio
     {
         bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + i] = job.Storage.GetBinding(i);
     }
+    for (usize i = 0; mState->GpuPreview->HasPersistentBuffers == true && i < internal::GPU_GRAPH_BUFFER_COUNT; ++i)
+    {
+        const GpuPreviewGraphBuffer& buffer = job.GraphBuffers[i];
+        bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + i] = {static_cast<uint32>(LUDUS_GPU_PREVIEW_BINDING_COUNT + i),
+                                                         buffer.Buffer,
+                                                         0,
+                                                         buffer.Size};
+    }
     if (sizeof(internal::GpuPreviewUniform) > mState->GpuPreview->Options.GpuByteBudget - mState->GpuPreview->GpuBytes)
     {
         return Status::CapacityExceeded;
     }
-    const Status status =
-        job.CameraUpdate.Prepare(mState->Device,
-                                 job.Uniform,
-                                 camera,
-                                 revision,
-                                 mState->GpuPreview->ComputeLayout,
-                                 {bindings.GetData(), LUDUS_GPU_PREVIEW_BINDING_COUNT + job.Storage.GetCount()});
+    const Status status = job.CameraUpdate.Prepare(mState->Device,
+                                                   job.Uniform,
+                                                   camera,
+                                                   revision,
+                                                   mState->GpuPreview->ComputeLayout,
+                                                   {bindings.GetData(), mState->GpuPreview->ComputeBindingCount});
     job.HasPendingCamera = status == Status::Ready || status == Status::Pending;
     if (job.HasPendingCamera == true)
     {

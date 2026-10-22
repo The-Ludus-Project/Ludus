@@ -10,7 +10,9 @@
 // ray functions into the portable compute target with an explicit resource ABI.
 namespace ludus::graphics::renderer
 {
-void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, rhi::ShaderStage stage) noexcept
+void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
+                                rhi::ShaderStage stage,
+                                bool hasPersistentBuffers) noexcept
 {
     using namespace foundation;
     constexpr usize COMPUTE_BINDING_COUNT = LUDUS_GPU_PREVIEW_BINDING_COUNT;
@@ -40,12 +42,28 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, 
             {0, rhi::RasterVertexFormat::Float2},
         },
     };
+    static constexpr StaticArray<rhi::RasterBinding, LUDUS_GRAPH_COMPUTE_BINDING_COUNT> PERSISTENT_BINDINGS{
+        {{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Compute, PARAMETERS_BYTES},
+         {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+         {2, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+         {3, rhi::RasterBindingKind::StorageReadWrite, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+         {4, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, VECTOR_BYTES},
+         {LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, rhi::RasterBindingKind::RayScene, rhi::RasterVisibility::Compute, 0},
+         {LUDUS_GRAPH_BUFFER0_BINDING,
+          rhi::RasterBindingKind::StorageReadWrite,
+          rhi::RasterVisibility::Compute,
+          VECTOR_BYTES},
+         {LUDUS_GRAPH_BUFFER1_BINDING,
+          rhi::RasterBindingKind::StorageReadWrite,
+          rhi::RasterVisibility::Compute,
+          VECTOR_BYTES}}};
     inoutDescription.Artifact.Stage = stage;
     inoutDescription.Bindings = {};
     inoutDescription.Inputs = {};
     if (stage == rhi::ShaderStage::Compute)
     {
-        inoutDescription.Bindings = COMPUTE_BINDINGS.AsSpan();
+        inoutDescription.Bindings =
+            hasPersistentBuffers == true ? PERSISTENT_BINDINGS.AsSpan() : COMPUTE_BINDINGS.AsSpan();
         inoutDescription.WorkgroupSize[0] = WORKGROUP_WIDTH;
         inoutDescription.WorkgroupSize[1] = 1;
         inoutDescription.WorkgroupSize[2] = 1;
@@ -67,17 +85,16 @@ RenderGraphRayPass::~RenderGraphRayPass() noexcept
 {
     if (mContextOrNull != nullptr)
     {
-        static_cast<void>(rhi::DiscardOrderedGraph(mDevice, mGraph));
         static_cast<void>(mContextOrNull->Release(mJob));
     }
 }
 rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
-                                                 rhi::DeviceHandle device,
                                                  Snapshot snapshot,
                                                  const ViewDescription& camera,
                                                  foundation::uint32 width,
                                                  foundation::uint32 height,
-                                                 const RenderGraphSceneDescription* sceneOrNull) noexcept
+                                                 const RenderGraphSceneDescription* sceneOrNull,
+                                                 const GpuPreviewGraphInvocation* invocationOrNull) noexcept
 {
     if (mContextOrNull != nullptr)
     {
@@ -99,11 +116,11 @@ rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
     description.CenterRays = true;
     // A camera/scene edit restarts accumulation, but must not replay the same per-pixel stream.
     description.Seed = sceneOrNull != nullptr ? sceneOrNull->SourceGeneration : 0;
-    const rhi::RasterStatus status = inoutContext.BeginGpuPreview(snapshot, description, mJob, sceneOrNull);
+    const rhi::RasterStatus status =
+        inoutContext.BeginGpuPreview(snapshot, description, mJob, sceneOrNull, invocationOrNull);
     if (status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending)
     {
         mContextOrNull = &inoutContext;
-        mDevice = device;
     }
     return status;
 }
@@ -115,31 +132,6 @@ rhi::RasterStatus RenderGraphRayPass::Poll() noexcept
     }
     GpuPreviewInfo information;
     return mContextOrNull->GetGpuPreviewInfo(mJob, information);
-}
-rhi::RasterStatus RenderGraphRayPass::Prepare(rhi::TextureHandle target) noexcept
-{
-    if (mContextOrNull == nullptr)
-    {
-        return rhi::RasterStatus::InvalidState;
-    }
-    if (mIsPrepared == true)
-    {
-        return rhi::RasterStatus::Ready;
-    }
-    static_cast<void>(rhi::DiscardOrderedGraph(mDevice, mGraph));
-    const rhi::RasterStatus status = mContextOrNull->PrepareGpuPreviewGraph(mJob, target, mGraph);
-    mIsPrepared = status == rhi::RasterStatus::Ready;
-    return status;
-}
-rhi::RasterStatus RenderGraphRayPass::Encode(rhi::SurfaceHandle surface) noexcept
-{
-    if (mIsPrepared == false)
-    {
-        return rhi::RasterStatus::NotReady;
-    }
-    const rhi::RasterStatus status = rhi::EncodeOrderedGraph(mDevice, surface, mGraph);
-    mIsPrepared = false;
-    return status;
 }
 } // namespace ludus::graphics::renderer::internal
 
@@ -155,8 +147,6 @@ rhi::RasterStatus RenderGraphRayPass::PollCamera() noexcept
 }
 void RenderGraphRayPass::CommitCamera() noexcept
 {
-    static_cast<void>(rhi::DiscardOrderedGraph(mDevice, mGraph));
-    mIsPrepared = false;
     mContextOrNull->commitGpuPreviewCamera(mJob);
 }
 void RenderGraphRayPass::DiscardCamera() noexcept

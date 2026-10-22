@@ -134,8 +134,7 @@ Hit Trace(float3 originWorld,
     ray.Direction = directionWorld;
     ray.TMin = nearDistanceWorld;
     ray.TMax = farDistanceWorld;
-    uint flags = (Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0
-                     ? RAY_FLAG_FORCE_OPAQUE : RAY_FLAG_FORCE_NON_OPAQUE;
+    uint flags = (Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ? RAY_FLAG_FORCE_OPAQUE : RAY_FLAG_FORCE_NON_OPAQUE;
     if (isVisibility == true)
         flags |= RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
     RayQuery<RAY_FLAG_NONE> query;
@@ -604,15 +603,23 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
     if (compensation.w != historyTag && compensation.w != historyTag + 1)
     {
         sum = 0;
+        accumulation[pixel * 2] = 0; // Scene callbacks read the sample index from this buffer.
         compensation = float4(0, 0, 0, historyTag);
     }
+#if defined(LUDUS_GRAPH_PERSISTENT_PIPELINE)
+    float3 sample = EvaluateGraphRay(pixel);
+    compensation.w = any(isfinite(sample) == false) || any(sample < 0) ? historyTag + 1 : historyTag;
+    accumulation[pixel * 2] = float4(sample, asfloat(asuint(sum.w) + 1));
+    accumulation[pixel * 2 + 1] = compensation;
+    float3 mean = sample;
+#else
     if (sum.w < float(Sampling.w) && compensation.w == historyTag)
     {
-#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+#    if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
         float3 sample = EvaluateGraphRay(pixel);
-#else
+#    else
         float3 sample = Integrate(pixel, uint(sum.w));
-#endif
+#    endif
         if (any(!isfinite(sample)) || any(sample < 0))
             compensation.w = historyTag + 1;
         else
@@ -632,6 +639,7 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
         accumulation[pixel * 2 + 1] = compensation;
     }
     float3 mean = sum.w > 0 ? sum.xyz / sum.w : float3(0);
+#endif
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE) && !defined(LUDUS_SCENE_RAY_INTERFACE)
     colors[pixel] = float4(compensation.w != historyTag ? float3(1, 0, 1) : saturate(mean), float(pixel));
 #else
