@@ -58,7 +58,8 @@ public:
     ~PreviewViewport() override;
     /// Present frames from another source from now on. Every read of the current source is
     /// ended first, so its last image disappears when the next source's first frame is shown;
-    /// switch once that source has a pending frame. Null returns to preview's own frames.
+    /// switch once that source has a pending frame. Null returns to the project's GPU display
+    /// source when bound, otherwise to preview's own frames.
     /// The new source has the same contract as the constructor's. Native builds only; the
     /// browser canvas always presents preview.
     void SetFrameSource(ViewportFrameSource* frameSourceOrNull);

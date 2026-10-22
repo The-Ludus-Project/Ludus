@@ -66,6 +66,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources src/internal/offscreen_frame_reader.h src/offscreen_frame_reader.cpp)
     # RG3b trusted render-graph preview reads exported color back through the same frame reader.
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
+        src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
     # The Renderer tab's texture viewer reads any graph attachment (colour or depth) back the same way.

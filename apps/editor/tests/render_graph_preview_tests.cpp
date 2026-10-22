@@ -55,6 +55,7 @@
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QQuickWindow>
 #include <QSaveFile>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -81,6 +82,7 @@ constexpr usize ATTEMPTS = 5000;
 constexpr qsizetype INTERFACE_OFFSET = format::HEADER_FIELD_COUNT * sizeof(uint32);
 constexpr qsizetype TRUNCATED_BYTES = 40;
 constexpr int32 COLOR_TOLERANCE = 1;
+constexpr usize DISPLAY_READ_COUNT = 3;
 constexpr usize MATRIX_COLUMNS = 4;
 /// Bytes per RGBA8 test texel.
 constexpr usize TEXEL_BYTES = 4;
@@ -2048,4 +2050,195 @@ TEST_CASE("World renderer follows the viewport Force raster preference", "[edito
     source.SetForceRaster(true);
     CHECK(previewOrNull->ShouldForceRaster() == true);
     workspace.SetPreviewSource(nullptr);
+}
+
+TEST_CASE("Graph GPU display snapshots retain consumers and bypass frame readback",
+          "[editor][render-graph][preview][gpu-display]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No headless GPU adapter");
+    }
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetDirectPresentation(true);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    GraphDisplayFrames& display = preview.GetDisplayFrames();
+    struct Reads final
+    {
+        GraphDisplayFrames& Display;
+        rhi::NativeDeviceLease Device;
+        StaticArray<ViewportFrameRead, DISPLAY_READ_COUNT> Held;
+        QMetaObject::Connection ResetConnection;
+        void Drain() noexcept
+        {
+            for (ViewportFrameRead& read : Held)
+            {
+                if (read.Token != 0)
+                {
+                    Display.DrainFrameRead(read);
+                }
+            }
+        }
+        ~Reads()
+        {
+            QObject::disconnect(ResetConnection);
+            Drain();
+            static_cast<void>(rhi::ReleaseNativeDevice(Device));
+        }
+    } reads{display, {}, {}, {}};
+    REQUIRE(rhi::AcquireNativeDevice(device.Device, reads.Device) == rhi::RasterStatus::Ready);
+    rhi::NativeDeviceInfo native;
+    REQUIRE(rhi::GetNativeDeviceInfo(reads.Device, native) == rhi::RasterStatus::Ready);
+    reads.ResetConnection =
+        QObject::connect(&display, &ViewportFrameSource::ResettingFrames, &display, [&reads]() { reads.Drain(); });
+    QSignalSpy released(&display, &GraphDisplayFrames::CapacityAvailable);
+    for (usize i = 0; i < reads.Held.GetSize(); ++i)
+    {
+        const uint64 revision = i + 1;
+        preview.SetExtraction(MakeExtraction({1, 0, 0, 1}, revision));
+        REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == revision; }) == true);
+        REQUIRE(display.TakeFrameRead(reads.Device, native.Identity, reads.Held[i]) == rhi::RasterStatus::Ready);
+        CHECK(reads.Held[i].Image.Width == WIDTH);
+        CHECK(reads.Held[i].Image.Height == HEIGHT);
+        CHECK(preview.GetImage().isNull() == true);
+        CHECK(preview.HasGpuFrame() == true);
+    }
+    const uint64 retainedSerial = display.GetLatestSerial();
+    constexpr uint64 BLOCKED_REVISION = 4;
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, BLOCKED_REVISION));
+    constexpr usize BACKPRESSURE_POLLS = 100;
+    for (usize i = 0; i < BACKPRESSURE_POLLS; ++i)
+    {
+        preview.Tick();
+        QThread::usleep(200);
+    }
+    CHECK(display.GetLatestSerial() == retainedSerial);
+    CHECK(preview.GetPresentedRevision() == reads.Held.GetSize());
+    display.DrainFrameRead(reads.Held[0]);
+    CHECK(released.count() == 1);
+    const bool hasResumed = TickUntil(preview, [&]() { return preview.GetPresentedRevision() == BLOCKED_REVISION; });
+    INFO(preview.GetStatus().toStdString());
+    INFO("copying=" << display.IsCopying() << ", latest=" << display.GetLatestSerial());
+    REQUIRE(hasResumed == true);
+    CHECK(display.GetLatestSerial() > retainedSerial);
+    for (usize i = 1; i < reads.Held.GetSize(); ++i)
+    {
+        rhi::NativeTextureInfo retained;
+        REQUIRE(rhi::GetNativeTextureInfo(reads.Held[i].Read, retained) == rhi::RasterStatus::Ready);
+        CHECK(retained.Revision == reads.Held[i].Image.Revision);
+        CHECK(retained.ProducerOrdinal == reads.Held[i].Image.ProducerOrdinal);
+    }
+    CHECK(preview.GetStatistics().GetReadbackMilliseconds().GetAverage() == 0);
+    const uint64 lastGood = display.GetLatestSerial();
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    CHECK(preview.Load(WriteBytes(directory, QStringLiteral("bad.lurgrt"), QByteArrayLiteral("bad"))) ==
+          RenderGraphPreviewLoad::Malformed);
+    CHECK(display.GetLatestSerial() == lastGood);
+    preview.Detach();
+    CHECK(reads.Held[1].Token == 0);
+    CHECK(reads.Held[2].Token == 0);
+}
+
+TEST_CASE("Live graph viewport presents GPU images through navigation and resize", "[.render-native][gpu-display]")
+{
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    REQUIRE(workspace.PreviewRuntime() == true);
+    viewport.resize(640, 480);
+    viewport.show();
+    REQUIRE(source.SetScene(MakeScene({0, 1, 0, 1})) == true);
+    REQUIRE(source.Start() == true);
+    viewport.raise();
+    viewport.activateWindow();
+    QQuickWindow* windowOrNull = nullptr;
+    for (QWindow* window : QGuiApplication::allWindows())
+    {
+        if (window->objectName() == QStringLiteral("LudusGpuViewport") && window->isVisible() == true)
+        {
+            windowOrNull = static_cast<QQuickWindow*>(window);
+        }
+    }
+    REQUIRE(windowOrNull != nullptr);
+    REQUIRE(QTest::qWaitForWindowExposed(windowOrNull) == true);
+    const auto waitFor = [](auto predicate) {
+        QElapsedTimer timer;
+        timer.start();
+        constexpr int32 DEADLINE_MILLISECONDS = 10'000;
+        while (predicate() == false && timer.elapsed() < DEADLINE_MILLISECONDS)
+        {
+            QTest::qWait(1);
+        }
+        return predicate();
+    };
+    RenderGraphPreview& graph = *workspace.GetPreviewOrNull();
+    const bool hasPresented = waitFor([&]() { return viewport.PresentedFrames() > 0; });
+    INFO(source.Status().toStdString());
+    INFO(graph.GetStatus().toStdString());
+    INFO("Qt initialized=" << windowOrNull->isSceneGraphInitialized() << ", exposed=" << windowOrNull->isExposed());
+    REQUIRE(hasPresented == true);
+    CHECK(graph.HasGpuFrame() == true);
+    CHECK(graph.GetImage().isNull() == true);
+    CHECK(viewport.HasRetainedGraphFrame() == true);
+    // Test-only framebuffer capture independently checks the actual shared GPU presentation.
+    const QImage first = windowOrNull->grabWindow();
+    REQUIRE(first.isNull() == false);
+    CHECK(first.pixelColor(first.width() / 2, first.height() / 2) != first.pixelColor(0, 0));
+    const uint64 firstRevision = graph.GetPresentedRevision();
+    const uint64 firstPaint = viewport.PresentedFrames();
+    source.Orbit(120, 40);
+    REQUIRE(waitFor([&]() {
+                return graph.GetPresentedRevision() > firstRevision && viewport.PresentedFrames() > firstPaint;
+            }) == true);
+    const QImage navigated = windowOrNull->grabWindow();
+    CHECK(navigated != first);
+    viewport.resize(800, 550);
+    const uint64 beforeResize = viewport.PresentedFrames();
+    source.Orbit(20, 10);
+    REQUIRE(waitFor([&]() { return viewport.PresentedFrames() > beforeResize; }) == true);
+    CHECK(windowOrNull->grabWindow().size() != first.size());
+    CHECK(graph.GetImage().isNull() == true);
+    CHECK(graph.GetStatistics().GetReadbackMilliseconds().GetAverage() == 0);
+    QString depthTarget;
+    for (const RenderGraphTarget& target : graph.GetTargetCatalogue().Targets)
+    {
+        if (target.IsDepth == true)
+        {
+            depthTarget = target.Name;
+            break;
+        }
+    }
+    REQUIRE(depthTarget.isEmpty() == false);
+    const uint64 beforeDepth = viewport.PresentedFrames();
+    graph.SetOutputTarget(depthTarget);
+    REQUIRE(waitFor([&]() { return graph.HasGpuFrame() == false && viewport.PresentedFrames() > beforeDepth; }) ==
+            true);
+    CHECK(windowOrNull->grabWindow().isNull() == false);
+    const uint64 beforeColor = viewport.PresentedFrames();
+    graph.SetOutputTarget({});
+    REQUIRE(waitFor([&]() { return graph.HasGpuFrame() == true && viewport.PresentedFrames() > beforeColor; }) == true);
+    source.SetStatisticsVisible(true);
+    constexpr int32 IDLE_STATISTICS_MILLISECONDS = 1'250;
+    QTest::qWait(IDLE_STATISTICS_MILLISECONDS);
+    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("FPS (updates): 0")) == true);
+    const uint64 lastGeneration = graph.GetPresentedGeneration();
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    CHECK(graph.Load(WriteBytes(directory, QStringLiteral("broken.lurgrt"), QByteArrayLiteral("bad"))) ==
+          RenderGraphPreviewLoad::Malformed);
+    CHECK(graph.GetPresentedGeneration() == lastGeneration);
+    CHECK(viewport.HasRetainedGraphFrame() == true);
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
 }
