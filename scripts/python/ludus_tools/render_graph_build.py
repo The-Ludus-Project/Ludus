@@ -26,10 +26,13 @@ from .errors import ToolingError
 from . import render_graph as graph
 from . import render_graph_diagnostics as diagnostics
 from . import render_graph_ray as ray
+from . import render_graph_buffers as buffers
 
 VERSION = 1
 TARGETS = ('spirv', 'wgsl', 'metal', 'glsl')
 SHAPES = {'Float32': ('float', 1), 'Float2': ('float2', 2), 'Float3': ('float3', 3), 'Float4': ('float4', 4)}
+STORAGE_SHAPES = {**SHAPES, **{name + suffix: (spelling + (suffix if suffix != '32' else ''), int(suffix) if suffix != '32' else 1)
+    for name, spelling in (('UInt', 'uint'), ('Int', 'int')) for suffix in ('32', '2', '3', '4')}}
 RESERVED = {'class', 'struct', 'namespace', 'auto', 'const', 'float', 'int', 'void', 'return', 'for', 'while', 'if', 'else', 'static', 'inline', 'template', 'typename', 'private', 'public', 'protected', 'operator', 'true', 'false', 'nullptr', 'bool', 'break', 'continue', 'switch', 'case', 'default', 'delete', 'new', 'this', 'union', 'enum', 'do', 'sizeof', 'alignof', 'using', 'typedef', 'uniform', 'in', 'out', 'register', 'cbuffer', 'shader', 'rgEntry', 'value'}
 RESERVED.update(('alignas alignof and and_eq asm atomic_cancel atomic_commit atomic_noexcept bitand bitor catch char char8_t char16_t char32_t compl consteval constexpr constinit const_cast co_await co_return co_yield decltype double dynamic_cast explicit export extern friend goto inline int long mutable noexcept not not_eq or or_eq reflexpr reinterpret_cast requires short signed static_assert static_cast template thread_local throw try typeid typename unsigned virtual volatile wchar_t xor xor_eq concept final override float2 float3 float4 uint uint2 uint3 uint4').split())
 NAME = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,62}\Z')
@@ -181,17 +184,17 @@ def validate_manifest(value):
         keys(schema, ('id', 'role', 'fields'), 'schema')
         name(schema['id'], 'schema id')
         require(schema['id'] not in schemas, 'Schema', schema['id'], 'duplicate schema')
-        enum(schema['role'], ('Uniform', 'Vertex', 'Varying'), 'schema role')
+        enum(schema['role'], ('Uniform', 'Storage', 'Vertex', 'Varying'), 'schema role')
         bounded_list(schema['fields'], 16, 'schema fields')
         require(schema['fields'], 'Schema', schema['id'], 'empty schema')
         seen, locations = set(), set()
         for field in schema['fields']:
-            keys(field, ('id', 'type') if schema['role'] == 'Uniform' else ('id', 'type', 'semantic', 'location'), 'field')
+            keys(field, ('id', 'type') if schema['role'] in ('Uniform', 'Storage') else ('id', 'type', 'semantic', 'location'), 'field')
             name(field['id'], 'field id')
             require(field['id'] not in seen, 'Schema', schema['id'], 'duplicate field identity')
             seen.add(field['id'])
-            enum(field['type'], SHAPES, 'field type')
-            if schema['role'] != 'Uniform':
+            enum(field['type'], STORAGE_SHAPES if schema['role'] == 'Storage' else SHAPES, 'field type')
+            if schema['role'] not in ('Uniform', 'Storage'):
                 require(type(field['semantic']) is str and re.fullmatch(r'(?:POSITION|NORMAL|TEXCOORD[0-9]|COLOR[0-9]|SV_Position)', field['semantic']),
                         'Schema', field['id'], 'bounded semantic required')
                 integer(field['location'], 0, 15, 'field location')
@@ -215,6 +218,7 @@ def validate_manifest(value):
         enum(program['stage'], ('vertex', 'fragment', *ray.STAGES), 'stage')
         if program['stage'] in ray.STAGES:
             ray.validate_program(program, sys.modules[__name__])
+            buffers.validate_bindings(program, schemas, sys.modules[__name__])
             programs[program['id']] = program
             continue
         require(type(program['input']) is str and program['input'] in schemas, 'Schema', program['id'], 'unknown input schema')
@@ -331,7 +335,7 @@ def shader_source(program, schemas):
         lines += ['struct ' + sid, '{']
         for field in schema['fields']:
             prefix, suffix = '', ''
-            if schema['role'] != 'Uniform':
+            if schema['role'] not in ('Uniform', 'Storage'):
                 if field['semantic'] != 'SV_Position':
                     prefix = '[[vk::location(' + str(field['location']) + ')]] '
                 suffix = ' : ' + field['semantic']
@@ -390,9 +394,10 @@ def cpp_header(schemas, compiled):
     for sid, schema in sorted(schemas.items()):
         lines += ['/// Logical schema values; target upload bytes must use the generated packer.', 'struct ' + sid, '{']
         for field in schema['fields']:
-            width = SHAPES[field['type']][1]
-            lines += ['    /// Schema field ' + field['id'] + '; native float32 values.',
-                      '    foundation::float32 ' + field['id'] + (f'[{width}]' if width > 1 else '') + '{};']
+            width = (STORAGE_SHAPES if schema['role'] == 'Storage' else SHAPES)[field['type']][1]
+            scalar = 'uint32' if field['type'].startswith('UInt') else 'int32' if field['type'].startswith('Int') else 'float32'
+            lines += ['    /// Schema field ' + field['id'] + '; native scalar values.',
+                      '    foundation::' + scalar + ' ' + field['id'] + (f'[{width}]' if width > 1 else '') + '{};']
         lines += ['};']
     layouts = {}
     for (pid, target), result in compiled.items():
@@ -704,7 +709,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
                 'Metal hardware raytracing requires the pinned --spirv-cross translator')
         original_programs = programs
-        programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__])
+        programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__], schemas)
         ray_closure = sorted(set(p for program in original_programs.values() if program['stage'] in ray.STAGES
                                  for p in closures[program['id']]) | set(snapshot.files))
         for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):

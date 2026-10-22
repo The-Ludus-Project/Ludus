@@ -15,6 +15,7 @@ import struct
 from . import render_graph as graph
 from . import render_graph_build as build
 from . import render_graph_ray as ray
+from . import render_graph_buffers as buffers
 
 MAX_PASSES = 16
 MAX_RESOURCES = 32
@@ -52,7 +53,7 @@ def lower_plan(package, configuration):
     plans = [p for p in package['plans'] if p['configuration'] == configuration]
     build.require(len(plans) == 1, 'Configuration', configuration, 'one declared root configuration required')
     plan = plans[0]
-    resources = sorted(plan['resources'])
+    resources = sorted(name for name, value in plan['resources'].items() if value['type'] != 'Buffer')
     rasters = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
     cameras = sorted({p['view'] for p in rasters})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
@@ -128,7 +129,7 @@ STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 6
+PACKAGE_VERSION = 7
 MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
@@ -271,8 +272,9 @@ def _runtime_contents(path, configuration):
     for camera in cameras:
         choices = [c for c in plan['cameras'] if c['id'] == camera and c['active']]
         build.require(len(choices) == 1, 'Configuration', camera, 'active camera target required')
-        camera_targets.append(sorted(plan['resources']).index(choices[0]['target']))
+        camera_targets.append(sorted(name for name, value in plan['resources'].items() if value['type'] != 'Buffer').index(choices[0]['target']))
     value_count, bindings, blocks, fields, uniform_interface = _lower_uniforms(package, stages)
+    storage_buffers = buffers.lower_bindings(plan, stages, build)
     artifacts = {}
     for ordinal, (key, program) in enumerate(sorted(stages.items(), key=lambda x: (role(x[0][0], x[0][1]), TARGET_CODES[x[0][2]]))):
         program_name, stage, target = key
@@ -309,7 +311,7 @@ def _runtime_contents(path, configuration):
     return {'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
-            'uniform_interface': uniform_interface,
+            'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
             'interface_identity': build.identity(interface), 'generation': path.name}
 
 
@@ -361,10 +363,11 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
     lines += ['inline constexpr foundation::StaticArray<foundation::BorrowedView<const char>, PASS_COUNT> PASS_NAMES', '{', '    {']
     lines += ['        {' + json.dumps(label, ensure_ascii=True) + ', ' + str(len(label.encode('utf-8'))) + '},' for label in pass_names]
     lines += ['    },', '};']
+    lines += [f'inline constexpr foundation::usize STORAGE_BUFFER_COUNT = {len(contents["storage_buffers"])};']
     lines += _uniform_constants(contents)
     kinds = {'Kind': 'Aspect', 'Program': 'Technique', 'ColorLoad': 'Load', 'DepthLoad': 'Load', 'ColorStore': 'Store',
              'DepthStore': 'Store', 'Stages': 'Visibility', 'Target': 'ShaderTarget'}
-    tables = [('RESOURCES', resources, 'Resource', 'RESOURCE_COUNT'), ('PASSES', passes, 'Pass', 'PASS_COUNT'),
+    tables = [('STORAGE_BUFFERS', contents['storage_buffers'], 'StorageBuffer', 'STORAGE_BUFFER_COUNT'), ('RESOURCES', resources, 'Resource', 'RESOURCE_COUNT'), ('PASSES', passes, 'Pass', 'PASS_COUNT'),
               ('UNIFORM_BINDINGS', contents['bindings'], 'UniformBinding', 'UNIFORM_BINDING_COUNT'),
               ('UNIFORM_BLOCKS', contents['blocks'], 'UniformBlock', 'UNIFORM_BLOCK_COUNT'),
               ('UNIFORM_FIELDS', contents['fields'], 'UniformField', 'UNIFORM_FIELD_COUNT')]
@@ -395,7 +398,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '        {RESOURCES.GetData(), RESOURCES.GetSize()}, {CAMERAS.GetData(), CAMERAS.GetSize()}, {PASSES.GetData(), PASSES.GetSize()},',
               '        ' + ', '.join(view(label, values) for label, values in
                                     [('UNIFORM_BINDINGS', contents['bindings']), ('UNIFORM_BLOCKS', contents['blocks']),
-                                     ('UNIFORM_FIELDS', contents['fields'])]) + ', {PASS_NAMES.GetData(), PASS_NAMES.GetSize()}};', '}']
+                                     ('UNIFORM_FIELDS', contents['fields'])]) + ', {PASS_NAMES.GetData(), PASS_NAMES.GetSize()}, ' + view('STORAGE_BUFFERS', contents['storage_buffers']) + '};', '}']
     identity = bytes.fromhex(contents['interface_identity'])
     lines += ['/// SHA-256 of the CPU-visible vertex/instance and uniform interface this host was compiled against (RG3).',
               '/// Runtime generations with another identity are rejected with RestartRequired.',
@@ -452,11 +455,14 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
             if program_name == 'RayTracing':
                 lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ');']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
+            if program_name == 'RayTracing' and stage == 'compute':
+                stage_bindings = [{'slot': entry['binding'], 'kind': entry['kind'], 'visibility': 'Compute', 'size': entry['size']}
+                                  for entry in contents['artifacts'][keys[0]]['descriptor']['interface']['entries']]
             if stage_bindings:
                 constant = member.upper() + '_BINDING_COUNT'
                 lines += [f'    static constexpr foundation::usize {constant} = {len(stage_bindings)};',
                           f'    static constexpr foundation::StaticArray<rhi::RasterBinding, {constant}> {member}Bindings', '{', '        {']
-                lines += ['            {' + str(b['slot']) + ', rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::' +
+                lines += ['            {' + str(b['slot']) + ', rhi::RasterBindingKind::' + b.get('kind', 'UniformBuffer') + ', rhi::RasterVisibility::' +
                           b['visibility'] + ', ' + str(b['size']) + '},' for b in stage_bindings]
                 lines += ['        },', '    };', f'    result.{member}.Bindings = {member}Bindings.AsSpan();']
             for key in sorted(keys, key=lambda k: TARGET_CODES[k[2]]):
@@ -523,6 +529,10 @@ def encode_runtime_package(contents):
             data += u32(slot, len(encoded)) + encoded + bytes(-len(encoded) % 4)
         for blob in (entry, item['bytes']):
             data += blob + bytes(-len(blob) % 4)
+    storage = contents.get('storage_buffers', [])
+    data += u32(len(storage))
+    for buffer in storage:
+        data += u32(buffer['Slot'], buffer['Stride'], buffer['Count'], buffer['IsReadOnly'])
     for operation in contents['plan']['passes']:
         if operation['kind'] not in ('Raster', 'RayTracing'):
             continue
@@ -553,7 +563,7 @@ def encode_resource_names(contents):
     the names to exactly one package; runtime activation never reads this file.
     """
     plan = contents['plan']
-    names = sorted(plan['resources'])
+    names = sorted(name for name, resource in plan['resources'].items() if resource['type'] != 'Buffer')
     entries = [{'name': name, 'type': plan['resources'][name]['type'], 'format': plan['resources'][name]['format'],
                 'extent': list(plan['resources'][name]['extent'])} for name in names]
     # Expanded operation IDs let a canvas node (Raster, Subgraph, Export, Present) find what it wrote or read.

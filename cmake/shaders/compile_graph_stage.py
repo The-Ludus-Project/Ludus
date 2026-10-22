@@ -135,7 +135,10 @@ def compile_graph_stage(args, lock):
     points = document.get('entryPoints', [])
     if len(points) != 1 or points[0].get('stage') != stage or points[0].get('name') != args.name:
         raise RuntimeError('RG1 requested entry/stage differs from target reflection')
-    interface = raster_interface(document, stage, metal and not native_rays)
+    interface = raster_interface(document, stage, metal and not native_rays, structured_records=native_rays)
+    if native_rays:
+        from compile_raster import verify_storage_record_strides
+        verify_storage_record_strides(intermediate.read_bytes(), interface)
     if stage != 'compute' and any(x['kind'] != 'UniformBuffer' for x in interface['entries']):
         raise RuntimeError('RG1 initial schema profile permits uniform buffers only')
     links = [] if stage == 'compute' else varying_interface(points[0], stage)

@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/content/render_graph_format/plan.h>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/rhi/lifetime.h>
 
@@ -26,6 +28,12 @@ struct GpuPreviewOptions final
     ludus::foundation::usize GpuByteBudget = 0;
     /// Positive finite display exposure. Output applies Reinhard then sRGB encoding.
     ludus::foundation::float32 Exposure = 1;
+    /// Optional native graph storage; copied by EnableGpuPreview/EnableTriangleRayPipeline.
+    /// Slots/strides/access must match the compute shader. Each job owns zeroed buffers
+    /// until release; Count==0 follows its pixel extent. Budgets include their bytes.
+    // Keep partial aggregate callers warning-clean when this optional field is omitted.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const content::render_graph_format::StorageBuffer> StorageBuffers{};
 };
 /// Renderer-owned immutable GPU scene and progressive accumulation. Copies borrow;
 /// Release cancels future dispatches, while acquired output frames retain the job.

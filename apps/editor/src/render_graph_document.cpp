@@ -837,6 +837,7 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     {
         if (IsPipelineNode(node.toObject().value(QStringLiteral("kind")).toString()) == true ||
             node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize") ||
+            node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("StructuredBuffer") ||
             node.toObject().value(QStringLiteral("extent")).toString() == QStringLiteral("RenderSize"))
         {
             graph.insert(QStringLiteral("version"), 2);

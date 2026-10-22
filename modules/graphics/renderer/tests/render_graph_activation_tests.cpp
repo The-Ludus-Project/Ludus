@@ -222,6 +222,10 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
+    if (options.Version >= format::PACKAGE_VERSION)
+    {
+        writer.WriteWord(0);
+    }
     if (options.Version >= format::NAMED_PACKAGE_VERSION)
     {
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
@@ -265,6 +269,7 @@ Array<uint8> MakeMultiTargetPackageBytes(std::string_view vertexSpirv, bool hasF
     }
     WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::Wgsl, FRAGMENT_TEXT, "FragmentMain");
     WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::GlslEs, GLSL_TEXT, "main");
+    writer.WriteWord(0);
     writer.WriteWord(static_cast<uint32>(PackageOptions{}.PassName.size()));
     writer.WritePadded(PackageOptions{}.PassName);
     return Move(writer.Bytes);
@@ -745,6 +750,7 @@ TEST_CASE("RG3 runtime packages carry GLSL ES block names and reject malformed u
                    FRAGMENT_TEXT,
                    "FragmentMain",
                    blockTarget == format::ShaderTarget::Wgsl ? block : std::string_view{});
+        writer.WriteWord(0);
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
         writer.WritePadded(options.PassName);
         return Move(writer.Bytes);
@@ -942,6 +948,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::NAMED_PACKAGE_VERSION,
                                  format::VIEW_PACKAGE_VERSION,
                                  format::SCENE_PACKAGE_VERSION,
+                                 format::NATIVE_RAY_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
