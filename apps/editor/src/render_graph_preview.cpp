@@ -25,8 +25,8 @@ namespace renderer = graphics::renderer;
 namespace rhi = graphics::rhi;
 namespace
 {
-/// Ticks (about 16 ms each) to wait for the producer of one frame before reporting a stall.
-constexpr uint32 MAX_PRODUCER_TICKS = 600;
+/// Wall-clock producer deadline, independent of the completion polling cadence.
+constexpr int32 MAX_PRODUCER_MILLISECONDS = 10'000;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
 /// Straight alpha below one cannot use the opaque static profile.
 constexpr float32 OPAQUE_ALPHA = 1.0F;
@@ -345,6 +345,11 @@ struct RenderGraphPreview::State final
     rhi::RasterShaderDescription CompositeFragment{};
     renderer::RenderGraphActivation Activation;
     RenderTargetReader Reader;
+    GraphDisplayFrames Display;
+    bool ShouldPresentDirectly = false;
+    bool IsCopyingDisplay = false;
+    bool HasGpuFrame = false;
+    bool HasPendingPreparation = false;
     GraphViewportStatistics Statistics;
     ViewportFrameTrace Trace;
     QElapsedTimer ReadbackTimer;
@@ -397,7 +402,7 @@ struct RenderGraphPreview::State final
     uint64 MaterialStatusRevision = 0;
     QString MaterialStatus;
     bool IsAwaitingProducer = false;
-    uint32 ProducerTicks = 0;
+    QElapsedTimer ProducerTimer;
     uint64 RenderedGeneration = 0;
     uint64 RenderedRevision = 0;
     /// Texture viewer readback; runs only between frames, after the export copy.
@@ -429,6 +434,7 @@ RenderGraphPreview::RenderGraphPreview(BorrowedView<const uint8> interfaceIdenti
 RenderGraphPreview::~RenderGraphPreview()
 {
     // Same release order as Detach, without notifying observers during destruction.
+    mState->Display.Reset();
     mState->Reader.Release();
     mState->Inspector.Release();
     mState->Activation.Reset();
@@ -452,6 +458,7 @@ bool RenderGraphPreview::Attach(rhi::DeviceHandle device, rhi::SurfaceHandle sur
                       .arg(DescribeRasterStatus(initialized)));
         return false;
     }
+    state.Display.Initialize(device, state.CompositeVertex, state.CompositeFragment);
     state.Device = device;
     state.Surface = surface;
     state.IsResizeRejected = false;
@@ -482,6 +489,9 @@ void RenderGraphPreview::Detach() noexcept
     }
     state.Trace.Cancel("preview detached");
     // Drop the export and inspection consumers before the generations that own their textures.
+    state.Display.Reset();
+    state.IsCopyingDisplay = false;
+    state.HasPendingPreparation = false;
     state.Reader.Release();
     state.Statistics.Reset();
     state.ReadbackTimer.invalidate();
@@ -494,7 +504,7 @@ void RenderGraphPreview::Detach() noexcept
     state.Active = {};
     state.UpdatedRevision = 0;
     state.IsAwaitingProducer = false;
-    state.ProducerTicks = 0;
+    state.ProducerTimer.invalidate();
     Q_EMIT Changed();
 }
 
@@ -690,11 +700,12 @@ void RenderGraphPreview::SetOutputTarget(const QString& name)
         mState->FailedOutputRevision = 0;
         // Redraw the current extraction; keep the last complete image during the new read.
         mPresentedSession = 0;
+        Q_EMIT Changed();
     }
 }
 bool RenderGraphPreview::IsCopyingOutput() const noexcept
 {
-    return mState->Reader.IsBusy();
+    return mState->Reader.IsBusy() == true || mState->IsCopyingDisplay == true;
 }
 void RenderGraphPreview::SetExtraction(const RenderGraphExtraction& extraction)
 {
@@ -733,16 +744,38 @@ ViewportFrameTrace& RenderGraphPreview::GetFrameTrace() noexcept
 {
     return mState->Trace;
 }
+void RenderGraphPreview::SetDirectPresentation(bool shouldPresentDirectly) noexcept
+{
+    mState->ShouldPresentDirectly = shouldPresentDirectly;
+}
+bool RenderGraphPreview::HasPendingWork() const noexcept
+{
+    const State& state = *mState;
+    const renderer::RenderGraphCandidateState candidate = state.Activation.GetReport().Candidate;
+    return state.IsAwaitingProducer == true || state.Reader.IsBusy() == true || state.IsCopyingDisplay == true ||
+           state.Inspector.IsBusy() == true || state.HasPendingPreparation == true ||
+           candidate == renderer::RenderGraphCandidateState::Preparing ||
+           (candidate == renderer::RenderGraphCandidateState::NeedsUpdate && state.HasExtraction == true);
+}
+bool RenderGraphPreview::HasGpuFrame() const noexcept
+{
+    return mState->HasGpuFrame;
+}
+GraphDisplayFrames& RenderGraphPreview::GetDisplayFrames() noexcept
+{
+    return mState->Display;
+}
 void RenderGraphPreview::Tick(float64 preparationMilliseconds)
 {
     State& state = *mState;
     renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
     const bool hasPendingSamples = activeOrNull != nullptr && activeOrNull->HasPendingSamples() == true;
     const bool hasActiveWork =
-        state.IsAttached == true && (hasPendingSamples == true || state.Reader.IsBusy() == true ||
-                                     state.IsAwaitingProducer == true || state.Candidate.Serial != 0 ||
-                                     (state.HasExtraction == true && (state.Extraction.Revision != mPresentedRevision ||
-                                                                      state.Session != mPresentedSession)));
+        state.IsAttached == true &&
+        (hasPendingSamples == true || state.IsCopyingDisplay == true || state.Reader.IsBusy() == true ||
+         state.IsAwaitingProducer == true || state.Candidate.Serial != 0 ||
+         (state.HasExtraction == true &&
+          (state.Extraction.Revision != mPresentedRevision || state.Session != mPresentedSession)));
     QElapsedTimer timer;
     timer.start();
     state.HasCompletedStatisticsFrame = false;
@@ -755,9 +788,15 @@ void RenderGraphPreview::Tick(float64 preparationMilliseconds)
     if (state.HasCompletedStatisticsFrame == true)
     {
         state.Statistics.CompleteFrame(time::Now().Nanoseconds,
-                                       static_cast<float64>(state.ReadbackTimer.nsecsElapsed()) /
-                                           NANOSECONDS_PER_MILLISECOND);
+                                       state.HasGpuFrame == true
+                                           ? 0
+                                           : static_cast<float64>(state.ReadbackTimer.nsecsElapsed()) /
+                                                 NANOSECONDS_PER_MILLISECOND);
         Q_EMIT FramePresented();
+        if (state.ShouldPresentDirectly == true)
+        {
+            Q_EMIT state.Display.FrameReady();
+        }
     }
 }
 void RenderGraphPreview::tick()
@@ -766,6 +805,11 @@ void RenderGraphPreview::tick()
     State& state = *mState;
     if (state.IsAttached == false)
     {
+        return;
+    }
+    if (state.IsCopyingDisplay == true)
+    {
+        finishDisplayCopy();
         return;
     }
     if (state.Reader.IsBusy() == true)
@@ -806,18 +850,55 @@ void RenderGraphPreview::tick()
         const rhi::RasterStatus exported = activeOrNull == nullptr
                                                ? rhi::RasterStatus::InvalidState
                                                : activeOrNull->GetResourceAllocation(resource, texture, aspect);
-        if (exported == rhi::RasterStatus::NotReady && ++state.ProducerTicks < MAX_PRODUCER_TICKS)
+        if (exported == rhi::RasterStatus::NotReady && state.ProducerTimer.elapsed() < MAX_PRODUCER_MILLISECONDS)
         {
             return;
         }
-        state.IsAwaitingProducer = false;
         if (exported != rhi::RasterStatus::Ready)
         {
+            state.IsAwaitingProducer = false;
             state.Trace.Cancel("producer failed");
             setStatus(QStringLiteral("The preview frame did not complete (%1); the shown frame is kept.")
                           .arg(DescribeRasterStatus(exported)));
             return;
         }
+        format::Resource description;
+        const bool canUseGpuDisplay = state.ShouldPresentDirectly == true && aspect == rhi::TextureAspect::Color &&
+                                      activeOrNull->GetResourceDescription(resource, description) == true &&
+                                      description.IsExported != 0;
+        // Transient attachments remain owned by their graph pool and cannot be imported into
+        // the display-copy graph. Explicit inspection keeps the existing readback path.
+        if (canUseGpuDisplay == true)
+        {
+            const rhi::RasterStatus copied = state.Display.Copy(state.Surface, texture, width, height);
+            if (copied == rhi::RasterStatus::NotReady)
+            {
+                state.Trace.SetStage("Await GPU display capacity");
+                return;
+            }
+            state.IsAwaitingProducer = false;
+            state.ReadingOutputRevision = state.OutputRevision;
+            if (copied == rhi::RasterStatus::Ready)
+            {
+                state.Display.PublishCopy();
+                publishFrame(true);
+            }
+            else if (copied == rhi::RasterStatus::Pending)
+            {
+                state.IsCopyingDisplay = true;
+                state.Trace.SetStage("Await GPU display snapshot");
+            }
+            else
+            {
+                state.FailedOutputGeneration = state.RenderedGeneration;
+                state.FailedOutputRevision = state.RenderedRevision;
+                state.Trace.Cancel("GPU display copy failed");
+                setStatus(QStringLiteral("GPU presentation failed (%1); the shown frame is kept.")
+                              .arg(DescribeRasterStatus(copied)));
+            }
+            return;
+        }
+        state.IsAwaitingProducer = false;
         state.ReadingOutputRevision = state.OutputRevision;
         state.Trace.SetStage("Readback requests and wait (observed)");
         state.ReadbackTimer.start();
@@ -880,20 +961,52 @@ void RenderGraphPreview::finishCopy()
             LUDUS_PROFILE_SCOPE(EditorGraphDisplayImageConversion);
             mImage = MakeDisplayImage(texture, settings, range);
         }
-        state.Trace.Publish();
-        mPresentedGeneration = state.RenderedGeneration;
-        mPresentedRevision = state.RenderedRevision;
-        mPresentedSession = state.Session;
-        setStatus(mPresentedRevision == state.MaterialStatusRevision ? state.MaterialStatus : QString{});
-        // Live refresh: the viewed texture follows every presented frame.
-        state.IsInspectionRequested = state.InspectedName.isEmpty() == false;
-        state.HasCompletedStatisticsFrame = true;
+        publishFrame();
     }
     else if (status == RenderTargetReadStatus::Failed || status == RenderTargetReadStatus::Undefined)
     {
         state.Reader.Cancel();
         state.Trace.Cancel("output readback failed");
         setStatus(QStringLiteral("The preview frame copy failed; the shown frame is kept."));
+    }
+}
+
+void RenderGraphPreview::publishFrame(bool isGpuFrame)
+{
+    State& state = *mState;
+    state.HasGpuFrame = isGpuFrame;
+    state.Trace.Publish();
+    mPresentedGeneration = state.RenderedGeneration;
+    mPresentedRevision = state.RenderedRevision;
+    mPresentedSession = state.Session;
+    setStatus(mPresentedRevision == state.MaterialStatusRevision ? state.MaterialStatus : QString{});
+    state.IsInspectionRequested = state.InspectedName.isEmpty() == false;
+    state.HasCompletedStatisticsFrame = true;
+}
+void RenderGraphPreview::finishDisplayCopy()
+{
+    State& state = *mState;
+    const rhi::RasterStatus status = state.Display.PollCopy();
+    if (status == rhi::RasterStatus::Pending)
+    {
+        return;
+    }
+    state.IsCopyingDisplay = false;
+    if (status == rhi::RasterStatus::Ready && state.ReadingOutputRevision == state.OutputRevision)
+    {
+        state.Display.PublishCopy();
+        publishFrame(true);
+    }
+    else
+    {
+        state.Display.DiscardCopy();
+        if (state.ReadingOutputRevision == state.OutputRevision)
+        {
+            state.FailedOutputGeneration = state.RenderedGeneration;
+            state.FailedOutputRevision = state.RenderedRevision;
+        }
+        state.Trace.Cancel("GPU display copy failed or superseded");
+        setStatus(QStringLiteral("GPU presentation was superseded or failed; the shown frame is kept."));
     }
 }
 
@@ -925,7 +1038,8 @@ void RenderGraphPreview::advance()
     }
     const renderer::RenderGraphActivationReport before = state.Activation.GetReport();
     // No export consumer is outstanding here, so Poll may activate and Reset the old generation.
-    static_cast<void>(state.Activation.Poll());
+    const rhi::RasterStatus preparation = state.Activation.Poll();
+    state.HasPendingPreparation = preparation == rhi::RasterStatus::Pending;
     const renderer::RenderGraphActivationReport report = state.Activation.GetReport();
     if (report.ActiveGeneration != before.ActiveGeneration && report.ActiveGeneration == state.Candidate.Serial)
     {
@@ -956,6 +1070,7 @@ void RenderGraphPreview::advance()
             renderer::RenderGraphCoveragePolicy::DiagnosticColor,
             graphReport,
             &shaderInputs);
+        state.HasPendingPreparation = state.HasPendingPreparation == true || updated == rhi::RasterStatus::Pending;
         if (IsAccepted(updated) == true)
         {
             state.MaterialStatusRevision = state.Extraction.Revision;
@@ -1037,7 +1152,7 @@ void RenderGraphPreview::advance()
     state.RenderedRevision = drawable;
     state.Trace.SetStage("Await producer completion (observed)");
     state.IsAwaitingProducer = true;
-    state.ProducerTicks = 0;
+    state.ProducerTimer.start();
 }
 
 const RenderGraphTargetCatalogue& RenderGraphPreview::GetTargetCatalogue() const noexcept

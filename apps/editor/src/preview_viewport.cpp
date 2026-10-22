@@ -4,6 +4,7 @@
 #include "internal/viewport_statistics.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/time/time.hpp>
 
 #include <new>
 
@@ -289,6 +290,8 @@ struct PreviewViewport::State final
     {
         /// The source's read of this slot's image; the source decides how it is opened and closed.
         ViewportFrameRead Read{};
+        ViewportTraceIdentity TraceIdentity;
+        uint64 FrameBeginTicks = 0;
         QSGTexture* Wrapper = nullptr;
         bool HasLease = false;
         bool IsRetiring = false;
@@ -306,6 +309,42 @@ struct PreviewViewport::State final
         {
             LUDUS_REQUIRE(QThread::currentThread() == mState.Widget->thread());
             QSGSimpleTextureNode* node = static_cast<QSGSimpleTextureNode*>(oldNodeOrNull);
+            if (mState.ProjectGraph.isNull() == false && mState.Source == &mState.ProjectGraph->GetDisplayFrames() &&
+                mState.ProjectGraph->HasGpuFrame() == false && mState.ProjectGraph->GetImage().isNull() == false)
+            {
+                QSGTexture* wrapperOrNull = window()->createTextureFromImage(mState.ProjectGraph->GetImage());
+                if (wrapperOrNull == nullptr)
+                {
+                    return node;
+                }
+                if (node == nullptr)
+                {
+                    node = new QSGSimpleTextureNode;
+                    node->setOwnsTexture(false);
+                }
+                if (mState.Pending >= 0)
+                {
+                    mState.Frames[mState.Pending].IsRetiring = true;
+                    mState.Pending = -1;
+                }
+                if (mState.Active >= 0)
+                {
+                    Frame& previous = mState.Frames[mState.Active];
+                    previous.IsRetiring = true;
+                    delete previous.Wrapper;
+                    previous.Wrapper = nullptr;
+                    mState.Active = -1;
+                }
+                delete mState.CpuWrapperOrNull;
+                mState.CpuWrapperOrNull = wrapperOrNull;
+                node->setTexture(wrapperOrNull);
+                const QSizeF size =
+                    QSizeF(mState.ProjectGraph->GetImage().size()).scaled(boundingRect().size(), Qt::KeepAspectRatio);
+                node->setRect(QRectF(QPointF((width() - size.width()) / 2, (height() - size.height()) / 2), size));
+                mState.PresentedCpuImageKey = mState.ProjectGraph->GetImage().cacheKey();
+                ++mState.Presented;
+                return node;
+            }
             if (mState.Pending >= 0)
             {
                 Frame& next = mState.Frames[mState.Pending];
@@ -333,12 +372,27 @@ struct PreviewViewport::State final
                 }
                 mState.Active = mState.Pending;
                 mState.Pending = -1;
+                delete mState.CpuWrapperOrNull;
+                mState.CpuWrapperOrNull = nullptr;
                 node->setTexture(next.Wrapper);
+                if (mState.ProjectGraph.isNull() == false && mState.Source == &mState.ProjectGraph->GetDisplayFrames())
+                {
+                    mState.PaintTrace.Queue(next.TraceIdentity, next.FrameBeginTicks);
+                    mState.PaintTrace.BeginPaint();
+                }
                 ++mState.Presented;
             }
             if (node != nullptr)
             {
-                node->setRect(boundingRect());
+                QRectF target = boundingRect();
+                if (mState.ProjectGraph.isNull() == false &&
+                    mState.Source == &mState.ProjectGraph->GetDisplayFrames() && mState.Active >= 0)
+                {
+                    const rhi::NativeTextureInfo& image = mState.Frames[mState.Active].Read.Image;
+                    const QSizeF size = QSizeF(image.Width, image.Height).scaled(target.size(), Qt::KeepAspectRatio);
+                    target = QRectF(QPointF((width() - size.width()) / 2, (height() - size.height()) / 2), size);
+                }
+                node->setRect(target);
             }
             return node;
         }
@@ -354,6 +408,10 @@ struct PreviewViewport::State final
     QWidget* Container = nullptr;
     FrameCanvas* CanvasOrNull = nullptr;
     WorldGraphView* GraphViewOrNull = nullptr;
+    QPointer<RenderGraphPreview> ProjectGraph;
+    ViewportPaintTrace PaintTrace;
+    QSGTexture* CpuWrapperOrNull = nullptr;
+    int64 PresentedCpuImageKey = 0;
     OffscreenFrameReader Reader;
     renderer::ViewportFrame ReadLease{};
     bool HasReadLease = false;
@@ -426,6 +484,22 @@ private:
     }
     void createCanvas()
     {
+        if (GraphViewOrNull != nullptr)
+        {
+            ProjectGraph->SetDirectPresentation(false);
+            Widget->SetFrameSource(Preview.data());
+            if (Preview->AdmitOffscreenDevice() == true)
+            {
+                GraphViewOrNull->show();
+                Message->hide();
+            }
+            else
+            {
+                Message->setText(Preview->Status());
+                Message->show();
+            }
+            return;
+        }
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
         CanvasOrNull->SetStatisticsText(StatisticsText);
         CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
@@ -496,7 +570,7 @@ private:
     }
     void createWindow()
     {
-        if (GraphViewOrNull != nullptr)
+        if (GraphViewOrNull != nullptr && PreviewViewport::GetPresentation() != ViewportPresentation::SharedDevice)
         {
             if (Preview->HasDevice() == false && Preview->AdmitOffscreenDevice() == false)
             {
@@ -515,6 +589,11 @@ private:
             return;
         }
         const ViewportPresentation presentation = PreviewViewport::GetPresentation();
+        if (ProjectGraph.isNull() == false)
+        {
+            ProjectGraph->SetDirectPresentation(presentation == ViewportPresentation::SharedDevice);
+            GraphViewOrNull->hide();
+        }
         if (presentation == ViewportPresentation::OffscreenReadback)
         {
             createCanvas();
@@ -596,6 +675,7 @@ private:
             Widget,
             [this]() {
                 IsRecording = false;
+                PaintTrace.EndPaint();
                 releaseRetired();
             },
             Qt::DirectConnection);
@@ -644,6 +724,7 @@ private:
         Layout->addWidget(Container, 1);
         Message->hide();
         Container->show();
+        Window->update();
         Service.start(SERVICE_INTERVAL_MILLISECONDS);
     }
     // Destroying the native window releases Qt Quick's swapchain and the VkSurfaceKHR
@@ -737,7 +818,7 @@ private:
             releaseReadLease();
             return;
         }
-        bool hasFrames = false;
+        bool hasFrames = CpuWrapperOrNull != nullptr;
         for (const Frame& frame : Frames)
         {
             hasFrames = hasFrames || frame.HasLease;
@@ -751,6 +832,10 @@ private:
         // Its obsolete node owns no texture and cannot record further sampling.
         delete Item;
         Item = nullptr;
+        delete CpuWrapperOrNull;
+        CpuWrapperOrNull = nullptr;
+        PresentedCpuImageKey = 0;
+        PaintTrace.Cancel();
         Active = Pending = -1;
         for (Frame& frame : Frames)
         {
@@ -814,8 +899,23 @@ private:
             serviceCanvas();
             return;
         }
+        if (ProjectGraph.isNull() == false && Source == &ProjectGraph->GetDisplayFrames() &&
+            ProjectGraph->HasGpuFrame() == false && Window != nullptr && Item != nullptr &&
+            ProjectGraph->GetImage().isNull() == false && ProjectGraph->GetImage().cacheKey() != PresentedCpuImageKey &&
+            Widget->isVisible() == true)
+        {
+            Item->update();
+            Window->update();
+            return;
+        }
         if (Preview.isNull() == true || Source.isNull() == true || Window == nullptr || Pending >= 0 ||
             Source->HasPendingFrame() == false)
+        {
+            return;
+        }
+        if (ProjectGraph.isNull() == false && Source == &ProjectGraph->GetDisplayFrames() &&
+            (Widget->isVisible() == false ||
+             (Active >= 0 && Frames[Active].Read.Token == ProjectGraph->GetDisplayFrames().GetLatestSerial())))
         {
             return;
         }
@@ -837,6 +937,12 @@ private:
                 return;
             }
             frame.HasLease = true;
+            if (ProjectGraph.isNull() == false && Source == &ProjectGraph->GetDisplayFrames())
+            {
+                const ViewportFrameTrace& trace = ProjectGraph->GetFrameTrace();
+                frame.TraceIdentity = trace.GetPublishedIdentity();
+                frame.FrameBeginTicks = trace.GetPublishedBeginTicks();
+            }
             Pending = i;
             Item->update();
             Window->update();
@@ -1054,11 +1160,16 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         }
     });
     connect(&mState->Service, &QTimer::timeout, this, [this]() {
-        if (mState->GraphViewOrNull != nullptr)
+        if (mState->GraphViewOrNull != nullptr && mState->Window == nullptr)
         {
             return;
         }
         mState->recreatePendingSurface();
+        if (mState->Window != nullptr && mState->Preview->HasDevice() == false)
+        {
+            // The first frame admits Qt's device even before a producer image exists.
+            mState->Window->update();
+        }
         mState->releaseRetired();
         // Always finish an in-flight offscreen copy; otherwise only present when admitted.
         if (mState->CanShowFrames == true || mState->Reader.IsBusy() == true)
@@ -1089,6 +1200,12 @@ void PreviewViewport::connectFrameSource()
 void PreviewViewport::SetFrameSource(ViewportFrameSource* frameSourceOrNull)
 {
     ViewportFrameSource* next = frameSourceOrNull == nullptr ? Preview_ : frameSourceOrNull;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (frameSourceOrNull == nullptr && mState->ProjectGraph.isNull() == false && mState->Window != nullptr)
+    {
+        next = &mState->ProjectGraph->GetDisplayFrames();
+    }
+#endif
     if (next == mFrameSource)
     {
         return;
@@ -1165,6 +1282,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             synchronizeProblem,
             Qt::QueuedConnection);
     synchronizeProblem();
+    mState->ProjectGraph = inoutWorkspace.GetPreviewOrNull();
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
@@ -1184,6 +1302,24 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     statistics->setToolTip(QStringLiteral("Show delivered-image FPS, active CPU work, GPU device time and elapsed "
                                           "readback/conversion latency. Times average the last 30 samples; "
                                           "FPS falls to zero when idle. GPU shows n/a without timestamps."));
+    if (GetPresentation() == ViewportPresentation::SharedDevice)
+    {
+        SetFrameSource(&mState->ProjectGraph->GetDisplayFrames());
+        mState->GraphViewOrNull->hide();
+        connect(mState->ProjectGraph, &RenderGraphPreview::FramePresented, this, &PreviewViewport::updateStatistics);
+        connect(mState->GraphViewOrNull, &WorldGraphView::StatusChanged, this, [this](const QString& text) {
+            if (mFrameSource == &mState->ProjectGraph->GetDisplayFrames())
+            {
+                mState->ShaderStatusText = text;
+                mState->HasShaderError = false;
+                mState->applyShaderStatus();
+            }
+        });
+        connect(mState->GraphViewOrNull, &WorldGraphView::StatisticsChanged, this, [this]() {
+            mState->StatisticsText = mState->GraphViewOrNull->GetStatisticsText();
+            mState->applyStatistics();
+        });
+    }
     updateStatistics();
     if (wasRunning == true)
     {
@@ -1213,7 +1349,7 @@ void PreviewViewport::ShowFrame()
     // A manually gated import may present only after its catalog is committed.
     // Once admitted, also retry frames that arrived while both slots were leased.
     mState->CanShowFrames = true;
-    if (mState->GraphViewOrNull == nullptr)
+    if (mState->GraphViewOrNull == nullptr || mState->Window != nullptr)
     {
         mState->showFrame();
     }
@@ -1226,7 +1362,9 @@ void PreviewViewport::ShowFrame()
 bool PreviewViewport::HasRetainedGraphFrame() const noexcept
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    return mState->GraphViewOrNull != nullptr && mState->GraphViewOrNull->GetImage().isNull() == false;
+    return mState->GraphViewOrNull != nullptr &&
+           ((mState->Window != nullptr && (mState->Active >= 0 || mState->CpuWrapperOrNull != nullptr)) ||
+            mState->GraphViewOrNull->GetImage().isNull() == false);
 #else
     return false;
 #endif
@@ -1259,7 +1397,7 @@ void PreviewViewport::ClearFrame(const QString& text)
 QString PreviewViewport::GetStatisticsText() const
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mState->GraphViewOrNull != nullptr)
+    if (mState->GraphViewOrNull != nullptr && mState->Window == nullptr)
     {
         return mState->GraphViewOrNull->GetStatisticsText();
     }
@@ -1299,6 +1437,15 @@ void PreviewViewport::updateStatistics()
     if (mState->GraphViewOrNull != nullptr)
     {
         mState->GraphViewOrNull->SetStatisticsVisible(Preview_->IsStatisticsVisible());
+        if (GetPresentation() == ViewportPresentation::SharedDevice)
+        {
+            mState->StatisticsText = Preview_->IsStatisticsVisible() == true
+                                         ? FormatGraphViewportStatistics(mState->ProjectGraph->GetStatistics(),
+                                                                         Preview_->GetStatistics(),
+                                                                         foundation::time::Now().Nanoseconds)
+                                         : QString{};
+            mState->applyStatistics();
+        }
         return;
     }
 #endif
@@ -1378,7 +1525,7 @@ foundation::float32 PreviewViewport::getDrawableHeight() const noexcept
     return static_cast<foundation::float32>(mState->BrowserOrNull->height());
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mState->GraphViewOrNull != nullptr)
+    if (mState->GraphViewOrNull != nullptr && mState->Window == nullptr)
     {
         return static_cast<foundation::float32>(mState->GraphViewOrNull->height());
     }
@@ -1407,6 +1554,11 @@ void PreviewViewport::resizeSurface()
     if (mState->Window != nullptr && mState->Item != nullptr)
     {
         const foundation::float64 ratio = mState->Window->devicePixelRatio();
+        if (mState->ProjectGraph.isNull() == false && mFrameSource == &mState->ProjectGraph->GetDisplayFrames())
+        {
+            Preview_->Resize(qRound(static_cast<float64>(mState->Window->width()) * ratio),
+                             qRound(static_cast<float64>(mState->Window->height()) * ratio));
+        }
         mFrameSource->Resize(qRound(static_cast<foundation::float64>(mState->Window->width()) * ratio),
                              qRound(static_cast<foundation::float64>(mState->Window->height()) * ratio));
         mState->Item->setSize(QSizeF(mState->Window->size()));
@@ -1451,7 +1603,9 @@ uint64 PreviewViewport::PresentedFrames() const noexcept
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     return mState->BrowserOrNull->GetPresentedFrames();
 #elif defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    return mState->GraphViewOrNull != nullptr ? mState->GraphViewOrNull->GetPresentedFrames() : mState->Presented;
+    return mState->GraphViewOrNull != nullptr && mState->Window == nullptr
+               ? mState->GraphViewOrNull->GetPresentedFrames()
+               : mState->Presented;
 #else
     return mState->Presented;
 #endif
