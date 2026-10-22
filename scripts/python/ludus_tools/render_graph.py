@@ -1101,10 +1101,11 @@ def _root_asset(output):
 
 
 def new_workspace(destination, *, output="presentation", renderer_static=False, profiles=None, template="raster"):
-    """Publish an editable raster or ReSTIR DI template in a new directory.
+    """Publish an editable built-in render graph template in a new directory.
 
-    template selects raster (the default) or restir-di, whose native offscreen
-    package includes its shaders, settings and RenderSize-derived reservoirs.
+    template selects raster (the default), restir-di, visibility-buffer or
+    visibility-secondary-rays. The latter three create offscreen Renderer packages
+    containing their shaders and shared view-relative RenderSize controls.
     output is presentation, offscreen or depth. Creation never overwrites an
     existing directory; staged files are validated before publication and cleaned
     up on failure. This is graph source creation, not game-project/SDK setup.
@@ -1117,15 +1118,15 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     _enum(output, ("presentation", "offscreen", "depth"), "new graph")
     _require(renderer_static == (profiles is not None), "Schema", "new graph",
              "Renderer sources require --renderer-static and explicit --profiles together")
-    _enum(template, ("raster", "restir-di"), "new graph template")
+    from .render_graph_templates import TEMPLATES, template_files
+    _enum(template, ("raster", *TEMPLATES), "new graph template")
     destination = Path(destination).absolute()
     files = [TemplateFile("rasterize.lurender.json", canonical_asset(_raster_asset()).decode()),
              TemplateFile("main.lurender.json", canonical_asset(_root_asset(output)).decode())]
-    if template == "restir-di":
-        _require(renderer_static and output == "offscreen", "Capability", "ReSTIR DI",
-                 "ReSTIR DI creates a native offscreen Renderer graph; select --renderer-static --output offscreen --profiles metal or spirv")
-        from .render_graph_templates import restir_files
-        files = [TemplateFile(path, text) for path, text in restir_files(profiles, sys.modules[__name__]).items()]
+    if template != "raster":
+        _require(renderer_static and output == "offscreen", "Capability", template,
+                 "this template creates an offscreen Renderer graph; select --renderer-static --output offscreen and explicit --profiles")
+        files = [TemplateFile(path, text) for path, text in template_files(template, profiles, sys.modules[__name__]).items()]
     staged = stage_project(files, destination)
     try:
         compile_graph(staged.staging / "main.lurender.json")

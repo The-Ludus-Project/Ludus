@@ -143,3 +143,56 @@ TEST_CASE("ReSTIR template settings are editable from the canvas with Properties
     REQUIRE(reloaded.Load(QFileInfo(path).absolutePath(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reloaded.GetDraft(manifest) == workspace.GetDocument().GetSaved(manifest));
 }
+
+TEST_CASE("Visibility templates are created from the editor picker with Properties hidden",
+          "[editor][render-graph][visibility-template]")
+{
+    QString identity;
+    SECTION("visibility buffer and depth")
+    {
+        identity = QStringLiteral("visibility-buffer");
+    }
+    SECTION("surface reconstruction and secondary rays")
+    {
+        identity = QStringLiteral("visibility-secondary-rays");
+    }
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.show();
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    QTimer::singleShot(0, &workspace, [&identity]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QComboBox* templateOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("newRenderGraphTemplate"));
+        REQUIRE(templateOrNull != nullptr);
+        const int32 selected = templateOrNull->findData(identity);
+        REQUIRE(selected >= 0);
+        templateOrNull->setCurrentIndex(selected);
+        CHECK(templateOrNull->currentData(Qt::ToolTipRole).toString().isEmpty() == false);
+        dialogOrNull->accept();
+    });
+    REQUIRE(workspace.PromptNewGraph() == true);
+    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(workspace.GetLastResult().Message.toStdString());
+    REQUIRE(workspace.GetCanvas().GetNodeCount() > 0);
+    CHECK(inspector->isVisible() == false);
+    const QByteArray manifest = workspace.GetDocument().GetDraft(QStringLiteral("main.lushader.json"));
+    CHECK(manifest.contains("Flat") == true);
+    const bool hasSecondaryRays = identity == QStringLiteral("visibility-secondary-rays");
+    CHECK(manifest.contains("visibility_buffer") == hasSecondaryRays);
+    const QByteArray graph = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    CHECK(graph.contains("GraphicsPipeline") == true);
+    CHECK(graph.contains("RayTracingPipeline") == hasSecondaryRays);
+    CHECK(graph.contains("visibilityOutput") == true);
+    CHECK(graph.contains("depthOutput") == true);
+    REQUIRE(workspace.Validate() == true);
+    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(workspace.GetLastResult().Message.toStdString());
+    CHECK(workspace.GetLastResult().IsSuccessful == true);
+}

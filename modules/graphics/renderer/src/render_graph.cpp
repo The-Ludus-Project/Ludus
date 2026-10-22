@@ -1172,6 +1172,13 @@ struct RenderGraph::State final
             description.ColorStore = static_cast<rhi::RasterStore>(operation.ColorStore);
             description.DepthLoad = static_cast<rhi::RasterLoad>(operation.DepthLoad);
             description.DepthStore = static_cast<rhi::RasterStore>(operation.DepthStore);
+            if (GetStage(Programs, operation.Program, rhi::ShaderStage::Vertex).Inputs.size() ==
+                format::VISIBILITY_INPUT_COUNT)
+            {
+                // Raster-only visibility exports share the codec's zero-background contract.
+                constexpr usize ALPHA_CHANNEL = 3;
+                description.Clear[ALPHA_CHANNEL] = 0;
+            }
             HasAttemptedDraw = true;
             RecordingStatus =
                 Contexts[static_cast<usize>(operation.Program)].DrawView(Current->Views[pass], description);

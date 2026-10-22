@@ -1053,20 +1053,34 @@ bool RendererWorkspace::PromptNewGraph()
     fields->addRow(QStringLiteral("Name"), name);
     QComboBox* graphTemplate = new QComboBox(&dialog);
     graphTemplate->setObjectName(QStringLiteral("newRenderGraphTemplate"));
-    graphTemplate->addItem(QStringLiteral("Raster"), QStringLiteral("raster"));
-    graphTemplate->addItem(QStringLiteral("ReSTIR DI — mesh emitter lighting"), QStringLiteral("restir-di"));
+    const auto addTemplate =
+        [graphTemplate](const QString& label, const QString& identity, const QString& description) {
+            graphTemplate->addItem(label, identity);
+            graphTemplate->setItemData(graphTemplate->count() - 1, description, Qt::ToolTipRole);
+        };
+    addTemplate(QStringLiteral("Raster"),
+                QStringLiteral("raster"),
+                QStringLiteral("Render your World into a color image using editable raster shaders."));
+    addTemplate(QStringLiteral("Visibility buffer + depth"),
+                QStringLiteral("visibility-buffer"),
+                QStringLiteral("Write original primitive and instance IDs into RGBA8, alongside depth. "
+                               "Exports both attachments with one shared render size. Uses opaque static triangles."));
+    addTemplate(QStringLiteral("Visibility + secondary rays"),
+                QStringLiteral("visibility-secondary-rays"),
+                QStringLiteral(
+                    "Rasterize visibility and depth, reconstruct the first surface, then trace one reflected "
+                    "secondary ray. Samples authored emission and environment lighting. Requires native ray tracing."));
+    addTemplate(QStringLiteral("ReSTIR DI — mesh emitter lighting"),
+                QStringLiteral("restir-di"),
+                QStringLiteral("Three ray passes with editable shader settings and automatically sized reservoirs. "
+                               "Uses emissive meshes and requires native ray tracing. Temporal reuse has no motion "
+                               "reprojection. Change settings through Properties or the canvas menu."));
     fields->addRow(QStringLiteral("Template"), graphTemplate);
     QLabel* description = new QLabel(&dialog);
     description->setWordWrap(true);
     fields->addRow(description);
     const auto describe = [description, graphTemplate, &dialog]() {
-        description->setText(
-            graphTemplate->currentData().toString() == QStringLiteral("restir-di")
-                ? QStringLiteral(
-                      "Three ray passes with editable shader settings and automatically sized "
-                      "reservoirs. Uses emissive meshes and requires native ray tracing. Temporal reuse has no motion "
-                      "reprojection. Change settings through Properties or the canvas menu.")
-                : QStringLiteral("Render your World into a color image using editable raster shaders."));
+        description->setText(graphTemplate->currentData(Qt::ToolTipRole).toString());
         dialog.adjustSize();
     };
     describe();

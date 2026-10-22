@@ -40,7 +40,9 @@ bool RenderGraphCreation::Start(const ToolingPaths& tooling,
         outError = QStringLiteral("Wait for graph creation to finish.");
         return false;
     }
-    if (templateIdentity != QStringLiteral("raster") && templateIdentity != QStringLiteral("restir-di"))
+    if (templateIdentity != QStringLiteral("raster") && templateIdentity != QStringLiteral("restir-di") &&
+        templateIdentity != QStringLiteral("visibility-buffer") &&
+        templateIdentity != QStringLiteral("visibility-secondary-rays"))
     {
         outError = QStringLiteral("Select a built-in render graph template.");
         return false;

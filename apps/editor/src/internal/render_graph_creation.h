@@ -19,7 +19,8 @@ public:
     explicit RenderGraphCreation(QObject* parentOrNull = nullptr);
     /// Publish under project/graphs/name. Rejects existing destinations and
     /// escaping paths; failure preserves existing files and the open document.
-    /// templateIdentity selects raster or restir-di; sources use explicit native host profiles.
+    /// templateIdentity selects raster, restir-di, visibility-buffer or visibility-secondary-rays;
+    /// sources use explicit native host profiles.
     [[nodiscard]] bool Start(const ToolingPaths& tooling,
                              const QString& projectRoot,
                              const QString& name,

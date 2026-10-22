@@ -86,7 +86,7 @@ public:
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
-    /// Create and open a built-in raster or restir-di offscreen Renderer template in the selected project's
+    /// Create and open a built-in raster, ReSTIR DI or visibility offscreen Renderer template in the selected project's
     /// graphs/name directory. Completion is asynchronous through JobFinished.
     /// Existing files and the current draft are retained if creation fails.
     [[nodiscard]] bool CreateGraph(const QString& name, const QString& templateIdentity = QStringLiteral("raster"));
