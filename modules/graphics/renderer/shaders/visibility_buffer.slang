@@ -23,9 +23,9 @@ float4 EncodeVisibility(uint instanceIndex, uint primitiveIndex)
     if (instanceIndex >= VISIBILITY_MAX_INSTANCE_COUNT || primitiveIndex > VISIBILITY_MAX_PRIMITIVE)
         return float4(1, 0, 1, 1);
     uint4 bytes = uint4(primitiveIndex & VISIBILITY_BYTE_MASK,
-                       (primitiveIndex >> VISIBILITY_BYTE_BITS) & VISIBILITY_BYTE_MASK,
-                       (primitiveIndex >> VISIBILITY_HALF_BITS) & VISIBILITY_BYTE_MASK,
-                       instanceIndex + 1);
+                        (primitiveIndex >> VISIBILITY_BYTE_BITS) & VISIBILITY_BYTE_MASK,
+                        (primitiveIndex >> VISIBILITY_HALF_BITS) & VISIBILITY_BYTE_MASK,
+                        instanceIndex + 1);
     return float4(bytes) / VISIBILITY_BYTE_SCALE;
 }
 
@@ -64,11 +64,14 @@ uint FindVisibilityTriangle(SceneContext scene, uint instanceIndex, uint primiti
 /// Returns MISS for clear pixels, SURFACE for a valid hit, FAILURE for invalid identity/depth/geometry.
 /// Failure latches queries.HasFailed. The query budget is unchanged. Source textures, scene and
 /// launch must share generation, camera and extent; the graph runtime enforces the producer pairing.
-uint LoadVisibilitySurface(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries,
+uint LoadVisibilitySurface(SceneContext scene,
+                           RayLaunch launch,
+                           inout RayQueryContext inoutQueries,
                            out SurfaceHit outHit)
 {
     outHit = (SurfaceHit)0;
-    if (inoutQueries.HasFailed == true || any(launch.ExtentPixel == 0) || any(launch.PositionPixel >= launch.ExtentPixel))
+    if (inoutQueries.HasFailed == true || any(launch.ExtentPixel == 0) ||
+        any(launch.PositionPixel >= launch.ExtentPixel))
     {
         inoutQueries.HasFailed = true;
         return SCENE_QUERY_FAILURE;
@@ -85,8 +88,8 @@ uint LoadVisibilitySurface(SceneContext scene, RayLaunch launch, inout RayQueryC
         return SCENE_QUERY_FAILURE;
     }
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
-    float4 positionHomogeneousWorld = mul(launch.CameraClipToWorld,
-        float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, depth, 1));
+    float4 positionHomogeneousWorld =
+        mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, depth, 1));
     if (any(isfinite(positionHomogeneousWorld) == false) || positionHomogeneousWorld.w == 0)
     {
         inoutQueries.HasFailed = true;
@@ -99,8 +102,9 @@ uint LoadVisibilitySurface(SceneContext scene, RayLaunch launch, inout RayQueryC
     float3 normalWorld = cross(edge1World, edge2World);
     float denominator = dot(normalWorld, normalWorld);
     float3 offsetWorld = positionWorld - triangle.Position0World;
-    float2 barycentric = float2(dot(cross(offsetWorld, edge2World), normalWorld),
-                               dot(cross(edge1World, offsetWorld), normalWorld)) / denominator;
+    float2 barycentric =
+        float2(dot(cross(offsetWorld, edge2World), normalWorld), dot(cross(edge1World, offsetWorld), normalWorld)) /
+        denominator;
     if (denominator <= 0 || any(isfinite(barycentric) == false) ||
         any(barycentric < -VISIBILITY_BARYCENTRIC_TOLERANCE) ||
         barycentric.x + barycentric.y > 1 + VISIBILITY_BARYCENTRIC_TOLERANCE)
