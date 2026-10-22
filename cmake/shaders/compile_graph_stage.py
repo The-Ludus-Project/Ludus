@@ -50,6 +50,8 @@ def verify_glsl_links(reflected, emitted, stage):
 def metal_layouts(code, interface, document):
     """Independently derive emitted scalar/vector Metal uniform struct layouts."""
     for entry_value in interface['entries']:
+        if entry_value.get('kind', 'UniformBuffer') != 'UniformBuffer':
+            continue
         resource = next(p for p in document['parameters'] if p['name'] == entry_value['name'])
         type_name = resource['type']['elementType'].get('name')
         if type_name is None:
@@ -136,7 +138,8 @@ def compile_graph_stage(args, lock):
     if len(points) != 1 or points[0].get('stage') != stage or points[0].get('name') != args.name:
         raise RuntimeError('RG1 requested entry/stage differs from target reflection')
     interface = raster_interface(document, stage, metal and not native_rays)
-    if stage != 'compute' and any(x['kind'] != 'UniformBuffer' for x in interface['entries']):
+    allowed = ('UniformBuffer', 'StorageRead') if stage == 'fragment' and getattr(args, 'fragment_storage', False) else ('UniformBuffer',)
+    if stage != 'compute' and any(x['kind'] not in allowed for x in interface['entries']):
         raise RuntimeError('RG1 initial schema profile permits uniform buffers only')
     links = [] if stage == 'compute' else varying_interface(points[0], stage)
     if slang_target == 'spirv' and (not metal or args.validator):
@@ -161,7 +164,7 @@ def compile_graph_stage(args, lock):
         if len(names) != 1:
             raise RuntimeError('RG1 requires exactly one emitted Metal stage entry')
         code = artifact.read_text()
-        if stage == 'compute':
+        if stage in ('compute', 'fragment'):
             from compile_raster import normalize_metal_storage
             code = normalize_metal_storage(code, interface)
         if stage != 'compute':

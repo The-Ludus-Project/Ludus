@@ -10,7 +10,7 @@ from compile_shader import relative_line_directives
 # Thanks to the Slang team, "Using the Reflection API", User Guide,
 # https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-reflection.html
 # Reflect each target independently. No cross-target CPU packing is inferred.
-# Raster rejects storage; compute accepts bounded structured buffers. Both reject
+# Raster admits read-only fragment storage; compute also admits writable structured buffers. Both reject
 # extra groups and unsupported inputs. Native descriptor arrays use explicit profiles.
 # Must match rhi::RASTER_BINDING_COUNT in profile.h; regression-checked.
 RASTER_BINDING_COUNT = 16
@@ -96,7 +96,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             size = resource_type['elementVarLayout']['binding']['size']
             if not 0 < size <= 16384:
                 raise RuntimeError('Uniform occupied range exceeds the raster profile')
-        elif stage == 'compute' and kind == 'resource' and resource_type.get('baseShape') == 'structuredBuffer':
+        elif (stage == 'compute' or (stage == 'fragment' and resource_type.get('access', 'read') == 'read')) and kind == 'resource' and resource_type.get('baseShape') == 'structuredBuffer':
             result = resource_type.get('resultType', {})
             scalar = result if result.get('kind') == 'scalar' else result.get('elementType', {})
             width = 1 if result.get('kind') == 'scalar' else result.get('elementCount')
@@ -671,7 +671,7 @@ def compile_raster(args, lock):
                     variable = re.escape(binding['name']) + r'(?:_\d+)?'
                     if re.search(r'\b' + variable + r'\s*\)?\s*\.\s*(?:sample|gather)\b', code):
                         raise RuntimeError('Depth/stencil views require unfiltered loads')
-            if compute:
+            if compute or stage == 'fragment':
                 code = normalize_metal_storage(code, interfaces[(target, stage)])
             artifact.write_text(code)
             names = re.findall(r'\[\[' + ('kernel' if compute else stage) + r'\]\]\s+\w+\s+(\w+)\s*\(', code)
@@ -681,7 +681,7 @@ def compile_raster(args, lock):
         else:
             run([args.validator, '--target-env', 'vulkan1.2' if native_rays else 'vulkan1.1', str(artifact)])
             artifacts[(target, stage)] = (artifact.read_bytes(), entry(artifact))
-            if args.spirv_cross and not compute and not native_arrays:
+            if args.spirv_cross and not compute and not native_arrays and not getattr(args, 'fragment_storage', False):
                 essl = output / f'{args.name}.{stage}.essl'
                 command = [args.spirv_cross, str(artifact), '--version', '300', '--es', '--fixup-clipspace', '--output', str(essl)]
                 commands.append(command); run(command)
@@ -728,7 +728,7 @@ def compile_raster(args, lock):
             artifact.write_text(code)
             artifacts[('wgsl', stage)] = (code, names[0])
             interfaces[('wgsl', stage)] = interface
-    if args.spirv_cross and not compute and not native_arrays:
+    if args.spirv_cross and not compute and not native_arrays and not getattr(args, 'fragment_storage', False):
         verify_varyings(interfaces[('glsl', 'vertex')]['varyings'], interfaces[('glsl', 'fragment')]['varyings'])
     companion = ''
     header = '#pragma once\n#include <ludus/foundation/base/config.h>\n#include <ludus/graphics/rhi/raster.h>\n'
@@ -796,7 +796,7 @@ def compile_raster(args, lock):
             header += f'inline graphics::rhi::RasterShaderDescription {stage.title()}() noexcept {{ return Spirv{stage.title()}(); }}\n'
         else:
             header += f'inline auto {stage.title()}() noexcept {{\n#if defined(LUDUS_PLATFORM_WEB)\n auto result = Wgsl{stage.title()}();\n'
-            if args.spirv_cross and not compute:
+            if args.spirv_cross and not compute and not getattr(args, 'fragment_storage', False):
                 header += f' auto glsl = Glsl{stage.title()}(); result.Artifact.GlslEs = glsl.Artifact.GlslEs; result.Artifact.GlslEsEntry = glsl.Artifact.GlslEsEntry;\n'
                 # Web source/metadata is selected after startup, so packing is
                 # verified equal here; native target packing remains independent.

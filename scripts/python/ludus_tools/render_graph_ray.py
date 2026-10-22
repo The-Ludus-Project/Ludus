@@ -26,6 +26,7 @@ SCENE_QUERY_LIMITS = {
 
 COMPUTE_ID = 'GraphRayCompute'
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
+IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
@@ -163,7 +164,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         suffix = 'VertexOutput rgEntry(VertexInput value) { return ' + function + '(value); }' if stage == 'vertex' else 'float4 rgEntry(VertexOutput value) : SV_Target0 { return ' + function + '(value); }'
         source += '[shader("' + stage + '")]\n' + suffix + '\n'
         result[identity] = {'id': identity, 'stage': stage, 'source': selected['ray_generation']['source'],
-                            'function': function, 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': source, 'native_ray_profile': True}
+                            'function': function, 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': source, 'native_ray_profile': True, 'fragment_storage': stage == 'fragment'}
     build.require(not set(result) & {program['id'] for program in selected.values()}, 'Schema', 'ray programs', 'reserved linked program identity')
     build.require(snapshot.total <= build.MAX_BYTES and len(snapshot.files) <= build.MAX_FILES, 'Capacity', 'ray sources', 'source snapshot limits exceeded')
     return result
@@ -180,11 +181,13 @@ def check_interface(program, result, build):
                        (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)],
                       'ShaderInterface', program['id'], 'ray query reflection differs from the native renderer ABI')
     elif program['id'] == IMAGE_VERTEX_ID:
-        build.require([(entry['binding'], entry['kind'], entry['size']) for entry in entries] == [(0, 'UniformBuffer', 16)]
-                      and [(value['location'], value['format']) for value in interface['inputs']] == [(0, 'Float2'), (1, 'Float4')],
+        build.require(entries == [] and
+                      [{key: value for key, value in item.items() if key != 'name'} for item in interface['inputs']] == IMAGE_INPUTS,
                       'ShaderInterface', program['id'], 'ray image vertex interface differs from renderer ABI')
     else:
-        build.require(entries == [] and interface['inputs'] == [], 'ShaderInterface', program['id'], 'ray image fragment resources are unexpected')
+        build.require([(entry['binding'], entry['kind'], entry['size']) for entry in entries] ==
+                      [(0, 'UniformBuffer', 16), (1, 'StorageRead', 16)] and interface['inputs'] == [],
+                      'ShaderInterface', program['id'], 'ray image fragment resources differ from renderer ABI')
 
 
 def scene_wrapper(selected, interface, snapshot, build, recipe):

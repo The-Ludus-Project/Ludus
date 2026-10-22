@@ -616,6 +616,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
                '--lock', str(helper / 'shader_toolchain.json'), '--graph-stage', program['stage'], '--graph-target', target]
     if program.get('native_ray_queries'):
         command += ['--native-ray-queries']
+    if program.get('fragment_storage'):
+        command += ['--fragment-storage']
     if worker_socket:
         command += ['--worker-socket', worker_socket, '--worker-identity', worker_identity]
     if 'tool/spirv-val' in tools:

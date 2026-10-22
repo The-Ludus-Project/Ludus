@@ -27,7 +27,7 @@ public:
     void SetProducerPending(bool hasPendingProducer) noexcept;
     [[nodiscard]] LUDUS_INLINE bool IsActive() const noexcept
     {
-        return mService.isActive();
+        return mIsRunning;
     }
 Q_SIGNALS:
     /// Service the preview on its GUI/device owner thread; callbacks never nest.
@@ -38,6 +38,7 @@ private:
     QTimer mService;
     QTimer mCompletion;
     QTimer mWake;
+    bool mIsRunning = false;
     bool mIsDispatchingWork = false;
     bool mHasDeferredWork = false;
     void dispatchWork();

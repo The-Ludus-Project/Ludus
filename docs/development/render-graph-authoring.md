@@ -2328,6 +2328,37 @@ which the preview parity tests cook, on the same interface. Graphs scaffolded wi
 a candidate whose camera count differs from the active generation's fails, because
 one extraction feeds both; preview it after a viewport restart instead.
 
+Camera navigation reuses the accepted scene's meshes, material tables, packed ray
+scene and native acceleration structures. The editor gives `RenderGraph::Update`
+a separate nonzero `contentRevision`; only a scene/material/light/transform change
+advances it. Applications may opt into the same contract: a matching identity
+ignores mesh/item/shader inputs and stages only camera views. Zero retains full
+extraction behavior. Relative-size replacements and newly staged generations
+still prepare the complete scene. Camera candidates publish together after every
+new view/binding is Ready and the prior producer completes. Pending or failed
+preparation retains the drawable revision and its display image.
+
+Ray camera updates replace the small parameter buffer and its binding snapshot.
+They retain geometry, texels and accumulation allocations. An epoch in the
+renderer kernel resets each pixel's history on its first invocation with the new
+camera, including prior error state; no full-image CPU clear/upload is required.
+Epoch exhaustion falls back to a complete scene replacement when geometry inputs
+are supplied, as they are by the editor. Camera-only API calls instead return
+`IdentityExhausted` and keep the drawable view; a full Update restarts the identity. Opaque-only scenes
+force opaque native ray traversal. Scenes containing alpha-masked surfaces keep
+the candidate alpha test. These are engine-kernel choices; authored callbacks and
+sampling policies are unchanged.
+
+The renderer image recipe draws one fullscreen quad and reads computed colors
+through a fragment storage buffer. Draw geometry is constant with image size.
+Project runtime packages using the prior pixel-instance image interface need
+recooking with the matching SDK; incompatible artifacts are not reinterpreted.
+The GUI recomputes camera/extraction inputs only after navigation, scene or target
+size changes. GPU timing is collected at completed frames and by the profiling
+controller, rather than on each completion poll. While a producer is pending,
+only the completion clock runs; the fallback clock resumes afterward. Explicit
+wakes remain coalesced and do not wait for the fallback interval.
+
 ### Texture viewer
 
 The Renderer tab's **Textures** page shows any texture of the previewed generation,

@@ -134,7 +134,8 @@ Hit Trace(float3 originWorld,
     ray.Direction = directionWorld;
     ray.TMin = nearDistanceWorld;
     ray.TMax = farDistanceWorld;
-    uint flags = RAY_FLAG_FORCE_NON_OPAQUE;
+    uint flags = (Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0
+                     ? RAY_FLAG_FORCE_OPAQUE : RAY_FLAG_FORCE_NON_OPAQUE;
     if (isVisibility == true)
         flags |= RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
     RayQuery<RAY_FLAG_NONE> query;
@@ -599,7 +600,13 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
     uint pixel = positionPixel.y * Dimensions.x + positionPixel.x;
     float4 sum = accumulation[pixel * 2];
     float4 compensation = accumulation[pixel * 2 + 1];
-    if (sum.w < float(Sampling.w) && compensation.w == 0)
+    float historyTag = float((Sampling.z >> LUDUS_GPU_PREVIEW_HISTORY_SHIFT) * 2);
+    if (compensation.w != historyTag && compensation.w != historyTag + 1)
+    {
+        sum = 0;
+        compensation = float4(0, 0, 0, historyTag);
+    }
+    if (sum.w < float(Sampling.w) && compensation.w == historyTag)
     {
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
         float3 sample = EvaluateGraphRay(pixel);
@@ -607,14 +614,14 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
         float3 sample = Integrate(pixel, uint(sum.w));
 #endif
         if (any(!isfinite(sample)) || any(sample < 0))
-            compensation.w = 1;
+            compensation.w = historyTag + 1;
         else
         {
             float3 adjusted = sample - compensation.xyz;
             float3 next = sum.xyz + adjusted;
             compensation.xyz = (next - sum.xyz) - adjusted;
             if (any(!isfinite(next)) || any(!isfinite(compensation.xyz)))
-                compensation.w = 1;
+                compensation.w = historyTag + 1;
             else
             {
                 sum.xyz = next;
@@ -626,7 +633,7 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
     }
     float3 mean = sum.w > 0 ? sum.xyz / sum.w : float3(0);
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE) && !defined(LUDUS_SCENE_RAY_INTERFACE)
-    colors[pixel] = float4(compensation.w != 0 ? float3(1, 0, 1) : saturate(mean), float(pixel));
+    colors[pixel] = float4(compensation.w != historyTag ? float3(1, 0, 1) : saturate(mean), float(pixel));
 #else
     float3 linear = mean * Options.y;
     for (uint channel = 0; channel < 3; ++channel)
@@ -636,7 +643,7 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
         linear[channel] = isfinite(linear[channel]) ? linear[channel] / (1 + linear[channel]) : 1;
     }
     float3 encoded = select(linear > .0031308, 1.055 * pow(linear, 1.0 / 2.4) - .055, linear * 12.92);
-    colors[pixel] = float4(compensation.w != 0 ? float3(1, 0, 1) : saturate(encoded), float(pixel));
+    colors[pixel] = float4(compensation.w != historyTag ? float3(1, 0, 1) : saturate(encoded), float(pixel));
 #endif
 }
 #undef LUDUS_GPU_PREVIEW_COMPUTE_ENTRY

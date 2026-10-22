@@ -297,6 +297,19 @@ class RasterReflectionTests(unittest.TestCase):
             invalid=copy.deepcopy(data);invalid['entryPoints'][0]['threadGroupSize']=group
             with self.assertRaisesRegex(RuntimeError,'workgroup'):raster_interface(invalid,'compute')
 
+    def test_fragment_storage_is_read_only_and_keeps_element_stride(self):
+        data = self.compute_fixture()
+        data['parameters'][0]['type']['access'] = 'read'
+        data['entryPoints'][0]['stage'] = 'fragment'
+        value = raster_interface(data, 'fragment')
+        self.assertEqual(value['entries'][0]['kind'], 'StorageRead')
+        self.assertEqual(value['entries'][0]['size'], 8)
+        with self.assertRaises(RuntimeError):
+            raster_interface(data, 'vertex')
+        data['parameters'][0]['type']['access'] = 'readWrite'
+        with self.assertRaises(RuntimeError):
+            raster_interface(data, 'fragment')
+
     def test_compute_integer_uniforms_verify_wgsl_packing_without_widening_raster(self):
         from compile_raster import wgsl_contract, wgsl_uniform_type
         code = """struct Parameters_0 {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../shaders/renderer_gpu_preview_layout.h"
+#include "gpu_preview_camera.h"
 #include "reference_data.h"
 
 #include <ludus/foundation/base/pointer.hpp>
@@ -54,6 +55,9 @@ struct GpuPreviewRecord final
     rhi::BindingSetHandle ImageBindings{};
     GpuFrameRecord Frames[2];
     GpuPreviewInfo Info;
+    GpuPreviewUniform Uniform{};
+    GpuPreviewCameraUpdate CameraUpdate;
+    bool HasPendingCamera = false;
     uint32 Width = 0;
     uint32 Height = 0;
     uint32 PendingFrame = 0;

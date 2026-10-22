@@ -14,8 +14,8 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, 
 {
     using namespace foundation;
     constexpr usize COMPUTE_BINDING_COUNT = LUDUS_GPU_PREVIEW_BINDING_COUNT;
-    constexpr usize IMAGE_INPUT_COUNT = 2;
-    constexpr usize IMAGE_BINDING_COUNT = 1;
+    constexpr usize IMAGE_INPUT_COUNT = 1;
+    constexpr usize IMAGE_BINDING_COUNT = 2;
     constexpr usize PARAMETERS_BYTES = LUDUS_GPU_PREVIEW_PARAMETERS_BYTES;
     constexpr usize VECTOR_BYTES = LUDUS_GPU_PREVIEW_VECTOR_BYTES;
     constexpr uint32 WORKGROUP_WIDTH = LUDUS_GPU_PREVIEW_GROUP_WIDTH;
@@ -31,16 +31,18 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, 
     };
     static constexpr StaticArray<rhi::RasterBinding, IMAGE_BINDING_COUNT> IMAGE_BINDINGS{
         {
-            {0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Vertex, VECTOR_BYTES},
+            {0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, VECTOR_BYTES},
+            {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Fragment, VECTOR_BYTES},
         },
     };
     static constexpr StaticArray<rhi::RasterShaderInput, IMAGE_INPUT_COUNT> IMAGE_INPUTS{
         {
             {0, rhi::RasterVertexFormat::Float2},
-            {1, rhi::RasterVertexFormat::Float4},
         },
     };
     inoutDescription.Artifact.Stage = stage;
+    inoutDescription.Bindings = {};
+    inoutDescription.Inputs = {};
     if (stage == rhi::ShaderStage::Compute)
     {
         inoutDescription.Bindings = COMPUTE_BINDINGS.AsSpan();
@@ -51,6 +53,9 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription, 
     else if (stage == rhi::ShaderStage::Vertex)
     {
         inoutDescription.Inputs = IMAGE_INPUTS.AsSpan();
+    }
+    else if (stage == rhi::ShaderStage::Fragment)
+    {
         inoutDescription.Bindings = IMAGE_BINDINGS.AsSpan();
     }
 }
@@ -135,5 +140,27 @@ rhi::RasterStatus RenderGraphRayPass::Encode(rhi::SurfaceHandle surface) noexcep
     const rhi::RasterStatus status = rhi::EncodeOrderedGraph(mDevice, surface, mGraph);
     mIsPrepared = false;
     return status;
+}
+} // namespace ludus::graphics::renderer::internal
+
+namespace ludus::graphics::renderer::internal
+{
+rhi::RasterStatus RenderGraphRayPass::PrepareCamera(const ViewDescription& camera, foundation::uint64 revision) noexcept
+{
+    return mContextOrNull->prepareGpuPreviewCamera(mJob, camera, revision);
+}
+rhi::RasterStatus RenderGraphRayPass::PollCamera() noexcept
+{
+    return mContextOrNull->pollGpuPreviewCamera(mJob);
+}
+void RenderGraphRayPass::CommitCamera() noexcept
+{
+    static_cast<void>(rhi::DiscardOrderedGraph(mDevice, mGraph));
+    mIsPrepared = false;
+    mContextOrNull->commitGpuPreviewCamera(mJob);
+}
+void RenderGraphRayPass::DiscardCamera() noexcept
+{
+    mContextOrNull->discardGpuPreviewCamera(mJob);
 }
 } // namespace ludus::graphics::renderer::internal

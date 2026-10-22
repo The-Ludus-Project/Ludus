@@ -779,7 +779,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             mPreviewSourceOrNull->NotifyGpuProfileSubmission();
         }
     });
-    connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, &RendererWorkspace::renderPreview);
+    connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, [this]() {
+        if (mPreviewSourceOrNull != nullptr)
+        {
+            mPreviewSourceOrNull->PollGpuProfiling();
+        }
+        renderPreview();
+    });
     mTextureViewerOrNull->SetPreview(mPreviewOrNull);
     connect(&mPreviewPump, &ViewportFramePump::WorkRequested, this, &RendererWorkspace::ServicePreview);
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, &mPreviewPump, &ViewportFramePump::Wake);
@@ -1122,6 +1128,7 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     mSourceProblem.clear();
     mExtractionProblem.clear();
     mPreviewSceneIdentity.clear();
+    mArePreviewInputsDirty = true;
     prepareDefaultPreview();
     mSelectedFile = mDocument.GetRootGraph();
     mSelectedConfiguration.clear();
@@ -3306,6 +3313,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
     mCanvas->SetReferenceSize({});
     mPreviewDeviceSerial = 0;
     mPreviewSceneIdentity.clear();
+    mArePreviewInputsDirty = true;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mPreviewSourceOrNull != nullptr && mPreviewOrNull != nullptr)
     {
@@ -3335,11 +3343,16 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
         mCanvas->SetReferenceSize(mPreviewSourceOrNull->GetDrawableSize());
         connect(mPreviewSourceOrNull, &RenderPreview::DrawableSizeChanged, this, [this](const QSize& size) {
             mCanvas->SetReferenceSize(size);
+            mArePreviewInputsDirty = true;
         });
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-        connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, &mPreviewPump, &ViewportFramePump::Wake);
+        connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, this, [this]() {
+            mArePreviewInputsDirty = true;
+            mPreviewPump.Wake();
+        });
         connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
+            mArePreviewInputsDirty = true;
             if (mPreviewSourceOrNull->HasDevice() == true)
             {
                 mPreviewPump.Start();
@@ -3429,6 +3442,7 @@ void RendererWorkspace::ServicePreview()
         {
             mPreviewDeviceSerial = mPreviewSourceOrNull->GetDeviceSerial();
             mPreviewSceneIdentity.clear();
+            mArePreviewInputsDirty = true;
         }
     }
     if (mPreviewSourceOrNull != nullptr)
@@ -3436,7 +3450,10 @@ void RendererWorkspace::ServicePreview()
         preview.SetReferenceSize(mPreviewSourceOrNull->GetDrawableSize());
     }
     const QSize target = preview.GetTargetSize();
-    if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false)
+    mArePreviewInputsDirty = mArePreviewInputsDirty == true || target != mPreviewTargetSize;
+    mPreviewTargetSize = target;
+    if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false &&
+        mArePreviewInputsDirty == true)
     {
         // The World viewport's current camera or orbit, at the graph's exported extent. The
         // runtime profile admits only conventional depth, so request a finite conventional
@@ -3452,30 +3469,40 @@ void RendererWorkspace::ServicePreview()
         {
             mPreviewStatus->setText(error);
             setProblem(mExtractionProblem, error);
-            mPreviewSceneIdentity = scene.Identity;
         }
+        mArePreviewInputsDirty = false;
         if (hasView == true && (scene.Identity != mPreviewSceneIdentity ||
                                 AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false))
         {
             LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
-            RenderGraphExtraction extraction;
-            if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)
+            bool hasUpdatedInputs = false;
+            if (scene.Identity == mPreviewSceneIdentity)
             {
-                setProblem(mExtractionProblem, {});
-                preview.SetExtraction(extraction);
+                preview.SetCamera(view, ++mPreviewRevision);
+                hasUpdatedInputs = true;
             }
             else
             {
-                setProblem(mExtractionProblem, error);
-                mPreviewStatus->setText(error);
+                RenderGraphExtraction extraction;
+                if (MakeRenderGraphExtraction(scene, view, ++mPreviewRevision, extraction, error) == true)
+                {
+                    setProblem(mExtractionProblem, {});
+                    extraction.ContentRevision = mPreviewRevision;
+                    preview.SetExtraction(extraction);
+                    hasUpdatedInputs = true;
+                }
+                else
+                {
+                    setProblem(mExtractionProblem, error);
+                    mPreviewStatus->setText(error);
+                }
             }
-            mPreviewSceneIdentity = scene.Identity;
-            mPreviewWorldToClip = view.WorldToClip;
+            if (hasUpdatedInputs == true)
+            {
+                mPreviewSceneIdentity = scene.Identity;
+                mPreviewWorldToClip = view.WorldToClip;
+            }
         }
-    }
-    if (mPreviewSourceOrNull != nullptr)
-    {
-        mPreviewSourceOrNull->PollGpuProfiling();
     }
     constexpr foundation::float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
     preview.Tick(static_cast<foundation::float64>(preparationTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND);

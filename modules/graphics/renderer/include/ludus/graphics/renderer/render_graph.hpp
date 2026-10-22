@@ -323,13 +323,30 @@ public:
     /// precedes visibility culling. Pending/failed preparation preserves prior drawing.
     /// Rejection updates diagnostic report but preserves the current and pending scene.
     /// Source storage need only survive this call. Revision must be nonzero.
+    /// @param meshes Borrowed static geometry table, copied during a full extraction.
+    /// @param items Borrowed instances, transforms, material bindings and per-draw values.
+    /// @param cameras Complete generation-local camera table; consumed before return.
+    /// @param sceneRevision Nonzero identity for the requested drawable scene/view publication.
+    /// @param policy Whether unsupported coverage rejects or receives diagnostic color.
+    /// @param outReport Latest candidate diagnostics, independent of the retained drawable output.
+    /// Preflight rejection preserves it; coverage/preparation results replace it.
+    /// @param sceneInputsOrNull Optional borrowed material/light/environment inputs for a full extraction.
+    /// @param contentRevision Optional nonzero identity for all non-camera inputs. Reusing it promises
+    /// unchanged geometry, transforms, materials, lights, uniforms and coverage policy; only cameras
+    /// and sceneRevision may change. This reuses scene/acceleration buffers and resets camera history.
+    /// Mesh/item/shader inputs are ignored while reusing that identity; their original storage
+    /// need not survive the original Update. Zero always prepares a complete extraction.
+    /// Resize and new generations also prepare in full. At ray-history identity exhaustion,
+    /// supplied geometry permits a full restart; camera-only inputs return IdentityExhausted
+    /// and preserve the drawable view. A full Update with contentRevision zero can restart it.
     [[nodiscard]] rhi::RasterStatus Update(foundation::BorrowedView<const RenderGraphMesh> meshes,
                                            foundation::BorrowedView<const RenderGraphItem> items,
                                            foundation::BorrowedView<const ViewDescription> cameras,
                                            foundation::uint64 sceneRevision,
                                            RenderGraphCoveragePolicy policy,
                                            RenderGraphReport& outReport,
-                                           const SceneShaderInputs* sceneInputsOrNull = nullptr) noexcept;
+                                           const SceneShaderInputs* sceneInputsOrNull = nullptr,
+                                           foundation::uint64 contentRevision = 0) noexcept;
     /// Borrow latest candidate coverage records until the next Update/Reset; no allocation.
     [[nodiscard]] foundation::BorrowedView<const RenderGraphCoverageRecord> GetCoverage() const noexcept;
     /// Copy the latest candidate report, independent of the drawable extraction.
