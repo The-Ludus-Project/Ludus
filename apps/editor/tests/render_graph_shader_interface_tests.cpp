@@ -140,3 +140,13 @@ TEST_CASE("Shader API lookup searches immediately and keeps position across refr
         REQUIRE(page->grab().save(capture) == true);
     }
 }
+
+TEST_CASE("Visibility ray references expose depth reconstruction and the codec", "[editor][shader-api]")
+{
+    const QByteArray manifest = ReadFixture(QStringLiteral("visibility"));
+    const QString generate = DescribeShaderInterface(manifest, QStringLiteral("main_shaders/generate.slang"));
+    CHECK(generate.contains(QStringLiteral("uint LoadVisibilitySurface(")) == true);
+    CHECK(generate.contains(QStringLiteral("float4 EncodeVisibility(")) == true);
+    CHECK(generate.contains(QStringLiteral("float4x4 CameraClipToWorld;")) == true);
+    CHECK(generate.contains(QStringLiteral("Ray SpawnSurfaceRay(")) == true);
+}

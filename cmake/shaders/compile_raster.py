@@ -141,8 +141,11 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         bindings = resource.get('bindings', [resource.get('binding', {})])
         descriptors = [b for b in bindings if b.get('kind') == 'descriptorTableSlot']
         if metal and not descriptors:
-            native_kinds = ('constantBuffer',) if stage == 'compute' else ('constantBuffer', 'shaderResource', 'samplerState')
-            descriptors = [b for b in bindings if b.get('kind') in native_kinds]
+            native_kinds = ('constantBuffer', 'shaderResource') if stage == 'compute' else ('constantBuffer', 'shaderResource', 'samplerState')
+            # Metal buffers also carry zero-count shaderResource metadata.
+            # Only the occupied native category identifies their descriptor.
+            descriptors = [b for b in bindings if b.get('kind') in native_kinds
+                           and (stage != 'compute' or b.get('count', 1) != 0)]
         if len(descriptors) != 1 or descriptors[0].get('space', 0) != 0:
             raise RuntimeError('Raster resources require one descriptor in group/set zero')
         index = descriptors[0]['index']
@@ -209,8 +212,8 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
                 kind = 'TextureDepth2D' if scalar == 'float32' else 'TextureStencil2D'
         else:
             raise RuntimeError('Unsupported raster resource shape: ' + kind)
-        if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'RayScene'):
-            raise RuntimeError('Compute profile accepts buffer bindings only')
+        if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'RayScene', 'Texture2D', 'TextureDepth2D'):
+            raise RuntimeError('Compute profile accepts buffers, native scenes and unfiltered 2D color/depth textures only')
         if metal:
             native_kind = {'StorageRead': 'constantBuffer', 'StorageReadWrite': 'constantBuffer', 'UniformBuffer': 'constantBuffer', 'Texture2D': 'shaderResource', 'Texture2DArray': 'shaderResource', 'TextureCube': 'shaderResource', 'Texture3D': 'shaderResource', 'TextureDepth2D': 'shaderResource', 'TextureStencil2D': 'shaderResource', 'Sampler': 'samplerState'}[kind]
             native = [b for b in bindings if b.get('kind') == native_kind]

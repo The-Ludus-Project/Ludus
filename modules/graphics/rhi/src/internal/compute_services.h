@@ -100,10 +100,15 @@ RasterStatus EncodeCompute(const ComputePacket& packet) noexcept
     const RasterLayout& layout = set.Description;
     for (usize i = 0; i < layout.DescriptorCount; ++i)
     {
-        const RasterKind kind = layout.GetDescriptorBinding(i).Kind == RasterBindingKind::RayScene
-                                    ? RasterKind::RayScene
-                                    : RasterKind::Buffer;
+        const RasterBindingKind bindingKind = layout.GetDescriptorBinding(i).Kind;
+        const RasterKind kind = bindingKind == RasterBindingKind::RayScene ? RasterKind::RayScene
+                                : TextureBinding(bindingKind) == true      ? RasterKind::View
+                                                                           : RasterKind::Buffer;
         FrameRetain(kind, set.Slots[i]);
+        if (kind == RasterKind::View)
+        {
+            FrameRetain(RasterKind::Texture, At(RasterKind::View, set.Slots[i]).TextureSlot);
+        }
         if (layout.GetDescriptorBinding(i).Kind == RasterBindingKind::StorageReadWrite)
         {
             At(RasterKind::Buffer, set.Slots[i]).FrameBufferWritten = true;
@@ -152,7 +157,9 @@ RasterStatus CreateComputePipeline(DeviceHandle device,
     {
         if (layout->Layout.Entries[i].Visibility != RasterVisibility::Compute ||
             (BufferBinding(layout->Layout.Entries[i].Kind) == false &&
-             layout->Layout.Entries[i].Kind != RasterBindingKind::RayScene))
+             layout->Layout.Entries[i].Kind != RasterBindingKind::RayScene &&
+             layout->Layout.Entries[i].Kind != RasterBindingKind::Texture2D &&
+             layout->Layout.Entries[i].Kind != RasterBindingKind::TextureDepth2D))
         {
             return RasterStatus::InvalidDescription;
         }

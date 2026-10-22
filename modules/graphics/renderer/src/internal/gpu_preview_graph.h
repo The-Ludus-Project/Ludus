@@ -10,7 +10,8 @@ namespace ludus::graphics::renderer::internal
                                               const GpuPreviewRecord& job,
                                               foundation::uint32 image,
                                               rhi::OrderedGraph& outGraph,
-                                              const rhi::TextureHandle* targetOrNull = nullptr) noexcept;
+                                              const rhi::TextureHandle* targetOrNull = nullptr,
+                                              const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept;
 [[nodiscard]] rhi::RasterStatus BuildGpuGraphSequence(rhi::DeviceHandle device,
                                                       const GpuPreviewState& state,
                                                       foundation::BorrowedView<const GpuPreviewRecord*> jobs,

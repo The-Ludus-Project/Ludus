@@ -41,6 +41,8 @@ enum class RasterTextureUse : ludus::foundation::uint8
     SampledFragment,
     /// Read in either raster shader stage.
     SampledBoth,
+    /// Unfiltered reads in a compute shader; ordered graphs track producer dependencies.
+    SampledCompute,
     /// Read/write as a color attachment.
     ColorAttachment,
 };

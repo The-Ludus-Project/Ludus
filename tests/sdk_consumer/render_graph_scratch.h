@@ -143,6 +143,8 @@ struct ScratchShape final
                                   ::ludus::content::render_graph_format::SCENE_DATA_ALL,
                                   0U,
                                   format::ABSENT,
+                                  format::ABSENT,
+                                  format::ABSENT,
                                   format::ABSENT})
         {
             WriteWord(bytes, word);

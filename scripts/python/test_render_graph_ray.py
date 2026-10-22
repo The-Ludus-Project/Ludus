@@ -43,6 +43,19 @@ class RayPipelineTests(unittest.TestCase):
         snapshot.load('closest.slang')
         self.assertEqual([engine], ray.capture_program_closure(image, snapshot, build))
 
+    def test_visibility_fixture_retains_raster_and_reads_matching_versions(self):
+        source = ROOT / 'tests/sdk_consumer/rg2/visibility/main.lurender.json'
+        plan = graph.compile_graph(source)
+        operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
+        self.assertEqual(['Raster', 'RayTracing'], [p['kind'] for p in operations])
+        producer, consumer = operations
+        for key, aspect in (('visibility', 'color'), ('visibility_depth', 'depth')):
+            self.assertEqual(producer['attachments'][aspect]['resource'], consumer[key]['resource'])
+            self.assertEqual(producer['attachments'][aspect]['output_version'], consumer[key]['input_version'])
+        manifest = json.loads((source.parent / 'main.lushader.json.in').read_text()
+                              .replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+        build.validate_manifest(manifest)
+
     def test_authored_stages_lower_to_ray_execution_and_camera_export(self):
         plan = self.compile()
         operation = next(value for value in plan['passes'] if value['kind'] == 'RayTracing')

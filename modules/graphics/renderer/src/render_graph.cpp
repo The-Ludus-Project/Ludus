@@ -178,16 +178,17 @@ bool HasFlatInterface(const rhi::RasterShaderDescription& vertex,
                       format::Technique technique) noexcept
 {
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        vertex.Inputs.size() != FLAT_INPUT_COUNT || HasPlanBindings(vertex, plan, technique) == false ||
-        HasPlanBindings(fragment, plan, technique) == false)
+        (vertex.Inputs.size() != FLAT_INPUT_COUNT && vertex.Inputs.size() != format::VISIBILITY_INPUT_COUNT) ||
+        HasPlanBindings(vertex, plan, technique) == false || HasPlanBindings(fragment, plan, technique) == false)
     {
         return false;
     }
-    for (usize i = 0; i < FLAT_INPUT_COUNT; ++i)
+    for (usize i = 0; i < vertex.Inputs.size(); ++i)
     {
         const rhi::RasterShaderInput& input = vertex.Inputs[i];
-        if (input.Location != i ||
-            input.Format != (i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4))
+        if (input.Location != i || input.Format != (i == 0                 ? rhi::RasterVertexFormat::Float3
+                                                    : i < FLAT_INPUT_COUNT ? rhi::RasterVertexFormat::Float4
+                                                                           : rhi::RasterVertexFormat::Float2))
         {
             return false;
         }
@@ -477,12 +478,42 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             {
                 return Status::Unsupported;
             }
+            if ((pass.Visibility == format::ABSENT) != (pass.VisibilityDepth == format::ABSENT))
+            {
+                return Status::InvalidDescription;
+            }
+            if (pass.Visibility != format::ABSENT)
+            {
+                if (passIndex == 0 || pass.Visibility >= plan.Resources.GetSize() ||
+                    pass.VisibilityDepth >= plan.Resources.GetSize() || pass.Visibility == pass.Color)
+                {
+                    return Status::InvalidDescription;
+                }
+                const format::Pass& producer = plan.Passes[passIndex - 1];
+                const format::Resource& visibility = plan.Resources[pass.Visibility];
+                const format::Resource& depth = plan.Resources[pass.VisibilityDepth];
+                const format::Resource& target = plan.Resources[pass.Color];
+                if (format::GetTechniqueFamily(producer.Program) != format::Technique::ColorAndDepth ||
+                    producer.Camera != pass.Camera || producer.Color != pass.Visibility ||
+                    producer.Depth != pass.VisibilityDepth || visibility.Kind != format::Aspect::Color ||
+                    depth.Kind != format::Aspect::Depth || depth.Backing != pass.Visibility ||
+                    visibility.IsSurface != 0 || visibility.Width != target.Width ||
+                    visibility.Height != target.Height || visibility.ViewNumerator != target.ViewNumerator ||
+                    visibility.ViewDenominator != target.ViewDenominator || producer.ColorLoad != format::Load::Clear ||
+                    producer.DepthLoad != format::Load::Clear || producer.ColorStore != format::Store::Store ||
+                    producer.DepthStore != format::Store::Store || colorDefined[pass.Visibility] == false ||
+                    depthDefined[pass.Visibility] == false)
+                {
+                    return Status::Unsupported;
+                }
+            }
             colorDefined[pass.Color] = true;
             depthDefined[pass.Color] = false;
             continue;
         }
         hasEndedRaySequence = rayPassCount != 0;
-        if (pass.RayProgram != 0 || pass.Buffer0 != format::ABSENT || pass.Buffer1 != format::ABSENT)
+        if (pass.RayProgram != 0 || pass.Buffer0 != format::ABSENT || pass.Buffer1 != format::ABSENT ||
+            pass.Visibility != format::ABSENT || pass.VisibilityDepth != format::ABSENT)
         {
             return Status::InvalidDescription;
         }
@@ -1129,6 +1160,11 @@ struct RenderGraph::State final
                 Current->IsRayGraphPrepared = false;
                 continue;
             }
+            if (pass + 1 < Header.PassCount && Passes[pass + 1].Program == format::Technique::RayTracing &&
+                Passes[pass + 1].Visibility == operation.Color)
+            {
+                continue;
+            }
             const uint32 backing = Resources[operation.Depth].Backing;
             rhi::RasterPassDescription description;
             description.Color = Textures[backing];
@@ -1296,6 +1332,34 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             return Status::Unsupported;
         }
+    }
+    bool hasVisibility = false;
+    usize visibilityRayPassCount = 0;
+    for (usize index = 0; index < plan.Passes.GetSize(); ++index)
+    {
+        const format::Pass& pass = plan.Passes[index];
+        visibilityRayPassCount += pass.Program == format::Technique::RayTracing ? 1 : 0;
+        if (pass.Visibility != format::ABSENT)
+        {
+            hasVisibility = true;
+            const format::Technique producer = plan.Passes[index - 1].Program;
+            if (GetStage(programs, producer, rhi::ShaderStage::Vertex).Inputs.size() !=
+                    format::VISIBILITY_INPUT_COUNT ||
+                GetStage(programs, producer, rhi::ShaderStage::Vertex).Bindings.empty() == false ||
+                GetStage(programs, producer, rhi::ShaderStage::Fragment).Bindings.empty() == false)
+            {
+                return Status::Unsupported;
+            }
+        }
+    }
+    if (hasVisibility == true && visibilityRayPassCount != 1)
+    {
+        return Status::Unsupported;
+    }
+    if (hasVisibility != programs.HasVisibilityBuffer ||
+        (hasVisibility == true && programs.HasSceneShaderInterface == false))
+    {
+        return Status::InvalidDescription;
     }
     State* allocationOrNull = new (std::nothrow) State;
     core::UniquePtr<State> candidate{allocationOrNull};
@@ -2010,6 +2074,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             }
             SceneItem drawing;
             drawing.SourceId = item.SourceId;
+            drawing.DrawIndex = item.MeshIndex;
+            drawing.InstanceIndex = static_cast<uint32>(itemIndex);
             drawing.Geometry = candidate->Meshes[context][item.MeshIndex];
             drawing.Transform = item.MeshToWorld;
             drawing.Material = item.Material;
@@ -2161,11 +2227,26 @@ Status RenderGraph::PrepareEncoding() noexcept
     StaticArray<GpuPreview, format::MAX_RAY_PASSES> jobs{};
     StaticArray<rhi::TextureHandle, format::MAX_RAY_PASSES> targets{};
     usize count = 0;
+    VisibilityRasterPass visibility;
+    const VisibilityRasterPass* visibilityOrNull = nullptr;
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         if (state.Passes[pass].Program != format::Technique::RayTracing)
         {
             continue;
+        }
+        const format::Pass& operation = state.Passes[pass];
+        if (operation.Visibility != format::ABSENT)
+        {
+            const format::Pass& producer = state.Passes[pass - 1];
+            visibility.ProducerOrNull = &state.Contexts[static_cast<usize>(producer.Program)];
+            visibility.View = state.Current->Views[pass - 1];
+            visibility.Attachment.Color = state.Textures[operation.Visibility];
+            visibility.Attachment.ColorLoad = static_cast<rhi::RasterLoad>(producer.ColorLoad);
+            visibility.Attachment.ColorStore = static_cast<rhi::RasterStore>(producer.ColorStore);
+            visibility.Attachment.DepthLoad = static_cast<rhi::RasterLoad>(producer.DepthLoad);
+            visibility.Attachment.DepthStore = static_cast<rhi::RasterStore>(producer.DepthStore);
+            visibilityOrNull = &visibility;
         }
         jobs[count] = state.Current->RayPasses[pass].GetJob();
         targets[count++] = state.Textures[state.Passes[pass].Color];
@@ -2177,7 +2258,8 @@ Status RenderGraph::PrepareEncoding() noexcept
             state.Contexts[static_cast<usize>(format::Technique::RayTracing)].PrepareGpuPreviewGraphSequence(
                 {jobs.GetData(), count},
                 {targets.GetData(), count},
-                state.Current->RayGraph);
+                state.Current->RayGraph,
+                visibilityOrNull);
         if (prepared != Status::Ready)
         {
             return prepared;

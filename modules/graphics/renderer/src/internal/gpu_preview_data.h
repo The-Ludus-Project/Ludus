@@ -57,6 +57,9 @@ struct GpuPreviewRecord final
     rhi::BufferHandle Accumulation{};
     rhi::BufferHandle Colors{};
     rhi::BufferHandle ImageParameters{};
+    rhi::TextureHandle VisibilityTexture{};
+    rhi::TextureViewHandle VisibilityView{};
+    rhi::TextureViewHandle VisibilityDepthView{};
     rhi::BindingSetHandle ComputeBindings{};
     rhi::BindingSetHandle ImageBindings{};
     foundation::StaticArray<GpuPreviewGraphBuffer, GPU_GRAPH_BUFFER_COUNT> GraphBuffers{};
@@ -84,10 +87,12 @@ struct GpuPreviewState final
     StaticArray<content::render_graph_format::StorageBuffer, content::render_graph_format::MAX_STORAGE_BUFFERS>
         StorageDescriptions{};
     // RasterBinding initializes Visibility to Both for every nested element.
-    StaticArray<rhi::RasterBinding, LUDUS_GPU_PREVIEW_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
+    StaticArray<rhi::RasterBinding,
+                LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
         ComputeBindings{}; // NOLINT(bugprone-invalid-enum-default-initialization)
     usize ComputeBindingCount = 0;
     bool IsGraphRayScene = false;
+    bool HasVisibilityBuffer = false;
     bool HasPersistentBuffers = false;
     uint32 Phase = 0;
     bool QuadCreated = false;

@@ -2211,8 +2211,9 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
             color ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         const VkPipelineStageFlags tests =
             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        const VkPipelineStageFlags shaders =
-            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        const VkPipelineStageFlags shaders = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         VkImageMemoryBarrier depth{};
         depth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         depth.image = texture.Depth;
@@ -2246,8 +2247,9 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
         texture.DepthLayout = depthLayout;
     }
     const VkPipelineStageFlags stage =
-        color                                    ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-        : use == RasterTextureUse::SampledVertex ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+        color                                     ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        : use == RasterTextureUse::SampledCompute ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+        : use == RasterTextureUse::SampledVertex  ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
         : use == RasterTextureUse::SampledFragment
             ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
             : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;

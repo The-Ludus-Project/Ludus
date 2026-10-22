@@ -464,9 +464,16 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
             BindRayMetalScene(encoder, {set.Slots[i], layout.Entries[i].Binding});
             continue;
         }
-        [encoder setBuffer:gRasterBuffers[set.Slots[i]]
-                    offset:set.Offsets[i] + packet.BindingOffsets.Bytes[layout.Entries[i].Binding]
-                   atIndex:layout.Entries[i].Binding];
+        if (internal::TextureBinding(layout.Entries[i].Kind) == true)
+        {
+            [encoder setTexture:gRasterViews[set.Slots[i]] atIndex:layout.Entries[i].Binding];
+        }
+        else
+        {
+            [encoder setBuffer:gRasterBuffers[set.Slots[i]]
+                        offset:set.Offsets[i] + packet.BindingOffsets.Bytes[layout.Entries[i].Binding]
+                       atIndex:layout.Entries[i].Binding];
+        }
     }
     const auto& info = gComputeInfos[packet.Pipeline];
     [encoder dispatchThreadgroups:MTLSizeMake(packet.Groups[0], packet.Groups[1], packet.Groups[2])

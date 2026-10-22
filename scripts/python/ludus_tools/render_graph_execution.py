@@ -26,7 +26,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -138,6 +138,20 @@ def lower_plan(package, configuration):
     color_defined = {r: False for r in resources}
     for operation in rasters:
         if operation['kind'] == 'RayTracing':
+            if 'visibility' in operation:
+                producer = rasters[rasters.index(operation) - 1] if rasters.index(operation) != 0 else {}
+                visibility = operation['visibility']['resource']
+                visibility_depth = operation['visibility_depth']['resource']
+                color_output = producer.get('attachments', {}).get('color', {})
+                depth_output = producer.get('attachments', {}).get('depth', {})
+                build.require(producer.get('kind') == 'Raster' and producer.get('material') == 'DefaultOpaque' and
+                              producer.get('view') == operation['view'] and
+                              color_output.get('resource') == visibility and depth_output.get('resource') == visibility_depth and
+                              color_output.get('output_version') == operation['visibility']['input_version'] and
+                              depth_output.get('output_version') == operation['visibility_depth']['input_version'] and
+                              all(item.get('load') == 'Clear' and item.get('store') == 'Store' for item in (color_output, depth_output)),
+                              'Configuration', operation['id'],
+                              'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
             color = operation['attachments']['color']
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE]
             variants = recipes[0].get('ray_programs', [list(ray.program_tuple(operation['pipeline']))]) if recipes else [list(ray.program_tuple(operation['pipeline']))]
@@ -150,7 +164,9 @@ def lower_plan(package, configuration):
             pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']),
                 'Color': resources.index(color['resource']), 'Depth': ABSENT, 'ColorLoad': 'Clear', 'ColorStore': 'Store',
                 'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
-                'RayProgram': variants.index(variant), 'Buffer0': persistent_slots[0], 'Buffer1': persistent_slots[1]})
+                'RayProgram': variants.index(variant), 'Buffer0': persistent_slots[0], 'Buffer1': persistent_slots[1],
+                'Visibility': resources.index(operation['visibility']['resource']) if 'visibility' in operation else ABSENT,
+                'VisibilityDepth': resources.index(operation['visibility_depth']['resource']) if 'visibility_depth' in operation else ABSENT})
             continue
         choices = [r for r in package['recipes'] if r['technique'] == operation['technique'] and
                    ('pipeline' not in operation or all(r['state'][key] == value
@@ -171,7 +187,8 @@ def lower_plan(package, configuration):
                              'Depth': resources.index(depth), 'ColorLoad': color_load, 'ColorStore': color_store,
                              'DepthLoad': attachment['depth']['load'], 'DepthStore': attachment['depth']['store'],
                              'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
-                             'RayProgram': 0, 'Buffer0': ABSENT, 'Buffer1': ABSENT})
+                             'RayProgram': 0, 'Buffer0': ABSENT, 'Buffer1': ABSENT,
+                             'Visibility': ABSENT, 'VisibilityDepth': ABSENT})
     # Distinct explicitly authored shader pairs represent deliberate passes (for
     # example GBuffer and beauty), rather than an accidental duplicate scene route.
     for operation, record in zip(rasters, pass_records):
@@ -182,14 +199,23 @@ def lower_plan(package, configuration):
                  peer['configuration'] == operation['configuration']]
         if len(peers) > 1 and len({peer['technique'] for peer in peers}) == len(peers):
             record['AllowsRepeatedCoverage'] = 1
+    for index, record in enumerate(pass_records):
+        if record.get('Visibility', ABSENT) != ABSENT:
+            record['AllowsRepeatedCoverage'] = 1
+            pass_records[index - 1]['AllowsRepeatedCoverage'] = 1
     return plan, resource_records, pass_records, cameras
 
 
 STATIC_INPUTS = [{'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for i in range(6)]
+VISIBILITY_INPUTS = STATIC_INPUTS + [{'location': i, 'format': 'Float2'} for i in (6, 7)]
+
+def stage_inputs(item):
+    return [{k: v for k, v in x.items() if k != 'name'} for x in item['descriptor']['interface']['inputs']]
+
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 10
+PACKAGE_VERSION = 11
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -349,7 +375,9 @@ def _runtime_contents(path, configuration):
                       len(descriptor['interface']['entries']) == len(descriptor.get('layouts', []))),
                       'Configuration', program['id'], 'runtime profile admits only verified uniform bindings')
         expected = (ray.IMAGE_INPUTS
-                    if is_ray and stage == 'vertex' else STATIC_INPUTS if stage == 'vertex' else [])
+                    if is_ray and stage == 'vertex' else stage_inputs(program) if stage == 'vertex' else [])
+        build.require(stage != 'vertex' or is_ray or expected in (STATIC_INPUTS, VISIBILITY_INPUTS),
+                      'Configuration', program['id'], 'unsupported static/visibility vertex interface')
         build.require([{k: v for k, v in x.items() if k != 'name'} for x in descriptor['interface']['inputs']] == expected,
                       'Configuration', program['id'], 'static vertex/instance interface mismatch')
         artifact_name = Path(descriptor['artifact'])
@@ -370,11 +398,19 @@ def _runtime_contents(path, configuration):
         artifacts[key] = {'ordinal': ordinal, 'descriptor': descriptor, 'bytes': artifact, 'entry': entry, 'blocks': names}
     # CPU-visible interface: the logical vertex/instance schema, fixed static inputs,
     # and the per-draw uniform schemas with every target layout that packs them.
-    interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1', 'vertex_schema': vertex_schemas[0], 'inputs': STATIC_INPUTS, 'uniform_schemas': uniform_interface}
+    interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1', 'vertex_schema': vertex_schemas[0], 'inputs': [stage_inputs(record) for (name, stage, target), record in stages.items() if stage == 'vertex' and name != 'RayTracing'], 'uniform_schemas': uniform_interface}
     scene_versions = {r.get('scene_interface_version', 0) for r in package['recipes'] if r['technique'] == ray.TECHNIQUE}
     build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
+    has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
+    visibility_profiles = {r.get('visibility_buffer', False) for r in package['recipes'] if r['technique'] == ray.TECHNIQUE}
+    ray_pass_count = sum(p['Program'] == 'RayTracing' for p in passes)
+    build.require(not has_visibility or ray_pass_count == 1, 'Capability', 'visibility',
+                  'visibility reconstruction currently admits one ray invocation per configuration')
+    has_ray = ray_pass_count != 0
+    build.require(not has_ray or visibility_profiles == {has_visibility}, 'Configuration', 'visibility',
+                  'ray visibility inputs must match scene_interface.visibility_buffer')
     persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in package['recipes'])
-    return {'persistent_buffers': persistent, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    return {'persistent_buffers': persistent, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -508,6 +544,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
         lines.append('    result.HasPersistentRayBuffers = true;')
     if contents.get('scene_interface', False):
         lines.append('    result.HasSceneShaderInterface = true;')
+    if contents.get('visibility_buffer', False):
+        lines.append('    result.HasVisibilityBuffer = true;')
     for program_name in PROGRAM_CODES:
         for stage in (('compute', 'vertex', 'fragment') if program_name == 'RayTracing' else ('vertex', 'fragment')):
             member = program_member(program_name, stage)
@@ -517,14 +555,14 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 continue
             lines.append('    result.' + member + '.Artifact.Stage = rhi::ShaderStage::' + stage.title() + ';')
             if stage == 'vertex':
-                input_values = ray.IMAGE_INPUTS if program_name == 'RayTracing' else STATIC_INPUTS
+                input_values = ray.IMAGE_INPUTS if program_name == 'RayTracing' else stage_inputs(contents['artifacts'][keys[0]])
                 constant = declaration.upper() + '_INPUT_COUNT'
                 lines += [f'    static constexpr foundation::usize {constant} = {len(input_values)};',
                           f'    static constexpr foundation::StaticArray<rhi::RasterShaderInput, {constant}> {declaration}Inputs', '{', '        {']
                 lines += ['            {' + str(value['location']) + ', rhi::RasterVertexFormat::' + value['format'] + '},' for value in input_values]
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {declaration}Inputs.AsSpan();']
             if program_name == 'RayTracing':
-                lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers);']
+                lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers, result.HasVisibilityBuffer);']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
             if program_name == 'RayTracing' and stage == 'compute':
                 stage_bindings = [{'slot': entry['binding'], 'kind': entry['kind'], 'visibility': 'Compute', 'size': entry['size']}
@@ -579,7 +617,7 @@ def encode_runtime_package(contents):
         data += u32(target)
     for p in contents['passes']:
         data += u32(PROGRAM_CODES[p['Program']], p['Camera'], p['Color'], p['Depth'], loads[p['ColorLoad']],
-                    stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'], p.get('SceneData', graph.scene_bundle.ALL_DATA), p['RayProgram'], p['Buffer0'], p['Buffer1'])
+                    stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'], p.get('SceneData', graph.scene_bundle.ALL_DATA), p['RayProgram'], p['Buffer0'], p['Buffer1'], p.get('Visibility', ABSENT), p.get('VisibilityDepth', ABSENT))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
@@ -588,7 +626,7 @@ def encode_runtime_package(contents):
         data += u32(f['Binding'], TARGET_CODES[f['Target']], f['ValueOffset'], f['Components'], f['ByteOffset'])
     for (program_name, stage, target), item in stages:
         inputs = (ray.IMAGE_INPUTS
-                  if program_name == 'RayTracing' and stage == 'vertex' else STATIC_INPUTS if stage == 'vertex' else [])
+                  if program_name == 'RayTracing' and stage == 'vertex' else stage_inputs(item) if stage == 'vertex' else [])
         entry = item['entry'].encode()
         stage_role = (PERSISTENT_RAY_STAGE_ROLE if contents.get('persistent_buffers', False) else 11) if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)
         data += u32(stage_role, TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),

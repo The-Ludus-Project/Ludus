@@ -1010,11 +1010,11 @@ See [native worker setup, limits, workflow and measurements](../development/rend
 Numeric plan version 6 and runtime package version 9 append a callback-set index
 and two persistent buffer-resource indices to each pass. Buffer resources use the
 existing resource table with an explicit Buffer aspect: Width is byte capacity,
-Height is one, and export/surface flags are forbidden. Runtime package version 10
-and numeric plan version 7 add BytesPerPixel to each resource. Zero preserves fixed
+Height is one, and export/surface flags are forbidden. Runtime package version 11
+and numeric plan version 8 add BytesPerPixel to each resource. Zero preserves fixed
 capacity; a positive aligned stride with a view policy resolves byte capacity from
 the scaled reference pixel count. Resizing stages buffers beside attachments and ray
-jobs and publishes them together only at readiness. Version 9 remains readable
+jobs and publishes them together only at readiness. Versions 9 and 10 remain readable
 with fixed-capacity buffers. Serialized
 widths derive from the field schema, with no host-padding copies. Earlier hardware
 package version 6 remains readable with callback zero and absent buffer slots.

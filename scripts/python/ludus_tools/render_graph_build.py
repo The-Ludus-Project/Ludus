@@ -191,7 +191,9 @@ def validate_manifest(value):
         require(schema['fields'], 'Schema', schema['id'], 'empty schema')
         seen, locations = set(), set()
         for field in schema['fields']:
-            keys(field, ('id', 'type') if schema['role'] in ('Uniform', 'Storage') else ('id', 'type', 'semantic', 'location'), 'field')
+            keys(field, ('id', 'type') if schema['role'] in ('Uniform', 'Storage') else ('id', 'type', 'semantic', 'location'), 'field', optional=('interpolation',) if schema['role'] == 'Varying' else ())
+            if 'interpolation' in field:
+                enum(field['interpolation'], ('Flat',), 'interpolation')
             name(field['id'], 'field id')
             require(field['id'] not in seen, 'Schema', schema['id'], 'duplicate field identity')
             seen.add(field['id'])
@@ -250,7 +252,9 @@ def validate_manifest(value):
             keys(technique, ('id', 'configuration', *ray.STAGES, 'recipes'), 'ray technique', ('scene_interface',))
             scene_interface = technique.get('scene_interface')
             if scene_interface is not None:
-                keys(scene_interface, ('version', 'payload', 'surface_queries', 'visibility_queries'), 'scene interface', ('local_payload_bytes',))
+                keys(scene_interface, ('version', 'payload', 'surface_queries', 'visibility_queries'), 'scene interface', ('local_payload_bytes', 'visibility_buffer'))
+                if 'visibility_buffer' in scene_interface:
+                    require(type(scene_interface['visibility_buffer']) is bool, 'Schema', 'visibility_buffer', 'Boolean required')
                 if 'local_payload_bytes' in scene_interface:
                     integer(scene_interface['local_payload_bytes'], ray.PAYLOAD_FIELD_ALIGNMENT_BYTES,
                             ray.MAX_LOCAL_PAYLOAD_BYTES, 'shader-local payload budget')
@@ -337,6 +341,8 @@ def shader_source(program, schemas):
     if program['stage'] == 'vertex':
         used.add(program['output'])
     lines = ['// Generated RG1 declarations; edit the schema/build source.']
+    if len(schemas.get('RendererStatic', {}).get('fields', [])) == 8:
+        lines.append('#include "_ludus_visibility.slang"')
     for sid in sorted(used):
         schema = schemas[sid]
         lines += ['struct ' + sid, '{']
@@ -346,6 +352,8 @@ def shader_source(program, schemas):
                 if field['semantic'] != 'SV_Position':
                     prefix = '[[vk::location(' + str(field['location']) + ')]] '
                 suffix = ' : ' + field['semantic']
+                if field.get('interpolation') == 'Flat':
+                    prefix += 'nointerpolation '
             lines.append('    ' + prefix + SHAPES[field['type']][0] + ' ' + field['id'] + suffix + ';')
         lines += ['};']
     for binding in program['bindings']:
@@ -706,6 +714,11 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     value = document(snapshot.load(manifest_label), manifest_label)
     schemas, programs, techniques, counts = validate_manifest(value)
     helper = Path(helper).resolve()
+    visibility_helper = helper / 'visibility_buffer.slang'
+    if visibility_helper.is_file():
+        snapshot.files['_ludus_visibility.slang'] = read(visibility_helper)
+        snapshot.external['_ludus_visibility.slang'] = visibility_helper
+        snapshot.total += len(snapshot.files['_ludus_visibility.slang'])
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
     hash_file = ToolFileHashes()
     tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross,
@@ -738,6 +751,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     # Registered programs include authoring drafts. Only explicit techniques select
     # executable stages; unused callbacks must never be compiled as entry points.
     closures = {pid: snapshot.shader_closure(p['source']) for pid, p in programs.items()}
+    if len(schemas.get('RendererStatic', {}).get('fields', [])) == 8:
+        require('_ludus_visibility.slang' in snapshot.files, 'Tools', 'visibility', 'SDK visibility helper is missing')
+        closures = {pid: sorted(set(closure) | {'_ludus_visibility.slang'}) for pid, closure in closures.items()}
     # Build plans for every declared closed root configuration and preserve graph
     # imports in the same source snapshot used by shaders.
     graph_path = manifest.with_suffix('').with_suffix('.lurender.json')
@@ -877,6 +893,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                         record['ray_programs'] = [list(variant) for variant in variants]
                         record['persistent_buffers'] = persistent
                         record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
+                        record['visibility_buffer'] = technique.get('scene_interface', {}).get('visibility_buffer', False)
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)

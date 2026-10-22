@@ -297,6 +297,31 @@ class RasterReflectionTests(unittest.TestCase):
             invalid=copy.deepcopy(data);invalid['entryPoints'][0]['threadGroupSize']=group
             with self.assertRaisesRegex(RuntimeError,'workgroup'):raster_interface(invalid,'compute')
 
+    def test_metal_compute_buffers_ignore_zero_count_texture_metadata(self):
+        data = self.compute_fixture()
+        records = data['parameters'][0]
+        records.pop('binding')
+        records['bindings'] = [{'kind': 'constantBuffer', 'index': 0},
+                               {'kind': 'shaderResource', 'index': 0, 'count': 0}]
+        for name, index, result_type in (
+                ('color', 1, {'kind': 'vector', 'elementCount': 4,
+                              'elementType': {'kind': 'scalar', 'scalarType': 'float32'}}),
+                ('depth', 2, {'kind': 'scalar', 'scalarType': 'float32'})):
+            data['parameters'].append({
+                'name': name, 'bindings': [{'kind': 'shaderResource', 'index': index}],
+                'type': {'kind': 'resource', 'baseShape': 'texture2D', 'resultType': result_type}})
+            data['entryPoints'][0]['bindings'].append({'name': name, 'binding': {'used': 1}})
+        for access, kind, metadata in (('read', 'StorageRead', 'shaderResource'),
+                                       ('readWrite', 'StorageReadWrite', 'unorderedAccess')):
+            records['type']['access'] = access
+            records['bindings'][1]['kind'] = metadata
+            entries = raster_interface(data, 'compute', metal=True)['entries']
+            self.assertEqual([(entry['binding'], entry['kind']) for entry in entries],
+                             [(0, kind), (1, 'Texture2D'), (2, 'TextureDepth2D')])
+        records['bindings'][1] = {'kind': 'shaderResource', 'index': 0, 'count': 1}
+        with self.assertRaisesRegex(RuntimeError, 'one descriptor'):
+            raster_interface(data, 'compute', metal=True)
+
     def test_fragment_storage_is_read_only_and_keeps_element_stride(self):
         data = self.compute_fixture()
         data['parameters'][0]['type']['access'] = 'read'

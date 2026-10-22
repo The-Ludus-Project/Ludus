@@ -40,7 +40,7 @@ function(ludus_compile_render_graph)
             string(JSON source GET "${renderer_recipes}" "${recipe}" source)
             configure_file("${renderer_directory}/${source}" "${helper}/${source}" COPYONLY)
         endforeach()
-        foreach(source renderer_gpu_preview_layout.h renderer_surface_functions.slang scene_shader.slang ray_shader.slang)
+        foreach(source renderer_gpu_preview_layout.h renderer_surface_functions.slang scene_shader.slang visibility_buffer.slang ray_shader.slang)
             configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/shaders/${source}" "${helper}/${source}" COPYONLY)
         endforeach()
         configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" "${helper}/scene_data.h" COPYONLY)
@@ -98,6 +98,7 @@ function(ludus_compile_render_graph)
             "${package}/ludus_tools/buildlock.py" "${package}/ludus_tools/errors.py"
             "${helper}/compile_shader.py" "${helper}/compile_raster.py" "${helper}/compile_graph_stage.py" "${helper}/native_worker.py"
             "${helper}/shader_toolchain.json" "${helper}/spirv_cross_toolchain.json" "${helper}/scene_data.h"
+            "${helper}/visibility_buffer.slang"
         VERBATIM)
     target_sources(${GRAPH_TARGET} PRIVATE "${output}/${GRAPH_NAME}.h")
     target_include_directories(${GRAPH_TARGET} PRIVATE "${output}")

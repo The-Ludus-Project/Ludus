@@ -484,8 +484,10 @@ bool ValidBinding(const RasterBinding& binding) noexcept
                binding.MinSize > 0 && binding.MinSize % sizeof(uint32) == 0 &&
                binding.MinSize <= limits.MaxStorageRange;
     }
-    return visibility != 4 && (TextureBinding(binding.Kind) == true || binding.Kind == RasterBindingKind::Sampler) &&
-           binding.MinSize == 0;
+    return (binding.Visibility != RasterVisibility::Compute ||
+            (binding.Count == 1 &&
+             (binding.Kind == RasterBindingKind::Texture2D || binding.Kind == RasterBindingKind::TextureDepth2D))) &&
+           (TextureBinding(binding.Kind) == true || binding.Kind == RasterBindingKind::Sampler) && binding.MinSize == 0;
 }
 bool CopyLayout(std::span<const RasterBinding> entries, RasterLayout& outLayout) noexcept
 {

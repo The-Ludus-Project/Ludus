@@ -400,3 +400,82 @@ TEST_CASE("R18c layout entry and per-stage descriptor limits reject before publi
     CHECK(after.ResourceBytes == before.ResourceBytes);
     CHECK(reference::Creates[static_cast<usize>(internal::RasterKind::Layout)] == 2);
 }
+
+TEST_CASE("Compute texture loads track raster color and depth initialization", "[rhi][compute][visibility]")
+{
+    ComputeSession session;
+    TextureDescription textureDescription;
+    textureDescription.Width = 16;
+    textureDescription.Height = 16;
+    textureDescription.Attachment = true;
+    TextureHandle texture;
+    REQUIRE(CreateTexture(session.Device, textureDescription, {}, texture) == RasterStatus::Ready);
+    TextureViewHandle colorView;
+    TextureViewHandle depthView;
+    REQUIRE(CreateTextureView(session.Device, texture, colorView) == RasterStatus::Ready);
+    TextureViewDescription depthDescription;
+    depthDescription.Aspect = TextureAspect::Depth;
+    REQUIRE(CreateTextureView(session.Device, texture, depthDescription, depthView) == RasterStatus::Ready);
+    StaticArray<RasterBinding, 2> bindings{{{0, RasterBindingKind::Texture2D, RasterVisibility::Compute, 0},
+                                            {1, RasterBindingKind::TextureDepth2D, RasterVisibility::Compute, 0}}};
+    RasterShaderDescription shaderDescription;
+    shaderDescription.Artifact.Stage = ShaderStage::Compute;
+    shaderDescription.Artifact.Wgsl = "reference compute color/depth loads";
+    shaderDescription.Artifact.WgslEntry = "computeMain";
+    shaderDescription.Bindings = bindings.AsSpan();
+    RasterShaderHandle shader;
+    BindingLayoutHandle layout;
+    BindingSetHandle set;
+    ComputePipelineHandle pipeline;
+    REQUIRE(CreateRasterShader(session.Device, shaderDescription, shader) == RasterStatus::Ready);
+    REQUIRE(CreateBindingLayout(session.Device, bindings.AsSpan(), layout) == RasterStatus::Ready);
+    StaticArray<RasterBindingResource, 2> resources{
+        {{ .Binding = 0, .Texture = colorView }, { .Binding = 1, .Texture = depthView }}};
+    REQUIRE(CreateBindingSet(session.Device, layout, resources.AsSpan(), set) == RasterStatus::Ready);
+    REQUIRE(CreateComputePipeline(session.Device, {shader, layout}, pipeline) == RasterStatus::Ready);
+    OrderedGraph graph;
+    GraphVersion previous;
+    GraphVersion written;
+    RasterTextureState state;
+    REQUIRE(GetTextureState(session.Device, texture, state) == RasterStatus::Ready);
+    REQUIRE(CreateOrderedGraph(session.Device, graph) == RasterStatus::Ready);
+    REQUIRE(ImportGraphTexture(session.Device, graph, texture, state, RasterTextureUse::SampledCompute, previous) ==
+            RasterStatus::Ready);
+    REQUIRE(NextGraphVersion(session.Device, graph, previous, written) == RasterStatus::Ready);
+    GraphPassDescription producer;
+    producer.Name = "raster color and depth producer";
+    producer.Attachment.Color = texture;
+    producer.Attachment.DepthStore = RasterStore::Store;
+    SECTION("Both stored aspects are readable") {}
+    SECTION("Discarded depth rejects even when color is initialized")
+    {
+        producer.Attachment.DepthStore = RasterStore::Discard;
+    }
+    const GraphUse write{written, GraphAccessMode::ColorWrite};
+    producer.Uses = &write;
+    producer.UseCount = 1;
+    REQUIRE(AddGraphPass(session.Device, graph, producer) == RasterStatus::Ready);
+    const ComputeDispatch dispatch{pipeline, set};
+    const GraphUse read{written, GraphAccessMode::Sampled, 0, 0, RasterVisibility::Compute};
+    GraphPassDescription consumer;
+    consumer.Name = "compute color and depth consumer";
+    consumer.Dispatch = &dispatch;
+    consumer.Uses = &read;
+    consumer.UseCount = 1;
+    consumer.SideEffect = true;
+    REQUIRE(AddGraphPass(session.Device, graph, consumer) == RasterStatus::Ready);
+    GraphReport report;
+    const RasterStatus expected =
+        producer.Attachment.DepthStore == RasterStore::Store ? RasterStatus::Ready : RasterStatus::InvalidDescription;
+    REQUIRE(CompileOrderedGraph(session.Device, graph, report) == expected);
+    if (expected == RasterStatus::Ready)
+    {
+        CHECK(report.LivePasses == 2);
+        CHECK(report.DependencyCount > 0);
+        REQUIRE(Destroy(session.Device, colorView) == RasterStatus::Ready);
+        REQUIRE(Destroy(session.Device, depthView) == RasterStatus::Ready);
+        REQUIRE(Destroy(session.Device, texture) == RasterStatus::Ready);
+        SubmissionToken completion;
+        REQUIRE(ExecuteOrderedGraph(session.Device, session.Surface, graph, completion) == RasterStatus::Ready);
+    }
+}

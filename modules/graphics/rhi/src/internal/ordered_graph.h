@@ -768,7 +768,8 @@ bool RasterFinishFrame() noexcept
     {
         auto& texture = At(RasterKind::Texture, slot);
         if (texture.InFrame && texture.Texture.Attachment &&
-            texture.FrameTextureUse == RasterTextureUse::ColorAttachment)
+            (texture.FrameTextureUse == RasterTextureUse::ColorAttachment ||
+             texture.FrameTextureUse == RasterTextureUse::SampledCompute))
         {
             backend::RasterTextureBarrier(slot, RasterTextureUse::SampledBoth);
             if (GetStartup().State != StartupState::Ready)
@@ -1484,8 +1485,10 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
                     return RasterStatus::InvalidDescription;
                 }
             }
-            else if (pass.IsCompute || use.Offset != 0 || use.Size != 0 ||
-                     use.Visibility == RasterVisibility::Compute ||
+            else if (use.Offset != 0 || use.Size != 0 ||
+                     (pass.IsCompute == true &&
+                      (use.Access != GraphAccessMode::Sampled || use.Visibility != RasterVisibility::Compute)) ||
+                     (pass.IsCompute == false && use.Visibility == RasterVisibility::Compute) ||
                      (use.Access != GraphAccessMode::Sampled && use.Access != GraphAccessMode::ColorWrite &&
                       use.Access != GraphAccessMode::ColorReadWrite))
             {
@@ -1706,6 +1709,29 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
                 // The retained snapshot owns their TLAS/BLAS through submission.
                 if (binding.Kind == RasterBindingKind::RayScene)
                 {
+                    continue;
+                }
+                if (TextureBinding(binding.Kind) == true)
+                {
+                    const Record& view = At(RasterKind::View, set.Slots[i]);
+                    const GraphUse* useOrNull = FindUse(graph,
+                                                        pass,
+                                                        RasterKind::Texture,
+                                                        view.TextureSlot,
+                                                        GraphAccessMode::Sampled,
+                                                        0,
+                                                        0,
+                                                        static_cast<uint8>(RasterVisibility::Compute));
+                    if (useOrNull == nullptr)
+                    {
+                        return RasterStatus::InvalidDescription;
+                    }
+                    const usize resource = GraphAccess::Resource(useOrNull->Resource);
+                    if (ViewDefined(At(RasterKind::Texture, view.TextureSlot), view.View, tracks[resource].States) ==
+                        false)
+                    {
+                        return RasterStatus::InvalidDescription;
+                    }
                     continue;
                 }
                 const auto access = binding.Kind == RasterBindingKind::UniformBuffer ? GraphAccessMode::Uniform
@@ -2289,6 +2315,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                 const auto visibility = static_cast<uint8>(use.Visibility);
                 const auto sampled = visibility == 1   ? RasterTextureUse::SampledVertex
                                      : visibility == 2 ? RasterTextureUse::SampledFragment
+                                     : visibility == 4 ? RasterTextureUse::SampledCompute
                                                        : RasterTextureUse::SampledBoth;
                 backend::RasterTextureBarrier(resource.Slot, sampled);
                 const auto currentBarrier = Admission(device, false);

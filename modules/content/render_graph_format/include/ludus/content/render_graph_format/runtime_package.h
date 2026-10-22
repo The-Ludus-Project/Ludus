@@ -29,18 +29,21 @@
 /// Version 8 inserts a storage count and that many four-word StorageBuffer records
 /// after stage records and before pass names. Version 6 has native-query ray stages.
 /// Version 5 appends one SceneData mask to each pass; older versions imply all scene data.
+/// Version 10 appends visibility color/depth resource indices to every pass.
 /// Version 7 admits additional raster shader-pair IDs and stage roles; record widths are unchanged.
 /// Version 9 appends RayProgram, Buffer0 and Buffer1 to each pass and admits Buffer resources.
 /// Older records imply callback zero with no persistent buffers.
-/// Version 10 appends BytesPerPixel to each resource for RenderSize-derived storage.
+/// Version 11 appends BytesPerPixel to each resource for RenderSize-derived storage.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 10;
-/// First generation supporting ordered callback sets and persistent graph buffers.
-inline constexpr foundation::uint32 PERSISTENT_PACKAGE_VERSION = 9;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 11;
+/// First generation carrying visibility color/depth resource indices in pass records.
+inline constexpr foundation::uint32 VISIBILITY_PACKAGE_VERSION = 10;
+/// First generation with ordered callback selectors and persistent buffer references.
+inline constexpr foundation::uint32 ORDERED_PACKAGE_VERSION = 9;
 /// Structured-storage records with the previous ten-word pass layout.
 inline constexpr foundation::uint32 STORAGE_PACKAGE_VERSION = 8;
 /// First generation supporting independent raster shader pairs, without storage records.
@@ -98,7 +101,7 @@ inline constexpr foundation::usize HEADER_FIELD_COUNT = 10;
 inline constexpr foundation::usize HEADER_BYTES = HEADER_FIELD_COUNT * sizeof(foundation::uint32) + 2 * IDENTITY_BYTES;
 /// Serialized resource record width, derived from the explicit field schema.
 inline constexpr foundation::usize RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * sizeof(foundation::uint32);
-/// Serialized resource width for relative-size package versions 4 through 9.
+/// Serialized resource width for relative-size package versions 4 through 10.
 inline constexpr foundation::usize RELATIVE_RESOURCE_RECORD_BYTES = 8 * sizeof(foundation::uint32);
 /// Serialized structured storage record width; fields are encoded independently of host padding.
 inline constexpr foundation::usize STORAGE_BUFFER_RECORD_BYTES =

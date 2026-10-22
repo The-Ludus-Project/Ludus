@@ -23,7 +23,8 @@ struct ComputePipelineDescription final
 {
     /// Reflected Compute shader, including verified local workgroup dimensions.
     RasterShaderHandle Shader{};
-    /// Immutable Compute-only buffer layout, optionally with one ready native RayScene.
+    /// Immutable Compute-only buffer layout, unfiltered single 2D color/depth views,
+    /// and optionally one ready native RayScene.
     /// Native scenes require enabled ray queries and stay retained through dispatch completion.
     BindingLayoutHandle Layout{};
     /// Queue native driver creation; also enabled by an asynchronous shader input.
