@@ -844,6 +844,120 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
     }
 }
 
+TEST_CASE("scene ray query budgets share Properties and canvas history with Properties hidden",
+          "[editor][render-graph][canvas][query-budgets]")
+{
+    QTemporaryDir project;
+    const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/scene_ray"));
+    const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
+    for (const QString& file : {ROOT_GRAPH,
+                                QStringLiteral("main_shaders/geometry.slang"),
+                                QStringLiteral("main_shaders/color.slang"),
+                                QStringLiteral("main_shaders/depth.slang"),
+                                QStringLiteral("main_shaders/generate.slang"),
+                                QStringLiteral("main_shaders/miss.slang"),
+                                QStringLiteral("main_shaders/closest.slang"),
+                                QStringLiteral("main_shaders/payload.slang")})
+    {
+        WriteFile(QDir(package).filePath(file), ReadFile(source.filePath(file)));
+    }
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QByteArray manifestBytes = ReadFile(source.filePath(manifestFile + QStringLiteral(".in")));
+    manifestBytes.replace("@RG2_TEST_PROFILES@", "[\"metal\", \"wgsl\"]");
+    QJsonObject manifest = QJsonDocument::fromJson(manifestBytes).object();
+    QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    QJsonObject technique = techniques.last().toObject();
+    QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
+    interface.insert(QStringLiteral("surface_queries"), 1);
+    interface.insert(QStringLiteral("visibility_queries"), 1);
+    technique.insert(QStringLiteral("scene_interface"), interface);
+    techniques.replace(techniques.size() - 1, technique);
+    manifest.insert(QStringLiteral("techniques"), techniques);
+    WriteFile(QDir(package).filePath(manifestFile), EncodeCanonicalJson(manifest));
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("trace")) == true);
+    QWidget propertiesHost;
+    static_cast<void>(workspace.TakeInspectorPanel(&propertiesHost));
+    workspace.resize(1200, 800);
+    workspace.show();
+    QCoreApplication::processEvents();
+    const QByteArray originalManifest = workspace.GetDocument().GetDraft(manifestFile);
+    const QByteArray originalGraph = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    bool hasExercised = false;
+    const auto exercise = [&](QWidget& inoutControls) {
+        QSpinBox* surfaceOrNull = inoutControls.findChild<QSpinBox*>(QStringLiteral("renderGraphSurfaceQueries"));
+        QSpinBox* visibilityOrNull = inoutControls.findChild<QSpinBox*>(QStringLiteral("renderGraphVisibilityQueries"));
+        REQUIRE(surfaceOrNull != nullptr);
+        REQUIRE(visibilityOrNull != nullptr);
+        CHECK(surfaceOrNull->value() == 1);
+        CHECK(visibilityOrNull->value() == 1);
+        surfaceOrNull->setValue(2);
+        CHECK(workspace.GetDocument().GetRevision() == revision);
+        REQUIRE(QMetaObject::invokeMethod(surfaceOrNull, "editingFinished") == true);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+        CHECK(inoutControls.findChild<QSpinBox*>(QStringLiteral("renderGraphSurfaceQueries")) == surfaceOrNull);
+        REQUIRE(QMetaObject::invokeMethod(surfaceOrNull, "editingFinished") == true);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+        visibilityOrNull->setValue(0);
+        REQUIRE(QMetaObject::invokeMethod(visibilityOrNull, "editingFinished") == true);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 2);
+        RenderGraphSceneQueryBudgets edited;
+        REQUIRE(workspace.GetDocument().GetSceneQueryBudgets(edited) == true);
+        CHECK(edited.SurfaceQueries == 2);
+        CHECK(edited.VisibilityQueries == 0);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == originalGraph);
+        CHECK(workspace.GetDocument().GetSaved(manifestFile) == originalManifest);
+        const QByteArray editedManifest = workspace.GetDocument().GetDraft(manifestFile);
+        workspace.Undo();
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(manifestFile) == originalManifest);
+        workspace.Redo();
+        workspace.Redo();
+        CHECK(workspace.GetDocument().GetDraft(manifestFile) == editedManifest);
+        REQUIRE(workspace.Save() == true);
+        CHECK(ReadFile(QDir(package).filePath(manifestFile)) == editedManifest);
+        RenderGraphDocument reloaded;
+        REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(reloaded.GetSceneQueryBudgets(edited) == true);
+        CHECK(edited.SurfaceQueries == 2);
+        CHECK(edited.VisibilityQueries == 0);
+        hasExercised = true;
+    };
+    SECTION("Properties")
+    {
+        exercise(propertiesHost);
+    }
+    SECTION("canvas with Properties hidden")
+    {
+        propertiesHost.hide();
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        canvas.Rebuild();
+        QTimer::singleShot(0, &canvas, [&canvas, &exercise, &propertiesHost]() {
+            QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menuOrNull != nullptr);
+            QAction* editOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+            REQUIRE(editOrNull != nullptr);
+            QTimer::singleShot(0, &canvas, [&exercise, &propertiesHost]() {
+                QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                REQUIRE(dialogOrNull != nullptr);
+                CHECK(propertiesHost.isVisible() == false);
+                exercise(*dialogOrNull);
+                dialogOrNull->reject();
+            });
+            menuOrNull->close();
+            editOrNull->trigger();
+        });
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("trace")) + QPointF(20, 10));
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+    }
+    CHECK(hasExercised == true);
+}
+
 TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidden",
           "[editor][render-graph][canvas][scene-materials]")
 {

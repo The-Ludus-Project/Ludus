@@ -249,8 +249,10 @@ def validate_manifest(value):
                     integer(scene_interface['local_payload_bytes'], ray.PAYLOAD_FIELD_ALIGNMENT_BYTES,
                             ray.MAX_LOCAL_PAYLOAD_BYTES, 'shader-local payload budget')
                 integer(scene_interface['version'], 1, 1, 'scene interface version')
-                integer(scene_interface['surface_queries'], 1, 8, 'surface query budget')
-                integer(scene_interface['visibility_queries'], 0, 16, 'visibility query budget')
+                integer(scene_interface['surface_queries'], ray.SCENE_QUERY_LIMITS['MIN_SURFACE_QUERIES'],
+                        ray.SCENE_QUERY_LIMITS['MAX_SURFACE_QUERIES'], 'surface query budget')
+                integer(scene_interface['visibility_queries'], ray.SCENE_QUERY_LIMITS['MIN_VISIBILITY_QUERIES'],
+                        ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'], 'visibility query budget')
                 require(type(scene_interface['payload']) is str and scene_interface['payload'].endswith('.slang'),
                         'Schema', 'payload', 'package-local Slang payload source required')
             bounded_list(technique['recipes'], 1, 'ray recipes')
