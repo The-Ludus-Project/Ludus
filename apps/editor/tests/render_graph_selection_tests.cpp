@@ -504,3 +504,186 @@ TEST_CASE("Graph file context menu adds a configuration through the name dialog"
     workspace.Undo();
     CHECK(workspace.GetDocument().GetDraft(LIBRARY) == before);
 }
+
+TEST_CASE("Configuration deletion preserves complete history and publishes only on Save",
+          "[editor][render-graph][configuration-delete]")
+{
+    QTemporaryDir project;
+    const QString package = MakeSelectionPackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    const QString alternate = QStringLiteral("Alternate");
+    REQUIRE(document.AddConfiguration(ROOT, alternate) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = document.GetDraft(ROOT);
+    const QByteArray library = document.GetDraft(LIBRARY);
+    const QByteArray saved = document.GetSaved(ROOT);
+    const uint64 revision = document.GetRevision();
+    QString error;
+    SECTION("remove the populated default and choose a surviving default")
+    {
+        REQUIRE(document.RemoveConfiguration(ROOT, DEFAULT, error) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetHistoryNodeSelection().Configuration == alternate);
+        QJsonObject graph;
+        REQUIRE(document.GetGraph(ROOT, graph) == true);
+        CHECK(graph.value(QStringLiteral("default")).toString() == alternate);
+        CHECK(ReadConfiguration(document, ROOT, DEFAULT).isEmpty() == true);
+    }
+    SECTION("remove a nondefault without changing the default")
+    {
+        REQUIRE(document.RemoveConfiguration(ROOT, alternate, error) == RenderGraphDocumentStatus::Ok);
+        QJsonObject graph;
+        REQUIRE(document.GetGraph(ROOT, graph) == true);
+        CHECK(graph.value(QStringLiteral("default")).toString() == DEFAULT);
+        CHECK(ReadConfiguration(document, ROOT, alternate).isEmpty() == true);
+    }
+    CHECK(error.isEmpty() == true);
+    CHECK(document.GetRevision() == revision + 1);
+    CHECK(document.GetDraft(LIBRARY) == library);
+    CHECK(document.GetSaved(ROOT) == saved);
+    const QByteArray deleted = document.GetDraft(ROOT);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(ROOT) == original);
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetDraft(ROOT) == deleted);
+    QStringList savedFiles;
+    REQUIRE(document.Save(savedFiles) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT) == deleted);
+    CHECK(reopened.GetDraft(LIBRARY) == library);
+    REQUIRE(document.Undo() == true);
+    REQUIRE(document.Save(savedFiles) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(reopened.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT) == original);
+}
+
+TEST_CASE("Configuration deletion rejects missing last and referenced configurations atomically",
+          "[editor][render-graph][configuration-delete]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeSelectionPackage(project), ROOT) == RenderGraphDocumentStatus::Ok);
+    const QString alternate = QStringLiteral("Alternate");
+    QString file = ROOT;
+    QString configuration = DEFAULT;
+    RenderGraphDocumentStatus expected = RenderGraphDocumentStatus::InvalidEdit;
+    QString repair;
+    SECTION("last configuration")
+    {
+        repair = QStringLiteral("Add another");
+    }
+    SECTION("missing configuration")
+    {
+        configuration = QStringLiteral("Missing");
+        expected = RenderGraphDocumentStatus::NotFound;
+    }
+    SECTION("missing file")
+    {
+        file = QStringLiteral("missing.lurender.json");
+        expected = RenderGraphDocumentStatus::NotFound;
+    }
+    SECTION("same-file reference")
+    {
+        REQUIRE(document.AddConfiguration(ROOT, alternate) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.AddNode(ROOT,
+                                 alternate,
+                                 {{QStringLiteral("id"), QStringLiteral("caller")},
+                                  {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                                  {QStringLiteral("asset"), ROOT},
+                                  {QStringLiteral("configuration"), DEFAULT}}) == RenderGraphDocumentStatus::Ok);
+        repair = ROOT + QLatin1Char('#') + alternate + QStringLiteral("/caller");
+    }
+    SECTION("other-file reference")
+    {
+        REQUIRE(document.AddConfiguration(ROOT, alternate) == RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.AddNode(LIBRARY,
+                                 DEFAULT,
+                                 {{QStringLiteral("id"), QStringLiteral("caller")},
+                                  {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                                  {QStringLiteral("asset"), ROOT},
+                                  {QStringLiteral("configuration"), DEFAULT}}) == RenderGraphDocumentStatus::Ok);
+        repair = LIBRARY + QLatin1Char('#') + DEFAULT + QStringLiteral("/caller");
+    }
+    const QByteArray original = document.GetDraft(ROOT);
+    const QByteArray library = document.GetDraft(LIBRARY);
+    const uint64 revision = document.GetRevision();
+    const bool canUndo = document.CanUndo();
+    QString error;
+    CHECK(document.RemoveConfiguration(file, configuration, error) == expected);
+    CHECK(error.isEmpty() == false);
+    CHECK(error.contains(repair) == true);
+    CHECK(document.GetDraft(ROOT) == original);
+    CHECK(document.GetDraft(LIBRARY) == library);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.CanUndo() == canUndo);
+}
+
+TEST_CASE("Tree and canvas menus delete configurations with Properties hidden and restore selection",
+          "[editor][render-graph][configuration-delete][selection]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    const QString alternate = QStringLiteral("Alternate");
+    REQUIRE(workspace.SelectNode(LIBRARY, DEFAULT, {}) == true);
+    REQUIRE(workspace.CreateConfiguration(alternate) == true);
+    REQUIRE(workspace.SelectNode(LIBRARY, DEFAULT, {}) == true);
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    properties->hide();
+    const QByteArray original = workspace.GetDocument().GetDraft(LIBRARY);
+    const QByteArray root = workspace.GetDocument().GetDraft(ROOT);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    const auto deleteFromMenu = [&workspace]() {
+        QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphNodeMenu"));
+        REQUIRE(menuOrNull != nullptr);
+        QAction* remove = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphDeleteConfiguration"));
+        REQUIRE(remove != nullptr);
+        REQUIRE(remove->isEnabled() == true);
+        menuOrNull->close();
+        remove->trigger();
+    };
+    SECTION("source-tree menu")
+    {
+        QTreeWidget* tree = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+        REQUIRE(tree != nullptr);
+        REQUIRE(tree->currentItem() != nullptr);
+        QTimer::singleShot(0, &workspace, deleteFromMenu);
+        Q_EMIT tree->customContextMenuRequested(tree->visualItemRect(tree->currentItem()).center());
+    }
+    SECTION("canvas menu")
+    {
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        QTimer::singleShot(0, &workspace, deleteFromMenu);
+        const QPoint point = canvas.viewport()->rect().bottomRight() - QPoint(20, 20);
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QCoreApplication::sendEvent(canvas.viewport(), &context);
+    }
+    SECTION("tree Delete shortcut")
+    {
+        QTreeWidget* tree = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+        REQUIRE(tree != nullptr);
+        tree->setFocus();
+        QCoreApplication::processEvents();
+        QTest::keyClick(tree, Qt::Key_Delete);
+    }
+    CHECK(properties->isVisible() == false);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(workspace.GetDocument().GetDraft(ROOT) == root);
+    CHECK(workspace.GetCanvas().GetFile() == LIBRARY);
+    CHECK(workspace.GetCanvas().GetConfiguration() == alternate);
+    CHECK(workspace.GetCanvas().GetNodeCount() == 0);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(LIBRARY) == original);
+    CHECK(workspace.GetCanvas().GetConfiguration() == DEFAULT);
+    CHECK(workspace.GetCanvas().GetNodeCount() == 3);
+    CHECK(workspace.GetCanvas().GetSelectedNodes().isEmpty() == true);
+    workspace.Redo();
+    CHECK(workspace.GetCanvas().GetConfiguration() == alternate);
+    REQUIRE(workspace.Save() == true);
+    CHECK(workspace.GetDocument().IsDirty() == false);
+    const uint64 beforeRejected = workspace.GetDocument().GetRevision();
+    CHECK(workspace.RemoveSelectedConfiguration() == false);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("last configuration")) == true);
+    CHECK(workspace.GetDocument().GetRevision() == beforeRejected);
+}

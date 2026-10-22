@@ -101,6 +101,10 @@ public:
     /// Create/select an empty configuration in the selected graph file. One undo step;
     /// Save publishes it. Invalid/duplicate names or external source conflicts preserve the draft.
     [[nodiscard]] bool CreateConfiguration(const QString& name);
+    /// Delete the selected configuration in one undo step and select the asset default.
+    /// Last configurations, referenced configurations and source conflicts preserve the
+    /// draft and report the repair in the status line. Save publishes; GUI thread only.
+    [[nodiscard]] bool RemoveSelectedConfiguration();
     /// Copy the selected authored-node group to the system clipboard; writes no project files.
     /// Requires one configuration and no external source conflict. Failure retains clipboard data.
     [[nodiscard]] bool CopySelectedNodes();

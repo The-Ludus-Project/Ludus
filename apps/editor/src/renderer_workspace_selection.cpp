@@ -14,6 +14,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QMimeData>
 #include <QPushButton>
 #include <QShortcut>
@@ -139,7 +140,16 @@ void RendererWorkspace::setupGraphSelection()
     });
     QShortcut* remove = new QShortcut(QKeySequence(Qt::Key_Delete), mTree);
     remove->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(remove, &QShortcut::activated, this, &RendererWorkspace::RemoveSelectedNodes);
+    connect(remove, &QShortcut::activated, this, [this]() {
+        const QList<QTreeWidgetItem*> selected = mTree->selectedItems();
+        if (selected.size() == 1 && selected.first()->data(0, CONFIGURATION_ROLE).toString().isEmpty() == false &&
+            selected.first()->data(0, NODE_ROLE).toString().isEmpty() == true)
+        {
+            static_cast<void>(RemoveSelectedConfiguration());
+            return;
+        }
+        RemoveSelectedNodes();
+    });
 }
 
 void RendererWorkspace::syncTreeSelection()
@@ -224,6 +234,31 @@ bool RendererWorkspace::CreateConfiguration(const QString& name)
     mSelectedNodes.clear();
     documentEdited(status);
     mViews->setCurrentWidget(mCanvas);
+    return true;
+}
+
+bool RendererWorkspace::RemoveSelectedConfiguration()
+{
+    if (CanCreateSubgraph() == false || selectedConfiguration().isEmpty() == true)
+    {
+        mStatus->setText(
+            QStringLiteral("Select a configuration and resolve external source conflicts before deleting it."));
+        return false;
+    }
+    const QString file = mSelectedFile;
+    const QString configuration = mSelectedConfiguration;
+    QString error;
+    const RenderGraphDocumentStatus status = mDocument.RemoveConfiguration(file, configuration, error);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(error);
+        return false;
+    }
+    mSelectedNode.clear();
+    mSelectedNodes.clear();
+    documentEdited(status);
+    mStatus->setText(
+        QStringLiteral("Deleted %1#%2. Undo restores it; Save publishes the deletion.").arg(file, configuration));
     return true;
 }
 
