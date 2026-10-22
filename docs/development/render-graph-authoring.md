@@ -706,9 +706,10 @@ float4 ShaderMain(RasterVarying input)
 ```
 
 The standard encoding stores the primitive's low/middle/high bytes in RGB and
-`instanceIndex + 1` in A. All-zero clear denotes background. It admits 128 extraction
-instances and primitive indices through `0xffffff`; out-of-range IDs encode an
-invalid sentinel which reconstruction reports as failure. The draw reference need
+`instanceIndex + 1` in A. All-zero clear denotes background and A=255 is reserved
+for invalid input. The graph admits 128 extraction instances and primitive indices
+through `0xffffff`. Packing outside the representation capacity writes an invalid
+sentinel; unresolved scene references also report reconstruction failure. The draw reference need
 not occupy another channel: instance identity resolves its geometry and material
 bindings. Use opaque writes with no sRGB encoding, blending, filtering, mipmaps or
 MSAA resolve. Every channel is a normalized byte, not a floating-point bitcast of
@@ -1919,9 +1920,9 @@ ludus render-graph cook-runtime out/raster-package out/main.lurgrt --configurati
 identity into a little-endian file described by
 `ludus/content/render_graph_format/runtime_package.h` (layout version 9, with
 independent raster shader pairs, native-only ray roles, structured storage records,
-per-pass Scene data masks, view-relative size policies, pass names, uniform
+optional visibility/depth reads, per-pass Scene data masks, view-relative size policies, pass names, uniform
 binding/block/field records and GLSL ES block names; native-ray packages from
-versions 6 and 7 and raster packages from versions 2 through 7 remain readable,
+versions 6 through 8 and raster packages from versions 2 through 8 remain readable,
 with versions 2 through 4 implying full Scene data. Older software-ray packages require recooking). `emit-runtime`
 headers also export `INTERFACE_IDENTITY`, which covers the vertex/instance
 interface and the per-draw uniform schemas with their target layouts. With CMake, add `RUNTIME_PACKAGE` to

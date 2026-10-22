@@ -98,6 +98,7 @@ function(ludus_compile_render_graph)
             "${package}/ludus_tools/buildlock.py" "${package}/ludus_tools/errors.py"
             "${helper}/compile_shader.py" "${helper}/compile_raster.py" "${helper}/compile_graph_stage.py" "${helper}/native_worker.py"
             "${helper}/shader_toolchain.json" "${helper}/spirv_cross_toolchain.json" "${helper}/scene_data.h"
+            "${helper}/visibility_buffer.slang"
         VERBATIM)
     target_sources(${GRAPH_TARGET} PRIVATE "${output}/${GRAPH_NAME}.h")
     target_include_directories(${GRAPH_TARGET} PRIVATE "${output}")

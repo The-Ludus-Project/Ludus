@@ -6,7 +6,7 @@ static const uint VISIBILITY_BYTE_MASK = 255;
 static const uint VISIBILITY_BYTE_BITS = 8;
 static const uint VISIBILITY_HALF_BITS = 16;
 static const uint VISIBILITY_MAX_PRIMITIVE = 0xffffff;
-static const uint VISIBILITY_MAX_INSTANCE_COUNT = 128;
+static const uint VISIBILITY_MAX_INSTANCE_COUNT = VISIBILITY_BYTE_MASK - 1;
 static const float VISIBILITY_BYTE_SCALE = 255.0;
 
 /// Decode the exact low/high 16-bit primitive components supplied at raster vertex location 6.
@@ -68,7 +68,7 @@ uint LoadVisibilitySurface(SceneContext scene, RayLaunch launch, inout RayQueryC
                            out SurfaceHit outHit)
 {
     outHit = (SurfaceHit)0;
-    if (any(launch.ExtentPixel == 0) || any(launch.PositionPixel >= launch.ExtentPixel))
+    if (inoutQueries.HasFailed == true || any(launch.ExtentPixel == 0) || any(launch.PositionPixel >= launch.ExtentPixel))
     {
         inoutQueries.HasFailed = true;
         return SCENE_QUERY_FAILURE;

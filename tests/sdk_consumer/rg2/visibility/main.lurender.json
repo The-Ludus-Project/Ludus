@@ -221,13 +221,13 @@
         },
         {
           "id": "HistoryA",
-          "kind": "Buffer",
+          "kind": "StructuredBuffer",
           "stride": 16,
           "count": "ColorTarget"
         },
         {
           "id": "HistoryB",
-          "kind": "Buffer",
+          "kind": "StructuredBuffer",
           "stride": 16,
           "count": "ColorTarget"
         }
