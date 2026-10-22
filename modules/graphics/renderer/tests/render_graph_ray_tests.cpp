@@ -747,11 +747,28 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
             status = fixture.Graph.Poll();
         }
         REQUIRE(status == rhi::RasterStatus::Ready);
-        constexpr usize FRAME_COUNT = 3;
-        constexpr StaticArray<uint8, FRAME_COUNT> EXPECTED_RED{{188, 213, 225}};
+        constexpr usize FRAME_COUNT = 4;
+        constexpr usize CAMERA_FRAME_INDEX = 3;
+        constexpr StaticArray<uint8, FRAME_COUNT> EXPECTED_RED{{188, 213, 225, 0}};
         uint8 previousRed = 0;
         for (usize frame = 0; frame < FRAME_COUNT; ++frame)
         {
+            if (frame == CAMERA_FRAME_INDEX)
+            {
+                status = fixture.Graph.Update({},
+                                              {},
+                                              {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                              2,
+                                              renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                              report,
+                                              nullptr,
+                                              1);
+                while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+                {
+                    status = fixture.Graph.Poll();
+                }
+                REQUIRE(status == rhi::RasterStatus::Ready);
+            }
             rhi::SubmissionToken completion;
             REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
             status = rhi::GetStatus(fixture.Device, completion);
@@ -786,29 +803,18 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
             REQUIRE(rhi::CopyReadback(fixture.Device, ticket, fixture.Pixels.GetData(), fixture.Pixels.GetSize()) ==
                     rhi::RasterStatus::Ready);
             const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
-            CHECK(fixture.Pixels[center] > previousRed);
+            if (frame < CAMERA_FRAME_INDEX)
+            {
+                CHECK(fixture.Pixels[center] > previousRed);
+            }
             CHECK(fixture.Pixels[center] == EXPECTED_RED[frame]);
             CHECK(fixture.Graph.HasPendingSamples() == true);
-            CHECK(fixture.Pixels[center + 1] == 0);
+            // This fixture diagnoses a retained frame counter with a restarted sample index as green.
+            // It also proves camera epochs preserve the ordered invocation index.
+            CHECK(fixture.Pixels[center + 1] == (frame == CAMERA_FRAME_INDEX ? 255 : 0));
             CHECK(fixture.Pixels[center + 2] == 0);
             previousRed = fixture.Pixels[center];
             REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
-            if (frame == 0)
-            {
-                status = fixture.Graph.Update({},
-                                              {},
-                                              {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
-                                              2,
-                                              renderer::RenderGraphCoveragePolicy::RejectIncomplete,
-                                              report,
-                                              nullptr,
-                                              1);
-                while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
-                {
-                    status = fixture.Graph.Poll();
-                }
-                REQUIRE(status == rhi::RasterStatus::Ready);
-            }
         }
     }
 }
