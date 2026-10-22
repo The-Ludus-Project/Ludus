@@ -100,6 +100,17 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(cancelled.outcome, init_progress.CANCELLED)
         self.assertEqual(cancelled.steps[0].status, init_progress.CANCELLED)
 
+    def test_up_to_date_marks_only_the_current_step(self):
+        steps = [init_progress.Step("a", "A"), init_progress.Step("b", "B")]
+        progress = init_progress.SetupProgress.from_plan(steps)
+        # A marker before any step has nowhere to go and must not fail.
+        self.assertTrue(progress.feed("LUDUS_PROGRESS_UP_TO_DATE early", 0.0))
+        progress.feed("LUDUS_PROGRESS 1 2 A", 1.0)
+        self.assertTrue(progress.feed("LUDUS_PROGRESS_UP_TO_DATE the pins are installed", 1.5))
+        self.assertEqual(progress.last_line, "the pins are installed")
+        progress.feed("LUDUS_PROGRESS 2 2 B", 2.0)
+        self.assertEqual([step.is_up_to_date for step in progress.steps], [True, False])
+
     def test_clean_line_and_elapsed(self):
         self.assertEqual(init_progress.clean_line("\x1b[32mok\x1b[0m\n"), "ok")
         self.assertEqual(init_progress.clean_line(" 10%\r 50%\r100%"), "100%")
@@ -128,6 +139,20 @@ class ReporterTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             init_progress.begin("a")
         self.assertEqual(output.getvalue(), "")
+
+    def test_up_to_date_formats(self):
+        steps = [init_progress.Step("a", "Alpha")]
+        for machine, expected in ((False, "Up to date: nothing changed"),
+                                  (True, "LUDUS_PROGRESS_UP_TO_DATE nothing changed")):
+            with self.subTest(machine=machine), contextlib.redirect_stdout(io.StringIO()) as output:
+                init_progress.start(steps, environment={"LUDUS_INIT_PROGRESS": "1"} if machine else {})
+                init_progress.begin("a")
+                init_progress.up_to_date("nothing changed")
+            self.assertIn(expected, output.getvalue())
+        init_progress.stop()
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            init_progress.up_to_date("plain")
+        self.assertEqual(output.getvalue(), "plain\n")
 
     def test_sudo_password_notice(self):
         init_progress.start([], environment={"LUDUS_INIT_PROGRESS": "1"})
@@ -160,6 +185,8 @@ class PlanTests(unittest.TestCase):
             stack.enter_context(patch.object(init_editor.platform, "system", return_value="Linux"))
             stack.enter_context(patch.object(init_editor.platform, "machine", return_value="x86_64"))
             stack.enter_context(patch.object(init_editor.cmake_targets, "query_codemodel"))
+            # The shader tool download runs in the background; never start it here.
+            stack.enter_context(patch.object(init_editor, "BackgroundCommands"))
             stack.enter_context(patch.object(init_editor, "refresh_editor_engine_installs",
                                              side_effect=lambda *_: init_progress.begin("engine_refresh")))
             stack.enter_context(patch.object(init_options, "save_options"))
@@ -263,6 +290,7 @@ FAKE_RUNNER = textwrap.dedent("""
     time.sleep(0.2)
     print("+ sudo apt-get update", flush=True)
     print("LUDUS_PROGRESS 2 3 Conan install (all native presets)", flush=True)
+    print("LUDUS_PROGRESS_UP_TO_DATE Conan dependencies already match conan.lock", flush=True)
     print("LUDUS_PROGRESS_DETAIL 1 4 conan install linux-clang-development", flush=True)
     if outcome == "hang":
         import subprocess
@@ -310,6 +338,7 @@ class WindowTests(unittest.TestCase):
                 observed["retry"] = (str(window.initialize_button.cget("text")),
                                      str(window.initialize_button.cget("state")))
                 observed["log_visible"] = window.log_frame.winfo_ismapped()
+                observed["durations"] = [str(duration.cget("text")) for _icon, _label, duration in window.step_rows]
                 window.window.quit()
             else:
                 window.window.after(100, close_when_done)
@@ -325,6 +354,9 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(window.progress.outcome, init_progress.DONE)
         self.assertIn("Ludus initialization complete", observed["outcome"])
         self.assertEqual([step.status for step in window.progress.steps], [init_progress.DONE] * 3)
+        # A skipped step says so instead of showing a near-zero time.
+        self.assertEqual(observed["durations"][1], init_progress.UP_TO_DATE_LABEL)
+        self.assertNotEqual(observed["durations"][0], init_progress.UP_TO_DATE_LABEL)
 
     def test_failure_shows_error_and_offers_retry(self):
         code, window, observed = self.run_window("fail")

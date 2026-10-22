@@ -477,7 +477,9 @@ class SetupWindow:
             if step.started_at is not None:
                 finished = step.finished_at if step.finished_at is not None else (
                     now if step.status == init_progress.RUNNING else None)
-                if finished is not None:
+                if step.is_up_to_date and step.status != init_progress.FAILED:
+                    duration.configure(text=init_progress.UP_TO_DATE_LABEL)
+                elif finished is not None:
                     duration.configure(text=init_progress.format_elapsed(finished - step.started_at))
         if self.finished_at is not None:
             return

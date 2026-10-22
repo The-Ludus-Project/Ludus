@@ -33,6 +33,7 @@ def main():
     parser.add_argument('--ninja', type=Path, default=ROOT / 'out/host-tools/venv/bin/ninja')
     parser.add_argument('--compiler', type=Path, default=ROOT / 'out/shader-tools/slang/bin/slangc')
     parser.add_argument('--validator', type=Path, default=ROOT / 'out/shader-tools/spirv-tools/usr/bin/spirv-val')
+    parser.add_argument('--spirv-cross', type=Path, default=ROOT / 'out/shader-tools/spirv-cross/bin/spirv-cross')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='ludus-shader-', dir='/tmp') as directory:
         root = Path(directory)
@@ -75,7 +76,8 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             command = [str(args.cmake), '-S', str(recipes), '-B', str(root / 'recipe-build'), '-G', 'Ninja',
                 '-DCMAKE_MAKE_PROGRAM=' + str(args.ninja), '-DPython3_EXECUTABLE=' + sys.executable,
                 '-DCMAKE_CXX_COMPILER=' + str(ROOT / 'out/host-tools/bin/clang++'),
-                '-DLUDUS_SLANG_COMPILER=' + str(args.compiler), '-DLUDUS_SHADER_WORKER_SOCKET=' + str(endpoint)]
+                '-DLUDUS_SLANG_COMPILER=' + str(args.compiler), '-DLUDUS_SHADER_WORKER_SOCKET=' + str(endpoint),
+                '-DLUDUS_SPIRV_CROSS=' + str(args.spirv_cross)]
             if sys.platform != 'darwin':
                 command += ['-DLUDUS_SPIRV_VALIDATOR=' + str(args.validator)]
             configured = subprocess.run(command, capture_output=True, text=True)
@@ -90,6 +92,7 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             template = (bound / 'main.lushader.json.in').read_text()
             (bound / 'main.lushader.json').write_text(template.replace('@RG2_TEST_PROFILES@', json.dumps(profiles)))
             bound_options = dict(helper=ROOT / 'cmake/shaders', compiler=args.compiler)
+            bound_options['spirv_cross'] = args.spirv_cross
             # The shared helper's lock files are installed beside it; stage the
             # same verified helper bundle used by the normal build adapter.
             bound_helper = root / 'bound-helper'
@@ -103,6 +106,7 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             # Mirror the installed helper bundle with its renderer/math/RHI-owned sources.
             for relative in ('modules/graphics/renderer/shaders', 'modules/foundation/math/shaders',
                              'modules/graphics/rhi/shaders',
+                             'modules/content/render_graph_format/include/ludus/content/render_graph_format',
                              'modules/graphics/renderer/include/ludus/graphics/renderer'):
                 for source_file in (ROOT / relative).iterdir():
                     if source_file.suffix in ('.slang', '.h') or source_file.name == 'recipes.json':
@@ -121,6 +125,23 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
                 offline_ray = render_graph_reload.rebuild(manifest, root / (fixture + '-offline'),
                     root / (fixture + '-offline.lurgrt'), **bound_options)
                 assert native_ray['runtime']['interface_identity'] == offline_ray['runtime']['interface_identity']
+                closest = ray_sources / 'main_shaders/closest.slang'
+                original_closest = closest.read_text()
+                closest.write_text('#define LUDUS_BENCH_MACRO 1\n' + original_closest)
+                edited_ray = render_graph_reload.rebuild(manifest, root / (fixture + '-native'),
+                    root / (fixture + '-native.lurgrt'), worker_socket=str(endpoint), **bound_options)
+                assert edited_ray['build']['cache_misses'] == 1
+                assert edited_ray['build']['cache_hits'] == native_ray['build']['cache_misses'] - 1
+                published_ray = (root / (fixture + '-native.lurgrt')).read_bytes()
+                closest.write_text('invalid shader source')
+                try:
+                    render_graph_reload.rebuild(manifest, root / (fixture + '-native'),
+                        root / (fixture + '-native.lurgrt'), worker_socket=str(endpoint), **bound_options)
+                except ToolingError:
+                    pass
+                else:
+                    raise AssertionError('Broken native ray callback was accepted')
+                assert (root / (fixture + '-native.lurgrt')).read_bytes() == published_ray
             native_bound = render_graph_reload.rebuild(bound / 'main.lushader.json', root / 'bound-native', root / 'bound-native.lurgrt',
                 worker_socket=str(endpoint), **bound_options)
             legacy_bound = render_graph_reload.rebuild(bound / 'main.lushader.json', root / 'bound-legacy', root / 'bound-legacy.lurgrt', **bound_options)

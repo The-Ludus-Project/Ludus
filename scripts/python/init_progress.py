@@ -9,6 +9,8 @@ and the runner prints machine-readable lines instead::
     LUDUS_PROGRESS_DETAIL <done> <total> <text>    progress inside the step
     LUDUS_PROGRESS_NOTE <text>                     a transient notice, such as a
                                                    sudo password prompt
+    LUDUS_PROGRESS_UP_TO_DATE <text>               the current step found its inputs
+                                                   unchanged and skipped its work
 
 ``SetupProgress`` folds those lines, and Ninja's ``[done/total]`` status lines,
 into the state the window displays. It has no Tk dependency so it can be tested
@@ -31,6 +33,8 @@ PROGRESS_ENVIRONMENT = "LUDUS_INIT_PROGRESS"
 STEP_MARKER = "LUDUS_PROGRESS"
 DETAIL_MARKER = "LUDUS_PROGRESS_DETAIL"
 NOTE_MARKER = "LUDUS_PROGRESS_NOTE"
+UP_TO_DATE_MARKER = "LUDUS_PROGRESS_UP_TO_DATE"
+UP_TO_DATE_LABEL = "up to date"
 
 # Ninja prints "[12/345] Building CXX object ..." for every edge when its
 # output is not a terminal.
@@ -40,6 +44,7 @@ ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 STEP_LINE = re.compile(r"^" + STEP_MARKER + r" (\d+) (\d+) (.+)$")
 DETAIL_LINE = re.compile(r"^" + DETAIL_MARKER + r" (\d+) (\d+) ?(.*)$")
 NOTE_LINE = re.compile(r"^" + NOTE_MARKER + r" (.+)$")
+UP_TO_DATE_LINE = re.compile(r"^" + UP_TO_DATE_MARKER + r" ?(.*)$")
 ERROR_PREFIX = "error: "
 COMPLETION_PREFIX = "Ludus initialization"
 
@@ -64,8 +69,6 @@ def native_plan(args, *, system: str | None = None, environment=None) -> list[St
     single = args.preset_only and not validating
     steps.append(Step("host_tools", "Installing pinned CMake, Ninja and Conan"))
     steps.append(Step("conan", "Conan install" + (" (" + args.preset + ")" if single else " (all native presets)")))
-    if with_editor and args.with_editor_preview:
-        steps.append(Step("preview_tools", "Fetching pinned shader tools"))
     steps.append(Step("cmake_caches", "Checking CMake caches"))
     if args.with_rad_debugger:
         steps.append(Step("rad", "Building RAD Debugger"))
@@ -75,6 +78,10 @@ def native_plan(args, *, system: str | None = None, environment=None) -> list[St
     if with_editor:
         if not args.no_system_install:
             steps.append(Step("editor_packages", "Installing Qt for the editor" + (" (Homebrew)" if system == "Darwin" else "")))
+        if args.with_editor_preview:
+            # Fetched in the background from the Conan step on; this step
+            # waits for the download and verification to finish.
+            steps.append(Step("preview_tools", "Fetching pinned shader tools"))
         steps.append(Step("editor_configure", "CMake configure (editor)"))
         steps.append(Step("editor_build", "Building the editor"))
         if not getattr(args, "skip_engine_refresh", False):
@@ -155,6 +162,13 @@ class Reporter:
             f"Setup stopped at step {self.current}/{len(self.steps)}: {step.label} (after {self.elapsed()}).", painter),
             flush=True)
 
+    def up_to_date(self, text: str) -> None:
+        """Say that the current step skipped its work because its inputs are unchanged."""
+        if self.machine_readable:
+            self.write(f"{UP_TO_DATE_MARKER} {text}", flush=True)
+        else:
+            self.write(init_terminal.up_to_date(text, init_terminal.painter_for()), flush=True)
+
     def detail(self, done: int, total: int, text: str) -> None:
         if self.machine_readable:
             self.write(f"{DETAIL_MARKER} {done} {total} {text}", flush=True)
@@ -194,6 +208,14 @@ def begin(key: str) -> None:
     """Announce step ``key`` of the current plan; without a plan (bootstrap, tests) do nothing."""
     if _active is not None:
         _active.begin(key)
+
+
+def up_to_date(text: str) -> None:
+    """Report that the current step is skipped; without a plan just print ``text``."""
+    if _active is not None:
+        _active.up_to_date(text)
+    else:
+        print(text, flush=True)
 
 
 def detail(done: int, total: int, text: str) -> None:
@@ -242,6 +264,7 @@ class StepState:
     status: str = PENDING
     started_at: float | None = None
     finished_at: float | None = None
+    is_up_to_date: bool = False
 
 
 @dataclass
@@ -297,6 +320,12 @@ class SetupProgress:
         if match:
             self.note = match.group(1)
             return False
+        match = UP_TO_DATE_LINE.match(line)
+        if match:
+            if self.current >= 0:
+                self.steps[self.current].is_up_to_date = True
+            self.last_line = match.group(1)
+            return True
         if not line.strip():
             return True
         self.note = ""

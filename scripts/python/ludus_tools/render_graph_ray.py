@@ -5,6 +5,7 @@ stage assignment, launch extent and publication. No CPU transport is selected.
 """
 from copy import deepcopy
 import re
+from . import render_graph_buffers as buffers
 
 TECHNIQUE = 'RendererTriangles.RayTracing'
 STAGES = ('ray_generation', 'miss', 'closest_hit')
@@ -16,7 +17,7 @@ STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
 # One owner for build admission and the editor controls. Editor CMake reads this
-# data through runpy at configure time; no Python interpreter enters the UI.
+# data through a module import at configure time; no Python interpreter enters the UI.
 SCENE_QUERY_LIMITS = {
     'MIN_SURFACE_QUERIES': 1,
     'MAX_SURFACE_QUERIES': 8,
@@ -57,24 +58,33 @@ def lower(node, where, graph):
                        field='inputs', expected=f'one {kind} input', actual=f'{len(choices)} inputs',
                        repair=f'Add or retain exactly one {kind} input in the pipeline editor.')
         mappings[aspect] = choices[0]
+    storage = {name for name, kind in types.items() if kind == 'Buffer'}
+    graph._require(len(storage) <= buffers.MAX_BUFFERS, 'Capacity', where, 'at most two Buffer inputs supported')
+    mappings.update({'buffer:' + name: name for name in storage})
     unsupported = sorted(set(types) - set(mappings.values()))
     descriptions = ', '.join(f"'{identity}' ({types[identity]})" for identity in unsupported)
     graph._require(not unsupported, 'Capability', where,
                    f"Unsupported ray pipeline inputs: {descriptions}. This triangle ray profile accepts only "
-                   'Scene, View and ColorTexture. Remove the extra input declarations and their wires; '
+                   'Scene, View, ColorTexture and up to two Buffers. Remove the extra input declarations and their wires; '
                    'if exposed by a subgraph, also remove the matching interface inputs and parent wires.',
                    port=unsupported[0] if unsupported else None, direction='input',
                    expected='Scene, View, ColorTexture', actual=descriptions,
                    repair='Remove unsupported pipeline inputs and their wires; also update exposed subgraph interfaces.')
-    graph._require(len(node['outputs']) == 1, 'Capability', where,
-                   f"Triangle ray profile requires one color output; found {len(node['outputs'])}. "
-                   'Keep one ColorTexture writable resource in the pipeline editor.')
-    output = node['outputs'][0]
-    graph._require(output['type'] == 'ColorTexture' and output['target'] == mappings['color'] and
-                   output['load'] == 'Clear' and output['store'] == 'Store', 'Capability', where,
-                   'ray output must Clear/Store its ColorTexture target')
+    colors = [port for port in node['outputs'] if port['type'] == 'ColorTexture']
+    graph._require(len(colors) == 1, 'Capability', where, 'triangle ray profile requires one color output')
+    output = colors[0]
+    graph._require(output['target'] == mappings['color'] and output['load'] == 'Clear' and output['store'] == 'Store',
+                   'Capability', where, 'ray output must Clear/Store its ColorTexture target')
+    outputs = {'color': output['id']}
+    for port in node['outputs']:
+        if port is output:
+            continue
+        graph._require(port['type'] == 'Buffer' and port['target'] in storage and
+                       port['load'] == 'Load' and port['store'] == 'Store', 'Capability', where,
+                       'writable structured buffers require Load/Store on a paired Buffer input')
+        outputs['buffer:' + port['target']] = port['id']
     record = {'id': node['id'], 'kind': 'RayTracing', 'color_load': output['load'], 'color_store': output['store']}
-    return record, mappings, {'color': output['id']}
+    return record, mappings, outputs
 
 
 def validate_program(program, build):
@@ -83,13 +93,15 @@ def validate_program(program, build):
     scene = {'ray_generation': ('RayLaunch', 'Radiance'), 'miss': ('Ray', 'ScenePayload'),
              'closest_hit': ('SurfaceHit', 'ScenePayload')}
     signature = (program['input'], program['output'])
-    build.require(signature in (legacy[program['stage']], scene[program['stage']]) and program['bindings'] == [],
+    build.require(signature in (legacy[program['stage']], scene[program['stage']]),
                   'Schema', program['id'], 'ray function interface differs from declared profile')
 
 
-def expand_programs(programs, technique, snapshot, helper, build):
+def expand_programs(programs, technique, snapshot, helper, build, schemas=None):
     """Capture the engine kernel and all three functions in one linked compute entry."""
     selected = {stage: programs[technique[stage]] for stage in STAGES}
+    storage = buffers.merge_bindings(selected, build)
+    storage_source = buffers.declarations(storage, schemas or {}, build)
     recipes = build.document(build.read(helper / 'recipes.json'), 'renderer recipes')
     compute_recipe = recipes['renderer_gpu_preview']
     image_recipe = recipes['renderer_gpu_preview_image']
@@ -106,6 +118,7 @@ def expand_programs(programs, technique, snapshot, helper, build):
 static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
 #include "_ludus_ray/ray_shader.slang"
 '''
+    wrapper += storage_source
     for source in sorted({program['source'] for program in selected.values()}):
         wrapper += '#include "' + source + '"\n'
     wrapper += '''float3 EvaluateGraphRay(uint pixel)
@@ -153,10 +166,10 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     wrapper = wrapper.replace('_ludus_ray/renderer_gpu_preview.slang', '_ludus_ray/' + compute_recipe['source'])
     wrapper = wrapper.replace('ComputeMain(positionPixel)', compute_recipe['compute'] + '(positionPixel)')
     if technique.get('scene_interface') is not None:
-        wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe)
+        wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe, storage_source)
     result = {identity: deepcopy(program) for identity, program in programs.items() if program['stage'] not in STAGES}
     result[COMPUTE_ID] = {'id': COMPUTE_ID, 'stage': 'compute', 'source': selected['ray_generation']['source'],
-                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True}
+                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}}
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
         # Use the same renderer-owned image recipe; its interface is validated by the runtime.
         source = '#include "_ludus_ray/' + image_recipe['source'] + '"\n'
@@ -169,16 +182,46 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     return result
 
 
+def capture_program_closure(program, snapshot, build):
+    """Capture literal roots in our generated wrapper and their bounded includes.
+
+    The image recipe has no dependency on authored ray callbacks. Engine helpers
+    remain conservative: shared C++/Slang headers contain native-only includes
+    outside the authored include grammar. All captured engine helpers participate
+    in each ray key; authored roots use Snapshot's normal validated closure.
+    """
+    roots = re.findall(r'^\s*#include "([^"\n]+)"', program['ray_wrapper'], re.M)
+    build.require(roots, 'Source', program['id'], 'generated ray wrapper has no source roots')
+    engine = set(snapshot.external)
+    authored = {path for root in roots if root not in engine for path in snapshot.shader_closure(root)}
+    return sorted(engine | authored)
+
+
 def check_interface(program, result, build):
     """Validate the frozen renderer ABI from independently reflected artifacts."""
     interface = result['interface']
     entries = sorted(interface['entries'], key=lambda value: value['binding'])
     if program['id'] == COMPUTE_ID:
         build.require(interface.get('workgroup') == [64, 1, 1] and interface['inputs'] == [] and
-                      [(entry['binding'], entry['kind'], entry['size']) for entry in entries] ==
+                      [(entry['binding'], entry['kind'], entry['size']) for entry in entries if entry['binding'] < buffers.FIRST_SLOT] ==
                       [(0, 'UniformBuffer', 224), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
                        (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)],
                       'ShaderInterface', program['id'], 'ray query reflection differs from the native renderer ABI')
+        declared = program.get('storage_bindings', [])
+        extra = [entry for entry in entries if entry['binding'] >= buffers.FIRST_SLOT]
+        build.require(len(extra) == len(declared) and all(
+            entry['binding'] == binding['slot'] and entry['name'] == binding['id'] and
+            entry['kind'] == ('StorageRead' if binding['access'] == 'Read' else 'StorageReadWrite') and
+            0 < entry['size'] <= buffers.MAX_STRIDE for entry, binding in zip(extra, declared)),
+            'ShaderInterface', program['id'], 'structured buffer reflection differs from declared ray bindings')
+        for entry, binding in zip(extra, declared):
+            schema = program['storage_schemas'][binding['schema']]
+            expected = [{'name': field['id'], 'scalar': 'uint32' if field['type'].startswith('UInt') else
+                         'int32' if field['type'].startswith('Int') else 'float32',
+                         'width': build.STORAGE_SHAPES[field['type']][1]} for field in schema['fields']]
+            reflected = [{key: field[key] for key in ('name', 'scalar', 'width')} for field in entry.get('fields', [])]
+            build.require(reflected == expected, 'ShaderInterface', binding['id'],
+                          'structured buffer fields differ from the declared Storage schema')
     elif program['id'] == IMAGE_VERTEX_ID:
         build.require([(entry['binding'], entry['kind'], entry['size']) for entry in entries] == [(0, 'UniformBuffer', 16)]
                       and [(value['location'], value['format']) for value in interface['inputs']] == [(0, 'Float2'), (1, 'Float4')],
@@ -187,7 +230,7 @@ def check_interface(program, result, build):
         build.require(entries == [] and interface['inputs'] == [], 'ShaderInterface', program['id'], 'ray image fragment resources are unexpected')
 
 
-def scene_wrapper(selected, interface, snapshot, build, recipe):
+def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source=''):
     """Link ordinary callbacks; the user raygen is the only sample/integrator driver."""
     expected = {'ray_generation': ('RayLaunch', 'Radiance'), 'miss': ('Ray', 'ScenePayload'),
                 'closest_hit': ('SurfaceHit', 'ScenePayload')}
@@ -202,6 +245,7 @@ def scene_wrapper(selected, interface, snapshot, build, recipe):
 #include "_ludus_ray/renderer_gpu_preview.slang"
 #include "_ludus_ray/scene_shader.slang"
 '''
+    wrapper += storage_source
     wrapper += '#include "' + interface['payload'] + '"\n'
     wrapper += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
     for source in sorted({program['source'] for program in selected.values()}):

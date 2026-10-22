@@ -216,7 +216,8 @@ RenderGraphDomain GetRenderGraphDomain(const QString& kind)
     {
         return RenderGraphDomain::SceneView;
     }
-    if (kind == QStringLiteral("Target") || kind == QStringLiteral("Export") || kind == QStringLiteral("RenderSize"))
+    if (kind == QStringLiteral("StructuredBuffer") || kind == QStringLiteral("Target") ||
+        kind == QStringLiteral("Export") || kind == QStringLiteral("RenderSize"))
     {
         return RenderGraphDomain::Resource;
     }
@@ -250,6 +251,10 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
     {
         ports.Inputs = {{QStringLiteral("target"), node.value(QStringLiteral("target_type")).toString()}};
         ports.Outputs = {{QStringLiteral("view"), QStringLiteral("View")}};
+    }
+    else if (kind == QStringLiteral("StructuredBuffer"))
+    {
+        ports.Outputs = {{QStringLiteral("buffer"), QStringLiteral("Buffer")}};
     }
     else if (kind == QStringLiteral("Target"))
     {
@@ -937,7 +942,8 @@ void RenderGraphCanvas::refreshFeedback()
                                                         : QStringLiteral("\nSource: ") + source;
                 }
                 if (port.Type == QStringLiteral("ColorTexture") || port.Type == QStringLiteral("DepthTexture") ||
-                    port.Type == QStringLiteral("Texture") || port.Type == QStringLiteral("RenderSize"))
+                    port.Type == QStringLiteral("Texture") || port.Type == QStringLiteral("RenderSize") ||
+                    port.Type == QStringLiteral("Buffer"))
                 {
                     if (resourceCache.contains(source) == false)
                     {

@@ -1,4 +1,4 @@
-add_library(ludus_graphics_renderer STATIC src/render_graph.cpp src/render_graph_ray.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp)
+add_library(ludus_graphics_renderer STATIC src/render_graph.cpp src/render_graph_ray.cpp src/render_graph_storage.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
 set_target_properties(ludus_graphics_renderer PROPERTIES EXPORT_NAME GraphicsRenderer)
 target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
@@ -61,7 +61,7 @@ install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADI
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
-    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/reference_backend.cpp src/render_graph.cpp src/render_graph_ray.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp
+    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/reference_backend.cpp src/render_graph.cpp src/render_graph_ray.cpp src/render_graph_storage.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp
         ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
     target_include_directories(ludus_renderer_tests PRIVATE include ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationStrings Ludus::RenderGraphFormat Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationThreading Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
@@ -187,6 +187,17 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_scene_ray_RUNTIME_PACKAGE PARENT_PATH scene_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_RAY_DIRECTORY="${scene_ray_package_directory}")
+    set(storage_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/storage_ray")
+    set(storage_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/storage_ray")
+    file(COPY "${scene_ray_source}/" DESTINATION "${storage_ray_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${storage_ray_source}/main.lurender.json" "${storage_ray_staged}/main.lurender.json" COPYONLY)
+    configure_file("${storage_ray_source}/reservoir.slang" "${storage_ray_staged}/main_shaders/reservoir.slang" COPYONLY)
+    configure_file("${storage_ray_source}/main.lushader.json.in" "${storage_ray_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_storage_ray
+        MANIFEST "${storage_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_storage_ray_RUNTIME_PACKAGE PARENT_PATH storage_ray_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
     add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests)
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
 endif()

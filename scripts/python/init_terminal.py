@@ -97,6 +97,11 @@ def command_echo(text: str, painter: Painter) -> str:
     return painter.paint(f"+ {text}", "dim")
 
 
+def up_to_date(text: str, painter: Painter) -> str:
+    """The line a step prints when it skips work whose inputs have not changed."""
+    return painter.paint(f"Up to date: {text}", "dim")
+
+
 def heading(text: str, painter: Painter) -> str:
     return painter.paint(text, "bold")
 

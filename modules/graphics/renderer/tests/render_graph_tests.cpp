@@ -1,3 +1,4 @@
+#include "../src/internal/render_graph_storage.h"
 #include "internal/lifecycle.h"
 #include "reference_raster.h"
 
@@ -977,6 +978,88 @@ TEST_CASE("pending resize and failed attachment creation preserve the drawable o
     CHECK(fixture.Graph.GetExport(0, output, aspect) == rhi::RasterStatus::Ready);
     REQUIRE(fixture.Graph.GetResourceDescription(0, drawing) == true);
     CHECK(drawing.Width == 193);
+}
+
+TEST_CASE("Graph storage allocates distinct zeroed buffers and preserves them until reset", "[render-graph][storage]")
+{
+    GraphFixture fixture;
+    // The reference backend retains bytes from earlier devices for retirement tests.
+    // This fresh device has no buffers; discard stale snapshots before checking uploads.
+    for (usize slot = 0; slot < rhi::reference::BufferBytes.GetSize(); ++slot)
+    {
+        rhi::reference::BufferBytes[slot].Clear();
+    }
+    constexpr usize BUFFER_COUNT = 2;
+    constexpr uint32 STRIDE = 32;
+    constexpr uint32 WIDTH = 3;
+    constexpr uint32 HEIGHT = 2;
+    constexpr usize PIXEL_BYTES = usize{WIDTH} * HEIGHT * STRIDE;
+    constexpr usize FIXED_BYTES = usize{2} * STRIDE;
+    const StaticArray<format::StorageBuffer, BUFFER_COUNT> descriptions{
+        {{format::FIRST_STORAGE_SLOT, STRIDE, 0, 0}, {format::FIRST_STORAGE_SLOT + 1, STRIDE, 2, 1}}};
+    renderer::internal::RenderGraphStorage storage;
+    REQUIRE(storage.Initialize(fixture.Device,
+                               {descriptions.GetData(), descriptions.GetSize()},
+                               WIDTH,
+                               HEIGHT,
+                               {PIXEL_BYTES, PIXEL_BYTES + FIXED_BYTES}) == rhi::RasterStatus::Ready);
+    CHECK(storage.GetCount() == BUFFER_COUNT);
+    CHECK(storage.GetBytes() == PIXEL_BYTES + FIXED_BYTES);
+    const rhi::RasterBindingResource first = storage.GetBinding(0);
+    const rhi::RasterBindingResource second = storage.GetBinding(1);
+    CHECK(first.Size == PIXEL_BYTES);
+    CHECK(second.Size == FIXED_BYTES);
+    CHECK(first.Binding == format::FIRST_STORAGE_SLOT);
+    CHECK(second.Binding == format::FIRST_STORAGE_SLOT + 1);
+    usize bufferCount = 0;
+    for (usize slot = 0; slot < rhi::reference::BufferBytes.GetSize(); ++slot)
+    {
+        const Array<uint8>& bytes = rhi::reference::BufferBytes[slot];
+        if (bytes.GetSize() == PIXEL_BYTES || bytes.GetSize() == FIXED_BYTES)
+        {
+            ++bufferCount;
+            for (const uint8 value : bytes)
+            {
+                CHECK(value == 0);
+            }
+        }
+    }
+    CHECK(bufferCount == BUFFER_COUNT);
+    rhi::OrderedGraph graph;
+    REQUIRE(rhi::CreateOrderedGraph(fixture.Device, graph) == rhi::RasterStatus::Ready);
+    StaticArray<rhi::GraphUse, BUFFER_COUNT> uses;
+    REQUIRE(storage.AppendUses(graph, {uses.GetData(), uses.GetSize()}) == rhi::RasterStatus::Ready);
+    CHECK(uses[0].Access == rhi::GraphAccessMode::StorageReadWrite);
+    CHECK(uses[1].Access == rhi::GraphAccessMode::StorageRead);
+    REQUIRE(rhi::DiscardOrderedGraph(fixture.Device, graph) == rhi::RasterStatus::Ready);
+    REQUIRE(storage.Poll() == rhi::RasterStatus::Ready);
+    CHECK(storage.GetBinding(0).Size == first.Size);
+    storage.Reset();
+    CHECK(storage.GetBytes() == 0);
+    CHECK(storage.GetCount() == 0);
+    CHECK(rhi::GetStatus(fixture.Device, first.Buffer) == rhi::RasterStatus::InvalidHandle);
+}
+
+TEST_CASE("Graph storage rejects invalid descriptors and budgets before allocation", "[render-graph][storage]")
+{
+    GraphFixture fixture;
+    constexpr uint32 STRIDE = 32;
+    constexpr usize BUDGET = 1024;
+    renderer::internal::RenderGraphStorage storage;
+    format::StorageBuffer description{format::FIRST_STORAGE_SLOT, STRIDE, 2, 0};
+    REQUIRE(storage.Initialize(fixture.Device, {&description, 1}, 1, 1, {STRIDE, BUDGET}) ==
+            rhi::RasterStatus::CapacityExceeded);
+    REQUIRE(storage.Initialize(fixture.Device, {&description, 1}, 1, 1, {BUDGET, STRIDE}) ==
+            rhi::RasterStatus::CapacityExceeded);
+    description.Stride = 0;
+    CHECK(storage.Initialize(fixture.Device, {&description, 1}, 1, 1, {BUDGET, BUDGET}) ==
+          rhi::RasterStatus::InvalidDescription);
+    description.Stride = STRIDE;
+    description.Slot = format::FIRST_STORAGE_SLOT - 1;
+    CHECK(storage.Initialize(fixture.Device, {&description, 1}, 1, 1, {BUDGET, BUDGET}) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(storage.GetCount() == 0);
+    CHECK(storage.GetBytes() == 0);
 }
 
 TEST_CASE("independent opaque shader pairs draw both retained passes", "[render-graph]")

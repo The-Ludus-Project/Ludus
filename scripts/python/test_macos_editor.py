@@ -149,6 +149,23 @@ class SetupTests(unittest.TestCase):
                 self.assertIn(f"-DQt6_DIR={qt_base}/lib/cmake/Qt6", configure.call_args.args[2])
                 self.assertIn(f"-DQt6Quick_DIR={qt_quick}/lib/cmake/Qt6Quick", configure.call_args.args[2])
 
+    def test_installed_homebrew_qt_skips_brew_install(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            qt_base = Path(temporary) / "Qt Base"
+            qt_quick = Path(temporary) / "Qt Declarative"
+            (qt_base / "lib/cmake/Qt6").mkdir(parents=True)
+            (qt_quick / "lib/cmake/Qt6Quick").mkdir(parents=True)
+            with patch.object(platform, "system", return_value="Darwin"), \
+                 patch.object(platform, "machine", return_value="arm64"), \
+                 patch.object(init_editor.shutil, "which", return_value="/brew"), \
+                 patch.object(engine, "capture_command_quiet", side_effect=[(0, str(qt_base)), (0, str(qt_quick))]), \
+                 patch.object(engine, "run") as run, patch.object(engine, "cmake_configure") as configure, \
+                 patch.object(engine, "cmake_build"), patch.object(init_editor.cmake_targets, "query_codemodel"):
+                init_editor.setup_editor(self.args(), engine)
+                # `brew install` would refresh Homebrew's index on every warm run.
+                run.assert_not_called()
+                self.assertIn(f"-DQt6Quick_DIR={qt_quick}/lib/cmake/Qt6Quick", configure.call_args.args[2])
+
     def test_preview_install_includes_qt_quick(self):
         with patch.object(platform, "system", return_value="Darwin"), patch.object(platform, "machine", return_value="arm64"), \
              patch.object(init_editor.shutil, "which", return_value="/brew"), \

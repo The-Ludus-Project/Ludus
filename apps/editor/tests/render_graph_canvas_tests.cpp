@@ -24,6 +24,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeySequence>
+#include <QLineEdit>
 #include <QMenu>
 #include <QNativeGestureEvent>
 #include <QPlainTextEdit>
@@ -1193,4 +1194,64 @@ TEST_CASE("field diagnostics open the shared canvas editor at the highlighted co
     CHECK(hasHighlightedField == true);
     CHECK(workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"))->isHidden() == true);
     CHECK(workspace.GetDocument().GetRevision() == revision);
+}
+
+TEST_CASE("structured buffer fields edit on canvas with Properties hidden and undo", "[editor][render-graph][storage]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kindsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    REQUIRE(kindsOrNull != nullptr);
+    kindsOrNull->setCurrentText(QStringLiteral("StructuredBuffer"));
+    workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
+    const QString identity = QStringLiteral("structuredbuffer");
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, identity) == true);
+    RenderGraphNodePorts ports;
+    REQUIRE(GetRenderGraphNodePorts(workspace.GetDocument(),
+                                    QJsonObject{{QStringLiteral("kind"), QStringLiteral("StructuredBuffer")}},
+                                    ports) == true);
+    REQUIRE(ports.Outputs.size() == 1);
+    CHECK(ports.Outputs[0].Type == QStringLiteral("Buffer"));
+    workspace.resize(1200, 800);
+    workspace.show();
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.Rebuild();
+    QTimer::singleShot(0, &canvas, [&canvas, propertiesOrNull]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* editOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+        REQUIRE(editOrNull != nullptr);
+        QTimer::singleShot(0, &canvas, [propertiesOrNull]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            CHECK(propertiesOrNull->isHidden() == true);
+            QSpinBox* strideOrNull = dialogOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphField_stride"));
+            REQUIRE(strideOrNull != nullptr);
+            strideOrNull->setValue(32);
+            Q_EMIT strideOrNull->editingFinished();
+            QLineEdit* countOrNull = dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphField_count"));
+            REQUIRE(countOrNull != nullptr);
+            countOrNull->setText(QStringLiteral("1024"));
+            Q_EMIT countOrNull->editingFinished();
+            dialogOrNull->accept();
+        });
+        menuOrNull->close();
+        editOrNull->trigger();
+    });
+    const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(identity) + QPointF(20, 10));
+    QContextMenuEvent event(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &event);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("1024") == true);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("ColorTarget") == true);
+    workspace.Redo();
+    REQUIRE(workspace.Save() == true);
 }

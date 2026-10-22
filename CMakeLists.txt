@@ -589,6 +589,7 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     scripts/python/ludus_tools/render_graph_diagnostics.py
     scripts/python/ludus_tools/render_graph_build.py scripts/python/ludus_tools/render_graph_execution.py
     scripts/python/ludus_tools/render_graph_pipeline.py scripts/python/ludus_tools/render_graph_ray.py
+    scripts/python/ludus_tools/render_graph_buffers.py
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/ludus_tools")
 # Gameplay project helper + host/shipping main templates (project-live-reload).
 if(NOT EMSCRIPTEN)
