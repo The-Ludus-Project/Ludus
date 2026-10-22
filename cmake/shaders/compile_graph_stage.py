@@ -126,7 +126,7 @@ def compile_graph_stage(args, lock):
                '-reflection-json', str(reflection), '-depfile', str(depfile)]
     if native_rays:
         command += ['-capability', 'spvRayQueryKHR']
-    if getattr(args, 'worker_socket', None) and not native_rays:
+    if getattr(args, 'worker_socket', None):
         from native_worker import compile_stage
         compile_stage(args.worker_socket, args, lock, intermediate, reflection, depfile)
     else:

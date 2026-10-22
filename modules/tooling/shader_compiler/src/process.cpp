@@ -49,7 +49,7 @@ bool Process(Compiler& inoutCompiler, BorrowedView<const uint8> bytes, Array<uin
         bool isValid = root.Get("identity").Integer(request.Identity);
         result.Identity = request.Identity;
         isValid = isValid == true && root.Get("version").Integer(version) == true && version == PROTOCOL_VERSION &&
-                  root.Get("target").Integer(target) == true && target <= static_cast<uint8>(Target::Metal) &&
+                  root.Get("target").Integer(target) == true && target <= static_cast<uint8>(Target::SpirvRayQuery) &&
                   root.Get("stage").Integer(stage) == true && stage <= static_cast<uint8>(Stage::Compute) &&
                   root.Get("source").String(source) == true && root.Get("entry").String(entry) == true &&
                   files.Object() == true && files.MemberCount() <= MAX_SOURCE_FILES;

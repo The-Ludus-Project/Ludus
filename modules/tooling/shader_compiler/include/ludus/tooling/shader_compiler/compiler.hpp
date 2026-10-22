@@ -26,9 +26,10 @@ inline constexpr foundation::usize MAX_ENTRY_BYTES = 128;
 /// Supported portable targets; device-specific machine code belongs to the graphics driver.
 enum class Target : foundation::uint8
 {
-    Spirv, ///< Vulkan SPIR-V 1.3.
-    Wgsl,  ///< WebGPU WGSL.
-    Metal, ///< Metal shading language source.
+    Spirv,         ///< Vulkan SPIR-V 1.3.
+    Wgsl,          ///< WebGPU WGSL.
+    Metal,         ///< Metal shading language source.
+    SpirvRayQuery, ///< Vulkan SPIR-V 1.5 compute with spvRayQueryKHR; rejects raster stages.
 };
 /// Shader entry-point stage.
 enum class Stage : foundation::uint8
@@ -80,7 +81,7 @@ struct Result final
 /// Optional native compiler library. Does not initialize an engine, editor, device or window.
 /// Single-thread-affine: all operations and destruction use its creating thread.
 /// One global Slang session survives requests. Only the latest identical source snapshot
-/// reuses a module/session; changed bytes replace that session before loading sources.
+/// and ray-query profile reuse a module/session; changes replace it before loading sources.
 class Compiler final
 {
 public:
