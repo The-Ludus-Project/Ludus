@@ -1,0 +1,284 @@
+{
+  "version": 2,
+  "id": "Main",
+  "default": "Default",
+  "configurations": [
+    {
+      "id": "Default",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "visibility",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "Depth32Float",
+          "id": "depth",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "DepthTexture"
+        },
+        {
+          "id": "raster",
+          "kind": "GraphicsPipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "target": "depth",
+              "format": "Depth32Float",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "vertex",
+              "stage": "vertex",
+              "program": "Geometry"
+            },
+            {
+              "id": "fragment",
+              "stage": "fragment",
+              "program": "Color"
+            }
+          ],
+          "state": {
+            "topology": "TriangleList",
+            "cull": "None",
+            "front": "CounterClockwise",
+            "depth_compare": "Less",
+            "depth_write": true,
+            "blend": "Opaque",
+            "samples": 1
+          },
+          "invocation": {
+            "mode": "ColorAndDepth",
+            "vertex_layout": "RendererStatic",
+            "material": "DefaultOpaque",
+            "scene": "scene",
+            "view": "view"
+          }
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "visibilityOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "depthOutput",
+          "kind": "Export",
+          "type": "DepthTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "trace",
+          "kind": "RayTracingPipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "visibility",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "stage": "ray_generation",
+              "program": "Generate"
+            },
+            {
+              "id": "miss",
+              "stage": "miss",
+              "program": "Miss"
+            },
+            {
+              "id": "closest_hit",
+              "stage": "closest_hit",
+              "program": "Closest"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "raster.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "raster.view"
+        },
+        {
+          "from": "visibility.texture",
+          "to": "raster.color"
+        },
+        {
+          "from": "depth.texture",
+          "to": "raster.depth"
+        },
+        {
+          "from": "raster.color",
+          "to": "visibilityOutput.texture"
+        },
+        {
+          "from": "raster.depth",
+          "to": "depthOutput.texture"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "visibility.size"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "depth.size"
+        },
+        {
+          "from": "scene.scene",
+          "to": "trace.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "trace.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "trace.color"
+        },
+        {
+          "from": "raster.color",
+          "to": "trace.visibility"
+        },
+        {
+          "from": "raster.depth",
+          "to": "trace.depth"
+        },
+        {
+          "from": "trace.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        }
+      ]
+    }
+  ]
+}

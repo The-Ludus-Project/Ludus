@@ -578,6 +578,7 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
     job.Storage.Reset();
     static_cast<void>(rhi::Destroy(Device, job.VisibilityView));
     static_cast<void>(rhi::Destroy(Device, job.VisibilityDepthView));
+    job.VisibilityTexture = {};
     static_cast<void>(rhi::Destroy(Device, job.ImageBindings));
     static_cast<void>(rhi::Destroy(Device, job.NativeScene));
     static_cast<void>(rhi::Destroy(Device, job.NativeGeometry));

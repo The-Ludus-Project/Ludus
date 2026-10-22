@@ -5,6 +5,8 @@
 #include "rg2_scene_ray.h"
 #include "rg2_storage_ray.h"
 #include "rg2_visibility.h"
+#include "rg2_visibility_buffer_template.h"
+#include "rg2_visibility_secondary_rays_template.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
@@ -145,7 +147,7 @@ constexpr usize GetPixel(usize column, usize row) noexcept
 {
     return (row * WIDTH + column) * 4;
 }
-void ReadGraphFrame(GraphGpuFixture& inoutFixture)
+void ReadGraphFrame(GraphGpuFixture& inoutFixture, uint32 exportResource = 0)
 {
     rhi::SubmissionToken completion;
     REQUIRE(inoutFixture.Graph.Render(inoutFixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
@@ -158,7 +160,7 @@ void ReadGraphFrame(GraphGpuFixture& inoutFixture)
     REQUIRE(result == rhi::RasterStatus::Ready);
     rhi::TextureHandle texture;
     rhi::TextureAspect aspect;
-    REQUIRE(inoutFixture.Graph.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(inoutFixture.Graph.GetExport(exportResource, texture, aspect) == rhi::RasterStatus::Ready);
     rhi::ReadbackTicket ticket;
     result = rhi::RequestTextureReadback(inoutFixture.Device,
                                          texture,
@@ -1258,4 +1260,115 @@ TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale h
     CHECK(fixture.Pixels[center] == 0);
     CHECK(fixture.Pixels[center + 1] == 0);
     CHECK(fixture.Pixels[center + 2] == 0);
+}
+
+TEST_CASE("Built-in visibility templates preserve IDs and reconstruct reflected emitter hits",
+          "[render-graph][gpu][visibility-template]")
+{
+    GraphGpuFixture fixture;
+    bool hasSecondaryRays = false;
+    SECTION("visibility and depth exports") {}
+    SECTION("reconstructed surface and secondary rays")
+    {
+        hasSecondaryRays = true;
+    }
+    const PackageLocation location =
+        hasSecondaryRays == true
+            ? PackageLocation{LUDUS_RG3_VISIBILITY_SECONDARY_RAYS_TEMPLATE_DIRECTORY,
+                              "rg2_visibility_secondary_rays_template.lurgrt"}
+            : PackageLocation{LUDUS_RG3_VISIBILITY_BUFFER_TEMPLATE_DIRECTORY, "rg2_visibility_buffer_template.lurgrt"};
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        hasSecondaryRays == true
+            ? packages::rg2_visibility_secondary_rays_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                             shaders::renderer_composite::Fragment())
+            : packages::rg2_visibility_buffer_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                     shaders::renderer_composite::Fragment());
+    CheckSameStage(programs.ColorVertex, compiled.ColorVertex);
+    if (hasSecondaryRays == true)
+    {
+        CheckSameStage(programs.RayCompute, compiled.RayCompute);
+    }
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const auto wait = [&fixture](rhi::RasterStatus initial, const char* operation) {
+        INFO(operation);
+        rhi::RasterStatus status = initial;
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    wait(fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT), "initialize");
+    fixture.Cameras[0].OrthographicCamera = true;
+    constexpr usize MATERIAL_COUNT = 2;
+    StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> materials{};
+    materials[0].BaseColor = {1, 1, 1};
+    materials[1].Emission = {2, 1, 0};
+    materials[1].IsEmissionTwoSided = true;
+    StaticArray<renderer::RenderGraphMesh, MATERIAL_COUNT> meshes{};
+    StaticArray<renderer::RenderGraphItem, MATERIAL_COUNT> items{};
+    uint32 receiverBinding = 0;
+    uint32 emitterBinding = 1;
+    meshes[0] = fixture.Meshes[0];
+    meshes[0].MaterialBindings = {&receiverBinding, 1};
+    meshes[1] = fixture.Meshes[0];
+    meshes[1].MaterialBindings = {&emitterBinding, 1};
+    items[0].SourceId = 1;
+    items[1].SourceId = 2;
+    items[1].MeshIndex = 1;
+    // Behind the near clip plane: absent from raster visibility, reachable by reflection.
+    items[1].MeshToWorld.Translation.Z = -.75F;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    inputs.Environment = {0, 0, 1};
+    const auto update = [&fixture, &wait, &meshes, &items, &inputs](uint64 revision) {
+        renderer::RenderGraphReport report;
+        wait(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                  {items.GetData(), items.GetSize()},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  revision,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report,
+                                  &inputs,
+                                  revision),
+             "update");
+    };
+    const uint32 colorResource = hasSecondaryRays == true ? plan.Passes[1].Color : plan.Passes[0].Color;
+    update(1);
+    ReadGraphFrame(fixture, colorResource);
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    if (hasSecondaryRays == false)
+    {
+        CHECK(fixture.Pixels[center] == 0);
+        CHECK(fixture.Pixels[center + 1] == 0);
+        CHECK(fixture.Pixels[center + 2] == 0);
+        CHECK(fixture.Pixels[center + 3] == 1);
+        CHECK(fixture.Pixels[GetPixel(0, 0) + 3] == 0);
+        rhi::TextureHandle depth;
+        rhi::TextureAspect aspect;
+        REQUIRE(fixture.Graph.GetExport(plan.Passes[0].Depth, depth, aspect) == rhi::RasterStatus::Ready);
+        CHECK(aspect == rhi::TextureAspect::Depth);
+        return;
+    }
+    // A reconstructed first hit leaves the one permitted surface query for the hidden emitter.
+    CHECK(fixture.Pixels[center] == 213);
+    CHECK(fixture.Pixels[center + 1] == 188);
+    CHECK(fixture.Pixels[center + 2] == 0);
+    CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == 188);
+    materials[1].Emission = {0, 0, 0};
+    update(2);
+    ReadGraphFrame(fixture, colorResource);
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 1] == 0);
+    CHECK(fixture.Pixels[center + 2] == 0);
+    items[1].MeshToWorld.Translation.X = 2;
+    update(3);
+    ReadGraphFrame(fixture, colorResource);
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 2] == 188);
 }

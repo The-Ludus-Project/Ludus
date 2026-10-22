@@ -902,6 +902,42 @@ Depth32Float aspect are sufficient. This follows the indirection in Christopher 
 Burns and Warren A. Hunt, [*The Visibility Buffer: A Cache-Friendly Approach to
 Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/).
 
+Choose either starter in **New Render Graph → Template**. The editor copies the
+complete editable graph, manifest and shaders into `graphs/<name>/` and opens it.
+Both use explicit GraphicsPipeline nodes and a shared view-relative **RenderSize**
+node connected to every attachment. Edit RenderSize from Properties or the canvas
+node editor to resize them together.
+
+| Template | Result |
+| --- | --- |
+| **Visibility buffer + depth** (`visibility-buffer`) | One raster pass exports the exact RGBA8 identity image and its Depth32Float attachment. The identity image is the camera output; its alpha channel encodes identity rather than transparency. No ray-tracing capability is needed. |
+| **Visibility + secondary rays** (`visibility-secondary-rays`) | The same raster producer feeds a ray pass and a separate shaded color target. It also exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. |
+
+Create the same packages through the CLI:
+
+```bash
+ludus render-graph new graphs/Visibility --template visibility-buffer --output offscreen \
+  --renderer-static --profiles metal wgsl
+ludus render-graph new graphs/Reflections --template visibility-secondary-rays --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. The raster-only template also accepts `wgsl` alone.
+Both canonical packages are shipped with the SDK:
+[visibility and depth](../../modules/graphics/renderer/render_graphs/visibility_buffer/main.lurender.json)
+and [secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json).
+Existing graph folders are never overwritten; cancelling creation writes nothing.
+
+The secondary-ray starter calls `LoadVisibilitySurface` in
+`main_shaders/generate.slang`, evaluates the resolved material, and traces one
+base-color-tinted ideal reflection with `SpawnSurfaceRay` and `TraceAndShade`.
+Its closest-hit callback returns authored surface emission; its miss callback
+returns the authored environment. Primary surface emission is added separately.
+It uses one surface-query slot and no visibility queries: reconstruction consumes
+neither. The starter has no recursive bounce, roughness/metallic BRDF, direct-light
+sampling, accumulation or denoising. A scene without emission or environment
+lighting produces black. These are editable transport choices, not engine lights.
+
 Extend the manifest's `RendererStatic` vertex schema with these two fields:
 
 | ID (example) | Type | Semantic | Location | Meaning |

@@ -4,14 +4,23 @@ from pathlib import Path
 import json
 
 
-def restir_files(profiles, graph):
+TEMPLATES = {
+    'restir-di': ('restir_di', 'ReSTIR DI', True),
+    'visibility-buffer': ('visibility_buffer', 'Visibility buffer', False),
+    'visibility-secondary-rays': ('visibility_secondary_rays', 'Visibility + secondary rays', True),
+}
+
+
+def template_files(identity, profiles, graph):
+    """Load one canonical source/installed template and validate its complete editable closure."""
     from . import render_graph_build as build
-    graph._require(any(target in ('metal', 'spirv') for target in profiles), 'Capability', 'ReSTIR DI',
-                   'select Metal or Vulkan; ReSTIR DI requires native ray tracing')
-    candidates = (Path(__file__).resolve().parents[3] / 'modules/graphics/renderer/render_graphs/restir_di',
-                  Path(__file__).resolve().parent.parent / 'templates/restir_di')
+    directory, label, requires_native_rays = TEMPLATES[identity]
+    graph._require(not requires_native_rays or any(target in ('metal', 'spirv') for target in profiles),
+                   'Capability', label, 'select Metal or Vulkan; this template requires native ray tracing')
+    candidates = (Path(__file__).resolve().parents[3] / 'modules/graphics/renderer/render_graphs' / directory,
+                  Path(__file__).resolve().parent.parent / 'templates' / directory)
     source = next((path for path in candidates if path.is_dir()), None)
-    graph._require(source is not None, 'Source', 'ReSTIR DI', 'built-in template files are missing; repair the engine installation')
+    graph._require(source is not None, 'Source', label, 'built-in template files are missing; repair the engine installation')
     snapshot = build.Snapshot(source)
     text = snapshot.load('main.lushader.json.in').decode('utf-8')
     text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(list(profiles)))

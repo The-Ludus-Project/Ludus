@@ -84,7 +84,7 @@ class RestirTemplateTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/restir_di'
         shutil.copytree(source, installed / 'templates/restir_di')
         with patch.object(render_graph_templates, '__file__', str(module)):
-            files = render_graph_templates.restir_files(('spirv',), graph)
+            files = render_graph_templates.template_files('restir-di', ('spirv',), graph)
         manifest = json.loads(files['main.lushader.json'])
         self.assertEqual(manifest['profiles'], ['spirv'])
         build.validate_manifest(manifest)
@@ -108,6 +108,108 @@ class RestirTemplateTests(unittest.TestCase):
         manifest['settings'][0]['id'] = 'Injected;'
         with self.assertRaises(ToolingError):
             build.validate_manifest(manifest)
+
+
+class VisibilityTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, identity, profiles=('metal', 'wgsl')):
+        return graph.new_workspace(Path(self.directory.name) / identity, output='offscreen',
+                                   renderer_static=True, profiles=profiles, template=identity)
+
+    def test_templates_export_exact_visibility_and_depth_with_shared_view_size(self):
+        for identity in ('visibility-buffer', 'visibility-secondary-rays'):
+            with self.subTest(identity=identity):
+                root = self.create(identity)
+                asset = json.loads(root.read_text())
+                self.assertEqual(asset['version'], 2)
+                nodes = asset['configurations'][0]['nodes']
+                self.assertTrue(any(node['kind'] == 'GraphicsPipeline' for node in nodes))
+                self.assertFalse(any(node['kind'] == 'Raster' for node in nodes))
+                plan = graph.compile_graph(root)
+                self.assertTrue(all(resource['view_scale'] == [1, 1] for resource in plan['resources'].values()))
+                self.assertTrue(all(resource['samples'] == 1 for resource in plan['resources'].values()))
+                raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+                self.assertEqual(raster['material'], 'DefaultOpaque')
+                for aspect, format_name in (('color', 'RGBA8Unorm'), ('depth', 'Depth32Float')):
+                    attachment = raster['attachments'][aspect]
+                    self.assertEqual((attachment['load'], attachment['store']), ('Clear', 'Store'))
+                    self.assertEqual(plan['resources'][attachment['resource']]['format'], format_name)
+                    self.assertTrue(any(operation['kind'] == 'Export' and operation['resource'] == attachment['resource']
+                                        for operation in plan['passes']))
+                manifest = json.loads(root.with_name('main.lushader.json').read_text())
+                build.validate_manifest(manifest)
+                vertex = next(schema for schema in manifest['schemas'] if schema['id'] == 'RendererStatic')
+                self.assertEqual([(field['location'], field['type']) for field in vertex['fields'][-2:]],
+                                 [(6, 'Float2'), (7, 'Float2')])
+                varying = next(schema for schema in manifest['schemas'] if schema['role'] == 'Varying')
+                self.assertTrue(all(field['interpolation'] == 'Flat' for field in varying['fields'][-2:]))
+                rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+                self.assertEqual(len(rays), int(identity == 'visibility-secondary-rays'))
+                if rays:
+                    ray_pass = rays[0]
+                    self.assertEqual(ray_pass['visibility']['resource'], raster['attachments']['color']['resource'])
+                    self.assertEqual(ray_pass['visibility_depth']['resource'], raster['attachments']['depth']['resource'])
+                    self.assertNotEqual(ray_pass['attachments']['color']['resource'], ray_pass['visibility']['resource'])
+                    interface = next(technique['scene_interface'] for technique in manifest['techniques']
+                                     if 'scene_interface' in technique)
+                    self.assertTrue(interface['visibility_buffer'])
+                    self.assertEqual(interface['surface_queries'], 1)
+                    self.assertEqual(interface['visibility_queries'], 0)
+                    self.assertFalse(any(program['bindings'] for program in manifest['programs']))
+
+    def test_shared_render_size_resizes_all_attachments(self):
+        root = self.create('visibility-secondary-rays')
+        asset = json.loads(root.read_text())
+        size = next(node for node in asset['configurations'][0]['nodes'] if node['kind'] == 'RenderSize')
+        size['extent'] = [96, 64]
+        root.write_bytes(graph.canonical_asset(asset))
+        plan = graph.compile_graph(root)
+        self.assertTrue(all(resource['extent'] == [96, 64] for resource in plan['resources'].values()))
+        ray_pass = next(operation for operation in plan['passes'] if operation['kind'] == 'RayTracing')
+        self.assertEqual(ray_pass['pipeline']['invocation']['dimensions'], 'ColorTarget')
+
+    def test_raster_is_portable_but_secondary_rays_require_a_native_target(self):
+        self.create('visibility-buffer', ('wgsl',))
+        with self.assertRaises(ToolingError):
+            self.create('visibility-secondary-rays', ('wgsl',))
+        self.assertFalse((Path(self.directory.name) / 'visibility-secondary-rays').exists())
+
+    def test_existing_destinations_are_preserved(self):
+        for identity in ('visibility-buffer', 'visibility-secondary-rays'):
+            destination = Path(self.directory.name) / identity
+            destination.mkdir()
+            marker = destination / 'mine'
+            marker.write_text('keep')
+            with self.assertRaises(ToolingError):
+                self.create(identity)
+            self.assertEqual(list(destination.iterdir()), [marker])
+            self.assertEqual(marker.read_text(), 'keep')
+
+    def test_both_templates_resolve_from_a_relocated_sdk(self):
+        from ludus_tools import render_graph_templates
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        for identity, directory in (('visibility-buffer', 'visibility_buffer'),
+                                     ('visibility-secondary-rays', 'visibility_secondary_rays')):
+            source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs' / directory
+            shutil.copytree(source, installed / 'templates' / directory)
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                files = render_graph_templates.template_files(identity, ('spirv', 'wgsl'), graph)
+            manifest = json.loads(files['main.lushader.json'])
+            self.assertEqual(manifest['profiles'], ['spirv', 'wgsl'])
+            build.validate_manifest(manifest)
+            self.assertIn('EncodeVisibility', files['main_shaders/color.slang'])
+
+    def test_cli_exposes_both_template_choices(self):
+        from ludus_tools.cli import build_parser
+        for identity in ('visibility-buffer', 'visibility-secondary-rays'):
+            arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Main', '--template', identity,
+                                                   '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+            self.assertEqual(arguments.template, identity)
 
 
 if __name__ == '__main__':
