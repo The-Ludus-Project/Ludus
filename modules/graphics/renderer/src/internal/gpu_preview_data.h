@@ -3,6 +3,7 @@
 #include "../../shaders/renderer_gpu_preview_layout.h"
 #include "gpu_preview_camera.h"
 #include "reference_data.h"
+#include "render_graph_storage.h"
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/math/matrix.hpp>
@@ -45,6 +46,7 @@ struct GpuPreviewRecord final
     rhi::RaySceneHandle NativeScene{};
     bool HasNativeGeometry = false;
     bool IsNativeSceneCreated = false;
+    RenderGraphStorage Storage;
     rhi::BufferHandle Data{};
     rhi::BufferHandle Texels{};
     rhi::BufferHandle Parameters{};
@@ -73,6 +75,12 @@ struct GpuPreviewRecord final
 struct GpuPreviewState final
 {
     GpuPreviewOptions Options;
+    StaticArray<content::render_graph_format::StorageBuffer, content::render_graph_format::MAX_STORAGE_BUFFERS>
+        StorageDescriptions{};
+    // RasterBinding initializes Visibility to Both for every nested element.
+    StaticArray<rhi::RasterBinding, LUDUS_GPU_PREVIEW_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
+        ComputeBindings{}; // NOLINT(bugprone-invalid-enum-default-initialization)
+    usize ComputeBindingCount = 0;
     bool IsGraphRayScene = false;
     uint32 Phase = 0;
     bool QuadCreated = false;

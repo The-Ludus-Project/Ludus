@@ -5,14 +5,22 @@ import contextlib
 import io
 import os
 import platform
+import sys
+import tempfile
+import time
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import engine
 import init_editor
 import init_ui
 import init_options
+import init_theme
+
+BACKGROUND_START_TIMEOUT_SECONDS = 10
+BACKGROUND_POLL_SECONDS = 0.01
 
 
 class InitTests(unittest.TestCase):
@@ -153,18 +161,77 @@ class EditorSetupTests(unittest.TestCase):
                 for options, calls in (((), 1), (("--no-editor-preview",), 0), (("--no-editor",), 0)):
                     args = init_ui.apply_defaults(engine.make_parser().parse_args(
                         ["init", "--cli", preset, *([] if "--no-editor" in options else ["--with-editor"]), *options]))
-                    with patch.object(engine, "run") as run:
-                        init_editor.prepare_editor_preview(args, engine)
-                    self.assertEqual(run.call_count, calls * (2 if host == "Darwin" else 1))
+                    with patch.object(init_editor.BackgroundCommands, "start", autospec=True,
+                                      side_effect=lambda job: job) as start:
+                        job = init_editor.prepare_editor_preview(args, engine)
+                    self.assertEqual(start.call_count, calls)
                     if calls:
-                        self.assertEqual(run.call_args_list[0].args[0],
-                                         [engine.venv_python(root), root / "scripts/shader-probe", "bootstrap"])
+                        expected = [[engine.venv_python(root), root / "scripts/shader-probe", "bootstrap"]]
                         if host == "Darwin":
-                            self.assertEqual(run.call_args_list[1].args[0],
-                                             [engine.venv_python(root), root / "scripts/bootstrap-spirv-cross"])
+                            expected.append([engine.venv_python(root), root / "scripts/bootstrap-spirv-cross"])
+                        self.assertEqual(job.commands, expected)
+                    else:
+                        self.assertIsNone(job)
                 tools = init_editor.preview_tool_args(root)
                 self.assertEqual(len(tools), tool_count)
                 self.assertIn("LUDUS_SLANG_COMPILER", tools[0])
+
+    def test_background_preview_tools_replay_output_and_raise_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            succeed = [sys.executable, "-c", "print('verified slang')"]
+            fail = [sys.executable, "-c", "import sys; print('bad digest'); sys.exit(3)"]
+            never = [sys.executable, "-c", "print('not reached')"]
+            output = io.StringIO()
+            job = init_editor.BackgroundCommands([succeed, fail, never], cwd=Path(temporary), engine=engine).start()
+            with contextlib.redirect_stdout(output), self.assertRaisesRegex(engine.EngineError, "exit code 3"):
+                job.wait()
+            self.assertIn("verified slang", output.getvalue())
+            self.assertIn("bad digest", output.getvalue())
+            self.assertNotIn("not reached", output.getvalue())
+
+    def test_cancel_stops_a_running_background_command(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            job = init_editor.BackgroundCommands([[sys.executable, "-c", "import time; time.sleep(60)"]],
+                                                 cwd=Path(temporary), engine=engine).start()
+            started = time.monotonic()
+            while job.process is None and time.monotonic() - started < BACKGROUND_START_TIMEOUT_SECONDS:
+                time.sleep(BACKGROUND_POLL_SECONDS)
+            job.cancel()
+            self.assertFalse(job.thread.is_alive())
+            self.assertNotEqual(job.process.returncode, 0)
+
+    def test_editor_waits_for_started_preview_tools_before_configuring(self):
+        args = init_ui.apply_defaults(engine.make_parser().parse_args(
+            ["init", "--cli", "linux-clang-development", "--with-editor", "--no-system-install"]))
+        calls = Mock()
+        preparation = Mock()
+        calls.attach_mock(preparation.wait, "wait")
+        with patch.object(init_editor.cmake_targets, "query_codemodel"), \
+                patch.object(engine, "cmake_configure") as configure, patch.object(engine, "cmake_build"), \
+                patch.object(init_editor, "prepare_editor_preview") as prepare:
+            calls.attach_mock(configure, "cmake_configure")
+            init_editor.build_editor(args, engine, preparation=preparation)
+        prepare.assert_not_called()
+        self.assertEqual([call[0] for call in calls.mock_calls], ["wait", "cmake_configure"])
+
+    def test_compiler_cache_is_chosen_only_for_new_build_trees(self):
+        root = engine.repo_root()
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary)
+            with patch.object(engine, "build_dir_for_preset", return_value=build), \
+                    patch.object(init_editor.shutil, "which", return_value="/usr/bin/ccache"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(init_editor.compiler_cache_args(root, "linux-clang-development", engine, {}),
+                                 ["-DLUDUS_ENABLE_CCACHE=ON"])
+                (build / "CMakeCache.txt").write_text("LUDUS_ENABLE_CCACHE:BOOL=OFF\n")
+                self.assertEqual(init_editor.compiler_cache_args(root, "linux-clang-development", engine, {}), [])
+                self.assertEqual(init_editor.compiler_cache_args(
+                    root, "linux-clang-development", engine, {"LUDUS_ENABLE_CCACHE": "1"}), ["-DLUDUS_ENABLE_CCACHE=ON"])
+                self.assertEqual(init_editor.compiler_cache_args(
+                    root, "linux-clang-development", engine, {"LUDUS_ENABLE_CCACHE": "0"}), ["-DLUDUS_ENABLE_CCACHE=OFF"])
+            with patch.object(engine, "build_dir_for_preset", return_value=build / "new"), \
+                    patch.object(init_editor.shutil, "which", return_value=None):
+                self.assertEqual(init_editor.compiler_cache_args(root, "linux-clang-development", engine, {}), [])
 
     def test_default_editor_configures_rendering_and_pinned_tools(self):
         args = init_ui.apply_defaults(engine.make_parser().parse_args(
@@ -208,7 +275,8 @@ class EditorSetupTests(unittest.TestCase):
             init_editor.setup_editor(args, engine)
         run.assert_not_called()
         self.assertTrue(args.with_tests)
-        configure.assert_called_once_with(engine.repo_root(), "linux-clang-asan-ubsan", ["-DLUDUS_BUILD_EDITOR=ON", "-DLUDUS_EDITOR_RENDER_PREVIEW=OFF"])
+        configure.assert_called_once_with(engine.repo_root(), "linux-clang-asan-ubsan", ["-DLUDUS_BUILD_EDITOR=ON", "-DLUDUS_EDITOR_RENDER_PREVIEW=OFF"],
+                                          reuse_current_cache=True)
         build.assert_called_once_with(engine.repo_root(), "linux-clang-asan-ubsan", ["--target", "ludus_editor"])
 
     def test_no_system_install_uses_existing_qt_and_propagates_configure_failure(self):
@@ -226,8 +294,15 @@ class EditorSetupTests(unittest.TestCase):
         args = init_ui.apply_defaults(engine.make_parser().parse_args([
             "init", "--cli", "linux-clang-development", "--with-editor", "--no-system-install"]))
         calls = Mock()
+
+        def prepare_conan(*_arguments, after_host_tools, **_options):
+            calls.host_tools()
+            after_host_tools()
+            calls.conan()
+
         with contextlib.ExitStack() as stack:
-            for module, name in ((engine, "prepare_conan_artifacts"), (init_editor, "prepare_editor_preview"),
+            stack.enter_context(patch.object(engine, "prepare_conan_artifacts", side_effect=prepare_conan))
+            for module, name in ((init_editor, "prepare_editor_preview"),
                                  (engine, "repair_existing_cmake_caches"), (init_editor, "setup_editor")):
                 calls.attach_mock(stack.enter_context(patch.object(module, name)), name)
             for name in ("check_current_python", "configure_system_tool_shims", "command_install_hooks"):
@@ -237,17 +312,24 @@ class EditorSetupTests(unittest.TestCase):
             stack.enter_context(patch.object(init_options, "save_options"))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             engine.command_init(args)
-        self.assertEqual([call[0] for call in calls.mock_calls],
-                         ["prepare_conan_artifacts", "prepare_editor_preview", "repair_existing_cmake_caches", "setup_editor"])
+        names = [call[0] for call in calls.mock_calls if "." not in call[0]]
+        # Shader tools start once the managed Python exists and download while Conan runs.
+        self.assertEqual(names, ["host_tools", "prepare_editor_preview", "conan", "repair_existing_cmake_caches",
+                                 "setup_editor"])
+        self.assertIs(calls.setup_editor.call_args.kwargs["preparation"], calls.prepare_editor_preview.return_value)
+        calls.prepare_editor_preview.return_value.cancel.assert_called_once_with()
 
     def test_init_calls_editor_setup_only_when_selected(self):
         for enabled in (False, True):
             with self.subTest(enabled=enabled), contextlib.ExitStack() as stack:
                 args = init_ui.apply_defaults(engine.make_parser().parse_args([
                     "init", "--cli", "--no-system-install", "--with-editor" if enabled else "--no-editor"]))
-                for name in ("check_current_python", "configure_system_tool_shims", "prepare_conan_artifacts",
+                for name in ("check_current_python", "configure_system_tool_shims",
                              "repair_existing_cmake_caches", "command_install_hooks"):
                     stack.enter_context(patch.object(engine, name))
+                stack.enter_context(patch.object(
+                    engine, "prepare_conan_artifacts",
+                    side_effect=lambda *_arguments, after_host_tools, **_options: after_host_tools()))
                 stack.enter_context(patch.object(engine, "load_tool_versions", return_value={"minimum": {"python": "3.10"}}))
                 stack.enter_context(patch.object(engine, "command_doctor", return_value=0))
                 stack.enter_context(patch.object(init_options, "save_options"))
@@ -259,19 +341,26 @@ class EditorSetupTests(unittest.TestCase):
                 preview.assert_called_once_with(args, engine)
 
 
+# How long after mainloop starts each window test acts, and when it gives up.
+DRIVE_DELAY_MILLISECONDS = 100
+WINDOW_TIMEOUT_MILLISECONDS = 20000
+
+
 @unittest.skipUnless(os.environ.get("LUDUS_TEST_GUI") == "1", "requires a desktop display")
 class WindowTests(unittest.TestCase):
     def select(self, action, *options):
-        import tkinter as tk
-        real_tk = tk.Tk
+        real_create_root = init_theme.create_root
         errors = []
+        timed_out = []
 
-        def create_window(*arguments, **options):
-            window = real_tk(*arguments, **options)
+        def create_window(tk, **keywords):
+            # The selector reuses the root of an earlier window in this process,
+            # so drive whatever root it gets instead of wrapping tk.Tk.
+            window = real_create_root(tk, **keywords)
 
             def on_error(*error):
                 errors.append(error)
-                window.destroy()
+                window.quit()
 
             window.report_callback_exception = on_error
 
@@ -281,13 +370,20 @@ class WindowTests(unittest.TestCase):
                     return children + [child for widget in children for child in descendants(widget)]
                 action(window, descendants(window))
 
-            window.after(100, drive)
+            def give_up():
+                # A window that ignores the action must fail this test, not hang the suite.
+                timed_out.append(True)
+                window.quit()
+
+            window.after(DRIVE_DELAY_MILLISECONDS, drive)
+            window.after(WINDOW_TIMEOUT_MILLISECONDS, give_up)
             return window
 
         args = init_ui.apply_defaults(engine.make_parser().parse_args(["init", "--gui", *options]))
-        with patch.object(tk, "Tk", side_effect=create_window):
+        with patch.object(init_theme, "create_root", side_effect=create_window):
             result = init_ui.select_options(args, engine)
         self.assertEqual(errors, [])
+        self.assertEqual(timed_out, [], "the selector did not close after the test's action")
         return result
 
     def test_initialize_preserves_supplied_options(self):

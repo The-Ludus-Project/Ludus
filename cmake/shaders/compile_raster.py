@@ -45,7 +45,79 @@ def external_text_source(namespace, label, data):
     return declaration, definition
 
 
-def raster_interface(document, stage, metal=False, native_arrays=False, runtime_arrays=False):
+def verify_storage_record_strides(binary, interface):
+    """Cross-check structured element stride against the emitted SPIR-V ArrayStride.
+
+    Raw reflection reports fields, while the binary owns the runtime array stride.
+    Admit only a scalar binding whose block contains that one runtime array.
+    """
+    records = [entry for entry in interface['entries'] if 'fields' in entry and entry['kind'].startswith('Storage')]
+    if not records:
+        return
+    if len(binary) < 20 or len(binary) % 4:
+        raise RuntimeError('Structured storage requires complete SPIR-V words')
+    words = struct.unpack('<' + 'I' * (len(binary) // 4), binary)
+    if words[0] != 0x07230203:
+        raise RuntimeError('Structured storage requires SPIR-V magic')
+    decorations, pointers, blocks, arrays, variables = {}, {}, {}, set(), {}
+    cursor = 5
+    while cursor < len(words):
+        count, opcode = words[cursor] >> 16, words[cursor] & 0xffff
+        if count == 0 or cursor + count > len(words):
+            raise RuntimeError('Malformed structured storage SPIR-V instruction')
+        operands = words[cursor + 1:cursor + count]
+        if opcode == 71 and len(operands) == 3:  # OpDecorate
+            decorations[(operands[0], operands[1])] = operands[2]
+        elif opcode == 32 and len(operands) == 3:  # OpTypePointer
+            pointers[operands[0]] = operands[2]
+        elif opcode == 30 and len(operands) >= 1:  # OpTypeStruct
+            blocks[operands[0]] = operands[1:]
+        elif opcode == 29 and len(operands) == 2:  # OpTypeRuntimeArray
+            arrays.add(operands[0])
+        elif opcode == 59 and len(operands) >= 3:  # OpVariable
+            variables[operands[1]] = operands[0]
+        cursor += count
+    for entry in records:
+        matches = [identity for identity in variables if decorations.get((identity, 33)) == entry['binding']
+                   and decorations.get((identity, 34), 0) == 0]
+        if len(matches) != 1:
+            raise RuntimeError('Structured storage SPIR-V binding is missing or ambiguous')
+        members = blocks.get(pointers.get(variables[matches[0]]), ())
+        if len(members) != 1 or members[0] not in arrays or decorations.get((members[0], 6)) != entry['size']:
+            raise RuntimeError('Structured storage SPIR-V stride differs from reflected record')
+
+
+def storage_record_layout(record):
+    """Validate a flat native scalar/vector record against reflected field offsets.
+
+    Native ray stages are emitted as SPIR-V std430 and translated to Metal by the
+    pinned SPIRV-Cross. Vec3 occupies twelve bytes with sixteen-byte alignment.
+    """
+    fields = record.get('fields', [])
+    if not fields or len(fields) > 16:
+        raise RuntimeError('Native structured storage requires one to sixteen scalar/vector fields')
+    offset, alignment, members = 0, 1, []
+    for field in fields:
+        shape = field.get('type', {})
+        scalar = shape if shape.get('kind') == 'scalar' else shape.get('elementType', {})
+        width = 1 if shape.get('kind') == 'scalar' else shape.get('elementCount')
+        if shape.get('kind') not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 3, 4):
+            raise RuntimeError('Native structured storage fields require scalar32 or vector32 values')
+        size = 4 * width
+        align = 16 if width == 3 else size
+        offset = (offset + align - 1) // align * align
+        layout = field.get('binding', {})
+        if layout.get('kind') != 'uniform' or layout.get('offset') != offset or layout.get('size') != size:
+            raise RuntimeError('Native structured storage field layout differs from std430')
+        if any(member['name'] == field.get('name') for member in members):
+            raise RuntimeError('Native structured storage field is duplicated')
+        members.append({'name': field['name'], 'scalar': scalar['scalarType'], 'width': width, 'offset': offset})
+        alignment = max(alignment, align)
+        offset += size
+    return (offset + alignment - 1) // alignment * alignment, members
+
+
+def raster_interface(document, stage, metal=False, native_arrays=False, runtime_arrays=False, structured_records=False):
     points = [x for x in document['entryPoints'] if x['stage'] == stage]
     if len(points) != 1:
         raise RuntimeError('Expected one entry per raster stage')
@@ -91,6 +163,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             resource_type = resource_type.get('elementType', {})
         kind = resource_type['kind']
         size = 0
+        record_fields = None
         if kind == 'constantBuffer':
             kind = 'UniformBuffer'
             size = resource_type['elementVarLayout']['binding']['size']
@@ -100,12 +173,15 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             result = resource_type.get('resultType', {})
             scalar = result if result.get('kind') == 'scalar' else result.get('elementType', {})
             width = 1 if result.get('kind') == 'scalar' else result.get('elementCount')
-            if result.get('kind') not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 4):
+            if structured_records and result.get('kind') == 'struct':
+                size, record_fields = storage_record_layout(result)
+            elif result.get('kind') not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 4):
                 raise RuntimeError('Compute storage requires scalar32, vector2 or vector4 elements')
+            else:
+                size = 4 * width
             if resource_type.get('access', 'read') not in ('read', 'readWrite'):
                 raise RuntimeError('Unsupported compute storage access')
             kind = 'StorageReadWrite' if resource_type.get('access') == 'readWrite' else 'StorageRead'
-            size = 4 * width
         elif stage == 'compute' and kind == 'resource' and resource_type.get('baseShape') == 'accelerationStructure':
             if count != 1 or is_runtime:
                 raise RuntimeError('Native ray scenes require scalar bindings')
@@ -150,8 +226,11 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         if is_runtime:
             value['runtime_sized'] = True
         if kind in ('StorageRead', 'StorageReadWrite'):
-            value['scalar'] = scalar['scalarType']
-            value['width'] = width
+            if record_fields is not None:
+                value['fields'] = record_fields
+            else:
+                value['scalar'] = scalar['scalarType']
+                value['width'] = width
         if kind == 'UniformBuffer':
             value['offsets'] = {field['name']: field['binding']['offset'] for field in resource_type['elementType']['fields']}
             value['shapes'] = {field['name']: uniform_shape(field.get('type', {})) for field in resource_type['elementType']['fields']}
@@ -634,7 +713,9 @@ def compile_raster(args, lock):
             commands.append(command)
             run(command)
         dependencies.append(depfile.read_text().split(':', 1)[1].strip())
-        interfaces[(target, stage)] = raster_interface(json.loads(reflection.read_text()), stage, target == 'metal', native_arrays, runtime_arrays)
+        interfaces[(target, stage)] = raster_interface(json.loads(reflection.read_text()), stage, target == 'metal', native_arrays, runtime_arrays, structured_records=native_rays)
+        if native_rays:
+            verify_storage_record_strides(artifact.read_bytes(), interfaces[(target, stage)])
         if native_arrays:
             spirv_array_indexing(artifact.read_bytes(), interfaces[(target, stage)])
             for binding in interfaces[(target, stage)]['entries']:

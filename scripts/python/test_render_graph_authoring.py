@@ -328,6 +328,7 @@ def parse_runtime(data):
         offset += artifact_bytes + (-artifact_bytes % 4)
         result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry,
                                  'artifact': artifact, 'blocks': names})
+    result['storage_buffers'] = [take(4) for _ in range(take(1)[0])] if version >= 7 else []
     result['pass_names'] = []
     if version >= 3:
         for _ in range(passes):

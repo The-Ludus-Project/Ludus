@@ -33,8 +33,8 @@ set(scene_query_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${scene_query_policy}")
 execute_process(
     COMMAND "${Python3_EXECUTABLE}" -c
-        "import json,runpy,sys; print(json.dumps(runpy.run_path(sys.argv[1])['SCENE_QUERY_LIMITS']))"
-        "${scene_query_policy}"
+        "import json,sys; sys.path.insert(0, sys.argv[1]); from ludus_tools.render_graph_ray import SCENE_QUERY_LIMITS; print(json.dumps(SCENE_QUERY_LIMITS))"
+        "${PROJECT_SOURCE_DIR}/scripts/python"
     RESULT_VARIABLE scene_query_status OUTPUT_VARIABLE scene_query_limits ERROR_VARIABLE scene_query_error)
 if(NOT scene_query_status EQUAL 0)
     message(FATAL_ERROR "Cannot read scene query limits: ${scene_query_error}")

@@ -265,11 +265,13 @@ struct Compiler::State final
     Slang::ComPtr<slang::ISession> Session;
     Slang::ComPtr<slang::IModule> Module;
     PathText Source;
+    bool HasNativeRayQueries = false;
 
     Status Capture(const Request& request) noexcept
     {
-        if (Session.get() != nullptr && Source.GetView() == GetText(request.Source) &&
-            Filesystem->Matches(request) == true)
+        const bool hasNativeRayQueries = request.OutputTarget == Target::SpirvRayQuery;
+        if (Session.get() != nullptr && HasNativeRayQueries == hasNativeRayQueries &&
+            Source.GetView() == GetText(request.Source) && Filesystem->Matches(request) == true)
         {
             return Status::Ready;
         }
@@ -304,15 +306,22 @@ struct Compiler::State final
         static_cast<void>(Source.TryAssign(GetText(request.Source)));
         StaticArray<slang::TargetDesc, TARGET_COUNT> targets{};
         targets[0].format = SLANG_SPIRV;
-        targets[0].profile = Global->findProfile("spirv_1_3");
+        targets[0].profile = Global->findProfile(hasNativeRayQueries == true ? "spirv_1_5" : "spirv_1_3");
+        slang::CompilerOptionEntry capability{};
+        capability.name = slang::CompilerOptionName::Capability;
+        capability.value.kind = slang::CompilerOptionValueKind::Int;
+        capability.value.intValue0 = Global->findCapability("spvRayQueryKHR");
+        targets[0].compilerOptionEntries = hasNativeRayQueries == true ? &capability : nullptr;
+        targets[0].compilerOptionEntryCount = hasNativeRayQueries == true ? 1 : 0;
         targets[1].format = SLANG_WGSL;
         targets[1].profile = Global->findProfile("sm_6_0");
         targets[2].format = SLANG_METAL;
         targets[2].profile = Global->findProfile("sm_6_0");
         slang::SessionDesc description;
         description.targets = targets.GetData();
-        description.targetCount = static_cast<SlangInt>(TARGET_COUNT);
+        description.targetCount = hasNativeRayQueries == true ? 1 : static_cast<SlangInt>(TARGET_COUNT);
         description.fileSystem = Filesystem.get();
+        HasNativeRayQueries = hasNativeRayQueries;
         return SLANG_SUCCEEDED(Global->createSession(description, Session.writeRef())) ? Status::Ready
                                                                                        : Status::Unavailable;
     }
@@ -410,7 +419,8 @@ Status Compiler::Compile(const Request& request, Result& outResult) noexcept
     {
         return outResult.Outcome;
     }
-    const SlangInt target = static_cast<SlangInt>(request.OutputTarget);
+    const SlangInt target =
+        request.OutputTarget == Target::SpirvRayQuery ? 0 : static_cast<SlangInt>(request.OutputTarget);
     slang::ProgramLayout* layoutOrNull = linked->getLayout(target, diagnostics.writeRef());
     captureDiagnostics();
     Slang::ComPtr<slang::IBlob> reflection;

@@ -35,6 +35,8 @@ struct ResourceDescription final
     QJsonObject ViewPolicy{};
     int32 Samples = 0;
     bool IsPresentation = false;
+    int32 Stride = 0;
+    QString Count{};
 };
 
 QJsonObject FindRecord(const QJsonArray& records, const QString& identity)
@@ -118,6 +120,15 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
     const QJsonObject node = FindRecord(context.Configuration.value(QStringLiteral("nodes")).toArray(), identity);
     const QString kind = node.value(QStringLiteral("kind")).toString();
     const QJsonValue extent = node.value(QStringLiteral("extent"));
+    if (kind == QStringLiteral("StructuredBuffer") && port == QStringLiteral("buffer"))
+    {
+        ResourceDescription result;
+        result.Type = QStringLiteral("Buffer");
+        result.Stride = node.value(QStringLiteral("stride")).toInt();
+        const QJsonValue count = node.value(QStringLiteral("count"));
+        result.Count = count.isString() == true ? count.toString() : QString::number(count.toInteger());
+        return result;
+    }
     if (kind == QStringLiteral("Target") && port == QStringLiteral("texture"))
     {
         ResourceDescription result{node.value(QStringLiteral("type")).toString(),
@@ -378,6 +389,17 @@ RenderGraphResourceFeedback DescribeRenderGraphResource(const RenderGraphDocumen
                                   {}};
     int32 remainingSteps = MAX_INFERENCE_STEPS;
     const ResourceDescription resource = ResolveResource(context, endpoint, remainingSteps);
+    if (resource.Type == QStringLiteral("Buffer"))
+    {
+        const QString count = resource.Count == QStringLiteral("ColorTarget")
+                                  ? QStringLiteral("one per output pixel")
+                                  : resource.Count + QStringLiteral(" elements");
+        const QString label = QStringLiteral("%1 B × %2").arg(resource.Stride).arg(count);
+        return {label,
+                label +
+                    QStringLiteral(
+                        "\nZeroed on preparation; retained across ray samples until scene/camera/extent replacement.")};
+    }
     QString size;
     QString detail;
     if (HasViewPolicy(resource) == true)

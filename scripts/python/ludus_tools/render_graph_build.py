@@ -26,10 +26,13 @@ from .errors import ToolingError
 from . import render_graph as graph
 from . import render_graph_diagnostics as diagnostics
 from . import render_graph_ray as ray
+from . import render_graph_buffers as buffers
 
 VERSION = 1
 TARGETS = ('spirv', 'wgsl', 'metal', 'glsl')
 SHAPES = {'Float32': ('float', 1), 'Float2': ('float2', 2), 'Float3': ('float3', 3), 'Float4': ('float4', 4)}
+STORAGE_SHAPES = {**SHAPES, **{name + suffix: (spelling + (suffix if suffix != '32' else ''), int(suffix) if suffix != '32' else 1)
+    for name, spelling in (('UInt', 'uint'), ('Int', 'int')) for suffix in ('32', '2', '3', '4')}}
 RESERVED = {'class', 'struct', 'namespace', 'auto', 'const', 'float', 'int', 'void', 'return', 'for', 'while', 'if', 'else', 'static', 'inline', 'template', 'typename', 'private', 'public', 'protected', 'operator', 'true', 'false', 'nullptr', 'bool', 'break', 'continue', 'switch', 'case', 'default', 'delete', 'new', 'this', 'union', 'enum', 'do', 'sizeof', 'alignof', 'using', 'typedef', 'uniform', 'in', 'out', 'register', 'cbuffer', 'shader', 'rgEntry', 'value'}
 RESERVED.update(('alignas alignof and and_eq asm atomic_cancel atomic_commit atomic_noexcept bitand bitor catch char char8_t char16_t char32_t compl consteval constexpr constinit const_cast co_await co_return co_yield decltype double dynamic_cast explicit export extern friend goto inline int long mutable noexcept not not_eq or or_eq reflexpr reinterpret_cast requires short signed static_assert static_cast template thread_local throw try typeid typename unsigned virtual volatile wchar_t xor xor_eq concept final override float2 float3 float4 uint uint2 uint3 uint4').split())
 NAME = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,62}\Z')
@@ -181,17 +184,17 @@ def validate_manifest(value):
         keys(schema, ('id', 'role', 'fields'), 'schema')
         name(schema['id'], 'schema id')
         require(schema['id'] not in schemas, 'Schema', schema['id'], 'duplicate schema')
-        enum(schema['role'], ('Uniform', 'Vertex', 'Varying'), 'schema role')
+        enum(schema['role'], ('Uniform', 'Storage', 'Vertex', 'Varying'), 'schema role')
         bounded_list(schema['fields'], 16, 'schema fields')
         require(schema['fields'], 'Schema', schema['id'], 'empty schema')
         seen, locations = set(), set()
         for field in schema['fields']:
-            keys(field, ('id', 'type') if schema['role'] == 'Uniform' else ('id', 'type', 'semantic', 'location'), 'field')
+            keys(field, ('id', 'type') if schema['role'] in ('Uniform', 'Storage') else ('id', 'type', 'semantic', 'location'), 'field')
             name(field['id'], 'field id')
             require(field['id'] not in seen, 'Schema', schema['id'], 'duplicate field identity')
             seen.add(field['id'])
-            enum(field['type'], SHAPES, 'field type')
-            if schema['role'] != 'Uniform':
+            enum(field['type'], STORAGE_SHAPES if schema['role'] == 'Storage' else SHAPES, 'field type')
+            if schema['role'] not in ('Uniform', 'Storage'):
                 require(type(field['semantic']) is str and re.fullmatch(r'(?:POSITION|NORMAL|TEXCOORD[0-9]|COLOR[0-9]|SV_Position)', field['semantic']),
                         'Schema', field['id'], 'bounded semantic required')
                 integer(field['location'], 0, 15, 'field location')
@@ -215,6 +218,7 @@ def validate_manifest(value):
         enum(program['stage'], ('vertex', 'fragment', *ray.STAGES), 'stage')
         if program['stage'] in ray.STAGES:
             ray.validate_program(program, sys.modules[__name__])
+            buffers.validate_bindings(program, schemas, sys.modules[__name__])
             programs[program['id']] = program
             continue
         require(type(program['input']) is str and program['input'] in schemas, 'Schema', program['id'], 'unknown input schema')
@@ -336,7 +340,7 @@ def shader_source(program, schemas):
         lines += ['struct ' + sid, '{']
         for field in schema['fields']:
             prefix, suffix = '', ''
-            if schema['role'] != 'Uniform':
+            if schema['role'] not in ('Uniform', 'Storage'):
                 if field['semantic'] != 'SV_Position':
                     prefix = '[[vk::location(' + str(field['location']) + ')]] '
                 suffix = ' : ' + field['semantic']
@@ -395,9 +399,10 @@ def cpp_header(schemas, compiled):
     for sid, schema in sorted(schemas.items()):
         lines += ['/// Logical schema values; target upload bytes must use the generated packer.', 'struct ' + sid, '{']
         for field in schema['fields']:
-            width = SHAPES[field['type']][1]
-            lines += ['    /// Schema field ' + field['id'] + '; native float32 values.',
-                      '    foundation::float32 ' + field['id'] + (f'[{width}]' if width > 1 else '') + '{};']
+            width = (STORAGE_SHAPES if schema['role'] == 'Storage' else SHAPES)[field['type']][1]
+            scalar = 'uint32' if field['type'].startswith('UInt') else 'int32' if field['type'].startswith('Int') else 'float32'
+            lines += ['    /// Schema field ' + field['id'] + '; native scalar values.',
+                      '    foundation::' + scalar + ' ' + field['id'] + (f'[{width}]' if width > 1 else '') + '{};']
         lines += ['};']
     layouts = {}
     for (pid, target), result in compiled.items():
@@ -429,7 +434,34 @@ def file_hash(path):
     return h.hexdigest()
 
 
-def tool_identity(helper, compiler, validator, cross, *, worker_socket=None):
+class ToolFileHashes:
+    """Job-local hashes, reused only while the opened file's identity is unchanged.
+
+    Every check opens the current pathname and checks device/inode, size, mtime
+    and ctime. Replacements, edits (including restored mtime) and symlink retargets
+    therefore rehash. No stamps or trusted hashes persist between build jobs.
+    """
+    def __init__(self):
+        self.values = {}
+
+    def __call__(self, path):
+        with Path(path).open('rb') as stream:
+            before = os.fstat(stream.fileno())
+            stamp = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            if stamp in self.values:
+                return self.values[stamp]
+            h = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                h.update(chunk)
+            after = os.fstat(stream.fileno())
+            require(stamp == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns),
+                    'Stale', str(path), 'toolchain changed while hashing')
+            result = h.hexdigest()
+            self.values[stamp] = result
+            return result
+
+
+def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, hash_file=file_hash):
     """Hash required helpers/tools; the native client belongs only to worker builds."""
     paths = {f'helper/{p}': helper / p for p in HELPERS}
     if worker_socket:
@@ -458,7 +490,7 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None):
                     paths['slang/' + folder.name + '/' + p.name] = p
     require(len(paths) <= 64, 'Capacity', 'toolchain', 'unexpected tool file count')
     try:
-        return {key: file_hash(p) for key, p in paths.items()}, paths
+        return {key: hash_file(p) for key, p in paths.items()}, paths
     except OSError as error:
         fail('Tools', 'toolchain', str(error))
 
@@ -531,7 +563,7 @@ def atomic(path, data):
 
 
 @contextmanager
-def cache_writes(tool_paths, tool_hashes):
+def cache_writes(tool_paths, tool_hashes, hash_file=file_hash):
     """Discard this job's cache writes if its compiler/helper snapshot changed.
 
     A stale/cancelled job must not leave artifacts under a tool identity that did
@@ -543,8 +575,8 @@ def cache_writes(tool_paths, tool_hashes):
         yield written
     finally:
         try:
-            changed = any(file_hash(path) != tool_hashes[key] for key, path in tool_paths.items())
-        except OSError:
+            changed = any(hash_file(path) != tool_hashes[key] for key, path in tool_paths.items())
+        except (OSError, ToolingError):
             changed = True
         if changed:
             for path in written:
@@ -673,7 +705,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     schemas, programs, techniques, counts = validate_manifest(value)
     helper = Path(helper).resolve()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
-    tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross, worker_socket=worker_socket)
+    hash_file = ToolFileHashes()
+    tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross,
+                                           worker_socket=worker_socket, hash_file=hash_file)
     worker_identity = None
     if worker_socket:
         import importlib.util
@@ -710,12 +744,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
         require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
                 'Metal hardware raytracing requires the pinned --spirv-cross translator')
-        original_programs = programs
-        programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__])
-        ray_closure = sorted(set(p for program in original_programs.values() if program['stage'] in ray.STAGES
-                                 for p in closures[program['id']]) | set(snapshot.files))
+        programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__], schemas)
         for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
-            closures[program_identity] = ray_closure
+            closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
+                                                                    sys.modules[__name__])
     # Build plans for every declared closed root configuration and preserve graph
     # imports in the same source snapshot used by shaders.
     graph_path = manifest.with_suffix('').with_suffix('.lurender.json')
@@ -772,7 +804,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     output = Path(output).resolve()
     require(not snapshot.root.is_relative_to(output), 'Source', str(output), 'output must not contain source root')
     output.mkdir(parents=True, exist_ok=True)
-    with BuildTreeLock(output), cache_writes(tool_paths, tool_hashes) as written_cache:
+    with BuildTreeLock(output), cache_writes(tool_paths, tool_hashes, hash_file) as written_cache:
         checkpoint(cancel)
         cache = output / 'cache'
         generations = output / 'generations'
@@ -892,7 +924,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             (package / 'integrity.json').write_bytes(encoded(integrity))
             checkpoint(cancel)
             snapshot.verify()
-            require(all(file_hash(p) == tool_hashes[k] for k, p in tool_paths.items()), 'Stale', 'toolchain', 'toolchain changed during build')
+            require(all(hash_file(p) == tool_hashes[k] for k, p in tool_paths.items()), 'Stale', 'toolchain', 'toolchain changed during build')
             generation = generations / generation_key
             if generation.exists():
                 verify_package(generation)
@@ -906,7 +938,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             # diagnostics cannot publish a partially successful build.
             checkpoint(cancel)
             snapshot.verify()
-            require(all(file_hash(p) == tool_hashes[k] for k, p in tool_paths.items()), 'Stale', 'toolchain', 'toolchain changed before publication')
+            require(all(hash_file(p) == tool_hashes[k] for k, p in tool_paths.items()), 'Stale', 'toolchain', 'toolchain changed before publication')
             atomic(output / 'current.json', encoded({'version': VERSION, 'generation': generation_key}))
             return report
 

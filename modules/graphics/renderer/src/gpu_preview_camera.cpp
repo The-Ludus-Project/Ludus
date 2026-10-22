@@ -3,6 +3,7 @@
 #include "internal/gpu_preview_data.h"
 #include "internal/reference_data.h"
 
+#include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
@@ -22,7 +23,10 @@ struct GpuPreviewCameraUpdate::State final
     rhi::BufferHandle Parameters{};
     rhi::BindingSetHandle Bindings{};
     rhi::BindingLayoutHandle Layout{};
-    StaticArray<rhi::RasterBindingResource, LUDUS_GPU_PREVIEW_BINDING_COUNT> Resources{};
+    StaticArray<rhi::RasterBindingResource,
+                LUDUS_GPU_PREVIEW_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
+        Resources{};
+    usize BindingCount = 0;
     bool HasBindings = false;
     ~State() noexcept
     {
@@ -40,7 +44,8 @@ Status GpuPreviewCameraUpdate::Prepare(rhi::DeviceHandle device,
                                        BorrowedView<const rhi::RasterBindingResource> bindings) noexcept
 {
     if (camera.Depth != DepthConvention::Conventional || camera.InfiniteFar == true || bindings.IsValid() == false ||
-        bindings.GetSize() != LUDUS_GPU_PREVIEW_BINDING_COUNT)
+        bindings.GetSize() < LUDUS_GPU_PREVIEW_BINDING_COUNT ||
+        bindings.GetSize() > LUDUS_GPU_PREVIEW_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS)
     {
         return Status::InvalidDescription;
     }
@@ -88,6 +93,7 @@ Status GpuPreviewCameraUpdate::Prepare(rhi::DeviceHandle device,
     std::memcpy(&candidate->Uniform.BoundsMinimumWorld.W, &generationLow, sizeof(generationLow));
     std::memcpy(&candidate->Uniform.BoundsMaximumWorld.W, &generationHigh, sizeof(generationHigh));
     candidate->Layout = layout;
+    candidate->BindingCount = bindings.GetSize();
     for (usize i = 0; i < bindings.GetSize(); ++i)
     {
         candidate->Resources[i] = bindings[i];
@@ -115,7 +121,10 @@ Status GpuPreviewCameraUpdate::Poll() noexcept
     Status status = rhi::GetStatus(state.Device, state.Parameters);
     if (status == Status::Ready && state.HasBindings == false)
     {
-        status = rhi::CreateBindingSet(state.Device, state.Layout, state.Resources.AsSpan(), state.Bindings);
+        status = rhi::CreateBindingSet(state.Device,
+                                       state.Layout,
+                                       {state.Resources.GetData(), state.BindingCount},
+                                       state.Bindings);
         state.HasBindings = status == Status::Ready || status == Status::Pending;
     }
     return status == Status::Ready ? rhi::GetStatus(state.Device, state.Bindings) : status;

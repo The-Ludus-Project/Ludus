@@ -9,7 +9,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import init_progress
 import init_theme
@@ -85,6 +85,56 @@ class IdentityTests(unittest.TestCase):
         tk.Tk.assert_called_once_with(className=init_theme.WINDOW_CLASS)
         root.title.assert_called_once_with(init_theme.APPLICATION_NAME)
 
+    def test_later_windows_reuse_the_first_root(self):
+        tk = SimpleNamespace(Tk=Mock())
+        first = init_theme.create_root(tk, system="Unknown")
+        second = init_theme.create_root(tk, system="Unknown")
+        self.assertIs(first, second)
+        tk.Tk.assert_called_once_with(className=init_theme.WINDOW_CLASS)
+        second.deiconify.assert_called_once_with()
+
+    def test_a_destroyed_root_is_replaced_and_still_retained(self):
+        tk = SimpleNamespace(Tk=Mock(side_effect=[Mock(), Mock()]))
+        first = init_theme.create_root(tk, system="Unknown")
+        first.winfo_exists.side_effect = RuntimeError("main window destroyed")
+        second = init_theme.create_root(tk, system="Unknown")
+        self.assertIsNot(first, second)
+        retained = [root for module, root in init_theme._shared_roots if module is tk]
+        self.assertEqual(retained, [first, second])
+
+    def test_macos_root_defines_the_dock_reopen_handler(self):
+        tk = SimpleNamespace(Tk=Mock())
+        with patch.object(init_theme, "set_process_name", return_value=False):
+            root = init_theme.create_root(tk, system="Darwin")
+        root.tk.eval.assert_called_once_with(init_theme.MACOS_REOPEN_HANDLER)
+        # Tk 8.6 and 9 call this exact command for the kAEReopenApplication event.
+        self.assertIn("proc ::tk::mac::ReopenApplication {}", init_theme.MACOS_REOPEN_HANDLER)
+
+    def test_reopen_handler_failure_does_not_stop_setup(self):
+        root = Mock()
+        root.tk.eval.side_effect = RuntimeError("no Tcl")
+        self.assertFalse(init_theme.install_reopen_handler(root))
+
+    def test_release_never_destroys_the_root(self):
+        root = Mock()
+        root.winfo_children.return_value = []
+        root.bind.return_value = ()
+        root.tk.splitlist.return_value = ()
+        root.grid_size.return_value = (0, 0)
+        init_theme.release_root(root)
+        root.withdraw.assert_called_once_with()
+        root.destroy.assert_not_called()
+
+    def test_setup_windows_do_not_destroy_the_shared_root(self):
+        # Destroying the first root deletes the interpreter macOS keeps for
+        # Apple events; a Dock click then crashes with a bus error.
+        directory = Path(init_theme.__file__).parent
+        for name in ("init_ui.py", "init_window.py"):
+            with self.subTest(name=name):
+                source = (directory / name).read_text(encoding="utf-8")
+                self.assertNotIn("window.destroy", source)
+                self.assertIn("init_theme.release_root(", source)
+
     def test_unsupported_hosts_keep_their_process_name(self):
         self.assertFalse(init_theme.set_process_name("Unknown"))
 
@@ -134,6 +184,43 @@ class ThemeWindowTests(unittest.TestCase):
                     root.update_idletasks()
                 finally:
                     root.destroy()
+
+    def test_shared_root_survives_release_and_handles_reopen(self):
+        import tkinter as tk
+        from tkinter import ttk
+        with patch.object(init_theme, "set_process_name", return_value=False):
+            root = init_theme.create_root(tk, system="Darwin")
+        interpreter = root.tk
+        ttk.Label(root, text="selector").grid(row=0, column=0)
+        root.columnconfigure(0, weight=1)
+        root.bind("<Escape>", lambda _event: None)
+        root.protocol("WM_DELETE_WINDOW", root.quit)
+        root.after(60_000, lambda: None)
+        root.update()
+        root.iconify()
+        root.update()
+        root.tk.call("::tk::mac::ReopenApplication")
+        root.update()
+        self.assertEqual(root.state(), "normal")
+
+        init_theme.release_root(root)
+        self.assertEqual(root.state(), "withdrawn")
+        self.assertEqual(root.winfo_children(), [])
+        self.assertEqual(root.bind(), ())
+        self.assertEqual(root.tk.splitlist(root.tk.call("after", "info")), ())
+        self.assertEqual(int(root.grid_columnconfigure(0)["weight"]), 0)
+        # A Dock click between windows must not show an empty root.
+        root.tk.call("::tk::mac::ReopenApplication")
+        self.assertEqual(root.state(), "withdrawn")
+
+        with patch.object(init_theme, "set_process_name", return_value=False):
+            again = init_theme.create_root(tk, system="Darwin")
+        try:
+            self.assertIs(again, root)
+            self.assertIs(again.tk, interpreter)
+            self.assertEqual(again.state(), "normal")
+        finally:
+            init_theme.release_root(again)
 
     def test_missing_icons_do_not_stop_setup(self):
         import tkinter as tk

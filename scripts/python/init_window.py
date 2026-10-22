@@ -352,10 +352,9 @@ class SetupWindow:
                     pass
             if self.process is not None and self.process.stdout is not None:
                 self.process.stdout.close()
-            try:
-                self.window.destroy()
-            except self.tk.TclError:
-                pass
+            # Hide rather than destroy, so the Tcl interpreter that macOS
+            # Apple events use stays valid until the process exits.
+            init_theme.release_root(self.window)
         if self.progress.outcome == init_progress.CANCELLED:
             return CANCELLED_EXIT_CODE
         if self.exit_code is None:
@@ -478,7 +477,9 @@ class SetupWindow:
             if step.started_at is not None:
                 finished = step.finished_at if step.finished_at is not None else (
                     now if step.status == init_progress.RUNNING else None)
-                if finished is not None:
+                if step.is_up_to_date and step.status != init_progress.FAILED:
+                    duration.configure(text=init_progress.UP_TO_DATE_LABEL)
+                elif finished is not None:
                     duration.configure(text=init_progress.format_elapsed(finished - step.started_at))
         if self.finished_at is not None:
             return

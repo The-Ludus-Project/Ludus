@@ -26,6 +26,8 @@
 /// contain no zero, and have at most MAX_PASS_NAME_BYTES bytes. No trailing bytes
 /// are permitted. Version 2 has no name table. Version 4 adds ViewNumerator and
 /// ViewDenominator after each resource's six legacy fields; versions 2/3 are fixed.
+/// Version 8 inserts a storage count and that many four-word StorageBuffer records
+/// after stage records and before pass names. Version 6 has native-query ray stages.
 /// Version 5 appends one SceneData mask to each pass; older versions imply all scene data.
 /// Version 7 admits additional raster shader-pair IDs and stage roles; record widths are unchanged.
 namespace ludus::content::render_graph_format
@@ -33,7 +35,9 @@ namespace ludus::content::render_graph_format
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 7;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 8;
+/// First generation supporting independent raster shader pairs, without storage records.
+inline constexpr foundation::uint32 INDEPENDENT_PROGRAM_PACKAGE_VERSION = 7;
 /// First generation using native hardware ray traversal.
 inline constexpr foundation::uint32 NATIVE_RAY_PACKAGE_VERSION = 6;
 /// Last package version carrying explicit scene inputs with portable software ray traversal.
@@ -85,6 +89,9 @@ inline constexpr foundation::usize HEADER_FIELD_COUNT = 10;
 inline constexpr foundation::usize HEADER_BYTES = HEADER_FIELD_COUNT * sizeof(foundation::uint32) + 2 * IDENTITY_BYTES;
 /// Serialized resource record width; matches Resource's eight fields.
 inline constexpr foundation::usize RESOURCE_RECORD_BYTES = 8 * sizeof(foundation::uint32);
+/// Serialized structured storage record width; fields are encoded independently of host padding.
+inline constexpr foundation::usize STORAGE_BUFFER_RECORD_BYTES =
+    STORAGE_BUFFER_FIELD_COUNT * sizeof(foundation::uint32);
 /// Serialized camera record width; matches Camera's one field.
 inline constexpr foundation::usize CAMERA_RECORD_BYTES = sizeof(foundation::uint32);
 /// Serialized pass record width; version 5 appends SceneData to the nine legacy fields.

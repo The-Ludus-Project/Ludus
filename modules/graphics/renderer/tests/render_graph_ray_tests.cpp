@@ -1,6 +1,7 @@
 #include "renderer_composite.h"
 #include "rg2_raytracing.h"
 #include "rg2_scene_ray.h"
+#include "rg2_storage_ray.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
@@ -676,4 +677,89 @@ TEST_CASE("Measure engine-only ray navigation and image output at 640 by 480", "
          << ", full Update call ms=" << fullUpdateNanoseconds / CAMERA_ITERATIONS / NANOSECONDS_PER_MILLISECOND
          << ", retained camera Update call ms="
          << cameraUpdateNanoseconds / CAMERA_ITERATIONS / NANOSECONDS_PER_MILLISECOND);
+}
+
+TEST_CASE("Two graph reservoirs retain alternating shader writes and reset on replacement",
+          "[render-graph][gpu][ray-pipeline][storage]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_STORAGE_RAY_DIRECTORY, "rg2_storage_ray.lurgrt"});
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(plan.StorageBuffers.GetSize() == 2);
+    CHECK(plan.StorageBuffers[0].Count == 0);
+    CHECK(plan.StorageBuffers[0].Stride == 32);
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_storage_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                shaders::renderer_composite::Fragment());
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, decoded);
+    const uint64 started = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    fixture.Cameras[0].OrthographicCamera = true;
+    const auto update = [&fixture](uint64 revision, bool shouldReuseScene = false) {
+        renderer::RenderGraphReport report;
+        rhi::RasterStatus result = fixture.Graph.Update(
+            shouldReuseScene == true
+                ? BorrowedView<const renderer::RenderGraphMesh>{}
+                : BorrowedView<const renderer::RenderGraphMesh>{fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+            shouldReuseScene == true
+                ? BorrowedView<const renderer::RenderGraphItem>{}
+                : BorrowedView<const renderer::RenderGraphItem>{fixture.Items.GetData(), fixture.Items.GetSize()},
+            {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+            revision,
+            renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+            report,
+            nullptr,
+            shouldReuseScene == true ? 1 : revision);
+        const uint64 beginning = time::NowTicks();
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = fixture.Graph.Poll();
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+    };
+    const auto render = [&fixture]() {
+        rhi::SubmissionToken completion;
+        REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+        const uint64 beginning = time::NowTicks();
+        rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = rhi::GetStatus(fixture.Device, completion);
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        rhi::TextureHandle texture;
+        rhi::TextureAspect aspect;
+        REQUIRE(fixture.Graph.GetExport(0, texture, aspect) == rhi::RasterStatus::Ready);
+        rhi::ReadbackTicket ticket;
+        result =
+            rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, WIDTH, HEIGHT}, usize{WIDTH} * 4, ticket);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = rhi::GetStatus(fixture.Device, ticket);
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::CopyReadback(fixture.Device, ticket, fixture.Pixels.GetData(), fixture.Pixels.GetSize()) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+        return fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2)];
+    };
+    update(1);
+    const uint8 first = render();
+    const uint8 second = render();
+    const uint8 third = render();
+    CHECK(first > 0);
+    CHECK(second > first);
+    CHECK(third > second);
+    update(2, true);
+    CHECK(render() > third); // Camera history resets; authored storage and its bindings survive.
+    update(3);
+    CHECK(render() == first);
 }
