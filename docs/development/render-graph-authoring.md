@@ -2027,6 +2027,21 @@ RG3b completes the editor half of the
 a visual node canvas over the same draft, and a trusted preview of the cooked
 runtime generation on the editor's existing viewport device.
 
+### Rename a node
+
+Choose **Edit Node...** from the canvas context menu, edit **Name**, and press
+**Rename** or Enter. **Rename Node...** in the same menu opens a focused name
+editor. The Name controls are also available in Properties. Names must be unique
+within their configuration: 1–63 ASCII letters, digits, underscores or hyphens,
+starting with a letter. `input` is reserved for the configuration interface.
+Rejected names show a repair beside the field and preserve the draft.
+
+Renaming updates incoming and outgoing connections, configuration output sources
+and canvas positions together in one Undo/Redo step, retaining selection under
+the restored name. Other configurations, shared shader/program IDs and source
+files retain their names. Cancel leaves the draft unchanged; **Save** publishes
+the accepted rename with the graph.
+
 ### Edit shader sources inside Ludus
 
 The **Source** pane uses the shared code editor: line numbers, Slang lexical

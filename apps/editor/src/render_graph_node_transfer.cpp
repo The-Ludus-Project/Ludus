@@ -110,6 +110,126 @@ bool CollectDependencies(const RenderGraphDocument& document,
 }
 } // namespace
 
+RenderGraphDocumentStatus RenderGraphDocument::RenameNode(const QString& file,
+                                                          const QString& configuration,
+                                                          const QString& node,
+                                                          const QString& name,
+                                                          QString& outError)
+{
+    outError = QStringLiteral("Select an existing node and configuration before renaming it.");
+    QJsonObject graph;
+    if (GetGraph(file, graph) == false)
+    {
+        return RenderGraphDocumentStatus::Malformed;
+    }
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    const qsizetype configurationIndex = FindConfiguration(configurations, configuration);
+    if (configurationIndex < 0)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    QJsonObject record = configurations.at(configurationIndex).toObject();
+    QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    qsizetype nodeIndex = -1;
+    for (qsizetype index = 0; index < nodes.size(); ++index)
+    {
+        const QString identity = nodes.at(index).toObject().value(QStringLiteral("id")).toString();
+        if (identity == node)
+        {
+            if (nodeIndex >= 0)
+            {
+                outError = QStringLiteral("Resolve the duplicate node ID in Source before renaming it.");
+                return RenderGraphDocumentStatus::InvalidEdit;
+            }
+            nodeIndex = index;
+        }
+        if (identity == name && name != node)
+        {
+            outError = QStringLiteral("A node named '%1' already exists in this configuration.").arg(name);
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+    }
+    if (nodeIndex < 0)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    if (IsIdentifier(name) == false || name == QStringLiteral("input"))
+    {
+        outError = QStringLiteral("Use 1–%1 ASCII letters, digits, underscores or hyphens, starting with a letter. "
+                                  "The name 'input' is reserved.")
+                       .arg(MAX_IDENTIFIER_LENGTH);
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    if (name == node)
+    {
+        outError.clear();
+        return RenderGraphDocumentStatus::Ok;
+    }
+    QJsonObject renamed = nodes.at(nodeIndex).toObject();
+    renamed.insert(QStringLiteral("id"), name);
+    nodes.replace(nodeIndex, renamed);
+    record.insert(QStringLiteral("nodes"), nodes);
+    const auto renameEndpoint = [&node, &name](const QString& endpoint) {
+        return GetEndpointNode(endpoint) == node && endpoint.contains(QLatin1Char('.')) == true
+                   ? name + endpoint.mid(node.size())
+                   : endpoint;
+    };
+    QJsonArray edges = record.value(QStringLiteral("edges")).toArray();
+    for (qsizetype index = 0; index < edges.size(); ++index)
+    {
+        QJsonObject edge = edges.at(index).toObject();
+        for (const QString& field : {QStringLiteral("from"), QStringLiteral("to")})
+        {
+            edge.insert(field, renameEndpoint(edge.value(field).toString()));
+        }
+        edges.replace(index, edge);
+    }
+    record.insert(QStringLiteral("edges"), edges);
+    QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
+    for (qsizetype index = 0; index < outputs.size(); ++index)
+    {
+        QJsonObject output = outputs.at(index).toObject();
+        if (output.contains(QStringLiteral("source")) == true)
+        {
+            output.insert(QStringLiteral("source"), renameEndpoint(output.value(QStringLiteral("source")).toString()));
+            outputs.replace(index, output);
+        }
+    }
+    record.insert(QStringLiteral("outputs"), outputs);
+    if (record.contains(QStringLiteral("layout")) == true)
+    {
+        QJsonObject layout = record.value(QStringLiteral("layout")).toObject();
+        QJsonArray positions = layout.value(QStringLiteral("positions")).toArray();
+        for (qsizetype index = 0; index < positions.size(); ++index)
+        {
+            QJsonObject position = positions.at(index).toObject();
+            if (position.value(QStringLiteral("node")).toString() == node)
+            {
+                position.insert(QStringLiteral("node"), name);
+                positions.replace(index, position);
+            }
+        }
+        layout.insert(QStringLiteral("positions"), positions);
+        record.insert(QStringLiteral("layout"), layout);
+    }
+    configurations.replace(configurationIndex, record);
+    graph.insert(QStringLiteral("configurations"), configurations);
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    const RenderGraphDocumentStatus status =
+        commit(candidate, false, {}, {}, {file, configuration, node}, {file, configuration, name});
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mLastMove.clear();
+        outError.clear();
+    }
+    else
+    {
+        outError = QStringLiteral("The renamed graph exceeds the source or package limits. The draft was preserved.");
+    }
+    return status;
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::AddConfiguration(const QString& file, const QString& name)
 {
     QJsonObject graph;
