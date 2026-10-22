@@ -28,11 +28,20 @@ struct RenderGraphTextState final
     CodeTextSelection Selection;
 };
 
+/// Non-authoring selection restored by a node rename's Undo/Redo on the GUI thread.
+struct RenderGraphNodeSelection final
+{
+    QString File;
+    QString Configuration;
+    QString Node;
+};
+
 /// Complete authored render-graph package content: package-relative path to bytes.
 struct RenderGraphSnapshot final
 {
     QMap<QString, QByteArray> Files;
     RenderGraphTextState TextState;
+    RenderGraphNodeSelection NodeSelection;
     /// History cursor hints do not participate in authored equality or serialization.
     [[nodiscard]] LUDUS_INLINE bool operator==(const RenderGraphSnapshot& other) const
     {
@@ -139,6 +148,17 @@ public:
                                                         const QString& configuration,
                                                         const QJsonObject& node,
                                                         QString* outErrorOrNull = nullptr);
+    /// Rename one node and its edge endpoints, configuration output sources and layout
+    /// references in the owning configuration as one undoable draft edit. Names are unique
+    /// ASCII graph identifiers; "input" is reserved. Equal names succeed without history.
+    /// Failure preserves every source and history entry and describes the repair in outError.
+    /// Other configurations, shader/program IDs and source files are retained. GUI thread only;
+    /// Save publishes the edit. History carries before/after node selection hints.
+    [[nodiscard]] RenderGraphDocumentStatus RenameNode(const QString& file,
+                                                       const QString& configuration,
+                                                       const QString& node,
+                                                       const QString& name,
+                                                       QString& outError);
     /// Apply a pipeline and create missing shader programs and source templates as one
     /// undoable draft edit, including the selected technique and recipe. Program placeholders receive generated names.
     /// Existing programs must match stage and source. Failure preserves all draft files; Save publishes new files
@@ -272,6 +292,13 @@ public:
         return mDraft.TextState;
     }
 
+    /// Selection hint from the current rename transaction; empty for other edits.
+    /// The document owns the returned reference until its next mutation.
+    [[nodiscard]] LUDUS_INLINE const RenderGraphNodeSelection& GetHistoryNodeSelection() const noexcept
+    {
+        return mDraft.NodeSelection;
+    }
+
     [[nodiscard]] bool CanUndo() const noexcept
     {
         return mHistory.CanUndo();
@@ -320,7 +347,9 @@ private:
     [[nodiscard]] RenderGraphDocumentStatus commit(const RenderGraphSnapshot& candidate,
                                                    bool shouldMerge,
                                                    const RenderGraphTextState& beforeText = {},
-                                                   const RenderGraphTextState& afterText = {});
+                                                   const RenderGraphTextState& afterText = {},
+                                                   const RenderGraphNodeSelection& beforeSelection = {},
+                                                   const RenderGraphNodeSelection& afterSelection = {});
     [[nodiscard]] RenderGraphDocumentStatus createPackage(QStringList& outSavedFiles);
     void
     adopt(const QString& packageRoot, const QString& rootGraph, const RenderGraphSnapshot& snapshot, bool isBuiltIn);

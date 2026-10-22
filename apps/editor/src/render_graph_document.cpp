@@ -779,7 +779,9 @@ bool RenderGraphDocument::GetGraph(const QString& file, QJsonObject& outGraph) c
 RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot& candidate,
                                                       bool shouldMerge,
                                                       const RenderGraphTextState& beforeText,
-                                                      const RenderGraphTextState& afterText)
+                                                      const RenderGraphTextState& afterText,
+                                                      const RenderGraphNodeSelection& beforeSelection,
+                                                      const RenderGraphNodeSelection& afterSelection)
 {
     qsizetype total = 0;
     for (const QByteArray& bytes : candidate.Files)
@@ -796,8 +798,10 @@ RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot&
     }
     RenderGraphSnapshot before = mDraft;
     before.TextState = beforeText;
+    before.NodeSelection = beforeSelection;
     RenderGraphSnapshot after = candidate;
     after.TextState = afterText;
+    after.NodeSelection = afterSelection;
     if (mHistory.Commit(before, after, shouldMerge) == false)
     {
         return RenderGraphDocumentStatus::InvalidEdit;
