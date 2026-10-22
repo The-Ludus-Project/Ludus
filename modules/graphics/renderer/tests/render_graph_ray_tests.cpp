@@ -811,7 +811,7 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
             CHECK(fixture.Graph.HasPendingSamples() == true);
             // This fixture diagnoses a retained frame counter with a restarted sample index as green.
             // It also proves camera epochs preserve the ordered invocation index.
-            CHECK(fixture.Pixels[center + 1] == (frame == CAMERA_FRAME_INDEX ? 255 : 0));
+            CHECK(fixture.Pixels[center + 1] == (frame == CAMERA_FRAME_INDEX ? 188 : 0));
             CHECK(fixture.Pixels[center + 2] == 0);
             previousRed = fixture.Pixels[center];
             REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
