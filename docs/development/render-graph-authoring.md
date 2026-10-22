@@ -93,6 +93,20 @@ The editor creates the shared `ScenePayload` source and manifest interface along
 the callbacks. Raygen traces the camera ray once; the template displays material
 color and adds no lighting estimator.
 
+For a scene-aware ray pipeline, **Properties → Scene query budgets** sets the
+maximum **Surface queries** (1–8) and **Visibility queries** (0–16) per camera
+sample. The same controls are available from the canvas node's **Edit Node**
+dialog with Properties hidden. Surface queries include the camera intersection;
+camera plus one BSDF ray for direct-light MIS needs at least two. Visibility
+queries count shadow tests; zero permits none. Exceeding either budget rejects
+the sample rather than committing partial lighting.
+
+These budgets belong to the package's shared ray technique, so changing them
+affects every scene-aware ray pipeline using it, including imported subgraphs.
+Completed edits update the existing manifest interface as one undoable change;
+**Save** publishes it and updates Live Preview. Legacy pipelines first need
+**Enable Scene Materials**, described below.
+
 Existing ray techniques keep their interface and authored sources. For a legacy
 `ShaderMain(RayHit input)`, material tint is `input.Color.xyz`; full material
 parameters are unavailable through `RayHit`. Select the ray pipeline and choose

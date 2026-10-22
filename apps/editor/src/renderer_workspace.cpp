@@ -2129,6 +2129,29 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
     {
         RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, &inoutParent);
+        if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+        {
+            RenderGraphSceneQueryBudgets budgets;
+            if (mDocument.GetSceneQueryBudgets(budgets) == true)
+            {
+                editor->AddSceneQueryBudgets(budgets);
+                connect(editor,
+                        &RenderGraphPipelineEditor::SceneQueryBudgetsEdited,
+                        this,
+                        [this, editor](const RenderGraphSceneQueryBudgets& candidate) {
+                            QString error;
+                            const RenderGraphDocumentStatus status = mDocument.SetSceneQueryBudgets(candidate, error);
+                            if (status != RenderGraphDocumentStatus::Ok)
+                            {
+                                mStatus->setText(error);
+                                renderInspector();
+                                Q_EMIT NodeFieldsChanged(nullptr);
+                                return;
+                            }
+                            documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
+                        });
+            }
+        }
         connect(editor, &RenderGraphPipelineEditor::Edited, this, [this, editor](const QJsonObject& candidate) {
             QString error;
             const RenderGraphDocumentStatus status =

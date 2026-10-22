@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_scene_query_budgets.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -30,10 +31,15 @@ public:
 
     /// Adopt document-assigned program names without emitting another edit or replacing controls.
     void SetShaderAssignments(const QJsonArray& shaders);
+    /// Add shared scene-ray budget controls once, after construction, for a ray pipeline.
+    /// Commits propose manifest edits separately from node state; the document owns acceptance.
+    void AddSceneQueryBudgets(const RenderGraphSceneQueryBudgets& budgets);
 
 Q_SIGNALS:
     /// A completed edit proposes the complete node; the document may reject unsafe port changes.
     void Edited(const QJsonObject& node);
+    /// A completed budget edit proposes the shared technique's limits; no node fields change.
+    void SceneQueryBudgetsEdited(const RenderGraphSceneQueryBudgets& budgets);
 
 private:
     [[nodiscard]] QTableWidget*

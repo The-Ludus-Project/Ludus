@@ -1615,6 +1615,191 @@ QJsonObject GetRayTechnique(const RenderGraphDocument& document)
 }
 } // namespace
 
+TEST_CASE("scene query budgets edit only the shared manifest and survive history and save",
+          "[editor][render-graph][pipeline][query-budgets]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject node = MakeCompleteRayPipeline(QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    RenderGraphSceneQueryBudgets originalBudgets;
+    REQUIRE(document.GetSceneQueryBudgets(originalBudgets) == true);
+    CHECK(originalBudgets.SurfaceQueries == 1);
+    CHECK(originalBudgets.VisibilityQueries == 1);
+    // An existing optional interface field must survive budget changes.
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    QJsonObject technique = techniques.last().toObject();
+    QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
+    interface.insert(QStringLiteral("local_payload_bytes"), 256);
+    technique.insert(QStringLiteral("scene_interface"), interface);
+    techniques.replace(techniques.size() - 1, technique);
+    manifest.insert(QStringLiteral("techniques"), techniques);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    QMap<QString, QByteArray> originalFiles;
+    for (const QString& file : document.GetFiles())
+    {
+        originalFiles.insert(file, document.GetDraft(file));
+    }
+    const uint64 revision = document.GetRevision();
+    QString error;
+    REQUIRE(document.SetSceneQueryBudgets(originalBudgets, error) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetRevision() == revision);
+    const RenderGraphSceneQueryBudgets edited
+    {
+        .SurfaceQueries = 2,
+        .VisibilityQueries = 0,
+    };
+    REQUIRE(document.SetSceneQueryBudgets(edited, error) == RenderGraphDocumentStatus::Ok);
+    CHECK(error.isEmpty() == true);
+    CHECK(document.GetRevision() == revision + 1);
+    CHECK(document.GetFiles() == originalFiles.keys());
+    for (QMap<QString, QByteArray>::const_iterator file = originalFiles.constBegin(); file != originalFiles.constEnd();
+         ++file)
+    {
+        if (file.key() != manifestFile)
+        {
+            CHECK(document.GetDraft(file.key()) == file.value());
+        }
+        CHECK(document.GetSaved(file.key()) == file.value());
+    }
+    const QJsonObject editedInterface = GetRayTechnique(document).value(QStringLiteral("scene_interface")).toObject();
+    QJsonObject expectedInterface = interface;
+    expectedInterface.insert(QStringLiteral("surface_queries"), edited.SurfaceQueries);
+    expectedInterface.insert(QStringLiteral("visibility_queries"), edited.VisibilityQueries);
+    CHECK(editedInterface == expectedInterface);
+    const QByteArray editedManifest = document.GetDraft(manifestFile);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(manifestFile) == originalFiles.value(manifestFile));
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetDraft(manifestFile) == editedManifest);
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphSceneQueryBudgets reloadedBudgets;
+    REQUIRE(reloaded.GetSceneQueryBudgets(reloadedBudgets) == true);
+    CHECK(reloadedBudgets.SurfaceQueries == edited.SurfaceQueries);
+    CHECK(reloadedBudgets.VisibilityQueries == edited.VisibilityQueries);
+    CHECK(reloaded.GetDraft(manifestFile) == editedManifest);
+}
+
+TEST_CASE("scene query budget validation preserves sources and rejects ambiguous interfaces",
+          "[editor][render-graph][pipeline][query-budgets]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject node = MakeCompleteRayPipeline(QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    RenderGraphSceneQueryBudgets budgets;
+    REQUIRE(document.GetSceneQueryBudgets(budgets) == true);
+    SECTION("out-of-range surface queries")
+    {
+        budgets.SurfaceQueries = RenderGraphSceneQueryBudgets::MAX_SURFACE_QUERIES + 1;
+    }
+    SECTION("zero surface queries")
+    {
+        budgets.SurfaceQueries = 0;
+    }
+    SECTION("out-of-range visibility queries")
+    {
+        budgets.VisibilityQueries = RenderGraphSceneQueryBudgets::MAX_VISIBILITY_QUERIES + 1;
+    }
+    SECTION("negative visibility queries")
+    {
+        budgets.VisibilityQueries = -1;
+    }
+    SECTION("duplicate shared technique")
+    {
+        const QString manifestFile = QStringLiteral("main.lushader.json");
+        QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+        QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+        techniques.append(GetRayTechnique(document));
+        manifest.insert(QStringLiteral("techniques"), techniques);
+        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+        RenderGraphSceneQueryBudgets preserved{ .SurfaceQueries = 2, .VisibilityQueries = 0 };
+        CHECK(document.GetSceneQueryBudgets(preserved) == false);
+        CHECK(preserved.SurfaceQueries == 2);
+        CHECK(preserved.VisibilityQueries == 0);
+    }
+    SECTION("legacy interface")
+    {
+        const QString manifestFile = QStringLiteral("main.lushader.json");
+        QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+        QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+        QJsonObject technique = techniques.last().toObject();
+        technique.remove(QStringLiteral("scene_interface"));
+        techniques.replace(techniques.size() - 1, technique);
+        manifest.insert(QStringLiteral("techniques"), techniques);
+        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetSceneQueryBudgets(budgets) == false);
+    }
+    const uint64 revision = document.GetRevision();
+    QMap<QString, QByteArray> originalFiles;
+    for (const QString& file : document.GetFiles())
+    {
+        originalFiles.insert(file, document.GetDraft(file));
+    }
+    QString error;
+    CHECK(document.SetSceneQueryBudgets(budgets, error) == RenderGraphDocumentStatus::InvalidEdit);
+    CHECK(error.isEmpty() == false);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetFiles() == originalFiles.keys());
+    for (QMap<QString, QByteArray>::const_iterator file = originalFiles.constBegin(); file != originalFiles.constEnd();
+         ++file)
+    {
+        CHECK(document.GetDraft(file.key()) == file.value());
+    }
+}
+
+TEST_CASE("scene query budget controls commit complete edits within admitted limits",
+          "[editor][render-graph][pipeline][query-budgets]")
+{
+    const QJsonObject node = MakeCompleteRayPipeline(QStringLiteral("trace"));
+    const RenderGraphSceneQueryBudgets budgets;
+    RenderGraphPipelineEditor editor(node);
+    editor.AddSceneQueryBudgets(budgets);
+    QSpinBox* surfaceOrNull = editor.findChild<QSpinBox*>(QStringLiteral("renderGraphSurfaceQueries"));
+    QSpinBox* visibilityOrNull = editor.findChild<QSpinBox*>(QStringLiteral("renderGraphVisibilityQueries"));
+    REQUIRE(surfaceOrNull != nullptr);
+    REQUIRE(visibilityOrNull != nullptr);
+    CHECK(surfaceOrNull->minimum() == RenderGraphSceneQueryBudgets::MIN_SURFACE_QUERIES);
+    CHECK(surfaceOrNull->maximum() == RenderGraphSceneQueryBudgets::MAX_SURFACE_QUERIES);
+    CHECK(visibilityOrNull->minimum() == RenderGraphSceneQueryBudgets::MIN_VISIBILITY_QUERIES);
+    CHECK(visibilityOrNull->maximum() == RenderGraphSceneQueryBudgets::MAX_VISIBILITY_QUERIES);
+    int32 edits = 0;
+    int32 nodeEdits = 0;
+    RenderGraphSceneQueryBudgets proposed;
+    QObject::connect(&editor,
+                     &RenderGraphPipelineEditor::SceneQueryBudgetsEdited,
+                     &editor,
+                     [&edits, &proposed](const RenderGraphSceneQueryBudgets& candidate) {
+                         ++edits;
+                         proposed = candidate;
+                     });
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&nodeEdits](const QJsonObject&) {
+        ++nodeEdits;
+    });
+    surfaceOrNull->setValue(2);
+    CHECK(edits == 0);
+    REQUIRE(QMetaObject::invokeMethod(surfaceOrNull, "editingFinished") == true);
+    CHECK(edits == 1);
+    CHECK(proposed.SurfaceQueries == 2);
+    CHECK(proposed.VisibilityQueries == 1);
+    visibilityOrNull->setValue(0);
+    REQUIRE(QMetaObject::invokeMethod(visibilityOrNull, "editingFinished") == true);
+    CHECK(edits == 2);
+    CHECK(proposed.VisibilityQueries == 0);
+    CHECK(nodeEdits == 0);
+}
+
 TEST_CASE("completing an imported ray pipeline registers its technique in the same undo step",
           "[editor][render-graph][pipeline][technique]")
 {

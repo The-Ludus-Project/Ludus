@@ -7,6 +7,7 @@
 
 #include "internal/code_document.h"
 #include "internal/document_history.h"
+#include "internal/render_graph_scene_query_budgets.h"
 #include "internal/render_graph_source.h"
 
 #include <QByteArray>
@@ -154,6 +155,15 @@ public:
     /// Preserves original callbacks through adapters, program IDs and admission budgets.
     /// Failure preserves draft/history and reports the required repair. No disk writes.
     [[nodiscard]] RenderGraphDocumentStatus EnableSceneMaterials(QString& outError);
+    /// Read the shared scene-ray query budgets. Missing/ambiguous techniques, unsupported
+    /// versions or invalid budget fields preserve outBudgets and return false. GUI thread only.
+    [[nodiscard]] bool GetSceneQueryBudgets(RenderGraphSceneQueryBudgets& outBudgets) const;
+    /// Update only the shared scene interface's query budgets in one undoable draft edit.
+    /// All ray pipelines using that technique share the values. Save publishes the manifest.
+    /// Out-of-range values, absent/ambiguous techniques and unsupported versions preserve
+    /// all sources/history and describe the repair. Other interface metadata is retained.
+    [[nodiscard]] RenderGraphDocumentStatus SetSceneQueryBudgets(const RenderGraphSceneQueryBudgets& budgets,
+                                                                 QString& outError);
     /// Register complete pipelines from the root import closure in one undoable draft edit.
     /// Repairs older packages without changing shaders. Conflict/capacity failures preserve the draft.
     [[nodiscard]] RenderGraphDocumentStatus PrepareTechniques(QString& outError);

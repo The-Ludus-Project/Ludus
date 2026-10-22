@@ -15,6 +15,14 @@ STAGES = ('ray_generation', 'miss', 'closest_hit')
 STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
+# One owner for build admission and the editor controls. Editor CMake reads this
+# data through runpy at configure time; no Python interpreter enters the UI.
+SCENE_QUERY_LIMITS = {
+    'MIN_SURFACE_QUERIES': 1,
+    'MAX_SURFACE_QUERIES': 8,
+    'MIN_VISIBILITY_QUERIES': 0,
+    'MAX_VISIBILITY_QUERIES': 16,
+}
 
 COMPUTE_ID = 'GraphRayCompute'
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
