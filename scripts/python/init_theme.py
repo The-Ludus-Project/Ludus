@@ -10,7 +10,9 @@ Identity
     process name that ``top``, ``ps -o comm`` and system monitors show becomes
     ``ludus-setup`` through ``prctl``. On macOS the application menu and Dock
     use the main bundle's ``CFBundleName``, which is set before Tk creates the
-    menu bar; ``iconphoto`` replaces the Python rocket in the Dock. The full
+    menu bar; ``iconphoto`` replaces the Python rocket in the Dock, and
+    clicking that Dock icon brings the current window to the front. Both
+    windows share one Tk root (see ``create_root``). The full
     command line in ``ps`` still names the interpreter: rewriting ``argv``
     needs the third-party ``setproctitle`` package, which setup does not
     install.
@@ -227,12 +229,103 @@ def set_macos_application_name(name: str) -> bool:
     return send_object(information, selector(b"objectForKey:"), key) is not None
 
 
+# Every Tk root this process created, with the tkinter module that made it.
+# A root is reused by later windows and its Tcl interpreter is never deleted
+# before the process exits; see ``create_root``.
+_shared_roots: list[tuple[object, object]] = []
+
+# Run when the Dock icon is clicked (Tk calls ::tk::mac::ReopenApplication for
+# the kAEReopenApplication Apple event): bring the current window back from the
+# Dock and to the front. A withdrawn root (between the option selector and the
+# progress window) stays hidden instead of appearing empty.
+MACOS_REOPEN_HANDLER = """
+namespace eval ::tk::mac {}
+proc ::tk::mac::ReopenApplication {} {
+    if {[winfo exists .] == 0 || [wm state .] eq "withdrawn"} {
+        return
+    }
+    wm deiconify .
+    raise .
+    focus -force .
+}
+"""
+
+
 def create_root(tk, *, system: str | None = None):
-    """Create the Tk root with the Ludus Setup name, window class and process name."""
-    set_process_name(system)
-    root = tk.Tk(className=WINDOW_CLASS)
+    """Return the Tk root with the Ludus Setup name, window class and process name.
+
+    The option selector and the progress window share one root, and its Tcl
+    interpreter lives until the process exits. On macOS, Tk hands the first
+    interpreter it initializes to the application object, which uses it for
+    every later Apple event (Dock clicks, Quit, Preferences) and never updates
+    it. Deleting that interpreter and creating a second root left a dangling
+    pointer, so clicking the Dock icon crashed the process with a bus error
+    inside ``handleReopenApplicationEvent``.
+    """
+    system = system or platform.system()
+    root = shared_root(tk)
+    if root is None:
+        set_process_name(system)
+        root = tk.Tk(className=WINDOW_CLASS)
+        _shared_roots.append((tk, root))
+    else:
+        root.deiconify()
     root.title(APPLICATION_NAME)
+    if system == "Darwin":
+        install_reopen_handler(root)
     return root
+
+
+def shared_root(tk):
+    """The live root an earlier ``create_root`` made with ``tk``, or None."""
+    for module, root in reversed(_shared_roots):
+        if module is not tk:
+            continue
+        try:
+            return root if bool(root.winfo_exists()) else None
+        except Exception:  # noqa: BLE001 - TclError: the main window was destroyed.
+            return None
+    return None
+
+
+def install_reopen_handler(root) -> bool:
+    """Define the macOS Dock reopen handler in the root's interpreter; best effort."""
+    try:
+        root.tk.eval(MACOS_REOPEN_HANDLER)
+    except Exception:  # noqa: BLE001 - TclError, or a stub root in tests.
+        return False
+    return True
+
+
+def release_root(root) -> None:
+    """Hide the root and clear what one window put on it, keeping its interpreter alive.
+
+    Call this instead of ``destroy`` when a window is done; the next
+    ``create_root`` reuses the root.
+    """
+    try:
+        root.withdraw()
+        reset_root(root)
+    except Exception:  # noqa: BLE001 - TclError from a destroyed root.
+        pass
+
+
+def reset_root(root) -> None:
+    """Remove widgets, bindings, timers, the close handler and the grid layout of ``root``."""
+    for child in list(root.winfo_children()):
+        child.destroy()
+    for sequence in root.bind():
+        root.unbind(sequence)
+    for timer in root.tk.splitlist(root.tk.call("after", "info")):
+        root.after_cancel(timer)
+    root.tk.call("wm", "protocol", root._w, "WM_DELETE_WINDOW", "")
+    columns, rows = root.grid_size()
+    for column in range(columns):
+        root.columnconfigure(column, weight=0, minsize=0, uniform="", pad=0)
+    for row in range(rows):
+        root.rowconfigure(row, weight=0, minsize=0, uniform="", pad=0)
+    root.minsize(1, 1)
+    root.geometry("")
 
 
 # -- appearance -----------------------------------------------------------------
