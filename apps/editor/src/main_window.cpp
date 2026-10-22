@@ -86,6 +86,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mRenderGraphToolbar(new QToolBar(QStringLiteral("Render Graph"), this)),
       mNewGraphAction(CreateEditorCommand(RENDER_GRAPH_NEW_COMMAND, this)),
       mOpenGraphAction(CreateEditorCommand(RENDER_GRAPH_OPEN_COMMAND, this)),
+      mRemoveUnusedShadersAction(CreateEditorCommand(RENDER_GRAPH_REMOVE_UNUSED_SHADERS_COMMAND, this)),
       mValidateGraphAction(CreateEditorCommand(RENDER_GRAPH_VALIDATE_COMMAND, this)),
       mBuildGraphAction(CreateEditorCommand(RENDER_GRAPH_BUILD_COMMAND, this)),
       mBuildPreviewGraphAction(CreateEditorCommand(RENDER_GRAPH_BUILD_PREVIEW_COMMAND, this)),
@@ -274,6 +275,12 @@ void MainWindow::BuildMenus()
     RedoAction_->setShortcuts(QKeySequence::keyBindings(QKeySequence::Redo));
     connect(UndoAction_, &QAction::triggered, this, &MainWindow::OnUndoRequested);
     connect(RedoAction_, &QAction::triggered, this, &MainWindow::OnRedoRequested);
+    editMenu->addSeparator();
+    editMenu->addAction(mRemoveUnusedShadersAction);
+    connect(mRemoveUnusedShadersAction, &QAction::triggered, this, [this]() {
+        static_cast<void>(Renderer_->RemoveUnusedShaders());
+        renderGraphCommands();
+    });
     // Visual Studio order: File, Edit, View, Project, Build, ..., Window, Help.
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
 

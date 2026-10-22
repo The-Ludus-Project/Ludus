@@ -187,6 +187,15 @@ public:
     /// Register complete pipelines from the root import closure in one undoable draft edit.
     /// Repairs older packages without changing shaders. Conflict/capacity failures preserve the draft.
     [[nodiscard]] RenderGraphDocumentStatus PrepareTechniques(QString& outError);
+    /// Remove programs unused by every loaded graph/configuration/subgraph and manifest technique.
+    /// Removes only their exclusive, unmentioned package-owned sources; shared files and
+    /// conservative include/import matches survive. Unregistered files and techniques are retained.
+    /// One undo step; Save publishes removals with disk conflict checks. Malformed reference
+    /// documents or missing subgraphs preserve draft/history and output lists; outError explains why.
+    /// Success reports manifest#program identities and package-relative removed sources; no-op
+    /// success creates no history entry. GUI thread only; no disk writes.
+    [[nodiscard]] RenderGraphDocumentStatus
+    RemoveUnusedShaders(QStringList& outPrograms, QStringList& outSources, QString& outError);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
     /// Add an empty named configuration to an existing file without changing its default.
