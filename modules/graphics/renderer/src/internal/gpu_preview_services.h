@@ -39,7 +39,8 @@ constexpr StaticArray<rhi::RasterBinding, LUDUS_GPU_PREVIEW_BINDING_COUNT> GPU_C
       LUDUS_GPU_PREVIEW_VECTOR_BYTES},
      {LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, rhi::RasterBindingKind::RayScene, rhi::RasterVisibility::Compute, 0}}};
 constexpr rhi::RasterBinding GPU_IMAGE_BINDINGS[]{
-    {0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Vertex, 16}};
+    {0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, sizeof(math::Vector4)},
+    {1, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Fragment, sizeof(math::Vector4)}};
 float32 GpuBits(uint32 value) noexcept
 {
     float32 result = 0;
@@ -317,6 +318,12 @@ Status PackGpuScene(const ReferenceJob& job,
     outUniform.Sampling[1] = static_cast<uint32>(job.Key.Value >> RANDOM_KEY_WORD_BITS);
     outUniform.Sampling[2] = (job.Description.ReverseZ ? 1U : 0U) | (job.Description.InfiniteFar ? 2U : 0U) |
                              (job.Description.CenterRays == true ? CENTER_RAYS_FLAG : 0U);
+    bool isOpaque = true;
+    for (usize i = 0; i < scene.InstanceCount; ++i)
+    {
+        isOpaque = isOpaque == true && scene.Instances[i].Surface->Alpha == MaterialAlpha::Opaque;
+    }
+    outUniform.Sampling[2] |= isOpaque == true ? LUDUS_GPU_PREVIEW_OPAQUE_FLAG : 0;
     outUniform.Sampling[FOURTH_COMPONENT] = job.Description.TargetSamples;
     outUniform.Environment =
         GpuVector(job.Description.Environment, GpuBits(static_cast<uint32>(job.ShaderEmitters.GetSize())));
@@ -436,9 +443,12 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
         }
         if (inoutJob.ImageBindingsCreated == false)
         {
-            const rhi::RasterBindingResource binding{0, inoutJob.ImageParameters, 0, 16};
+            constexpr usize IMAGE_BINDING_COUNT = 2;
+            const StaticArray<rhi::RasterBindingResource, IMAGE_BINDING_COUNT> bindings{
+                {{0, inoutJob.ImageParameters, 0, sizeof(math::Vector4)},
+                 {1, inoutJob.Colors, 0, usize(inoutJob.Width) * inoutJob.Height * sizeof(math::Vector4)}}};
             const Status created =
-                rhi::CreateBindingSet(device, inoutState.ImageLayout, {&binding, 1}, inoutJob.ImageBindings);
+                rhi::CreateBindingSet(device, inoutState.ImageLayout, bindings.AsSpan(), inoutJob.ImageBindings);
             if (Accepted(created) == false)
             {
                 return inoutJob.Setup = created;
@@ -493,6 +503,8 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
 void Renderer::State::DropGpuPreview(usize slot) noexcept
 {
     GpuPreviewRecord& job = GpuPreview->Jobs[slot];
+    job.CameraUpdate.Reset();
+    job.HasPendingCamera = false;
     static_cast<void>(rhi::Destroy(Device, job.ComputeBindings));
     for (usize bufferIndex = 0; bufferIndex < internal::GPU_GRAPH_BUFFER_COUNT; ++bufferIndex)
     {
@@ -660,14 +672,21 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
             return Status::InvalidDescription;
         }
     }
-    if (vertex.Inputs.size() != 2 || vertex.Inputs[0].Location != 0 ||
-        vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float2 || vertex.Inputs[1].Location != 1 ||
-        vertex.Inputs[1].Format != rhi::RasterVertexFormat::Float4 || vertex.Bindings.size() != 1 ||
-        vertex.Bindings[0].Binding != 0 || vertex.Bindings[0].Kind != rhi::RasterBindingKind::UniformBuffer ||
-        vertex.Bindings[0].MinSize != 16 || vertex.Bindings[0].Visibility != rhi::RasterVisibility::Vertex ||
-        fragment.Bindings.empty() == false)
+    if (vertex.Inputs.size() != 1 || vertex.Inputs[0].Location != 0 ||
+        vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float2 || vertex.Bindings.empty() == false ||
+        fragment.Bindings.size() != 2)
     {
         return Status::InvalidDescription;
+    }
+    for (usize i = 0; i < fragment.Bindings.size(); ++i)
+    {
+        const rhi::RasterBinding& expected = GPU_IMAGE_BINDINGS[i];
+        const rhi::RasterBinding& actual = fragment.Bindings[i];
+        if (actual.Binding != expected.Binding || actual.Kind != expected.Kind ||
+            actual.Visibility != expected.Visibility || actual.MinSize != expected.MinSize)
+        {
+            return Status::InvalidDescription;
+        }
     }
     GpuPreviewState* allocation = new (std::nothrow) GpuPreviewState;
     if (allocation == nullptr)
@@ -748,9 +767,8 @@ Status Renderer::PollGpuPreview() noexcept
         }
         return state.Setup;
     }
-    const rhi::RasterVertexStream streams[]{{8, false}, {16, true}};
-    const rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float2},
-                                                  {1, 1, 0, rhi::RasterVertexFormat::Float4}};
+    const rhi::RasterVertexStream streams[]{{sizeof(math::Vector2), false}};
+    const rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float2}};
     for (;;)
     {
         bool created = false;
@@ -1119,6 +1137,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         uniform.Sampling[2] |= invocationOrNull->Program << LUDUS_GRAPH_PASS_INDEX_SHIFT;
     }
     uniform.Options.Y = state.Options.Exposure;
+    job.Uniform = uniform;
     const math::Vector4 dimensions{float32(job.Width), float32(job.Height), 0, 0};
     status = rhi::CreateBuffer(mState->Device,
                                {rhi::BufferRole::Storage, dataBytes},
@@ -1148,7 +1167,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     if (Accepted(status))
     {
         status = rhi::CreateBuffer(mState->Device,
-                                   {rhi::BufferRole::StorageVertex, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
+                                   {rhi::BufferRole::Storage, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
                                    {zeros.GetData(), pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
                                    job.Colors);
     }

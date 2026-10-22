@@ -194,7 +194,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
         const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
                                                 : role % format::TECHNIQUE_STAGE_COUNT == 0;
-        if (inputCount != (isVertex == true ? (isRayRole == true ? 2 : format::STATIC_INPUT_COUNT) : 0))
+        if (inputCount != (isVertex == true ? (isRayRole == true ? 1 : format::STATIC_INPUT_COUNT) : 0))
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -1098,7 +1098,8 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
                                      uint64 sceneRevision,
                                      RenderGraphCoveragePolicy policy,
                                      RenderGraphReport& outReport,
-                                     const SceneShaderInputs* sceneInputsOrNull) noexcept
+                                     const SceneShaderInputs* sceneInputsOrNull,
+                                     uint64 contentRevision) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -1110,7 +1111,8 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     if (state.Active.Get() != nullptr)
     {
         activeStatus =
-            state.Active->Graph.Update(meshes, items, cameras, sceneRevision, policy, outReport, sceneInputsOrNull);
+            state.Active->Graph
+                .Update(meshes, items, cameras, sceneRevision, policy, outReport, sceneInputsOrNull, contentRevision);
         isActiveAccepting = IsAccepted(activeStatus);
         if (isActiveAccepting == true)
         {
@@ -1124,7 +1126,8 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     Generation& candidate = *state.Candidate;
     RenderGraphReport candidateReport;
     const Status candidateStatus =
-        candidate.Graph.Update(meshes, items, cameras, sceneRevision, policy, candidateReport, sceneInputsOrNull);
+        candidate.Graph
+            .Update(meshes, items, cameras, sceneRevision, policy, candidateReport, sceneInputsOrNull, contentRevision);
     if (IsAccepted(candidateStatus) == true)
     {
         candidate.SceneRevision = sceneRevision;

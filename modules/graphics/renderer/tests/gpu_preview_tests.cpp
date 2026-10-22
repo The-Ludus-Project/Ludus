@@ -14,6 +14,7 @@
 #include "renderer_surface.h"
 #include "renderer_surface_shadow.h"
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
@@ -835,4 +836,114 @@ TEST_CASE("Ray admission distinguishes GPU, RHI resource and CPU scratch ceiling
         CHECK(diagnostics.AvailableBytes > 0);
         CHECK(diagnostics.AvailableBytes < options.GpuByteBudget);
     }
+}
+
+TEST_CASE("Opaque ray optimization preserves masked candidates in mixed scenes", "[renderer][gpu][gpu-preview]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        LUDUS_INLINE ~Guard() noexcept
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Required.Compute = true;
+    description.Preferred.RayQueries = true;
+    REQUIRE(rhi::CreateDevice({},
+                              {
+                                  .Width = 8,
+                                  .Height = 8,
+                              },
+                              description,
+                              device,
+                              surface) == rhi::DeviceStatus::Ready);
+    rhi::RayCapabilities capabilities;
+    if (rhi::GetRayCapabilities(device, capabilities) == S::Unsupported)
+    {
+        SKIP("Native ray queries are unavailable");
+    }
+    rr::Renderer renderer;
+    REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
+            S::Ready);
+    REQUIRE(renderer.EnableGpuPreview(shaders::renderer_gpu_preview::Compute(),
+                                      shaders::renderer_gpu_preview_image::Vertex(),
+                                      shaders::renderer_gpu_preview_image::Fragment(),
+                                      {usize{32} * 1024 * 1024, usize{32} * 1024 * 1024, 1}) == S::Ready);
+    REQUIRE(renderer.InitializeViews(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()) ==
+            S::Ready);
+    REQUIRE(renderer.InitializeLighting(shaders::renderer_output::Vertex(),
+                                        shaders::renderer_output::Fragment(),
+                                        shaders::renderer_shadow::Fragment()) == S::Ready);
+    rr::MaterialProgram program;
+    S status = renderer.PrewarmLitProgram(shaders::renderer_lit::Vertex(),
+                                          shaders::renderer_lit::Fragment(),
+                                          shaders::renderer_lit_shadow::Fragment(),
+                                          program);
+    const uint64 beginning = time::NowTicks();
+    while (status == S::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+        status = renderer.GetStatus(program);
+    }
+    REQUIRE(status == S::Ready);
+    constexpr usize CORNER_COUNT = 3;
+    const StaticArray<math::Vector3, CORNER_COUNT> positions{{{-1, -1, .25F}, {1, -1, .25F}, {0, 1, .25F}}};
+    const StaticArray<uint32, CORNER_COUNT> indices{{0, 2, 1}};
+    rr::Mesh mesh;
+    const StaticArray<math::Vector3, CORNER_COUNT> normals{{{0, 0, -1}, {0, 0, -1}, {0, 0, -1}}};
+    rr::MeshDescription geometry{positions.GetData(), positions.GetSize(), indices.GetData(), indices.GetSize()};
+    geometry.Normals = normals.GetData();
+    REQUIRE(renderer.CreateMesh(geometry, mesh) == S::Ready);
+    rr::LitMaterialDescription material;
+    material.Emission = {1, 0, 0};
+    material.Metallic = 1;
+    material.Surface.Tint = {0, 0, 0, 0};
+    material.Surface.Alpha = rr::MaterialAlpha::Masked;
+    material.Surface.Tint.W = 0;
+    rr::LightSelection selection;
+    rr::MaterialVersion masked;
+    rr::MaterialVersion opaque;
+    REQUIRE(renderer.CreateLitMaterial(program, material, masked, selection) == S::Ready);
+    material.Emission = {0, 1, 0};
+    material.Surface.Alpha = rr::MaterialAlpha::Opaque;
+    material.Surface.Tint.W = 1;
+    REQUIRE(renderer.CreateLitMaterial(program, material, opaque, selection) == S::Ready);
+    constexpr usize ITEM_COUNT = 2;
+    StaticArray<rr::SceneItem, ITEM_COUNT> items{};
+    items[0].SourceId = 1;
+    items[0].Geometry = mesh;
+    items[0].Surface = masked;
+    items[1].SourceId = 2;
+    items[1].Geometry = mesh;
+    items[1].Surface = opaque;
+    items[1].Transform.Translation.Z = .5F;
+    rr::Snapshot snapshot;
+    REQUIRE(renderer.CreateSnapshot(items.GetData(), items.GetSize(), snapshot) == S::Ready);
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = 1;
+    capture.Height = 1;
+    capture.TargetSamples = 1;
+    capture.MaxDepth = 1;
+    capture.OrthographicCamera = true;
+    capture.CenterRays = true;
+    rr::GpuPreview preview;
+    REQUIRE(BeginPreview(renderer, snapshot, capture, preview) == S::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(renderer.AdvanceGpuPreview(preview, surface, completion) == S::Ready);
+    WaitPreview(renderer, preview, 1);
+    rr::GpuPreviewFrame frame;
+    rr::GpuPreviewImage image;
+    REQUIRE(renderer.AcquireGpuPreviewFrame(preview, frame, image) == S::Ready);
+    constexpr usize PIXEL_BYTES = 4;
+    StaticArray<uint8, PIXEL_BYTES> pixel{};
+    ReadImage(device, image, pixel.GetData(), pixel.GetSize());
+    CHECK(pixel[0] == 0);
+    CHECK(pixel[1] == Display(1));
+    CHECK(pixel[2] == 0);
+    REQUIRE(renderer.Release(frame) == S::Ready);
+    REQUIRE(renderer.Release(preview) == S::Ready);
 }

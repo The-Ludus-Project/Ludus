@@ -713,6 +713,11 @@ void RenderGraphPreview::SetExtraction(const RenderGraphExtraction& extraction)
     mState->HasExtraction = extraction.Revision != 0;
 }
 
+void RenderGraphPreview::SetCamera(const renderer::ViewDescription& view, uint64 revision)
+{
+    mState->Extraction.View = view;
+    mState->Extraction.Revision = revision;
+}
 void RenderGraphPreview::SetReferenceSize(const QSize& size)
 {
     mState->ReferenceSize = size;
@@ -1069,7 +1074,8 @@ void RenderGraphPreview::advance()
             state.Extraction.Revision,
             renderer::RenderGraphCoveragePolicy::DiagnosticColor,
             graphReport,
-            &shaderInputs);
+            &shaderInputs,
+            state.Extraction.ContentRevision);
         state.HasPendingPreparation = state.HasPendingPreparation == true || updated == rhi::RasterStatus::Pending;
         if (IsAccepted(updated) == true)
         {

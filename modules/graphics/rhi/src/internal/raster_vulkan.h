@@ -1148,7 +1148,7 @@ void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
             access = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
             break;
         case GraphAccessMode::StorageRead:
-            stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             access = VK_ACCESS_SHADER_READ_BIT;
             break;
         case GraphAccessMode::StorageReadWrite:

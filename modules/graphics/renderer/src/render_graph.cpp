@@ -721,6 +721,7 @@ struct RenderGraph::State final
         StaticArray<bool, format::MAX_PASSES> HasViews{};
         usize MeshCount = 0;
         uint64 Revision = 0;
+        uint64 ContentRevision = 0;
         uint32 SubmittedRaySamples = 0;
         ~Scene() noexcept
         {
@@ -749,6 +750,126 @@ struct RenderGraph::State final
     };
     core::UniquePtr<Scene> Current;
     core::UniquePtr<Scene> Pending;
+    struct CameraUpdate final
+    {
+        State* OwnerOrNull = nullptr;
+        Scene* SourceOrNull = nullptr;
+        StaticArray<PreparedView, format::MAX_PASSES> Views{};
+        StaticArray<bool, format::MAX_PASSES> HasRayCamera{};
+        StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
+        uint64 Revision = 0;
+        ~CameraUpdate() noexcept
+        {
+            if (OwnerOrNull == nullptr)
+            {
+                return;
+            }
+            for (usize i = 0; i < OwnerOrNull->Header.PassCount; ++i)
+            {
+                if (HasRayCamera[i] == true)
+                {
+                    SourceOrNull->RayPasses[i].DiscardCamera();
+                }
+                static_cast<void>(
+                    OwnerOrNull->Contexts[static_cast<usize>(OwnerOrNull->Passes[i].Program)].Release(Views[i]));
+            }
+        }
+    };
+    core::UniquePtr<CameraUpdate> PendingCamera;
+    Status PrepareCameras(BorrowedView<const ViewDescription> cameras, uint64 revision) noexcept
+    {
+        CameraUpdate* allocationOrNull = new (std::nothrow) CameraUpdate;
+        core::UniquePtr<CameraUpdate> candidate{allocationOrNull};
+        if (candidate.Get() == nullptr)
+        {
+            return Status::OutOfMemory;
+        }
+        candidate->OwnerOrNull = this;
+        candidate->SourceOrNull = Current.Get();
+        candidate->Revision = revision;
+        for (usize i = 0; i < cameras.GetSize(); ++i)
+        {
+            candidate->Cameras[i] = cameras[i];
+            candidate->Cameras[i].OverlayToClip = cameras[i].WorldToClip;
+        }
+        for (usize i = 0; i < Header.PassCount; ++i)
+        {
+            const format::Pass& pass = Passes[i];
+            Status status = Status::NotReady;
+            if (pass.Program == format::Technique::RayTracing)
+            {
+                status = Current->RayPasses[i].PrepareCamera(cameras[pass.Camera], revision);
+                candidate->HasRayCamera[i] = IsAccepted(status);
+            }
+            else
+            {
+                ViewReport viewReport;
+                status = Contexts[static_cast<usize>(pass.Program)].PrepareView(Current->Snapshots[i],
+                                                                                candidate->Cameras[pass.Camera],
+                                                                                candidate->Views[i],
+                                                                                viewReport);
+            }
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
+        }
+        PendingCamera.Swap(candidate);
+        return Status::Pending;
+    }
+    Status PollCameras() noexcept
+    {
+        if (Producer.IsNull() == false)
+        {
+            const Status producer = rhi::GetStatus(Device, Producer);
+            if (producer != Status::Ready)
+            {
+                return producer;
+            }
+        }
+        CameraUpdate& update = *PendingCamera;
+        for (usize i = 0; i < Header.PassCount; ++i)
+        {
+            const Status status = update.HasRayCamera[i] == true
+                                      ? Current->RayPasses[i].PollCamera()
+                                      : Contexts[static_cast<usize>(Passes[i].Program)].GetStatus(update.Views[i]);
+            if (status != Status::Ready)
+            {
+                if (status != Status::Pending)
+                {
+                    PendingCamera.Reset();
+                }
+                return status;
+            }
+        }
+        // Every replacement is ready. Retire the old binding snapshots before swapping them.
+        static_cast<void>(rhi::DiscardOrderedGraph(Device, Current->RayGraph));
+        Current->IsRayGraphPrepared = false;
+        // Publication cannot allocate or fail, and no producer is open.
+        for (usize i = 0; i < Header.PassCount; ++i)
+        {
+            if (update.HasRayCamera[i] == true)
+            {
+                Current->RayPasses[i].CommitCamera();
+                update.HasRayCamera[i] = false;
+            }
+            else
+            {
+                static_cast<void>(Contexts[static_cast<usize>(Passes[i].Program)].Release(Current->Views[i]));
+                Current->Views[i] = update.Views[i];
+                update.Views[i] = {};
+            }
+        }
+        Current->Cameras = update.Cameras;
+        Current->Revision = update.Revision;
+        Current->SubmittedRaySamples = 0;
+        if (Report.SceneRevision == update.Revision)
+        {
+            Report.IsReady = true;
+        }
+        PendingCamera.Reset();
+        return Status::Ready;
+    }
     StaticArray<RenderGraphCoverageRecord, MAX_COVERAGE> Coverage{};
     usize CoverageCount = 0;
     RenderGraphReport Report{};
@@ -826,7 +947,7 @@ struct RenderGraph::State final
             Resizing.Get() != nullptr ? Resizing->Resources : Resources;
         for (usize context = 0; context < format::TECHNIQUE_COUNT; ++context)
         {
-            if (IsUsed[context] == false)
+            if (IsUsed[context] == false || context == static_cast<usize>(format::Technique::RayTracing))
             {
                 continue;
             }
@@ -853,6 +974,15 @@ struct RenderGraph::State final
         for (usize i = 0; i < Header.PassCount; ++i)
         {
             Renderer& context = Contexts[static_cast<usize>(Passes[i].Program)];
+            if (Passes[i].Program == format::Technique::RayTracing && inoutScene.HasViews[i] == true)
+            {
+                const Status ready = inoutScene.RayPasses[i].Poll();
+                if (ready != Status::Ready)
+                {
+                    return ready;
+                }
+                continue;
+            }
             if (inoutScene.HasSnapshots[i] == false)
             {
                 const Status created = context.CreateSnapshot(inoutScene.Items[i].GetData(),
@@ -990,6 +1120,7 @@ struct RenderGraph::State final
     }
     ~State() noexcept
     {
+        PendingCamera.Reset();
         Pending.Reset();
         Resizing.Reset();
         Current.Reset();
@@ -1452,6 +1583,10 @@ Status RenderGraph::Poll() noexcept
         }
     }
     state.IsReady = true;
+    if (state.PendingCamera.Get() != nullptr)
+    {
+        return state.PollCameras();
+    }
     if (state.Pending.Get() != nullptr)
     {
         const Status ready = state.PollScene(*state.Pending);
@@ -1484,7 +1619,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                            uint64 sceneRevision,
                            RenderGraphCoveragePolicy policy,
                            RenderGraphReport& outReport,
-                           const SceneShaderInputs* sceneInputsOrNull) noexcept
+                           const SceneShaderInputs* sceneInputsOrNull,
+                           uint64 contentRevision) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -1513,6 +1649,26 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         if (camera.Depth != DepthConvention::Conventional)
         {
             return Status::Unsupported;
+        }
+    }
+    if (contentRevision != 0 && state.Current.Get() != nullptr && state.Current->ContentRevision == contentRevision &&
+        state.Resizing.Get() == nullptr && state.Pending.Get() == nullptr)
+    {
+        if (state.PendingCamera.Get() != nullptr)
+        {
+            return Status::NotReady;
+        }
+        const Status prepared = state.PrepareCameras(cameras, sceneRevision);
+        if (prepared != Status::IdentityExhausted || meshes.IsEmpty() == true)
+        {
+            if (IsAccepted(prepared) == true)
+            {
+                state.Report.SceneRevision = sceneRevision;
+                state.Report.IsAccepted = true;
+                state.Report.IsReady = false;
+            }
+            outReport = state.Report;
+            return prepared;
         }
     }
     for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
@@ -1635,6 +1791,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     candidate->OwnerOrNull = &state;
     candidate->MeshCount = meshes.GetSize();
     candidate->Revision = sceneRevision;
+    candidate->ContentRevision = contentRevision;
     for (usize camera = 0; camera < cameras.GetSize(); ++camera)
     {
         candidate->Cameras[camera] = cameras[camera];
@@ -1709,7 +1866,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         candidate->HasMeshes[meshIndex] = true;
         for (usize context = 0; context < format::TECHNIQUE_COUNT; ++context)
         {
-            if (state.IsUsed[context] == false)
+            if (state.IsUsed[context] == false || context == static_cast<usize>(format::Technique::RayTracing))
             {
                 continue;
             }
@@ -1866,6 +2023,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         return prepared;
     }
+    state.PendingCamera.Reset();
     state.Report.IsAccepted = true;
     state.Report.IsReady = prepared == Status::Ready;
     if (prepared == Status::Ready)

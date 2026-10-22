@@ -377,7 +377,8 @@ enum class RasterBindingKind : ludus::foundation::uint8
     TextureStencil2D,
     /// Non-comparison sampler.
     Sampler,
-    /// Read-only compute storage buffer range.
+    /// Read-only storage buffer range, visible to compute or fragment shaders.
+    /// Fragment storage requires the compute/storage capability profile; WebGL rejects it.
     StorageRead,
     /// Read/write compute storage buffer range; shader write races remain kernel obligations.
     StorageReadWrite,

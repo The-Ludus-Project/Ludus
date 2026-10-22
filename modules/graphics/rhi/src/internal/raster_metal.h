@@ -825,7 +825,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
         const uint32 textureIndex = entry.Binding + layout.GetArrayElement(i);
         const bool vertex = (static_cast<uint8>(entry.Visibility) & 1) != 0;
         const bool fragment = (static_cast<uint8>(entry.Visibility) & 2) != 0;
-        if (entry.Kind == RasterBindingKind::UniformBuffer)
+        if (entry.Kind == RasterBindingKind::UniformBuffer || entry.Kind == RasterBindingKind::StorageRead)
         {
             if (vertex)
             {

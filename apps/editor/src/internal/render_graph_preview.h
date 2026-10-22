@@ -43,6 +43,8 @@ struct RenderGraphExtraction final
     graphics::renderer::ViewDescription View{};
     /// Nonzero caller revision; a changed revision makes the preview prepare again.
     foundation::uint64 Revision = 0;
+    /// Nonzero identity changed with every non-camera input; zero disables scene reuse.
+    foundation::uint64 ContentRevision = 0;
 };
 
 /// Convert the World extraction used by the editor viewport into RenderGraph inputs: one static
@@ -123,6 +125,8 @@ public:
     [[nodiscard]] bool IsCopyingOutput() const noexcept;
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
     void SetExtraction(const RenderGraphExtraction& extraction);
+    /// Replace only the camera and publication revision of the retained extraction.
+    void SetCamera(const graphics::renderer::ViewDescription& view, foundation::uint64 revision);
     /// Queue the owning viewport's drawable size (physical pixels before rendering scale).
     /// Applied between output consumers; zero suspends new submissions and keeps the image.
     void SetReferenceSize(const QSize& size);

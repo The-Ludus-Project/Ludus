@@ -24,7 +24,7 @@ constexpr usize IMAGE_PARAMETERS_INDEX = 6;
 constexpr usize TEXEL_BUFFER_INDEX = 7;
 constexpr usize BASE_COMPUTE_USE_COUNT = 5;
 constexpr usize IMAGE_USE_COUNT = 5;
-constexpr usize IMAGE_VERTEX_SLICE_COUNT = 2;
+constexpr usize IMAGE_VERTEX_SLICE_COUNT = 1;
 constexpr usize QUAD_VERTEX_COUNT = 4;
 constexpr usize QUAD_INDEX_COUNT = 6;
 constexpr usize QUAD_BYTES = sizeof(math::Vector2) * QUAD_VERTEX_COUNT;
@@ -267,8 +267,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     {
         return status;
     }
-    const StaticArray<rhi::RasterVertexSlice, IMAGE_VERTEX_SLICE_COUNT> slices{
-        {{state.Quad, 0, QUAD_BYTES}, {job.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES}}};
+    const StaticArray<rhi::RasterVertexSlice, IMAGE_VERTEX_SLICE_COUNT> slices{{{state.Quad, 0, QUAD_BYTES}}};
     const rhi::RasterDraw draw{state.ImagePipeline,
                                job.ImageBindings,
                                slices.AsSpan(),
@@ -276,16 +275,20 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                0,
                                QUAD_INDEX_COUNT,
                                QUAD_VERTEX_COUNT,
-                               static_cast<uint32>(pixels)};
+                               1};
     const StaticArray<rhi::GraphUse, IMAGE_USE_COUNT> imageUses{
         {{versions[QUAD_BUFFER_INDEX], rhi::GraphAccessMode::Vertex, 0, QUAD_BYTES},
-         {colors, rhi::GraphAccessMode::Vertex, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
+         {colors,
+          rhi::GraphAccessMode::StorageRead,
+          0,
+          pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+          rhi::RasterVisibility::Fragment},
          {versions[INDEX_BUFFER_INDEX], rhi::GraphAccessMode::Index, 0, INDEX_BYTES},
          {versions[IMAGE_PARAMETERS_INDEX],
           rhi::GraphAccessMode::Uniform,
           0,
           IMAGE_PARAMETERS_BYTES,
-          rhi::RasterVisibility::Vertex},
+          rhi::RasterVisibility::Fragment},
          {output, rhi::GraphAccessMode::ColorWrite}}};
     rhi::GraphPassDescription present;
     present.Name = "GPU preview image";

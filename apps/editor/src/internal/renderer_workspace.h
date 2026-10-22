@@ -421,6 +421,8 @@ private:
     ViewportFramePump mPreviewPump;
     foundation::uint64 mPreviewDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;
+    bool mArePreviewInputsDirty = true;
+    QSize mPreviewTargetSize;
     QByteArray mPreviewSceneIdentity;
     /// Semantic graph inputs of the runtime request; older activation errors cannot fail a new draft.
     QByteArray mPreviewInputIdentity;

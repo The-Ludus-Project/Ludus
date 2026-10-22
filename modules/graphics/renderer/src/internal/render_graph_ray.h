@@ -31,6 +31,10 @@ public:
         return mJob;
     }
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
+    [[nodiscard]] rhi::RasterStatus PrepareCamera(const ViewDescription& camera, foundation::uint64 revision) noexcept;
+    [[nodiscard]] rhi::RasterStatus PollCamera() noexcept;
+    void CommitCamera() noexcept;
+    void DiscardCamera() noexcept;
 
 private:
     Renderer* mContextOrNull = nullptr;

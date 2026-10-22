@@ -3,7 +3,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
 # No downloads at configure/build time. Host tools remain separate from target
 # compilers, including when cross-compiling to wasm.
 function(ludus_compile_shader)
-    cmake_parse_arguments(PARSE_ARGV 0 SH "RASTER;NATIVE_BINDING_ARRAYS;RUNTIME_BINDING_ARRAYS;NATIVE_RAY_QUERIES" "TARGET;NAME;SOURCE;VERTEX;FRAGMENT;COMPUTE" "INCLUDES;DEFINES;DEPENDS")
+    cmake_parse_arguments(PARSE_ARGV 0 SH "RASTER;NATIVE_BINDING_ARRAYS;RUNTIME_BINDING_ARRAYS;NATIVE_RAY_QUERIES;FRAGMENT_STORAGE" "TARGET;NAME;SOURCE;VERTEX;FRAGMENT;COMPUTE" "INCLUDES;DEFINES;DEPENDS")
     if(SH_UNPARSED_ARGUMENTS OR NOT TARGET "${SH_TARGET}" OR
        NOT SH_NAME MATCHES "^[A-Za-z_][A-Za-z_0-9]*$" OR NOT SH_SOURCE OR (NOT SH_COMPUTE AND (NOT SH_VERTEX OR NOT SH_FRAGMENT)) OR (SH_COMPUTE AND (SH_VERTEX OR SH_FRAGMENT OR SH_RASTER)))
         message(FATAL_ERROR "ludus_compile_shader requires TARGET NAME SOURCE and either VERTEX/FRAGMENT or COMPUTE; optional RASTER INCLUDES DEFINES DEPENDS")
@@ -19,6 +19,12 @@ function(ludus_compile_shader)
     endif()
     if(SH_RASTER)
         list(APPEND backend_args --raster)
+    endif()
+    if(SH_FRAGMENT_STORAGE)
+        if(NOT SH_RASTER OR SH_COMPUTE)
+            message(FATAL_ERROR "FRAGMENT_STORAGE requires RASTER vertex/fragment stages")
+        endif()
+        list(APPEND backend_args --fragment-storage)
     endif()
     if(SH_NATIVE_BINDING_ARRAYS)
         if((NOT SH_RASTER AND NOT SH_COMPUTE) OR EMSCRIPTEN OR (SH_COMPUTE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
@@ -101,7 +107,7 @@ function(ludus_compile_shader)
     # Optional GLSL ES 3.00 (WebGL 2) backend artifact. Enabled only when the
     # pinned SPIR-V -> GLSL ES translator is provided; SPIR-V/WGSL builds are
     # unchanged otherwise. The browser build carries both WGSL and GLSL ES.
-    if((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND (SH_NATIVE_BINDING_ARRAYS OR EMSCRIPTEN OR (LUDUS_SPIRV_CROSS AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))))
+    if((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND NOT SH_FRAGMENT_STORAGE AND (SH_NATIVE_BINDING_ARRAYS OR EMSCRIPTEN OR (LUDUS_SPIRV_CROSS AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))))
         ludus_require_tool(LUDUS_SPIRV_CROSS "GLSL ES shader translation"
             "From the Ludus source repository root: ./scripts/bootstrap-spirv-cross")
         ludus_require_file("${LUDUS_SPIRV_CROSS}.build.json" "GLSL ES shader translation"
@@ -110,7 +116,7 @@ function(ludus_compile_shader)
     set(cross_args)
     set(cross_depends)
     set(cross_byproducts)
-    if(LUDUS_SPIRV_CROSS AND ((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND (SH_NATIVE_BINDING_ARRAYS OR NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))))
+    if(LUDUS_SPIRV_CROSS AND ((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND NOT SH_FRAGMENT_STORAGE AND (SH_NATIVE_BINDING_ARRAYS OR NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))))
         set(cross_lock "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/spirv_cross_toolchain.json")
         if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/spirv_cross_toolchain.json")
             set(cross_lock "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/spirv_cross_toolchain.json")
