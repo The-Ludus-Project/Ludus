@@ -4,6 +4,9 @@
 #include <ludus/graphics/rhi/measurement.h>
 namespace ludus::graphics::rhi::internal
 {
+/// Widest timestamp counter, in bits, and the coarsest accepted tick, in nanoseconds (one second).
+inline constexpr foundation::uint32 MAX_TIMESTAMP_COUNTER_BITS = 64;
+inline constexpr foundation::float64 MAX_TIMESTAMP_TICK_NANOSECONDS = 1e9;
 // A modular timestamp difference is trustworthy only inside one counter period.
 struct TimestampCounter final
 {
@@ -16,7 +19,8 @@ inline bool TimestampDuration(foundation::uint64 start,
                               foundation::uint64 elapsedCpu,
                               foundation::float64& output) noexcept
 {
-    if (counter.Bits == 0 || counter.Bits > 64 || (counter.Tick > 0) == false || (counter.Tick < 1e9) == false)
+    if (counter.Bits == 0 || counter.Bits > MAX_TIMESTAMP_COUNTER_BITS || (counter.Tick > 0) == false ||
+        (counter.Tick < MAX_TIMESTAMP_TICK_NANOSECONDS) == false)
     {
         return false;
     }

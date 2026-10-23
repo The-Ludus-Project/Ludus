@@ -8,6 +8,11 @@ namespace ludus::graphics::rhi
 {
 namespace
 {
+/// Bytes in one RGBA8 texel, and the row-pitch alignment callers' CPU rows must meet.
+constexpr usize TRANSFER_TEXEL_BYTES = 4;
+constexpr usize TRANSFER_PITCH_ALIGNMENT_BYTES = 4;
+/// Native staging rows are padded to this many bytes on every backend.
+constexpr usize STAGING_ROW_ALIGNMENT_BYTES = 256;
 bool InitializedMip(const Record& texture, uint32 mip) noexcept
 {
     return texture.Texture.Attachment
@@ -68,12 +73,13 @@ RasterStatus MutableDestination(Record& record, RasterKind kind) noexcept
 RasterStatus TransferRows(const TextureRegion& region, usize pitch, usize& nativePitch, usize& nativeSize) noexcept
 {
     usize rowBytes = 0, size = 0, rounded = 0;
-    if (TryMultiply(usize{region.Width}, usize{4}, rowBytes) == false || pitch < rowBytes || pitch % 4 != 0 ||
-        TryMultiply(pitch, usize{region.Height}, size) == false || TryAdd(rowBytes, usize{255}, rounded) == false)
+    if (TryMultiply(usize{region.Width}, TRANSFER_TEXEL_BYTES, rowBytes) == false || pitch < rowBytes ||
+        pitch % TRANSFER_PITCH_ALIGNMENT_BYTES != 0 || TryMultiply(pitch, usize{region.Height}, size) == false ||
+        TryAdd(rowBytes, STAGING_ROW_ALIGNMENT_BYTES - 1, rounded) == false)
     {
         return RasterStatus::InvalidDescription;
     }
-    nativePitch = rounded & ~usize{255};
+    nativePitch = rounded & ~(STAGING_ROW_ALIGNMENT_BYTES - 1);
     if (TryMultiply(nativePitch, usize{region.Height}, nativeSize) == false)
     {
         return RasterStatus::InvalidDescription;
@@ -151,8 +157,8 @@ RasterStatus RequestBufferUpdate(DeviceHandle device,
     {
         return RasterStatus::InvalidHandle;
     }
-    if (bytes == nullptr || size == 0 || offset % 4 != 0 || size % 4 != 0 ||
-        Fits(offset, size, buffer->Buffer.Size) == false)
+    if (bytes == nullptr || size == 0 || offset % internal::BUFFER_ALIGNMENT_BYTES != 0 ||
+        size % internal::BUFFER_ALIGNMENT_BYTES != 0 || Fits(offset, size, buffer->Buffer.Size) == false)
     {
         return RasterStatus::InvalidDescription;
     }

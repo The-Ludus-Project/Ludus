@@ -9,6 +9,8 @@ namespace ludus::graphics::rhi::backend
 {
 namespace
 {
+/// Highest ray query binding index: the acceleration structure at 0, then four buffers.
+constexpr NSUInteger LAST_RAY_QUERY_BINDING_INDEX = 4;
 struct RayMetalGeometry final
 {
     id<MTLAccelerationStructure> Structure = nil;
@@ -163,7 +165,7 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
                 argument.type == MTLBindingTypeInstanceAccelerationStructure ||
                 (argument.type == MTLBindingTypeBuffer &&
                  ((id<MTLBufferBinding>)argument).bufferDataType == MTLDataTypeInstanceAccelerationStructure);
-            if (argument.index > 4 ||
+            if (argument.index > LAST_RAY_QUERY_BINDING_INDEX ||
                 (argument.index == 0 ? structure == false : argument.type != MTLBindingTypeBuffer))
             {
                 LUDUS_LOG_ERROR(LOG_RHI,

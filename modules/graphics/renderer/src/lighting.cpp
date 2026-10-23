@@ -70,6 +70,17 @@ rhi::RasterStatus DecodeSurfaceParameters(math::Vector4 texel,
 }
 namespace
 {
+/// Largest absolute light-cluster bound coordinate, and the accepted cluster extent, in metres.
+constexpr float32 MAX_CLUSTER_COORDINATE = 1000000;
+constexpr float32 MIN_CLUSTER_EXTENT = 0.01F;
+constexpr float32 MAX_CLUSTER_EXTENT = 2000000;
+/// Smallest perceptual roughness the lit BRDF accepts; lower values alias badly.
+constexpr float32 MIN_ROUGHNESS = 0.045F;
+/// Accepted directional shadow map resolution, in texels per side.
+constexpr uint32 MIN_SHADOW_RESOLUTION = 4;
+constexpr uint32 MAX_SHADOW_RESOLUTION = 2048;
+/// Smallest light-space width or height a shadow projection may cover.
+constexpr float32 MIN_SHADOW_PROJECTION_EXTENT = 1e-5F;
 bool Bounded(math::Vector3 value, float32 minimum, float32 maximum) noexcept
 {
     return math::IsFinite(value) == true && value.X >= minimum && value.X <= maximum && value.Y >= minimum &&
@@ -442,8 +453,9 @@ rhi::RasterStatus BuildLightClusters(const LightClusterDescription& description,
         return rhi::RasterStatus::InvalidDescription;
     }
     const auto extent = description.Bounds.Max - description.Bounds.Min;
-    if (Bounded(extent, 0.01F, 2000000) == false || Bounded(description.Bounds.Min, -1000000, 1000000) == false ||
-        Bounded(description.Bounds.Max, -1000000, 1000000) == false)
+    if (Bounded(extent, MIN_CLUSTER_EXTENT, MAX_CLUSTER_EXTENT) == false ||
+        Bounded(description.Bounds.Min, -MAX_CLUSTER_COORDINATE, MAX_CLUSTER_COORDINATE) == false ||
+        Bounded(description.Bounds.Max, -MAX_CLUSTER_COORDINATE, MAX_CLUSTER_COORDINATE) == false)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -563,7 +575,7 @@ rhi::RasterStatus EvaluateLitBrdf(math::Vector3 baseColor,
                                   math::Vector3& output) noexcept
 {
     if (Bounded(baseColor, 0, 1) == false || math::IsFinite(metallic) == false || metallic < 0 || metallic > 1 ||
-        math::IsFinite(roughness) == false || roughness < 0.045F || roughness > 1 ||
+        math::IsFinite(roughness) == false || roughness < MIN_ROUGHNESS || roughness > 1 ||
         math::TryNormalize(normal, normal) != math::MathStatus::Success ||
         math::TryNormalize(view, view) != math::MathStatus::Success ||
         math::TryNormalize(light, light) != math::MathStatus::Success)
@@ -608,8 +620,8 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
                                                uint32 resolution,
                                                math::Matrix4& output) noexcept
 {
-    if (math::IsFinite(bounds) == false || math::IsEmpty(bounds) || resolution < 4 || resolution > 2048 ||
-        math::TryNormalize(direction, direction) != math::MathStatus::Success)
+    if (math::IsFinite(bounds) == false || math::IsEmpty(bounds) || resolution < MIN_SHADOW_RESOLUTION ||
+        resolution > MAX_SHADOW_RESOLUTION || math::TryNormalize(direction, direction) != math::MathStatus::Success)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
@@ -635,7 +647,8 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
                    math::Max(maximum.Z, projected.Z)};
     }
     auto width = maximum.X - minimum.X, height = maximum.Y - minimum.Y;
-    if (math::IsFinite(width) == false || math::IsFinite(height) == false || width <= 1e-5F || height <= 1e-5F)
+    if (math::IsFinite(width) == false || math::IsFinite(height) == false || width <= MIN_SHADOW_PROJECTION_EXTENT ||
+        height <= MIN_SHADOW_PROJECTION_EXTENT)
     {
         return rhi::RasterStatus::InvalidDescription;
     }

@@ -123,6 +123,8 @@ namespace
 using namespace foundation;
 using namespace internal;
 constexpr usize KINDS = static_cast<usize>(RasterKind::Count);
+/// Uniform members start on a 32-bit word.
+constexpr usize UNIFORM_MEMBER_ALIGNMENT_BYTES = 4;
 struct CpuTextureRecord final
 {
     StorageArray<uint8> Bytes;
@@ -1357,7 +1359,8 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
             valid |= binding.Binding == member.Binding && binding.Kind == RasterBindingKind::UniformBuffer &&
                      member.Offset < binding.MinSize;
         }
-        if (valid == false || member.Offset % 4 != 0 || member.Name.empty() || CopyName(member.Name, name) == false ||
+        if (valid == false || member.Offset % UNIFORM_MEMBER_ALIGNMENT_BYTES != 0 || member.Name.empty() ||
+            CopyName(member.Name, name) == false ||
             static_cast<uint8>(member.Shape) > static_cast<uint8>(RasterUniformShape::Float4x4Array))
         {
             return RasterStatus::InvalidDescription;
@@ -2172,8 +2175,8 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
         }
         const usize count = info.Streams[i].PerInstance ? draw.InstanceCount : draw.VertexCount;
         if ((buffer->Buffer.Role != BufferRole::Vertex && buffer->Buffer.Role != BufferRole::StorageVertex) ||
-            slice.Offset % 4 != 0 || Fits(slice.Offset, slice.Size, buffer->Buffer.Size) == false ||
-            count > slice.Size / info.Streams[i].Stride)
+            slice.Offset % internal::BUFFER_ALIGNMENT_BYTES != 0 ||
+            Fits(slice.Offset, slice.Size, buffer->Buffer.Size) == false || count > slice.Size / info.Streams[i].Stride)
         {
             return RasterStatus::InvalidDescription;
         }

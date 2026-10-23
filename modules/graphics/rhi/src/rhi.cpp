@@ -539,9 +539,12 @@ ResourceStatus Allocate(Resource* resources, usize& slot) noexcept
     }
     return ResourceStatus::CapacityExceeded;
 }
+/// Shader entry point names fit 64 bytes including the terminator.
+constexpr usize ENTRY_POINT_CAPACITY_BYTES = 64;
 bool ValidEntry(std::string_view entry) noexcept
 {
-    return entry.empty() == false && entry.size() < 64 && entry.find('\0') == std::string_view::npos;
+    return entry.empty() == false && entry.size() < ENTRY_POINT_CAPACITY_BYTES &&
+           entry.find('\0') == std::string_view::npos;
 }
 ResourceStatus Finish(Resource& resource, ResourceStatus result) noexcept
 {

@@ -44,6 +44,12 @@ constexpr usize FRAMES = 2;
 constexpr usize IMAGES = 8;
 /// Adapters one instance may enumerate; a larger count is rejected, never truncated.
 constexpr uint32 MAX_PHYSICAL_DEVICES = 32;
+/// Instance extensions one loader may report; a larger count is rejected, never truncated.
+constexpr uint32 MAX_AVAILABLE_INSTANCE_EXTENSIONS = 128;
+/// Longest wait for a frame or present fence: five seconds.
+constexpr uint64 FENCE_TIMEOUT_NANOSECONDS = 5000000000ULL;
+/// Bytes in one RGBA8 headless readback pixel.
+constexpr usize READBACK_PIXEL_BYTES = 4;
 void RasterVkDependencies(bool surface, VkSubpassDependency (&dependencies)[2]) noexcept;
 struct Frame final
 {
@@ -681,12 +687,12 @@ bool Initialize(const ApplicationInfo& app) noexcept
     extensionCount = 2;
     uint32 availableCount = 0;
     if (Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, nullptr)) == false ||
-        availableCount > 128)
+        availableCount > MAX_AVAILABLE_INSTANCE_EXTENSIONS)
     {
         volkFinalize();
         return false;
     }
-    VkExtensionProperties available[128]{};
+    VkExtensionProperties available[MAX_AVAILABLE_INSTANCE_EXTENSIONS]{};
     if (Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, available)) == false)
     {
         volkFinalize();
@@ -1346,7 +1352,7 @@ FrameStatus Begin() noexcept
         return FrameStatus::Skipped;
     }
     auto& frame = gFrames[gFrame];
-    if (Check(vkWaitForFences(gDevice, 1, &frame.Fence, VK_TRUE, 5000000000ULL)) == false)
+    if (Check(vkWaitForFences(gDevice, 1, &frame.Fence, VK_TRUE, FENCE_TIMEOUT_NANOSECONDS)) == false)
     {
         return Failure();
     }
@@ -1407,7 +1413,8 @@ FrameStatus Begin() noexcept
         gOwnedImage = true;
         if (gPresented[gImage])
         {
-            if (Check(vkWaitForFences(gDevice, 1, &gPresentFences[gImage], VK_TRUE, 5000000000ULL)) == false ||
+            if (Check(vkWaitForFences(gDevice, 1, &gPresentFences[gImage], VK_TRUE, FENCE_TIMEOUT_NANOSECONDS)) ==
+                    false ||
                 Check(vkResetFences(gDevice, 1, &gPresentFences[gImage])) == false)
             {
                 return Failure();
@@ -1817,7 +1824,8 @@ ResourceStatus Draw(usize slot) noexcept
 #if defined(LUDUS_RHI_TEST_READBACK)
 bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {
-    if (gHeadless == false || gEncoding || pixels.size() != static_cast<usize>(gExtent.width) * gExtent.height * 4)
+    if (gHeadless == false || gEncoding ||
+        pixels.size() != static_cast<usize>(gExtent.width) * gExtent.height * READBACK_PIXEL_BYTES)
     {
         return false;
     }
