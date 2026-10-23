@@ -1,8 +1,10 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/pointer.hpp>
 
 #include <ludus/content/render_graph_format/plan.h>
+#include <ludus/content/render_graph_format/runtime_package.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
@@ -94,6 +96,13 @@ struct RenderGraphPrograms final
                             content::render_graph_format::ADDITIONAL_RASTER_TECHNIQUE_COUNT *
                                 content::render_graph_format::TECHNIQUE_STAGE_COUNT>
         AdditionalRasterStages{};
+    rhi::RasterShaderDescription
+        ForwardVertex{}; ///< Opt-in authored material geometry, supplied together with all forward stages.
+    rhi::RasterShaderDescription ForwardFragment{};  ///< Same scene-material/light ABI as renderer_authored.
+    rhi::RasterShaderDescription ForwardShadow{};    ///< Matching material shadow ABI used by program qualification.
+    rhi::RasterShaderDescription LightingVertex{};   ///< Renderer output preparation support.
+    rhi::RasterShaderDescription LightingFragment{}; ///< Renderer output preparation support.
+    rhi::RasterShaderDescription LightingShadow{};   ///< Flat caster support for lighting initialization.
     /// Linked ray kernel reads the paired raster visibility/depth inputs declared by the plan.
     bool HasVisibilityBuffer = false;
     bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent uint4 storage slots.
@@ -110,6 +119,12 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
                                 rhi::ShaderStage stage,
                                 bool hasPersistentBuffers = false,
                                 bool hasVisibilityBuffer = false) noexcept;
+/// Attach the immutable forward recipe ABI to one cooked support stage. Artifact bytes
+/// remain untouched; shader reflection and Renderer prewarming independently validate it.
+/// @param inoutDescription Receives exact inputs, bindings and uniform member metadata.
+/// @param role One of the six forward StageRole values; other roles leave the description unchanged.
+void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescription,
+                                    content::render_graph_format::StageRole role) noexcept;
 /// Declared geometry interface of an extracted draw item.
 enum class RenderGraphLayout : foundation::uint8
 {
@@ -157,7 +172,8 @@ struct RenderGraphItem final
     foundation::BorrowedView<const foundation::uint32> MaterialOverrides{};
     foundation::math::Vector4 SurfaceTint{1, 1, 1, 1}; ///< Instance multiplier for the scene material profile.
 };
-/// Borrowed complete ray-scene inputs consumed during BeginGpuPreview. Not retained.
+/// Borrowed complete rendering inputs. Preparation consumes them before returning;
+/// scene/material GPU resources belong to Renderer and retain exact incarnations.
 struct RenderGraphSceneDescription final
 {
     foundation::BorrowedView<const RenderGraphMesh> Meshes{}; ///< Geometry and slot bindings.
@@ -205,9 +221,36 @@ enum class RenderGraphCoveragePolicy : foundation::uint8
     RejectIncomplete, ///< Preserve the last drawable scene on unsupported/conflicting coverage.
     DiagnosticColor,  ///< Admit an editor diagnostic color/proxy route while retaining unsupported reports.
 };
+/// Caller-owned revision promises for independent non-camera scene domains. All five
+/// must be nonzero to enable camera-only reuse, or all zero for full validation.
+/// Reusing every identity promises byte/semantic equality of all non-camera inputs,
+/// including coverage and uniform values. A changed identity stages a replacement;
+/// exact immutable mesh/texture content can still reuse the graph-local cache.
+struct RenderGraphSceneRevisions final
+{
+    foundation::uint64 Geometry = 0;    ///< Mesh attributes, topology and slot mapping.
+    foundation::uint64 Instances = 0;   ///< Transforms, exclusions, coverage and per-draw values.
+    foundation::uint64 Materials = 0;   ///< Material values, assignments, samplers and texture content.
+    foundation::uint64 Lights = 0;      ///< Complete analytic light set and its authored values.
+    foundation::uint64 Environment = 0; ///< Constant/HDR environment values and image content.
+    /// Compare domain identities; this does not compare source bytes or validate caller promises.
+    [[nodiscard]] LUDUS_INLINE bool operator==(const RenderGraphSceneRevisions&) const noexcept = default;
+};
+/// Cumulative device/context-local forward resource preparation counters. Camera-only
+/// updates do not change these. Reuse compares complete copied content, never pointers.
+struct RenderGraphSceneResourceReport final
+{
+    foundation::uint64 CreatedMeshes = 0;   ///< Immutable mesh uploads admitted by the cache.
+    foundation::uint64 ReusedMeshes = 0;    ///< Exact cached mesh acquisitions.
+    foundation::uint64 CreatedTextures = 0; ///< Immutable texture uploads admitted by the cache.
+    foundation::uint64 ReusedTextures = 0;  ///< Exact cached texture acquisitions.
+    foundation::uint32 DroppedLights = 0;   ///< Latest forward material's L4 light-selection overflow.
+};
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final
 {
+    RenderGraphSceneResourceReport
+        Resources{}; ///< Forward cache activity; candidate diagnostics remain separate from the displayed scene.
     SceneShaderDiagnostics SceneDiagnostics{}; ///< Material defaults/errors and discarded collapsed faces.
     foundation::uint64 SceneRevision = 0;      ///< Caller extraction revision, not a GPU completion number.
     foundation::uint32 Covered = 0;            ///< Compatible item/role/view tuples.
@@ -361,6 +404,8 @@ public:
     /// and sceneRevision may change. This reuses scene/acceleration buffers and resets camera history.
     /// Mesh/item/shader inputs are ignored while reusing that identity; their original storage
     /// need not survive the original Update. Zero always prepares a complete extraction.
+    /// @param revisions Optional domain revision promises. All-zero preserves contentRevision behavior.
+    /// A fully nonzero record enables the same camera-only reuse when every domain and coverage policy match.
     /// Resize and new generations also prepare in full. At ray-history identity exhaustion,
     /// supplied geometry permits a full restart; camera-only inputs return IdentityExhausted
     /// and preserve the drawable view. A full Update with contentRevision zero can restart it.
@@ -371,7 +416,8 @@ public:
                                            RenderGraphCoveragePolicy policy,
                                            RenderGraphReport& outReport,
                                            const SceneShaderInputs* sceneInputsOrNull = nullptr,
-                                           foundation::uint64 contentRevision = 0) noexcept;
+                                           foundation::uint64 contentRevision = 0,
+                                           const RenderGraphSceneRevisions& revisions = {}) noexcept;
     /// Borrow latest candidate coverage records until the next Update/Reset; no allocation.
     [[nodiscard]] foundation::BorrowedView<const RenderGraphCoverageRecord> GetCoverage() const noexcept;
     /// Copy the latest candidate report, independent of the drawable extraction.

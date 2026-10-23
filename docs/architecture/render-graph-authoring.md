@@ -1081,3 +1081,28 @@ fresh storage; RHI retirement protects outstanding producer uses on release.
 Shader code owns bounds and races, including ping-pong choice and zero-history
 handling. This adds no global dispatch synchronization, buffer exports or arbitrary
 compute/raster execution. See the [authoring workflow](../development/render-graph-authoring.md#create-structured-reservoir-buffers).
+
+## Forward scene generations
+
+ForwardLit adds a bounded material-aware raster execution profile using the existing
+scene submission boundary and renderer-authored shader recipes. Offline lowering
+carries the shared flat setup stages and six explicit forward/lighting support
+roles. These renderer-owned support stages do not change the caller's vertex/uniform
+interface identity, so compatible flat and forward templates share the existing editor
+extraction boundary. Runtime package version 12 appends those roles without changing older IDs.
+Forward stage records additionally carry verified GLSL combined texture/sampler
+names after their uniform-block names. Package versions 2 through 11 retain their
+previous decoding contracts; pixel-derived storage remains a version-11 feature.
+The compiler validates resource interfaces before publication, and native shader
+reflection/material prewarming independently checks the fixed ABI at preparation.
+
+`ForwardSceneResources` privately owns the exact-content cache, while each
+`ForwardSceneGeneration` owns its pins, material candidates and prepared draw
+inputs. Current/pending graph scenes retain distinct generations. Forward passes
+share the existing opaque renderer context, and camera-only updates reuse its
+snapshots and resources. Changed revision domains stage replacements; unchanged
+meshes/textures can be reacquired without upload. Domain promises never substitute
+for exact-content identity when admitting a new asset. General raster scene buffers,
+GPU light assignment, arbitrary material interfaces and cross-device caches remain
+separate extensions. See the [canonical workflow](../development/render-graph-authoring.md#use-the-forward-lit-template)
+for limits, shader editing and installed-SDK usage.

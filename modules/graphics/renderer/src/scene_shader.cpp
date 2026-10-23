@@ -1,4 +1,5 @@
 #include "internal/render_graph_ray_scene.h"
+#include "internal/scene_material_validation.h"
 #include "internal/scene_memory.h"
 
 #include <ludus/foundation/base/checked_integer.hpp>
@@ -65,6 +66,14 @@ bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
            IsTextureValid(material.SurfaceTexture, true) && IsTextureValid(material.EmissionTexture, false);
 }
 } // namespace
+bool IsSceneShaderMaterialValid(const SceneShaderMaterial& material) noexcept
+{
+    return IsMaterialValid(material);
+}
+bool IsSceneRadianceValid(math::Vector3 radiance) noexcept
+{
+    return ReferenceColor(radiance, MAX_EMISSION);
+}
 Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                                   const ReferenceCaptureDescription& description,
                                   usize byteBudget,

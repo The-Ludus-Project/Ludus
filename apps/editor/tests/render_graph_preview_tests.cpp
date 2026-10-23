@@ -2242,3 +2242,56 @@ TEST_CASE("Live graph viewport presents GPU images through navigation and resize
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
 }
+
+TEST_CASE("Forward-lit template follows World materials camera and viewport extent",
+          "[editor][render-graph][preview][forward-lit]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderScene scene = MakeScene({1, 1, 1, 1});
+    scene.Meshes[0].Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    PreviewSurface surface;
+    surface.Emission = {1, 0, 0};
+    scene.Surfaces.append(surface);
+    scene.Objects[0].Surface = 0;
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(scene, {}, 1, extraction, error) == true);
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetReferenceSize({WIDTH, HEIGHT});
+    preview.SetExtraction(extraction);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; }) == true);
+    CheckCenter(preview.GetImage(), 255, 0, 0);
+    const QImage previous = preview.GetImage();
+    scene.Surfaces[0].Emission = {0, 1, 0};
+    REQUIRE(MakeRenderGraphExtraction(scene, {}, 2, extraction, error) == true);
+    preview.SetExtraction(extraction);
+    CHECK(preview.GetImage() == previous);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 2; }) == true);
+    CheckCenter(preview.GetImage(), 0, 255, 0);
+    // The existing camera path must update the actual extraction and leave asset preparation reusable.
+    renderer::ViewDescription view;
+    view.WorldToClip.Columns[3].X = 2;
+    preview.SetCamera(view, 3);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 3; }) == true);
+    CheckCenter(preview.GetImage(), 0, 0, 0);
+    preview.SetCamera({}, 4);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 4; }) == true);
+    CheckCenter(preview.GetImage(), 0, 255, 0);
+    preview.SetReferenceSize({WIDTH * 2, HEIGHT * 2});
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetImage().size() == QSize(WIDTH * 2, HEIGHT * 2); }) == true);
+    const QImage retained = preview.GetImage();
+    scene.Meshes[0].Normals.clear();
+    REQUIRE(MakeRenderGraphExtraction(scene, {}, 5, extraction, error) == true);
+    preview.SetExtraction(extraction);
+    REQUIRE(TickUntil(preview, [&]() { return preview.HasPendingWork() == false; }) == true);
+    CHECK(preview.GetPresentedRevision() == 4);
+    CHECK(preview.GetImage() == retained);
+    preview.Detach();
+}

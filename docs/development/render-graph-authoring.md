@@ -3607,3 +3607,70 @@ validation, allocation, completion collection and scene updates still have costs
 no universal frame-time bound is claimed. The test reports service/pipeline timing
 separately from source compilation and refuses a skipped GPU case. Linux, browser
 and physical-device qualification remain distinct from any local macOS result.
+
+## Use the forward-lit template
+
+Choose **New Render Graph → Template → Forward lit**, or create an editable package:
+
+```bash
+ludus render-graph new graphs/Forward --template forward-lit --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. The package's shared RenderSize uses the current view
+extent. Its Graphics Pipeline consumes the complete Scene bundle and produces
+linear RGBA8 color with conventional Depth32 depth. It requires portable raster,
+sixteen vertex attributes and the renderer-authored material binding/uniform limits;
+it does not require ray tracing. Unsupported profiles reject preparation explicitly.
+
+The technique opts into `"scene_interface": {"version": 1, "profile": "ForwardLit"}`.
+The two editable shader functions use the renderer-authored `Input`/`Varying` types:
+`VSMain` calls `VertexMain`, and `PSMain` calls `FragmentMain`. The builder captures
+those engine functions and dependencies through the installed renderer recipe
+manifest, with cache identities and stale-input checks. This initial profile has
+one opaque ColorAndDepth technique with one pipeline recipe. Additional resource declarations or changes
+to its engine binding/vertex ABI require a separately qualified profile.
+
+Submit meshes, instances and `SceneShaderInputs` through `RenderGraph::Update`.
+The existing editor World extraction already supplies these inputs. Material
+slots and per-instance overrides resolve before drawing; each nonempty slot becomes
+an explicit draw. Mesh normals are required. Base-color, packed normal/roughness/
+metallic and emission maps use the existing authored material evaluation. Constant
+and HDR environments reuse Renderer lighting/environment preparation. Fixed source
+mip zero is used for these scene maps; this does not introduce texture streaming.
+Unassigned materials use the existing neutral material. Invalid references, error
+materials, masked/transparent coverage and missing normals reject the candidate.
+The previous drawable scene remains available while a replacement is pending or fails.
+
+Direct lighting uses L4's declared selection: validate at most 128 unique sources,
+then retain the eight smallest source identities. `GetReport().Resources.DroppedLights`
+reports omitted sources. Emission is visible on the emitting surface; this profile
+does not generate area-light proxies, indirect illumination or shadow maps.
+Linear RGBA8 clips values above one. Consumers own tone mapping/output encoding;
+ordinary raster navigation remains independent of path tracing.
+
+A private graph/device-local scene resource owner shares exact mesh/texture
+incarnations across instances, passes and replacements. It compares complete copied
+content and texture descriptors, including row-normalized texels; caller addresses
+and fingerprints never establish equality. Current and pending scenes pin their
+assets independently. Idle cached assets may be evicted under pressure; Renderer
+and RHI retain outstanding submitted uses after logical release. The cache admits
+128 MiB of CPU identity-copy payload across current, pending and idle assets;
+one preparation key can additionally use up to 128 MiB of scratch. Metadata,
+material preparation and HDR preprocessing are separate allocations. HDR preparation
+has a 64 MiB CPU budget per retained generation. Device GPU/upload limits remain
+independently enforced by RHI. Count/byte exhaustion rejects replacement.
+
+For camera-only updates, retain the existing `contentRevision` promise, or provide
+a fully nonzero `RenderGraphSceneRevisions` record for geometry, instances, materials,
+lights and environment. Unchanged domain identities and coverage policy permit
+camera-only preparation. All-zero domains preserve the legacy behavior; partial
+records reject. Changing a domain stages a new generation and still permits exact
+mesh/texture reuse. Domain identities are caller promises, not change detection.
+`GetReport().Resources` exposes cumulative created/reused mesh/texture counts;
+these are logical cache acquisitions, not driver allocation or GPU completion metrics.
+
+The installed [forward consumer](../../tests/sdk_consumer/forward_lit.cpp) cooks
+this same canonical template, renders a scene and replaces its material while
+checking mesh reuse. The template is owned by
+[Renderer's source package](../../modules/graphics/renderer/render_graphs/forward_lit/main.lurender.json).

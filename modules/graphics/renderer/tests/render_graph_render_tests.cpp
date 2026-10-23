@@ -3,6 +3,7 @@
 #include "rg2_bound.h"
 #include "rg2_depth.h"
 #include "rg2_depth_display.h"
+#include "rg2_forward_lit.h"
 #include "rg2_independent.h"
 #include "rg2_masked_color.h"
 #include "rg2_masked_depth.h"
@@ -45,6 +46,7 @@ constexpr uint32 WIDTH = 96;
 constexpr uint32 HEIGHT = 64;
 constexpr usize PIXEL_BYTES = static_cast<usize>(WIDTH) * HEIGHT * 4;
 constexpr usize VERTEX_COUNT = 3;
+constexpr usize TEXEL_BYTES = 4;
 constexpr usize INDEX_COUNT = 3;
 constexpr usize TABLE_COUNT = 1;
 constexpr usize STREAM_COUNT = 1;
@@ -1019,7 +1021,13 @@ TEST_CASE("independent entry points render different colors in one graph", "[ren
         plan = package->GetPlan();
         programs = package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     }
-    REQUIRE(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Ready);
+    rhi::RasterStatus initialized = fixture.Graph.Initialize(fixture.Device, plan, programs);
+    for (usize attempt = 0; attempt < 10000 && initialized == rhi::RasterStatus::Pending; ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        initialized = fixture.Graph.Poll();
+    }
+    REQUIRE(initialized == rhi::RasterStatus::Ready);
     fixture.Update(1);
     fixture.Render();
     constexpr usize CHANNEL_COUNT = 4;
@@ -1030,4 +1038,115 @@ TEST_CASE("independent entry points render different colors in one graph", "[ren
     CHECK(fixture.Pixels[LEFT + 1] == 0);
     CHECK(fixture.Pixels[RIGHT] == 0);
     CHECK(fixture.Pixels[RIGHT + 1] > 0);
+}
+
+TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene on rejection",
+          "[render-graph][forward-lit][gpu]")
+{
+    GraphGpuFixture fixture;
+    const renderer::RenderGraphPrograms programs =
+        packages::rg2_forward_lit::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPlan plan = packages::rg2_forward_lit::MakePlan();
+    rhi::RasterStatus initialized = fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT);
+    for (usize attempt = 0; attempt < 10000 && initialized == rhi::RasterStatus::Pending; ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        initialized = fixture.Graph.Poll();
+    }
+    REQUIRE(initialized == rhi::RasterStatus::Ready);
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    fixture.Meshes[0].Geometry.Normals = normals.GetData();
+    const uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    renderer::SceneShaderMaterial material;
+    material.Emission = {1, 0, 0};
+    const StaticArray<uint8, TEXEL_BYTES> white{{255, 255, 255, 255}};
+    material.ColorTexture = {white.GetData(), white.GetSize(), white.GetSize(), 1, 1, rhi::RasterFormat::Rgba8Unorm};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    renderer::RenderGraphReport report;
+    const auto update = [&](uint64 revision) {
+        rhi::RasterStatus status = fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                                        {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                                        {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                                        revision,
+                                                        renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report,
+                                                        &inputs,
+                                                        revision);
+        for (usize attempt = 0; attempt < 10000 && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == 1);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedTextures == 1);
+    rhi::TextureHandle texture;
+    rhi::TextureAspect aspect;
+    REQUIRE(fixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
+    renderer::Renderer compositor;
+    REQUIRE(compositor.Initialize(fixture.Device, programs.ColorVertex, programs.ColorFragment) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                       shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    renderer::ViewMapping mapping;
+    REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                         {0, 0, WIDTH, HEIGHT},
+                                         WIDTH,
+                                         HEIGHT,
+                                         mapping) == rhi::RasterStatus::Ready);
+    renderer::Presentation presentation;
+    REQUIRE(compositor.PreparePresentation(texture, mapping, presentation) == rhi::RasterStatus::Ready);
+    const auto render = [&]() {
+        REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+        REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+        const rhi::RasterStatus confirmed = fixture.Graph.ConfirmSubmission(completion);
+        REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
+        REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    };
+    render();
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(fixture.Pixels[center] > 200);
+    CHECK(fixture.Pixels[center + 1] < 10);
+    material.Emission = {0, 1, 0};
+    REQUIRE(update(2) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == 1);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedTextures == 1);
+    CHECK(fixture.Graph.GetReport().Resources.ReusedMeshes == 1);
+    CHECK(fixture.Graph.GetReport().Resources.ReusedTextures == 1);
+    render();
+    CHECK(fixture.Pixels[center] < 10);
+    CHECK(fixture.Pixels[center + 1] > 200);
+    fixture.Meshes[0].Geometry.Normals = nullptr;
+    CHECK(update(3) != rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+    render();
+    CHECK(fixture.Pixels[center + 1] > 200);
+    fixture.Meshes[0].Geometry.Normals = normals.GetData();
+    material.Emission = {};
+    renderer::DirectLight light;
+    light.SourceId = 1;
+    light.Color = {0, 0, 1};
+    light.Direction = {0, 0, -1};
+    light.Intensity = 1;
+    inputs.Lights = {&light, 1};
+    REQUIRE(update(4) == rhi::RasterStatus::Ready);
+    render();
+    CHECK(fixture.Pixels[center] < 10);
+    CHECK(fixture.Pixels[center + 2] > 10);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == 1);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedTextures == 1);
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_FORWARD_DIRECTORY, "rg2_forward_lit.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    CHECK(decoded.ForwardVertex.Inputs.size() == format::FORWARD_INPUT_COUNT);
+    CHECK(decoded.ForwardFragment.Bindings.size() == programs.ForwardFragment.Bindings.size());
 }

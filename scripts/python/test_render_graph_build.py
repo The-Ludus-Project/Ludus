@@ -528,6 +528,19 @@ class BuildTests(unittest.TestCase):
             with self.assertRaises(ToolingError):
                 self.run_build()
 
+    def test_forward_metal_arrays_are_opt_in_and_independently_sized(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import metal_layouts
+        interface = {'entries': [{'name': 'material', 'size': 48, 'offsets': {'Tint': 0, 'Lights': 16}}]}
+        raw = {'parameters': [{'name': 'material', 'type': {'elementType': {'name': 'Material'}}}]}
+        code = 'struct Material_0 { float4 Tint_0; array<float4, int(2)> Lights_0; };'
+        with self.assertRaisesRegex(RuntimeError, 'scalar/vector'):
+            metal_layouts(code, interface, raw)
+        metal_layouts(code, interface, raw, allows_arrays=True)
+        with self.assertRaisesRegex(RuntimeError, 'packing differs'):
+            metal_layouts(code.replace('int(2)', 'int(3)'), interface, raw, allows_arrays=True)
+
     def test_malformed_members_report_explicit_schema_errors(self):
         for change in (lambda v: v.update(profiles=[{}]), lambda v: v['programs'][0].update(input={}),
                        lambda v: v['techniques'][0].update(vertex=[]), lambda v: v['programs'][1]['bindings'][0].update(schema=[])):

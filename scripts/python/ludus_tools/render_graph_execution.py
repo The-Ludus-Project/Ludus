@@ -15,6 +15,7 @@ import struct
 from . import render_graph as graph
 from . import render_graph_build as build
 from . import render_graph_ray as ray
+from . import render_graph_forward as forward
 from . import render_graph_buffers as buffers
 
 MAX_PASSES = 16
@@ -64,6 +65,8 @@ def program_roles(package):
 
 
 def program_member(program, stage):
+    if (program, stage) in forward.ROLE_KEYS:
+        return forward.MEMBERS[forward.ROLE_KEYS.index((program, stage))]
     """C++ member expression of one cooked stage; declaration names stay separate."""
     code = PROGRAM_CODES[program]
     if code >= LEGACY_PROGRAM_COUNT:
@@ -215,7 +218,7 @@ def stage_inputs(item):
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 11
+PACKAGE_VERSION = 12
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -231,6 +234,8 @@ def role(program, stage):
     """Numeric StageRole: two consecutive roles (vertex, fragment) per program."""
     if program == 'RayTracing':
         return {'compute': 8, 'vertex': 9, 'fragment': 10}[stage]
+    if (program, stage) in forward.ROLE_KEYS:
+        return PERSISTENT_RAY_STAGE_ROLE + 1 + forward.ROLE_KEYS.index((program, stage))
     code = PROGRAM_CODES[program]
     return (code * 2 if code < LEGACY_PROGRAM_COUNT else
             LEGACY_STAGE_ROLE_COUNT + (code - LEGACY_PROGRAM_COUNT) * 2) + (stage == 'fragment')
@@ -349,6 +354,18 @@ def _runtime_contents(path, configuration):
                 build.require(key not in stages or stages[key]['key'] == matches[0]['key'],
                               'Configuration', technique, 'multiple stage programs for one static role/profile')
                 stages[key] = matches[0]
+    has_forward = any('forward_stages' in recipe for recipe in package['recipes'] if recipe['technique'] in selected_techniques)
+    if has_forward:
+        build.require(len(selected_techniques) == 1 and all(p['Program'] == 'ColorAndDepth' and p['SceneData'] == graph.scene_bundle.ALL_DATA for p in passes),
+                      'Capability', configuration, 'forward-lit requires opaque color passes with the complete Scene bundle')
+        for recipe in package['recipes']:
+            if recipe['technique'] not in selected_techniques:
+                continue
+            for identity, key in recipe.get('forward_stages', {}).items():
+                group, stage = identity.split(':')
+                matches = [program for program in package['programs'] if program['key'] == key and program['profile'] == recipe['profile']]
+                build.require(len(matches) == 1, 'Package', identity, 'missing forward support artifact')
+                stages[(group, stage, recipe['profile'])] = matches[0]
     for color, depth in (('ColorAndDepth', 'DepthOnly'), ('MaskedColorAndDepth', 'MaskedDepthOnly')):
         if any(k[0] == color for k in stages) and any(k[0] == depth for k in stages):
             build.require(all(stages[(color, 'vertex', t)]['key'] == stages[(depth, 'vertex', t)]['key']
@@ -371,12 +388,13 @@ def _runtime_contents(path, configuration):
         program_name, stage, target = key
         descriptor = program['descriptor']
         is_ray = program_name == 'RayTracing'
-        build.require(is_ray or (all(e['kind'] == 'UniformBuffer' for e in descriptor['interface']['entries']) and
+        is_forward = (program_name, stage) in forward.ROLE_KEYS
+        build.require(is_ray or is_forward or (all(e['kind'] == 'UniformBuffer' for e in descriptor['interface']['entries']) and
                       len(descriptor['interface']['entries']) == len(descriptor.get('layouts', []))),
                       'Configuration', program['id'], 'runtime profile admits only verified uniform bindings')
         expected = (ray.IMAGE_INPUTS
                     if is_ray and stage == 'vertex' else stage_inputs(program) if stage == 'vertex' else [])
-        build.require(stage != 'vertex' or is_ray or expected in (STATIC_INPUTS, VISIBILITY_INPUTS),
+        build.require(stage != 'vertex' or is_ray or is_forward or expected in (STATIC_INPUTS, VISIBILITY_INPUTS),
                       'Configuration', program['id'], 'unsupported static/visibility vertex interface')
         build.require([{k: v for k, v in x.items() if k != 'name'} for x in descriptor['interface']['inputs']] == expected,
                       'Configuration', program['id'], 'static vertex/instance interface mismatch')
@@ -393,12 +411,12 @@ def _runtime_contents(path, configuration):
         build.require(type(entry) is str and 0 < len(entry.encode()) <= MAX_ENTRY_BYTES and entry.isascii(),
                       'Package', program['id'], 'invalid stage entry name')
         names = _block_names(descriptor) if target == 'glsl' else []
-        build.require(target != 'glsl' or [n[0] for n in names] == sorted(b['slot'] for b in _stage_bindings(program_name, stage, bindings)),
+        build.require(target != 'glsl' or is_forward or [n[0] for n in names] == sorted(b['slot'] for b in _stage_bindings(program_name, stage, bindings)),
                       'Package', program['id'], 'GLSL ES uniform blocks differ from the stage bindings')
-        artifacts[key] = {'ordinal': ordinal, 'descriptor': descriptor, 'bytes': artifact, 'entry': entry, 'blocks': names}
+        artifacts[key] = {'ordinal': ordinal, 'descriptor': descriptor, 'bytes': artifact, 'entry': entry, 'blocks': names, 'textures': descriptor['interface'].get('textures', {}) if target == 'glsl' else {}}
     # CPU-visible interface: the logical vertex/instance schema, fixed static inputs,
     # and the per-draw uniform schemas with every target layout that packs them.
-    interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1', 'vertex_schema': vertex_schemas[0], 'inputs': [stage_inputs(record) for (name, stage, target), record in stages.items() if stage == 'vertex' and name != 'RayTracing'], 'uniform_schemas': uniform_interface}
+    interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1', 'vertex_schema': vertex_schemas[0], 'inputs': [stage_inputs(record) for (name, stage, target), record in stages.items() if stage == 'vertex' and name != 'RayTracing' and (name, stage) not in forward.ROLE_KEYS], 'uniform_schemas': uniform_interface}
     scene_versions = {r.get('scene_interface_version', 0) for r in package['recipes'] if r['technique'] == ray.TECHNIQUE}
     build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
     has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
@@ -410,7 +428,7 @@ def _runtime_contents(path, configuration):
     build.require(not has_ray or visibility_profiles == {has_visibility}, 'Configuration', 'visibility',
                   'ray visibility inputs must match scene_interface.visibility_buffer')
     persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in package['recipes'])
-    return {'persistent_buffers': persistent, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    return {'forward_lit': has_forward, 'persistent_buffers': persistent, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -546,10 +564,10 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
         lines.append('    result.HasSceneShaderInterface = true;')
     if contents.get('visibility_buffer', False):
         lines.append('    result.HasVisibilityBuffer = true;')
-    for program_name in PROGRAM_CODES:
-        for stage in (('compute', 'vertex', 'fragment') if program_name == 'RayTracing' else ('vertex', 'fragment')):
+    for program_name in (*PROGRAM_CODES, *forward.SUPPORT):
+        for stage in (forward.SUPPORT[program_name][1] if program_name in forward.SUPPORT else ('compute', 'vertex', 'fragment') if program_name == 'RayTracing' else ('vertex', 'fragment')):
             member = program_member(program_name, stage)
-            declaration = member if PROGRAM_CODES[program_name] < LEGACY_PROGRAM_COUNT else program_name + stage.title()
+            declaration = member if program_name in forward.SUPPORT or PROGRAM_CODES[program_name] < LEGACY_PROGRAM_COUNT else program_name + stage.title()
             keys = [key for key in artifact_labels if key[0] == program_name and key[1] == stage]
             if not keys:
                 continue
@@ -563,6 +581,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {declaration}Inputs.AsSpan();']
             if program_name == 'RayTracing':
                 lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers, result.HasVisibilityBuffer);']
+            if program_name in forward.SUPPORT:
+                lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{member});']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
             if program_name == 'RayTracing' and stage == 'compute':
                 stage_bindings = [{'slot': entry['binding'], 'kind': entry['kind'], 'visibility': 'Compute', 'size': entry['size']}
@@ -581,6 +601,9 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                           f'    result.{member}.Artifact.{field}Entry = ' + json.dumps(item['entry']) + ';']
                 for slot, block in item['blocks']:
                     lines.append(f'    result.{member}.UniformBlocks[{slot}] = ' + json.dumps(block) + ';')
+                for slot, texture in item.get('textures', {}).items():
+                    lines.append(f'    result.{member}.TextureNames[{slot}] = ' + json.dumps(texture['name']) + ';')
+                    lines.append(f'    result.{member}.TextureSamplers[{slot}] = ' + str(texture['sampler']) + ';')
     lines += ['    result.CompositeVertex = compositeVertex;', '    result.CompositeFragment = compositeFragment;', '    return result;', '}', '}']
     destination = Path(destination).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -636,6 +659,13 @@ def encode_runtime_package(contents):
         for slot, block in item['blocks']:
             encoded = block.encode()
             data += u32(slot, len(encoded)) + encoded + bytes(-len(encoded) % 4)
+        if (program_name, stage) in forward.ROLE_KEYS:
+            textures = item.get('textures', {})
+            data += u32(len(textures))
+            for slot, texture in sorted(textures.items(), key=lambda pair: int(pair[0])):
+                text = texture['name'].encode()
+                build.require(0 < len(text) <= MAX_ENTRY_BYTES, 'Package', texture['name'], 'combined sampler name exceeds runtime bounds')
+                data += u32(int(slot), texture['sampler'], len(text)) + text + bytes(-len(text) % 4)
         for blob in (entry, item['bytes']):
             data += blob + bytes(-len(blob) % 4)
     storage = contents.get('storage_buffers', [])

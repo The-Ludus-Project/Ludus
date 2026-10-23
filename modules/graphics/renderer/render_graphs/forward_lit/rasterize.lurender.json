@@ -1,0 +1,134 @@
+{
+  "configurations": [
+    {
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "draw.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "draw.view"
+        },
+        {
+          "from": "input.depth",
+          "to": "draw.depth"
+        },
+        {
+          "from": "input.color",
+          "to": "draw.color"
+        }
+      ],
+      "id": "ColorAndDepth",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "depth",
+          "type": "DepthTexture"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "nodes": [
+        {
+          "id": "draw",
+          "kind": "GraphicsPipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "target": "depth",
+              "format": "Depth32Float",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "vertex",
+              "stage": "vertex",
+              "program": "Geometry"
+            },
+            {
+              "id": "fragment",
+              "stage": "fragment",
+              "program": "Color"
+            }
+          ],
+          "state": {
+            "topology": "TriangleList",
+            "cull": "None",
+            "front": "CounterClockwise",
+            "depth_compare": "Less",
+            "depth_write": true,
+            "blend": "Opaque",
+            "samples": 1
+          },
+          "invocation": {
+            "mode": "ColorAndDepth",
+            "vertex_layout": "RendererStatic",
+            "material": "DefaultOpaque",
+            "scene": "scene",
+            "view": "view"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "id": "depth",
+          "required": false,
+          "source": "draw.depth",
+          "type": "DepthTexture"
+        },
+        {
+          "id": "color",
+          "required": false,
+          "source": "draw.color",
+          "type": "ColorTexture"
+        }
+      ]
+    }
+  ],
+  "default": "ColorAndDepth",
+  "id": "RasterizeGraph",
+  "version": 2
+}

@@ -32,6 +32,7 @@ constexpr usize COMPOSITE_BINDING_COUNT = 2;
 constexpr usize RESOURCE_COUNT = 2;
 constexpr usize PASS_COUNT = 1;
 constexpr usize VERTEX_COUNT = 3;
+constexpr usize TEXEL_BYTES = 4;
 constexpr usize INDEX_COUNT = 3;
 constexpr usize MESH_COUNT = 1;
 constexpr usize ITEM_COUNT = 1;
@@ -1122,4 +1123,138 @@ TEST_CASE("pixel buffer resolution follows RenderSize and preserves outputs on c
     resource.ViewNumerator = 0;
     REQUIRE(renderer::ResolveRenderGraphResource(resource, 1, 1, resolved) == rhi::RasterStatus::Ready);
     CHECK(resolved.Width == resource.Width);
+}
+
+namespace
+{
+renderer::RenderGraphPrograms MakeForwardPrograms(const GraphFixture& fixture)
+{
+    renderer::RenderGraphPrograms programs = fixture.MakePrograms();
+    const StaticArray<rhi::RasterShaderDescription*, format::FORWARD_STAGE_ROLE_COUNT> descriptions{
+        {&programs.ForwardVertex,
+         &programs.ForwardFragment,
+         &programs.ForwardShadow,
+         &programs.LightingVertex,
+         &programs.LightingFragment,
+         &programs.LightingShadow},
+    };
+    for (usize i = 0; i < descriptions.GetSize(); ++i)
+    {
+        const format::StageRole role = static_cast<format::StageRole>(format::FORWARD_STAGE_ROLE_FIRST + i);
+        rhi::RasterShaderDescription& description = *descriptions[i];
+        renderer::SetRenderGraphForwardInterface(description, role);
+        description.Artifact.Wgsl = "forward material fixture";
+        description.Artifact.WgslEntry = "ForwardMain";
+    }
+    return programs;
+}
+} // namespace
+TEST_CASE("forward scene generations publish together and retain reusable resources", "[render-graph][forward-lit]")
+{
+    GraphFixture fixture;
+    const renderer::RenderGraphPrograms programs = MakeForwardPrograms(fixture);
+    const auto settle = [&](rhi::RasterStatus status) {
+        for (usize attempt = 0; attempt < 100 && status == rhi::RasterStatus::Pending; ++attempt)
+        {
+            for (rhi::RasterStatus& transfer : rhi::reference::Transfers[0])
+            {
+                transfer = rhi::RasterStatus::Ready;
+            }
+            for (usize request = 0; request < rhi::reference::PendingCount; ++request)
+            {
+                rhi::internal::RasterComplete(rhi::reference::PendingRequests[request], rhi::RasterStatus::Ready);
+            }
+            REQUIRE(rhi::PollLifetime(fixture.Device) == rhi::RasterStatus::Ready);
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(settle(fixture.Graph.Initialize(fixture.Device, fixture.MakePlan(), programs)) == rhi::RasterStatus::Ready);
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    fixture.Meshes[0].Geometry.Normals = normals.GetData();
+    const uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    renderer::SceneShaderMaterial material;
+    material.Emission = {1, 0, 0};
+    StaticArray<uint8, TEXEL_BYTES> pixels{{255, 255, 255, 255}};
+    material.ColorTexture = {pixels.GetData(), pixels.GetSize(), pixels.GetSize(), 1, 1, rhi::RasterFormat::Rgba8Unorm};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    renderer::RenderGraphSceneRevisions revisions{1, 1, 1, 1, 1};
+    renderer::RenderGraphReport report;
+    const auto update = [&](uint64 revision) {
+        return fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                    {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                    {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                    revision,
+                                    renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                    report,
+                                    &inputs,
+                                    0,
+                                    revisions);
+    };
+    REQUIRE(settle(update(1)) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == 1);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedTextures == 1);
+    // A camera-only update uses the explicit domain promises and creates no new asset bindings.
+    fixture.Cameras[0].WorldToClip.Columns[3].X = .1F;
+    REQUIRE(update(2) == rhi::RasterStatus::Pending);
+    REQUIRE(fixture.Graph.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.ReusedMeshes == 0);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+    // Delayed material setup must retain generation two until every replacement is ready.
+    revisions.Materials = 2;
+    material.Emission = {0, 1, 0};
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    REQUIRE(update(3) == rhi::RasterStatus::Pending);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == 1);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedTextures == 1);
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    REQUIRE(settle(rhi::RasterStatus::Pending) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 3);
+    // A genuinely new texture has distinct content even at the same caller address.
+    revisions.Materials = 3;
+    pixels[0] = 0;
+    rhi::reference::Next = rhi::RasterStatus::Failed;
+    CHECK(update(4) == rhi::RasterStatus::Failed);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 3);
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    REQUIRE(settle(update(5)) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedTextures == 2);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == 1);
+    // Partial domain identities reject rather than allowing accidental camera-only reuse.
+    revisions.Geometry = 0;
+    CHECK(update(6) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 5);
+    // Two material slots split the index stream, while the first triangle reuses the original mesh.
+    revisions = {};
+    constexpr usize TWO_TRIANGLE_INDEX_COUNT = INDEX_COUNT * 2;
+    const StaticArray<uint32, TWO_TRIANGLE_INDEX_COUNT> indices{{0, 1, 2, 0, 2, 1}};
+    const StaticArray<uint32, 2> slots{{0, 1}};
+    const StaticArray<uint32, 2> bindings{{0, 1}};
+    StaticArray<renderer::SceneShaderMaterial, 2> materials{{material, material}};
+    materials[1].Emission = {0, 0, 1};
+    fixture.Meshes[0].Geometry.Indices = indices.GetData();
+    fixture.Meshes[0].Geometry.IndexCount = indices.GetSize();
+    fixture.Meshes[0].MaterialSlots = {slots.GetData(), slots.GetSize()};
+    fixture.Meshes[0].MaterialBindings = {bindings.GetData(), bindings.GetSize()};
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    REQUIRE(settle(update(7)) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == 2);
+    CHECK(fixture.Graph.GetReport().Resources.CreatedTextures == 2);
+    // A terminal asynchronous resource must be replaceable when the caller retries its bytes.
+    pixels[1] = 0;
+    materials[0].ColorTexture.Bytes = pixels.GetData();
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    REQUIRE(update(8) == rhi::RasterStatus::Pending);
+    for (usize request = 0; request < rhi::reference::PendingCount; ++request)
+    {
+        rhi::internal::RasterComplete(rhi::reference::PendingRequests[request], rhi::RasterStatus::Failed);
+    }
+    REQUIRE(fixture.Graph.Poll() == rhi::RasterStatus::Failed);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 7);
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    REQUIRE(settle(update(9)) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 9);
 }

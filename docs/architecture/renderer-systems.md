@@ -558,6 +558,17 @@ reference BRDF guards, retained atlases and conservative invalidation; cooker te
 cover gutters, revisions and mip admission. These validate correctness, not physical
 GPU performance or production bake quality.
 
+### Authored forward graph integration
+
+The [forward-lit graph template](../development/render-graph-authoring.md#use-the-forward-lit-template)
+uses the existing authored material program, light selection and environment
+preparation. Its private scene resource owner retains shared immutable mesh/texture
+incarnations across instances, passes and replacements. Material and light edits
+stage new scene generations; camera-only revision promises reuse prepared content.
+This graph profile is opaque and unshadowed. Its admission, budgets, shader ABI and
+publication boundaries belong to the linked graph workflow and
+[scene contract](shared-scene-shader-contract.md#authored-forward-material-execution).
+
 ## L5: opt-in portable scaling
 
 L5 adds CPU-built clustered forward lighting, conservative grouped visibility,

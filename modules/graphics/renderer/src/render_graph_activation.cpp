@@ -134,6 +134,8 @@ struct RenderGraphPackage::State final
         Array<uint32> Words;
         /// GLSL ES uniform block names by binding number; empty for other targets.
         StaticArray<std::string_view, format::UNIFORM_SLOT_COUNT> Blocks{};
+        StaticArray<std::string_view, rhi::RASTER_BINDING_COUNT> TextureNames{};
+        StaticArray<uint32, rhi::RASTER_BINDING_COUNT> TextureSamplers{};
     };
     Array<uint8> Bytes;
     format::Header Header{};
@@ -151,6 +153,7 @@ struct RenderGraphPackage::State final
     bool HasIndependentPrograms = false;
     bool HasVisibilityFields = false;
     bool HasPersistentBuffers = false;
+    bool HasForwardStages = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -193,17 +196,29 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::Malformed;
         }
+        const bool isForwardRole = role >= format::FORWARD_STAGE_ROLE_FIRST;
+        if (isForwardRole == true && HasForwardStages == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
         const bool isRayRole =
             (role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT) ||
             role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
-        const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
-                                                : role % format::TECHNIQUE_STAGE_COUNT == 0;
+        const bool isVertex = isForwardRole == true ? (role == static_cast<uint32>(format::StageRole::ForwardVertex) ||
+                                                       role == static_cast<uint32>(format::StageRole::LightingVertex))
+                              : isRayRole == true   ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
+                                                    : role % format::TECHNIQUE_STAGE_COUNT == 0;
         if (HasVisibilityFields == false && isVertex == true && isRayRole == true && inputCount == 2)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
         }
         if ((isVertex == false && inputCount != 0) || (isVertex == true && isRayRole == true && inputCount != 1) ||
-            (isVertex == true && isRayRole == false && inputCount != format::STATIC_INPUT_COUNT &&
+            (isForwardRole == true &&
+             inputCount != (role == static_cast<uint32>(format::StageRole::ForwardVertex) ? format::FORWARD_INPUT_COUNT
+                            : role == static_cast<uint32>(format::StageRole::LightingVertex) ? 1
+                                                                                             : 0)) ||
+            (isVertex == true && isRayRole == false && isForwardRole == false &&
+             inputCount != format::STATIC_INPUT_COUNT &&
              (HasVisibilityFields == false || inputCount != format::VISIBILITY_INPUT_COUNT)))
         {
             return RenderGraphPackageStatus::Malformed;
@@ -213,7 +228,12 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             const uint32 location = inoutReader.ReadWord();
             const uint32 inputFormat = inoutReader.ReadWord();
             const format::InputFormat expected =
-                input == 0 ? (isRayRole == true ? format::InputFormat::Float2 : format::InputFormat::Float3)
+                isForwardRole == true
+                    ? (role == static_cast<uint32>(format::StageRole::LightingVertex) ? format::InputFormat::Float4
+                       : (input == 0 || input == 7)                                   ? format::InputFormat::Float3
+                       : (input == 6 || input == 13 || input == 15)                   ? format::InputFormat::Float2
+                                                                                      : format::InputFormat::Float4)
+                : input == 0 ? (isRayRole == true ? format::InputFormat::Float2 : format::InputFormat::Float3)
                 : input >= format::STATIC_INPUT_COUNT ? format::InputFormat::Float2
                                                       : format::InputFormat::Float4;
             if (location != input || inputFormat != static_cast<uint32>(expected))
@@ -249,6 +269,34 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         if (artifactBytes > format::MAX_ARTIFACT_BYTES)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
+        }
+        if (isForwardRole == true)
+        {
+            const uint32 textureCount = inoutReader.ReadWord();
+            if (textureCount > rhi::RASTER_BINDING_COUNT ||
+                (textureCount != 0 && target != static_cast<uint32>(format::ShaderTarget::GlslEs)))
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+            for (uint32 texture = 0; texture < textureCount; ++texture)
+            {
+                const uint32 slot = inoutReader.ReadWord();
+                const uint32 sampler = inoutReader.ReadWord();
+                const uint32 count = inoutReader.ReadWord();
+                if (slot >= rhi::RASTER_BINDING_COUNT ||
+                    (sampler >= rhi::RASTER_BINDING_COUNT && sampler != format::ABSENT) ||
+                    count > format::MAX_ENTRY_BYTES || view.TextureNames[slot].empty() == false)
+                {
+                    return RenderGraphPackageStatus::Malformed;
+                }
+                const std::span<const uint8> name = inoutReader.ReadPadded(count);
+                if (inoutReader.IsOk() == false || IsBlockName(name) == false)
+                {
+                    return RenderGraphPackageStatus::Malformed;
+                }
+                view.TextureNames[slot] = {reinterpret_cast<const char*>(name.data()), name.size()};
+                view.TextureSamplers[slot] = sampler;
+            }
         }
         const std::span<const uint8> entry = inoutReader.ReadPadded(entryBytes);
         const std::span<const uint8> artifact = inoutReader.ReadPadded(artifactBytes);
@@ -290,6 +338,17 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
         {
             if (Stages[vertexRole][target].IsPresent != Stages[vertexRole + 1][target].IsPresent)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+        }
+    }
+    for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+    {
+        const bool hasForward = Stages[format::FORWARD_STAGE_ROLE_FIRST][target].IsPresent;
+        for (usize role = format::FORWARD_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
+        {
+            if (Stages[role][target].IsPresent != hasForward)
             {
                 return RenderGraphPackageStatus::Malformed;
             }
@@ -512,18 +571,20 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
-         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
-         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
-         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
+         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
+         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
-    candidate->HasPixelBuffers = version >= format::PACKAGE_VERSION;
+    candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
+    candidate->HasForwardStages = version >= format::PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->HasVisibilityFields = version >= format::VISIBILITY_PACKAGE_VERSION;
@@ -743,10 +804,19 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                                                                                          &result.RayImageVertex,
                                                                                          &result.RayImageFragment,
                                                                                          &result.RayCompute}};
+    const StaticArray<rhi::RasterShaderDescription*, format::FORWARD_STAGE_ROLE_COUNT> forwardMembers{
+        {&result.ForwardVertex,
+         &result.ForwardFragment,
+         &result.ForwardShadow,
+         &result.LightingVertex,
+         &result.LightingFragment,
+         &result.LightingShadow},
+    };
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =
-            role == static_cast<usize>(format::StageRole::PersistentRayCompute) ? result.RayCompute
+            role >= format::FORWARD_STAGE_ROLE_FIRST ? *forwardMembers[role - format::FORWARD_STAGE_ROLE_FIRST]
+            : role == static_cast<usize>(format::StageRole::PersistentRayCompute) ? result.RayCompute
             : role < format::LEGACY_STAGE_ROLE_COUNT
                 ? *members[role]
                 : result.AdditionalRasterStages[role - format::LEGACY_STAGE_ROLE_COUNT];
@@ -770,7 +840,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         description.Artifact.Stage = isVertex == true ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment;
         if (isVertex == true)
         {
-            if (isRayRole == false)
+            if (isRayRole == false && role < format::FORWARD_STAGE_ROLE_FIRST)
             {
                 usize inputCount = 0;
                 for (const State::StageView& view : views)
@@ -800,6 +870,10 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                                        isPersistentCompute,
                                        result.HasVisibilityBuffer);
         }
+        if (role >= format::FORWARD_STAGE_ROLE_FIRST)
+        {
+            SetRenderGraphForwardInterface(description, static_cast<format::StageRole>(role));
+        }
         if (state.BindingCounts[role] != 0)
         {
             description.Bindings = {state.Bindings[role].GetData(), state.BindingCounts[role]};
@@ -808,6 +882,11 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         const State::StageView& spirv = views[static_cast<usize>(format::ShaderTarget::Spirv)];
         const State::StageView& wgsl = views[static_cast<usize>(format::ShaderTarget::Wgsl)];
         const State::StageView& glsl = views[static_cast<usize>(format::ShaderTarget::GlslEs)];
+        for (usize slot = 0; slot < rhi::RASTER_BINDING_COUNT; ++slot)
+        {
+            description.TextureNames[slot] = glsl.TextureNames[slot];
+            description.TextureSamplers[slot] = glsl.TextureSamplers[slot];
+        }
         if (metal.IsPresent == true)
         {
             description.Artifact.Msl = metal.Text;

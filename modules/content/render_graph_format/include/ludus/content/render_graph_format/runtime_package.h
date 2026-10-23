@@ -34,12 +34,18 @@
 /// Version 9 appends RayProgram, Buffer0 and Buffer1 to each pass and admits Buffer resources.
 /// Older records imply callback zero with no persistent buffers.
 /// Version 11 appends BytesPerPixel to each resource for RenderSize-derived storage.
+/// Version 12 admits six forward support roles. Only those stage records insert a
+/// texture-name count after block names, then (texture slot, sampler slot, byte count,
+/// padded name) records. Non-GLSL targets carry zero texture names; older roles keep
+/// their existing stage record layout. Sampler slot ABSENT means no paired sampler.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 11;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 12;
+/// Last generation before forward material stages; adds pixel-derived storage.
+inline constexpr foundation::uint32 PIXEL_BUFFER_PACKAGE_VERSION = 11;
 /// First generation carrying visibility color/depth resource indices in pass records.
 inline constexpr foundation::uint32 VISIBILITY_PACKAGE_VERSION = 10;
 /// First generation with ordered callback selectors and persistent buffer references.
@@ -78,8 +84,15 @@ inline constexpr foundation::usize LEGACY_STAGE_ROLE_COUNT =
 /// Additional vertex/fragment roles; each pair follows its compiled technique ID.
 inline constexpr foundation::usize ADDITIONAL_RASTER_STAGE_COUNT =
     ADDITIONAL_RASTER_TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT;
+/// First appended forward material support role; earlier role IDs stay stable.
+inline constexpr foundation::usize FORWARD_STAGE_ROLE_FIRST =
+    LEGACY_STAGE_ROLE_COUNT + ADDITIONAL_RASTER_STAGE_COUNT + 1;
+/// Number of forward material and lighting support stages.
+inline constexpr foundation::usize FORWARD_STAGE_ROLE_COUNT = 6;
+/// Authored forward vertex interface size.
+inline constexpr foundation::usize FORWARD_INPUT_COUNT = 16;
 /// All admitted stage roles, including independent raster pairs.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = LEGACY_STAGE_ROLE_COUNT + ADDITIONAL_RASTER_STAGE_COUNT + 1;
+inline constexpr foundation::usize STAGE_ROLE_COUNT = FORWARD_STAGE_ROLE_FIRST + FORWARD_STAGE_ROLE_COUNT;
 /// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
 /// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,
@@ -92,7 +105,8 @@ inline constexpr foundation::usize STAGE_ROLE_COUNT = LEGACY_STAGE_ROLE_COUNT + 
 }
 /// Largest stage table: one artifact per role and target.
 inline constexpr foundation::usize MAX_STAGES =
-    (MAX_AUTHORED_TECHNIQUES * TECHNIQUE_STAGE_COUNT + RAY_STAGE_ROLE_COUNT) * SHADER_TARGET_COUNT;
+    (MAX_AUTHORED_TECHNIQUES * TECHNIQUE_STAGE_COUNT + RAY_STAGE_ROLE_COUNT) * SHADER_TARGET_COUNT +
+    FORWARD_STAGE_ROLE_COUNT * SHADER_TARGET_COUNT;
 /// Renderer static vertex/instance interface: position plus four transform rows and color.
 inline constexpr foundation::usize STATIC_INPUT_COUNT = 6;
 /// Fixed uint32 fields before the identities.
@@ -139,6 +153,12 @@ enum class StageRole : foundation::uint32
     PersistentRayCompute = LEGACY_STAGE_ROLE_COUNT +
         ADDITIONAL_RASTER_STAGE_COUNT, ///< Ordered callback sets with two persistent storage slots; exclusive with
                                        ///< other computes.
+    ForwardVertex = FORWARD_STAGE_ROLE_FIRST, ///< Authored forward geometry entry.
+    ForwardFragment,                          ///< Authored forward material and direct-light entry.
+    ForwardShadow,                            ///< Matching material shadow coverage entry.
+    LightingVertex,                           ///< Renderer lighting composition vertex.
+    LightingFragment,                         ///< Renderer lighting composition fragment.
+    LightingShadow,                           ///< Renderer flat shadow fragment.
 };
 /// Float vertex input width of one stage input record.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.

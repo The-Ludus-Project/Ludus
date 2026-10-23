@@ -26,6 +26,7 @@ from .errors import ToolingError
 from . import render_graph as graph
 from . import render_graph_diagnostics as diagnostics
 from . import render_graph_ray as ray
+from . import render_graph_forward as forward
 from . import render_graph_buffers as buffers
 
 VERSION = 1
@@ -300,7 +301,9 @@ def validate_manifest(value):
                     'Hardware raytracing requires native Metal or Vulkan; unsupported APIs need an authored raster configuration')
             techniques[ray.TECHNIQUE] = technique
             continue
-        keys(technique, ('id', 'configuration', 'vertex', 'fragment', 'recipes'), 'technique')
+        keys(technique, ('id', 'configuration', 'vertex', 'fragment', 'recipes'), 'technique', ('scene_interface',))
+        if 'scene_interface' in technique:
+            require(forward.is_forward(technique), 'ShaderInterface', technique['id'], 'unknown raster scene interface')
         require(type(technique['configuration']) is str and
                 any((technique['id'] == family + '.' + technique['configuration'] or
                     (type(technique['id']) is str and technique['id'].startswith(family + '.' + technique['configuration'] + '.') and
@@ -317,6 +320,8 @@ def validate_manifest(value):
         require(programs[technique['vertex']]['input'] == 'RendererStatic', 'Schema', technique['id'], 'RG0 requires RendererStatic schema')
         bounded_list(technique['recipes'], 16, 'recipes')
         require(technique['recipes'], 'Schema', technique['id'], 'at least one recipe required')
+        require(not forward.is_forward(technique) or len(technique['recipes']) == 1,
+                'Capability', technique['id'], 'the first forward profile requires one pipeline recipe')
         seen = set()
         for recipe in technique['recipes']:
             keys(recipe, ('id', 'color', 'depth', 'samples', 'topology', 'cull', 'front', 'depth_compare', 'depth_write', 'blend'), 'recipe')
@@ -350,6 +355,8 @@ def validate_manifest(value):
 
 def shader_source(program, schemas):
     """Generate declarations/bindings and entry wrapper; user source owns functions."""
+    if 'forward_wrapper' in program:
+        return program.get('settings_source', '') + program['forward_wrapper']
     if 'ray_wrapper' in program:
         return program.get('settings_source', '') + program['ray_wrapper']
     used = {program['input'], *(b['schema'] for b in program['bindings'])}
@@ -390,6 +397,8 @@ def check_layout(program, schemas, result, raw):
     if 'ray_wrapper' in program:
         ray.check_interface(program, result, sys.modules[__name__])
         return []
+    if 'forward_wrapper' in program:
+        return forward.check_interface(program, result, sys.modules[__name__])
     declared = {b['id']: b for b in program['bindings']}
     parameters = raw.get('parameters', [])
     require(all(p.get('name') in declared for p in parameters), 'Layout', program['id'], 'source declares a resource outside generated bindings')
@@ -499,6 +508,7 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, has
     paths['generator/render_graph_diagnostics.py'] = Path(diagnostics.__file__)
     paths['generator/render_graph_pipeline.py'] = Path(graph.pipeline.__file__)
     paths['generator/render_graph_ray.py'] = Path(ray.__file__)
+    paths['generator/render_graph_forward.py'] = Path(forward.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
     if validator:
         paths['tool/spirv-val'] = Path(validator).resolve()
@@ -672,6 +682,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     command = [sys.executable, str(helper / 'compile_shader.py'), '--source', str(source / 'wrapper.slang'),
                '--output', str(output), '--name', 'rgEntry', '--compiler', str(tools['tool/slangc']),
                '--lock', str(helper / 'shader_toolchain.json'), '--graph-stage', program['stage'], '--graph-target', target]
+    if program.get('forward_wrapper'):
+        command += ['--graph-forward-material']
     if program.get('native_ray_queries'):
         command += ['--native-ray-queries']
     if program.get('fragment_storage'):
@@ -845,6 +857,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
             closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
                                                                     sys.modules[__name__])
+    programs = forward.expand(programs, techniques, snapshot, helper, sys.modules[__name__])
+    for program_identity, program in programs.items():
+        if 'forward_wrapper' in program:
+            closures[program_identity] = forward.capture_closure(program, snapshot)
     from . import render_graph_settings
     for program in programs.values():
         program['settings_source'] = render_graph_settings.shader_source(value.get('settings', []))
@@ -912,6 +928,17 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                         record['persistent_buffers'] = persistent
                         record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
                         record['visibility_buffer'] = technique.get('scene_interface', {}).get('visibility_buffer', False)
+                        record['canonical'] = deepcopy(record)
+                        record['key'] = identity(record['canonical'])
+                        recipes.append(record)
+                        continue
+                    if forward.is_forward(technique):
+                        record = {'technique': tid, 'profile': target, 'state': technique['recipes'][0],
+                                  'vertex': entries[('ForwardSetupVertex', target)],
+                                  'fragment': entries[('ForwardSetupFragment', target)],
+                                  'vertex_schema': schemas['RendererStatic'], 'bindings': {'vertex': [], 'fragment': []},
+                                  'forward_stages': {group + ':' + stage: entries[(technique[stage] if group == 'ForwardLit' else group + stage.title(), target)]
+                                                     for group, (_, stages) in forward.SUPPORT.items() for stage in stages}}
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)

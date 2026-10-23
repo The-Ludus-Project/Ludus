@@ -47,7 +47,7 @@ def verify_glsl_links(reflected, emitted, stage):
     return emitted
 
 
-def metal_layouts(code, interface, document):
+def metal_layouts(code, interface, document, allows_arrays=False):
     """Independently derive emitted scalar/vector Metal uniform struct layouts."""
     for entry_value in interface['entries']:
         if entry_value.get('kind', 'UniformBuffer') != 'UniformBuffer':
@@ -67,9 +67,20 @@ def metal_layouts(code, interface, document):
             if not declaration.strip():
                 continue
             field = re.fullmatch(r'\s*(float[234]?)\s+(\w+)\s*', declaration)
-            if field is None:
+            count = 1
+            if field is None and allows_arrays:
+                array = re.fullmatch(r'\s*array<(float4),\s*int\(([0-9]+)\)>\s+(\w+)\s*', declaration)
+                if array:
+                    ty, count, emitted = array.groups()
+                    count = int(count)
+                    if not 0 < count <= 512:
+                        raise RuntimeError('Forward Metal array exceeds bounded material ABI')
+                else:
+                    raise RuntimeError('Forward Metal uniforms require vectors or bounded float4 arrays')
+            elif field is None:
                 raise RuntimeError('RG1 Metal uniforms require scalar/vector fields')
-            ty, emitted = field.groups()
+            else:
+                ty, emitted = field.groups()
             width = int(ty[-1]) if ty[-1].isdigit() else 1
             size = 16 if width == 3 else 4 * width
             align = size
@@ -79,7 +90,7 @@ def metal_layouts(code, interface, document):
             if stem in offsets:
                 raise RuntimeError('RG1 Metal uniform field is duplicated')
             offsets[stem] = offset
-            offset += size
+            offset += size * count
         size = (offset + alignment - 1) // alignment * alignment
         if offsets != entry_value['offsets'] or size != entry_value['size']:
             raise RuntimeError('RG1 emitted Metal packing differs from target reflection')
@@ -143,6 +154,8 @@ def compile_graph_stage(args, lock):
         from compile_raster import verify_storage_record_strides
         verify_storage_record_strides(intermediate.read_bytes(), interface)
     allowed = ('UniformBuffer', 'StorageRead') if stage == 'fragment' and getattr(args, 'fragment_storage', False) else ('UniformBuffer',)
+    if getattr(args, 'graph_forward_material', False) and stage == 'fragment':
+        allowed = ('UniformBuffer', 'Texture2D', 'Sampler')
     if stage != 'compute' and any(x['kind'] not in allowed for x in interface['entries']):
         raise RuntimeError('RG1 initial schema profile permits uniform buffers only')
     links = [] if stage == 'compute' else varying_interface(points[0], stage)
@@ -172,7 +185,7 @@ def compile_graph_stage(args, lock):
             from compile_raster import normalize_metal_storage
             code = normalize_metal_storage(code, interface)
         if stage != 'compute':
-            metal_layouts(code, interface, document)
+            metal_layouts(code, interface, document, getattr(args, 'graph_forward_material', False))
         code = relative_line_directives(code, [Path(args.source).parent])
         artifact.write_text(code)
         emitted = names[0]

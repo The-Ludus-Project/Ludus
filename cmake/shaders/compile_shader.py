@@ -270,9 +270,12 @@ def main():
     # browser backend artifact. When absent, SPIR-V/WGSL builds are unchanged.
     parser.add_argument('--spirv-cross')
     parser.add_argument('--spirv-cross-lock')
+    parser.add_argument("--graph-forward-material", action="store_true", help="Admit the verified renderer forward material resource interface")
     parser.add_argument("--graph-stage", choices=("vertex", "fragment", "compute"))
     parser.add_argument("--graph-target", choices=("spirv", "wgsl", "metal", "glsl"))
     args = parser.parse_args()
+    if args.graph_forward_material and args.graph_stage not in ('vertex', 'fragment'):
+        raise RuntimeError('Forward material resources require a closed generated raster graph stage')
     lock = json.loads(Path(args.lock).read_text())
     uses_native_worker = args.worker_socket and (not args.native_ray_queries or args.graph_stage)
     if not uses_native_worker and run([args.compiler, '-version']).strip() != lock['slang']['version']:
