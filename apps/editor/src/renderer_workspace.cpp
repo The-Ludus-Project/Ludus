@@ -2816,6 +2816,42 @@ void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonVa
     }
 }
 
+bool RendererWorkspace::CanRemoveUnusedShaders() const
+{
+    return mDocument.IsLoaded() == true && IsJobActive() == false && mSourceProblem.isEmpty() == true;
+}
+
+bool RendererWorkspace::RemoveUnusedShaders()
+{
+    if (CanRemoveUnusedShaders() == false || ReloadSourcesFromDisk() == false)
+    {
+        return false;
+    }
+    QWidget* focusedControlOrNull = QApplication::focusWidget();
+    if (IsNodeFieldControl(*this, *mInspector, focusedControlOrNull) == true)
+    {
+        focusedControlOrNull->clearFocus();
+    }
+    mSourceEditDebounce.stop();
+    mSourceController->BreakUndoGroup();
+    QStringList programs;
+    QStringList sources;
+    QString error;
+    const RenderGraphDocumentStatus status = mDocument.RemoveUnusedShaders(programs, sources, error);
+    documentEdited(status);
+    mStatus->setText(status == RenderGraphDocumentStatus::Ok
+                         ? QStringLiteral("Removed %1 unused shader programs and %2 source files from the draft. "
+                                          "Shared or included sources were retained. Save to publish; Undo to restore.")
+                               .arg(programs.size())
+                               .arg(sources.size())
+                         : error);
+    if (status == RenderGraphDocumentStatus::Ok && programs.isEmpty() == true)
+    {
+        mStatus->setText(QStringLiteral("No unused shader programs found in the loaded package."));
+    }
+    return status == RenderGraphDocumentStatus::Ok;
+}
+
 bool RendererWorkspace::CanCreateSubgraph() const
 {
     return mDocument.IsLoaded() == true && mCanvas->GetConfiguration().isEmpty() == false && IsJobActive() == false &&
@@ -3094,6 +3130,10 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterfaceAction"));
     editInterface->setEnabled(CanCreateSubgraph());
     connect(editInterface, &QAction::triggered, this, &RendererWorkspace::editConfigurationInterface);
+    QAction* cleanup = menu.addAction(QStringLiteral("Remove Unused Shaders"));
+    cleanup->setObjectName(QStringLiteral("renderGraphRemoveUnusedShadersAction"));
+    cleanup->setEnabled(CanRemoveUnusedShaders());
+    connect(cleanup, &QAction::triggered, this, [this]() { static_cast<void>(RemoveUnusedShaders()); });
     QMenu* createNodes = menu.addMenu(QStringLiteral("Create Node"));
     createNodes->setObjectName(QStringLiteral("renderGraphCreateNodeMenu"));
     createNodes->setEnabled(CanCreateSubgraph());

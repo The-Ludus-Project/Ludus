@@ -7,6 +7,7 @@
 #include "internal/main_window.h"
 #include "internal/options_dialog.h"
 #include "internal/project_explorer.h"
+#include "internal/render_graph_canvas.h"
 #include "internal/renderer_workspace.h"
 #include "internal/world_workspace.h"
 
@@ -19,6 +20,7 @@
 #include <QByteArray>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDialog>
 #include <QDir>
 #include <QDockWidget>
@@ -45,6 +47,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextBlock>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 
@@ -1072,4 +1075,86 @@ TEST_CASE("Missing rendering tools offer project repair directly above the viewp
     REQUIRE(dialogOrNull != nullptr);
     CHECK(dialogOrNull->isVisible() == true);
     dialogOrNull->reject();
+}
+
+TEST_CASE("Remove Unused Shaders is available in Edit and on the canvas with Properties hidden",
+          "[editor][render-graph][shader-cleanup][shell]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    const QString descriptor = WriteProject(directory);
+    const QString manifestPath = QDir(directory.path()).filePath(QStringLiteral("renderer/main.lushader.json"));
+    QJsonObject manifest = QJsonDocument::fromJson(ReadBytes(manifestPath)).object();
+    QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+    QJsonObject unused = programs.first().toObject();
+    unused.insert(QStringLiteral("id"), QStringLiteral("UnusedProgram"));
+    unused.insert(QStringLiteral("source"), QStringLiteral("unused_exclusive.slang"));
+    programs.append(unused);
+    manifest.insert(QStringLiteral("programs"), programs);
+    WriteBytes(manifestPath, EncodeCanonicalJson(manifest));
+    const QString sourcePath = QDir(directory.path()).filePath(QStringLiteral("renderer/unused_exclusive.slang"));
+    WriteBytes(sourcePath, QByteArrayLiteral("// authored source\n"));
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    QAction* cleanup = Action(window, QStringLiteral("renderGraph.removeUnusedShaders"));
+    CHECK(cleanup->isEnabled() == false);
+    controller.OpenProject(descriptor);
+    REQUIRE(controller.State().Document == DocumentState::ProjectLoaded);
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    REQUIRE(renderer != nullptr);
+    REQUIRE(renderer->OpenGraph(QDir(directory.path()).filePath(QStringLiteral("renderer/main.lurender.json"))) ==
+            true);
+    renderer->SetLivePreview(false);
+    static_cast<void>(Well(window).OpenDocument(renderer));
+    window.show();
+    Dock(window, QStringLiteral("propertiesDock"))->hide();
+    Settle();
+    REQUIRE(cleanup->isEnabled() == true);
+    bool hasMenuCommand = false;
+    for (QAction* menuAction : window.menuBar()->actions())
+    {
+        if (menuAction->menu() != nullptr && menuAction->menu()->title() == QStringLiteral("&Edit"))
+        {
+            hasMenuCommand = menuAction->menu()->actions().contains(cleanup);
+        }
+    }
+    CHECK(hasMenuCommand == true);
+    const QByteArray original = renderer->GetDocument().GetDraft(QStringLiteral("main.lushader.json"));
+    SECTION("Edit command")
+    {
+        cleanup->trigger();
+    }
+    SECTION("canvas context menu")
+    {
+        bool hasCanvasCommand = false;
+        QTimer::singleShot(0, &window, [&hasCanvasCommand]() {
+            QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (menuOrNull == nullptr)
+            {
+                return;
+            }
+            QAction* cleanupOrNull =
+                menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphRemoveUnusedShadersAction"));
+            if (cleanupOrNull != nullptr)
+            {
+                hasCanvasCommand = cleanupOrNull->isEnabled();
+                cleanupOrNull->trigger();
+            }
+            menuOrNull->close();
+        });
+        RenderGraphCanvas& canvas = renderer->GetCanvas();
+        const QPoint position = canvas.viewport()->rect().center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
+        QCoreApplication::sendEvent(canvas.viewport(), &event);
+        CHECK(hasCanvasCommand == true);
+    }
+    CHECK(renderer->GetDocument().GetDraft(QStringLiteral("main.lushader.json")).contains("UnusedProgram") == false);
+    CHECK(renderer->GetDocument().GetFiles().contains(QStringLiteral("unused_exclusive.slang")) == false);
+    CHECK(QFileInfo::exists(sourcePath) == true);
+    renderer->Undo();
+    CHECK(renderer->GetDocument().GetDraft(QStringLiteral("main.lushader.json")) == original);
+    CHECK(renderer->GetDocument().GetFiles().contains(QStringLiteral("unused_exclusive.slang")) == true);
+    renderer->Redo();
+    REQUIRE(renderer->Save() == true);
+    CHECK(QFileInfo::exists(sourcePath) == false);
 }

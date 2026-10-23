@@ -57,6 +57,16 @@ inline constexpr EditorCommand RENDER_GRAPH_OPEN_COMMAND
     .Help = "Open a root .lurender.json in this project as the render-graph document.",
     .IsCheckable = false,
 };
+inline constexpr EditorCommand RENDER_GRAPH_REMOVE_UNUSED_SHADERS_COMMAND
+{
+    .Id = "renderGraph.removeUnusedShaders",
+    .Text = "Remove &Unused Shaders",
+    .ToolbarText = "",
+    .Shortcut = "",
+    .Help = "Remove unused programs across the graph package; preserve shared and included sources. Save publishes the "
+            "undoable draft edit.",
+    .IsCheckable = false,
+};
 inline constexpr EditorCommand RENDER_GRAPH_VALIDATE_COMMAND
 {
     .Id = "renderGraph.validate",
