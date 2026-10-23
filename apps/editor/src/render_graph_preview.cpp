@@ -712,6 +712,18 @@ void RenderGraphPreview::SetOutputTarget(const QString& name)
         Q_EMIT Changed();
     }
 }
+const QString& RenderGraphPreview::GetRequestedPackagePath() const noexcept
+{
+    return mState->RequestedPath;
+}
+const QString& RenderGraphPreview::GetRasterFallbackPath() const noexcept
+{
+    return mState->RasterFallbackPath;
+}
+const QString& RenderGraphPreview::GetOutputTarget() const noexcept
+{
+    return mState->OutputName;
+}
 bool RenderGraphPreview::IsCopyingOutput() const noexcept
 {
     return mState->Reader.IsBusy() == true || mState->IsCopyingDisplay == true;
@@ -964,7 +976,7 @@ void RenderGraphPreview::finishCopy()
     if (status == RenderTargetReadStatus::Complete)
     {
         state.Trace.SetStage("CPU display image conversion");
-        const InspectedTexture texture = state.Reader.TakeTexture();
+        InspectedTexture texture = state.Reader.TakeTexture();
         TextureDisplaySettings settings;
         if (texture.Encoding == TexelEncoding::Depth32Float)
         {
@@ -975,6 +987,7 @@ void RenderGraphPreview::finishCopy()
             LUDUS_PROFILE_SCOPE(EditorGraphDisplayImageConversion);
             mImage = MakeDisplayImage(texture, settings, range);
         }
+        mOutputTexture = Move(texture);
         publishFrame();
     }
     else if (status == RenderTargetReadStatus::Failed || status == RenderTargetReadStatus::Undefined)

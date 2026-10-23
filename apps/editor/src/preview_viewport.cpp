@@ -1294,6 +1294,10 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         {
             mState->ReferenceWindow = new ReferenceCaptureWindow(preview, this);
         }
+#    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        // The project graph may have been adopted after the window was created.
+        mState->ReferenceWindow->SetProjectGraph(mState->ProjectGraph.data());
+#    endif
         mState->ReferenceWindow->show();
         mState->ReferenceWindow->raise();
         mState->ReferenceWindow->activateWindow();

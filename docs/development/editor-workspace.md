@@ -1447,8 +1447,8 @@ scene's authored analytic lights and its environment (map or constant) are
 supplied to the integrator. Emissive surfaces light the scene as true area
 emitters. The raster viewport's area-light proxies are not passed, which would
 count that light twice. Indirect light, soft shadows and inter-reflection
-therefore appear here and not in Lit. Comparing the two images shows what the
-raster profile approximates. Zero-area triangles are left out of the reference
+therefore appear here, where a raster profile approximates or omits them; see
+[comparison](#compare-with-the-viewports-render-graph). Zero-area triangles are left out of the reference
 geometry. They have no area to hit or emit from.
 
 | Traversal | Use |
@@ -1466,6 +1466,49 @@ profile does not retain. The integrator's declared limits apply: RGB only, no
 transmission or volumes, a fixed texture mip and a truncated depth. See the
 [reference workflow and frozen profile](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 Stopping the viewport's device cancels a running capture.
+
+#### Compare with the viewport's render graph
+
+In the native editor, **Compare with the viewport's render graph output** is on
+by default. Each capture then also renders the World viewport's current render
+graph: the same package, raster fallback, output target and **Force raster**
+choice the viewport shows. It uses a private producer on the same device, with
+the same frozen camera. The reference covers exactly the graph's output pixels.
+A graph that renders at a scaled resolution sets the extent, which can differ
+from **Long side**. The comparison measures the scheme the viewport actually
+uses. It is not the built-in Lit renderer. The editor's default graph draws
+flat colours, so compare a project graph to measure lighting. The browser editor
+has no project graph viewport and offers only the reference.
+
+The window shows the **Reference**, **Raster** and **Difference** images, and a
+summary that updates as samples accumulate. The difference image is red where
+the raster is brighter than the reference and blue where it is darker. It is
+black where they agree, saturates at 0.25 display units, and is grey where no
+reference sample exists yet. The statistics cover pixels with at least one
+reference sample:
+
+| Statistic | Meaning |
+| --- | --- |
+| MAE, RMSE, max | Mean absolute, root mean squared and largest channel error, raster minus reference |
+| Luminance bias | Mean signed Rec. 709 luminance error; negative means the raster is darker, for example where it omits indirect light |
+| Visibly different | Pixels whose largest display-space channel error exceeds 0.05 (about 13 of 255 levels) |
+| PSNR | Display space only, for a peak of one; capped at 100 dB for identical images |
+| relMSE | Linear space only: squared error over squared reference plus 0.01, per channel |
+
+The space follows the graph's output format. An `RGBA8Unorm` output is the
+displayed image. Its values are compared with the reference after the viewport
+display transform, so a graph that skips tone mapping shows that difference. An
+`RGBA16F` output is scene-linear radiance and is compared with the raw reference
+means. To compare radiometrically, select an HDR target as the viewport output.
+The reference's own Monte Carlo noise is part of every statistic. Read errors
+against its sample count, and use more samples before you trust small
+differences. A graph that keeps accumulating, such as a progressive ray-traced
+graph, is captured after 64 frames, and the summary says so.
+
+**Save…** also writes `<name>.raster.png` (the graph output as displayed),
+`<name>.difference.png`, and `<name>.comparison.json`. The JSON records the
+metrics, the reference settings, the graph package, output and encoding, and
+the frames rendered.
 
 ## S4 scene authoring
 

@@ -153,6 +153,17 @@ public:
     {
         return mImage;
     }
+    /// Raw texels of the output GetImage was converted from; invalid until a CPU fallback frame
+    /// is published. Unlike GetImage, HDR outputs keep their linear RGBA16F values.
+    [[nodiscard]] const InspectedTexture& GetOutputTexture() const noexcept
+    {
+        return mOutputTexture;
+    }
+    /// Runtime package and raster fallback of the latest Load request; empty before one.
+    [[nodiscard]] const QString& GetRequestedPackagePath() const noexcept;
+    [[nodiscard]] const QString& GetRasterFallbackPath() const noexcept;
+    /// Display attachment chosen by SetOutputTarget; empty selects the exported output.
+    [[nodiscard]] const QString& GetOutputTarget() const noexcept;
     /// Activation serial whose frame is shown; 0 when nothing was presented.
     [[nodiscard]] foundation::uint64 GetPresentedGeneration() const noexcept
     {
@@ -224,6 +235,7 @@ private:
 
     foundation::UniquePtr<State> mState;
     QImage mImage;
+    InspectedTexture mOutputTexture;
     foundation::uint64 mPresentedGeneration = 0;
     foundation::uint64 mPresentedRevision = 0;
     foundation::uint64 mPresentedSession = 0;

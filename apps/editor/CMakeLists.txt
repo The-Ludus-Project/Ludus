@@ -107,6 +107,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources src/internal/offscreen_frame_reader.h src/offscreen_frame_reader.cpp)
     # RG3b trusted render-graph preview reads exported color back through the same frame reader.
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
+        src/internal/viewport_raster_capture.h src/viewport_raster_capture.cpp
         src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
@@ -332,6 +333,8 @@ qt_add_executable(ludus_editor
     src/internal/preview_gpu_generation.h
     src/viewport_reference_capture.cpp
     src/internal/viewport_reference_capture.h
+    src/reference_comparison.cpp
+    src/internal/reference_comparison.h
     src/reference_capture_window.cpp
     src/internal/reference_capture_window.h
     src/internal/preview_shader_set.h
@@ -628,6 +631,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/preview_gpu_generation.h
         src/viewport_reference_capture.cpp
         src/internal/viewport_reference_capture.h
+        src/reference_comparison.cpp
+        src/internal/reference_comparison.h
         src/reference_capture_window.cpp
         src/internal/reference_capture_window.h
         src/internal/preview_shader_set.h
@@ -836,7 +841,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         ludus_editor_enable_shader_reload(ludus_editor_tests)
         ludus_editor_enable_reference_queries(ludus_editor_tests)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
-        target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp)
+        target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
+            tests/reference_comparison_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")

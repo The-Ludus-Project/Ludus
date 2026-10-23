@@ -1,25 +1,41 @@
 #include "internal/reference_capture_window.h"
 
+#include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
+#include "internal/texture_inspection.h"
 #include "internal/viewport_reference_capture.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/render_graph_preview.h"
+#    include "internal/viewport_raster_capture.h"
+#endif
+
+#include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/graphics/rhi/ray.h>
 
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QSaveFile>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStandardItemModel>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 namespace ludus::editor
@@ -39,15 +55,59 @@ QString DescribeTraversal(renderer::ReferenceTraversal traversal)
     return traversal == renderer::ReferenceTraversal::CpuOracle ? QStringLiteral("CPU oracle")
                                                                 : QStringLiteral("native ray queries");
 }
+
+void ConfigureImageLabel(QLabel& inoutLabel, const QString& objectName, const QString& accessibleName)
+{
+    inoutLabel.setObjectName(objectName);
+    inoutLabel.setAlignment(Qt::AlignCenter);
+    inoutLabel.setMinimumSize(MINIMUM_IMAGE_EXTENT, MINIMUM_IMAGE_EXTENT);
+    inoutLabel.setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    inoutLabel.setAccessibleName(accessibleName);
+}
+
+void ShowScaled(QLabel& inoutLabel, const QImage& image)
+{
+    if (image.isNull() == true)
+    {
+        inoutLabel.clear();
+        return;
+    }
+    inoutLabel.setPixmap(
+        QPixmap::fromImage(image).scaled(inoutLabel.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+}
+
+bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outError)
+{
+    QSaveFile file(path);
+    if (file.open(QIODevice::WriteOnly) == false || file.write(bytes) != bytes.size() || file.commit() == false)
+    {
+        outError = QStringLiteral("Could not write %1: %2").arg(path, file.errorString());
+        return false;
+    }
+    return true;
+}
+
+bool WriteImageAtomically(const QString& path, const QImage& image, QString& outError)
+{
+    QSaveFile file(path);
+    if (file.open(QIODevice::WriteOnly) == false || image.save(&file, "PNG") == false || file.commit() == false)
+    {
+        outError = QStringLiteral("Could not write %1: %2").arg(path, file.errorString());
+        return false;
+    }
+    return true;
+}
 } // namespace
 
 ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* parentOrNull)
     : QWidget(parentOrNull, Qt::Window), mPreview(preview), mLongSide(new QSpinBox(this)), mSamples(new QSpinBox(this)),
       mMaxDepth(new QSpinBox(this)), mTraversal(new QComboBox(this)),
+      mCompare(new QCheckBox(QStringLiteral("Compare with the viewport's render graph output"), this)),
       mCaptureButton(new QPushButton(QStringLiteral("Capture viewport"), this)),
       mStopButton(new QPushButton(QStringLiteral("Stop"), this)),
       mSaveButton(new QPushButton(QStringLiteral("Save…"), this)), mProgress(new QProgressBar(this)),
-      mStatus(new QLabel(this)), mImageLabel(new QLabel(this))
+      mStatus(new QLabel(this)), mComparisonText(new QLabel(this)), mImages(new QTabWidget(this)),
+      mImageLabel(new QLabel(this)), mRasterLabel(new QLabel(this)), mDifferenceLabel(new QLabel(this))
 {
     setObjectName(QStringLiteral("referenceCaptureWindow"));
     setWindowTitle(QStringLiteral("Reference capture"));
@@ -56,7 +116,8 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
                         static_cast<int32>(MAXIMUM_REFERENCE_LONG_SIDE));
     mLongSide->setValue(static_cast<int32>(ViewportReferenceSettings{}.LongSide));
     mLongSide->setSuffix(QStringLiteral(" px"));
-    mLongSide->setToolTip(QStringLiteral("Long side of the image; the short side follows the viewport's aspect."));
+    mLongSide->setToolTip(QStringLiteral("Long side of the image; the short side follows the viewport's aspect. "
+                                         "A comparison uses the render graph's output extent for this size."));
     mSamples->setObjectName(QStringLiteral("referenceSamples"));
     mSamples->setRange(1, static_cast<int32>(MAXIMUM_REFERENCE_SAMPLES));
     mSamples->setValue(static_cast<int32>(ViewportReferenceSettings{}.Samples));
@@ -74,19 +135,23 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mTraversal->setCurrentIndex(CPU_ORACLE_INDEX);
     mTraversal->setToolTip(QStringLiteral("CPU oracle traces a CPU BVH and runs everywhere. Native ray queries "
                                           "use the GPU's ray tracing hardware; they never fall back to the CPU."));
+    mCompare->setObjectName(QStringLiteral("referenceCompare"));
+    mCompare->setChecked(true);
     QFormLayout* form = new QFormLayout;
     form->addRow(QStringLiteral("Long side"), mLongSide);
     form->addRow(QStringLiteral("Samples"), mSamples);
     form->addRow(QStringLiteral("Max depth"), mMaxDepth);
     form->addRow(QStringLiteral("Traversal"), mTraversal);
+    form->addRow(mCompare);
 
     mCaptureButton->setObjectName(QStringLiteral("referenceCapture"));
     mCaptureButton->setToolTip(QStringLiteral("Render the viewport's current camera and scene. Navigating or "
                                               "editing afterwards does not change a running capture."));
     mStopButton->setObjectName(QStringLiteral("referenceStop"));
     mSaveButton->setObjectName(QStringLiteral("referenceSave"));
-    mSaveButton->setToolTip(QStringLiteral("Write the linear LUHDR01 capture and a display PNG beside it. "
-                                           "An unfinished capture is saved as partial."));
+    mSaveButton->setToolTip(QStringLiteral("Write the linear LUHDR01 capture and a display PNG beside it, plus the "
+                                           "raster image, difference image and metrics of a comparison. An "
+                                           "unfinished capture is saved as partial."));
     QHBoxLayout* buttons = new QHBoxLayout;
     buttons->addWidget(mCaptureButton);
     buttons->addWidget(mStopButton);
@@ -99,32 +164,43 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mStatus->setObjectName(QStringLiteral("referenceStatus"));
     mStatus->setWordWrap(true);
     mStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    mImageLabel->setObjectName(QStringLiteral("referenceImage"));
-    mImageLabel->setAlignment(Qt::AlignCenter);
-    mImageLabel->setMinimumSize(MINIMUM_IMAGE_EXTENT, MINIMUM_IMAGE_EXTENT);
-    mImageLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    mImageLabel->setAccessibleName(QStringLiteral("Reference image"));
+    mComparisonText->setObjectName(QStringLiteral("referenceComparison"));
+    mComparisonText->setWordWrap(true);
+    mComparisonText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    ConfigureImageLabel(*mImageLabel, QStringLiteral("referenceImage"), QStringLiteral("Reference image"));
+    ConfigureImageLabel(*mRasterLabel, QStringLiteral("referenceRasterImage"), QStringLiteral("Raster image"));
+    ConfigureImageLabel(*mDifferenceLabel,
+                        QStringLiteral("referenceDifferenceImage"),
+                        QStringLiteral("Raster minus reference difference image"));
+    mDifferenceLabel->setToolTip(QStringLiteral("Red: the raster image is brighter than the reference. Blue: it is "
+                                                "darker. Black: they agree. Grey: no reference sample yet."));
+    mImages->setObjectName(QStringLiteral("referenceImages"));
+    mImages->addTab(mImageLabel, QStringLiteral("Reference"));
+    mImages->addTab(mRasterLabel, QStringLiteral("Raster"));
+    mImages->addTab(mDifferenceLabel, QStringLiteral("Difference"));
 
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->addLayout(form);
     layout->addLayout(buttons);
     layout->addWidget(mProgress);
     layout->addWidget(mStatus);
-    layout->addWidget(mImageLabel, 1);
+    layout->addWidget(mComparisonText);
+    layout->addWidget(mImages, 1);
 
     mServiceTimer.setInterval(0);
     connect(&mServiceTimer, &QTimer::timeout, this, &ReferenceCaptureWindow::service);
     connect(mCaptureButton, &QPushButton::clicked, this, [this]() { static_cast<void>(StartCapture()); });
     connect(mStopButton, &QPushButton::clicked, this, &ReferenceCaptureWindow::StopCapture);
     connect(mSaveButton, &QPushButton::clicked, this, &ReferenceCaptureWindow::saveWithDialog);
+    connect(mImages, &QTabWidget::currentChanged, this, [this]() { showScaledImages(); });
     if (mPreview.isNull() == false)
     {
-        // The capture's renderer lives on the preview's device and must go before it.
+        // Both captures' renderers live on the preview's device and must go before it.
         connect(mPreview, &RenderPreview::DeviceStopping, this, [this]() {
-            if (mCapture.GetPhase() != ViewportReferencePhase::Idle)
+            if (mCapture.GetPhase() != ViewportReferencePhase::Idle || isRasterRendering() == true)
             {
                 mServiceTimer.stop();
-                mCapture.Release();
+                releaseCaptures();
                 mMessage = QStringLiteral("The viewport device stopped; the capture was cancelled.");
                 updateControls();
                 updateStatus();
@@ -134,6 +210,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     }
     mMessage = QStringLiteral("Captures the viewport's current camera with the RT1 progressive path tracer.");
     updateTraversalAvailability();
+    updateComparisonAvailability();
     updateControls();
     updateStatus();
 }
@@ -141,7 +218,34 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
 ReferenceCaptureWindow::~ReferenceCaptureWindow()
 {
     mServiceTimer.stop();
+    releaseCaptures();
+}
+
+void ReferenceCaptureWindow::SetProjectGraph(RenderGraphPreview* graphOrNull)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mProjectGraph = graphOrNull;
+#else
+    static_cast<void>(graphOrNull);
+#endif
+    updateComparisonAvailability();
+}
+
+void ReferenceCaptureWindow::releaseCaptures() noexcept
+{
     mCapture.Release();
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mRasterCapture.Release();
+#endif
+}
+
+bool ReferenceCaptureWindow::isRasterRendering() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    return mRasterCapture.GetPhase() == ViewportRasterPhase::Rendering;
+#else
+    return false;
+#endif
 }
 
 void ReferenceCaptureWindow::updateTraversalAvailability()
@@ -167,12 +271,67 @@ void ReferenceCaptureWindow::updateTraversalAvailability()
     }
 }
 
+void ReferenceCaptureWindow::updateComparisonAvailability()
+{
+    bool isAvailable = false;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    isAvailable = mProjectGraph.isNull() == false && mProjectGraph->GetRequestedPackagePath().isEmpty() == false;
+#endif
+    mIsComparisonAvailable = isAvailable;
+    mCompare->setToolTip(
+        isAvailable == true
+            ? QStringLiteral("Also render the viewport's project render graph, with its output and Force raster "
+                             "choice, at the same camera and extent, and report raster-minus-reference error.")
+            : QStringLiteral("Comparison needs the native editor's project render graph viewport."));
+    updateControls();
+}
+
+bool ReferenceCaptureWindow::startRasterCapture(const QSize& requestedSize, QSize& outExtent, QString& outError)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mRasterSource = GetViewportRasterSource(*mProjectGraph);
+    QSize extent;
+    if (mRasterCapture
+            .Load(mPreview->GetDevice(), mPreview->GetSurface(), mRasterSource, requestedSize, extent, outError) ==
+        false)
+    {
+        return false;
+    }
+    renderer::ViewDescription view;
+    QString error;
+    if (mPreview->DescribeConventionalView(static_cast<uint32>(extent.width()),
+                                           static_cast<uint32>(extent.height()),
+                                           view,
+                                           error) == false)
+    {
+        mRasterCapture.Release();
+        outError = QStringLiteral("The viewport camera cannot be described for the raster capture: %1").arg(error);
+        return false;
+    }
+    if (mRasterCapture.Begin(mPreview->Scene(), view, outError) == false)
+    {
+        return false;
+    }
+    outExtent = extent;
+    return true;
+#else
+    static_cast<void>(requestedSize);
+    static_cast<void>(outExtent);
+    outError = QStringLiteral("Comparison needs the native editor's project render graph viewport.");
+    return false;
+#endif
+}
+
 bool ReferenceCaptureWindow::StartCapture()
 {
     mServiceTimer.stop();
-    mCapture.Release();
+    releaseCaptures();
     mImage = {};
-    mImageLabel->clear();
+    mRasterImage = {};
+    mDifferenceImage = {};
+    mHasComparison = false;
+    mComparisonError.clear();
+    showScaledImages();
     updateTraversalAvailability();
     QString error;
     if (mPreview.isNull() == true || mPreview->HasDevice() == false)
@@ -187,13 +346,25 @@ bool ReferenceCaptureWindow::StartCapture()
     settings.Samples = static_cast<uint32>(mSamples->value());
     settings.MaxDepth = static_cast<uint32>(mMaxDepth->value());
     settings.Traversal = static_cast<renderer::ReferenceTraversal>(mTraversal->currentIndex());
-    const QSize extent = ComputeReferenceExtent(mPreview->GetDrawableSize(), settings.LongSide);
+    const QSize requestedExtent = ComputeReferenceExtent(mPreview->GetDrawableSize(), settings.LongSide);
+    QSize extent = requestedExtent;
+    mIsComparing = mIsComparisonAvailable == true && mCompare->isChecked() == true;
+    // The raster capture fixes the extent first: a graph may render at a scaled resolution, and the
+    // reference must cover exactly the pixels it is compared with.
+    if (mIsComparing == true && startRasterCapture(requestedExtent, extent, error) == false)
+    {
+        mMessage = error;
+        updateControls();
+        updateStatus();
+        return false;
+    }
     renderer::ViewDescription view;
     if (extent.isEmpty() == true || mPreview->DescribeView(static_cast<uint32>(extent.width()),
                                                            static_cast<uint32>(extent.height()),
                                                            view,
                                                            error) == false)
     {
+        releaseCaptures();
         mMessage = QStringLiteral("The viewport camera cannot be described: %1").arg(error);
         updateControls();
         updateStatus();
@@ -203,6 +374,7 @@ bool ReferenceCaptureWindow::StartCapture()
             .Start(mPreview->GetDevice(), mPreview->GetSurface(), mPreview->Scene(), view, extent, settings, error) ==
         false)
     {
+        releaseCaptures();
         mMessage = error;
         updateControls();
         updateStatus();
@@ -226,34 +398,104 @@ bool ReferenceCaptureWindow::StartCapture()
 
 void ReferenceCaptureWindow::StopCapture()
 {
-    if (mCapture.GetPhase() == ViewportReferencePhase::Idle)
+    if (mCapture.GetPhase() == ViewportReferencePhase::Idle && isRasterRendering() == false)
     {
         return;
     }
     mServiceTimer.stop();
-    mCapture.Release();
+    releaseCaptures();
+    mHasComparison = false;
     mMessage = QStringLiteral("Capture stopped.");
     updateControls();
     updateStatus();
     Q_EMIT CaptureFinished();
 }
 
+QString ReferenceCaptureWindow::GetComparisonPath(const QString& hdrPath, const QString& suffix)
+{
+    const QFileInfo info(hdrPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral(".") + suffix);
+}
+
 bool ReferenceCaptureWindow::SaveCapture(const QString& hdrPath, QString& outError) const
 {
-    return mCapture.Save(hdrPath, outError);
+    if (mCapture.Save(hdrPath, outError) == false)
+    {
+        return false;
+    }
+    return mHasComparison == false || saveComparison(hdrPath, outError);
+}
+
+bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& outError) const
+{
+    QJsonObject raster;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    raster.insert(QStringLiteral("package"), mRasterSource.PackagePath);
+    raster.insert(QStringLiteral("rasterFallback"), mRasterSource.FallbackPath);
+    raster.insert(QStringLiteral("outputTarget"), mRasterSource.OutputTarget);
+    raster.insert(QStringLiteral("forceRaster"), mRasterSource.ShouldForceRaster);
+    raster.insert(QStringLiteral("encoding"), GetEncodingName(mRasterCapture.GetTexture().Encoding));
+    raster.insert(QStringLiteral("frames"), static_cast<qint64>(mRasterCapture.GetFrameCount()));
+    raster.insert(QStringLiteral("stillAccumulating"), mRasterCapture.WasStillAccumulating());
+#endif
+    graphics::renderer::ReferenceCaptureInfo info;
+    QJsonObject reference;
+    if (mCapture.GetInfo(info) == true)
+    {
+        reference.insert(QStringLiteral("file"), QFileInfo(hdrPath).fileName());
+        reference.insert(QStringLiteral("minimumSamples"), static_cast<qint64>(info.MinimumSamples));
+        reference.insert(QStringLiteral("targetSamples"), static_cast<qint64>(info.TargetSamples));
+        reference.insert(QStringLiteral("maxDepth"), static_cast<qint64>(info.MaxDepth));
+        reference.insert(QStringLiteral("complete"), info.Complete);
+        reference.insert(QStringLiteral("traversal"), DescribeTraversal(info.Traversal));
+        reference.insert(QStringLiteral("seed"), QString::number(info.Seed));
+    }
+    const QJsonObject report{
+        {QStringLiteral("reference"), reference},
+        {QStringLiteral("raster"), raster},
+        {QStringLiteral("metrics"), MakeReferenceComparisonJson(mComparison)},
+    };
+    return WriteImageAtomically(GetComparisonPath(hdrPath, QStringLiteral("raster.png")), mRasterImage, outError) ==
+               true &&
+           WriteImageAtomically(GetComparisonPath(hdrPath, QStringLiteral("difference.png")),
+                                mDifferenceImage,
+                                outError) == true &&
+           WriteAtomically(GetComparisonPath(hdrPath, QStringLiteral("comparison.json")),
+                           QJsonDocument(report).toJson(),
+                           outError) == true;
 }
 
 void ReferenceCaptureWindow::service()
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool wasRasterRendering = isRasterRendering();
+    const ViewportRasterPhase rasterPhase = mRasterCapture.Service();
+    const bool hasRasterFinished = wasRasterRendering == true && rasterPhase != ViewportRasterPhase::Rendering;
+    if (hasRasterFinished == true && rasterPhase == ViewportRasterPhase::Complete)
+    {
+        mRasterImage = mRasterCapture.GetImage();
+    }
+    else if (hasRasterFinished == true)
+    {
+        mComparisonError = mRasterCapture.GetError();
+    }
+#else
+    const bool hasRasterFinished = false;
+#endif
     const ViewportReferencePhase phase = mCapture.Service(REFERENCE_SERVICE_BUDGET_NANOSECONDS);
-    const bool isFinished = phase != ViewportReferencePhase::Preparing && phase != ViewportReferencePhase::Tracing;
+    const bool isReferenceFinished =
+        phase != ViewportReferencePhase::Preparing && phase != ViewportReferencePhase::Tracing;
+    const bool isFinished = isReferenceFinished == true && isRasterRendering() == false;
     if (isFinished == true)
     {
         mServiceTimer.stop();
     }
-    if (isFinished == true || mRefreshTimer.elapsed() >= REFERENCE_DISPLAY_REFRESH_MILLISECONDS)
+    if (isFinished == true || hasRasterFinished == true ||
+        mRefreshTimer.elapsed() >= REFERENCE_DISPLAY_REFRESH_MILLISECONDS)
     {
         refreshImage();
+        updateComparison();
+        showScaledImages();
         mRefreshTimer.restart();
         updateControls();
         updateStatus();
@@ -276,31 +518,62 @@ void ReferenceCaptureWindow::refreshImage()
     if (mCapture.CopyDisplayImage(image, error) == true)
     {
         mImage = image;
-        showScaledImage();
     }
     mProgress->setValue(static_cast<int32>(info.MinimumSamples));
 }
 
-void ReferenceCaptureWindow::showScaledImage()
+void ReferenceCaptureWindow::updateComparison()
 {
-    if (mImage.isNull() == true)
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsComparing == false || mRasterCapture.GetPhase() != ViewportRasterPhase::Complete)
     {
         return;
     }
-    mImageLabel->setPixmap(
-        QPixmap::fromImage(mImage).scaled(mImageLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    Array<graphics::renderer::ReferencePixel> pixels;
+    QString error;
+    if (mCapture.CopyPixels(pixels, error) == false)
+    {
+        return;
+    }
+    const QSize extent = mCapture.GetExtent();
+    ReferenceComparison comparison;
+    QImage difference;
+    if (CompareRasterWithReference({pixels.GetData(), pixels.GetSize()},
+                                   static_cast<uint32>(extent.width()),
+                                   static_cast<uint32>(extent.height()),
+                                   mRasterCapture.GetTexture(),
+                                   comparison,
+                                   difference,
+                                   error) == false)
+    {
+        mComparisonError = error;
+        return;
+    }
+    mComparison = comparison;
+    mDifferenceImage = difference;
+    mHasComparison = true;
+    mComparisonError.clear();
+#endif
+}
+
+void ReferenceCaptureWindow::showScaledImages()
+{
+    ShowScaled(*mImageLabel, mImage);
+    ShowScaled(*mRasterLabel, mRasterImage);
+    ShowScaled(*mDifferenceLabel, mDifferenceImage);
 }
 
 void ReferenceCaptureWindow::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
-    showScaledImage();
+    showScaledImages();
 }
 
 void ReferenceCaptureWindow::updateControls()
 {
     const ViewportReferencePhase phase = mCapture.GetPhase();
-    const bool isRunning = phase == ViewportReferencePhase::Preparing || phase == ViewportReferencePhase::Tracing;
+    const bool isRunning = phase == ViewportReferencePhase::Preparing || phase == ViewportReferencePhase::Tracing ||
+                           isRasterRendering() == true;
     graphics::renderer::ReferenceCaptureInfo info;
     const bool hasSamples = mCapture.GetInfo(info) == true;
     mCaptureButton->setEnabled(isRunning == false);
@@ -313,6 +586,33 @@ void ReferenceCaptureWindow::updateControls()
     {
         setting->setEnabled(isRunning == false);
     }
+    mCompare->setEnabled(isRunning == false && mIsComparisonAvailable == true);
+}
+
+QString ReferenceCaptureWindow::describeRaster() const
+{
+    if (mIsComparing == false)
+    {
+        return {};
+    }
+    if (mComparisonError.isEmpty() == false)
+    {
+        return QStringLiteral("Comparison unavailable: %1").arg(mComparisonError);
+    }
+    if (mHasComparison == true)
+    {
+        QString text = DescribeReferenceComparison(mComparison);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        if (mRasterCapture.WasStillAccumulating() == true)
+        {
+            text += QStringLiteral(" The render graph was still accumulating after %1 frames.")
+                        .arg(mRasterCapture.GetFrameCount());
+        }
+#endif
+        return text;
+    }
+    return isRasterRendering() == true ? QStringLiteral("Rendering the viewport's render graph output…")
+                                       : QStringLiteral("Waiting for reference samples to compare.");
 }
 
 QString ReferenceCaptureWindow::GetStatusText() const
@@ -350,6 +650,9 @@ QString ReferenceCaptureWindow::GetStatusText() const
 void ReferenceCaptureWindow::updateStatus()
 {
     mStatus->setText(GetStatusText());
+    const QString comparison = describeRaster();
+    mComparisonText->setText(comparison);
+    mComparisonText->setVisible(comparison.isEmpty() == false);
 }
 
 void ReferenceCaptureWindow::saveWithDialog()
@@ -366,6 +669,11 @@ void ReferenceCaptureWindow::saveWithDialog()
     if (SaveCapture(path, error) == false)
     {
         mMessage = error;
+    }
+    else if (mHasComparison == true)
+    {
+        mMessage = QStringLiteral("Saved %1, its PNG and the comparison beside it (%2).")
+                       .arg(path, GetComparisonPath(path, QStringLiteral("comparison.json")));
     }
     else
     {
