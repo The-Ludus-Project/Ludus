@@ -6,6 +6,7 @@
 #include "rg2_storage_ray.h"
 #include "rg2_visibility.h"
 #include "rg2_visibility_buffer_template.h"
+#include "rg2_visibility_ordinary.h"
 #include "rg2_visibility_secondary_rays_template.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
@@ -904,18 +905,30 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
           "[render-graph][gpu][ray-pipeline][visibility]")
 {
     GraphGpuFixture fixture;
+    bool hasVisibility = true;
+    SECTION("visibility configuration") {}
+    SECTION("ordinary configuration in the same package")
+    {
+        hasVisibility = false;
+    }
     const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage({LUDUS_RG3_VISIBILITY_DIRECTORY, "rg2_visibility.lurgrt"});
+        LoadPackage(hasVisibility == true
+                        ? PackageLocation{LUDUS_RG3_VISIBILITY_DIRECTORY, "rg2_visibility.lurgrt"}
+                        : PackageLocation{LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY, "rg2_visibility_ordinary.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     const renderer::RenderGraphPrograms compiled =
-        packages::rg2_visibility::MakePrograms(shaders::renderer_composite::Vertex(),
-                                               shaders::renderer_composite::Fragment());
+        hasVisibility == true
+            ? packages::rg2_visibility::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                     shaders::renderer_composite::Fragment())
+            : packages::rg2_visibility_ordinary::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                              shaders::renderer_composite::Fragment());
     CheckSameStage(decoded.ColorVertex, compiled.ColorVertex);
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
-    REQUIRE(decoded.HasVisibilityBuffer == true);
+    REQUIRE(decoded.HasVisibilityBuffer == hasVisibility);
+    REQUIRE(compiled.HasVisibilityBuffer == hasVisibility);
     REQUIRE(decoded.HasSceneShaderInterface == true);
-    REQUIRE(package->GetPlan().Passes.GetSize() == 2);
+    REQUIRE(package->GetPlan().Passes.GetSize() == (hasVisibility == true ? 2 : 1));
     rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, package->GetPlan(), decoded);
     const uint64 started = time::NowTicks();
     while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
@@ -991,6 +1004,10 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
     CHECK(fixture.Pixels[rightBottom] == 188);
     CHECK(fixture.Pixels[rightBottom + 1] == 188);
     CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == 188);
+    if (hasVisibility == false)
+    {
+        return;
+    }
     // A second frame must rebuild imports after the first accepted producer revision.
     read();
     CHECK(fixture.Pixels[rightBottom + 1] == 188);

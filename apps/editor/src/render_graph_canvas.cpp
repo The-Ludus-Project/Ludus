@@ -3,6 +3,7 @@
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_scene_bundle.h"
+#include "internal/render_graph_upscale_node.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -234,7 +235,12 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
 {
     const QString kind = node.value(QStringLiteral("kind")).toString();
     RenderGraphNodePorts ports;
-    if (IsPipelineNode(kind) == true)
+    if (kind == QStringLiteral("Upscale"))
+    {
+        ports.Inputs = ReadInterface(GetUpscaleInputPorts(node));
+        ports.Outputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
+    }
+    else if (IsPipelineNode(kind) == true)
     {
         ports.Inputs = ReadInterface(node.value(QStringLiteral("inputs")).toArray());
         AppendSceneBundleInputs(ports.Inputs);

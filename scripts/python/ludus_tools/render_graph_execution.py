@@ -156,7 +156,8 @@ def lower_plan(package, configuration):
                               'Configuration', operation['id'],
                               'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
             color = operation['attachments']['color']
-            recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE]
+            recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
+                       recipe.get('visibility_buffer', False) == ('visibility' in operation)]
             variants = recipes[0].get('ray_programs', [list(ray.program_tuple(operation['pipeline']))]) if recipes else [list(ray.program_tuple(operation['pipeline']))]
             variant = list(ray.program_tuple(operation['pipeline']))
             build.require(variant in variants and all(recipe.get('ray_programs', variants) == variants for recipe in recipes),
@@ -336,6 +337,9 @@ def _runtime_contents(path, configuration):
     build.require(package['id'] == 'RendererStaticBuild', 'Configuration', package['id'],
                   'use an explicitly authored --renderer-static build manifest')
     plan, resources, passes, cameras = lower_plan(package, configuration)
+    has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
+    ray_recipes = [recipe for recipe in package['recipes'] if recipe['technique'] == ray.TECHNIQUE and
+                   recipe.get('visibility_buffer', False) == has_visibility]
     stages = {}
     roles = program_roles(package)
     vertex_schemas = []
@@ -344,7 +348,8 @@ def _runtime_contents(path, configuration):
         selected_techniques.add('DefaultStaticOpaque.ColorAndDepth')
     for technique in sorted(selected_techniques):
         program_name = roles[technique]
-        recipes = [r for r in package['recipes'] if r['technique'] == technique]
+        recipes = ray_recipes if technique == ray.TECHNIQUE else [r for r in package['recipes'] if r['technique'] == technique]
+        build.require(recipes, 'Configuration', technique, 'no shader profile matches the selected visibility inputs')
         for recipe in recipes:
             if technique != ray.TECHNIQUE:
                 vertex_schemas.append(recipe['vertex_schema'])
@@ -418,17 +423,16 @@ def _runtime_contents(path, configuration):
     # CPU-visible interface: the logical vertex/instance schema, fixed static inputs,
     # and the per-draw uniform schemas with every target layout that packs them.
     interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1', 'vertex_schema': vertex_schemas[0], 'inputs': [stage_inputs(record) for (name, stage, target), record in stages.items() if stage == 'vertex' and name != 'RayTracing' and (name, stage) not in forward.ROLE_KEYS], 'uniform_schemas': uniform_interface}
-    scene_versions = {r.get('scene_interface_version', 0) for r in package['recipes'] if r['technique'] == ray.TECHNIQUE}
+    scene_versions = {r.get('scene_interface_version', 0) for r in ray_recipes}
     build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
-    has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
-    visibility_profiles = {r.get('visibility_buffer', False) for r in package['recipes'] if r['technique'] == ray.TECHNIQUE}
+    visibility_profiles = {r.get('visibility_buffer', False) for r in ray_recipes}
     ray_pass_count = sum(p['Program'] == 'RayTracing' for p in passes)
     build.require(not has_visibility or ray_pass_count == 1, 'Capability', 'visibility',
                   'visibility reconstruction currently admits one ray invocation per configuration')
     has_ray = ray_pass_count != 0
     build.require(not has_ray or visibility_profiles == {has_visibility}, 'Configuration', 'visibility',
                   'ray visibility inputs must match scene_interface.visibility_buffer')
-    persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in package['recipes'])
+    persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in ray_recipes)
     return {'forward_lit': has_forward, 'persistent_buffers': persistent, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,

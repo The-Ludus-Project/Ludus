@@ -203,6 +203,76 @@ produce IncompletePipeline; an invalid/pending candidate leaves the current
 viewport generation intact. Blending/rasterization remain fields inside the
 node; separate state blocks and stream output are deferred.
 
+## Upscaling presets
+
+**Authoring only:** all current execution profiles reject a selected `Upscale`
+node with a mapped `Capability` diagnostic. No vendor SDK is downloaded or
+executed. An unused preset can remain in a graph without blocking its existing
+render path. Validation/build failure retains the previously drawable generation.
+
+Use **Create Node → Upscale — … (draft)** on the canvas, or the same preset in
+Properties' Add Node picker. Both create the same version-2 supporting operation:
+
+```json
+{"id": "upscale", "kind": "Upscale", "algorithm": "dlss-sr"}
+```
+
+These are **node presets**, not complete renderer configuration templates. Each
+preset supplies the fixed interface for one algorithm; vendor work is owned by a
+future SDK/backend adapter rather than a user-authored ComputePipeline shader.
+Select **Edit Node…** on the canvas or use Properties to change `algorithm`.
+Changing temporal to spatial requires disconnecting any ports that would disappear;
+the editor rejects the edit and preserves wires until that is done. Creation,
+changes, wiring, removal, copy/paste, undo/redo and Save use the ordinary document
+operations. Properties may stay hidden throughout canvas authoring.
+
+| Algorithm identity | Preset | Interface |
+| --- | --- | --- |
+| `dlss-sr` | DLSS Super Resolution | Temporal |
+| `fsr-1` | FSR 1 spatial | Spatial |
+| `fsr-2` | FSR 2 temporal | Temporal |
+| `fsr-3` | FSR 3 upscaling | Temporal |
+| `metalfx-spatial` | MetalFX Spatial | Spatial |
+| `metalfx-temporal` | MetalFX Temporal | Temporal |
+| `xess-sr` | XeSS Super Resolution | Temporal |
+
+All presets consume `color: ColorTexture` and
+`destination: ColorTexture`, and expose `color: ColorTexture` as the written
+version of the destination. The source texture determines input resolution; the
+separate destination determines output resolution. Targets can use the existing
+fixed or shared RenderSize policies. The canvas infers the output descriptor
+from destination storage. No quality preset silently changes either resolution.
+
+Temporal presets additionally declare the following required per-frame inputs:
+
+| Input | Graph type | Intended adapter contract |
+| --- | --- | --- |
+| `depth` | DepthTexture | Current frame depth |
+| `motion` | ColorTexture | Current-to-previous motion in RG; multiply by `motion_scale` to obtain render pixels, excluding projection jitter |
+| `jitter_pixel` | Float2 | Current projection jitter in render pixels |
+| `motion_scale` | Float2 | Per-axis conversion from encoded motion to render pixels |
+| `exposure` | Float32 | Positive linear exposure multiplier |
+| `reset` | UInt32 | Zero retains history; nonzero resets it, including camera cuts |
+
+These names record a draft interface, **not an implemented native texture ABI**.
+The current RGBA8 graph texture vocabulary cannot establish HDR or motion-vector
+precision. Typed wiring checks remain active, including on unused branches, but
+no upscaling resource/content validation or history allocation occurs. A future
+adapter must qualify texture formats, color/exposure and depth conventions,
+initialization, resource aliasing, dynamic extents, jitter/motion producers and
+history lifetime before execution is admitted. The current raster profile does
+not manufacture these temporal inputs. There is no automatic algorithm fallback.
+Frame generation, ray reconstruction, driver overrides and SDK version selection
+are separate work and are not represented by these super-resolution presets.
+
+Thanks to NVIDIA, [DLSS Programming Guide](https://github.com/NVIDIA/DLSS/tree/main/doc),
+AMD, [FidelityFX Super Resolution 2.3.3, Inputs](https://gpuopen.com/manuals/fidelityfx_sdk/techniques/super-resolution-temporal/),
+Apple, [MTLFXTemporalScaler](https://developer.apple.com/documentation/metalfx/mtlfxtemporalscaler),
+and Intel, [XeSS Super Resolution Developer Guide](https://github.com/intel/xess/blob/main/doc/xess_sr_developer_guide_english.md),
+for the spatial/temporal input distinction. Ludus adapts that distinction into a
+shared draft interface; it does not copy their SDK implementations or imply
+that their native contracts are interchangeable.
+
 ## Share render sizes
 
 Use a **RenderSize** node when targets should share a resolution. Its default
@@ -639,7 +709,11 @@ buffers and a texture-derived RenderSize node. Opening `#RestirDi` shows the ful
 editable wiring. Import, shader/manifest changes and any inserted Subgraph are
 one undo step; **Save** publishes them together. New shader programs have `Restir`
 prefixed IDs and sources under `restir_di/main_shaders/`. No shader copying or
-pasting is required. Existing callbacks remain unchanged; a shared custom payload
+pasting is required. Import captures every declared ray shader and its transitive
+local includes before committing the draft. If an embedded source is missing,
+application fails with its path instead of publishing a manifest that cannot build.
+Explicit **Build Graph** includes these new files in its immutable draft snapshot
+before Save; building does not publish them to the project. Existing callbacks remain unchanged; a shared custom payload
 keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
 admission defaults to the ReSTIR template capacities (16 programs and 64 artifacts),
 so an existing ray pipeline can coexist with the five imported programs. Custom
@@ -722,7 +796,14 @@ are `history.buffer → initial.history → temporal.history → shade.history` 
 `reservoir.buffer → initial.reservoir → temporal.reservoir → shade.reservoir`.
 The library color chain ends at its `color` output, connected by the parent to
 `output.texture` or a later pass. History persists through the
-frame boundary in the same allocation; no cyclic graph wire is needed. Do not
+frame boundary in the same allocation; no cyclic graph wire is needed.
+The final `shade.history` and `shade.reservoir` outputs may remain unconnected:
+those output ports name the updated logical resource versions; they do not allocate
+copies or control retention. All declared pass reads/writes and their resource
+hazards remain in the execution plan. The graph owns both persistent allocations
+through the frame boundary, until their generation is replaced or destroyed.
+Expose a Buffer output from the library only when a later parent pass needs it;
+that consumer must connect to the updated version. Do not
 swap the two buffer input positions between these particular passes. Temporal
 reuse writes only each invocation's own scratch record; spatial reuse reads only
 scratch while writing history. Thus neither pass races a neighbouring reader.
@@ -1005,12 +1086,17 @@ Applying a template adds its graph, shader sources, compatible identity attribut
 and manifest records in one undo step. **Save** publishes the complete edit.
 Ordinary raster shader bytes are retained; the shared `RendererStatic` schema gains
 its two visibility attributes, and a separate flat varying/graphics technique
-keeps visibility shaders distinct. Secondary rays require a native profile and a
-visibility-compatible shared ray interface with the starter's `ScenePayload`
-definition and at least one surface query. An incompatible ray ABI, changed
-reserved shader/schema, source collision or exceeded budget preserves the draft
-and reports a repair. The same canonical libraries back the New Render Graph
-starters and are included in installed SDK packages.
+keeps visibility shaders distinct. Unchanged engine-default authoring budgets
+expand to the template's budgets; custom limits remain authoritative. If a custom
+limit is too small, the error names the required count and manifest budget field.
+Secondary rays require a native profile. Existing ordinary ray configurations can
+share the package: their callbacks, payload source and query limits are retained.
+The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
+additional fields are accepted, with full payload validation at build time. An
+unsupported ray interface version, incompatible payload, changed reserved
+shader/schema or source collision reports the specific repair and preserves the
+draft. The same canonical libraries back the New Render Graph starters and are
+included in installed SDK packages.
 
 Choose either starter in **New Render Graph → Template**. The editor copies the
 complete editable graph, manifest and shaders into `graphs/<name>/` and opens it.
@@ -1095,8 +1181,14 @@ preceding opaque ColorAndDepth operation, using the same View and matching fixed
 or view-relative extents. Both producer aspects must Clear/Store. Its visibility
 shader pair has no authored uniform bindings. Masked/transmissive/deformed geometry,
 world-grid/overlay packets, multisampling and reverse/infinite depth remain outside
-this initial profile. A ray technique with the visibility ABI requires those
-paired inputs; a legacy ray technique does not acquire them implicitly.
+this initial profile. The technique flag enables visibility support for the
+package. Each configuration selects its ordinary or visibility shader bindings
+from its authored ray inputs; ordinary configurations keep their original
+resources. A configuration cannot mix ordinary and visibility ray invocations.
+The compiler keeps their callback dispatch tables and reflected resource layouts
+separate, and both runtime-package and generated-header paths select the matching
+profile. A visibility invocation requires the paired inputs; ordinary invocations
+do not acquire texture inputs implicitly.
 
 In raygen, reconstruct the surface before authoring secondary transport:
 
@@ -2198,7 +2290,10 @@ and on the Render Graph toolbar (see the
   the active document, including while you edit it in Properties.
   Save writes only changed files, each through an atomic replacement, and first
   checks that disk still holds the bytes that were loaded or last saved. An
-  external change returns a conflict and writes nothing. Graph documents are
+  external change returns a conflict and writes nothing. Template shader directories
+  are created before any changed files are published in an existing package. A
+  blocked or linked parent directory fails Save before graph/manifest references
+  change, leaving the draft available for retry. Graph documents are
   saved in the same canonical form as `ludus render-graph new`.
 
 Closing the project, opening another one or launching a build asks to save or

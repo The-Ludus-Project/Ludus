@@ -193,6 +193,27 @@ Declaring either type does not admit it on every target. Unsupported stages,
 resource kinds, shader tables or state combinations produce explicit capability
 errors; no graphics fallback or ignored setting is invented.
 
+### Upscaling operations and presets
+
+`Upscale` is a version-2 supporting SDK operation, with vendor-specific node
+presets for DLSS SR, FSR 1/2/3 upscaling, MetalFX Spatial/Temporal and XeSS SR.
+Its fixed typed interface is chosen by `algorithm`; it owns no shader program or
+pipeline-state record. Input color and output destination are distinct resource
+ports. Spatial presets expose two texture inputs; temporal presets additionally
+expose depth, motion, jitter, motion scale, exposure and reset values. The output
+is the destination's written color version. Presets are small node records,
+rather than duplicated full renderer configurations.
+
+Current profiles admit source inspection and editing only. Execution selection
+reports an unavailable-backend diagnostic at the authored node, including inside
+nested graphs. Unused drafts are culled from execution while their source shape
+and wires still undergo structural validation. No placeholder dispatch, implicit
+copy or automatic fallback may stand in for a vendor SDK. Backend availability,
+texture precision, dynamic sizing and temporal history ownership require a
+separate Renderer/RHI adapter before this operation can produce runtime work.
+See [upscaling presets](../development/render-graph-authoring.md#upscaling-presets)
+for the interface, references and editing workflow.
+
 ### Connection domains and supporting operations
 
 The graph retains different connection domains:

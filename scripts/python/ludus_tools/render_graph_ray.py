@@ -41,6 +41,8 @@ SCENE_QUERY_LIMITS = {
 }
 
 COMPUTE_ID = 'GraphRayCompute'
+VISIBILITY_COMPUTE_ID = 'GraphVisibilityRayCompute'
+COMPUTE_IDS = (COMPUTE_ID, VISIBILITY_COMPUTE_ID)
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
@@ -163,7 +165,41 @@ def migrate_legacy_scene_sources(sources, snapshot):
     return {'sources': overrides, 'callbacks': sorted(callbacks)}
 
 
-def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None):
+def group_profiles(plans, technique, build):
+    """Separate ordinary and visibility callback sets without changing their shared payload."""
+    groups = {}
+    for plan in plans:
+        operations = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        if not operations:
+            continue
+        visibility = {'visibility' in operation for operation in operations}
+        build.require(len(visibility) == 1, 'Capability', plan['configuration'],
+                      'ordinary and visibility ray passes require separate configurations')
+        has_visibility = visibility.pop()
+        build.require(not has_visibility or technique.get('scene_interface', {}).get('visibility_buffer', False),
+                      'Configuration', plan['configuration'],
+                      'visibility inputs require scene_interface.visibility_buffer')
+        group = groups.setdefault(has_visibility, {'variants': set(), 'persistent': False, 'structured_buffers': False})
+        group['variants'].update(program_tuple(operation['pipeline']) for operation in operations)
+        group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
+        group['persistent'] |= len(operations) > 1 or any(resource['type'] == 'Buffer' and 'stride' not in resource
+                                                        for resource in plan['resources'].values())
+    if not groups:
+        groups[technique.get('scene_interface', {}).get('visibility_buffer', False)] = {
+            'variants': {tuple(technique[stage] for stage in STAGES)}, 'persistent': False, 'structured_buffers': False}
+    result = []
+    for has_visibility, group in sorted(groups.items()):
+        build.require(not (group['persistent'] or len(group['variants']) > 1) or not group['structured_buffers'],
+                      'Capability', 'ray storage',
+                      'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
+        result.append({'visibility_buffer': has_visibility, 'variants': sorted(group['variants']),
+                       'persistent': group['persistent'] or len(group['variants']) > 1,
+                       'compute': VISIBILITY_COMPUTE_ID if has_visibility and len(groups) > 1 else COMPUTE_ID})
+    return result
+
+
+def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
+                    compute_identity=COMPUTE_ID):
     """Capture the engine kernel and all three functions in one linked compute entry."""
     selected = {stage: programs[identity] for stage, identity in zip(STAGES, variants[0])} if variants else {stage: programs[technique[stage]] for stage in STAGES}
     storage = buffers.merge_bindings(selected, build)
@@ -175,7 +211,10 @@ def expand_programs(programs, technique, snapshot, helper, build, variants=None,
     for filename in (*HELPERS, compute_recipe['source'], image_recipe['source']):
         data = build.read(helper / filename)
         relative = '_ludus_ray/' + filename
-        build.require(relative not in snapshot.files, 'Source', relative, 'reserved engine ray helper path')
+        if relative in snapshot.files:
+            build.require(snapshot.external.get(relative) == helper / filename and snapshot.files[relative] == data,
+                          'Source', relative, 'reserved engine ray helper path')
+            continue
         snapshot.files[relative] = data
         snapshot.external[relative] = helper / filename
         snapshot.total += len(data)
@@ -244,10 +283,10 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
                       'ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility)
     result = {identity: deepcopy(program) for identity, program in programs.items() if program['stage'] not in STAGES}
-    result[COMPUTE_ID] = {'id': COMPUTE_ID, 'stage': 'compute', 'source': selected['ray_generation']['source'],
+    result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
                           'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
     if compatibility['sources']:
-        result[COMPUTE_ID]['source_overrides'] = compatibility['sources']
+        result[compute_identity]['source_overrides'] = compatibility['sources']
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
         # Use the same renderer-owned image recipe; its interface is validated by the runtime.
         source = '#include "_ludus_ray/' + image_recipe['source'] + '"\n'
@@ -279,7 +318,7 @@ def check_interface(program, result, build):
     """Validate the frozen renderer ABI from independently reflected artifacts."""
     interface = result['interface']
     entries = sorted(interface['entries'], key=lambda value: value['binding'])
-    if program['id'] == COMPUTE_ID:
+    if program['id'] in COMPUTE_IDS:
         expected = [(0, 'UniformBuffer', 224), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
                     (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)]
         if program.get('persistent_ray_profile'):

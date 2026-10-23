@@ -1,6 +1,7 @@
 // Built-in creation and canvas settings use the real shared backend and document history.
 #include "internal/controller.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/renderer_workspace.h"
@@ -8,6 +9,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -16,6 +18,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QGraphicsScene>
@@ -216,6 +219,9 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
     inspector->hide();
     properties.hide();
     workspace.show();
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    REQUIRE(workspace.IsBuiltIn() == false);
+    REQUIRE(QFileInfo::exists(QDir(workspace.GetDocument().GetPackageRoot()).filePath(ROOT_GRAPH)) == true);
     REQUIRE(workspace.CreateSubgraph(QStringLiteral("raytracing")) == true);
     REQUIRE(workspace.CreateConfiguration(QStringLiteral("RestirDi")) == true);
     RenderGraphDocument& document = workspace.GetDocument();
@@ -319,6 +325,42 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
     configurations.replace(0, parent);
     root.insert(QStringLiteral("configurations"), configurations);
     REQUIRE(document.SetText(ROOT_GRAPH, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+    const QJsonArray importedPrograms =
+        QJsonDocument::fromJson(document.GetDraft(manifest)).object().value(QStringLiteral("programs")).toArray();
+    for (const QJsonValueConstRef value : importedPrograms)
+    {
+        const QString source = value.toObject().value(QStringLiteral("source")).toString();
+        INFO(source.toStdString());
+        REQUIRE(document.GetDraft(source).isEmpty() == false);
+    }
+    QTemporaryDir unsavedSnapshot;
+    REQUIRE(document.WriteSnapshot(unsavedSnapshot.path()) == RenderGraphDocumentStatus::Ok);
+    for (const QJsonValueConstRef value : importedPrograms)
+    {
+        CHECK(QFileInfo::exists(
+                  QDir(unsavedSnapshot.path()).filePath(value.toObject().value(QStringLiteral("source")).toString())) ==
+              true);
+    }
+    const QString helper = qEnvironmentVariable("LUDUS_RESTIR_TEST_HELPER");
+    const QString compiler = qEnvironmentVariable("LUDUS_RESTIR_TEST_COMPILER");
+    if (helper.isEmpty() == false && compiler.isEmpty() == false)
+    {
+        RenderGraphBuildSettings settings;
+        settings.ShouldOverrideTools = true;
+        settings.Tools.Helper = helper;
+        settings.Tools.Compiler = compiler;
+        settings.Tools.SpirvCross = qEnvironmentVariable("LUDUS_RESTIR_TEST_TRANSLATOR");
+        workspace.SetBuildSettings(settings);
+        QSignalSpy built(&workspace, &RendererWorkspace::JobFinished);
+        REQUIRE(workspace.Build() == true);
+        REQUIRE(built.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+        INFO(workspace.GetLastResult().Message.toStdString());
+        CHECK(workspace.GetLastResult().IsSuccessful == true);
+        CHECK(document.GetSaved(manifest) == beforeManifest);
+        CHECK(QFileInfo::exists(
+                  QDir(document.GetPackageRoot()).filePath(QStringLiteral("restir_di/main_shaders/miss.slang"))) ==
+              false);
+    }
     REQUIRE(workspace.Save() == true);
     QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
     REQUIRE(workspace.Validate() == true);
@@ -328,6 +370,29 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
     RenderGraphDocument reloaded;
     REQUIRE(reloaded.Load(document.GetPackageRoot(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reloaded.GetDraft(library) == afterLibrary);
+    for (const QString& file : document.GetFiles())
+    {
+        INFO(file.toStdString());
+        CHECK(reloaded.GetDraft(file) == document.GetDraft(file));
+    }
+    if (helper.isEmpty() == false && compiler.isEmpty() == false)
+    {
+        RendererWorkspace reopened({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+        reopened.SetProject(project.path(), 2);
+        reopened.SetLivePreview(false);
+        REQUIRE(reopened.IsBuiltIn() == false);
+        RenderGraphBuildSettings settings;
+        settings.ShouldOverrideTools = true;
+        settings.Tools.Helper = helper;
+        settings.Tools.Compiler = compiler;
+        settings.Tools.SpirvCross = qEnvironmentVariable("LUDUS_RESTIR_TEST_TRANSLATOR");
+        reopened.SetBuildSettings(settings);
+        QSignalSpy built(&reopened, &RendererWorkspace::JobFinished);
+        REQUIRE(reopened.Build() == true);
+        REQUIRE(built.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+        INFO(reopened.GetLastResult().Message.toStdString());
+        CHECK(reopened.GetLastResult().IsSuccessful == true);
+    }
     const QString fixture = qEnvironmentVariable("LUDUS_RESTIR_LIBRARY_FIXTURE");
     if (fixture.isEmpty() == false)
     {
@@ -756,7 +821,7 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     }
 }
 
-TEST_CASE("Root visibility insertion is atomic on library collisions and incompatible ray ABIs",
+TEST_CASE("Root visibility insertion is atomic on library collisions and unsupported ray versions",
           "[editor][render-graph][visibility-configuration]")
 {
     QTemporaryDir project;
@@ -783,13 +848,33 @@ TEST_CASE("Root visibility insertion is atomic on library collisions and incompa
     CHECK(document.GetDraft(ROOT_GRAPH) == insertedRoot);
     workspace.Undo();
     REQUIRE(workspace.ApplyRestirTemplate(QStringLiteral("Lighting")) == true);
+    QJsonObject incompatible =
+        QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    QJsonObject budgets = incompatible.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), 32);
+    incompatible.insert(QStringLiteral("budgets"), budgets);
+    QJsonArray techniques = incompatible.value(QStringLiteral("techniques")).toArray();
+    for (qsizetype index = 0; index < techniques.size(); ++index)
+    {
+        QJsonObject technique = techniques.at(index).toObject();
+        if (technique.value(QStringLiteral("id")) == QStringLiteral("RendererTriangles.RayTracing"))
+        {
+            QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
+            interface.insert(QStringLiteral("version"), 2);
+            technique.insert(QStringLiteral("scene_interface"), interface);
+            techniques.replace(index, technique);
+        }
+    }
+    incompatible.insert(QStringLiteral("techniques"), techniques);
+    REQUIRE(document.SetText(QStringLiteral("main.lushader.json"), EncodeCanonicalJson(incompatible)) ==
+            RenderGraphDocumentStatus::Ok);
     const QStringList files = document.GetFiles();
     const QByteArray restirManifest = document.GetDraft(QStringLiteral("main.lushader.json"));
     CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH,
                                               QStringLiteral("Reflections"),
                                               QStringLiteral("visibility-secondary-rays"),
                                               error) == RenderGraphDocumentStatus::Conflict);
-    CHECK(error.contains(QStringLiteral("ray interface")) == true);
+    CHECK(error.contains(QStringLiteral("version")) == true);
     CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == restirManifest);
     CHECK(document.GetFiles() == files);
 }
@@ -841,4 +926,238 @@ TEST_CASE("Visibility imports reuse compatible shader records and preserve confl
     CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == beforeManifest);
     CHECK(document.GetDraft(shader) == beforeShader);
     CHECK(document.GetFiles() == beforeFiles);
+}
+
+TEST_CASE("Visibility import coexists with an authored ray configuration at default budgets",
+          "[editor][render-graph][visibility-existing-package]")
+{
+    QTemporaryDir package;
+    const QString existing = qEnvironmentVariable("LUDUS_VISIBILITY_EXISTING_PACKAGE");
+    const QString source = existing.isEmpty() == true
+                               ? QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/raytracing")
+                               : existing;
+    QDirIterator files(source, QDir::Files, QDirIterator::Subdirectories);
+    while (files.hasNext() == true)
+    {
+        const QString original = files.next();
+        const QString relative = QDir(source).relativeFilePath(original);
+        const QString destination = QDir(package.path()).filePath(relative);
+        REQUIRE(QDir().mkpath(QFileInfo(destination).absolutePath()) == true);
+        REQUIRE(QFile::copy(original, destination) == true);
+    }
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    if (existing.isEmpty() == true)
+    {
+        QFile input(QDir(package.path()).filePath(manifestFile + QStringLiteral(".in")));
+        REQUIRE(input.open(QIODevice::ReadOnly) == true);
+        QJsonObject manifest =
+            QJsonDocument::fromJson(input.readAll().replace("@RG2_TEST_PROFILES@", "[\"metal\",\"wgsl\"]")).object();
+        QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+        QJsonObject extra = programs.at(1).toObject();
+        extra.insert(QStringLiteral("id"), QStringLiteral("CustomColor"));
+        programs.append(extra);
+        manifest.insert(QStringLiteral("programs"), programs);
+        QFile output(QDir(package.path()).filePath(manifestFile));
+        REQUIRE(output.open(QIODevice::WriteOnly) == true);
+        REQUIRE(output.write(EncodeCanonicalJson(manifest)) > 0);
+    }
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package.path(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphSnapshot before;
+    for (const QString& file : document.GetFiles())
+    {
+        before.Files.insert(file, document.GetDraft(file));
+    }
+    const QString library = document.GetFiles().contains(QStringLiteral("raytracing.lurender.json")) == true
+                                ? QStringLiteral("raytracing.lurender.json")
+                                : ROOT_GRAPH;
+    QString error;
+    const RenderGraphDocumentStatus status =
+        document.ApplyConfigurationTemplate(library,
+                                            QStringLiteral("Hybrid"),
+                                            QStringLiteral("visibility-secondary-rays"),
+                                            error);
+    INFO(error.toStdString());
+    REQUIRE(status == RenderGraphDocumentStatus::Ok);
+    for (const QString& file : before.Files.keys())
+    {
+        if (file.endsWith(QStringLiteral(".slang")) == true)
+        {
+            CHECK(document.GetDraft(file) == before.Files.value(file));
+        }
+    }
+    const QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    CHECK(manifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt() == 16);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles() == before.Files.keys());
+    for (const QString& file : before.Files.keys())
+    {
+        CHECK(document.GetDraft(file) == before.Files.value(file));
+    }
+    REQUIRE(document.Redo() == true);
+    // Keep the original root and select Hybrid as a second root configuration.
+    QJsonObject root = QJsonDocument::fromJson(before.Files.value(ROOT_GRAPH)).object();
+    QJsonArray configurations = root.value(QStringLiteral("configurations")).toArray();
+    QJsonObject hybrid = configurations.first().toObject();
+    hybrid.insert(QStringLiteral("id"), QStringLiteral("Hybrid"));
+    QJsonArray nodes = hybrid.value(QStringLiteral("nodes")).toArray();
+    for (qsizetype index = 0; index < nodes.size(); ++index)
+    {
+        QJsonObject node = nodes.at(index).toObject();
+        if (node.value(QStringLiteral("kind")) == QStringLiteral("RayTracingPipeline"))
+        {
+            node = QJsonObject{{QStringLiteral("id"), node.value(QStringLiteral("id"))},
+                               {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                               {QStringLiteral("asset"), QStringLiteral("Hybrid.lurender.json")},
+                               {QStringLiteral("configuration"), QStringLiteral("Hybrid")}};
+        }
+        else if (node.value(QStringLiteral("asset")) == library)
+        {
+            node.insert(QStringLiteral("configuration"), QStringLiteral("Hybrid"));
+        }
+        nodes.replace(index, node);
+    }
+    hybrid.insert(QStringLiteral("nodes"), nodes);
+    configurations.append(hybrid);
+    root.insert(QStringLiteral("configurations"), configurations);
+    REQUIRE(document.SetText(ROOT_GRAPH, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+    const QString fixture = qEnvironmentVariable("LUDUS_VISIBILITY_EXISTING_FIXTURE");
+    if (fixture.isEmpty() == false)
+    {
+        REQUIRE(QDir().mkpath(fixture) == true);
+        REQUIRE(document.WriteSnapshot(fixture) == RenderGraphDocumentStatus::Ok);
+    }
+}
+
+TEST_CASE("Visibility custom program limits identify the required budget and preserve the draft",
+          "[editor][render-graph][visibility-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), 4);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const QByteArray before = document.GetDraft(manifestFile);
+    const QStringList files = document.GetFiles();
+    QString error;
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                              QStringLiteral("Hybrid"),
+                                              QStringLiteral("visibility-secondary-rays"),
+                                              error) == RenderGraphDocumentStatus::Conflict);
+    CHECK(error.contains(QStringLiteral("budgets.programs")) == true);
+    CHECK(error.contains(QStringLiteral("needs 8")) == true);
+    CHECK(document.GetDraft(manifestFile) == before);
+    CHECK(document.GetFiles() == files);
+}
+
+TEST_CASE("ReSTIR import rejects a missing declared shader or transitive include before publication",
+          "[editor][render-graph][restir-library][restir-sources]")
+{
+    const QString missing = GENERATE(QStringLiteral("miss.slang"),
+                                     QStringLiteral("reservoir.slang"),
+                                     QStringLiteral("emitter_sampling.slang"));
+    QTemporaryDir project;
+    QTemporaryDir templates;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    const QString canonical =
+        QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/modules/graphics/renderer/render_graphs/restir_di/");
+    REQUIRE(QDir().mkpath(QDir(templates.path()).filePath(QStringLiteral("main_shaders"))) == true);
+    for (const QString& file : {QStringLiteral("main.lushader.json.in"), QStringLiteral("library.lurender.json")})
+    {
+        REQUIRE(QFile::copy(canonical + file, QDir(templates.path()).filePath(file)) == true);
+    }
+    for (const QString& file : QDir(canonical + QStringLiteral("main_shaders")).entryList(QDir::Files))
+    {
+        if (file != missing)
+        {
+            REQUIRE(QFile::copy(canonical + QStringLiteral("main_shaders/") + file,
+                                QDir(templates.path()).filePath(QStringLiteral("main_shaders/") + file)) == true);
+        }
+    }
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray beforeManifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+    RenderGraphSnapshot candidate;
+    for (const QString& file : document.GetFiles())
+    {
+        candidate.Files.insert(file, document.GetDraft(file));
+    }
+    const QString library = QStringLiteral("raytracing.lurender.json");
+    candidate.Files.insert(library,
+                           EncodeCanonicalJson(QJsonObject{{QStringLiteral("version"), 2},
+                                                           {QStringLiteral("id"), QStringLiteral("RayLibrary")},
+                                                           {QStringLiteral("default"), QStringLiteral("RestirDi")},
+                                                           {QStringLiteral("configurations"), QJsonArray{}}}));
+    QString error;
+    CHECK(PrepareRestirConfiguration(candidate,
+                                     ROOT_GRAPH,
+                                     library,
+                                     QStringLiteral("RestirDi"),
+                                     error,
+                                     templates.path()) == RenderGraphDocumentStatus::NotFound);
+    CHECK(error.contains(missing) == true);
+    CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == beforeManifest);
+    CHECK(document.GetDraft(library).isEmpty() == true);
+}
+
+TEST_CASE("Nested template shader directories are prepared before saved graph references change",
+          "[editor][render-graph][restir-library][nested-save]")
+{
+    const bool isLinkedDirectory = GENERATE(false, true);
+    QTemporaryDir project;
+    QTemporaryDir outside;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString package = document.GetPackageRoot();
+    const QString manifest = QStringLiteral("main.lushader.json");
+    QFile savedManifest(QDir(package).filePath(manifest));
+    REQUIRE(savedManifest.open(QIODevice::ReadOnly) == true);
+    const QByteArray beforeManifest = savedManifest.readAll();
+    savedManifest.close();
+    QString error;
+    REQUIRE(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("RestirDi"), error) ==
+            RenderGraphDocumentStatus::Ok);
+    const QString parent = QDir(package).filePath(QStringLiteral("restir_di"));
+    if (isLinkedDirectory == true)
+    {
+        REQUIRE(QFile::link(outside.path(), parent) == true);
+    }
+    else
+    {
+        QFile blocker(parent);
+        REQUIRE(blocker.open(QIODevice::WriteOnly | QIODevice::NewOnly) == true);
+        blocker.close();
+    }
+    QStringList saved;
+    const RenderGraphDocumentStatus expected =
+        isLinkedDirectory == true ? RenderGraphDocumentStatus::Conflict : RenderGraphDocumentStatus::WriteFailed;
+    CHECK(document.Save(saved) == expected);
+    CHECK(saved.isEmpty() == true);
+    CHECK(document.GetSaved(manifest) == beforeManifest);
+    REQUIRE(savedManifest.open(QIODevice::ReadOnly) == true);
+    CHECK(savedManifest.readAll() == beforeManifest);
+    savedManifest.close();
+    CHECK(document.IsDirty() == true);
+    CHECK(QFileInfo::exists(QDir(package).filePath(QStringLiteral("RestirDi.lurender.json"))) == false);
+    CHECK(QDir(outside.path()).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty() == true);
+    REQUIRE(QFile::remove(parent) == true);
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    CHECK(QFileInfo::exists(QDir(parent).filePath(QStringLiteral("main_shaders/miss.slang"))) == true);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    for (const QString& file : document.GetFiles())
+    {
+        INFO(file.toStdString());
+        CHECK(reloaded.GetDraft(file) == document.GetDraft(file));
+    }
 }
