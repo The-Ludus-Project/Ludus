@@ -23,7 +23,7 @@ struct GraphRaySceneInput final
                                                    usize byteBudget,
                                                    core::UniquePtr<ReferenceJob>& outJob) noexcept;
 /// Freeze material-bound graph geometry, maps and lights, preserving output on failure.
-[[nodiscard]] rhi::RasterStatus BuildMaterialGraphRayScene(const RenderGraphSceneDescription& scene,
+[[nodiscard]] rhi::RasterStatus BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                                                            const ReferenceCaptureDescription& description,
                                                            usize byteBudget,
                                                            core::UniquePtr<ReferenceJob>& outJob) noexcept;

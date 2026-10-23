@@ -12,6 +12,7 @@
 #if defined(LUDUS_EDITOR_CRASH_CAPTURE)
 #    include "internal/crash_reporting.h"
 #endif
+#include "internal/qt_accessibility.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -87,6 +88,14 @@ int main(int argc, char** argv)
 #endif
     logging::LogSystem::Initialize(logConfig);
     qInstallMessageHandler(ForwardQtMessage);
+#if defined(Q_OS_MACOS)
+    if (ludus::editor::InstallQtAccessibilityOwnershipFix() == false)
+    {
+        LUDUS_LOG_TEXT(LOG_EDITOR_MAIN, Error, "Cannot install the Qt Cocoa accessibility ownership correction.");
+        logging::LogSystem::Shutdown();
+        return 1;
+    }
+#endif
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Ludus Editor workspace"));

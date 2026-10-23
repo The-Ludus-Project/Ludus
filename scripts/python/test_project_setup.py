@@ -132,6 +132,22 @@ class ProjectSetupTests(unittest.TestCase):
         self.assertTrue(any("--fresh" in a for a in self.calls))
         self.assertTrue(any(Path(a[0]).name == "ctest" for a in self.calls))
 
+    def test_repair_ignores_runtime_files_and_keeps_project_rules(self):
+        runtime = ["/assets/.scene-writer.lock", ".DS_Store"]
+        created = (self.project / ".gitignore").read_text()
+        self.assertTrue(set(runtime) <= set(created.splitlines()))
+        self.repair()
+        self.assertEqual(created, (self.project / ".gitignore").read_text())
+        # Projects created before these rules gain them once, after custom rules.
+        ignore = self.project / ".gitignore"
+        ignore.write_text("/out/\n/CMakeUserPresets.json\n/.ludus/\n/custom/\n")
+        self.repair()
+        self.assertEqual(ignore.read_text(), "/out/\n/CMakeUserPresets.json\n/.ludus/\n/custom/\n"
+                         "\n/assets/.scene-writer.lock\n\n.DS_Store\n")
+        before = ignore.read_bytes()
+        self.repair()
+        self.assertEqual(ignore.read_bytes(), before)
+
     def test_moved_sdk_tools_and_changed_cache_require_repair(self):
         self.repair()
         moved = self.root / "new-sdk"

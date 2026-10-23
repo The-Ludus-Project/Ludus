@@ -22,6 +22,19 @@ import init_ui
 
 
 class SetupTests(unittest.TestCase):
+    @staticmethod
+    def stage_name(argv: list[str]) -> str:
+        """Name an engine preparation command by its script, or by its CMake/engine.py verb."""
+        executable = Path(argv[0]).name
+        script = Path(argv[1]).name if len(argv) > 1 else ""
+        if script == "engine.py":
+            return argv[2]
+        if executable == "cmake":
+            return argv[1]
+        if executable.startswith("python"):
+            return script
+        return executable
+
     def test_automatic_create_and_repair_prepare_with_managed_sdk(self):
         from ludus_tools import creation_engine, project_setup
         for operation_name in ("project_create", "project_setup"):
@@ -52,13 +65,17 @@ class SetupTests(unittest.TestCase):
                          patch.object(creation_engine, "select_creation_sdk", side_effect=select), \
                          patch.object(project_setup, "select_repair_sdk", side_effect=lambda path, *, tooling_root, prepare: prepare(root / "engine-install")), \
                          patch.object(creation_engine, "prepared_sdk_prefix", return_value=root / "engine-install"), \
+                         patch.object(creation_engine, "PROFILE", "macos-clang-development"), \
                          patch.object(project_setup, "supported_project"), \
                          patch.object(project_setup, "repair_project", return_value="Verified"), \
                          patch("ludus_tools.create.create_project"):
                         self.assertEqual(operation._execute_setup(descriptor).outcome, "success")
                         self.assertEqual(os.environ["SDKROOT"], "/incompatible/MacOSX27.sdk")
-                    self.assertEqual(len(commands), 4)
-                    self.assertEqual(Path(commands[0][0][0]).name, "init")
+                    # A macOS engine also prepares the Metal ray tooling (Slang and
+                    # SPIRV-Cross) before building; see prepare_creation_sdk.
+                    self.assertEqual([self.stage_name(argv) for argv, _ in commands],
+                                     ["init", "shader-probe", "bootstrap-spirv-cross", "build",
+                                      "--install", "bundle-sdk-dependencies"])
                     for _, env in commands:
                         self.assertEqual(env.get("SDKROOT"), str(sdk.resolve()) if prepared else None)
                         self.assertNotIn("LUDUS_INIT_SHELL_SDKROOT", env)

@@ -21,9 +21,10 @@ API/documentation validation. Drafts retain these inexpensive checks. They do no
 install the native toolchain or compile engine, Editor or shader-worker targets.
 The `Ubuntu Clang` gate requires the source/tooling job for non-documentation
 changes and verifies that every deferred native job is skipped. The installed
-host-tooling and public API checks remain separate required checks. The `ci:full`
-label does not expand an integration PR into a full run; dispatch a batch on
-`main` when earlier platform qualification is needed.
+host-tooling and public API checks remain separate required checks. No label
+expands an integration PR into a full run; dispatch a batch on `main` when
+earlier platform qualification is needed. A pull request targeting any other
+branch runs the full tier. No workflow triggers on `push` or `merge_group`.
 
 The combined batch owns native compilation, unit tests, full analysis,
 sanitizers, browser builds, SDK qualification, editor journeys and build budgets.
@@ -39,6 +40,14 @@ sanitizer build keep the default (on). It also retains
 static analysis and the installed Behavior SDK journey. This replaces the separate native build on every
 PR with one authoring build per combined batch. Native dependency and compiler
 caches continue to be saved in the batch's `main` scope.
+
+Native build, test and analysis jobs depend only on change classification, not
+on the source/tooling job. A source-policy or formatting failure therefore no
+longer skips every Linux compile in a batch, including **Development and SDK**
+and the Editor job: each still reports its own result, so one batch shows every
+failure to fix. Promotion is unchanged: the `Ubuntu Clang` gate still requires
+the source/tooling job to succeed. Like every coordinator edit, this takes effect
+for batches only after it reaches `main`.
 
 Cheap PR checks establish source/tooling admission, not build readiness. A compile
 or runtime regression can enter `develop`; the batch must reject it before
@@ -117,9 +126,10 @@ The coordinator is disabled until `BATCH_CI_ENABLED=true`. These settings need a
 repository/organization administrator; no credential belongs in Git or chat.
 Finish them after the migration PR lands, before accepting ordinary PRs into develop.
 
-1. Land the migration PR through the existing `main` merge queue. Legacy PRs
-   targeting `main` and `merge_group` checks remain supported for this transition.
-   Drain or remove the remaining old queue entries before switching processes.
+1. Land the migration PR through the existing `main` merge queue and drain or
+   remove the remaining old queue entries before switching processes. Activation
+   is complete: the `merge_group` triggers, the reduced tier for PRs targeting
+   `main` and its `ci:full` label have since been removed from the workflows.
 2. Use the existing `develop` branch. After landing, fast-forward it to main if
    it is behind; if it contains unique commits, merge main through a reviewed PR
    so those commits are preserved. Keep `main` the default branch.
@@ -294,7 +304,7 @@ yet), and drives `clang++` against the runner's Microsoft STL and dynamic CRT. I
 pinned CMake/Ninja/Conan versions, exports the local Catch2 recipe and installs
 only that locked package with `config/conan/profiles/windows-clang-x86_64`. Ludus
 configures only the FoundationThreading closure on Windows (Base, Memory,
-Containers, Time, Profiling and Threading); other modules have no Windows backend
+Containers, Hash, Strings, Time, Profiling and Threading); other modules have no Windows backend
 and no SDK is installed. The job runs the threading, startup-seam, profiling-adapter
 and allocation suites once, then repeats the scheduler and startup suites 20 times.
 

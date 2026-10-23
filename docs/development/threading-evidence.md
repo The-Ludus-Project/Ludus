@@ -328,7 +328,7 @@ lane installs the MSVC 14.40 toolset (VS 2022 17.10 LTSC) and selects it through
 toolset, or an LLVM pin update, which would be a separate toolchain decision.
 
 On Windows, CMake configures only the FoundationThreading closure (Base, Memory,
-Containers, Time, Profiling and Threading). FoundationBase uses a report-only
+Containers, Hash, Strings, Time, Profiling and Threading). FoundationBase uses a report-only
 assertion backend: emergency bytes go to the standard error handle, and the
 POSIX report socket and helper control endpoint are unavailable. The Microsoft
 CRT's deprecation of portable ISO C calls is disabled with `_CRT_SECURE_NO_WARNINGS`.

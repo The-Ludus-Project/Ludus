@@ -53,8 +53,8 @@ that violates it.
 - After batched CI is activated, submit agent changes through pull requests
   targeting `develop`. Start isolated task branches from freshly fetched `origin/develop`;
   `develop` may contain changes awaiting full validation. Use `origin/main` when a
-  fully validated starting point is required. Before activation, use `main` and
-  its existing merge queue, including the one-time CI migration pull request.
+  fully validated starting point is required. The `main` merge queue and its
+  `merge_group` checks are retired; do not target agent pull requests at `main`.
 - Never push agent changes directly to `develop` or `main`, enqueue or merge a pull
   request, or move the batch-attempt marker. Agents open and update pull requests;
   the maintainer accepts reviewed changes into `develop`. Preserve worktree isolation
@@ -66,9 +66,8 @@ that violates it.
   to exactly the validated commit, with an explicit lease and no history rewrite.
   Failed/cancelled validation leaves `main` unchanged. Never bypass promotion or
   represent acceptance into `develop` as full platform qualification.
-- Do not add `ci:full` to integration pull requests. Request a manual batch only
-  when the maintainer needs earlier qualification; retry an unchanged failed
-  candidate only after investigating the failure. See
+- Request a manual batch only when the maintainer needs earlier qualification;
+  retry an unchanged failed candidate only after investigating the failure. See
   `docs/development/continuous-integration.md` for setup, promotion and recovery.
 
 ## Coding standards

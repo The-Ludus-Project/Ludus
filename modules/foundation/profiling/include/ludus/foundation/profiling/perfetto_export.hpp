@@ -21,7 +21,7 @@ struct GpuTraceSample final
     /// Nonzero device lifetime generation; distinguishes restarted devices.
     uint64 DeviceSession = 0;
     /// Empty for the frame probe; otherwise a nonempty UTF-8 pass name borrowed until serialization returns.
-    BorrowedView<const char> PassName{};
+    BorrowedView<const char> PassName;
     /// Nonzero producer-local identity for a named pass; zero for a frame probe.
     uint64 ScopeIdentity = 0;
     /// Physical operation ordinal within the named scope; distinguishes multi-encoder scopes.

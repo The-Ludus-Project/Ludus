@@ -97,19 +97,20 @@ Status PackGpuScene(const ReferenceJob& job,
     usize size = 0;
     Array<usize> textures;
     const usize textureCount = scene.InstanceCount * LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE;
+    const uint64 textureOffsetBytes = uint64{textureCount} * sizeof(usize);
     const auto getImage = [&scene](usize index) noexcept -> const rhi::TextureCpuContent& {
         const internal::ReferenceInstance& instance = scene.Instances[index / LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE];
         return index % LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE == 0   ? instance.Texture
                : index % LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE == 1 ? instance.SurfaceMap
                                                                      : instance.EmissionMap;
     };
-    if (textureCount * sizeof(usize) > budget || textures.TryResize(textureCount) == false)
+    if (textureOffsetBytes > budget || textures.TryResize(textureCount) == false)
     {
-        return textureCount * sizeof(usize) > budget ? internal::RejectSceneMemory(diagnosticsOrNull,
-                                                                                   SceneMemoryBudget::CpuScratch,
-                                                                                   textureCount * sizeof(usize),
-                                                                                   budget)
-                                                     : Status::OutOfMemory;
+        return textureOffsetBytes > budget ? internal::RejectSceneMemory(diagnosticsOrNull,
+                                                                         SceneMemoryBudget::CpuScratch,
+                                                                         textureOffsetBytes,
+                                                                         budget)
+                                           : Status::OutOfMemory;
     }
     for (usize i = 0; i < textureCount; ++i)
     {
@@ -148,7 +149,8 @@ Status PackGpuScene(const ReferenceJob& job,
     {
         return Status::CapacityExceeded;
     }
-    const uint64 requiredBytes = (uint64{size} + dataSize) * sizeof(math::Vector4) + textures.GetSize() * sizeof(usize);
+    const uint64 requiredBytes =
+        (uint64{size} + dataSize) * sizeof(math::Vector4) + uint64{textures.GetSize()} * sizeof(usize);
     if (requiredBytes > budget)
     {
         return internal::RejectSceneMemory(diagnosticsOrNull, SceneMemoryBudget::CpuScratch, requiredBytes, budget);

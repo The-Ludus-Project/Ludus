@@ -588,7 +588,7 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
                 AppendJsonEscaped(out, {sample.PassName.GetDataOrNull(), sample.PassName.GetSize()});
                 out += " [";
                 AppendUint(out, sample.ScopeIdentity);
-                out += ":";
+                out += ':';
                 AppendUint(out, sample.ScopePassIndex);
                 out += sample.IsCompute == true ? ":Compute]/DurationNanoseconds" : ":Raster]/DurationNanoseconds";
             }

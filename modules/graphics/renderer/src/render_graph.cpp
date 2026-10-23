@@ -229,7 +229,6 @@ GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::
     switch (technique)
     {
         case format::Technique::ColorAndDepth:
-            return isVertex == true ? programs.ColorVertex : programs.ColorFragment;
         case format::Technique::RayTracing:
             return isVertex == true ? programs.ColorVertex : programs.ColorFragment;
         case format::Technique::DepthOnly:

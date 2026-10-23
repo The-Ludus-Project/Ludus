@@ -327,5 +327,57 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("needs.promote.result == 'success'", condition.group(1))
 
 
+class WorkflowTargetTests(unittest.TestCase):
+    """Batch jobs run main's workflow definitions against the develop candidate.
+
+    A CMake target that main's workflows still build must exist in the candidate,
+    or every batch fails with "ninja: error: unknown target" until promotion.
+    """
+    ROOT = Path(__file__).resolve().parents[2]
+    TRUSTED_REFERENCE = "origin/main"
+    # Names separated by blanks or shell line continuations, ending at the next option or command.
+    TARGET_LIST = re.compile(r"--target((?:(?:[ \t]+|[ \t]*\\\n\s*)[A-Za-z_]\w*(?![\w/.-]))+)")
+    TARGET_NAME = re.compile(r"[A-Za-z_]\w*")
+    CMAKE_NAME = re.compile(r"ludus_[\w${}]*")
+
+    def defined_target_patterns(self) -> list[re.Pattern[str]]:
+        listing = subprocess.run(["git", "-C", str(self.ROOT), "ls-files", "*CMakeLists.txt", "*.cmake"],
+                                 capture_output=True, text=True, check=True)
+        names = set()
+        for name in listing.stdout.split("\n"):
+            if name:
+                text = (self.ROOT / name).read_text(encoding="utf-8", errors="replace")
+                names.update(self.CMAKE_NAME.findall(text))
+        # Generated names such as ludus_${name}_control_child match any expansion.
+        return [re.compile(re.sub(r"\\\$\\\{\w+\\\}", r"\\w+", re.escape(name)) + r"\Z") for name in names]
+
+    def workflow_targets(self, texts: dict[str, str]) -> set[tuple[str, str]]:
+        return {(workflow, name) for workflow, text in texts.items()
+                for targets in self.TARGET_LIST.findall(text) for name in self.TARGET_NAME.findall(targets)}
+
+    def assert_targets_defined(self, texts: dict[str, str]):
+        patterns = self.defined_target_patterns()
+        missing = sorted((workflow, name) for workflow, name in self.workflow_targets(texts)
+                         if any(pattern.match(name) for pattern in patterns) == False)
+        self.assertEqual(missing, [], "workflows build targets this checkout does not define")
+
+    def test_workflow_targets_exist_in_this_checkout(self):
+        workflows = sorted((self.ROOT / ".github/workflows").glob("*.yml"))
+        self.assert_targets_defined({path.name: path.read_text(encoding="utf-8") for path in workflows})
+
+    def test_trusted_workflow_targets_exist_in_this_checkout(self):
+        listing = subprocess.run(["git", "-C", str(self.ROOT), "ls-tree", "--name-only",
+                                  self.TRUSTED_REFERENCE, ".github/workflows/"],
+                                 capture_output=True, text=True, check=False)
+        if listing.returncode != 0:
+            self.skipTest(f"{self.TRUSTED_REFERENCE} is not available in this checkout")
+        texts = {}
+        for name in listing.stdout.split():
+            shown = subprocess.run(["git", "-C", str(self.ROOT), "show", f"{self.TRUSTED_REFERENCE}:{name}"],
+                                   capture_output=True, text=True, check=True)
+            texts[name] = shown.stdout
+        self.assert_targets_defined(texts)
+
+
 if __name__ == "__main__":
     unittest.main()
