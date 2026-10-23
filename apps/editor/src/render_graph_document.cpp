@@ -3,6 +3,7 @@
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_shader_creation.h"
+#include "internal/render_graph_upscale_node.h"
 
 #include <ludus/foundation/strings/utf8.hpp>
 
@@ -249,9 +250,25 @@ bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& argu
             }
         }
     }
-    if (IsPipelineNode(previous.value(QStringLiteral("kind")).toString()) == true)
+    if (IsPipelineNode(previous.value(QStringLiteral("kind")).toString()) == true ||
+        previous.value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale"))
     {
         const auto getType = [](const QJsonObject& record, const QString& direction, const QString& port) -> QString {
+            if (record.value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale"))
+            {
+                if (direction == QStringLiteral("outputs"))
+                {
+                    return port == QStringLiteral("color") ? QStringLiteral("ColorTexture") : QString{};
+                }
+                for (const QJsonValueConstRef input : GetUpscaleInputPorts(record))
+                {
+                    if (input.toObject().value(QStringLiteral("id")).toString() == port)
+                    {
+                        return input.toObject().value(QStringLiteral("type")).toString();
+                    }
+                }
+                return {};
+            }
             const QJsonArray ports = record.value(direction).toArray();
             for (const QJsonValueConstRef value : ports)
             {
@@ -841,6 +858,7 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     for (const QJsonValueConstRef node : nodes)
     {
         if (IsPipelineNode(node.toObject().value(QStringLiteral("kind")).toString()) == true ||
+            node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale") ||
             node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize") ||
             node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("StructuredBuffer") ||
             node.toObject().value(QStringLiteral("extent")).toString() == QStringLiteral("RenderSize"))

@@ -27,6 +27,7 @@ from . import render_graph_pipeline as pipeline
 from . import render_graph_buffers as buffers
 from . import render_graph_scene as scene_bundle
 from . import render_graph_ray as ray
+from . import render_graph_upscale as upscale
 
 MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
@@ -135,6 +136,9 @@ def _validate_extent(extent, where):
 def _validate_node(node, where):
     _require(type(node) is dict, "Schema", where, "node object required")
     kind = node.get("kind")
+    if kind == 'Upscale':
+        upscale.validate(node, where, sys.modules[__name__])
+        return
     if kind == 'StructuredBuffer':
         buffers.validate_node(node, where, sys.modules[__name__])
         return
@@ -229,12 +233,12 @@ def _validate_document(value, where):
         nodes = set()
         for node in config["nodes"]:
             _require(type(node) is dict, "Schema", location, "node object required")
-            _require(value["version"] == 2 or node.get("kind") not in (*pipeline.KINDS, "StructuredBuffer"),
-                     "Version", location, "pipeline and structured buffer nodes require document version 2")
+            _require(value["version"] == 2 or node.get("kind") not in (*pipeline.KINDS, "StructuredBuffer", "Upscale"),
+                     "Version", location, "pipeline, structured buffer and upscaling nodes require document version 2")
             _require(value['version'] == 2 or (node.get('kind') != 'RenderSize' and node.get('extent') != 'RenderSize'),
                      'Version', location, 'shared render sizes require document version 2')
             _validate_node(node, location + "/" + str(node.get("id", "node"))
-                           if node.get("kind") in (*pipeline.KINDS, 'RenderSize', 'StructuredBuffer') else location)
+                           if node.get("kind") in (*pipeline.KINDS, 'RenderSize', 'StructuredBuffer', 'Upscale') else location)
             _require(node["id"] not in nodes, "DuplicateIdentity", location, node["id"])
             nodes.add(node["id"])
         for edge in config["edges"]:
@@ -444,6 +448,8 @@ class _Library:
 
     def node_ports(self, node):
         kind = node["kind"]
+        if kind == "Upscale":
+            return upscale.input_ports(node), {"color": "ColorTexture"}
         if kind in pipeline.KINDS:
             return (scene_bundle.ports({p["id"]: p["type"] for p in node["inputs"]}),
                     {p["id"]: p["type"] for p in node["outputs"]})
@@ -618,6 +624,12 @@ class _Library:
             budget[0] += 1
             _require(budget[0] <= MAX_EXPANDED_NODES, 'Capacity', self.label(path), 'expanded node capacity exceeded')
             where = self.label(path) + '#' + config['id'] + '/' + node['id']
+            if node['kind'] == 'Upscale':
+                first_issue = len(diagnostics.errors)
+                with diagnostics.capture():
+                    upscale.reject_execution(node, where, sys.modules[__name__])
+                for issue in diagnostics.errors[first_issue:]:
+                    issue.target['instance'] = prefix + '/' + node['id']
             # Pipeline profile checks depend on declarations, not resource versions.
             # Check independent retained nodes before starting transactional lowering.
             if node['kind'] in pipeline.KINDS:
@@ -705,6 +717,8 @@ class _Compiler:
             kind = node["kind"]
             authored_pipeline = None
             output_mapping = None
+            if kind == 'Upscale':
+                upscale.reject_execution(node, where, sys.modules[__name__])
             if kind in pipeline.KINDS:
                 inputs = scene_bundle.resolve(node, inputs, where, sys.modules[__name__])
                 authored_pipeline = node

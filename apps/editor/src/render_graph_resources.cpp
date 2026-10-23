@@ -199,6 +199,10 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
     {
         target = port;
     }
+    else if (kind == QStringLiteral("Upscale") && port == QStringLiteral("color"))
+    {
+        target = QStringLiteral("destination");
+    }
     else if (IsPipelineNode(kind) == true)
     {
         target = FindRecord(node.value(QStringLiteral("outputs")).toArray(), port)
