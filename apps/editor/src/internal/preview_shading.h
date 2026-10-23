@@ -4,10 +4,14 @@
 
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/vector.hpp>
-#include <ludus/graphics/renderer/lighting.hpp>
-#include <ludus/graphics/renderer/renderer.hpp>
 
 #include <QString>
+
+namespace ludus::graphics::renderer
+{
+enum class MaterialDebugView : foundation::uint8;
+struct ViewDescription;
+} // namespace ludus::graphics::renderer
 
 namespace ludus::editor
 {

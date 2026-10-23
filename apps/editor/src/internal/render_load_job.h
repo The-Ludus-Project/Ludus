@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/render_scene.h"
+#include "internal/world_document.h"
 
 #include <QObject>
 #include <QThread>

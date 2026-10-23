@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/render_preview.h"
+#include "internal/world_document.h"
 
 #include <QWidget>
 

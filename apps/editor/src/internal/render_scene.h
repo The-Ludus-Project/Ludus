@@ -7,18 +7,22 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/gameplay/camera/evaluation.hpp>
-#include <ludus/graphics/renderer/lighting.hpp>
-#include <ludus/graphics/renderer/views.hpp>
+#include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/runtime/resources/scene.h>
-
-#include "internal/world_document.h"
 
 #include <QImage>
 #include <QJsonObject>
 #include <QVector>
 
+namespace ludus::graphics::renderer
+{
+struct ViewDescription;
+} // namespace ludus::graphics::renderer
+
 namespace ludus::editor
 {
+class WorldDocument;
+
 /// Where a World's render extraction comes from; one World has at most one source.
 enum class RenderSceneSource : foundation::uint8
 {
