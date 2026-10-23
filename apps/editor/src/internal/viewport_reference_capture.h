@@ -89,7 +89,10 @@ enum class ViewportReferencePhase : foundation::uint8
 [[nodiscard]] QSize ComputeReferenceExtent(const QSize& drawable, foundation::uint32 longSide) noexcept;
 
 /// Encode one scene-linear radiance the way the raster viewport displays it: exposure one,
-/// per-channel Reinhard, then sRGB, rounded to eight bits.
+/// per-channel Reinhard, then sRGB. Returns a display value in [0, 1]; non-finite or negative
+/// radiance encodes as zero.
+[[nodiscard]] foundation::float32 EncodeReferenceDisplayValue(foundation::float32 radiance) noexcept;
+/// EncodeReferenceDisplayValue rounded to eight bits.
 [[nodiscard]] foundation::uint8 EncodeReferenceDisplayChannel(foundation::float32 radiance) noexcept;
 
 /// Copy the analytic lights of a raster light selection into outLights and return their count.
@@ -151,6 +154,10 @@ public:
     /// Copy the current means and display-encode them as EncodeReferenceDisplayChannel does.
     /// Pixels without committed samples are black. False before tracing has begun.
     [[nodiscard]] bool CopyDisplayImage(QImage& outImage, QString& outError) const;
+    /// Copy the current raw linear means and committed counts, top-left row order.
+    /// False before tracing has begun; outPixels is unchanged on failure.
+    [[nodiscard]] bool CopyPixels(foundation::Array<graphics::renderer::ReferencePixel>& outPixels,
+                                  QString& outError) const;
     /// Encode the current LUHDR01 capture, including partial progress with exact counts.
     [[nodiscard]] bool EncodeHdr(QByteArray& outBytes, QString& outError) const;
     /// Atomically write the LUHDR01 capture to hdrPath and its display image beside it as PNG.

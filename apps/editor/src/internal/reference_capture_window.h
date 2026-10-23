@@ -3,7 +3,11 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
+#include "internal/reference_comparison.h"
 #include "internal/viewport_reference_capture.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/viewport_raster_capture.h"
+#endif
 
 #include <QElapsedTimer>
 #include <QImage>
@@ -12,14 +16,17 @@
 #include <QTimer>
 #include <QWidget>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QProgressBar;
 class QPushButton;
 class QSpinBox;
+class QTabWidget;
 
 namespace ludus::editor
 {
+class RenderGraphPreview;
 class RenderPreview;
 
 /// Wall time one service tick may spend preparing or tracing before yielding to the event loop.
@@ -27,24 +34,29 @@ inline constexpr foundation::uint64 REFERENCE_SERVICE_BUDGET_NANOSECONDS = 8'000
 /// Shortest interval between progressive display refreshes while tracing.
 inline constexpr foundation::int32 REFERENCE_DISPLAY_REFRESH_MILLISECONDS = 250;
 
-/// Non-modal window that renders an RT1 reference image of one viewport's current camera.
+/// Non-modal window that renders an RT1 reference image of one viewport's current camera and,
+/// optionally, compares it with the viewport's project-graph output at the same camera and extent.
 ///
 /// Capture freezes the viewport's scene and camera at the click; later navigation or edits do
 /// not change the running capture. Work runs on the GUI thread in short service ticks. The
-/// capture is released before the viewport's device stops. GUI thread only.
+/// captures are released before the viewport's device stops. GUI thread only.
 class ReferenceCaptureWindow final : public QWidget
 {
     Q_OBJECT
 public:
-    /// preview is borrowed; the window releases its capture when the preview stops its device.
+    /// preview is borrowed; the window releases its captures when the preview stops its device.
     explicit ReferenceCaptureWindow(RenderPreview* preview, QWidget* parentOrNull = nullptr);
     ~ReferenceCaptureWindow() override;
 
+    /// Borrow the viewport's live project-graph producer, whose package, output and renderer
+    /// choice the comparison renders. Null (and browser builds) disables comparison.
+    void SetProjectGraph(RenderGraphPreview* graphOrNull);
     /// Start a capture with the settings shown in the window. False reports why in the status.
     bool StartCapture();
-    /// Cancel the running capture, keeping nothing.
+    /// Cancel the running captures, keeping nothing.
     void StopCapture();
-    /// Write the current capture to hdrPath and a display PNG beside it.
+    /// Write the current capture to hdrPath and a display PNG beside it. With a comparison, also
+    /// write `<base>.raster.png`, `<base>.difference.png` and `<base>.comparison.json`.
     [[nodiscard]] bool SaveCapture(const QString& hdrPath, QString& outError) const;
     [[nodiscard]] LUDUS_INLINE const ViewportReferenceCapture& GetCapture() const noexcept
     {
@@ -55,7 +67,29 @@ public:
     {
         return mImage;
     }
+    /// True once the raster output and some reference samples have been compared.
+    [[nodiscard]] LUDUS_INLINE bool HasComparison() const noexcept
+    {
+        return mHasComparison;
+    }
+    /// Latest comparison; meaningful while HasComparison.
+    [[nodiscard]] LUDUS_INLINE const ReferenceComparison& GetComparison() const noexcept
+    {
+        return mComparison;
+    }
+    /// Captured project-graph output as displayed; null without a completed raster capture.
+    [[nodiscard]] LUDUS_INLINE const QImage& GetRasterImage() const noexcept
+    {
+        return mRasterImage;
+    }
+    /// Signed difference image of the latest comparison.
+    [[nodiscard]] LUDUS_INLINE const QImage& GetDifferenceImage() const noexcept
+    {
+        return mDifferenceImage;
+    }
     [[nodiscard]] QString GetStatusText() const;
+    /// Path Save writes beside hdrPath for one comparison artefact, such as "raster.png".
+    [[nodiscard]] static QString GetComparisonPath(const QString& hdrPath, const QString& suffix);
 
 Q_SIGNALS:
     /// The capture completed, failed or was stopped.
@@ -67,28 +101,53 @@ protected:
 private:
     void service();
     void refreshImage();
+    void updateComparison();
     void updateControls();
     void updateStatus();
     void updateTraversalAvailability();
+    void updateComparisonAvailability();
+    void releaseCaptures() noexcept;
     void saveWithDialog();
-    void showScaledImage();
+    void showScaledImages();
+    [[nodiscard]] bool isRasterRendering() const noexcept;
+    [[nodiscard]] bool startRasterCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
+    [[nodiscard]] QString describeRaster() const;
+    [[nodiscard]] bool saveComparison(const QString& hdrPath, QString& outError) const;
     QPointer<RenderPreview> mPreview;
     ViewportReferenceCapture mCapture;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    QPointer<RenderGraphPreview> mProjectGraph;
+    ViewportRasterCapture mRasterCapture;
+    /// Package the current raster capture loaded, recorded with a saved comparison.
+    ViewportRasterSource mRasterSource;
+#endif
     QTimer mServiceTimer;
     QElapsedTimer mRefreshTimer;
     QElapsedTimer mCaptureTimer;
     QImage mImage;
+    QImage mRasterImage;
+    QImage mDifferenceImage;
+    ReferenceComparison mComparison;
     QString mMessage;
+    QString mComparisonError;
+    bool mHasComparison = false;
+    bool mIsComparing = false;
+    bool mIsComparisonAvailable = false;
     // Child widgets, created in the constructor and owned by this window.
     QSpinBox* const mLongSide;
     QSpinBox* const mSamples;
     QSpinBox* const mMaxDepth;
     QComboBox* const mTraversal;
+    QCheckBox* const mCompare;
     QPushButton* const mCaptureButton;
     QPushButton* const mStopButton;
     QPushButton* const mSaveButton;
     QProgressBar* const mProgress;
     QLabel* const mStatus;
+    QLabel* const mComparisonText;
+    QTabWidget* const mImages;
     QLabel* const mImageLabel;
+    QLabel* const mRasterLabel;
+    QLabel* const mDifferenceLabel;
 };
 } // namespace ludus::editor

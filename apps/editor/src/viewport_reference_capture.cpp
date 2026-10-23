@@ -139,12 +139,17 @@ usize CollectReferenceLights(const renderer::LightSelection& selection, Referenc
     return count;
 }
 
-uint8 EncodeReferenceDisplayChannel(float32 radiance) noexcept
+float32 EncodeReferenceDisplayValue(float32 radiance) noexcept
 {
     // Matches renderer_output.slang at exposure one: Reinhard, saturate, then sRGB.
     const float32 linear = math::IsFinite(radiance) == true ? math::Max(radiance, 0.0F) : 0.0F;
     const float32 display = math::Clamp(linear / (1 + linear), 0.0F, 1.0F);
-    return static_cast<uint8>(math::EncodeSrgb(display) * DISPLAY_CHANNEL_MAXIMUM + .5F);
+    return math::EncodeSrgb(display);
+}
+
+uint8 EncodeReferenceDisplayChannel(float32 radiance) noexcept
+{
+    return static_cast<uint8>(EncodeReferenceDisplayValue(radiance) * DISPLAY_CHANNEL_MAXIMUM + .5F);
 }
 
 ViewportReferenceCapture::ViewportReferenceCapture() noexcept = default;
@@ -323,7 +328,7 @@ bool ViewportReferenceCapture::GetInfo(renderer::ReferenceCaptureInfo& outInfo) 
            mGeneration->Renderer.GetReferenceCaptureInfo(mCapture, outInfo) == rhi::RasterStatus::Ready;
 }
 
-bool ViewportReferenceCapture::CopyDisplayImage(QImage& outImage, QString& outError) const
+bool ViewportReferenceCapture::CopyPixels(Array<renderer::ReferencePixel>& outPixels, QString& outError) const
 {
     if (mHasCapture == false)
     {
@@ -341,6 +346,17 @@ bool ViewportReferenceCapture::CopyDisplayImage(QImage& outImage, QString& outEr
     if (status != rhi::RasterStatus::Ready)
     {
         outError = QStringLiteral("Could not copy reference pixels: %1.").arg(DescribeStatus(status));
+        return false;
+    }
+    outPixels = Move(pixels);
+    return true;
+}
+
+bool ViewportReferenceCapture::CopyDisplayImage(QImage& outImage, QString& outError) const
+{
+    Array<renderer::ReferencePixel> pixels;
+    if (CopyPixels(pixels, outError) == false)
+    {
         return false;
     }
     QImage image(static_cast<int32>(mDescription.Width), static_cast<int32>(mDescription.Height), QImage::Format_RGB32);
