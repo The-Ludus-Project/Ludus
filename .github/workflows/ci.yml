@@ -203,7 +203,14 @@ jobs:
         env:
           QT_QPA_PLATFORM: cocoa
           LUDUS_SCENE_TEST_PLAYER: ${{ github.workspace }}/out/build/macos-clang-development/apps/world_demo/ludus_world_demo
-        run: out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.scene-native]'
+        # Candidates that retired the separate scene preview (play-in-viewport P2)
+        # no longer carry this journey; their World viewport journeys cover it.
+        run: |
+          if [ -f apps/editor/tests/scene_native_tests.mm ]; then
+            out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.scene-native]'
+          else
+            echo "Candidate has no scene preview journey."
+          fi
 
       - name: Verify native World renderer and camera authoring
         env:
@@ -212,12 +219,17 @@ jobs:
 
       - name: Analyze native Editor production and regression sources
         run: |
+          # Analyze the retired scene preview sources only while the candidate still has them.
+          scene_sources=()
+          for source in apps/editor/src/scene_document.cpp apps/editor/src/scene_preview.cpp \
+            apps/editor/tests/scene_document_tests.cpp apps/editor/tests/scene_native_tests.mm; do
+            if [ -f "$source" ]; then scene_sources+=("$source"); fi
+          done
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' \
             apps/editor/src/controller_play.cpp apps/editor/src/workspace.cpp \
             apps/editor/src/main_window.cpp apps/editor/src/main_window_layout.cpp \
             apps/editor/src/recent_projects.cpp apps/editor/tests/controller_tests.cpp \
-            apps/editor/src/scene_document.cpp apps/editor/src/world_demo_adapter.cpp \
-            apps/editor/src/scene_preview.cpp \
+            "${scene_sources[@]}" apps/editor/src/world_demo_adapter.cpp \
             apps/editor/src/world_document.cpp apps/editor/src/world_workspace.cpp \
             apps/editor/src/render_scene.cpp apps/editor/src/render_preview.cpp \
             apps/editor/src/editor_camera_controller.cpp apps/editor/src/viewport_navigation.cpp \
@@ -227,8 +239,7 @@ jobs:
             apps/editor/src/render_load_job.cpp apps/editor/src/render_panel.cpp \
             apps/editor/tests/render_authoring_tests.cpp \
             apps/editor/tests/world_workspace_tests.cpp \
-            apps/editor/tests/scene_document_tests.cpp apps/editor/tests/world_demo_workspace_tests.cpp \
-            apps/editor/tests/scene_native_tests.mm apps/editor/tests/render_native_tests.mm \
+            apps/editor/tests/world_demo_workspace_tests.cpp apps/editor/tests/render_native_tests.mm \
             apps/editor/tests/macos_journey_tests.cpp apps/editor/tests/live_journey_tests.cpp
 
       - name: Verify installed macOS diagnostic helper
@@ -388,7 +399,10 @@ jobs:
           LUDUS_TEST_COCOA: "1"
         run: |
           out/host-tools/venv/bin/cmake --preset macos-clang-asan-ubsan -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_EDITOR_RENDER_PREVIEW=ON
-          out/host-tools/venv/bin/cmake --build --preset macos-clang-asan-ubsan --target ludus_editor_tests ludus_editor_scene_tests ludus_game_host_app ludus_game_host_loader_tests ludus_game_host_session_tests ludus_game_host_reload_tests ludus_game_host_protocol_tests ludus_game_fixture_C ludus_game_fixture_D ludus_game_fixture_H ludus_audio_tests ludus_audio_content_tests ludus_rhi_lifecycle_tests ludus_rhi_metal_tests ludus_rhi_render_tests ludus_platform_cocoa_tests ludus_platform_cocoa_keymap_tests ludus_filesystem_tests ludus_filesystem_fault_tests ludus_filesystem_namespace_fault_tests ludus_filesystem_pack_fault_tests ludus_filesystem_async_fault_tests ludus_filesystem_persistence_fault_tests ludus_filesystem_watch_fault_tests ludus_foundation_threading_tests ludus_content_tests ludus_content_save_fault_tests
+          # Candidates that retired the scene preview no longer define its test target.
+          scene_targets=()
+          if grep -q 'add_executable(ludus_editor_scene_tests' apps/editor/CMakeLists.txt; then scene_targets=(ludus_editor_scene_tests); fi
+          out/host-tools/venv/bin/cmake --build --preset macos-clang-asan-ubsan --target ludus_editor_tests "${scene_targets[@]}" ludus_game_host_app ludus_game_host_loader_tests ludus_game_host_session_tests ludus_game_host_reload_tests ludus_game_host_protocol_tests ludus_game_fixture_C ludus_game_fixture_D ludus_game_fixture_H ludus_audio_tests ludus_audio_content_tests ludus_rhi_lifecycle_tests ludus_rhi_metal_tests ludus_rhi_render_tests ludus_platform_cocoa_tests ludus_platform_cocoa_keymap_tests ludus_filesystem_tests ludus_filesystem_fault_tests ludus_filesystem_namespace_fault_tests ludus_filesystem_pack_fault_tests ludus_filesystem_async_fault_tests ludus_filesystem_persistence_fault_tests ludus_filesystem_watch_fault_tests ludus_foundation_threading_tests ludus_content_tests ludus_content_save_fault_tests
 
           out/host-tools/venv/bin/cmake --build --preset macos-clang-asan-ubsan --target ludus_asan_control_child ludus_ubsan_control_child
           out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --label-regex sanitizer-control --output-on-failure --no-tests=error
@@ -1167,7 +1181,11 @@ jobs:
           ./scripts/shader-probe bootstrap
           out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
       - name: Build Editor application and its test targets
-        run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development --target ludus_editor ludus_editor_tests ludus_editor_scene_tests
+        run: |
+          # Candidates that retired the scene preview no longer define its test target.
+          scene_targets=()
+          if grep -q 'add_executable(ludus_editor_scene_tests' apps/editor/CMakeLists.txt; then scene_targets=(ludus_editor_scene_tests); fi
+          out/host-tools/venv/bin/cmake --build --preset linux-clang-development --target ludus_editor ludus_editor_tests "${scene_targets[@]}"
       - name: Verify editor initialization and offscreen tests
         run: out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^editor$' --no-tests=error
       - name: Measure the content browser projection
@@ -1182,6 +1200,12 @@ jobs:
           path: out/editor-content-scale.txt
       - name: Analyze document interactions and regressions
         run: |
+          # Analyze the retired scene preview sources only while the candidate still has them.
+          scene_sources=()
+          for source in apps/editor/src/scene_document.cpp apps/editor/src/scene_preview.cpp \
+            apps/editor/tests/scene_document_tests.cpp; do
+            if [ -f "$source" ]; then scene_sources+=("$source"); fi
+          done
           out/host-tools/bin/clang-tidy -p out/build/linux-clang-development --warnings-as-errors='*' \
             apps/editor/src/controller.cpp apps/editor/src/main_window.cpp \
             apps/editor/src/main_window_layout.cpp apps/editor/src/document_commands.cpp \
@@ -1193,8 +1217,7 @@ jobs:
             apps/editor/tests/content_browser_tests.cpp apps/editor/tests/content_import_gate_tests.cpp \
             apps/editor/src/controller_play.cpp apps/editor/src/script_workspace.cpp \
             apps/editor/tests/script_workspace_tests.cpp \
-            apps/editor/src/scene_document.cpp apps/editor/src/world_demo_adapter.cpp \
-            apps/editor/src/scene_preview.cpp \
+            "${scene_sources[@]}" apps/editor/src/world_demo_adapter.cpp \
             apps/editor/src/world_document.cpp apps/editor/src/world_workspace.cpp \
             apps/editor/src/render_scene.cpp apps/editor/src/render_preview.cpp \
             apps/editor/src/editor_camera_controller.cpp apps/editor/src/viewport_navigation.cpp \
@@ -1204,7 +1227,7 @@ jobs:
             apps/editor/src/render_load_job.cpp apps/editor/src/render_panel.cpp \
             apps/editor/tests/render_authoring_tests.cpp \
             apps/editor/tests/world_workspace_tests.cpp \
-            apps/editor/tests/scene_document_tests.cpp apps/editor/tests/world_demo_workspace_tests.cpp
+            apps/editor/tests/world_demo_workspace_tests.cpp
       - name: Verify S5 Editor, installed Behavior SDK and GameHost journey
         run: |
           ./scripts/script-provider bootstrap
