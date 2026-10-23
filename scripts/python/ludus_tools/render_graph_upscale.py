@@ -1,4 +1,4 @@
-"""Upscaling interfaces: executable bilinear and explicitly unavailable vendor adapters.
+"""Upscaling interfaces: executable bilinear/MetalFX Spatial and unavailable vendor adapters.
 
 Thanks to NVIDIA, DLSS Programming Guide (https://github.com/NVIDIA/DLSS/tree/main/doc),
 AMD, FidelityFX Super Resolution 2.3.3, Inputs
@@ -24,7 +24,10 @@ ALGORITHMS = {
 
 def new_node(algorithm, identity):
     """Create an independent preset record; validation owns identity/algorithm legality."""
-    return {'id': identity, 'kind': 'Upscale', 'algorithm': algorithm}
+    node = {'id': identity, 'kind': 'Upscale', 'algorithm': algorithm}
+    if algorithm == 'metalfx-spatial':
+        node['color_processing'] = 'Linear'
+    return node
 
 
 def input_ports(node):
@@ -38,7 +41,11 @@ def input_ports(node):
 
 def validate(node, where, graph):
     """Validate saved drafts without requiring wires, an SDK, or a device."""
-    graph._keys(node, ('id', 'kind', 'algorithm'), where)
+    graph._keys(node, ('id', 'kind', 'algorithm'), where, optional=('color_processing',))
+    if 'color_processing' in node:
+        graph._require(node['algorithm'] == 'metalfx-spatial', 'Schema', where,
+                       'color_processing is only supported by MetalFX Spatial')
+        graph._enum(node['color_processing'], ('Linear', 'Perceptual'), where)
     graph._identifier(node['id'], where)
     graph._require(node['id'] != 'input', 'Schema', where, 'input is reserved')
     graph._enum(node['algorithm'], tuple(ALGORITHMS), where)
@@ -46,7 +53,7 @@ def validate(node, where, graph):
 
 def reject_execution(node, where, graph):
     """Fail at the selected node, preserving the current executable generation."""
-    if node['algorithm'] == 'bilinear':
+    if node['algorithm'] in ('bilinear', 'metalfx-spatial'):
         return
     label = ALGORITHMS[node['algorithm']][0]
     repair = ('Keep this as an unused draft, or disconnect its output and reconnect the '

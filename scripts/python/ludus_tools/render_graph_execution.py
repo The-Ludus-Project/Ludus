@@ -28,7 +28,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 12
+FORMAT_VERSION = 13
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -49,6 +49,8 @@ for variant in range(1, MAX_AUTHORED_TECHNIQUES):
         code = LEGACY_PROGRAM_COUNT + (variant - 1) * RASTER_FAMILY_COUNT + family
         PROGRAM_CODES[name] = code
 PROGRAM_CODES['BilinearUpscale'] = len(PROGRAM_CODES)
+PROGRAM_CODES['MetalFxSpatialUpscale'] = len(PROGRAM_CODES)
+PROGRAM_CODES['MetalFxSpatialPerceptualUpscale'] = len(PROGRAM_CODES)
 VISIBILITY = {'Vertex': 1, 'Fragment': 2, 'Both': 3}
 
 
@@ -144,10 +146,13 @@ def lower_plan(package, configuration):
     color_defined = {r: False for r in resources}
     for operation in operations:
         if operation['kind'] == 'Upscale':
-            build.require(operation.get('algorithm') == 'bilinear', 'Capability', operation['id'], 'unsupported upscaler')
+            build.require(operation.get('algorithm') in ('bilinear', 'metalfx-spatial'), 'Capability', operation['id'], 'unsupported upscaler')
             source = operation['source_color']['resource']
             color = operation['attachments']['color']['resource']
-            pass_records.append({'Program': 'BilinearUpscale', 'Camera': cameras.index(operation['view']),
+            program = ('BilinearUpscale' if operation['algorithm'] == 'bilinear' else
+                       'MetalFxSpatialPerceptualUpscale' if operation.get('color_processing', 'Linear') == 'Perceptual' else
+                       'MetalFxSpatialUpscale')
+            pass_records.append({'Program': program, 'Camera': cameras.index(operation['view']),
                 'Color': resources.index(color), 'Depth': ABSENT, 'ColorLoad': 'Clear', 'ColorStore': 'Store',
                 'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': 0,
                 'RayProgram': 0, 'Buffer0': ABSENT, 'Buffer1': ABSENT, 'Visibility': ABSENT,
@@ -239,7 +244,7 @@ def stage_inputs(item):
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 16
+PACKAGE_VERSION = 17
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127

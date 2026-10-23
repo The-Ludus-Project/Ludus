@@ -651,6 +651,7 @@ void ApplyPassState(const RasterPassInfo& pass) noexcept
     }
     PassViews(pass, true, true);
     gRasterPass = pass;
+    shouldBeginRasterPassAfterSpatialUpscale = false;
 }
 RasterStatus StartPass(const RasterPassInfo& pass) noexcept
 {

@@ -12,6 +12,7 @@
 #include "internal/profile.h"
 #include "internal/raster.h"
 #include "internal/ray_backend.h"
+#include "internal/spatial_upscale_backend.h"
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
@@ -157,6 +158,7 @@ struct Record final
     uint64 BufferRevision = 1;
     bool FrameBufferWritten = false;
     ComputePipelineInfo Compute;
+    SpatialUpscalerDescription SpatialUpscaler;
     TextureDescription Texture;
     uint64 TextureRevision = 1;
     uint32 InitializedMips = 0;
@@ -191,6 +193,7 @@ RasterPassInfo gRasterPass;
 bool gSurfaceColorDefined = true;
 bool gSurfaceDepthDefined = false;
 bool gGraphExecuting = false;
+bool shouldBeginRasterPassAfterSpatialUpscale = false;
 void ResetGraphRecords() noexcept;
 RasterStatus ValidatePacketPass(const RasterPacket&, const RasterPassInfo&, bool) noexcept;
 RasterStatus ComputeAdmission(DeviceHandle, bool = true) noexcept;
@@ -409,8 +412,9 @@ RasterStatus Reserve(RasterKind kind, usize& slot) noexcept
         {
             return RasterStatus::IdentityExhausted;
         }
-        const auto grown =
-            static_cast<usize>(kind) < RASTER_KINDS ? backend::RasterGrow(kind, slot + 1) : RasterStatus::Ready;
+        const RasterStatus grown = kind == RasterKind::SpatialUpscaler       ? backend::SpatialUpscaleGrow(slot + 1)
+                                   : static_cast<usize>(kind) < RASTER_KINDS ? backend::RasterGrow(kind, slot + 1)
+                                                                             : RasterStatus::Ready;
         if (grown != RasterStatus::Ready)
         {
             return grown;
@@ -2231,6 +2235,10 @@ RasterStatus ReserveFrameSubmission() noexcept
 }
 RasterStatus EncodePacket(const RasterPacket& packet) noexcept
 {
+    if (shouldBeginRasterPassAfterSpatialUpscale == true)
+    {
+        return RasterStatus::InvalidState;
+    }
     if (gDrawCount >= CurrentDeviceProfile().Raster.DrawsPerFrame)
     {
         return RasterStatus::CapacityExceeded;
@@ -2262,7 +2270,7 @@ RasterStatus EncodePacket(const RasterPacket& packet) noexcept
 } // namespace
 RasterStatus DrawIndexed(DeviceHandle device, const RasterDraw& draw) noexcept
 {
-    if (FrameOpen() == false)
+    if (FrameOpen() == false || shouldBeginRasterPassAfterSpatialUpscale == true)
     {
         const auto admission = Admission(device, false);
         return admission == RasterStatus::Ready ? RasterStatus::InvalidState : admission;
@@ -2350,6 +2358,7 @@ void RasterBeginFrame() noexcept
     gNativeComputePassCount = 0;
     gRasterPass = {};
     gGraphExecuting = false;
+    shouldBeginRasterPassAfterSpatialUpscale = false;
     gSurfaceColorDefined = true;
     gSurfaceDepthDefined = false;
     Collect();
@@ -2928,3 +2937,174 @@ GetTextureCpuContent(DeviceHandle device, TextureViewHandle handle, uint32 mip, 
 } // namespace ludus::graphics::rhi
 
 #include "internal/native_interop_services.h"
+
+namespace ludus::graphics::rhi
+{
+RasterStatus GetStatus(DeviceHandle device, SpatialUpscalerHandle upscaler) noexcept
+{
+    const RasterStatus admission = Admission(device, false);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    Collect();
+    const RasterStatus current = Admission(device, false);
+    if (current != RasterStatus::Ready)
+    {
+        return current;
+    }
+    const Record* recordOrNull = Resolve(upscaler, RasterKind::SpatialUpscaler);
+    return recordOrNull == nullptr ? RasterStatus::InvalidHandle : recordOrNull->Status;
+}
+RasterStatus Destroy(DeviceHandle device, SpatialUpscalerHandle& inoutUpscaler) noexcept
+{
+    const RasterStatus admission = Admission(device);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    Record* recordOrNull = Resolve(inoutUpscaler, RasterKind::SpatialUpscaler);
+    if (recordOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    recordOrNull->Published = false;
+    --recordOrNull->References;
+    inoutUpscaler = {};
+    Collect();
+    return RasterStatus::Ready;
+}
+
+} // namespace ludus::graphics::rhi
+
+namespace ludus::graphics::rhi
+{
+RasterStatus GetSpatialUpscaleCapabilities(DeviceHandle device, SpatialUpscaleCapabilities& outCapabilities) noexcept
+{
+    const RasterStatus status = Admission(device, false);
+    if (status == RasterStatus::Ready)
+    {
+        outCapabilities.IsMetalFxSpatialSupported = backend::IsMetalFxSpatialSupported();
+    }
+    return status;
+}
+RasterStatus CreateSpatialUpscaler(DeviceHandle device,
+                                   const SpatialUpscalerDescription& description,
+                                   SpatialUpscalerHandle& outUpscaler) noexcept
+{
+    const RasterStatus status = Admission(device);
+    if (status != RasterStatus::Ready)
+    {
+        return status;
+    }
+    const uint32 maximum = CurrentDeviceProfile().Raster.MaxTextureDimension2D;
+    if (description.InputWidth == 0 || description.InputHeight == 0 ||
+        description.OutputWidth < description.InputWidth || description.OutputHeight < description.InputHeight ||
+        description.OutputWidth > maximum || description.OutputHeight > maximum ||
+        (description.ColorProcessing != SpatialUpscaleColorProcessing::Linear &&
+         description.ColorProcessing != SpatialUpscaleColorProcessing::Perceptual))
+    {
+        return RasterStatus::InvalidDescription;
+    }
+    if (backend::IsMetalFxSpatialSupported() == false)
+    {
+        return RasterStatus::Unsupported;
+    }
+    return Publish(RasterKind::SpatialUpscaler, outUpscaler, [&](usize slot, Record& outRecord) noexcept {
+        outRecord.SpatialUpscaler = description;
+        return backend::SpatialUpscaleCreate(slot, description);
+    });
+}
+RasterStatus EncodeSpatialUpscale(DeviceHandle device,
+                                  SpatialUpscalerHandle upscaler,
+                                  TextureHandle source,
+                                  TextureHandle destination) noexcept
+{
+    const RasterStatus admission = Admission(device, false);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    if (FrameOpen() == false || gGraphExecuting == true)
+    {
+        return RasterStatus::InvalidState;
+    }
+    Record* effectOrNull = Resolve(upscaler, RasterKind::SpatialUpscaler);
+    Record* inputOrNull = Resolve(source, RasterKind::Texture);
+    Record* outputOrNull = Resolve(destination, RasterKind::Texture);
+    if (effectOrNull == nullptr || inputOrNull == nullptr || outputOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    constexpr usize SPATIAL_RESOURCE_COUNT = 3;
+    const StaticArray<const Record*, SPATIAL_RESOURCE_COUNT> records{{effectOrNull, inputOrNull, outputOrNull}};
+    for (const Record* record : records)
+    {
+        if (record->Status != RasterStatus::Ready)
+        {
+            return record->Status == RasterStatus::Pending ? RasterStatus::NotReady : record->Status;
+        }
+    }
+    if (inputOrNull->TextureRevision == ~uint64{0} || outputOrNull->TextureRevision == ~uint64{0})
+    {
+        return RasterStatus::IdentityExhausted;
+    }
+    const SpatialUpscalerDescription& configuration = effectOrNull->SpatialUpscaler;
+    const TextureDescription& input = inputOrNull->Texture;
+    const TextureDescription& output = outputOrNull->Texture;
+    const auto isCompatible = [](const TextureDescription& texture, uint32 width, uint32 height) noexcept {
+        return texture.Width == width && texture.Height == height && texture.Format == RasterFormat::Rgba8Unorm &&
+               texture.Dimension == TextureDimension::D2 && texture.DepthOrLayers == 1 && texture.MipLevels == 1 &&
+               texture.SampleCount == 1;
+    };
+    if (source == destination || output.Attachment == false || outputOrNull->ExternalReads != 0 ||
+        isCompatible(input, configuration.InputWidth, configuration.InputHeight) == false ||
+        isCompatible(output, configuration.OutputWidth, configuration.OutputHeight) == false)
+    {
+        return RasterStatus::InvalidDescription;
+    }
+    const bool isDefined = input.Attachment == true ? (inputOrNull->InFrame == true ? inputOrNull->FrameColorDefined
+                                                                                    : inputOrNull->ColorDefined)
+                                                    : (inputOrNull->InitializedMips & 1U) != 0;
+    if (isDefined == false)
+    {
+        return RasterStatus::InvalidState;
+    }
+    if (gDrawCount >= CurrentDeviceProfile().Raster.DrawsPerFrame)
+    {
+        return RasterStatus::CapacityExceeded;
+    }
+    const RasterStatus reservation = ReserveFrameSubmission();
+    if (reservation != RasterStatus::Ready)
+    {
+        return reservation;
+    }
+    if (ClaimRasterFrame() == false)
+    {
+        return RasterStatus::InvalidState;
+    }
+    FrameRetain(RasterKind::SpatialUpscaler, RasterAccess::Slot(upscaler));
+    FrameRetain(RasterKind::Texture, RasterAccess::Slot(source));
+    FrameRetain(RasterKind::Texture, RasterAccess::Slot(destination));
+    backend::RasterEndPass();
+    shouldBeginRasterPassAfterSpatialUpscale = true;
+    backend::RasterTextureBarrier(RasterAccess::Slot(source), RasterTextureUse::SampledBoth);
+    backend::RasterTextureBarrier(RasterAccess::Slot(destination), RasterTextureUse::ColorAttachment);
+    const RasterStatus status = backend::SpatialUpscaleEncode(RasterAccess::Slot(upscaler),
+                                                              RasterAccess::Slot(source),
+                                                              RasterAccess::Slot(destination));
+    ++gDrawCount;
+    inputOrNull->FrameTextureUse = RasterTextureUse::SampledBoth;
+    outputOrNull->FrameTextureUse = RasterTextureUse::ColorAttachment;
+    if (status == RasterStatus::Ready)
+    {
+        outputOrNull->FrameAttachmentState[0] = COLOR_DEFINED;
+        outputOrNull->FrameColorDefined = true;
+        outputOrNull->FrameDepthDefined = false;
+        outputOrNull->FrameStencilDefined = false;
+        backend::RasterTextureBarrier(RasterAccess::Slot(destination), RasterTextureUse::SampledBoth);
+        outputOrNull->FrameTextureUse = RasterTextureUse::SampledBoth;
+    }
+    return status;
+}
+} // namespace ludus::graphics::rhi

@@ -803,6 +803,7 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
         case internal::RasterKind::RayScene:
         case internal::RasterKind::RayProgram:
         case internal::RasterKind::RayBatch:
+        case internal::RasterKind::SpatialUpscaler:
         case internal::RasterKind::Count:
             break;
     }

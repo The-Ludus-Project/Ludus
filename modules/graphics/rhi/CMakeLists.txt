@@ -23,7 +23,7 @@ target_sources(ludus_graphics_rhi
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
@@ -57,9 +57,9 @@ if(EMSCRIPTEN)
         "-sMIN_WEBGL_VERSION=2"
         "-sFULL_ES3=1")
 elseif(APPLE)
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_metal.mm src/hosted_metal.mm src/hosted_consumer_metal.mm)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_metal.mm src/spatial_upscale_metal.mm src/hosted_metal.mm src/hosted_consumer_metal.mm)
     target_link_libraries(ludus_graphics_rhi PRIVATE
-        "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework IOSurface" "-framework CoreFoundation")
+        "-framework MetalFX" "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework IOSurface" "-framework CoreFoundation")
     ludus_configure_cocoa_target(ludus_graphics_rhi)
 else()
     target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp)
@@ -82,6 +82,9 @@ else()
     if(LUDUS_PLATFORM_ENABLE_WAYLAND)
         target_compile_definitions(ludus_graphics_rhi PRIVATE VK_USE_PLATFORM_WAYLAND_KHR)
     endif()
+endif()
+if(NOT APPLE)
+    target_sources(ludus_graphics_rhi PRIVATE src/spatial_upscale_unsupported.cpp)
 endif()
 ludus_apply_project_defaults(ludus_graphics_rhi)
 
@@ -140,7 +143,7 @@ if(LUDUS_BUILD_TESTS AND APPLE)
     target_compile_definitions(ludus_graphics_rhi PRIVATE LUDUS_RHI_TEST_READBACK=1)
     add_executable(ludus_rhi_metal_tests tests/metal_tests.mm)
     target_include_directories(ludus_rhi_metal_tests PRIVATE src)
-    target_link_libraries(ludus_rhi_metal_tests PRIVATE Ludus::GraphicsRhi Catch2::Catch2WithMain "-framework Metal" "-framework QuartzCore")
+    target_link_libraries(ludus_rhi_metal_tests PRIVATE Ludus::GraphicsRhi Catch2::Catch2WithMain "-framework MetalFX" "-framework Metal" "-framework QuartzCore")
     ludus_apply_project_defaults(ludus_rhi_metal_tests)
     ludus_configure_cocoa_target(ludus_rhi_metal_tests)
     ludus_enable_test_exceptions(ludus_rhi_metal_tests)

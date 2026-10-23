@@ -211,7 +211,21 @@ qsizetype FindNode(const QJsonArray& nodes, const QString& identity)
 bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& arguments, QString* outErrorOrNull)
 {
     QJsonArray nodes = inoutConfiguration.value(QStringLiteral("nodes")).toArray();
-    const QJsonObject node = QJsonDocument::fromJson(arguments.at(0).toUtf8()).object();
+    QJsonObject node = QJsonDocument::fromJson(arguments.at(0).toUtf8()).object();
+    if (node.value(QStringLiteral("kind")) == QStringLiteral("Upscale"))
+    {
+        if (node.value(QStringLiteral("algorithm")) == QStringLiteral("metalfx-spatial"))
+        {
+            if (node.contains(QStringLiteral("color_processing")) == false)
+            {
+                node.insert(QStringLiteral("color_processing"), QStringLiteral("Linear"));
+            }
+        }
+        else
+        {
+            node.remove(QStringLiteral("color_processing"));
+        }
+    }
     const qsizetype index = FindNode(nodes, node.value(QStringLiteral("id")).toString());
     if (index < 0)
     {

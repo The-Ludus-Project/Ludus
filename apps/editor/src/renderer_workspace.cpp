@@ -175,6 +175,10 @@ QStringList GetChoices(const QString& field)
     {
         return GetUpscaleAlgorithms();
     }
+    if (field == QStringLiteral("color_processing"))
+    {
+        return {QStringLiteral("Linear"), QStringLiteral("Perceptual")};
+    }
     if (field == QStringLiteral("mode"))
     {
         return {QStringLiteral("ColorAndDepth"), QStringLiteral("DepthOnly")};
@@ -520,8 +524,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("Present")});
     for (const QString& algorithm : GetUpscaleAlgorithms())
     {
-        mNewKind->addItem((algorithm == QStringLiteral("bilinear") ? QStringLiteral("Upscale — %1")
-                                                                   : QStringLiteral("Upscale — %1 (draft)"))
+        mNewKind->addItem(((algorithm == QStringLiteral("bilinear") || algorithm == QStringLiteral("metalfx-spatial"))
+                               ? QStringLiteral("Upscale — %1")
+                               : QStringLiteral("Upscale — %1 (draft)"))
                               .arg(GetUpscaleLabel(algorithm)),
                           algorithm);
     }
@@ -2230,7 +2235,13 @@ void RendererWorkspace::renderInspector()
 
 void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inoutParent)
 {
-    const QJsonObject node = selectedNode();
+    QJsonObject node = selectedNode();
+    if (node.value(QStringLiteral("kind")) == QStringLiteral("Upscale") &&
+        node.value(QStringLiteral("algorithm")) == QStringLiteral("metalfx-spatial") &&
+        node.contains(QStringLiteral("color_processing")) == false)
+    {
+        node.insert(QStringLiteral("color_processing"), QStringLiteral("Linear"));
+    }
     populateNodeNameFields(outFields, inoutParent);
     outFields.addRow(QStringLiteral("Kind"), new QLabel(node.value(QStringLiteral("kind")).toString(), &inoutParent));
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale"))

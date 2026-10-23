@@ -1,6 +1,7 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 
 #include "../shaders/renderer_gpu_preview_layout.h"
+#include "internal/render_graph_metalfx.h"
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
 #include "internal/render_graph_scene_resources.h"
@@ -65,7 +66,7 @@ bool IsMaskedTechnique(format::Technique technique) noexcept
 /// Whether a technique's authored family covers the item's declared static coverage contract.
 bool IsCompatible(format::Technique technique, const RenderGraphItem& item, const RenderGraphMesh& mesh) noexcept
 {
-    return technique != format::Technique::BilinearUpscale && mesh.Layout == RenderGraphLayout::Static &&
+    return format::IsImageTechnique(technique) == false && mesh.Layout == RenderGraphLayout::Static &&
            ((item.Coverage == RenderGraphMaterial::Opaque && IsMaskedTechnique(technique) == false) ||
             (item.Coverage == RenderGraphMaterial::Masked && IsMaskedTechnique(technique) == true));
 }
@@ -239,6 +240,8 @@ GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::
             return isVertex == true ? programs.MaskedColorVertex : programs.MaskedColorFragment;
         case format::Technique::MaskedDepthOnly:
             break;
+        case format::Technique::MetalFxSpatialUpscale:
+        case format::Technique::MetalFxSpatialPerceptualUpscale:
         case format::Technique::BilinearUpscale:
             return isVertex == true ? programs.CompositeVertex : programs.CompositeFragment;
     }
@@ -436,7 +439,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
     {
         const format::Pass& pass = plan.Passes[passIndex];
-        if (pass.Program == format::Technique::BilinearUpscale)
+        if (format::IsImageTechnique(pass.Program) == true)
         {
             if (pass.Camera >= plan.Cameras.GetSize() || pass.Color >= plan.Resources.GetSize() ||
                 pass.SourceColor >= plan.Resources.GetSize() || pass.SourceColor == pass.Color ||
@@ -449,6 +452,12 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                 pass.Buffer0 != format::ABSENT || pass.Buffer1 != format::ABSENT || pass.Visibility != format::ABSENT ||
                 pass.VisibilityDepth != format::ABSENT || pass.AccumulationSamples != 0 ||
                 pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)
+            {
+                return Status::InvalidDescription;
+            }
+            if (pass.Program != format::Technique::BilinearUpscale &&
+                (plan.Resources[pass.Color].Width < plan.Resources[pass.SourceColor].Width ||
+                 plan.Resources[pass.Color].Height < plan.Resources[pass.SourceColor].Height))
             {
                 return Status::InvalidDescription;
             }
@@ -751,6 +760,7 @@ struct RenderGraph::State final
     {
         rhi::DeviceHandle Device{};
         RenderGraphAttachmentPool* PoolOrNull = nullptr;
+        core::UniquePtr<internal::RenderGraphMetalFxResources> MetalFxResources;
         uint32 Count = 0;
         StaticArray<format::Resource, format::MAX_RESOURCES> Resources{};
         StaticArray<rhi::TextureHandle, format::MAX_RESOURCES> Textures{};
@@ -775,6 +785,7 @@ struct RenderGraph::State final
         }
     };
     core::UniquePtr<AttachmentReplacement> Resizing;
+    core::UniquePtr<internal::RenderGraphMetalFxResources> MetalFxResources;
     /// Commit only beside the scene prepared for these dimensions. The local retired set
     /// releases old leases through RHI completion, using the same pool ownership ledger.
     void PublishResize() noexcept
@@ -801,6 +812,7 @@ struct RenderGraph::State final
             Resizing->Textures[i] = texture;
             Resizing->IsPooled[i] = isPooled;
         }
+        MetalFxResources.Swap(Resizing->MetalFxResources);
         Resizing.Reset();
         HasValidOutput = false;
         OutputRevision = 0;
@@ -924,7 +936,7 @@ struct RenderGraph::State final
         for (usize i = 0; i < Header.PassCount; ++i)
         {
             const format::Pass& pass = Passes[i];
-            if (pass.Program == format::Technique::BilinearUpscale)
+            if (format::IsImageTechnique(pass.Program) == true)
             {
                 continue;
             }
@@ -963,7 +975,7 @@ struct RenderGraph::State final
         CameraUpdate& update = *PendingCamera;
         for (usize i = 0; i < Header.PassCount; ++i)
         {
-            if (Passes[i].Program == format::Technique::BilinearUpscale)
+            if (format::IsImageTechnique(Passes[i].Program) == true)
             {
                 continue;
             }
@@ -985,7 +997,7 @@ struct RenderGraph::State final
         // Publication cannot allocate or fail, and no producer is open.
         for (usize i = 0; i < Header.PassCount; ++i)
         {
-            if (Passes[i].Program == format::Technique::BilinearUpscale)
+            if (format::IsImageTechnique(Passes[i].Program) == true)
             {
                 continue;
             }
@@ -1130,7 +1142,73 @@ struct RenderGraph::State final
         }
         for (usize i = 0; i < Header.PassCount; ++i)
         {
-            if (Passes[i].Program == format::Technique::BilinearUpscale)
+            if (Passes[i].Program == format::Technique::MetalFxSpatialUpscale ||
+                Passes[i].Program == format::Technique::MetalFxSpatialPerceptualUpscale)
+            {
+                core::UniquePtr<internal::RenderGraphMetalFxResources>& effects =
+                    Resizing.Get() != nullptr ? Resizing->MetalFxResources : MetalFxResources;
+                if (effects.Get() == nullptr)
+                {
+                    effects.Reset(new (std::nothrow) internal::RenderGraphMetalFxResources);
+                    if (effects.Get() == nullptr)
+                    {
+                        return Status::OutOfMemory;
+                    }
+                }
+                if (effects->IsPrepared[i] == false)
+                {
+                    const bool isSurface = preparingResources[Passes[i].Color].IsSurface == 1;
+                    if (isSurface == true)
+                    {
+                        internal::RenderGraphUpscaleProgram& program = UpscalePrograms[0];
+                        if (HasUpscalePrograms[0] == false)
+                        {
+                            const Status created =
+                                program.Initialize(Device, Programs.CompositeVertex, Programs.CompositeFragment, true);
+                            if (IsAccepted(created) == false)
+                            {
+                                return created;
+                            }
+                            HasUpscalePrograms[0] = true;
+                        }
+                        const Status ready = program.Poll();
+                        if (ready != Status::Ready)
+                        {
+                            return ready;
+                        }
+                    }
+                    const format::Resource& source = preparingResources[Passes[i].SourceColor];
+                    const format::Resource& destination = preparingResources[Passes[i].Color];
+                    rhi::SpatialUpscalerDescription description;
+                    description.InputWidth = source.Width;
+                    description.InputHeight = source.Height;
+                    description.OutputWidth = destination.Width;
+                    description.OutputHeight = destination.Height;
+                    description.ColorProcessing = Passes[i].Program == format::Technique::MetalFxSpatialUpscale
+                                                      ? rhi::SpatialUpscaleColorProcessing::Linear
+                                                      : rhi::SpatialUpscaleColorProcessing::Perceptual;
+                    const StaticArray<rhi::TextureHandle, format::MAX_RESOURCES>& textures =
+                        Resizing.Get() != nullptr ? Resizing->Textures : Textures;
+                    const Status created =
+                        effects->Passes[i].Initialize(Device,
+                                                      description,
+                                                      textures[Passes[i].SourceColor],
+                                                      textures[Passes[i].Color],
+                                                      isSurface == true ? &UpscalePrograms[0] : nullptr);
+                    if (IsAccepted(created) == false)
+                    {
+                        return created;
+                    }
+                    effects->IsPrepared[i] = true;
+                }
+                const Status ready = effects->Passes[i].Poll();
+                if (ready != Status::Ready)
+                {
+                    return ready;
+                }
+                continue;
+            }
+            if (format::IsImageTechnique(Passes[i].Program) == true)
             {
                 const StaticArray<rhi::TextureHandle, format::MAX_RESOURCES>& textures =
                     Resizing.Get() != nullptr ? Resizing->Textures : Textures;
@@ -1272,10 +1350,12 @@ struct RenderGraph::State final
         {
             const rhi::GpuScope scope(Device, PassScopes[pass]);
             const format::Pass& operation = Passes[pass];
-            if (operation.Program == format::Technique::BilinearUpscale)
+            if (format::IsImageTechnique(operation.Program) == true)
             {
                 HasAttemptedDraw = true;
-                RecordingStatus = Current->UpscalePasses[pass].Draw(Textures[operation.Color]);
+                RecordingStatus = operation.Program == format::Technique::BilinearUpscale
+                                      ? Current->UpscalePasses[pass].Draw(Textures[operation.Color])
+                                      : MetalFxResources->Passes[pass].Draw();
                 continue;
             }
             if (operation.Program == format::Technique::RayTracing)
@@ -1345,6 +1425,7 @@ struct RenderGraph::State final
     }
     ~State() noexcept
     {
+        MetalFxResources.Reset();
         PendingCamera.Reset();
         Pending.Reset();
         Resizing.Reset();
@@ -1447,7 +1528,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
         {
-            if (plan.Passes[pass].Program == format::Technique::BilinearUpscale)
+            if (format::IsImageTechnique(plan.Passes[pass].Program) == true)
             {
                 continue;
             }
@@ -1458,10 +1539,28 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             }
         }
     }
+    for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
+    {
+        const format::Pass& pass = plan.Passes[passIndex];
+        if (pass.Program == format::Technique::MetalFxSpatialUpscale ||
+            pass.Program == format::Technique::MetalFxSpatialPerceptualUpscale)
+        {
+            rhi::SpatialUpscaleCapabilities capabilities;
+            const Status capabilityStatus = rhi::GetSpatialUpscaleCapabilities(device, capabilities);
+            if (capabilityStatus != Status::Ready)
+            {
+                return capabilityStatus;
+            }
+            if (capabilities.IsMetalFxSpatialSupported == false)
+            {
+                return Status::Unsupported;
+            }
+        }
+    }
     StaticArray<bool, format::TECHNIQUE_COUNT> isUsed{};
     for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
     {
-        if (plan.Passes[pass].Program != format::Technique::BilinearUpscale)
+        if (format::IsImageTechnique(plan.Passes[pass].Program) == false)
         {
             isUsed[static_cast<usize>(plan.Passes[pass].Program)] = true;
         }
@@ -2063,7 +2162,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             for (usize pass = 0; pass < state.Header.PassCount; ++pass)
             {
                 const format::Pass& operation = state.Passes[pass];
-                routeCount += operation.Program != format::Technique::BilinearUpscale && operation.Camera == camera &&
+                routeCount += format::IsImageTechnique(operation.Program) == false && operation.Camera == camera &&
                                       ((role == 1 && operation.Program != format::Technique::RayTracing) ||
                                        (role == 0 && IsColorTechnique(operation.Program) == true))
                                   ? 1U

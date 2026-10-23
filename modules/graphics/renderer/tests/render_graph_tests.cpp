@@ -9,6 +9,7 @@
 #include <ludus/graphics/rhi/device.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <limits>
 
@@ -1259,10 +1260,14 @@ TEST_CASE("forward scene generations publish together and retain reusable resour
     CHECK(fixture.Graph.GetDrawableSceneRevision() == 9);
 }
 
-TEST_CASE("bilinear graph passes retain resize and camera transactions without scene coverage",
+TEST_CASE("spatial graph passes retain resize and camera transactions without scene coverage",
           "[render-graph][bilinear]")
 {
+    const format::Technique technique = GENERATE(format::Technique::BilinearUpscale,
+                                                 format::Technique::MetalFxSpatialUpscale,
+                                                 format::Technique::MetalFxSpatialPerceptualUpscale);
     GraphFixture fixture;
+    rhi::reference::IsSpatialUpscaleAvailable = true;
     constexpr usize UPSCALE_RESOURCE_COUNT = 3;
     constexpr usize UPSCALE_PASS_COUNT = 2;
     StaticArray<format::Resource, UPSCALE_RESOURCE_COUNT> resources{
@@ -1276,7 +1281,7 @@ TEST_CASE("bilinear graph passes retain resize and camera transactions without s
     resources[2].ViewNumerator = 1;
     resources[2].ViewDenominator = 1;
     StaticArray<format::Pass, UPSCALE_PASS_COUNT> passes{{fixture.Passes[0],
-                                                          {format::Technique::BilinearUpscale,
+                                                          {technique,
                                                            0,
                                                            2,
                                                            format::ABSENT,
@@ -1302,7 +1307,8 @@ TEST_CASE("bilinear graph passes retain resize and camera transactions without s
     const usize pipelines = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Pipeline)];
     rhi::SubmissionToken completion;
     REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
-    CHECK(rhi::reference::Draws == 2);
+    CHECK(rhi::reference::Draws == (technique == format::Technique::BilinearUpscale ? 2 : 1));
+    CHECK(rhi::reference::SpatialUpscaleEncodes == (technique == format::Technique::BilinearUpscale ? 0 : 1));
     rhi::reference::Completed = rhi::reference::Submitted;
     rhi::TextureHandle oldOutput;
     rhi::TextureAspect aspect;
@@ -1325,12 +1331,17 @@ TEST_CASE("bilinear graph passes retain resize and camera transactions without s
     REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
     CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaders);
     CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Pipeline)] == pipelines);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::SpatialUpscaler)] ==
+          (technique == format::Technique::BilinearUpscale ? 0 : 2));
     rhi::reference::Completed = rhi::reference::Submitted;
     REQUIRE(fixture.Graph.Resize(257, 193) == rhi::RasterStatus::Pending);
     rhi::reference::Next = rhi::RasterStatus::Pending;
     REQUIRE(fixture.Update(report, renderer::RenderGraphCoveragePolicy::RejectIncomplete, 3) ==
             rhi::RasterStatus::Pending);
     CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+    completion = {};
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    rhi::reference::Completed = rhi::reference::Submitted;
     rhi::reference::Next = rhi::RasterStatus::Ready;
     for (usize request = 0; request < rhi::reference::PendingCount; ++request)
     {
@@ -1347,6 +1358,9 @@ TEST_CASE("bilinear graph passes retain resize and camera transactions without s
 TEST_CASE("bilinear numeric plans reject aliasing and uninitialized reads before GPU creation",
           "[render-graph][bilinear]")
 {
+    const format::Technique technique = GENERATE(format::Technique::BilinearUpscale,
+                                                 format::Technique::MetalFxSpatialUpscale,
+                                                 format::Technique::MetalFxSpatialPerceptualUpscale);
     GraphFixture fixture;
     constexpr usize UPSCALE_RESOURCE_COUNT = 3;
     constexpr usize UPSCALE_PASS_COUNT = 2;
@@ -1354,7 +1368,7 @@ TEST_CASE("bilinear numeric plans reject aliasing and uninitialized reads before
         {fixture.Resources[0], fixture.Resources[1], {192, 128, format::Aspect::Color, 2, 0, 1}}};
     resources[0].IsExported = 0;
     StaticArray<format::Pass, UPSCALE_PASS_COUNT> passes{{fixture.Passes[0],
-                                                          {format::Technique::BilinearUpscale,
+                                                          {technique,
                                                            0,
                                                            2,
                                                            format::ABSENT,
@@ -1378,6 +1392,11 @@ TEST_CASE("bilinear numeric plans reject aliasing and uninitialized reads before
     passes[0].ColorStore = format::Store::Discard;
     CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) ==
           rhi::RasterStatus::InvalidDescription);
+    if (technique != format::Technique::BilinearUpscale)
+    {
+        passes[0].ColorStore = format::Store::Store;
+        CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) == rhi::RasterStatus::Unsupported);
+    }
     passes[0].ColorStore = format::Store::Store;
     passes[1].DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::Balanced);
     CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) ==

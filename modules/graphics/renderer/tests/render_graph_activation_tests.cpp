@@ -996,6 +996,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::ACCUMULATION_PACKAGE_VERSION,
                                  format::TONE_MAPPING_PACKAGE_VERSION,
                                  format::BILINEAR_PACKAGE_VERSION,
+                                 format::DENOISING_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1144,6 +1145,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
                                  format::ACCUMULATION_PACKAGE_VERSION,
                                  format::TONE_MAPPING_PACKAGE_VERSION,
                                  format::BILINEAR_PACKAGE_VERSION,
+                                 format::DENOISING_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
@@ -1157,7 +1159,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::PACKAGE_VERSION                ? format::PASS_FIELD_COUNT
+        const usize passBytes = (version >= format::DENOISING_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT
                                  : version >= format::BILINEAR_PACKAGE_VERSION     ? format::PASS_FIELD_COUNT - 1
                                  : version >= format::TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 2
                                  : version >= format::ACCUMULATION_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 3
@@ -1257,6 +1259,7 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                                  format::ACCUMULATION_PACKAGE_VERSION,
                                  format::TONE_MAPPING_PACKAGE_VERSION,
                                  format::BILINEAR_PACKAGE_VERSION,
+                                 format::DENOISING_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         for (const format::StageRole compute : {format::StageRole::RayCompute,
@@ -1332,6 +1335,35 @@ TEST_CASE("runtime packages preserve bilinear source indices without scene unifo
     const core::UniquePtr<renderer::RenderGraphPackage> toneMapped = MakePackage(options);
     CHECK(toneMapped->GetPlan().Passes[0].ToneMappingExposure == 2);
     CHECK(toneMapped->GetPlan().Passes[0].SourceColor == format::ABSENT);
+}
+
+TEST_CASE("MetalFX image roles require package version seventeen and preserve bilinear version fifteen",
+          "[render-graph][activation][metalfx]")
+{
+    PackageOptions options;
+    options.SceneData = 0;
+    options.SourceColor = 1;
+    for (const format::Technique technique :
+         {format::Technique::MetalFxSpatialUpscale, format::Technique::MetalFxSpatialPerceptualUpscale})
+    {
+        options.Program = technique;
+        options.Version = format::METALFX_SPATIAL_PACKAGE_VERSION;
+        const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
+        CHECK(package->GetPlan().Passes[0].Program == technique);
+        CHECK(package->GetPlan().Passes[0].SourceColor == 1);
+        options.Version = format::DENOISING_PACKAGE_VERSION;
+        CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+        options.Version = format::BILINEAR_PACKAGE_VERSION;
+        CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    }
+    options.Program = format::Technique::BilinearUpscale;
+    for (const uint32 version : {format::BILINEAR_PACKAGE_VERSION, format::DENOISING_PACKAGE_VERSION})
+    {
+        options.Version = version;
+        const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
+        CHECK(package->GetPlan().Passes[0].Program == format::Technique::BilinearUpscale);
+        CHECK(package->GetPlan().Passes[0].SourceColor == 1);
+    }
 }
 
 TEST_CASE("runtime denoising fields preserve modes and reject invalid raster use",

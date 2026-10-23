@@ -9,6 +9,7 @@
 #include "internal/raster.h"
 #include "internal/ray_backend.h"
 #include "internal/resources.h"
+#include "internal/spatial_upscale_backend.h"
 #include <climits>
 #if defined(LUDUS_RHI_TEST_READBACK)
 #    include "internal/readback.h"
@@ -760,6 +761,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 
 #include "internal/gpu_scope_metal.h"
 #include "internal/raster_metal.h"
+#include "internal/spatial_upscale_metal.h"
 
 #include "internal/lifetime_metal.h"
 
@@ -768,3 +770,19 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 #include "internal/measurement_metal.h"
 
 #include "internal/native_interop_metal.h"
+
+namespace ludus::graphics::rhi::backend
+{
+id<MTLDevice> GetSpatialUpscaleMetalDevice() noexcept
+{
+    return gDevice;
+}
+id<MTLTexture> GetSpatialUpscaleMetalTexture(foundation::usize slot) noexcept
+{
+    return gRasterTextures[slot];
+}
+id<MTLCommandBuffer> GetSpatialUpscaleMetalCommandBuffer() noexcept
+{
+    return gCommand;
+}
+} // namespace ludus::graphics::rhi::backend
