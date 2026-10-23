@@ -26,7 +26,16 @@ def template_files(identity, profiles, graph):
     text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(list(profiles)))
     manifest = json.loads(text)
     build.validate_manifest(manifest)
-    snapshot.load('main.lurender.json')
+    pending = ['main.lurender.json']
+    captured = set()
+    while pending:
+        relative = pending.pop()
+        if relative in captured:
+            continue
+        captured.add(relative)
+        asset = json.loads(snapshot.load(relative))
+        pending.extend(node['asset'] for configuration in asset['configurations']
+                       for node in configuration['nodes'] if node['kind'] == 'Subgraph')
     for program in manifest['programs']:
         snapshot.shader_closure(program['source'])
     for technique in manifest['techniques']:

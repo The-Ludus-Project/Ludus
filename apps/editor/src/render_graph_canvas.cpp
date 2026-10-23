@@ -540,8 +540,9 @@ void RenderGraphCanvas::ShowConfiguration(const QString& file, const QString& co
     const bool isSame = file == mFile && configuration == mConfiguration;
     mFile = file;
     mConfiguration = configuration;
+    const bool wasEmpty = mNodes.isEmpty();
     Rebuild();
-    if (isSame == false)
+    if (isSame == false || (wasEmpty == true && mNodes.isEmpty() == false))
     {
         // A different configuration starts with no selection and fits its contents.
         SelectNode({});

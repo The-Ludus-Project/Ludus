@@ -1,4 +1,5 @@
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_shader_creation.h"
@@ -1033,8 +1034,30 @@ RenderGraphDocument::AddNode(const QString& file, const QString& configuration, 
                              false);
 }
 
-// File, configuration, node and new asset name are distinct authored identities.
+// File, child configuration and parent configuration are distinct authored identities.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus RenderGraphDocument::ApplyRestirTemplate(const QString& file,
+                                                                   const QString& configuration,
+                                                                   QString& outError,
+                                                                   const QString& parentConfiguration)
+{
+    RenderGraphSnapshot candidate = mDraft;
+    const RenderGraphDocumentStatus prepared =
+        PrepareRestirTemplate(candidate, mRootGraph, file, configuration, parentConfiguration, mPackageRoot, outError);
+    if (prepared != RenderGraphDocumentStatus::Ok)
+    {
+        return prepared;
+    }
+    mLastMove.clear();
+    const RenderGraphDocumentStatus status = commit(candidate, false);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        outError =
+            QStringLiteral("The template exceeds this package's file or history limits. The draft was preserved.");
+    }
+    return status;
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& file,
                                                               const QString& configuration,
                                                               const QString& node,

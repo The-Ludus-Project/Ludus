@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -235,6 +236,98 @@ bool RendererWorkspace::CreateConfiguration(const QString& name)
     documentEdited(status);
     mViews->setCurrentWidget(mCanvas);
     return true;
+}
+
+bool RendererWorkspace::ApplyRestirTemplate(const QString& configuration)
+{
+    if (CanCreateSubgraph() == false)
+    {
+        mStatus->setText(
+            QStringLiteral("Open a graph and resolve external source conflicts before applying a template."));
+        return false;
+    }
+    QString error;
+    const RenderGraphDocumentStatus status =
+        mDocument.ApplyRestirTemplate(mSelectedFile, configuration, error, mSelectedConfiguration);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(error);
+        return false;
+    }
+    if (mSelectedFile == mDocument.GetRootGraph())
+    {
+        mSelectedFile = configuration + QStringLiteral(".lurender.json");
+    }
+    mSelectedConfiguration = configuration;
+    mSelectedNode.clear();
+    mSelectedNodes.clear();
+    documentEdited(status);
+    mViews->setCurrentWidget(mCanvas);
+    mStatus->setText(QStringLiteral("Created %1#%2. Use it in a Subgraph node: connect scene, view and color, then use "
+                                    "its color output. Save publishes shaders and settings.")
+                         .arg(mSelectedFile, configuration));
+    return true;
+}
+
+void RendererWorkspace::promptRestirTemplate()
+{
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("renderGraphTemplateDialog"));
+    dialog.setWindowTitle(QStringLiteral("Apply Configuration Template"));
+    QFormLayout* fields = new QFormLayout(&dialog);
+    QComboBox* choice = new QComboBox(&dialog);
+    choice->setObjectName(QStringLiteral("renderGraphConfigurationTemplate"));
+    choice->addItem(QStringLiteral("ReSTIR DI — mesh emitter lighting"), QStringLiteral("restir-di"));
+    fields->addRow(QStringLiteral("Template"), choice);
+    QLineEdit* name = new QLineEdit(mSelectedConfiguration, &dialog);
+    name->setObjectName(QStringLiteral("renderGraphTemplateConfiguration"));
+    QJsonObject graph;
+    if (mDocument.GetGraph(mSelectedFile, graph) == true)
+    {
+        for (const QJsonValueConstRef value : graph.value(QStringLiteral("configurations")).toArray())
+        {
+            const QJsonObject configuration = value.toObject();
+            if (configuration.value(QStringLiteral("id")).toString() == mSelectedConfiguration &&
+                (configuration.value(QStringLiteral("nodes")).toArray().isEmpty() == false ||
+                 configuration.value(QStringLiteral("inputs")).toArray().isEmpty() == false ||
+                 configuration.value(QStringLiteral("outputs")).toArray().isEmpty() == false))
+            {
+                name->setText(QStringLiteral("RestirDi"));
+            }
+        }
+    }
+    if (mSelectedFile == mDocument.GetRootGraph())
+    {
+        name->setText(QStringLiteral("RestirDi"));
+    }
+    fields->addRow(QStringLiteral("Configuration"), name);
+    QLabel* description = new QLabel(
+        QStringLiteral("Create a reusable library configuration, or fill an empty one. The root graph also receives a "
+                       "Subgraph node. Connect scene, view "
+                       "and color from the parent graph. Includes three passes, two automatically sized reservoirs and "
+                       "Graph settings. Requires native ray tracing and emissive meshes."),
+        &dialog);
+    description->setWordWrap(true);
+    fields->addRow(description);
+    QLabel* error = new QLabel(&dialog);
+    error->setObjectName(QStringLiteral("renderGraphTemplateError"));
+    error->setWordWrap(true);
+    fields->addRow(error);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, &dialog);
+    fields->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, &dialog, [this, name, error, &dialog]() {
+        if (ApplyRestirTemplate(name->text().trimmed()) == true)
+        {
+            dialog.accept();
+        }
+        else
+        {
+            error->setText(mStatus->text());
+            dialog.adjustSize();
+        }
+    });
+    dialog.exec();
 }
 
 bool RendererWorkspace::RemoveSelectedConfiguration()

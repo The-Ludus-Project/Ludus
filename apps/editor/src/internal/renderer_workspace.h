@@ -101,6 +101,10 @@ public:
     /// Create/select an empty configuration in the selected graph file. One undo step;
     /// Save publishes it. Invalid/duplicate names or external source conflicts preserve the draft.
     [[nodiscard]] bool CreateConfiguration(const QString& name);
+    /// Add or fill an empty reusable ReSTIR DI configuration in the selected graph file.
+    /// Includes settings, shaders and automatically sized reservoirs in one undoable draft;
+    /// Save publishes. Failures preserve sources and display a repair. GUI thread only.
+    [[nodiscard]] bool ApplyRestirTemplate(const QString& configuration);
     /// Delete the selected configuration in one undo step and select the asset default.
     /// Last configurations, referenced configurations and source conflicts preserve the
     /// draft and report the repair in the status line. Save publishes; GUI thread only.
@@ -346,6 +350,7 @@ private:
     void syncTreeSelection();
     void syncCanvasSelection(const QStringList& nodes);
     void promptCreateConfiguration();
+    void promptRestirTemplate();
     void activateSelectedNode();
     void openSourceLine(const QString& file, foundation::int32 line);
     [[nodiscard]] QJsonObject getDiagnosticLocation(foundation::int32 row) const;
