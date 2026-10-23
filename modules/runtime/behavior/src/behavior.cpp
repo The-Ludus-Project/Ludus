@@ -24,6 +24,35 @@ namespace ludus::runtime::behavior
 {
 namespace
 {
+/// SHA-256 contract digests: raw bytes and lowercase hexadecimal characters.
+constexpr usize DIGEST_BYTES = 32;
+constexpr usize DIGEST_HEX_CHARACTERS = 64;
+/// Most operations one contract declares, and most arguments one operation takes.
+constexpr usize MAX_OPERATIONS = 16;
+constexpr usize MAX_OPERATION_ARGUMENTS = 4;
+/// Highest operation phase; phases are stored in one byte.
+constexpr uint32 MAX_OPERATION_PHASE = 255;
+/// Most fields one state record holds.
+constexpr uint32 MAX_STATE_FIELDS = 16;
+/// Encoded state: magic, version, contract digest and field count before the fields.
+constexpr usize STATE_HEADER_BYTES = 44;
+constexpr uint32 STATE_MAGIC = 0x34534842;
+constexpr usize STATE_DIGEST_OFFSET = 8;
+/// Encoded bytes of one state field: identifier, type and value words.
+constexpr usize STATE_FIELD_BYTES = 12;
+/// Largest Luau number accepted for a uint32 field.
+constexpr float64 MAX_UINT32_NUMBER = 4294967295.0;
+/// LUDS4PK package header layout: magic, version, total size, Luau profile digest,
+/// contract digest, then the program count and a reserved word.
+constexpr usize PACKAGE_VERSION_OFFSET = 8;
+constexpr usize PACKAGE_TOTAL_OFFSET = 12;
+constexpr usize PACKAGE_PROFILE_OFFSET = 16;
+constexpr usize PACKAGE_CONTRACT_OFFSET = 48;
+constexpr usize PACKAGE_PROGRAM_COUNT_OFFSET = 112;
+constexpr usize PACKAGE_RESERVED_OFFSET = 116;
+/// Most programs one package carries.
+constexpr uint32 MAX_PACKAGE_PROGRAMS = 8;
+
 // Bounded contract/value admission shared by native and Luau execution.
 bool Name(const char* text) noexcept
 {
@@ -109,17 +138,18 @@ bool Specs(std::span<const FieldSpec> specs, bool entity) noexcept
 bool ValidContract(const Contract& contract) noexcept
 {
     uint8 hash[32]{};
-    if (contract.Digest == nullptr || std::strlen(contract.Digest) != 64 || Hex(contract.Digest, hash) == false ||
-        contract.State.empty() || Specs(contract.Config, false) == false || Specs(contract.State, false) == false ||
-        Specs(contract.Event, true) == false || contract.Operations.size() > 16)
+    if (contract.Digest == nullptr || std::strlen(contract.Digest) != DIGEST_HEX_CHARACTERS ||
+        Hex(contract.Digest, hash) == false || contract.State.empty() || Specs(contract.Config, false) == false ||
+        Specs(contract.State, false) == false || Specs(contract.Event, true) == false ||
+        contract.Operations.size() > MAX_OPERATIONS)
     {
         return false;
     }
     for (usize i = 0; i < contract.Operations.size(); ++i)
     {
         const auto& op = contract.Operations[i];
-        if (op.Id == 0 || Name(op.Name) == false || op.Phase == 0 || op.Phase > 255 || op.Capability == 0 ||
-            op.Arguments.size() > 4 || Specs(op.Arguments, true) == false)
+        if (op.Id == 0 || Name(op.Name) == false || op.Phase == 0 || op.Phase > MAX_OPERATION_PHASE ||
+            op.Capability == 0 || op.Arguments.size() > MAX_OPERATION_ARGUMENTS || Specs(op.Arguments, true) == false)
         {
             return false;
         }
@@ -339,16 +369,16 @@ bool EncodeState(const Contract& contract, const Record& state, std::span<uint8>
     {
         return false;
     }
-    const usize size = 44 + static_cast<usize>(state.Count) * 12;
+    const usize size = STATE_HEADER_BYTES + static_cast<usize>(state.Count) * STATE_FIELD_BYTES;
     if (output.size() < size)
     {
         return false;
     }
     uint8 bytes[236]{};
     auto data = std::span<uint8>{bytes};
-    (void)TryWriteLittleEndian(uint32{0x34534842}, data);
+    (void)TryWriteLittleEndian(STATE_MAGIC, data);
     (void)TryWriteLittleEndian(uint32{1}, data.subspan(4));
-    (void)Hex(contract.Digest, bytes + 8);
+    (void)Hex(contract.Digest, bytes + STATE_DIGEST_OFFSET);
     (void)TryWriteLittleEndian(state.Count, data.subspan(40));
     // Descriptor order makes equivalent record permutations serialize identically.
     for (usize i = 0; i < contract.State.size(); ++i)
@@ -366,7 +396,7 @@ bool EncodeState(const Contract& contract, const Record& state, std::span<uint8>
 }
 bool DecodeState(const Contract& contract, std::span<const uint8> bytes, Record& output) noexcept
 {
-    if (ValidContract(contract) == false || bytes.size() < 44)
+    if (ValidContract(contract) == false || bytes.size() < STATE_HEADER_BYTES)
     {
         return false;
     }
@@ -377,8 +407,10 @@ bool DecodeState(const Contract& contract, std::span<const uint8> bytes, Record&
     (void)TryReadLittleEndian(bytes.subspan(4), version);
     (void)TryReadLittleEndian(bytes.subspan(40), candidate.Count);
     (void)Hex(contract.Digest, digest);
-    if (magic != 0x34534842 || version != 1 || std::memcmp(bytes.data() + 8, digest, 32) != 0 || candidate.Count > 16 ||
-        bytes.size() != 44 + static_cast<usize>(candidate.Count) * 12)
+    if (magic != STATE_MAGIC || version != 1 ||
+        std::memcmp(bytes.data() + STATE_DIGEST_OFFSET, digest, DIGEST_BYTES) != 0 ||
+        candidate.Count > MAX_STATE_FIELDS ||
+        bytes.size() != STATE_HEADER_BYTES + static_cast<usize>(candidate.Count) * STATE_FIELD_BYTES)
     {
         return false;
     }
@@ -404,7 +436,7 @@ bool DecodeState(const Contract& contract, std::span<const uint8> bytes, Record&
 }
 bool MigrateState(const Record& source, const Contract& target, Record& output) noexcept
 {
-    if (ValidContract(target) == false || source.Count > 16)
+    if (ValidContract(target) == false || source.Count > MAX_STATE_FIELDS)
     {
         return false;
     }
@@ -516,7 +548,7 @@ struct LuauProvider::Impl
                 scripting::Reject(state, 1, "uint32 required");
             }
             const float64 number = lua_tonumber(state, index);
-            if (foundation::math::IsFinite(number) == false || number < 0 || number > 4294967295.0)
+            if (foundation::math::IsFinite(number) == false || number < 0 || number > MAX_UINT32_NUMBER)
             {
                 scripting::Reject(state, 1, "uint32 range");
             }
@@ -673,12 +705,14 @@ struct LuauProvider::Impl
         uint32 version = 0, total = 0, programs = 0, reserved = 0;
         uint8 profile[32]{}, contract[32]{};
         if (bytes.size() < 120 || bytes.size() > usize{2} * 1024 * 1024 || std::memcmp(bytes.data(), MAGIC, 8) != 0 ||
-            TryReadLittleEndian(bytes.subspan(8), version) == false || version != 1 ||
-            TryReadLittleEndian(bytes.subspan(12), total) == false || total != bytes.size() ||
-            TryReadLittleEndian(bytes.subspan(112), programs) == false || programs == 0 || programs > 8 ||
-            TryReadLittleEndian(bytes.subspan(116), reserved) == false || reserved != 0 ||
+            TryReadLittleEndian(bytes.subspan(PACKAGE_VERSION_OFFSET), version) == false || version != 1 ||
+            TryReadLittleEndian(bytes.subspan(PACKAGE_TOTAL_OFFSET), total) == false || total != bytes.size() ||
+            TryReadLittleEndian(bytes.subspan(PACKAGE_PROGRAM_COUNT_OFFSET), programs) == false || programs == 0 ||
+            programs > MAX_PACKAGE_PROGRAMS ||
+            TryReadLittleEndian(bytes.subspan(PACKAGE_RESERVED_OFFSET), reserved) == false || reserved != 0 ||
             Hex(LuauProfile(), profile) == false || Hex(Schema.Digest, contract) == false ||
-            std::memcmp(bytes.data() + 16, profile, 32) != 0 || std::memcmp(bytes.data() + 48, contract, 32) != 0)
+            std::memcmp(bytes.data() + PACKAGE_PROFILE_OFFSET, profile, DIGEST_BYTES) != 0 ||
+            std::memcmp(bytes.data() + PACKAGE_CONTRACT_OFFSET, contract, DIGEST_BYTES) != 0)
         {
             return false;
         }
