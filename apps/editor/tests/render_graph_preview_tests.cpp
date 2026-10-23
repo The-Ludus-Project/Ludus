@@ -781,6 +781,12 @@ TEST_CASE("RG3b Renderer workspace previews only explicitly requested generation
           QSize(static_cast<int32>(default_graph::RESOURCES[0].Width),
                 static_cast<int32>(default_graph::RESOURCES[0].Height)));
     CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == 0);
+    // The default's targets follow the drawable at 1/1, so the World image fills the viewport.
+    CHECK(default_graph::RESOURCES[0].ViewNumerator == 1);
+    CHECK(default_graph::RESOURCES[0].ViewDenominator == 1);
+    const QSize drawable(1000, 562);
+    workspace.GetPreviewOrNull()->SetReferenceSize(drawable);
+    CHECK(workspace.GetPreviewOrNull()->GetTargetSize() == drawable);
 }
 
 TEST_CASE("The editor's prebuilt engine default previews with no project files", "[editor][render-graph][preview]")

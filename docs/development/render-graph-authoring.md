@@ -329,8 +329,10 @@ The 100% preset uses 1/1. These controls edit the same nodes as the canvas;
 Undo/Redo while focused in this section uses render-graph history. When several
 RenderSize nodes share an OutputSize, editing that output changes all its consumers.
 
-An ordinary root renderer with one color Target can use **Enable resolution
-controls** to add the pair in one undo step. Fixed target dimensions are retained,
+The built-in default renderer already exposes one pair (`outputSize` at Viewport
+pixels, `renderSize` at 1/1), so its controls need no setup. An ordinary root
+renderer with one color Target can use **Enable resolution controls** to add the
+pair in one undo step. Fixed target dimensions are retained,
 as are existing fixed/view-relative RenderSize dimensions and scale. Matching
 fixed Targets (including depth) are wired to the new render provider. Custom or
 ambiguous layouts are left intact with a setup message; expose the desired pair
@@ -1616,8 +1618,13 @@ the editor uses it for any project that has no graph of its own.
    from the **Window** menu (or a render graph in Project Explorer). If the project has
    no `graphs/Main/main.lurender.json`, the document shows the **Engine default
    renderer**. This is the static opaque `RendererStatic` graph: Scene and Camera feed
-   `RasterizeGraph` into 640×360 color and depth targets, and the color target is
-   exported. Its sources live in
+   `RasterizeGraph` into color and depth targets, and the color target is exported.
+   Both targets follow an **OutputSize → Viewport pixels** provider through a
+   **RenderSize** at 1/1, so the default renders at the drawable's physical pixel
+   size and resizes with it. Change the output or render scale in
+   **Project Settings → Rendering resolution** (see
+   [Output and render resolution](#output-and-render-resolution)); the first edit
+   turns the default into a project draft like any other edit. Its sources live in
    [`modules/graphics/renderer/render_graphs/default`](../../modules/graphics/renderer/render_graphs/default/main.lurender.json).
    The SDK installs a read-only copy to `share/Ludus/render-graphs/default`, and
    the editor embeds the same copy. Showing the default writes nothing to the
@@ -1718,10 +1725,11 @@ Limits:
 - This World integration is native-only. Browser authoring retains its existing viewport;
   it has no local shader compiler or native runtime-graph preview.
 - The current runtime profile and CPU interface identity restrictions below still apply.
-  The default uses 640×360 targets. Target extents come from the graph; resizing the World
-  widget scales a fixed output and preserves its aspect ratio. Connect its targets to a
-  view-relative RenderSize to resize their resource instances with the drawable view;
-  neither path rewrites project data.
+  Target extents come from the graph. The default's targets follow the viewport's
+  OutputSize, so resizing the World widget resizes their resource instances with the
+  drawable view and the image fills the viewport. A graph with fixed extents (for example
+  after choosing **Fixed resolution**) keeps its size; resizing the widget scales that
+  output and preserves its aspect ratio. Neither path rewrites project data.
 - On macOS Metal and shared-device Linux Vulkan, exported color output is copied on the GPU into
   three bounded display slots and sampled directly by Qt Quick. Native read leases retain
   each slot through Qt submission and consumer completion; graph activation and resize do
