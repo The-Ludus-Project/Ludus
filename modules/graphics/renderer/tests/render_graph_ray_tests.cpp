@@ -1680,6 +1680,34 @@ TEST_CASE("OIDN presents stable accumulation after sampling stops", "[render-gra
     CHECK(fixture.Graph.HasPendingSamples() == true);
 }
 
+TEST_CASE("Builds without OIDN reject denoising at setup, not at scene preparation", "[render-graph][gpu][denoising]")
+{
+    if (renderer::IsDenoisingAvailable() == true)
+    {
+        SKIP("This build has a native OIDN adapter");
+    }
+    GraphGpuFixture fixture;
+    const renderer::RenderGraphPrograms programs =
+        packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                              shaders::renderer_composite::Fragment());
+    renderer::RenderGraphPlan plan = packages::rg2_scene_ray::MakePlan();
+    format::Pass operation = plan.Passes[0];
+    plan.Passes = {&operation, 1};
+    CHECK(renderer::RequiresDenoising(plan) == false);
+    operation.DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::Balanced);
+    CHECK(renderer::RequiresDenoising(plan) == true);
+    CHECK(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Unsupported);
+    // The rejected setup leaves the graph unstarted, so the same plan without denoising still starts.
+    operation.DenoisingQuality = 0;
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, programs);
+    const uint64 start = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - start < 30 * time::NANOSECONDS_PER_SECOND)
+    {
+        status = fixture.Graph.Poll();
+    }
+    CHECK(status == rhi::RasterStatus::Ready);
+}
+
 TEST_CASE("OIDN preserves scene material metadata and accepts material replacements", "[render-graph][gpu][denoising]")
 {
     if (renderer::internal::IsGpuDenoisingAvailable() == false)

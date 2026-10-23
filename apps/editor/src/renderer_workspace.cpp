@@ -214,6 +214,22 @@ QStringList GetChoices(const QString& field)
     return {};
 }
 
+/// Why this editor cannot run a Denoise node, or empty when it can. OIDN is an optional
+/// native build feature; browser editors never have it.
+QString GetDenoiseUnavailableMessage()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (graphics::renderer::IsDenoisingAvailable() == true)
+    {
+        return {};
+    }
+#endif
+    return QStringLiteral(
+        "This editor was built without the OIDN denoiser (LUDUS_ENABLE_OIDN=OFF), so a graph with "
+        "an enabled Denoise node cannot preview here. Disable or remove the node, or use an editor and SDK "
+        "built with denoising.");
+}
+
 /// Choices for a Subgraph reference: every other draft graph for `asset`, and the
 /// referenced graph's configurations for `configuration`. An authored value that is not a
 /// current choice (a missing file or configuration) stays listed, so the inspector shows
@@ -530,6 +546,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                               .arg(GetUpscaleLabel(algorithm)),
                           algorithm);
     }
+    // Graphs stay portable to OIDN builds, so Denoise remains authorable; this build says why it cannot preview it.
+    mNewKind->setItemData(mNewKind->findText(QStringLiteral("Denoise")),
+                          GetDenoiseUnavailableMessage(),
+                          Qt::ToolTipRole);
     mNewKind->setAccessibleName(QStringLiteral("New node type"));
     QPushButton* add = new QPushButton(QStringLiteral("Add Node"), mInspector);
     add->setObjectName(QStringLiteral("renderGraphAddNode"));
@@ -2251,6 +2271,14 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         availability->setWordWrap(true);
         outFields.addRow(availability);
     }
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Denoise") &&
+        GetDenoiseUnavailableMessage().isEmpty() == false)
+    {
+        QLabel* availability = new QLabel(GetDenoiseUnavailableMessage(), &inoutParent);
+        availability->setObjectName(QStringLiteral("renderGraphDenoiseAvailability"));
+        availability->setWordWrap(true);
+        outFields.addRow(availability);
+    }
     if (HasSceneBundle(node) == true)
     {
         QPushButton* expand = new QPushButton(QStringLiteral("Expand Scene Bundle"), &inoutParent);
@@ -3328,6 +3356,7 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         QAction* createNode =
             createNodes->addAction(kind == QStringLiteral("Subgraph") ? QStringLiteral("Subgraph Reference") : kind);
         createNode->setData(kind);
+        createNode->setToolTip(mNewKind->itemData(index, Qt::ToolTipRole).toString());
         connect(createNode, &QAction::triggered, this, [this, index]() {
             mNewKind->setCurrentIndex(index);
             addNode();

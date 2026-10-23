@@ -9,6 +9,7 @@
 #include <ludus/graphics/rhi/ray.h>
 
 #include "../shaders/renderer_gpu_preview_layout.h"
+#include "internal/gpu_denoiser.h"
 
 #include <cstring>
 #include <new>
@@ -1038,6 +1039,21 @@ bool RequiresHardwareRayTracing(const RenderGraphPlan& plan) noexcept
         }
     }
     return false;
+}
+bool RequiresDenoising(const RenderGraphPlan& plan) noexcept
+{
+    for (usize i = 0; i < plan.Passes.GetSize(); ++i)
+    {
+        if (plan.Passes[i].DenoisingQuality != 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+bool IsDenoisingAvailable() noexcept
+{
+    return internal::IsGpuDenoisingAvailable();
 }
 Status SelectRenderGraphRenderer(rhi::DeviceHandle device,
                                  RenderGraphPreference preference,
