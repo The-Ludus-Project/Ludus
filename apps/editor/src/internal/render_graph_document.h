@@ -207,6 +207,14 @@ public:
                                                                 const QString& configuration,
                                                                 QString& outError,
                                                                 const QString& parentConfiguration = {});
+    /// Apply restir-di, visibility-buffer or visibility-secondary-rays to a library configuration,
+    /// inserting a new library/Subgraph when file is the root. One undo step; no disk writes.
+    /// Existing nonempty configurations, shader sources and incompatible ABIs are preserved on failure.
+    [[nodiscard]] RenderGraphDocumentStatus ApplyConfigurationTemplate(const QString& file,
+                                                                       const QString& configuration,
+                                                                       const QString& templateIdentity,
+                                                                       QString& outError,
+                                                                       const QString& parentConfiguration = {});
     /// Add an empty named configuration to an existing file without changing its default.
     /// Unique ASCII identifiers are required. One undo step; failure preserves the draft.
     [[nodiscard]] RenderGraphDocumentStatus AddConfiguration(const QString& file, const QString& name);

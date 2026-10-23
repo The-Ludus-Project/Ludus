@@ -105,6 +105,10 @@ public:
     /// Includes settings, shaders and automatically sized reservoirs in one undoable draft;
     /// Save publishes. Failures preserve sources and display a repair. GUI thread only.
     [[nodiscard]] bool ApplyRestirTemplate(const QString& configuration);
+    /// Apply one built-in library template through the same undo/save path as the canvas picker.
+    /// templateIdentity selects restir-di, visibility-buffer or visibility-secondary-rays.
+    /// Failure preserves sources and reports a repair. GUI thread only; Save publishes.
+    [[nodiscard]] bool ApplyConfigurationTemplate(const QString& configuration, const QString& templateIdentity);
     /// Delete the selected configuration in one undo step and select the asset default.
     /// Last configurations, referenced configurations and source conflicts preserve the
     /// draft and report the repair in the status line. Save publishes; GUI thread only.
@@ -350,7 +354,7 @@ private:
     void syncTreeSelection();
     void syncCanvasSelection(const QStringList& nodes);
     void promptCreateConfiguration();
-    void promptRestirTemplate();
+    void promptConfigurationTemplate();
     void activateSelectedNode();
     void openSourceLine(const QString& file, foundation::int32 line);
     [[nodiscard]] QJsonObject getDiagnosticLocation(foundation::int32 row) const;

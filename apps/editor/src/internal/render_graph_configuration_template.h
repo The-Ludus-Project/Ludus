@@ -22,4 +22,24 @@ namespace ludus::editor
                                                               const QString& parentConfiguration,
                                                               const QString& packageRoot,
                                                               QString& outError);
+/// Prepare visibility-buffer or visibility-secondary-rays in an absent/empty library configuration.
+/// Caller owns/discards the snapshot; compatible RendererStatic fields are extended, authored shader
+/// bytes are preserved, and ABI/source/budget conflicts report a repair. GUI thread; no disk writes.
+[[nodiscard]] RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
+                                                                       const QString& rootGraph,
+                                                                       const QString& file,
+                                                                       const QString& configuration,
+                                                                       const QString& templateIdentity,
+                                                                       QString& outError);
+/// Prepare a built-in configuration, inserting a library/Subgraph when selected on the root canvas.
+/// Supports restir-di, visibility-buffer and visibility-secondary-rays. Same transaction contract
+/// as PrepareRestirTemplate; invalid identities and conflicts leave publication to the caller.
+[[nodiscard]] RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,
+                                                                     const QString& rootGraph,
+                                                                     const QString& file,
+                                                                     const QString& configuration,
+                                                                     const QString& parentConfiguration,
+                                                                     const QString& packageRoot,
+                                                                     const QString& templateIdentity,
+                                                                     QString& outError);
 } // namespace ludus::editor

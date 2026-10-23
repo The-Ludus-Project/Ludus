@@ -1041,9 +1041,25 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyRestirTemplate(const QString
                                                                    QString& outError,
                                                                    const QString& parentConfiguration)
 {
+    return ApplyConfigurationTemplate(file, configuration, QStringLiteral("restir-di"), outError, parentConfiguration);
+}
+// File, configuration and template identify distinct authoring records.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
+                                                                          const QString& configuration,
+                                                                          const QString& templateIdentity,
+                                                                          QString& outError,
+                                                                          const QString& parentConfiguration)
+{
     RenderGraphSnapshot candidate = mDraft;
-    const RenderGraphDocumentStatus prepared =
-        PrepareRestirTemplate(candidate, mRootGraph, file, configuration, parentConfiguration, mPackageRoot, outError);
+    const RenderGraphDocumentStatus prepared = PrepareConfigurationTemplate(candidate,
+                                                                            mRootGraph,
+                                                                            file,
+                                                                            configuration,
+                                                                            parentConfiguration,
+                                                                            mPackageRoot,
+                                                                            templateIdentity,
+                                                                            outError);
     if (prepared != RenderGraphDocumentStatus::Ok)
     {
         return prepared;

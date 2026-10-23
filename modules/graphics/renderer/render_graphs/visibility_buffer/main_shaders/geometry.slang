@@ -1,6 +1,6 @@
-RasterVarying TransformGeometry(RendererStatic input)
+VisibilityRasterVarying TransformGeometry(RendererStatic input)
 {
-    RasterVarying result;
+    VisibilityRasterVarying result;
     float4 positionMesh = float4(input.PositionMesh, 1);
     result.PositionClip = float4(dot(input.MeshToClipRow0, positionMesh),
                                  dot(input.MeshToClipRow1, positionMesh),
