@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPlainTextEdit>
+#include <QSignalSpy>
 #include <QTableWidget>
 
 using namespace ludus::editor;
@@ -70,4 +71,91 @@ TEST_CASE("structured validation batches produce one actionable Error List row p
     CHECK(entries.first().Location.contains(QStringLiteral("port depth")) == true);
     CHECK(result.GetDiagnostic(-1).isEmpty() == true);
     CHECK(result.GetDiagnostic(2).isEmpty() == true);
+}
+
+TEST_CASE("Error List shows details only for descriptions its row cannot show", "[editor][diagnostics]")
+{
+    ErrorList list;
+    list.resize(800, 200);
+    list.show();
+    const QPlainTextEdit* details = list.findChild<QPlainTextEdit*>(QStringLiteral("errorListDetails"));
+    REQUIRE(details != nullptr);
+    list.ReplaceEntries(ErrorListProducer::RenderGraph,
+                        {
+                        {
+                            .Severity = ErrorListSeverity::Message,
+                            .Producer = ErrorListProducer::RenderGraph,
+                            .Code = {},
+                            .Description = QStringLiteral("build succeeded for draft revision 2."),
+                            .File = {},
+                            .Location = {},
+                            .Origin = QStringLiteral("Render graph"),
+                            .SourceIndex = 0,
+                        }});
+    QCoreApplication::processEvents();
+    CHECK(details->isVisible() == false);
+    list.ReplaceEntries(ErrorListProducer::RenderGraph,
+                        {
+                        {
+                            .Severity = ErrorListSeverity::Error,
+                            .Producer = ErrorListProducer::RenderGraph,
+                            .Code = QStringLiteral("RenderGraphTypeMismatch"),
+                            .Description = QStringLiteral("wrong input type\nrepair: Connect a depth target."),
+                            .File = {},
+                            .Location = {},
+                            .Origin = QStringLiteral("Render graph"),
+                            .SourceIndex = 0,
+                        }});
+    QCoreApplication::processEvents();
+    CHECK(details->isVisible() == true);
+    // A single line wider than its column is elided in the row, so the pane shows all of it.
+    list.ReplaceEntries(ErrorListProducer::RenderGraph,
+                        {
+                        {
+                            .Severity = ErrorListSeverity::Warning,
+                            .Producer = ErrorListProducer::RenderGraph,
+                            .Code = {},
+                            .Description = QString(400, QLatin1Char('w')),
+                            .File = {},
+                            .Location = {},
+                            .Origin = QStringLiteral("Shader"),
+                            .SourceIndex = 0,
+                        }});
+    QCoreApplication::processEvents();
+    CHECK(details->isVisible() == true);
+}
+
+TEST_CASE("Error List reports new errors and warnings once per changed result", "[editor][diagnostics]")
+{
+    ErrorList list;
+    QSignalSpy reported(&list, &ErrorList::ProblemsReported);
+    const ErrorListEntry message
+    {
+        .Severity = ErrorListSeverity::Message,
+        .Producer = ErrorListProducer::RenderGraph,
+        .Code = {},
+        .Description = QStringLiteral("validate succeeded for draft revision 1."),
+        .File = {},
+        .Location = {},
+        .Origin = QStringLiteral("Render graph"),
+        .SourceIndex = 0,
+    };
+    ErrorListEntry warning = message;
+    warning.Severity = ErrorListSeverity::Warning;
+    warning.Description = QStringLiteral("implicit truncation");
+    list.ReplaceEntries(ErrorListProducer::RenderGraph, {message});
+    CHECK(reported.count() == 0);
+    list.ReplaceEntries(ErrorListProducer::RenderGraph, {warning});
+    CHECK(reported.count() == 1);
+    // The same result again (a live preview rebuild) leaves a closed list closed.
+    list.ReplaceEntries(ErrorListProducer::RenderGraph, {warning});
+    CHECK(reported.count() == 1);
+    ErrorListEntry error = warning;
+    error.Severity = ErrorListSeverity::Error;
+    error.Producer = ErrorListProducer::Build;
+    list.ReplaceEntries(ErrorListProducer::Build, {error});
+    CHECK(reported.count() == 2);
+    list.ReplaceEntries(ErrorListProducer::Build, {});
+    CHECK(reported.count() == 2);
+    CHECK(list.GetEntries().size() == 1);
 }

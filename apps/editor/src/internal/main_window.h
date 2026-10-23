@@ -114,7 +114,21 @@ private:
     void InitializeWorkspace();
     void ResetWorkspaceLayout();
     void arrangeDefaultDocks();
+    /// Size the default arrangement for this window: side column width, Project Explorer and
+    /// Properties split, and the bottom group (closed on short windows).
     void applyDefaultDockSizes();
+    /// Default height of the bottom tool-window group for the current window height.
+    [[nodiscard]] foundation::int32 getDefaultBottomDockHeight() const;
+    /// Every tool window, in the default arrangement's order.
+    [[nodiscard]] QList<QDockWidget*> getToolWindows() const;
+    /// Focus Viewport: hide tool windows, toolbars and World chrome, or restore the exact
+    /// arrangement captured on entry (dock state and the previously active document).
+    void setViewportFocused(bool isFocused);
+    /// The arrangement to persist: the one Focus Viewport returns to while it is active.
+    [[nodiscard]] QByteArray getPersistentLayoutState() const;
+    /// Show and raise dock without focusing it; a reopened bottom tool window gets the default height.
+    void openToolWindow(QDockWidget* dock);
+    /// openToolWindow, then focus the tool window's content.
     void showToolWindow(QDockWidget* dock);
     void buildWindowMenu(QMenu* menu);
     void renderWindowDocuments(QMenu* menu);
@@ -125,6 +139,9 @@ private:
     void renderGraphCommands();
     void showOptions();
     void renderGraphErrors();
+    /// Show and raise the Error List for newly reported errors or warnings, without taking
+    /// focus. Under Focus Viewport only the status bar announces them.
+    void revealErrorList();
     void setupProfiling();
     void renderBuildErrors();
     void SaveWorkspaceLayout() const;
@@ -212,6 +229,12 @@ private:
     QAction* mOptionsAction;
     QAction* mProjectSettingsAction;
     QAction* mResetLayoutAction;
+    QAction* mFocusViewportAction;
+    /// Main-window state captured when Focus Viewport started; empty otherwise.
+    QByteArray mFocusRestoreState;
+    /// Document that was active when Focus Viewport started; reactivated on exit.
+    QWidget* mFocusRestoreDocumentOrNull = nullptr;
+    bool mIsViewportFocused = false;
     QToolBar* GameToolbar_ = nullptr;
     // Build output is parsed for the Error List after it stops changing briefly.
     QTimer mBuildErrorsTimer;
@@ -223,6 +246,8 @@ private:
     QLabel* mSetupNoticeTextOrNull = nullptr;
     QPushButton* mSetupNoticeRepairOrNull = nullptr;
     QPushButton* mSetupNoticeCheckOrNull = nullptr;
+    /// Setup problem whose notice the user dismissed; a different problem shows it again.
+    QString mDismissedSetupProblem;
 
     // Project lifecycle presentation; controller actions own all operations.
     QLabel* ProjectIdentity_ = nullptr;

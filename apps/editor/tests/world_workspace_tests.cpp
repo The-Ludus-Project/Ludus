@@ -31,12 +31,14 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QRect>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
 #include <catch2/catch_test_macros.hpp>
 
 #include <ludus/platform/entropy.h>
@@ -466,6 +468,37 @@ TEST_CASE("World layout remains usable in a compact desktop window", "[editor][w
         }
     }
     CHECK(view.findChild<QPushButton*>(QStringLiteral("worldApply"))->geometry().bottom() <= view.height());
+    // Commands sit in rows instead of full-width stacks: the file commands beside the path,
+    // the entity commands under the hierarchy, Apply beside Reset, Add Component beside its choice.
+    const auto isSameRow = [&view](const char* first, const char* second) {
+        QWidget* firstOrNull = view.findChild<QWidget*>(QString::fromLatin1(first));
+        QWidget* secondOrNull = view.findChild<QWidget*>(QString::fromLatin1(second));
+        REQUIRE(firstOrNull != nullptr);
+        REQUIRE(secondOrNull != nullptr);
+        const QRect firstRect(firstOrNull->mapTo(&view, QPoint(0, 0)), firstOrNull->size());
+        const QRect secondRect(secondOrNull->mapTo(&view, QPoint(0, 0)), secondOrNull->size());
+        return firstRect.top() < secondRect.bottom() && secondRect.top() < firstRect.bottom();
+    };
+    CHECK(isSameRow("worldNew", "worldOpen") == true);
+    CHECK(isSameRow("worldNew", "worldImportScene") == true);
+    CHECK(isSameRow("worldNew", "worldPath") == true);
+    CHECK(isSameRow("worldAdd", "worldDuplicate") == true);
+    CHECK(isSameRow("worldAdd", "worldDelete") == true);
+    CHECK(isSameRow("worldApply", "worldReset") == true);
+    CHECK(isSameRow("worldAttach", "worldComponentChoice") == true);
+    CHECK(isSameRow("worldPreview3D", "worldPreviewDetails") == true);
+    QLabel* pathLabel = view.findChild<QLabel*>(QStringLiteral("worldPath"));
+    REQUIRE(pathLabel != nullptr);
+    CHECK(pathLabel->text() == QStringLiteral("authoring/starter.world.json"));
+    CHECK(pathLabel->toolTip().contains(QDir::toNativeSeparators(path)) == true);
+    CHECK(pathLabel->wordWrap() == false);
+    // Restore Recovery appears only while a recovery file exists.
+    CHECK(view.findChild<QPushButton*>(QStringLiteral("worldRecover"))->isHidden() == true);
+    // The navigation hint is a tooltip button on the viewport's controls row, not a line of its own.
+    QToolButton* hint = view.findChild<QToolButton*>(QStringLiteral("viewportNavigationHint"));
+    REQUIRE(hint != nullptr);
+    CHECK(hint->toolTip().contains(QStringLiteral("orbit")) == true);
+    CHECK(isSameRow("viewportNavigationHint", "viewportShading") == true);
     // A long entity name plus persisted UUID must not widen the inspector.
     auto* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
     list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);

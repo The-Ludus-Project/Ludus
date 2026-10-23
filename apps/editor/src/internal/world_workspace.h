@@ -143,6 +143,18 @@ public:
     /// editing this workspace's draft; this workspace keeps owning its state. Call once.
     /// @return The moved panel; it lives as long as newParent keeps it.
     [[nodiscard]] QWidget* TakePropertiesPanel(QWidget* newParent);
+    /// Show or hide everything around the viewport: the file and render controls above it,
+    /// the entity hierarchy beside it, the status line below it, and the inspector while it
+    /// is still in this view. The viewports are never hidden, reparented or recreated, so
+    /// their native surfaces only resize. Showing again restores the splitter sizes that
+    /// were in place when the chrome was hidden. Visibility each control derives from the
+    /// document (import preview, Play, scene cancellation) is unaffected.
+    void SetChromeVisible(bool isVisible);
+    /// False while SetChromeVisible(false) is in effect.
+    [[nodiscard]] bool IsChromeVisible() const noexcept
+    {
+        return mIsChromeVisible;
+    }
     /// Replace the entropy source that mints World, entity and scene-level IDs,
     /// including the embedded 3D level workspace's. Production keeps
     /// platform::GetSystemEntropySource(); tests inject a controlled or failing source.
@@ -178,6 +190,13 @@ private:
     RenderPreview* mShownRenderPreviewOrNull = nullptr;
     /// Entity inspector column; TakePropertiesPanel moves it into a shell tool window.
     QWidget* mPropertiesPanel;
+    /// File, import and render controls above the viewport; SetChromeVisible hides it.
+    QWidget* mHeader;
+    /// Entity hierarchy column of the splitter; SetChromeVisible hides it.
+    QWidget* mHierarchy;
+    /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
+    QByteArray mSplitterStateBeforeChromeHidden;
+    bool mIsChromeVisible = true;
     WorldDocument Document_;
     foundation::identity::EntropySource mEntropy = platform::GetSystemEntropySource();
     QPushButton* PlayButton_ = nullptr;

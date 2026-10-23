@@ -65,6 +65,7 @@ void UpdateWorkspaceStyle(QWidget* widget)
             "QToolButton:hover, QToolButton:checked { background: palette(button); } "
             "QPushButton { background: palette(button); color: palette(button-text); border: 1px solid palette(mid); "
             "border-radius: 4px; padding: 5px 12px; } "
+            "QPushButton[density=compact] { padding: 2px 8px; } "
             "QPushButton:hover:enabled { border-color: %1; } "
             "QPushButton:pressed, QPushButton:checked { background: palette(highlight); } "
             "QPushButton[visualRole=primary]:enabled, QPushButton:default:enabled { background: %1; color: %2; "

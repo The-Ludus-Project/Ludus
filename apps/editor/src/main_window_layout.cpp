@@ -46,6 +46,7 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QSize>
 #include <QSizePolicy>
 #include <QStackedWidget>
@@ -54,6 +55,7 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QWidget>
@@ -77,6 +79,9 @@ constexpr foundation::int32 MAX_SIDE_DOCK_PIXELS = 420;
 constexpr foundation::int32 BOTTOM_DOCK_PERCENT = 27;
 constexpr foundation::int32 MIN_BOTTOM_DOCK_PIXELS = 160;
 constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 300;
+// Below this window height (a 13-inch laptop at its default scale) the bottom group starts
+// closed so the documents keep their height; new errors or warnings open it again.
+constexpr foundation::int32 SHORT_WINDOW_HEIGHT_PIXELS = 1000;
 // Project Explorer's share of the right column; Properties gets the rest.
 constexpr foundation::int32 EXPLORER_SHARE_PERCENT = 40;
 constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = 8;
@@ -93,10 +98,14 @@ void MainWindow::BuildUi()
     mSetupNoticeOrNull->setFloatable(false);
     QWidget* notice = new QWidget(mSetupNoticeOrNull);
     notice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    // One compact line: the problem, its two commands and a dismiss button. The full
+    // explanation is the text's tooltip; the status bar keeps reporting setup state.
     QHBoxLayout* noticeLayout = new QHBoxLayout(notice);
+    noticeLayout->setContentsMargins(0, 0, 0, 0);
     mSetupNoticeTextOrNull = new QLabel(notice);
     mSetupNoticeTextOrNull->setObjectName(QStringLiteral("projectSetupNoticeText"));
     mSetupNoticeTextOrNull->setTextFormat(Qt::PlainText);
+    mSetupNoticeTextOrNull->setWordWrap(false);
     mSetupNoticeTextOrNull->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     noticeLayout->addWidget(mSetupNoticeTextOrNull, 1);
     mSetupNoticeRepairOrNull = new QPushButton(QStringLiteral("Repair setup…"), notice);
@@ -105,12 +114,24 @@ void MainWindow::BuildUi()
     mSetupNoticeCheckOrNull = new QPushButton(QStringLiteral("Check again"), notice);
     mSetupNoticeCheckOrNull->setObjectName(QStringLiteral("projectSetupNoticeCheck"));
     noticeLayout->addWidget(mSetupNoticeCheckOrNull);
+    QToolButton* dismiss = new QToolButton(notice);
+    dismiss->setObjectName(QStringLiteral("projectSetupNoticeDismiss"));
+    dismiss->setText(QStringLiteral("✕"));
+    dismiss->setAutoRaise(true);
+    dismiss->setAccessibleName(QStringLiteral("Dismiss setup notice"));
+    dismiss->setToolTip(QStringLiteral("Hide this notice until the setup problem changes. Project > Repair Project "
+                                       "Setup… stays available."));
+    noticeLayout->addWidget(dismiss);
     mSetupNoticeOrNull->addWidget(notice);
     addToolBar(mSetupNoticeOrNull);
     addToolBarBreak();
     mSetupNoticeOrNull->hide();
     connect(mSetupNoticeRepairOrNull, &QPushButton::clicked, this, [this]() { SetupProjectAction_->trigger(); });
     connect(mSetupNoticeCheckOrNull, &QPushButton::clicked, this, [this]() { CheckSetupAction_->trigger(); });
+    connect(dismiss, &QToolButton::clicked, this, [this]() {
+        mDismissedSetupProblem = Controller_->State().SetupProblem;
+        RenderStatus();
+    });
 
     // Visual Studio layout: documents in the central well; tool windows dock around it.
     // The right dock area owns both right corners, so Project Explorer and Properties run
@@ -550,17 +571,7 @@ void MainWindow::arrangeDefaultDocks()
     // Right: Project Explorer (with Content and Render Preview) above Properties (with Live
     // Inspector), so a node's properties stay visible beside its preview. Bottom, under the
     // documents: Error List with Output and Timing.
-    const QList<QDockWidget*> docks{
-        mProjectExplorerDock,
-        mContentDock,
-        mRenderPreviewDock,
-        mPropertiesDock,
-        InspectorDock_,
-        mErrorListDock,
-        OutputDock_,
-        TimingDock_,
-        mProfilingDock,
-    };
+    const QList<QDockWidget*> docks = getToolWindows();
     for (QDockWidget* dock : docks)
     {
         dock->setFloating(false);
@@ -584,20 +595,101 @@ void MainWindow::arrangeDefaultDocks()
     mErrorListDock->raise();
 }
 
+QList<QDockWidget*> MainWindow::getToolWindows() const
+{
+    const QList<QDockWidget*> docks{
+        mProjectExplorerDock,
+        mContentDock,
+        mRenderPreviewDock,
+        mPropertiesDock,
+        InspectorDock_,
+        mErrorListDock,
+        OutputDock_,
+        TimingDock_,
+        mProfilingDock,
+    };
+    return docks;
+}
+
+void MainWindow::setViewportFocused(bool isFocused)
+{
+    {
+        const QSignalBlocker blocker(mFocusViewportAction);
+        mFocusViewportAction->setChecked(isFocused);
+    }
+    if (isFocused == mIsViewportFocused)
+    {
+        return;
+    }
+    if (isFocused == true)
+    {
+        // Captured before anything is hidden, so leaving restores docks, tabs, sizes and toolbars.
+        mFocusRestoreState = saveState(LAYOUT_VERSION);
+        mFocusRestoreDocumentOrNull = mDocuments->GetActiveDocumentOrNull();
+        mIsViewportFocused = true;
+        for (QDockWidget* dock : getToolWindows())
+        {
+            dock->hide();
+        }
+        for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar, mSetupNoticeOrNull})
+        {
+            toolbar->hide();
+        }
+        // The viewport widgets stay where they are; only their neighbours hide, so the
+        // native surface resizes instead of being recreated.
+        World_->SetChromeVisible(false);
+        static_cast<void>(mDocuments->OpenDocument(World_));
+        return;
+    }
+    mIsViewportFocused = false;
+    World_->SetChromeVisible(true);
+    if (restoreState(mFocusRestoreState, LAYOUT_VERSION) == false)
+    {
+        LUDUS_LOG_TEXT(LOG_EDITOR_LAYOUT, Warning, "Could not restore the layout from before Focus Viewport.");
+    }
+    mFocusRestoreState.clear();
+    QWidget* previousOrNull = mFocusRestoreDocumentOrNull;
+    mFocusRestoreDocumentOrNull = nullptr;
+    if (previousOrNull != nullptr && mDocuments->IsDocumentAvailable(previousOrNull) == true)
+    {
+        static_cast<void>(mDocuments->OpenDocument(previousOrNull));
+    }
+    // The setup notice follows project state, not the restored toolbar visibility.
+    RenderStatus();
+}
+
+QByteArray MainWindow::getPersistentLayoutState() const
+{
+    return mIsViewportFocused == true ? mFocusRestoreState : saveState(LAYOUT_VERSION);
+}
+
+foundation::int32 MainWindow::getDefaultBottomDockHeight() const
+{
+    return qBound(MIN_BOTTOM_DOCK_PIXELS, height() * BOTTOM_DOCK_PERCENT / PERCENT, MAX_BOTTOM_DOCK_PIXELS);
+}
+
 void MainWindow::applyDefaultDockSizes()
 {
     const foundation::int32 side =
         qBound(MIN_SIDE_DOCK_PIXELS, width() * SIDE_DOCK_PERCENT / PERCENT, MAX_SIDE_DOCK_PIXELS);
-    const foundation::int32 bottom =
-        qBound(MIN_BOTTOM_DOCK_PIXELS, height() * BOTTOM_DOCK_PERCENT / PERCENT, MAX_BOTTOM_DOCK_PIXELS);
+    const bool isShortWindow = height() < SHORT_WINDOW_HEIGHT_PIXELS;
+    for (QDockWidget* dock : {mErrorListDock, OutputDock_, TimingDock_, mProfilingDock})
+    {
+        dock->setVisible(isShortWindow == false);
+    }
     resizeDocks({mProjectExplorerDock}, {side}, Qt::Horizontal);
-    resizeDocks({mErrorListDock}, {bottom}, Qt::Vertical);
+    if (isShortWindow == false)
+    {
+        mErrorListDock->raise();
+        resizeDocks({mErrorListDock}, {getDefaultBottomDockHeight()}, Qt::Vertical);
+    }
     const foundation::int32 explorer = height() * EXPLORER_SHARE_PERCENT / PERCENT;
     resizeDocks({mProjectExplorerDock, mPropertiesDock}, {explorer, height() - explorer}, Qt::Vertical);
 }
 
 void MainWindow::ResetWorkspaceLayout()
 {
+    setViewportFocused(false);
     (void)restoreState(DefaultLayout_, LAYOUT_VERSION);
     // Also recover panes that were floating, closed or moved when the user requested reset.
     arrangeDefaultDocks();
@@ -706,10 +798,21 @@ void MainWindow::renderWindowDocuments(QMenu* menu)
     }
 }
 
-void MainWindow::showToolWindow(QDockWidget* dock)
+void MainWindow::openToolWindow(QDockWidget* dock)
 {
+    const bool wasHidden = dock->isHidden();
     dock->show();
     dock->raise();
+    if (wasHidden == true && dockWidgetArea(dock) == Qt::BottomDockWidgetArea)
+    {
+        // A short window starts with the bottom group closed; open it at the default height.
+        resizeDocks({dock}, {getDefaultBottomDockHeight()}, Qt::Vertical);
+    }
+}
+
+void MainWindow::showToolWindow(QDockWidget* dock)
+{
+    openToolWindow(dock);
     dock->widget()->setFocus(Qt::ShortcutFocusReason);
 }
 
@@ -720,7 +823,7 @@ void MainWindow::SaveWorkspaceLayout() const
     {
         return;
     }
-    const auto state = saveState(LAYOUT_VERSION);
+    const QByteArray state = getPersistentLayoutState();
     const auto geometry = saveGeometry();
     if (state.size() > MAX_STATE_BYTES || geometry.size() > 4096 ||
         QDir().mkpath(QFileInfo(WorkspaceSettingsFile_).absolutePath()) == false)
@@ -755,7 +858,7 @@ void MainWindow::SaveProjectWorkspace() const
     QJsonObject object{{QStringLiteral("version"), LAYOUT_VERSION},
                        {QStringLiteral("qtVersion"), QString::fromLatin1(qVersion())},
                        {QStringLiteral("root"), ProjectLayoutRoot_},
-                       {QStringLiteral("state"), QString::fromLatin1(saveState(LAYOUT_VERSION).toBase64())},
+                       {QStringLiteral("state"), QString::fromLatin1(getPersistentLayoutState().toBase64())},
                        {QStringLiteral("documents"), mDocuments->SaveState()},
                        {QStringLiteral("world"), World_->Session()}};
     const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
@@ -785,6 +888,8 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     {
         return;
     }
+    // A project's saved arrangement replaces whatever Focus Viewport would have returned to.
+    setViewportFocused(false);
     const auto key = QCryptographicHash::hash(canonical.toUtf8(), QCryptographicHash::Sha256).toHex();
     QFile file(QFileInfo(WorkspaceSettingsFile_).absolutePath() + QStringLiteral("/projects/") +
                QString::fromLatin1(key) + QStringLiteral(".json"));
