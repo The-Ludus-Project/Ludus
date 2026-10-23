@@ -4,6 +4,9 @@
 
 namespace ludus::editor
 {
+/// Upgrade unchanged engine-default manifest budgets to the selected template's budgets.
+/// Custom limits are retained. Returns false when embedded defaults are unavailable; no disk writes.
+[[nodiscard]] bool UpgradeDefaultTemplateBudgets(QJsonObject& inoutManifest, const QJsonObject& source);
 /// Prepare a reusable ReSTIR configuration and its shader/manifest closure in an unpublished snapshot.
 /// The destination must be absent or empty. Existing shader bytes, configurations and setting values
 /// are retained; incompatible shared ray interfaces fail with a repair message. GUI thread, no disk writes.

@@ -111,6 +111,23 @@ class RayPipelineTests(unittest.TestCase):
         snapshot.load('closest.slang')
         self.assertEqual([engine], ray.capture_program_closure(image, snapshot, build))
 
+    def test_visibility_and_ordinary_configurations_keep_separate_callback_profiles(self):
+        visibility = graph.compile_graph(ROOT / 'tests/sdk_consumer/rg2/visibility/main.lurender.json')
+        ordinary = self.compile()
+        ordinary['configuration'] = 'Ordinary'
+        technique = {'scene_interface': {'version': 1, 'visibility_buffer': True}}
+        profiles = ray.group_profiles([ordinary, visibility], technique, build)
+        self.assertEqual([False, True], [profile['visibility_buffer'] for profile in profiles])
+        self.assertEqual([ray.COMPUTE_ID, ray.VISIBILITY_COMPUTE_ID], [profile['compute'] for profile in profiles])
+        self.assertTrue(all(not profile['persistent'] for profile in profiles))
+        self.assertEqual([ray.program_tuple(ordinary['passes'][0]['pipeline'])], profiles[0]['variants'])
+        with self.assertRaisesRegex(ToolingError, 'visibility_buffer'):
+            ray.group_profiles([visibility], {'scene_interface': {}}, build)
+        mixed = deepcopy(visibility)
+        mixed['passes'].extend(ordinary['passes'])
+        with self.assertRaisesRegex(ToolingError, 'separate configurations'):
+            ray.group_profiles([mixed], technique, build)
+
     def test_visibility_fixture_retains_raster_and_reads_matching_versions(self):
         source = ROOT / 'tests/sdk_consumer/rg2/visibility/main.lurender.json'
         plan = graph.compile_graph(source)
@@ -461,6 +478,74 @@ class RayPipelineTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
                      'set LUDUS_RG1_SLANG, LUDUS_RG1_HELPER and LUDUS_RG1_CROSS for native ray compiler acceptance')
 class RayCompilerAcceptance(unittest.TestCase):
+    def test_visibility_and_ordinary_configurations_compile_and_cook_independently(self):
+        from ludus_tools import render_graph_templates as templates, render_graph_execution as execution
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'mixed'
+            source.mkdir()
+            for relative, contents in templates.template_files('visibility-secondary-rays', ('metal', 'wgsl'), graph).items():
+                path = source / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents)
+            manifest = source / 'main.lushader.json'
+            value = json.loads(manifest.read_text())
+            legacy = json.loads((FIXTURE / 'main.lushader.json.in').read_text()
+                                .replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+            for program in legacy['programs']:
+                if program['stage'] not in ray.STAGES:
+                    continue
+                program['id'] = 'Ordinary' + program['id']
+                original = program['source']
+                program['source'] = 'ordinary/' + original
+                path = source / program['source']
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((FIXTURE / original).read_bytes())
+                value['programs'].append(program)
+            # Comments and extra payload fields must survive and work with both sets of callbacks.
+            payload = source / 'main_shaders/payload.slang'
+            payload.write_text('#pragma once\n// Authored payload.\nstruct ScenePayload { float3 Radiance; uint BounceCount; };\n')
+            manifest.write_text(json.dumps(value))
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            ordinary = deepcopy(document['configurations'][0])
+            ordinary['id'] = 'Ordinary'
+            legacy_graph = json.loads((FIXTURE / 'main.lurender.json').read_text())
+            trace = next(node for node in legacy_graph['configurations'][0]['nodes'] if node['kind'] == 'RayTracingPipeline')
+            trace['id'] = 'transport'
+            trace['invocation']['dimensions'] = 'ColorTarget'
+            for shader in trace['shaders']:
+                shader['program'] = 'Ordinary' + shader['program']
+            ordinary['nodes'] = [trace if node['id'] == 'transport' else node for node in ordinary['nodes']
+                                 if node['id'] not in ('visibilityOutput', 'depthOutput')]
+            ordinary['edges'] = [edge for edge in ordinary['edges']
+                                 if edge['to'].split('.')[0] not in ('visibilityOutput', 'depthOutput')]
+            document['configurations'].append(ordinary)
+            graph_path.write_text(json.dumps(document))
+            original = {path.relative_to(source): path.read_bytes() for path in source.rglob('*') if path.is_file()}
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            result = build.build_package(manifest, root / 'build', **options)
+            package = build.verify_package(Path(result['package']))
+            self.assertEqual({False, True}, {recipe['visibility_buffer'] for recipe in package['recipes']
+                                            if recipe['technique'] == ray.TECHNIQUE})
+            for configuration, has_visibility in (('Default', True), ('Ordinary', False)):
+                with self.subTest(configuration=configuration):
+                    contents = execution._runtime_contents(Path(result['package']), configuration)
+                    self.assertEqual(has_visibility, contents['visibility_buffer'])
+                    self.assertFalse(contents['persistent_buffers'])
+                    self.assertEqual(0, next(record['RayProgram'] for record in contents['passes']
+                                             if record['Program'] == 'RayTracing'))
+                    compute = next(artifact for (name, stage, target), artifact in contents['artifacts'].items()
+                                   if name == 'RayTracing' and stage == 'compute')
+                    bindings = {entry['binding'] for entry in compute['descriptor']['interface']['entries']}
+                    self.assertEqual(has_visibility, ray.VISIBILITY_SLOT in bindings)
+                    execution.cook_runtime(Path(result['package']), root / (configuration + '.lurgrt'), configuration=configuration)
+                    execution.emit_runtime(Path(result['package']), root / (configuration + '.h'), configuration=configuration, name=configuration)
+            warm = build.build_package(manifest, root / 'build', **options)
+            self.assertEqual(0, warm['cache_misses'])
+            self.assertEqual(original, {path.relative_to(source): path.read_bytes() for path in source.rglob('*') if path.is_file()})
+
     def test_old_editor_bridge_with_replaced_unguarded_callback_compiles_without_rewriting_project(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -767,7 +852,8 @@ class OrderedRayTests(unittest.TestCase):
         self.assertEqual(execution.PACKAGE_VERSION, parsed['version'])
         self.assertEqual(3, len(parsed['passes']))
         self.assertEqual({0, 1, 2}, {record[10] for record in parsed['passes']})
-        self.assertEqual({(1, 2)}, {record[11:] for record in parsed['passes']})
+        self.assertEqual({(1, 2)}, {record[11:13] for record in parsed['passes']})
+        self.assertEqual({(execution.ABSENT, execution.ABSENT)}, {record[13:] for record in parsed['passes']})
         self.assertIn(execution.PERSISTENT_RAY_STAGE_ROLE, {stage['role'] for stage in parsed['stages']})
         header = self.root / 'ordered.h'
         execution.emit_runtime(result['package'], header)

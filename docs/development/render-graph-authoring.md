@@ -1005,12 +1005,17 @@ Applying a template adds its graph, shader sources, compatible identity attribut
 and manifest records in one undo step. **Save** publishes the complete edit.
 Ordinary raster shader bytes are retained; the shared `RendererStatic` schema gains
 its two visibility attributes, and a separate flat varying/graphics technique
-keeps visibility shaders distinct. Secondary rays require a native profile and a
-visibility-compatible shared ray interface with the starter's `ScenePayload`
-definition and at least one surface query. An incompatible ray ABI, changed
-reserved shader/schema, source collision or exceeded budget preserves the draft
-and reports a repair. The same canonical libraries back the New Render Graph
-starters and are included in installed SDK packages.
+keeps visibility shaders distinct. Unchanged engine-default authoring budgets
+expand to the template's budgets; custom limits remain authoritative. If a custom
+limit is too small, the error names the required count and manifest budget field.
+Secondary rays require a native profile. Existing ordinary ray configurations can
+share the package: their callbacks, payload source and query limits are retained.
+The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
+additional fields are accepted, with full payload validation at build time. An
+unsupported ray interface version, incompatible payload, changed reserved
+shader/schema or source collision reports the specific repair and preserves the
+draft. The same canonical libraries back the New Render Graph starters and are
+included in installed SDK packages.
 
 Choose either starter in **New Render Graph → Template**. The editor copies the
 complete editable graph, manifest and shaders into `graphs/<name>/` and opens it.
@@ -1095,8 +1100,14 @@ preceding opaque ColorAndDepth operation, using the same View and matching fixed
 or view-relative extents. Both producer aspects must Clear/Store. Its visibility
 shader pair has no authored uniform bindings. Masked/transmissive/deformed geometry,
 world-grid/overlay packets, multisampling and reverse/infinite depth remain outside
-this initial profile. A ray technique with the visibility ABI requires those
-paired inputs; a legacy ray technique does not acquire them implicitly.
+this initial profile. The technique flag enables visibility support for the
+package. Each configuration selects its ordinary or visibility shader bindings
+from its authored ray inputs; ordinary configurations keep their original
+resources. A configuration cannot mix ordinary and visibility ray invocations.
+The compiler keeps their callback dispatch tables and reflected resource layouts
+separate, and both runtime-package and generated-header paths select the matching
+profile. A visibility invocation requires the paired inputs; ordinary invocations
+do not acquire texture inputs implicitly.
 
 In raygen, reconstruct the surface before authoring secondary transport:
 

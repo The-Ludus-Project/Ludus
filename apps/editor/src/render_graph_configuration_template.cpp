@@ -32,35 +32,6 @@ QString GetProgramName(const QString& identity)
     return QStringLiteral("Restir") + identity;
 }
 
-bool UpgradeDefaultBudgets(QJsonObject& inoutManifest, const QJsonObject& source)
-{
-    QFile defaults(QStringLiteral(":/render-graph/default/main.lushader.json"));
-    if (defaults.open(QIODevice::ReadOnly) == false || defaults.size() > RenderGraphDocument::MAX_FILE_BYTES)
-    {
-        return false;
-    }
-    const QJsonObject defaultBudgets =
-        QJsonDocument::fromJson(defaults.readAll()).object().value(QStringLiteral("budgets")).toObject();
-    const QJsonObject templateBudgets = source.value(QStringLiteral("budgets")).toObject();
-    if (defaultBudgets.isEmpty() == true || templateBudgets.isEmpty() == true)
-    {
-        return false;
-    }
-    QJsonObject budgets = inoutManifest.value(QStringLiteral("budgets")).toObject();
-    for (QJsonObject::const_iterator field = templateBudgets.constBegin(); field != templateBudgets.constEnd(); ++field)
-    {
-        // Importing the larger built-in template upgrades only unchanged defaults.
-        // Custom admission limits remain authoritative, including tighter limits.
-        if (budgets.value(field.key()) == defaultBudgets.value(field.key()) &&
-            budgets.value(field.key()).toInt() < field.value().toInt())
-        {
-            budgets.insert(field.key(), field.value());
-        }
-    }
-    inoutManifest.insert(QStringLiteral("budgets"), budgets);
-    return true;
-}
-
 RenderGraphDocumentStatus MergeSettings(QJsonObject& inoutManifest, const QJsonArray& additions, QString& outError)
 {
     QJsonArray settings = inoutManifest.value(QStringLiteral("settings")).toArray();
@@ -227,6 +198,35 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
 }
 } // namespace
 
+bool UpgradeDefaultTemplateBudgets(QJsonObject& inoutManifest, const QJsonObject& source)
+{
+    QFile defaults(QStringLiteral(":/render-graph/default/main.lushader.json"));
+    if (defaults.open(QIODevice::ReadOnly) == false || defaults.size() > RenderGraphDocument::MAX_FILE_BYTES)
+    {
+        return false;
+    }
+    const QJsonObject defaultBudgets =
+        QJsonDocument::fromJson(defaults.readAll()).object().value(QStringLiteral("budgets")).toObject();
+    const QJsonObject templateBudgets = source.value(QStringLiteral("budgets")).toObject();
+    if (defaultBudgets.isEmpty() == true || templateBudgets.isEmpty() == true)
+    {
+        return false;
+    }
+    QJsonObject budgets = inoutManifest.value(QStringLiteral("budgets")).toObject();
+    for (QJsonObject::const_iterator field = templateBudgets.constBegin(); field != templateBudgets.constEnd(); ++field)
+    {
+        // Importing the larger built-in template upgrades only unchanged defaults.
+        // Custom admission limits remain authoritative, including tighter limits.
+        if (budgets.value(field.key()) == defaultBudgets.value(field.key()) &&
+            budgets.value(field.key()).toInt() < field.value().toInt())
+        {
+            budgets.insert(field.key(), field.value());
+        }
+    }
+    inoutManifest.insert(QStringLiteral("budgets"), budgets);
+    return true;
+}
+
 // File and configuration name distinct authored identities.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutSnapshot,
@@ -287,7 +287,8 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
                                    .toArray();
     QJsonObject record = library.isEmpty() == true ? QJsonObject{} : library.first().toObject();
     outError = QStringLiteral("ReSTIR template resources are unavailable; repair the editor installation.");
-    if (source.isEmpty() == true || record.isEmpty() == true || UpgradeDefaultBudgets(manifest, source) == false)
+    if (source.isEmpty() == true || record.isEmpty() == true ||
+        UpgradeDefaultTemplateBudgets(manifest, source) == false)
     {
         return RenderGraphDocumentStatus::NotFound;
     }
