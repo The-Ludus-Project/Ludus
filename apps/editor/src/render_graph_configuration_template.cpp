@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QSet>
 
 namespace ludus::editor
 {
@@ -17,9 +18,9 @@ const QString RESOURCE_ROOT = QStringLiteral(":/render-graph/templates/restir-di
 const QString SOURCE_ROOT = QStringLiteral("restir_di/");
 const QString RAY_TECHNIQUE = QStringLiteral("RendererTriangles.RayTracing");
 
-QByteArray ReadTemplate(const QString& file)
+QByteArray ReadTemplate(const QString& file, const QString& templateRoot)
 {
-    QFile source(RESOURCE_ROOT + file);
+    QFile source(QDir(templateRoot).filePath(file));
     if (source.open(QIODevice::ReadOnly) == false || source.size() > RenderGraphDocument::MAX_FILE_BYTES)
     {
         return {};
@@ -102,12 +103,13 @@ RenderGraphDocumentStatus MergeSettings(QJsonObject& inoutManifest, const QJsonA
     return RenderGraphDocumentStatus::Ok;
 }
 
-bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterface)
+bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterface, const QString& templateRoot)
 {
     const QString previous = inoutInterface.value(QStringLiteral("payload")).toString();
     const QString destination = SOURCE_ROOT + QStringLiteral("main_shaders/payload.slang");
-    QByteArray payload = previous.isEmpty() == true ? ReadTemplate(QStringLiteral("main_shaders/payload.slang"))
-                                                    : inoutSnapshot.Files.value(previous);
+    QByteArray payload = previous.isEmpty() == true
+                             ? ReadTemplate(QStringLiteral("main_shaders/payload.slang"), templateRoot)
+                             : inoutSnapshot.Files.value(previous);
     QString text = QString::fromUtf8(payload);
     // The build owns full payload grammar and byte-budget validation. Only extend a flat
     // existing payload; never rewrite a user's callback source or discard custom fields.
@@ -147,12 +149,70 @@ bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterfac
     return true;
 }
 
+// Capture the declared entry sources and their literal include closure. A directory
+// listing is not evidence that every required shader was packaged or copied.
+RenderGraphDocumentStatus CopyShaderSources(RenderGraphSnapshot& inoutSnapshot,
+                                            QStringList pending,
+                                            const QString& templateRoot,
+                                            QString& outError)
+{
+    QSet<QString> visited;
+    static const QRegularExpression INCLUDE(QStringLiteral("^\\s*#\\s*include\\s+\"([^\"]+)\""),
+                                            QRegularExpression::MultilineOption);
+    while (pending.isEmpty() == false)
+    {
+        const QString relative = QDir::cleanPath(pending.takeFirst());
+        if (relative.startsWith(QStringLiteral("../")) == true || QDir::isAbsolutePath(relative) == true)
+        {
+            outError =
+                QStringLiteral("ReSTIR template source '%1' must remain inside the template directory.").arg(relative);
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+        if (visited.contains(relative) == true)
+        {
+            continue;
+        }
+        visited.insert(relative);
+        const QByteArray bytes = ReadTemplate(relative, templateRoot);
+        const QString destination = SOURCE_ROOT + relative;
+        if (bytes.isEmpty() == true)
+        {
+            outError = QStringLiteral("ReSTIR template source '%1' is unavailable; repair the editor installation. The "
+                                      "draft was preserved.")
+                           .arg(relative);
+            return RenderGraphDocumentStatus::NotFound;
+        }
+        if (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes)
+        {
+            outError = QStringLiteral("Shader source '%1' already has different contents. Rename the conflicting "
+                                      "source before importing ReSTIR DI. The draft was preserved.")
+                           .arg(destination);
+            return RenderGraphDocumentStatus::Conflict;
+        }
+        if (inoutSnapshot.Files.contains(destination) == false &&
+            static_cast<usize>(inoutSnapshot.Files.size()) >= RenderGraphDocument::MAX_FILES)
+        {
+            outError = QStringLiteral("ReSTIR shader sources exceed the package file limit. The draft was preserved.");
+            return RenderGraphDocumentStatus::Capacity;
+        }
+        inoutSnapshot.Files.insert(destination, bytes);
+        QRegularExpressionMatchIterator includes = INCLUDE.globalMatch(QString::fromUtf8(bytes));
+        while (includes.hasNext() == true)
+        {
+            pending.append(QDir(QFileInfo(relative).path()).filePath(includes.next().captured(1)));
+        }
+    }
+    return RenderGraphDocumentStatus::Ok;
+}
+
 RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
                                         QJsonObject& inoutManifest,
                                         const QJsonObject& source,
+                                        const QString& templateRoot,
                                         QString& outError)
 {
     QJsonArray programs = inoutManifest.value(QStringLiteral("programs")).toArray();
+    QStringList sources;
     for (const QJsonValueConstRef value : source.value(QStringLiteral("programs")).toArray())
     {
         QJsonObject program = value.toObject();
@@ -162,6 +222,7 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
         {
             continue;
         }
+        sources.append(program.value(QStringLiteral("source")).toString());
         program.insert(QStringLiteral("id"), GetProgramName(program.value(QStringLiteral("id")).toString()));
         program.insert(QStringLiteral("source"), SOURCE_ROOT + program.value(QStringLiteral("source")).toString());
         bool hasProgram = false;
@@ -197,34 +258,9 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
         return RenderGraphDocumentStatus::Capacity;
     }
     inoutManifest.insert(QStringLiteral("programs"), programs);
-    const QDir directory(RESOURCE_ROOT + QStringLiteral("main_shaders"));
-    for (const QString& file : directory.entryList({QStringLiteral("*.slang")}, QDir::Files))
-    {
-        if (file == QStringLiteral("payload.slang") || file == QStringLiteral("geometry.slang") ||
-            file == QStringLiteral("color.slang") || file == QStringLiteral("depth.slang"))
-        {
-            continue;
-        }
-        const QString relative = QStringLiteral("main_shaders/") + file;
-        const QByteArray bytes = ReadTemplate(relative);
-        const QString destination = SOURCE_ROOT + relative;
-        if (bytes.isEmpty() == true)
-        {
-            outError = QStringLiteral("ReSTIR template source '%1' is unavailable; repair the editor installation.")
-                           .arg(relative);
-            return RenderGraphDocumentStatus::NotFound;
-        }
-        if (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes)
-        {
-            outError = QStringLiteral("Shader source '%1' already has different contents. Rename the conflicting "
-                                      "source before importing ReSTIR DI. The draft was preserved.")
-                           .arg(destination);
-            return RenderGraphDocumentStatus::Conflict;
-        }
-        inoutSnapshot.Files.insert(destination, bytes);
-    }
-    return RenderGraphDocumentStatus::Ok;
+    return CopyShaderSources(inoutSnapshot, sources, templateRoot, outError);
 }
+
 } // namespace
 
 // File and configuration name distinct authored identities.
@@ -233,8 +269,10 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
                                                      const QString& rootGraph,
                                                      const QString& file,
                                                      const QString& configuration,
-                                                     QString& outError)
+                                                     QString& outError,
+                                                     const QString& templateRoot)
 {
+    const QString sourceRoot = templateRoot.isEmpty() == true ? RESOURCE_ROOT : templateRoot;
     outError = QStringLiteral(
         "Select a new or empty configuration for the ReSTIR DI template. Existing contents are preserved.");
     static const QRegularExpression CONFIGURATION_IDENTIFIER(QStringLiteral("\\A[A-Za-z][A-Za-z0-9_-]{0,62}\\z"));
@@ -277,21 +315,23 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
-    QByteArray sourceBytes = ReadTemplate(QStringLiteral("main.lushader.json.in"));
+    QByteArray sourceBytes = ReadTemplate(QStringLiteral("main.lushader.json.in"), sourceRoot);
     sourceBytes.replace("@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@",
                         QJsonDocument(profiles).toJson(QJsonDocument::Compact));
     const QJsonObject source = QJsonDocument::fromJson(sourceBytes).object();
-    const QJsonArray library = QJsonDocument::fromJson(ReadTemplate(QStringLiteral("library.lurender.json")))
-                                   .object()
-                                   .value(QStringLiteral("configurations"))
-                                   .toArray();
+    const QJsonArray library =
+        QJsonDocument::fromJson(ReadTemplate(QStringLiteral("library.lurender.json"), sourceRoot))
+            .object()
+            .value(QStringLiteral("configurations"))
+            .toArray();
     QJsonObject record = library.isEmpty() == true ? QJsonObject{} : library.first().toObject();
     outError = QStringLiteral("ReSTIR template resources are unavailable; repair the editor installation.");
     if (source.isEmpty() == true || record.isEmpty() == true || UpgradeDefaultBudgets(manifest, source) == false)
     {
         return RenderGraphDocumentStatus::NotFound;
     }
-    const RenderGraphDocumentStatus programStatus = MergePrograms(inoutSnapshot, manifest, source, outError);
+    const RenderGraphDocumentStatus programStatus =
+        MergePrograms(inoutSnapshot, manifest, source, sourceRoot, outError);
     if (programStatus != RenderGraphDocumentStatus::Ok)
     {
         return programStatus;
@@ -334,7 +374,7 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
     if ((interface.contains(QStringLiteral("version")) == true &&
          interface.value(QStringLiteral("version")).toInt() != 1) ||
         interface.value(QStringLiteral("visibility_buffer")).toBool() == true ||
-        MergePayload(inoutSnapshot, interface) == false)
+        MergePayload(inoutSnapshot, interface, sourceRoot) == false)
     {
         return RenderGraphDocumentStatus::Conflict;
     }
