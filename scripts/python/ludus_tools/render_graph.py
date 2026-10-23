@@ -28,6 +28,7 @@ from . import render_graph_buffers as buffers
 from . import render_graph_scene as scene_bundle
 from . import render_graph_ray as ray
 from . import render_graph_upscale as upscale
+from . import render_graph_sizes as sizes
 
 MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
@@ -139,6 +140,9 @@ def _validate_extent(extent, where):
 def _validate_node(node, where):
     _require(type(node) is dict, "Schema", where, "node object required")
     kind = node.get("kind")
+    if kind in sizes.KINDS:
+        sizes.validate(node, where, sys.modules[__name__])
+        return
     if kind == 'Upscale':
         upscale.validate(node, where, sys.modules[__name__])
         return
@@ -148,7 +152,7 @@ def _validate_node(node, where):
     if kind in pipeline.KINDS:
         pipeline.validate(node, where, sys.modules[__name__])
         return
-    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "RenderSize", "Raster", "Accumulate", "ToneMap", "Subgraph", "Export", "Present"), where)
+    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "Raster", "Accumulate", "ToneMap", "Subgraph", "Export", "Present"), where)
     fields = {"id", "kind"}
     if kind == "Accumulate":
         fields.add("samples")
@@ -160,8 +164,6 @@ def _validate_node(node, where):
         fields |= ({"bytes_per_pixel", "extent"} if "bytes_per_pixel" in node else {"bytes"})
     elif kind == "Target":
         fields |= {"type", "format", "extent", "samples", "imported", "initialized", "presentation"}
-    elif kind == 'RenderSize':
-        fields.add('extent')
     elif kind == "Raster":
         fields |= {"mode", "vertex_layout", "material", "depth_load", "depth_store"}
         if node.get("mode") == "ColorAndDepth":
@@ -207,9 +209,6 @@ def _validate_node(node, where):
         _require(not node["presentation"] or
                  (node["imported"] and node["type"] == "ColorTexture"),
                  "TypeMismatch", where, "presentation requires an imported color target")
-    elif kind == 'RenderSize':
-        if node['extent'] != 'Texture':
-            _validate_size(node['extent'], where)
     elif kind == "Raster":
         _enum(node["mode"], MODES, where)
         _enum(node["vertex_layout"], ("RendererStatic",), where)
@@ -248,10 +247,10 @@ def _validate_document(value, where):
             _require(type(node) is dict, "Schema", location, "node object required")
             _require(value["version"] == 2 or node.get("kind") not in (*pipeline.KINDS, "StructuredBuffer", "Upscale"),
                      "Version", location, "pipeline, structured buffer and upscaling nodes require document version 2")
-            _require(value['version'] == 2 or (node.get('kind') != 'RenderSize' and node.get('extent') != 'RenderSize'),
+            _require(value['version'] == 2 or (node.get('kind') not in sizes.KINDS and node.get('extent') != 'RenderSize'),
                      'Version', location, 'shared render sizes require document version 2')
             _validate_node(node, location + "/" + str(node.get("id", "node"))
-                           if node.get("kind") in (*pipeline.KINDS, 'RenderSize', 'StructuredBuffer', 'Upscale') else location)
+                           if node.get("kind") in (*pipeline.KINDS, *sizes.KINDS, 'StructuredBuffer', 'Upscale') else location)
             _require(node["id"] not in nodes, "DuplicateIdentity", location, node["id"])
             nodes.add(node["id"])
         for edge in config["edges"]:
@@ -476,8 +475,8 @@ class _Library:
             return ({'size': 'RenderSize'} if 'bytes_per_pixel' in node else {}), {'buffer': 'Buffer'}
         if kind == "Target":
             return ({'size': 'RenderSize'} if node['extent'] == 'RenderSize' else {}), {"texture": node["type"]}
-        if kind == 'RenderSize':
-            return ({'texture': 'Texture'} if node['extent'] == 'Texture' else {}), {'size': 'RenderSize'}
+        if kind in sizes.KINDS:
+            return sizes.input_ports(node), {'size': 'RenderSize'}
         if kind == "Raster":
             inputs = {"scene": "Scene", "view": "View", "depth": "DepthTexture"}
             outputs = {"depth": "DepthTexture"}
@@ -773,23 +772,9 @@ class _Compiler:
                         self.resources[where]['view_scale'] = list(inputs['size'].scale)
                 self.latest[where] = 0
                 outputs["texture"] = _Value(node["type"], origin=where, resource=where, defined=node["initialized"])
-            elif kind == 'RenderSize':
-                extent = (self.resources[inputs['texture'].resource]['extent']
-                          if node['extent'] == 'Texture' else node['extent'])
-                scale = ()
-                if node['extent'] == 'Texture':
-                    scale = tuple(self.resources[inputs['texture'].resource].get('view_scale', ()))
-                elif type(extent) is dict:
-                    from math import gcd
-                    numerator, denominator = extent['scale']
-                    divisor = gcd(numerator, denominator)
-                    scale = (numerator // divisor, denominator // divisor)
-                    # Bounded nominal dimensions keep offline reports readable. They do not
-                    # constrain the caller's actual reference; runtime validates that instance.
-                    extent = [min(MAX_TARGET_EXTENT, max(1, (dimension * scale[0] + scale[1] - 1) // scale[1]))
-                              for dimension in (640, 480)]
-                    _validate_extent(extent, where)
-                outputs['size'] = _Value('RenderSize', origin=where, extent=tuple(extent), scale=scale)
+            elif kind in sizes.KINDS:
+                extent, scale = sizes.resolve(node, inputs, self.resources, where, sys.modules[__name__])
+                outputs['size'] = _Value('RenderSize', origin=where, extent=extent, scale=scale)
             elif kind == "Camera":
                 camera = {"id": where, "active": node["active"], "role": node["role"],
                           "target": inputs["target"].resource if "target" in inputs else None}

@@ -893,6 +893,41 @@ The PCH only ever mirrors `core.h` (never containers/strings/logging), and the
 default build (PCH off) is the guarantee that no file depends on a PCH-only
 symbol. See `cmake/EnginePch.cmake` and ADR 0007.
 
+### Editor precompiled headers
+
+The optional Qt editor (`apps/editor`) is the exception: its targets precompile
+stable Qt Core and standard library headers by default
+(`apps/editor/cmake/EditorPrecompiledHeaders.cmake`). Editor translation units
+spend most of their time parsing the same Qt headers, and the list holds no
+Ludus header, so engine headers and the build-time budget are unaffected. Each
+editor target builds its own precompiled header, because the targets differ in
+exception policy and definitions. Objective-C++ sources on macOS compile without
+it, and the browser editor leaves it off.
+
+On an 8-core Linux host (RelWithDebInfo, editor with preview and tests, ccache
+disabled for the timings):
+
+| Editor build | Off | On |
+| --- | ---: | ---: |
+| Clean build of every editor target (CPU) | 1,158 s | 550 s |
+| Clean build of every editor target (wall) | 146 s | 71 s |
+| Edit one editor `.cpp` (wall) | 8.0 s | 6.1 s |
+| Edit `core.h`, whole tree (wall) | 163 s | 110 s |
+
+Turn it off for a build tree with:
+
+```bash
+cmake --preset linux-clang-development -DLUDUS_EDITOR_PRECOMPILED_HEADERS=OFF
+```
+
+or export `LUDUS_EDITOR_PRECOMPILED_HEADERS=0` before `./init.sh` creates a new
+build tree. With ccache 4.8 or newer, the editor targets pass ccache the
+`pch_defines,time_macros` sloppiness and compile with `-Xclang
+-fno-pch-timestamp`, so a rebuild from a warm cache still hits. Editor sources
+must still include every header they use; the batch **Editor, shader worker and
+unit tests** job builds with the option off to catch a missing include, and
+`./scripts/profile-build` always profiles without it.
+
 ## Cleaning Generated State
 
 It is safe to remove generated state under `out/`:

@@ -665,6 +665,11 @@ Recommendation:
 5. **The PCH is invisible to the include graph and to tooling.** Include-cleaner
    and the transitive-include policy (§14) are evaluated as if the PCH does not
    exist.
+6. **Editor exception.** The optional Qt editor targets (`apps/editor`) precompile
+   stable Qt Core and standard library headers by default
+   (`LUDUS_EDITOR_PRECOMPILED_HEADERS`). No Ludus header is listed, so this
+   section's rules for engine headers are unchanged. The batch editor job builds
+   with it off, which is the no-PCH guard of point 4 for the editor.
 
 Rationale: this captures the real build win (re-parsing the cheap-but-ubiquitous
 foundation once per target) without letting the PCH define the architecture —

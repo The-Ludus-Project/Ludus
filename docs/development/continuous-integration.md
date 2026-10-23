@@ -32,7 +32,10 @@ Its **Editor, shader worker and unit tests** job prepares
 worker (`LUDUS_BUILD_SHADER_WORKER`, used by live shader reload), builds every
 default target with warnings as errors, and runs the union of the `unit` and `editor`
 CTest labels offscreen, including shader compiler and worker protocol tests, plus
-`ludus_target_detection`. Tests carrying both labels run once. It also retains
+`ludus_target_detection`. Tests carrying both labels run once. It builds with
+`LUDUS_EDITOR_PRECOMPILED_HEADERS=OFF`, so an editor source that relies on a Qt
+or standard header it does not include fails there; the macOS jobs and the Linux
+sanitizer build keep the default (on). It also retains
 static analysis and the installed Behavior SDK journey. This replaces the separate native build on every
 PR with one authoring build per combined batch. Native dependency and compiler
 caches continue to be saved in the batch's `main` scope.

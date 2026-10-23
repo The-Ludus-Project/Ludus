@@ -25,7 +25,7 @@ compatibility is never inferred from those labels.
 
 The node type picker offers **GraphicsPipeline**, **ComputePipeline** and
 **RayTracingPipeline** for GPU work. Scene, Camera, Target, RenderSize, Subgraph, Export and
-Present remain supporting nodes. A new pipeline has no inputs, outputs or shader
+Present remain supporting nodes; OutputSize is the final-resolution provider. A new pipeline has no inputs, outputs or shader
 assignments. It is an editable draft, not a ready rendering pass.
 
 Select the node in Properties. **Read Inputs** declares resources and values the
@@ -218,7 +218,7 @@ Properties' Add Node picker. Both create the same version-2 supporting operation
 ```
 
 These are **node presets**, not complete renderer configuration templates. Each
-preset supplies the fixed interface for one algorithm; vendor work is owned by a
+preset inserts an unused, sized target group around the fixed interface for one algorithm; vendor work is owned by a
 future SDK/backend adapter rather than a user-authored ComputePipeline shader.
 Select **Edit Node…** on the canvas or use Properties to change `algorithm`.
 Changing temporal to spatial requires disconnecting any ports that would disappear;
@@ -273,9 +273,61 @@ for the spatial/temporal input distinction. Ludus adapts that distinction into a
 shared draft interface; it does not copy their SDK implementations or imply
 that their native contracts are interchangeable.
 
+## Output and render resolution
+
+Configure rendering resolution in the **project's saved render graph**. Select an
+**OutputSize** or **RenderSize** node in Properties, or choose **Edit Node…** from
+its canvas menu. These are renderer settings, saved and reviewed with the graph;
+they are not machine preferences or shader compiler options. Separate graph
+configurations can own different output sizes and render scales.
+
+- **OutputSize → Viewport pixels** follows the current viewport drawable in
+  physical pixels, including display scaling and subsequent resizes. For an
+  offscreen image or fixed resolution, choose **Fixed dimensions** and edit the
+  pixel width and height.
+- **RenderSize → From OutputSize** receives the output provider on its `output`
+  input. Edit the adjacent multiply/divide controls for the render scale.
+  **1/1** gives native resolution; **1/2** gives half the width and height.
+  Each dimension uses `ceil(output × numerator / denominator)`, so 1921 × 1081
+  at 1/2 becomes 961 × 541. Bounds are checked against the actual drawable at
+  runtime, rather than the offline Plan's nominal reporting dimensions.
+
+```json
+[
+  {"id": "outputSize", "kind": "OutputSize", "extent": "Viewport"},
+  {"id": "renderSize", "kind": "RenderSize", "extent": "OutputSize", "scale": [1, 1]}
+]
+```
+
+Connect `outputSize.size` to `renderSize.output`. Connect `renderSize.size` to
+scene color/depth/motion Targets' `size` inputs, and `outputSize.size` to the final
+output Target's `size` input. Those Targets use `"extent": "RenderSize"`, the
+existing size-input representation. Both providers expose the existing
+`RenderSize` graph value type, which can cross subgraph interfaces. Neither
+provider allocates GPU storage or emits a GPU pass. Other targets, including
+shadow maps, keep their independently authored dimensions.
+
+New RenderSize nodes default to **From OutputSize**, with a 1/1 scale. Existing
+fixed, texture-derived and view-relative RenderSize records retain their saved
+behavior and controls. A derived RenderSize accepts fixed output dimensions or
+the full viewport reference. A second already-scaled view reference is rejected;
+this keeps output ownership explicit and avoids ambiguous repeated rounding.
+A connected `output` input must be disconnected before changing the RenderSize
+source policy. Rejected edits preserve the graph, wires and history.
+
+Every **Upscale — … (draft)** preset now inserts one unused group: an OutputSize
+provider, a RenderSize provider at 1/2, render-sized source targets, an output-sized
+destination target and the Upscale node. Color, depth and motion sources use
+RenderSize; destination uses OutputSize. Edit the two named size providers to
+configure that preset. The entire insertion is one undoable operation, and IDs
+are made unique when multiple presets coexist. The preset does not replace the
+active renderer path or invent scene/motion producers. Its source targets need
+authored render passes and its temporal values need per-frame providers.
+Vendor execution remains explicitly unavailable as described above.
+
 ## Share render sizes
 
-Use a **RenderSize** node when targets should share a resolution. Its default
+Use a **RenderSize** node when targets should share a resolution. Its
 **Fixed dimensions** policy owns one width/height pair in pixels. Select each
 Target's **extent > From size input**, then connect the size output to its new
 `size` input. For example, this size node can drive both `color.size` and
@@ -1750,7 +1802,8 @@ Root execution configurations cannot contain unbound interface inputs.
 | Target | `type`, `format`, `extent: [width, height]` or `"RenderSize"`, `samples`, `imported`, `initialized`, `presentation` | Optional `size: RenderSize` input; outputs `texture` of the specified texture type; names physical resource version 0 |
 | Buffer | Fixed `bytes`, or `bytes_per_pixel` and `extent: "RenderSize"` | Optional `size: RenderSize` input; outputs shared persistent `buffer: Buffer` for [ordered ray passes](#order-ray-passes-and-share-persistent-buffers) |
 | StructuredBuffer (version 2) | `stride` in bytes, `count` as a positive integer or `"ColorTarget"` | Outputs zero-initialized `buffer: Buffer`; native ray storage follows the [reservoir workflow](#create-structured-reservoir-buffers) |
-| RenderSize (version 2) | Fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | Optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
+| OutputSize (version 2) | `extent: "Viewport"` or fixed `[width,height]` | Outputs graph-only `size: RenderSize`; the viewport mode uses physical drawable pixels |
+| RenderSize (version 2) | `extent: "OutputSize"` with `scale: [numerator,denominator]`, fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | `output: RenderSize` for output-derived scaling, or optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
 | Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
 | Accumulate | `samples` (1..4096) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [linear ray mean](#accumulate-ray-samples-explicitly) |
 | ToneMap | `exposure` (0.01..64 linear multiplier) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [Reinhard and sRGB conversion](#tone-map-ray-output-explicitly) |
