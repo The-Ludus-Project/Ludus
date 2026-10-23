@@ -20,6 +20,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QToolButton>
+#include <QToolTip>
 #include <QVBoxLayout>
 
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
@@ -1082,6 +1083,24 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         connect(reload, &PreviewShaderReload::StatusChanged, this, [this]() { updateShaderStatus(); });
     }
 #endif
+    // Navigation help lives in a tooltip on the controls row instead of a line of its own,
+    // so the rendered image keeps the height; clicking shows it without waiting for hover.
+    QToolButton* navigationHint = new QToolButton(this);
+    navigationHint->setObjectName(QStringLiteral("viewportNavigationHint"));
+    navigationHint->setText(QStringLiteral("?"));
+    navigationHint->setAccessibleName(QStringLiteral("Viewport navigation help"));
+#if defined(Q_OS_MACOS)
+    navigationHint->setToolTip(QStringLiteral("Option-drag: orbit · Shift-Option-drag: pan · Scroll: zoom\n") +
+                               toolTip());
+#else
+    navigationHint->setToolTip(QStringLiteral("Alt-drag: orbit · Shift-Alt-drag: pan · Scroll: zoom\n") + toolTip());
+#endif
+    controls->addWidget(navigationHint);
+    connect(navigationHint, &QToolButton::clicked, navigationHint, [navigationHint]() {
+        QToolTip::showText(navigationHint->mapToGlobal(navigationHint->rect().bottomLeft()),
+                           navigationHint->toolTip(),
+                           navigationHint);
+    });
     mState->Layout->addLayout(controls);
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->StatisticsLabelOrNull = new QLabel(this);
@@ -1091,18 +1110,6 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     mState->StatisticsLabelOrNull->hide();
     mState->Layout->addWidget(mState->StatisticsLabelOrNull, 0, Qt::AlignTop);
 #endif
-    QLabel* navigationHint = new QLabel(this);
-    navigationHint->setObjectName(QStringLiteral("viewportNavigationHint"));
-    navigationHint->setTextFormat(Qt::PlainText);
-#if defined(Q_OS_MACOS)
-    navigationHint->setText(QStringLiteral("Option-drag: orbit · Shift-Option-drag: pan · Scroll: zoom"));
-#else
-    navigationHint->setText(QStringLiteral("Alt-drag: orbit · Shift-Alt-drag: pan · Scroll: zoom"));
-#endif
-    navigationHint->setWordWrap(true);
-    navigationHint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    navigationHint->setToolTip(toolTip());
-    mState->Layout->addWidget(navigationHint, 0, Qt::AlignTop);
     connect(shading, &QComboBox::currentIndexChanged, this, [preview](foundation::int32 index) {
         preview->SetShading(static_cast<PreviewShading>(index));
     });

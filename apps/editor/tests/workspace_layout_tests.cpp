@@ -563,3 +563,39 @@ TEST_CASE("Short windows start with the bottom tool windows closed until a probl
         CHECK(errors->isHidden() == false);
     }
 }
+
+TEST_CASE("The World viewport keeps most of a MacBook Air-sized editor window", "[editor][layout][world]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
+    REQUIRE(descriptor.open(QIODevice::WriteOnly) == true);
+    descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    descriptor.close();
+    // A 13-inch MacBook Air's default scale: about 1470 x 920 points for a maximized window.
+    window.resize(1470, 920);
+    window.show();
+    controller.OpenProject(descriptor.fileName());
+    QApplication::processEvents();
+    Reset(window);
+    WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+    REQUIRE(world != nullptr);
+    REQUIRE(world->Create(QFileInfo(directory.path()).canonicalFilePath() + QStringLiteral("/air.world.json")) == true);
+    REQUIRE(window.GetDocumentWell().OpenDocument(world) == true);
+    QApplication::processEvents();
+    QWidget* viewport = world->findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(viewport->isVisible() == true);
+    INFO("window " << window.width() << "x" << window.height() << ", viewport " << viewport->width() << "x"
+                   << viewport->height());
+    // Before these limits the viewport had about 135 of 950 pixels of height.
+    CHECK(viewport->height() * 100 >= window.height() * 55);
+    CHECK(viewport->width() * 100 >= window.width() * 50);
+    const QString captures = qEnvironmentVariable("LUDUS_EDITOR_LAYOUT_CAPTURE");
+    if (captures.isEmpty() == false)
+    {
+        REQUIRE(window.grab().save(captures + QStringLiteral("-macbook-air.png")));
+    }
+}

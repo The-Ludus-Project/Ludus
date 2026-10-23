@@ -24,7 +24,6 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
-#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QItemSelectionModel>
@@ -97,10 +96,13 @@ QString Display(const QJsonValue& value)
 const QString PLAY_MODE_KEY = QStringLiteral("play/mode");
 const QString PLAY_MODE_IN_VIEWPORT = QStringLiteral("viewport");
 const QString PLAY_MODE_SEPARATE_WINDOW = QStringLiteral("window");
-/// File-row grid column of the Play mode box and the separate-window offer, right of Play saved World.
-constexpr int PLAY_CHOICE_COLUMN = 3;
-/// File-row grid row of the Play-in-the-viewport refusal and its offer, below Play saved World.
-constexpr int PLAY_NOTICE_ROW = 2;
+/// What the World document is for; the path label's tooltip, below the full path.
+QString GetWorldIntroduction()
+{
+    return QStringLiteral("Create or open a world, import a scene, and edit placement and components together. "
+                          "Projects may supply authoring/world.schema.json for gameplay fields. Runtime binding "
+                          "belongs to the game.");
+}
 } // namespace
 WorldWorkspace::WorldWorkspace(QWidget* parent) : WorldWorkspace(ToolingPaths{}, parent) {}
 WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : QWidget(parent)
@@ -114,29 +116,43 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     QVBoxLayout* header = new QVBoxLayout(mHeader);
     header->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(mHeader);
-    auto* intro = new QLabel(QStringLiteral("World — entities and project-defined components"), this);
+#if defined(Q_OS_WASM)
+    // The browser note says where Worlds live; it stays visible instead of a tooltip.
+    QLabel* intro = new QLabel(this);
     intro->setWordWrap(true);
+    intro->setToolTip(GetWorldIntroduction());
     header->addWidget(intro);
-    intro->setToolTip(
-        QStringLiteral("Create or open a world, import a scene, and edit placement and components together. "
-                       "Projects may supply authoring/world.schema.json for gameplay fields. Runtime "
-                       "binding belongs to the game."));
-    QGridLayout* files = new QGridLayout;
-    auto* create = new QPushButton(QStringLiteral("New World…"), this);
+#endif
+    // One row: the open document's path, then its commands. Rarely available commands
+    // (Restore Recovery, Cancel scene operation, Play) appear only while they apply.
+    QHBoxLayout* files = new QHBoxLayout;
+    PathLabel_ = new QLabel(this);
+    PathLabel_->setObjectName(QStringLiteral("worldPath"));
+    PathLabel_->setTextFormat(Qt::PlainText);
+    PathLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    PathLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    files->addWidget(PathLabel_, 1);
+    const auto compact = [](QPushButton* button) {
+        button->setProperty("density", QStringLiteral("compact"));
+        return button;
+    };
+    QPushButton* create = compact(new QPushButton(QStringLiteral("New World…"), this));
     create->setObjectName(QStringLiteral("worldNew"));
-    auto* open = new QPushButton(QStringLiteral("Open World…"), this);
+    QPushButton* open = compact(new QPushButton(QStringLiteral("Open World…"), this));
     open->setObjectName(QStringLiteral("worldOpen"));
-    Recovery_ = new QPushButton(QStringLiteral("Restore Recovery"), this);
+    Recovery_ = compact(new QPushButton(QStringLiteral("Restore Recovery"), this));
     Recovery_->setObjectName(QStringLiteral("worldRecover"));
-    files->addWidget(create, 0, 0);
-    files->addWidget(open, 0, 1);
-    files->addWidget(Recovery_, 0, 2);
-    Import_ = new QPushButton(QStringLiteral("Import scene…"), this);
+    Recovery_->setToolTip(QStringLiteral("Replace the open World with the unsaved edits recovered after the editor "
+                                         "stopped unexpectedly. Undo restores the saved World."));
+    files->addWidget(create);
+    files->addWidget(open);
+    files->addWidget(Recovery_);
+    Import_ = compact(new QPushButton(QStringLiteral("Import scene…"), this));
     Import_->setObjectName(QStringLiteral("worldImportScene"));
-    files->addWidget(Import_, 0, 3);
-    CancelScene_ = new QPushButton(QStringLiteral("Cancel scene operation"), this);
+    files->addWidget(Import_);
+    CancelScene_ = compact(new QPushButton(QStringLiteral("Cancel scene operation"), this));
     CancelScene_->setObjectName(QStringLiteral("worldCancelScene"));
-    files->addWidget(CancelScene_, 1, 0, 1, 2);
+    files->addWidget(CancelScene_);
     connect(CancelScene_, &QPushButton::clicked, this, [this]() {
         Scene_->CancelOperation();
         // The Level status label is hidden inside the World workspace; mirror the cancel state here.
@@ -171,9 +187,9 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         }
     });
 #endif
-    PlayButton_ = new QPushButton(QStringLiteral("Play saved World"), this);
+    PlayButton_ = compact(new QPushButton(QStringLiteral("Play saved World"), this));
     PlayButton_->setObjectName(QStringLiteral("worldPlay"));
-    files->addWidget(PlayButton_, 1, 2);
+    files->addWidget(PlayButton_);
     connect(PlayButton_, &QPushButton::clicked, this, [this]() {
         // The launcher decides whether the viewport stays alive as the game's window.
         if (Save() && Dirty() == false && SceneBusy() == false)
@@ -192,7 +208,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     const bool isSeparateWindowSaved = QSettings().value(PLAY_MODE_KEY).toString() == PLAY_MODE_SEPARATE_WINDOW;
     mPlayModeBox->setCurrentIndex(mPlayModeBox->findData(
         static_cast<int>(isSeparateWindowSaved == true ? PlayMode::SeparateWindow : PlayMode::InViewport)));
-    files->addWidget(mPlayModeBox, 1, PLAY_CHOICE_COLUMN);
+    files->addWidget(mPlayModeBox);
     connect(mPlayModeBox, &QComboBox::activated, this, [this]() {
         SetPlayMode(static_cast<PlayMode>(mPlayModeBox->currentData().toInt()));
     });
@@ -201,13 +217,14 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     mPlayUnavailableLabel->setTextFormat(Qt::PlainText);
     mPlayUnavailableLabel->setWordWrap(true);
     mPlayUnavailableLabel->hide();
-    files->addWidget(mPlayUnavailableLabel, PLAY_NOTICE_ROW, 0, 1, PLAY_CHOICE_COLUMN);
+    QHBoxLayout* playNotice = new QHBoxLayout;
+    playNotice->addWidget(mPlayUnavailableLabel, 1);
     mPlayElsewhereButton = new QPushButton(QStringLiteral("Play in a separate window"), this);
     mPlayElsewhereButton->setObjectName(QStringLiteral("worldPlayElsewhere"));
     mPlayElsewhereButton->setToolTip(QStringLiteral("Open the game in its own window this time. The Play mode "
                                                     "preference is unchanged."));
     mPlayElsewhereButton->hide();
-    files->addWidget(mPlayElsewhereButton, PLAY_NOTICE_ROW, PLAY_CHOICE_COLUMN);
+    playNotice->addWidget(mPlayElsewhereButton);
     connect(mPlayElsewhereButton, &QPushButton::clicked, this, [this]() {
         if (Save() && Dirty() == false && SceneBusy() == false)
         {
@@ -215,8 +232,16 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
             Q_EMIT PlayRequested(PlayMode::SeparateWindow);
         }
     });
-    files->setColumnStretch(4, 1);
+    mImportReportToggleOrNull = new QToolButton(this);
+    mImportReportToggleOrNull->setObjectName(QStringLiteral("worldImportReportToggle"));
+    mImportReportToggleOrNull->setText(QStringLiteral("Import report"));
+    mImportReportToggleOrNull->setCheckable(true);
+    mImportReportToggleOrNull->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    mImportReportToggleOrNull->setArrowType(Qt::RightArrow);
+    mImportReportToggleOrNull->hide();
+    files->addWidget(mImportReportToggleOrNull);
     header->addLayout(files);
+    header->addLayout(playNotice);
     QHBoxLayout* previewRow = new QHBoxLayout;
     ImportPreview_ = new QPlainTextEdit(this);
     ImportPreview_->setObjectName(QStringLiteral("worldImportPreview"));
@@ -250,21 +275,6 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     ImportReport_->setMinimumHeight(100);
     ImportReport_->setMaximumHeight(160);
     ImportReport_->hide();
-    PathLabel_ = new QLabel(this);
-    PathLabel_->setTextFormat(Qt::PlainText);
-    PathLabel_->setWordWrap(true);
-    PathLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    QHBoxLayout* documentRow = new QHBoxLayout;
-    documentRow->addWidget(PathLabel_, 1);
-    mImportReportToggleOrNull = new QToolButton(this);
-    mImportReportToggleOrNull->setObjectName(QStringLiteral("worldImportReportToggle"));
-    mImportReportToggleOrNull->setText(QStringLiteral("Import report"));
-    mImportReportToggleOrNull->setCheckable(true);
-    mImportReportToggleOrNull->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    mImportReportToggleOrNull->setArrowType(Qt::RightArrow);
-    mImportReportToggleOrNull->hide();
-    documentRow->addWidget(mImportReportToggleOrNull);
-    header->addLayout(documentRow);
     connect(mImportReportToggleOrNull, &QToolButton::toggled, this, [this](bool isExpanded) {
         ImportReport_->setVisible(isExpanded);
         mImportReportToggleOrNull->setArrowType(isExpanded == true ? Qt::DownArrow : Qt::RightArrow);
@@ -303,16 +313,19 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     Entities_->setObjectName(QStringLiteral("worldEntities"));
     Entities_->setAccessibleName(QStringLiteral("World entities"));
     hierarchy->addWidget(Entities_, 1);
-    auto* commands = new QVBoxLayout;
+    // Entity commands share one row under the list.
+    QHBoxLayout* commands = new QHBoxLayout;
     Add_ = new QPushButton(QStringLiteral("Add Entity"), left);
     Add_->setObjectName(QStringLiteral("worldAdd"));
     Duplicate_ = new QPushButton(QStringLiteral("Duplicate"), left);
     Duplicate_->setObjectName(QStringLiteral("worldDuplicate"));
     Remove_ = new QPushButton(QStringLiteral("Delete"), left);
     Remove_->setObjectName(QStringLiteral("worldDelete"));
-    commands->addWidget(Add_);
-    commands->addWidget(Duplicate_);
-    commands->addWidget(Remove_);
+    for (QPushButton* button : {Add_, Duplicate_, Remove_})
+    {
+        button->setProperty("density", QStringLiteral("compact"));
+        commands->addWidget(button);
+    }
     hierarchy->addLayout(commands);
     BoundViewport_ = Render_->TakeViewport(split);
     Scene_ = new LevelWorkspace(tooling, this);
@@ -372,10 +385,20 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     Apply_->setObjectName(QStringLiteral("worldApply"));
     Reset_ = new QPushButton(QStringLiteral("Reset Fields"), this);
     Reset_->setObjectName(QStringLiteral("worldReset"));
-    edits->addWidget(Components_);
-    edits->addWidget(Attach_);
-    edits->addWidget(Apply_);
-    edits->addWidget(Reset_);
+    // The component choice sits beside Add Component; Apply and Reset share the row below,
+    // so the narrow Properties column keeps its fields in view.
+    QHBoxLayout* attach = new QHBoxLayout;
+    attach->addWidget(Components_, 1);
+    attach->addWidget(Attach_);
+    QHBoxLayout* commit = new QHBoxLayout;
+    commit->addWidget(Apply_);
+    commit->addWidget(Reset_);
+    for (QPushButton* button : {Attach_, Apply_, Reset_})
+    {
+        button->setProperty("density", QStringLiteral("compact"));
+    }
+    edits->addLayout(attach);
+    edits->addLayout(commit);
     inspectorPanelLayout->addLayout(edits);
     Status_ = new QLabel(this);
     Status_->setObjectName(QStringLiteral("worldStatus"));
@@ -1465,11 +1488,15 @@ void WorldWorkspace::Changed(const QString& message)
     Components_->setEnabled(Pending_ == false && isBusy == false);
     Apply_->setEnabled(Pending_ && isBusy == false);
     Reset_->setEnabled(Pending_ && isBusy == false);
-    Recovery_->setEnabled(Document_.Loaded() && isBusy == false && Dirty() == false && Unsaved_ == false &&
-                          QFileInfo::exists(Path_ + QStringLiteral(".ludus-recovery")));
+    const bool hasRecovery = Document_.Loaded() && Dirty() == false && Unsaved_ == false &&
+                             QFileInfo::exists(Path_ + QStringLiteral(".ludus-recovery"));
+    Recovery_->setVisible(hasRecovery);
+    Recovery_->setEnabled(hasRecovery == true && isBusy == false);
     PathLabel_->setText(Path_.isEmpty()
                             ? QStringLiteral("No world open")
                             : (Dirty() ? QStringLiteral("● ") : QString()) + QDir(Root_).relativeFilePath(Path_));
+    PathLabel_->setToolTip((Path_.isEmpty() ? QString() : QDir::toNativeSeparators(Path_) + QStringLiteral("\n\n")) +
+                           GetWorldIntroduction());
     Render_->SetSelection(Selected_, Pending_);
     Q_EMIT DocumentChanged();
 }

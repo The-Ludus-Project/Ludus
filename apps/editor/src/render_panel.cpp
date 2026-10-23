@@ -14,7 +14,6 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
-#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -33,7 +32,7 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
     Viewport_ = new PreviewViewport(&Preview_, this);
     Viewport_->setObjectName(QStringLiteral("worldViewport"));
     Viewport_->hide();
-    QGridLayout* actions = new QGridLayout;
+    QHBoxLayout* actions = new QHBoxLayout;
     Open_ = new QPushButton(QStringLiteral("Resume viewport"), this);
     Open_->setObjectName(QStringLiteral("worldPreview3D"));
     Open_->setToolTip(QStringLiteral("Validate the World snapshot and project render.preview.json, then resume the "
@@ -45,15 +44,17 @@ RenderPanel::RenderPanel(QWidget* parent) : QWidget(parent), Preview_(this)
     auto* details = new QPushButton(QStringLiteral("Camera and diagnostics ▸"), this);
     details->setCheckable(true);
     details->setObjectName(QStringLiteral("worldPreviewDetails"));
-    actions->addWidget(Open_, 0, 0);
-    actions->addWidget(Refresh_, 0, 1);
-    actions->addWidget(Stop_, 0, 2);
     Tint_ = new QPushButton(QStringLiteral("Tint…"), this);
     Tint_->setObjectName(QStringLiteral("worldPickTint"));
     Tint_->setToolTip(QStringLiteral("Load valid preview bindings, select a renderable and finish pending fields. The "
                                      "display color picker supplies linear RGB fields for Apply."));
-    actions->addWidget(Tint_, 1, 0);
-    actions->addWidget(details, 1, 1, 1, 2);
+    // One compact row, so the viewport below keeps the height.
+    for (QPushButton* button : {Open_, Refresh_, Stop_, Tint_, details})
+    {
+        button->setProperty("density", QStringLiteral("compact"));
+        actions->addWidget(button);
+    }
+    actions->addStretch();
     layout->addLayout(actions);
     Status_ = new QLabel(
         QStringLiteral(
