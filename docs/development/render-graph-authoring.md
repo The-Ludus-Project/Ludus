@@ -640,9 +640,15 @@ editable wiring. Import, shader/manifest changes and any inserted Subgraph are
 one undo step; **Save** publishes them together. New shader programs have `Restir`
 prefixed IDs and sources under `restir_di/main_shaders/`. No shader copying or
 pasting is required. Existing callbacks remain unchanged; a shared custom payload
-keeps its fields and gains `RayLaunch Launch`. An incompatible payload, visibility
-ray profile, source/setting collision or insufficient admission budget reports a
-repair and preserves the draft. Settings are shared by this package's ReSTIR
+keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
+admission defaults to the ReSTIR template capacities (16 programs and 64 artifacts),
+so an existing ray pipeline can coexist with the five imported programs. Custom
+admission limits remain unchanged. An incompatible payload, visibility ray profile,
+source/setting collision or insufficient custom admission budget reports a repair
+and preserves the draft. Program, source and setting conflicts name the conflicting
+input; a program capacity error gives the required count and `budgets.programs` limit.
+Undo restores the previous budgets along with the graph and shader edits.
+Settings are shared by this package's ReSTIR
 configurations. Keep explicit payload byte caps large enough for the extended
 payload; the compiler remains authoritative for that admission check.
 

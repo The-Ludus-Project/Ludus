@@ -2,6 +2,7 @@
 #include "internal/controller.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_pipeline_node.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -364,11 +365,149 @@ TEST_CASE("Root canvas inserts a ReSTIR subgraph transactionally and rejects con
     const QByteArray constrained = document.GetDraft(QStringLiteral("main.lushader.json"));
     QString error;
     CHECK(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), error) ==
-          RenderGraphDocumentStatus::Conflict);
-    CHECK(error.contains(QStringLiteral("budgets")) == true);
+          RenderGraphDocumentStatus::Capacity);
+    CHECK(error.contains(QStringLiteral("needs 8 shader programs")) == true);
+    CHECK(error.contains(QStringLiteral("budgets.programs is 1")) == true);
     CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
     CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == constrained);
     CHECK(document.GetDraft(QStringLiteral("Lighting.lurender.json")).isEmpty() == true);
+}
+
+TEST_CASE("ReSTIR import upgrades default budgets beside an existing ray pipeline",
+          "[editor][render-graph][restir-library]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString configuration = QStringLiteral("Default");
+    QJsonObject pipeline = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, configuration, pipeline) == RenderGraphDocumentStatus::Ok);
+    QJsonArray shaders;
+    for (const QString& stage :
+         {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
+    {
+        shaders.append(QJsonObject{{QStringLiteral("id"), stage},
+                                   {QStringLiteral("stage"), stage},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}});
+    }
+    pipeline.insert(QStringLiteral("shaders"), shaders);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, configuration, pipeline) == RenderGraphDocumentStatus::Ok);
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(manifestFile);
+    const QJsonObject before = QJsonDocument::fromJson(beforeManifest).object();
+    const QJsonArray previousPrograms = before.value(QStringLiteral("programs")).toArray();
+    CHECK(previousPrograms.size() == 6);
+    QString error;
+    REQUIRE(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), error) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(error.isEmpty() == true);
+    const QByteArray afterManifest = document.GetDraft(manifestFile);
+    const QJsonObject after = QJsonDocument::fromJson(afterManifest).object();
+    CHECK(after.value(QStringLiteral("programs")).toArray().size() == 11);
+    CHECK(after.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt() == 16);
+    CHECK(after.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("artifacts")).toInt() == 64);
+    for (const QJsonValueConstRef program : previousPrograms)
+    {
+        CHECK(after.value(QStringLiteral("programs")).toArray().contains(program) == true);
+    }
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(manifestFile) == beforeManifest);
+    CHECK(document.GetDraft(QStringLiteral("Lighting.lurender.json")).isEmpty() == true);
+    workspace.Redo();
+    CHECK(document.GetDraft(manifestFile) == afterManifest);
+}
+
+TEST_CASE("ReSTIR import preserves custom admission budgets", "[editor][render-graph][restir-library]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    const QJsonObject budgets{{QStringLiteral("configurations"), 4},
+                              {QStringLiteral("programs"), 24},
+                              {QStringLiteral("artifacts"), 96},
+                              {QStringLiteral("pipelines"), 32}};
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    QString error;
+    REQUIRE(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), error) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("budgets")) ==
+          budgets);
+}
+
+TEST_CASE("ReSTIR import identifies conflicting authored inputs without changing the draft",
+          "[editor][render-graph][restir-library]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QString error;
+    REQUIRE(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), error) ==
+            RenderGraphDocumentStatus::Ok);
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    QString expectedIdentity;
+    SECTION("program definition")
+    {
+        QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+        for (qsizetype index = 0; index < programs.size(); ++index)
+        {
+            QJsonObject program = programs.at(index).toObject();
+            if (program.value(QStringLiteral("id")).toString() == QStringLiteral("RestirGenerate"))
+            {
+                expectedIdentity = program.value(QStringLiteral("id")).toString();
+                program.insert(QStringLiteral("function"), QStringLiteral("GenerateCustomRay"));
+                programs.replace(index, program);
+            }
+        }
+        manifest.insert(QStringLiteral("programs"), programs);
+        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    }
+    SECTION("source contents")
+    {
+        expectedIdentity = QStringLiteral("restir_di/main_shaders/reservoir.slang");
+        REQUIRE(document.SetText(expectedIdentity, document.GetDraft(expectedIdentity) + "\n// Authored change.\n") ==
+                RenderGraphDocumentStatus::Ok);
+    }
+    SECTION("setting definition")
+    {
+        QJsonArray settings = manifest.value(QStringLiteral("settings")).toArray();
+        REQUIRE(settings.isEmpty() == false);
+        QJsonObject setting = settings.first().toObject();
+        expectedIdentity = setting.value(QStringLiteral("id")).toString();
+        setting.insert(QStringLiteral("maximum"), 2);
+        settings.replace(0, setting);
+        manifest.insert(QStringLiteral("settings"), settings);
+        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    }
+    REQUIRE(expectedIdentity.isEmpty() == false);
+    RenderGraphSnapshot before;
+    const QStringList files = document.GetFiles();
+    for (const QString& file : files)
+    {
+        before.Files.insert(file, document.GetDraft(file));
+    }
+    const uint64 revision = document.GetRevision();
+    CHECK(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("OtherLighting"), error) ==
+          RenderGraphDocumentStatus::Conflict);
+    CHECK(error.contains(expectedIdentity) == true);
+    CHECK(error.contains(QStringLiteral("draft was preserved")) == true);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetFiles() == files);
+    for (const QString& file : files)
+    {
+        CHECK(document.GetDraft(file) == before.Files.value(file));
+    }
 }
 
 TEST_CASE("ReSTIR library import preserves legacy callbacks and extends a custom payload",
