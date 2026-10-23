@@ -369,6 +369,17 @@ class RayPipelineTests(unittest.TestCase):
         with self.assertRaises(ToolingError):
             build.validate_manifest(value)
 
+    def test_scene_pipeline_adapts_legacy_stages_without_project_helpers(self):
+        value = json.loads((FIXTURE / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+        technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
+        technique['scene_interface'] = {'version': 1, 'surface_queries': 2, 'visibility_queries': 1}
+        _, programs, techniques, _ = build.validate_manifest(value)
+        self.assertEqual('RayHit', programs['Closest']['input'])
+        # Each stage can be replaced independently by a scene-aware callback.
+        programs['Closest'].update(input='SurfaceHit', output='ScenePayload')
+        build.validate_manifest(value)
+        self.assertNotIn('payload', techniques[ray.TECHNIQUE]['scene_interface'])
+
     def test_shader_local_payload_bounds_reject_resources_and_large_matrices(self):
         ray.validate_payload(b'struct ScenePayload { float3 Radiance; };', 16, build)
         with self.assertRaises(ToolingError):
@@ -382,6 +393,63 @@ class RayPipelineTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
                      'set LUDUS_RG1_SLANG, LUDUS_RG1_HELPER and LUDUS_RG1_CROSS for native ray compiler acceptance')
 class RayCompilerAcceptance(unittest.TestCase):
+    def test_pipeline_supplies_default_payload_and_adapts_each_legacy_stage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'raytracing'
+            shutil.copytree(FIXTURE, source)
+            manifest = source / 'main.lushader.json'
+            value = json.loads((source / 'main.lushader.json.in').read_text()
+                               .replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+            technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
+            technique['scene_interface'] = {'version': 1, 'surface_queries': 2, 'visibility_queries': 1}
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            for is_mixed in (False, True):
+                with self.subTest(is_mixed=is_mixed):
+                    if is_mixed:
+                        program = next(item for item in value['programs'] if item['stage'] == 'closest_hit')
+                        program.update(input='SurfaceHit', output='ScenePayload')
+                        (source / program['source']).write_text('''#pragma once
+#include "shared.slang"
+void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
+{
+    payload.Radiance = EvaluateMaterial(scene, hit).BaseColor;
+}
+''')
+                        (source / program['source']).with_name('shared.slang').write_text(
+                            '#pragma once\n#include "closest.slang"\n')
+                    manifest.write_text(json.dumps(value))
+                    result = build.build_package(manifest, root / 'build', **options)
+                    package = build.verify_package(Path(result['package']))
+                    self.assertEqual({'metal'}, {r['profile'] for r in package['recipes'] if r['technique'] == ray.TECHNIQUE})
+                    self.assertFalse((source / 'scene_legacy_callbacks.slang').exists())
+                    self.assertFalse((source / 'scene_payload.slang').exists())
+                    self.assertNotIn('payload', technique['scene_interface'])
+
+    def test_ordered_passes_adapt_legacy_callbacks_with_a_pipeline_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'ordered'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/ordered_ray', source)
+            manifest = source / 'main.lushader.json'
+            value = json.loads((source / 'main.lushader.json.in').read_text()
+                               .replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+            technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
+            technique['scene_interface'].pop('payload')
+            for program in value['programs']:
+                if program['stage'] not in ray.STAGES:
+                    continue
+                # Mix scene callbacks with a legacy miss in every ordered pass.
+                if program['stage'] == 'miss':
+                    program.update(input='Ray', output='Color')
+                    (source / program['source']).write_text('float3 ' + program['function'] + '(Ray ray) { return float3(1); }\n')
+            manifest.write_text(json.dumps(value))
+            result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                         compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            package = build.verify_package(Path(result['package']))
+            self.assertEqual(1, len([p for p in package['programs'] if p['id'] == ray.COMPUTE_ID]))
+
     def test_sampling_in_every_callback_needs_only_a_radiance_payload(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

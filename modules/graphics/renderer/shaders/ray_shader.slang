@@ -1,4 +1,5 @@
 // Callback data for the Ray/Color render-graph profile.
+#ifndef LUDUS_SCENE_RAY_INTERFACE
 struct Ray
 {
     float3 OriginWorld;
@@ -12,6 +13,7 @@ struct RayLaunch
     uint2 ExtentPixel;
     Ray CameraRay;
 };
+#endif
 struct RayHit
 {
     Ray IncomingRay;

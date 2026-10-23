@@ -92,6 +92,30 @@ TEST_CASE("Scene callback references include query functions and the current pay
     CHECK(miss.contains(QStringLiteral("Ray ray,")) == true);
 }
 
+TEST_CASE("Scene callback references display the pipeline payload without a project helper", "[editor][shader-api]")
+{
+    QJsonObject manifest = QJsonDocument::fromJson(ReadFixture(QStringLiteral("scene_ray"))).object();
+    QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    for (qsizetype index = 0; index < techniques.size(); ++index)
+    {
+        QJsonObject technique = techniques.at(index).toObject();
+        if (technique.contains(QStringLiteral("scene_interface")) == true)
+        {
+            QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
+            interface.remove(QStringLiteral("payload"));
+            technique.insert(QStringLiteral("scene_interface"), interface);
+            techniques.replace(index, technique);
+        }
+    }
+    manifest.insert(QStringLiteral("techniques"), techniques);
+    const QString reference =
+        DescribeShaderInterface(QJsonDocument(manifest).toJson(), QStringLiteral("main_shaders/closest.slang"));
+    CHECK(reference.contains(QStringLiteral("Pipeline default payload")) == true);
+    CHECK(reference.contains(QStringLiteral("struct ScenePayload")) == true);
+    CHECK(reference.contains(QStringLiteral("float3 Radiance;")) == true);
+    CHECK(reference.contains(QStringLiteral("declaration unavailable")) == false);
+}
+
 TEST_CASE("Shader API lookup searches immediately and keeps position across refreshes", "[editor][shader-api]")
 {
     QWidget parent;

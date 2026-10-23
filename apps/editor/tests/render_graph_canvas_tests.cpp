@@ -1013,6 +1013,8 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
     const QByteArray editedSource = workspace.GetDocument().GetDraft(editedFile);
     REQUIRE(editedSource != originalSource);
     REQUIRE(editedSource.contains("// Preserve this accepted source edit.") == true);
+    const QStringList shaderSources = workspace.GetSelectedShaderSources();
+    const QStringList originalFiles = workspace.GetDocument().GetFiles();
     const uint64 revision = workspace.GetDocument().GetRevision();
     const QByteArray before = workspace.GetDocument().GetDraft(manifestFile);
     bool shouldExpand = false;
@@ -1051,9 +1053,12 @@ TEST_CASE("legacy ray materials can be enabled from canvas with Properties hidde
               .toObject() == budgets);
     CHECK(workspace.GetDocument().GetDraft(manifestFile).contains("scene_interface") == true);
     CHECK(workspace.GetSelectedShaderSources().size() == 3);
+    CHECK(workspace.GetSelectedShaderSources() == shaderSources);
+    CHECK(workspace.GetDocument().GetFiles() == originalFiles);
     for (const QString& file : workspace.GetSelectedShaderSources())
     {
-        CHECK(workspace.GetDocument().GetDraft(file).contains("SceneShaderMain") == true);
+        CHECK(workspace.GetDocument().GetDraft(file) ==
+              (file == editedFile ? editedSource : ReadFile(source.filePath(file))));
     }
     workspace.Undo();
     CHECK(workspace.GetDocument().GetDraft(manifestFile) == before);

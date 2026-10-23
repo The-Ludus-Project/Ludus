@@ -21,7 +21,7 @@ def restir_files(profiles, graph):
     for program in manifest['programs']:
         snapshot.shader_closure(program['source'])
     for technique in manifest['techniques']:
-        if 'scene_interface' in technique:
+        if 'payload' in technique.get('scene_interface', {}):
             snapshot.shader_closure(technique['scene_interface']['payload'])
     snapshot.verify()
     files = {'main.lushader.json': text}

@@ -16,6 +16,45 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BuildTests(unittest.TestCase):
+    def test_guarded_shader_cycles_capture_every_dependency_and_invalidate_consumers(self):
+        source = self.manifest.parent / 'main_shaders/color.slang'
+        original = source.read_text()
+        bridge = source.with_name('bridge.slang')
+        bridge.write_text('#pragma once\n#include "color.slang"\n')
+        source.write_text('#include "bridge.slang"\n' + original)
+        snapshot = build.Snapshot(self.manifest.parent)
+        expected = ['main_shaders/bridge.slang', 'main_shaders/color.slang']
+        self.assertEqual(expected, snapshot.shader_closure('main_shaders/color.slang'))
+        self.assertEqual(expected, snapshot.shader_closure('main_shaders/bridge.slang'))
+        self.run_build()
+        self.calls.clear()
+        bridge.write_text(bridge.read_text() + '// edited helper\n')
+        self.run_build()
+        self.assertEqual(['fragment', 'fragment'], [stage for _, stage, _ in self.calls])
+
+    def test_unguarded_cycle_reports_the_include_chain_and_preserves_the_package(self):
+        self.run_build()
+        prior = (self.output / 'current.json').read_bytes()
+        source = self.manifest.parent / 'main_shaders/color.slang'
+        source.write_text('#include "bridge.slang"\n')
+        source.with_name('bridge.slang').write_text('#include "color.slang"\n')
+        with self.assertRaisesRegex(ToolingError, 'color.slang -> main_shaders/bridge.slang -> main_shaders/color.slang'):
+            self.run_build()
+        self.assertEqual(prior, (self.output / 'current.json').read_bytes())
+
+    def test_conditional_pragma_does_not_hide_an_unguarded_cycle(self):
+        source = self.manifest.parent / 'main_shaders/color.slang'
+        source.write_text('#if 0\n#pragma once\n#endif\n#include "color.slang"\n')
+        with self.assertRaisesRegex(ToolingError, 'unguarded shader include cycle'):
+            build.Snapshot(self.manifest.parent).shader_closure('main_shaders/color.slang')
+
+    def test_acyclic_shader_depth_stays_bounded(self):
+        for index in range(build.MAX_SHADER_INCLUDE_DEPTH + 1):
+            source = self.manifest.parent / f'level{index}.slang'
+            source.write_text(f'#include "level{index + 1}.slang"\n' if index < build.MAX_SHADER_INCLUDE_DEPTH else '')
+        with self.assertRaisesRegex(ToolingError, 'shader include depth exceeds 16: level0.slang ->'):
+            build.Snapshot(self.manifest.parent).shader_closure('level0.slang')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

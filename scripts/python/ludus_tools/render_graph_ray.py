@@ -29,6 +29,7 @@ STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
 VISIBILITY_SLOT = buffers.FIRST_SLOT + buffers.MAX_BUFFERS
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
+DEFAULT_PAYLOAD = '_ludus_ray/scene_payload.slang'
 # One owner for build admission and the editor controls. Editor CMake reads this
 # data through a module import at configure time; no Python interpreter enters the UI.
 SCENE_QUERY_LIMITS = {
@@ -44,7 +45,7 @@ IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
-           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
+           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 
 
 def resolve_state(state):
@@ -269,13 +270,10 @@ def check_interface(program, result, build):
 
 def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source=''):
     """Link ordinary callbacks; the user raygen is the only sample/integrator driver."""
-    expected = {'ray_generation': ('RayLaunch', 'Radiance'), 'miss': ('Ray', 'ScenePayload'),
-                'closest_hit': ('SurfaceHit', 'ScenePayload')}
-    for stage, program in selected.items():
-        build.require((program['input'], program['output']) == expected[stage],
-                      'ShaderInterface', program['id'], 'scene ray profile requires its complete callback interface')
-    snapshot.shader_closure(interface['payload'])
-    validate_payload(snapshot.files[interface['payload']], interface.get('local_payload_bytes'), build)
+    payload = interface.get('payload', DEFAULT_PAYLOAD)
+    if 'payload' in interface:
+        snapshot.shader_closure(payload)
+    validate_payload(snapshot.files[payload], interface.get('local_payload_bytes'), build)
     wrapper = '''float3 EvaluateGraphRay(uint pixel);
 #define LUDUS_RENDER_GRAPH_RAY_PIPELINE 1
 #define LUDUS_SCENE_RAY_INTERFACE 1
@@ -285,10 +283,14 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
     wrapper += storage_source
     if interface.get('visibility_buffer', False):
         wrapper += '#define LUDUS_RENDER_GRAPH_VISIBILITY_INPUTS 1\n#include "_ludus_ray/visibility_buffer.slang"\n'
-    wrapper += '#include "' + interface['payload'] + '"\n'
+    if any(program['output'] in ('Ray', 'Color') for program in selected.values()):
+        wrapper += '#include "_ludus_ray/ray_shader.slang"\n'
+    wrapper += '#include "' + payload + '"\n'
     wrapper += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
     for source in sorted({program['source'] for program in selected.values()}):
         wrapper += '#include "' + source + '"\n'
+    callbacks, adapters = adapt_legacy_callbacks(selected)
+    wrapper += adapters
     wrapper += '''uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload)
 {
     SurfaceHit hit;
@@ -339,8 +341,50 @@ float3 EvaluateGraphRay(uint pixel)
     wrapper = wrapper.replace('MAX_SURFACE_QUERIES', str(interface['surface_queries']))
     wrapper = wrapper.replace('MAX_VISIBILITY_QUERIES', str(interface['visibility_queries']))
     for token, stage in (('RAY_GENERATION', 'ray_generation'), ('RAY_MISS', 'miss'), ('RAY_CLOSEST_HIT', 'closest_hit')):
-        wrapper = wrapper.replace(token, selected[stage]['function'])
+        wrapper = wrapper.replace(token, callbacks[stage])
     return wrapper.replace('_ludus_ray/renderer_gpu_preview.slang', '_ludus_ray/' + recipe['source'])
+
+
+def adapt_legacy_callbacks(selected, suffix=''):
+    """Keep compatibility types and calls in generated build output, never project helpers."""
+    callbacks = {stage: program['function'] for stage, program in selected.items()}
+    adapters = ''
+    for stage, program in selected.items():
+        if program['output'] not in ('Ray', 'Color'):
+            continue
+        function = program['function']
+        callback = {'ray_generation': 'GraphLegacyGenerate', 'miss': 'GraphLegacyMiss',
+                    'closest_hit': 'GraphLegacyClosest'}[stage] + suffix
+        callbacks[stage] = callback
+        if stage == 'ray_generation':
+            adapters += f'''float3 {callback}(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+{{
+    ScenePayload payload = (ScenePayload)0;
+    TraceAndShade(scene, queries, {function}(launch), payload);
+    return payload.Radiance;
+}}
+'''
+        elif stage == 'miss':
+            adapters += f'''void {callback}(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)
+{{
+    payload.Radiance = {function}(ray);
+}}
+'''
+        else:
+            adapters += f'''void {callback}(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
+{{
+    RayHit input;
+    input.IncomingRay = hit.IncomingRay;
+    input.PositionWorld = hit.PositionWorld;
+    input.DistanceWorld = hit.DistanceWorld;
+    input.NormalWorld = hit.GeometricNormalWorld;
+    input.Primitive = hit.TriangleIndex;
+    input.Barycentric = hit.Barycentric;
+    input.Color = Surface(hit.TriangleIndex, 0);
+    payload.Radiance = {function}(input);
+}}
+'''
+    return callbacks, adapters
 
 
 def validate_payload(data, budget, build):
@@ -386,6 +430,11 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe):
                 for stage, identity in zip(STAGES, variants[0])}
     wrapper = scene_wrapper(selected, interface, snapshot, build, recipe)
     prefix, body = wrapper.split('uint TraceAndShade(', 1)
+    first_callbacks, first_adapters = adapt_legacy_callbacks(selected)
+    body = body.replace(first_adapters, '', 1) if first_adapters else body
+    if any(programs[identity]['output'] in ('Ray', 'Color') for variant in variants for identity in variant):
+        if '#include "_ludus_ray/ray_shader.slang"' not in prefix:
+            prefix += '#include "_ludus_ray/ray_shader.slang"\n'
     prefix = prefix.replace('#define LUDUS_SCENE_RAY_INTERFACE 1',
                             '#define LUDUS_SCENE_RAY_INTERFACE 1\n#define LUDUS_GRAPH_PERSISTENT_PIPELINE 1')
     prefix += '[[vk::binding(6, 0)]] RWStructuredBuffer<uint4> GraphBuffer0;\n'
@@ -395,26 +444,32 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe):
     # Shared type/helper includes are global and captured before entry-source namespaces.
     # Includes are compiler-resolved from the same immutable source snapshot.
     dependencies = {path for source in sources for path in snapshot.shader_closure(source)} - set(sources)
-    for dependency in sorted(dependencies - {interface['payload']}):
+    for dependency in sorted(dependencies - {interface.get('payload')}):
         prefix += '#include "' + dependency + '"\n'
     for index, source in enumerate(sources):
         prefix += f'namespace GraphSource{index} {{\n#include "{source}"\n}}\n'
+    variant_callbacks = []
+    for index, variant in enumerate(variants):
+        variant_selected = {stage: dict(programs[identity], function=f'GraphSource{sources.index(programs[identity]["source"])}::' + programs[identity]['function'])
+                            for stage, identity in zip(STAGES, variant)}
+        callbacks, adapters = adapt_legacy_callbacks(variant_selected, str(index))
+        variant_callbacks.append(callbacks)
+        prefix += adapters
     body = 'uint TraceAndShade(' + body
     # scene_wrapper's include rows are replaced by the namespaced union above.
     body = re.sub(r'^#include "[^"\n]+"\n', '', body, flags=re.M)
     def dispatch(stage, arguments, returns=False):
         result = 'switch (GetGraphPassIndex()) {\n'
         for index, variant in enumerate(variants):
-            program = programs[variant[STAGES.index(stage)]]
-            function = f'GraphSource{sources.index(program["source"])}::' + program['function']
+            function = variant_callbacks[index][stage]
             result += f'case {index}: ' + ('return ' if returns else '') + function + '(' + arguments + ');'
             result += ('\n' if returns else ' break;\n')
         return result + ('default: return float3(-1); }' if returns else 'default: queries.HasFailed = true; break; }')
-    body = body.replace(selected['closest_hit']['function'] + '(scene, hit, queries, payload);',
+    body = body.replace(first_callbacks['closest_hit'] + '(scene, hit, queries, payload);',
                         '{ ' + dispatch('closest_hit', 'scene, hit, queries, payload') + ' }')
-    body = body.replace(selected['miss']['function'] + '(scene, ray, queries, payload);',
+    body = body.replace(first_callbacks['miss'] + '(scene, ray, queries, payload);',
                         '{ ' + dispatch('miss', 'scene, ray, queries, payload') + ' }')
-    body = body.replace('float3 radiance = ' + selected['ray_generation']['function'] + '(scene, launch, queries);',
+    body = body.replace('float3 radiance = ' + first_callbacks['ray_generation'] + '(scene, launch, queries);',
                         'float3 radiance = DispatchGraphRay(scene, launch, queries);')
     dispatch_function = ('float3 DispatchGraphRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries) {\n' +
                          dispatch('ray_generation', 'scene, launch, queries', True) + '\n}\n')

@@ -42,6 +42,7 @@ LIMITS = {'configurations': 8, 'programs': 32, 'artifacts': 128, 'pipelines': 64
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
 MAX_FILES = 64
+MAX_SHADER_INCLUDE_DEPTH = 16
 MAX_PACKAGE_FILES = 1024
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 
@@ -139,8 +140,21 @@ class Snapshot:
             require(self.total <= MAX_BYTES, 'Capacity', relative, 'source byte limit exceeded')
         return self.files[relative]
 
-    def shader_closure(self, relative, active=()):
-        require(relative not in active and len(active) < 16, 'Source', relative, 'recursive or excessive shader import')
+    def shader_closure(self, relative, active=(), visited=None):
+        if visited is None:
+            visited = set()
+        if relative in active:
+            cycle = (*active[active.index(relative):], relative)
+            # This collector is not a preprocessor. Only an unconditional leading
+            # pragma can prove that a cycle terminates, regardless of its entry root.
+            guarded = any(re.match(r'\s*#[ \t]*pragma[ \t]+once[ \t]*\r?(?:\n|$)', re.sub(
+                r'/\*.*?\*/|//[^\n]*', '', self.load(path).decode('utf-8'), flags=re.S)) for path in cycle)
+            require(guarded, 'Source', relative, 'unguarded shader include cycle: ' + ' -> '.join(cycle))
+            return [relative]
+        if relative in visited:
+            return [relative]
+        require(len(active) < MAX_SHADER_INCLUDE_DEPTH, 'Source', relative,
+                'shader include depth exceeds ' + str(MAX_SHADER_INCLUDE_DEPTH) + ': ' + ' -> '.join((*active, relative)))
         data = self.load(relative)
         try:
             text = data.decode('utf-8')
@@ -158,8 +172,9 @@ class Snapshot:
             require(match is not None, 'Source', relative, 'only literal quoted includes are supported')
             child = (Path(relative).parent / match[1]).as_posix()
             self.path(child)
-            closure.update(self.shader_closure(child, (*active, relative)))
+            closure.update(self.shader_closure(child, (*active, relative), visited))
         require(not re.search(r'#\s*include\s*\\', text), 'Source', relative, 'continued include directives unsupported')
+        visited.add(relative)
         return sorted(closure)
 
     def verify(self):
@@ -252,7 +267,7 @@ def validate_manifest(value):
             keys(technique, ('id', 'configuration', *ray.STAGES, 'recipes'), 'ray technique', ('scene_interface',))
             scene_interface = technique.get('scene_interface')
             if scene_interface is not None:
-                keys(scene_interface, ('version', 'payload', 'surface_queries', 'visibility_queries'), 'scene interface', ('local_payload_bytes', 'visibility_buffer'))
+                keys(scene_interface, ('version', 'surface_queries', 'visibility_queries'), 'scene interface', ('payload', 'local_payload_bytes', 'visibility_buffer'))
                 if 'visibility_buffer' in scene_interface:
                     require(type(scene_interface['visibility_buffer']) is bool, 'Schema', 'visibility_buffer', 'Boolean required')
                 if 'local_payload_bytes' in scene_interface:
@@ -263,8 +278,9 @@ def validate_manifest(value):
                         ray.SCENE_QUERY_LIMITS['MAX_SURFACE_QUERIES'], 'surface query budget')
                 integer(scene_interface['visibility_queries'], ray.SCENE_QUERY_LIMITS['MIN_VISIBILITY_QUERIES'],
                         ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'], 'visibility query budget')
-                require(type(scene_interface['payload']) is str and scene_interface['payload'].endswith('.slang'),
-                        'Schema', 'payload', 'package-local Slang payload source required')
+                if 'payload' in scene_interface:
+                    require(type(scene_interface['payload']) is str and scene_interface['payload'].endswith('.slang'),
+                            'Schema', 'payload', 'package-local Slang payload source required')
             bounded_list(technique['recipes'], 1, 'ray recipes')
             require(len(technique['recipes']) == 1, 'Capability', ray.TECHNIQUE, 'one triangle ray recipe required')
             recipe = technique['recipes'][0]
@@ -277,8 +293,7 @@ def validate_manifest(value):
                 require(technique[stage] in programs and programs[technique[stage]]['stage'] == stage,
                         'ShaderInterface', ray.TECHNIQUE, 'unknown or wrong ray stage program')
             is_scene = scene_interface is not None
-            expected_outputs = ('Radiance', 'ScenePayload', 'ScenePayload') if is_scene else ('Ray', 'Color', 'Color')
-            require(tuple(programs[technique[stage]]['output'] for stage in ray.STAGES) == expected_outputs,
+            require(is_scene or tuple(programs[technique[stage]]['output'] for stage in ray.STAGES) == ('Ray', 'Color', 'Color'),
                     'ShaderInterface', ray.TECHNIQUE, 'callback signatures must match the selected scene/legacy profile')
             require(ray.TECHNIQUE not in techniques and any(target in ('metal', 'spirv') for target in value['profiles']),
                     'Capability', ray.TECHNIQUE,

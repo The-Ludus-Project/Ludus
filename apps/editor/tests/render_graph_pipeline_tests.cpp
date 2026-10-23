@@ -1348,7 +1348,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
     const QString renamedSource = QStringLiteral("shader_Shader_trace_raygen.slang");
     CHECK(document.GetFiles().contains(originalSource) == false);
     CHECK(document.GetDraft(renamedSource) == authored);
-    CHECK(document.GetFiles().size() == initialFiles + 2);
+    CHECK(document.GetFiles().size() == initialFiles + 1);
     REQUIRE(document.Undo() == true);
     CHECK(document.GetDraft(originalSource) == authored);
     CHECK(document.GetFiles().contains(renamedSource) == false);
@@ -1363,7 +1363,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
     node.insert(QStringLiteral("shaders"), shaders);
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
     CHECK(document.GetDraft(renamedSource) == authored);
-    CHECK(document.GetFiles().size() == initialFiles + 2);
+    CHECK(document.GetFiles().size() == initialFiles + 1);
     const QJsonArray programs =
         QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("programs")).toArray();
     const QJsonObject program = programs.last().toObject();
@@ -1863,7 +1863,7 @@ TEST_CASE("pipeline technique conflicts and budgets preserve the complete draft"
                              MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"))) ==
             RenderGraphDocumentStatus::Ok);
     QString error;
-    SECTION("a second pipeline cannot silently replace a shared technique")
+    SECTION("independent pipelines retain their callbacks and share engine helpers")
     {
         QJsonObject manifestBudget =
             QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
@@ -1882,14 +1882,23 @@ TEST_CASE("pipeline technique conflicts and budgets preserve the complete draft"
         const QStringList files = document.GetFiles();
         const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
         const uint64 revision = document.GetRevision();
-        CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) ==
-              RenderGraphDocumentStatus::Conflict);
-        CHECK(error.contains(QStringLiteral("trace")) == true);
-        CHECK(error.contains(QStringLiteral("otherTrace")) == true);
-        CHECK(error.contains(QStringLiteral("RendererTriangles.RayTracing")) == true);
-        CHECK(document.GetRevision() == revision);
-        CHECK(document.GetFiles() == files);
-        CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == manifest);
+        REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) ==
+                RenderGraphDocumentStatus::Ok);
+        CHECK(error.isEmpty() == true);
+        CHECK(document.GetRevision() == revision + 1);
+        CHECK(document.GetFiles().size() == files.size() + 3);
+        const QJsonObject previousManifest = QJsonDocument::fromJson(manifest).object();
+        const QJsonObject currentManifest =
+            QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+        CHECK(currentManifest.value(QStringLiteral("techniques")) ==
+              previousManifest.value(QStringLiteral("techniques")));
+        const QJsonArray currentPrograms = currentManifest.value(QStringLiteral("programs")).toArray();
+        for (const QJsonValueConstRef program : previousManifest.value(QStringLiteral("programs")).toArray())
+        {
+            CHECK(currentPrograms.contains(program) == true);
+        }
+        CHECK(document.GetFiles().contains(QStringLiteral("scene_legacy_callbacks.slang")) == false);
+        CHECK(document.GetFiles().contains(QStringLiteral("scene_payload.slang")) == false);
     }
     SECTION("a technique cannot exceed the manifest authoring budget")
     {
@@ -1966,8 +1975,8 @@ TEST_CASE("new ray shaders expose scene materials without manifest edits",
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
     const QJsonObject technique = GetRayTechnique(document);
     const QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
-    CHECK(document.GetDraft(interface.value(QStringLiteral("payload")).toString()).contains("float3 Radiance;") ==
-          true);
+    CHECK(interface.contains(QStringLiteral("payload")) == false);
+    CHECK(document.GetFiles().contains(QStringLiteral("scene_payload.slang")) == false);
     const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
     for (const QJsonValueConstRef value :
          QJsonDocument::fromJson(manifest).object().value(QStringLiteral("programs")).toArray())
@@ -2170,22 +2179,10 @@ TEST_CASE("legacy ray conversion preserves authored callbacks and is atomic",
         CHECK(manifestAfter.value(QStringLiteral("programs")).toArray().size() ==
               manifestBefore.value(QStringLiteral("programs")).toArray().size());
         CHECK(document.GetDraft(ROOT_GRAPH) == originalGraph);
-        for (const QJsonValueConstRef value :
-             QJsonDocument::fromJson(converted).object().value(QStringLiteral("programs")).toArray())
-        {
-            const QJsonObject program = value.toObject();
-            const QString stage = program.value(QStringLiteral("stage")).toString();
-            if (technique.value(stage) == program.value(QStringLiteral("id")))
-            {
-                const QByteArray adapter = document.GetDraft(program.value(QStringLiteral("source")).toString());
-                CHECK(adapter.contains("SceneShaderMain") == true);
-                if (stage == QStringLiteral("closest_hit"))
-                {
-                    CHECK(adapter.contains("input.Primitive = hit.TriangleIndex") == true);
-                    CHECK(adapter.contains("ShadeClosest(input)") == true);
-                }
-            }
-        }
+        CHECK(manifestAfter.value(QStringLiteral("programs")) == manifestBefore.value(QStringLiteral("programs")));
+        CHECK(document.GetFiles() == originalFiles);
+        CHECK(technique.value(QStringLiteral("scene_interface")).toObject().contains(QStringLiteral("payload")) ==
+              false);
         REQUIRE(document.EnableSceneMaterials(error) == RenderGraphDocumentStatus::Ok);
         CHECK(document.GetRevision() == revision + 1);
         REQUIRE(document.Undo() == true);
