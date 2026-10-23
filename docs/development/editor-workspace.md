@@ -32,7 +32,7 @@ central document well, and **tool windows** dock around it (see
 | Start Page | New/Open and recent projects while no project is open |
 | World | 2D/3D placement, game-owned entities/components, typed fields, references, shared history/save/recovery and trusted preview |
 | Render Graph | The open render-graph package: its source tree beside the node **Canvas**, the **Source** text editor and the validated **Plan** ([render-graph authoring](render-graph-authoring.md)) |
-| Project Settings | Setup/engine overview, lifecycle actions, name/profile and expandable build/launch details |
+| Project Settings | Setup/engine overview, lifecycle actions, rendering resolution/scale, name/profile and expandable build/launch details |
 | Scripts | Project-owned script and sequence drafts |
 | Audio | Content selection, definitions, save and preview |
 | Configuration | Independent offline configuration preview and preference editing |
@@ -96,9 +96,11 @@ recheck after changing installations outside the editor.
 
 **Check setup**, **Repair setup**, **Save settings**, **Build and run**, and
 **Stop** use the existing controller commands and their capability gates. Dirty
-settings must be saved before checks/repair/build. Save settings saves only the
-project descriptor; audio, World documents, scripts and configuration keep their own save
-owners. Opening a project still does not configure, download, repair or build it.
+settings must be saved before checks/repair/build. Save settings saves the project
+descriptor and pending edits in the active renderer graph, including the
+[output resolution and render scale](render-graph-authoring.md#output-and-render-resolution)
+shown in this tab. Audio, World documents, scripts and configuration keep their own
+save owners. Opening a project still does not configure, download, repair or build it.
 Repair's browser checkbox and engine selection retain their explicit behavior.
 
 Name and build profile are visible. Profile labels explain **Development** for
@@ -592,7 +594,7 @@ See [art direction](../architecture/editor-art-direction.md) and
 
 ## Initial S2 document interactions
 
-Project Settings retains up to 64 before/after snapshots. Consecutive edits in
+Project Settings descriptor fields retain up to 64 before/after snapshots. Consecutive edits in
 the same field coalesce until focus changes or Save establishes a boundary.
 Undo and Redo change the draft; they never write the descriptor. Dirty state
 compares the draft's content with the last successful save, so undoing to that
@@ -608,7 +610,9 @@ committed before Save or an unsaved-project decision. Field changes reach the
 current project synchronously, preventing queued edits from targeting a newly
 opened project. Focused editable text owns Undo/Redo first; move focus to another
 Project Settings control to use document history. Other work areas and live
-inspection do not consume project history.
+inspection do not consume project history. The Rendering resolution section uses
+the active render graph's history, including when a resolution spin box has focus;
+its canvas, Properties and Project Settings views all reflect Undo/Redo together.
 
 The shared Save action follows the active work area. Audio retains its existing
 save policy. Configuration saves committed preference edits to its selected

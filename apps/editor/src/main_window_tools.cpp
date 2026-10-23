@@ -202,7 +202,9 @@ void MainWindow::renderDocumentTitles()
                                        Renderer_->IsDirty()));
     mDocuments->SetDocumentTitle(Scripts_, title(QStringLiteral("Scripts"), {}, Scripts_->Dirty()));
     mDocuments->SetDocumentTitle(ProjectSettings_,
-                                 title(QStringLiteral("Project Settings"), {}, Controller_->State().Dirty()));
+                                 title(QStringLiteral("Project Settings"),
+                                       {},
+                                       Controller_->State().Dirty() == true || Renderer_->IsDirty() == true));
     mDocuments->SetDocumentTitle(Configuration_, title(QStringLiteral("Configuration"), {}, Configuration_->Dirty()));
 }
 

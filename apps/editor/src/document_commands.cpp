@@ -1,5 +1,6 @@
 #include "internal/code_editor.h"
 #include "internal/main_window.h"
+#include "internal/project_rendering_settings.h"
 
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
@@ -59,6 +60,7 @@ void MainWindow::CommitProjectFields()
     {
         return;
     }
+    mRenderingSettingsOrNull->Commit();
     // A QListWidget delegate's text is not in the model until accepted. Save
     // and loss-of-work confirmation must include that pending argument buffer.
     auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget());
@@ -118,7 +120,12 @@ void MainWindow::RenderDocumentActions()
     auto* line = qobject_cast<QLineEdit*>(focus);
     auto* plain = qobject_cast<QPlainTextEdit*>(focus);
     CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(focus);
-    if (line != nullptr)
+    if (isProject == true && mRenderingSettingsOrNull->ContainsFocus() == true)
+    {
+        UndoAction_->setEnabled(Renderer_->CanUndo());
+        RedoAction_->setEnabled(Renderer_->CanRedo());
+    }
+    else if (line != nullptr)
     {
         UndoAction_->setEnabled(line->isEnabled() && line->isReadOnly() == false && line->isUndoAvailable());
         RedoAction_->setEnabled(line->isEnabled() && line->isReadOnly() == false && line->isRedoAvailable());
@@ -159,7 +166,11 @@ void MainWindow::OnUndoRequested()
         return;
     }
     CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(QApplication::focusWidget());
-    if (codeOrNull != nullptr)
+    if (getActiveWorkspaceOrNull() == ProjectSettings_ && mRenderingSettingsOrNull->ContainsFocus() == true)
+    {
+        Renderer_->Undo();
+    }
+    else if (codeOrNull != nullptr)
     {
         codeOrNull->Undo();
     }
@@ -199,7 +210,11 @@ void MainWindow::OnRedoRequested()
         return;
     }
     CodeEditor* codeOrNull = qobject_cast<CodeEditor*>(QApplication::focusWidget());
-    if (codeOrNull != nullptr)
+    if (getActiveWorkspaceOrNull() == ProjectSettings_ && mRenderingSettingsOrNull->ContainsFocus() == true)
+    {
+        Renderer_->Redo();
+    }
+    else if (codeOrNull != nullptr)
     {
         codeOrNull->Redo();
     }

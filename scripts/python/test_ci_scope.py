@@ -199,6 +199,19 @@ class RequiredGateTests(unittest.TestCase):
         jobs = set(re.findall(r"^  ([a-z][a-z0-9-]*):$", workflow, re.MULTILINE))
         self.assertTrue(set(ci_scope.NATIVE_JOBS) <= jobs)
 
+    def test_native_builds_do_not_wait_for_source_policy(self):
+        # A source-policy failure must not skip every compile in a batch: the
+        # builds report their own results while the gate still requires the
+        # source/tooling job to succeed before promotion.
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$", workflow, re.MULTILINE))
+        for name in ci_scope.NATIVE_JOBS:
+            with self.subTest(job=name):
+                self.assertEqual(dependencies.get(name), "changes")
+        results = self.results(tier=ci_scope.FULL_TIER)
+        results["formatting"]["result"] = "failure"
+        self.assertIn("formatting: expected success, received failure.", ci_scope.gate_failures(results))
+
     def test_workflow_defers_exactly_the_integration_and_nightly_jobs(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         self.assertNotIn("'pull-request'", workflow)
