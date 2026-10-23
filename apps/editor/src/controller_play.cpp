@@ -19,6 +19,9 @@ namespace ludus::editor
 {
 namespace
 {
+/// Largest UTF-8 encoding accepted for a typed string property edit.
+constexpr qsizetype MAX_STRING_PROPERTY_BYTES = 256;
+
 bool DebugId(const QJsonValue& value)
 {
     const auto text = value.toString();
@@ -660,7 +663,7 @@ void EditorController::EditProperty(int row, const QString& text)
     }
     else if (kind == 4)
     {
-        valid = text.toUtf8().size() <= 256 && text.contains(QChar(u'\0')) == false;
+        valid = text.toUtf8().size() <= MAX_STRING_PROPERTY_BYTES && text.contains(QChar(u'\0')) == false;
         edit.insert(QStringLiteral("value"), text);
     }
     if (valid == false)

@@ -21,12 +21,14 @@ namespace ludus::editor
 {
 namespace
 {
+/// Largest `.ludus/setup.json` the setup dialog reads.
+constexpr foundation::int64 MAX_SETUP_RECORD_BYTES = foundation::int64{64} * 1024;
 QString SavedWebSdk(const QString& projectDirectory)
 {
     // Display saved metadata only. The shared tooling backend validates it
     // before repair; opening this dialog never runs project code or tools.
     QFile file(QDir(projectDirectory).filePath(QStringLiteral(".ludus/setup.json")));
-    if (file.open(QIODevice::ReadOnly) == false || file.size() > foundation::int64{64} * 1024)
+    if (file.open(QIODevice::ReadOnly) == false || file.size() > MAX_SETUP_RECORD_BYTES)
     {
         return {};
     }

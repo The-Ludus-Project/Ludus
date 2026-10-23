@@ -37,10 +37,19 @@ namespace ludus::editor
 {
 namespace
 {
+/// Largest script source, sidecar or evidence file the workspace reads.
+constexpr qint64 MAX_SCRIPT_DOCUMENT_BYTES = 131072;
+/// Longest accepted script project name, in UTF-16 code units.
+constexpr qsizetype MAX_SCRIPT_NAME_CHARACTERS = 64;
+/// Script project names are ASCII; code points from here on are rejected.
+constexpr char16_t FIRST_NON_ASCII_CODE_POINT = 128;
+/// Members of a `ludus.scripts.json` sidecar: version, name, contract and package.
+constexpr qsizetype SCRIPT_SIDECAR_FIELD_COUNT = 4;
 QByteArray Read(const QString& path)
 {
     QFile file(path);
-    if (QFileInfo(path).isSymLink() || file.open(QIODevice::ReadOnly) == false || file.size() > 131072)
+    if (QFileInfo(path).isSymLink() || file.open(QIODevice::ReadOnly) == false ||
+        file.size() > MAX_SCRIPT_DOCUMENT_BYTES)
     {
         return {};
     }
@@ -196,18 +205,20 @@ void ScriptWorkspace::SetProject(const QString& root, const QString& source, con
     Dirty_ = false;
     Sidecar_ = Object(Read(QDir(root).filePath(QStringLiteral("ludus.scripts.json"))));
     const auto name = Sidecar_.value(QStringLiteral("name")).toString();
-    const bool nameValid = name.isEmpty() == false && name.size() <= 64 && name.at(0).isLetter() && [&name]() {
-        for (QChar c : name)
-        {
-            if (c.unicode() >= 128 || (c.isLetterOrNumber() == false && c != QLatin1Char('_')))
+    const bool isNameValid =
+        name.isEmpty() == false && name.size() <= MAX_SCRIPT_NAME_CHARACTERS && name.at(0).isLetter() && [&name]() {
+            for (QChar c : name)
             {
-                return false;
+                if (c.unicode() >= FIRST_NON_ASCII_CODE_POINT ||
+                    (c.isLetterOrNumber() == false && c != QLatin1Char('_')))
+                {
+                    return false;
+                }
             }
-        }
-        return true;
-    }();
-    if (Sidecar_.size() != 4 || Sidecar_.value(QStringLiteral("version")).toInt() != 1 || nameValid == false ||
-        Within(root, Sidecar_.value(QStringLiteral("contract")).toString()).isEmpty())
+            return true;
+        }();
+    if (Sidecar_.size() != SCRIPT_SIDECAR_FIELD_COUNT || Sidecar_.value(QStringLiteral("version")).toInt() != 1 ||
+        isNameValid == false || Within(root, Sidecar_.value(QStringLiteral("contract")).toString()).isEmpty())
     {
         Sidecar_ = {};
     }
@@ -668,17 +679,17 @@ void ScriptWorkspace::Refresh()
     Cook_->setEnabled(Path_.isEmpty() == false && Sidecar_.isEmpty() == false && Dirty_ == false &&
                       Controller_->State().Busy() == false);
     Reload_->setEnabled(Dirty_ == false && (Controller_->CanBuildReload() || Controller_->Caps().CanBuild));
-    const bool ready = play.Phase == PlayPhase::Running && play.ScriptBusy == false && play.DebuggerStopped == false;
+    const bool isReady = play.Phase == PlayPhase::Running && play.ScriptBusy == false && play.DebuggerStopped == false;
     for (auto* control : DebugControls_)
     {
         const auto action = control->property("scriptAction").toString();
         control->setEnabled(
-            ready && (action == QStringLiteral("inspect") ||
-                      (play.ScriptStatus.isEmpty() == false &&
-                       (action == QStringLiteral("restart") ||
-                        (action == QStringLiteral("interact") ? play.ScriptPaused == false : play.ScriptPaused)))));
+            isReady && (action == QStringLiteral("inspect") ||
+                        (play.ScriptStatus.isEmpty() == false &&
+                         (action == QStringLiteral("restart") ||
+                          (action == QStringLiteral("interact") ? play.ScriptPaused == false : play.ScriptPaused)))));
     }
-    Break_->setEnabled(ready && MapsMatch() && play.ScriptStatus.isEmpty() == false &&
+    Break_->setEnabled(isReady && MapsMatch() && play.ScriptStatus.isEmpty() == false &&
                        play.ScriptStatus.value(QStringLiteral("package")) == Evidence_.value(QStringLiteral("key")));
     ClearBreak_->setEnabled(Break_->isEnabled());
     Highlight();

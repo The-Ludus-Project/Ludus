@@ -1032,15 +1032,15 @@ void LevelWorkspace::Inspect()
     Rendering_ = true;
     const auto index = Objects_->currentRow();
     const auto objects = Level_.value(QStringLiteral("objects")).toArray();
-    const bool available = Busy_ == false && index >= 0 && index < objects.size();
-    Name_->setEnabled(available);
-    Remove_->setEnabled(available);
-    const auto object = available ? objects[index].toObject() : QJsonObject{};
+    const bool isAvailable = Busy_ == false && index >= 0 && index < objects.size();
+    Name_->setEnabled(isAvailable);
+    Remove_->setEnabled(isAvailable);
+    const QJsonObject object = isAvailable ? objects[index].toObject() : QJsonObject{};
     Name_->setText(object.value(QStringLiteral("name")).toString());
     const auto transform = object.value(QStringLiteral("transform")).toArray();
     for (foundation::int32 i = 0; i < 3; ++i)
     {
-        Translation_[i]->setEnabled(available);
+        Translation_[i]->setEnabled(isAvailable);
         Translation_[i]->setValue(transform.size() == 12 ? transform[9 + i].toDouble() : 0);
     }
     Rendering_ = false;

@@ -983,8 +983,8 @@ void MainWindow::RenderRecentProjects()
     RecentMenu_->clear();
     for (const RecentProject& project : projects)
     {
-        const bool missing = QFileInfo(project.DescriptorPath).isFile() == false;
-        const QString name = missing ? QStringLiteral("%1 (missing)").arg(project.Name) : project.Name;
+        const bool isMissing = QFileInfo(project.DescriptorPath).isFile() == false;
+        const QString name = isMissing ? QStringLiteral("%1 (missing)").arg(project.Name) : project.Name;
         auto* item = new QListWidgetItem(name + QStringLiteral("\n") + project.DescriptorPath, RecentList_);
         item->setIcon(windowIcon());
         item->setData(Qt::UserRole, project.DescriptorPath);
@@ -1644,8 +1644,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
             event->ignore();
             return;
         }
-        const bool busy = Controller_->Caps().CanCloseImmediately == false || Content_->Importing();
-        if (busy && CloseConfirmed_ == false)
+        const bool isBusy = Controller_->Caps().CanCloseImmediately == false || Content_->Importing();
+        if (isBusy && CloseConfirmed_ == false)
         {
             const auto choice = QMessageBox::question(
                 this,

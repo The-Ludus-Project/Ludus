@@ -14,6 +14,8 @@ namespace
 {
 constexpr usize kMaxBacklog = usize{1} * 1024U * 1024U;
 constexpr usize kMaxLine = usize{256} * 1024U;
+/// Supervisor lines handled per scheduled pass before yielding to the event loop.
+constexpr int MAX_LINES_PER_PASS = 32;
 } // namespace
 
 PlayProcess::PlayProcess(QObject* parent) : QObject(parent)
@@ -48,8 +50,9 @@ PlayProcess::PlayProcess(QObject* parent) : QObject(parent)
         }
         ReadyTimer_.stop();
         Active_ = false;
-        const bool confirmed = CleanupConfirmed_ && exitCode == 0 && status == QProcess::NormalExit && Failed_ == false;
-        Q_EMIT Finished(confirmed);
+        const bool isConfirmed =
+            CleanupConfirmed_ && exitCode == 0 && status == QProcess::NormalExit && Failed_ == false;
+        Q_EMIT Finished(isConfirmed);
     });
 }
 
@@ -158,7 +161,7 @@ void PlayProcess::Read()
 void PlayProcess::Consume()
 {
     ConsumeScheduled_ = false;
-    for (int i = 0; i < 32 && Failed_ == false; ++i)
+    for (int i = 0; i < MAX_LINES_PER_PASS && Failed_ == false; ++i)
     {
         const auto newline = Backlog_.indexOf('\n');
         if (newline < 0)
@@ -210,9 +213,9 @@ void PlayProcess::Consume()
             }
             continue;
         }
-        const bool stoppedBeforeStart = StartSent_ == false && StopLatched_ && type == QStringLiteral("ended") &&
-                                        event.value(QStringLiteral("epoch")) == QStringLiteral("0000000000000000");
-        if (event.value(QStringLiteral("epoch")).toString() != Epoch_ && stoppedBeforeStart == false)
+        const bool hasStoppedBeforeStart = StartSent_ == false && StopLatched_ && type == QStringLiteral("ended") &&
+                                           event.value(QStringLiteral("epoch")) == QStringLiteral("0000000000000000");
+        if (event.value(QStringLiteral("epoch")).toString() != Epoch_ && hasStoppedBeforeStart == false)
         {
             Fail(QStringLiteral("Play epoch mismatch"));
             return;

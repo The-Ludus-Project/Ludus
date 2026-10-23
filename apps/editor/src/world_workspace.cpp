@@ -51,6 +51,8 @@ namespace ludus::editor
 {
 namespace
 {
+/// Room in a recovery envelope for its header line and SHA-256 hex digest line.
+constexpr foundation::int64 MAX_RECOVERY_HEADER_BYTES = 256;
 bool Read(const QString& path, QByteArray& output, foundation::int64 limit)
 {
     const QFileInfo info(path);
@@ -629,7 +631,7 @@ bool WorldWorkspace::LoadProjectSchema(WorldDocument& candidate, QByteArray& sch
         }
         return candidate.LoadSchema(schema, error);
     }
-    if (Inside(path, true) == false || Read(path, schema, 65536) == false)
+    if (Inside(path, true) == false || Read(path, schema, WorldDocument::MAX_SCHEMA_BYTES) == false)
     {
         Changed(QStringLiteral("Unreadable or unsafe authoring/world.schema.json. Repair the declared schema before "
                                "opening or creating a World."));
@@ -687,19 +689,19 @@ bool WorldWorkspace::Open(const QString& path)
         return false;
     }
     const auto incoming = QJsonDocument::fromJson(bytes).object();
-    const bool legacy =
+    const bool isLegacy =
         incoming.contains(QStringLiteral("schema")) == false && incoming.contains(QStringLiteral("settings"));
     const bool demo =
-        legacy || incoming.value(QStringLiteral("schema")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
+        isLegacy || incoming.value(QStringLiteral("schema")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
     if (LoadProjectSchema(candidate, schema, demo) == false)
     {
         return false;
     }
-    const auto destination = legacy ? QFileInfo(path).absolutePath() + QLatin1Char('/') +
-                                          QFileInfo(path).completeBaseName() + QStringLiteral(".world.json")
-                                    : path;
-    if ((legacy && Inside(destination, false) == false) ||
-        (legacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
+    const QString destination = isLegacy ? QFileInfo(path).absolutePath() + QLatin1Char('/') +
+                                               QFileInfo(path).completeBaseName() + QStringLiteral(".world.json")
+                                         : path;
+    if ((isLegacy && Inside(destination, false) == false) ||
+        (isLegacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
     {
         Changed(error);
         return false;
@@ -714,7 +716,7 @@ bool WorldWorkspace::Open(const QString& path)
     WorldDocument currentDefinition;
     if (LoadProjectSchema(currentDefinition, currentSchema, demo) == false || currentSchema != schema ||
         Read(path, bytes, WorldDocument::MaxBytes) == false ||
-        (legacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
+        (isLegacy ? ImportWorldDemo(candidate, mEntropy, bytes, error) : candidate.Load(bytes, error)) == false)
     {
         Changed(QStringLiteral("Incoming world/schema changed while opening. Retry Open World."));
         return false;
@@ -729,12 +731,12 @@ bool WorldWorkspace::Open(const QString& path)
     ClearImportState();
     Render_->SetWorld(Root_, &Document_);
     SchemaDisk_ = foundation::Move(schema);
-    Disk_ = legacy ? QByteArray() : bytes;
+    Disk_ = isLegacy ? QByteArray() : bytes;
     Path_ = QFileInfo(destination).absoluteFilePath();
     Selected_.clear();
     mSelectedEntities.clear();
     Pending_ = false;
-    Unsaved_ = legacy;
+    Unsaved_ = isLegacy;
     Render();
     RefreshScene();
     Changed(QStringLiteral("World opened. Select an entity or add one; recovery is restored only when requested."));
@@ -1809,7 +1811,9 @@ bool WorldWorkspace::Recover()
     if (SceneBusy() || Dirty() || Unsaved_ || Inside(Path_, true) == false ||
         Read(Path_, current, WorldDocument::MaxBytes) == false || current != Disk_ ||
         LoadProjectSchema(definition, schema, IsWorldDemo(Document_)) == false || schema != SchemaDisk_ ||
-        Read(Path_ + QStringLiteral(".ludus-recovery"), envelope, WorldDocument::MaxBytes + 256) == false ||
+        Read(Path_ + QStringLiteral(".ludus-recovery"),
+             envelope,
+             WorldDocument::MaxBytes + MAX_RECOVERY_HEADER_BYTES) == false ||
         envelope.startsWith(header) == false)
     {
         Changed(

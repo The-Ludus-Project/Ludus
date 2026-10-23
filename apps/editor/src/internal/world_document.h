@@ -29,6 +29,8 @@ class WorldDocument final
 {
 public:
     static constexpr foundation::int64 MaxBytes = 524288;
+    /// Largest world schema accepted from a project or the built-in adapter.
+    static constexpr foundation::int64 MAX_SCHEMA_BYTES = 65536;
     /// Most entities one World admits; validation rejects a larger entity list.
     static constexpr foundation::int32 MAX_ENTITIES = 128;
     [[nodiscard]] bool LoadSchema(const QByteArray& bytes, QString& error);

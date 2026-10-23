@@ -147,7 +147,7 @@ QJsonValue Property(const QJsonObject& entity, const QString& component, const Q
     return entity.value(QStringLiteral("components")).toObject().value(component).toObject().value(property);
 }
 /// Write `world` and the starter schema into a new project at `directory`; returns the World path.
-QString WriteStarterProject(QTemporaryDir& directory, const QByteArray& world)
+QString WriteStarterProject(const QTemporaryDir& directory, const QByteArray& world)
 {
     REQUIRE(directory.isValid());
     const QDir root(QFileInfo(directory.path()).canonicalFilePath());
@@ -157,9 +157,9 @@ QString WriteStarterProject(QTemporaryDir& directory, const QByteArray& world)
     Write(path, world);
     return path;
 }
-void Select(WorldWorkspace& view, const QString& key)
+void Select(WorldWorkspace& inoutView, const QString& key)
 {
-    QListWidget* list = view.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    QListWidget* list = inoutView.findChild<QListWidget*>(QStringLiteral("worldEntities"));
     REQUIRE(list != nullptr);
     for (ludus::foundation::int32 row = 0; row < list->count(); ++row)
     {
