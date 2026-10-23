@@ -247,7 +247,7 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
         AppendSceneBundleInputs(ports.Inputs);
         ports.Outputs = ReadInterface(node.value(QStringLiteral("outputs")).toArray());
     }
-    else if (kind == QStringLiteral("Accumulate"))
+    else if (kind == QStringLiteral("Accumulate") || kind == QStringLiteral("ToneMap"))
     {
         ports.Inputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
         ports.Outputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
@@ -1009,6 +1009,14 @@ void RenderGraphCanvas::refreshFeedback()
             resources.append(QStringLiteral("Linear RGB accumulation before display conversion. "
                                             "Resets on camera, scene, size or shader replacement. "
                                             "Bypass this node for individual samples."));
+        }
+        if (view->Kind == QStringLiteral("ToneMap"))
+        {
+            const QJsonObject node = FindNode(configuration(), view->Id);
+            sizeLabel =
+                QStringLiteral("Reinhard · %1× exposure").arg(node.value(QStringLiteral("exposure")).toDouble());
+            resources.append(QStringLiteral("Exposure, Reinhard compression and sRGB encoding after optional "
+                                            "linear accumulation. Bypass for clamped linear RGB."));
         }
         view->Frame->setToolTip(view->Id + QStringLiteral(" : ") + view->Kind + QStringLiteral("\n") + explanation +
                                 QLatin1Char('\n') + resources.join(QLatin1Char('\n')));

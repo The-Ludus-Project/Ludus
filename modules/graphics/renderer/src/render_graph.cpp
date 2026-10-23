@@ -453,7 +453,11 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             return Status::InvalidDescription;
         }
         if (pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
-            (pass.Program != format::Technique::RayTracing && pass.AccumulationSamples != 0))
+            (pass.ToneMappingExposure != 0 &&
+             (pass.ToneMappingExposure >= format::MIN_TONE_MAPPING_EXPOSURE &&
+              pass.ToneMappingExposure <= format::MAX_TONE_MAPPING_EXPOSURE) == false) ||
+            (pass.Program != format::Technique::RayTracing &&
+             (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0)))
         {
             return Status::InvalidDescription;
         }
@@ -1108,7 +1112,10 @@ struct RenderGraph::State final
             {
                 if (inoutScene.HasViews[i] == false)
                 {
-                    const GpuPreviewGraphInvocation invocation{0, {}, Passes[i].AccumulationSamples};
+                    const GpuPreviewGraphInvocation invocation{0,
+                                                               {},
+                                                               Passes[i].AccumulationSamples,
+                                                               Passes[i].ToneMappingExposure};
                     const Status created =
                         inoutScene.RayPasses[i].Initialize(context,
                                                            inoutScene.Snapshots[i],
@@ -2290,7 +2297,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             state.Programs.HasPersistentRayBuffers == true
                 ? BorrowedView<const GpuPreviewGraphBuffer>{buffers.GetData(), buffers.GetSize()}
                 : BorrowedView<const GpuPreviewGraphBuffer>{},
-            operation.AccumulationSamples};
+            operation.AccumulationSamples,
+            operation.ToneMappingExposure};
         const Status created =
             candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
                                                   {},

@@ -1008,6 +1008,10 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         (state.IsGraphRayScene == false ||
          (state.HasPersistentBuffers == false &&
           (invocationOrNull->Program != 0 || invocationOrNull->Buffers.IsEmpty() == false)) ||
+         (invocationOrNull->ToneMappingExposure != 0 &&
+          (invocationOrNull->ToneMappingExposure >= content::render_graph_format::MIN_TONE_MAPPING_EXPOSURE &&
+           invocationOrNull->ToneMappingExposure <= content::render_graph_format::MAX_TONE_MAPPING_EXPOSURE) ==
+              false) ||
          invocationOrNull->AccumulationSamples > content::render_graph_format::MAX_ACCUMULATION_SAMPLES ||
          invocationOrNull->Program >= content::render_graph_format::MAX_RAY_PASSES ||
          invocationOrNull->Buffers.IsValid() == false ||
@@ -1234,7 +1238,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         constexpr usize SAMPLE_LIMIT_COMPONENT = 3;
         uniform.Sampling[SAMPLE_LIMIT_COMPONENT] = invocationOrNull->AccumulationSamples;
     }
-    uniform.Options.Y = state.Options.Exposure;
+    uniform.Options.Y = invocationOrNull != nullptr ? invocationOrNull->ToneMappingExposure : state.Options.Exposure;
     job.Uniform = uniform;
     const math::Vector4 dimensions{float32(job.Width), float32(job.Height), 0, 0};
     status = rhi::CreateBuffer(mState->Device,

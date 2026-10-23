@@ -23,8 +23,12 @@
           "to": "lighting.color"
         },
         {
-          "from": "lighting.color",
+          "from": "tonemap.color",
           "to": "output.texture"
+        },
+        {
+          "from": "lighting.color",
+          "to": "tonemap.color"
         }
       ],
       "id": "Default",
@@ -73,6 +77,11 @@
           "kind": "Subgraph",
           "asset": "library.lurender.json",
           "configuration": "RestirDi"
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
         }
       ],
       "outputs": []

@@ -195,7 +195,16 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
     CheckSameStage(decoded.RayCompute, programs.RayCompute);
     CheckSameStage(decoded.RayImageVertex, programs.RayImageVertex);
     CheckSameStage(decoded.RayImageFragment, programs.RayImageFragment);
-    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, package->GetPlan(), decoded);
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    format::Pass operation = plan.Passes[0];
+    SECTION("clamped linear output") {}
+    SECTION("explicit ToneMap")
+    {
+        operation.ToneMappingExposure = 1;
+    }
+    const uint8 expected = operation.ToneMappingExposure == 0 ? 255 : 188;
+    plan.Passes = {&operation, 1};
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, decoded);
     const uint64 started = time::NowTicks();
     while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
     {
@@ -224,28 +233,28 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
     CHECK(fixture.Graph.GetReport().Covered == 1);
     read();
     const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
-    CHECK(fixture.Pixels[center] == 255);
+    CHECK(fixture.Pixels[center] == expected);
     CHECK(fixture.Pixels[center + 2] == 0);
-    CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == 255);
+    CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == expected);
     fixture.Items[0].MeshToWorld.Translation.X = 2;
     REQUIRE(update(2) == rhi::RasterStatus::Ready);
     read();
     CHECK(fixture.Pixels[center] == 0);
-    CHECK(fixture.Pixels[center + 2] == 255);
+    CHECK(fixture.Pixels[center + 2] == expected);
     fixture.Cameras[0].WorldToClip.Columns[3].X = -2;
     REQUIRE(update(3) == rhi::RasterStatus::Ready);
     read();
-    CHECK(fixture.Pixels[center] == 255);
+    CHECK(fixture.Pixels[center] == expected);
     fixture.Items[0].Material.Color = {0, 1, 0, 1};
     REQUIRE(update(4) == rhi::RasterStatus::Ready);
     read();
     CHECK(fixture.Pixels[center] == 0);
-    CHECK(fixture.Pixels[center + 1] == 255);
+    CHECK(fixture.Pixels[center + 1] == expected);
     fixture.Items[0].Coverage = renderer::RenderGraphMaterial::Transparent;
     CHECK(update(5) == rhi::RasterStatus::Unsupported);
     CHECK(fixture.Graph.GetDrawableSceneRevision() == 4);
     read();
-    CHECK(fixture.Pixels[center + 1] == 255);
+    CHECK(fixture.Pixels[center + 1] == expected);
     CHECK(fixture.Graph.GetOutputSceneRevision() == 4);
     REQUIRE(fixture.Graph.PrepareEncoding() == rhi::RasterStatus::Ready);
     REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
@@ -262,7 +271,7 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
     REQUIRE(update(6, false) == rhi::RasterStatus::Ready);
     read();
     CHECK(fixture.Pixels[center] == 0);
-    CHECK(fixture.Pixels[center + 2] == 255);
+    CHECK(fixture.Pixels[center + 2] == expected);
 }
 
 TEST_CASE("Scene callbacks preserve material and scene generation through native GPU rendering",
@@ -1390,8 +1399,8 @@ TEST_CASE("Built-in visibility templates preserve IDs and reconstruct reflected 
     CHECK(fixture.Pixels[center + 2] == 188);
 }
 
-TEST_CASE("Explicit Accumulate averages linear ray output and stops at its authored limit",
-          "[render-graph][gpu][accumulation]")
+TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",
+          "[render-graph][gpu][accumulation][tone-mapping]")
 {
     GraphGpuFixture fixture;
     const renderer::RenderGraphPrograms programs =
@@ -1405,7 +1414,18 @@ TEST_CASE("Explicit Accumulate averages linear ray output and stops at its autho
         passes[pass] = plan.Passes[pass];
     }
     constexpr uint32 SAMPLE_LIMIT = 2;
+    float32 exposure = 1;
+    SECTION("unit exposure") {}
+    SECTION("bypass")
+    {
+        exposure = 0;
+    }
+    SECTION("double exposure")
+    {
+        exposure = 2;
+    }
     passes[plan.Passes.GetSize() - 1].AccumulationSamples = SAMPLE_LIMIT;
+    passes[plan.Passes.GetSize() - 1].ToneMappingExposure = exposure;
     plan.Passes = {passes.GetData(), plan.Passes.GetSize()};
     const auto finish = [&fixture](rhi::RasterStatus status) {
         const uint64 beginning = time::NowTicks();
@@ -1438,14 +1458,16 @@ TEST_CASE("Explicit Accumulate averages linear ray output and stops at its autho
     REQUIRE(fixture.Graph.HasPendingSamples() == true);
     ReadGraphFrame(fixture, output);
     const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
-    CHECK(fixture.Pixels[center] == 188); // Reinhard/sRGB of linear sample 1.
+    const uint8 firstExpected = exposure == 0 ? 255 : exposure == 1 ? 188 : 213;
+    const uint8 meanExpected = exposure == 0 ? 255 : exposure == 1 ? 203 : 225;
+    CHECK(fixture.Pixels[center] == firstExpected); // Display conversion of linear sample 1.
     CHECK(fixture.Graph.HasPendingSamples() == true);
     ReadGraphFrame(fixture, output);
-    CHECK(fixture.Pixels[center] == 203); // Display conversion of mean(1, 2) = 1.5.
+    CHECK(fixture.Pixels[center] == meanExpected); // Exposure scales mean(1, 2) = 1.5, before encoding.
     CHECK(fixture.Pixels[center + 1] == 0);
     CHECK(fixture.Graph.HasPendingSamples() == false);
     ReadGraphFrame(fixture, output);
-    CHECK(fixture.Pixels[center] == 203);
+    CHECK(fixture.Pixels[center] == meanExpected);
     // An accepted camera revision restarts the averaging budget without clearing shared buffers.
     finish(fixture.Graph.Update({},
                                 {},

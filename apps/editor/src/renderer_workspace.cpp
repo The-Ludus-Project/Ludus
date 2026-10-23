@@ -38,6 +38,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -274,6 +275,10 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
         node.insert(QStringLiteral("role"), QStringLiteral("Offscreen"));
         node.insert(QStringLiteral("target_type"), QStringLiteral("ColorTexture"));
     }
+    else if (kind == QStringLiteral("ToneMap"))
+    {
+        node.insert(QStringLiteral("exposure"), 1);
+    }
     else if (kind == QStringLiteral("Accumulate"))
     {
         node.insert(QStringLiteral("samples"),
@@ -499,6 +504,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("ComputePipeline"),
                         QStringLiteral("RayTracingPipeline"),
                         QStringLiteral("Accumulate"),
+                        QStringLiteral("ToneMap"),
                         QStringLiteral("Subgraph"),
                         QStringLiteral("Export"),
                         QStringLiteral("Present")});
@@ -2341,6 +2347,21 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 replaceSelectedField(QStringLiteral("samples"), samples->value());
             });
             outFields.addRow(QStringLiteral("Sample limit"), samples);
+        }
+        else if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("ToneMap") &&
+                 name == QStringLiteral("exposure"))
+        {
+            QDoubleSpinBox* exposure = new QDoubleSpinBox(&inoutParent);
+            exposure->setObjectName(QStringLiteral("renderGraphField_exposure"));
+            exposure->setRange(static_cast<float64>(content::render_graph_format::MIN_TONE_MAPPING_EXPOSURE),
+                               static_cast<float64>(content::render_graph_format::MAX_TONE_MAPPING_EXPOSURE));
+            exposure->setValue(field.value().toDouble());
+            exposure->setToolTip(QStringLiteral("Linear exposure multiplier, then Reinhard compression and sRGB "
+                                                "encoding. Connect after Accumulate; bypass to clamp raw linear RGB."));
+            connect(exposure, &QDoubleSpinBox::editingFinished, this, [this, exposure]() {
+                replaceSelectedField(QStringLiteral("exposure"), exposure->value());
+            });
+            outFields.addRow(QStringLiteral("Exposure multiplier"), exposure);
         }
         else if (field.value().isBool() == true)
         {

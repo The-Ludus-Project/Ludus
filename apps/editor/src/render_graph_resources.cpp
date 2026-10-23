@@ -239,7 +239,8 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
                                depth + 1);
     }
     QString target;
-    if ((kind == QStringLiteral("Raster") || kind == QStringLiteral("Accumulate")) &&
+    if ((kind == QStringLiteral("Raster") || kind == QStringLiteral("Accumulate") ||
+         kind == QStringLiteral("ToneMap")) &&
         (port == QStringLiteral("color") || port == QStringLiteral("depth")))
     {
         target = port;

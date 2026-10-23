@@ -965,3 +965,18 @@ endforeach()
 if(TARGET ludus_render_graph_configuration_tests)
     target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_resolution_tests.cpp)
 endif()
+
+# Precompiled Qt Core and standard headers; see cmake/EditorPrecompiledHeaders.cmake.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EditorPrecompiledHeaders.cmake")
+ludus_editor_apply_precompiled_headers(
+    ludus_editor_core
+    ludus_editor_code
+    ludus_editor
+    ludus_code_editor_tests
+    ludus_editor_browser_content_tests
+    ludus_editor_tests
+    ludus_render_graph_pipeline_tests
+    ludus_shader_interface_tests
+    ludus_render_graph_configuration_tests
+    ludus_render_graph_live_build_tests
+)

@@ -37,6 +37,9 @@ struct GpuPreviewGraphInvocation final
     /// Zero outputs individual samples; a positive value up to RenderGraphFormat::MAX_ACCUMULATION_SAMPLES
     /// averages linear radiance before display conversion. Camera/scene replacement restarts the mean.
     foundation::uint32 AccumulationSamples = 0;
+    /// Graph-owned display conversion: zero bypasses it; a finite multiplier in the RenderGraphFormat
+    /// tone-mapping exposure range applies Reinhard and sRGB after optional accumulation.
+    foundation::float32 ToneMappingExposure = 0;
 };
 namespace internal
 {
