@@ -15,6 +15,7 @@
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/materials.hpp>
+#include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 
@@ -53,6 +54,17 @@ enum class PreviewLightingStage : foundation::uint8
     Ready,
 };
 
+/// RT1 retention for a generation whose snapshot feeds BeginReferenceCapture instead of a display.
+/// Reference rendering is enabled before any mesh or material version exists, color textures keep
+/// their CPU content, and no shadow atlas is prepared: reference transport traces its own visibility.
+struct PreviewReferenceSetup final
+{
+    /// Traversal and admission budgets passed to Renderer::EnableReferenceRendering.
+    graphics::renderer::ReferenceRenderingOptions Options{};
+    /// Installed native query kernel; borrowed static artifact, ignored by CpuOracle.
+    graphics::rhi::ShaderDescription QueryShader{};
+};
+
 /// Owner-thread GPU generation, frozen to one validated scene and shading mode.
 /// The device outlives this owner. Consumers release all image leases before destruction.
 /// Preparation never reads mutable workspace/camera state or publishes a display image.
@@ -60,10 +72,13 @@ class PreviewGpuGeneration final
 {
 public:
     /// shaders is copied; the generation draws every program with it for its whole lifetime.
+    /// referenceOrNull is copied; non-null prepares a lit RT1 reference snapshot rather than a
+    /// display. A reference generation requires a lit scene and Lit shading, and its Viewport stays empty.
     PreviewGpuGeneration(graphics::rhi::DeviceHandle device,
                          const RenderScene& source,
                          PreviewShading shading,
-                         const PreviewShaderSet& shaders);
+                         const PreviewShaderSet& shaders,
+                         const PreviewReferenceSetup* referenceOrNull = nullptr);
     ~PreviewGpuGeneration() noexcept;
     PreviewGpuGeneration(const PreviewGpuGeneration&) = delete;
     PreviewGpuGeneration& operator=(const PreviewGpuGeneration&) = delete;
@@ -100,6 +115,8 @@ public:
     /// Renderer shaders of this generation; owns any run-time replacement code its pipelines use.
     const PreviewShaderSet Shaders;
     const QByteArray LightingKey;
+    /// True when this generation retains RT1 reference inputs instead of preparing shadows.
+    const bool IsReference;
     preview_lighting::Inputs Lighting;
     graphics::renderer::EnvironmentMap Environment;
     bool HasEnvironment = false;
@@ -146,7 +163,8 @@ private:
     [[nodiscard]] bool prepareRenderer() noexcept;
     [[nodiscard]] bool prepareViews() noexcept;
     [[nodiscard]] bool prepareMaterials() noexcept;
-    [[nodiscard]] bool prepareAssets() noexcept;
+    [[nodiscard]] bool prepareAssets(QString& outError) noexcept;
+    [[nodiscard]] bool enableReferenceRendering(QString& outError) noexcept;
     [[nodiscard]] bool prepareSnapshot(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
     [[nodiscard]] bool prepareResources(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
     [[nodiscard]] bool prepareLighting(graphics::rhi::SurfaceHandle surface, QString& outError) noexcept;
@@ -154,6 +172,7 @@ private:
     foundation::StaticArray<graphics::renderer::MaterialVersion, PREVIEW_MATERIAL_CAPACITY> mMaterials{};
     graphics::renderer::MaterialProgram mProgram{};
     graphics::renderer::Snapshot mSnapshot{};
+    PreviewReferenceSetup mReference{};
 
     PreparationStage mStage = PreparationStage::Renderer;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)

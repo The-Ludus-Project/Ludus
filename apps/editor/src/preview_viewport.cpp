@@ -1,6 +1,7 @@
 #include "internal/preview_viewport.h"
 #include "internal/empty_world_view.h"
 #include "internal/preview_shading.h"
+#include "internal/reference_capture_window.h"
 #include "internal/viewport_statistics.h"
 
 #include <ludus/foundation/base/core.h>
@@ -277,6 +278,10 @@ struct PreviewViewport::State final
     bool HasShaderError = false;
     bool IsAutomatic = true;
     bool CanShowFrames = true;
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    /// Reference capture window of this viewport, created on first use and owned by the widget.
+    QPointer<ReferenceCaptureWindow> ReferenceWindow;
+#endif
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     BrowserViewport* BrowserOrNull = nullptr;
 #endif
@@ -1067,6 +1072,24 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                                           "timestamp queries."));
     controls->addWidget(statistics);
     connect(statistics, &QToolButton::toggled, preview, &RenderPreview::SetStatisticsVisible);
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    QToolButton* reference = new QToolButton(this);
+    reference->setObjectName(QStringLiteral("viewportReference"));
+    reference->setText(QStringLiteral("Reference…"));
+    reference->setAccessibleName(QStringLiteral("Open reference capture"));
+    reference->setToolTip(QStringLiteral("Render a path-traced reference image of this viewport's current camera "
+                                         "with the renderer's RT1 progressive path tracer."));
+    controls->addWidget(reference);
+    connect(reference, &QToolButton::clicked, this, [this, preview]() {
+        if (mState->ReferenceWindow.isNull() == true)
+        {
+            mState->ReferenceWindow = new ReferenceCaptureWindow(preview, this);
+        }
+        mState->ReferenceWindow->show();
+        mState->ReferenceWindow->raise();
+        mState->ReferenceWindow->activateWindow();
+    });
+#endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (PreviewShaderReload::IsSupported() == true)
     {
