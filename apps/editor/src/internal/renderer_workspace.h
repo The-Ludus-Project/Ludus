@@ -358,6 +358,8 @@ private:
                         bool shouldRefreshInspector = true,
                         QWidget* editOriginOrNull = nullptr);
     void replaceSelectedField(const QString& field, const QJsonValue& value);
+    void setSelectedNodeEnabled(bool isEnabled);
+    void replaceSelectedNode(const QJsonObject& node);
     void editConfigurationInterface();
     void addNode();
     void showNodeContextMenu(const QPoint& globalPosition);

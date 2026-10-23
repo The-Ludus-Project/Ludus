@@ -13,6 +13,7 @@ enum class RenderGraphActivity : foundation::uint8
 {
     Retained, ///< Reaches an exposed output, explicit effect or active-camera obligation.
     Inactive, ///< No such route in the displayed configuration.
+    Disabled, ///< Authored `"enabled": false`; the compiler forwards its input to its consumers.
     Unknown,  ///< Broken structure, unresolved imports or an analysis bound prevents classification.
 };
 /// Read-only canvas annotation. Explanations state the current configuration's scope.

@@ -1566,7 +1566,8 @@ The graph retains linear float32 radiance until filtering finishes. A connected
 ToneMap applies exposure, Reinhard compression and sRGB encoding after filtering,
 followed by RGBA8 presentation. Without ToneMap, RGBA8 output clamps raw radiance.
 The compensated accumulation buffer remains unfiltered. An unused draft has no
-runtime effect; bypass the node to disable filtering. A ray output admits one
+runtime effect; [disable the node](#disable-a-node) to turn filtering off
+without rewiring, which also keeps the graph buildable without OIDN. A ray output admits one
 Denoise operation. Raster RGBA8 inputs, filtering after ToneMap, repeated filtering
 and accumulation after filtering are rejected during graph validation.
 
@@ -1655,8 +1656,9 @@ The conversion applies exposure to linear RGB, compresses each channel with
 `x / (1 + x)`, then encodes sRGB. Connect Accumulate before ToneMap so averaging
 uses linear radiance. Accumulating already mapped colors is rejected.
 
-Bypass ToneMap by connecting its input's source directly to its consumer. An
-unused draft does not enable conversion. With no connected ToneMap, the graph
+Bypass ToneMap without rewiring by [disabling it](#disable-a-node), or by
+connecting its input's source directly to its consumer. An unused draft does not
+enable conversion. With no connected ToneMap, the graph
 writes clamped linear RGB to RGBA8; this is useful for inspecting raw samples,
 but does not preserve HDR values in the exported texture. The ReSTIR DI and
 Visibility + Secondary Rays templates include explicit ToneMap nodes at unit
@@ -1686,8 +1688,8 @@ ColorTexture input and one ColorTexture output, both named `color`:
 
 **Sample limit** is a positive integer from 1 to 4096, editable through either
 Properties or the canvas's **Edit Node** action, with shared undo and Save. The
-canvas displays the limit and explains reset behavior on hover. Bypass the node
-to display individual samples. An unused Accumulate draft does not enable averaging.
+canvas displays the limit and explains reset behavior on hover. [Disable the
+node](#disable-a-node) to display individual samples. An unused Accumulate draft does not enable averaging.
 The Visibility + Secondary Rays template includes this node explicitly; ReSTIR DI
 keeps its reservoir reuse without color averaging unless you add it.
 
@@ -1718,6 +1720,34 @@ See the [installed-consumer scene ray fixture](../../tests/sdk_consumer/rg2/scen
 and its [raygen source](../../tests/sdk_consumer/rg2/scene_ray/main_shaders/generate.slang).
 That acceptance shader exercises scene data and queries without implementing NEE
 or bounce transport, so it is also a minimal place to start authoring.
+
+### Disable a node
+
+Accumulate, Denoise and ToneMap can be disabled without deleting them or their
+wires. Right-click the node and choose **Disable Node**, or clear **Enabled** in
+Properties or **Edit Node...**. Choose the same action again to re-enable it.
+Each toggle is one undoable edit, saved with the graph:
+
+```json
+{"id": "tonemap", "kind": "ToneMap", "exposure": 1, "enabled": false}
+```
+
+The compiler treats a disabled node as a wire: every consumer of its `color`
+output reads the source connected to its `color` input instead, and the plan
+contains no operation for it. Disabling both nodes in
+`RayTracingPipeline → Accumulate → ToneMap → Export` therefore cooks the same
+passes as connecting the ray output straight to Export: individual samples,
+clamped to RGBA8. Chains of disabled nodes collapse to the first enabled source.
+A disabled Denoise needs no OIDN support, so a graph that keeps one can still be
+built and previewed where OIDN is unavailable.
+
+`enabled` is optional and defaults to `true`; the editor writes it only when the
+node is disabled. Settings such as the sample limit and exposure are kept and
+still validated, including Denoise quality. A disabled node whose output is used must have its input
+connected, otherwise validation reports `RenderGraphUnboundInput`. Other node
+kinds reject the field: a pipeline, Upscale or Subgraph has no single input of
+the same type and size that it could pass through. The canvas dims disabled
+nodes and labels them **Disabled · bypassed**.
 
 ### Create structured reservoir buffers
 
@@ -2068,8 +2098,9 @@ Root execution configurations cannot contain unbound interface inputs.
 | OutputSize (version 2) | `extent: "Viewport"` or fixed `[width,height]` | Outputs graph-only `size: RenderSize`; the viewport mode uses physical drawable pixels |
 | RenderSize (version 2) | `extent: "OutputSize"` with `scale: [numerator,denominator]`, fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | `output: RenderSize` for output-derived scaling, or optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
 | Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
-| Accumulate | `samples` (1..4096) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [linear ray mean](#accumulate-ray-samples-explicitly) |
-| ToneMap | `exposure` (0.01..64 linear multiplier) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [Reinhard and sRGB conversion](#tone-map-ray-output-explicitly) |
+| Accumulate | `samples` (1..4096); optional `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [linear ray mean](#accumulate-ray-samples-explicitly) |
+| Denoise | `quality` (`Fast`, `Balanced` or `High`); optional `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [OIDN filtering](#denoise-ray-output-with-oidn) |
+| ToneMap | `exposure` (0.01..64 linear multiplier); optional `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [Reinhard and sRGB conversion](#tone-map-ray-output-explicitly) |
 | Subgraph | `asset`, `configuration` | Selected asset interface defines its input/output ports |
 | Export | `type` | Input `texture` matching ColorTexture or DepthTexture; external output root |
 | Present | None | Input `color: ColorTexture`; root for the written version of an imported presentation target |
@@ -3121,6 +3152,7 @@ undoable edit; **Save** writes it to the project.
 | Drag an output onto an occupied input | Replace its source as one undoable edit; invalid links preserve the existing source. |
 | Right-click a port → Connect from / Connect to | Choose a compatible endpoint, replacing an occupied input in one undo step. |
 | Right-click a node → Edit Node... | Edit the same authored fields, pipeline controls and layout coordinates as Properties, without opening that panel. |
+| Right-click Accumulate, Denoise or ToneMap → Disable Node | Toggle its `enabled` field as one undoable edit; the compiler [forwards its input](#disable-a-node) |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
 | Double-click a Raster node | Opens its first mapped shader source; choose other stages with View Shaders or the Source selector |
@@ -3149,7 +3181,9 @@ They edit the configuration output's source rather than adding an ordinary edge.
 Each node has a draft-route label. **Inactive branch** nodes and their incoming
 wires are dimmed: they have no route to an exposed configuration output,
 Export/Present effect or active camera. Hover the node or label for the reason.
-These nodes remain selectable and editable. **On draft route** means a dependency
+These nodes remain selectable and editable. **Disabled · bypassed** nodes are
+dimmed the same way, but their upstream branch stays on the route because the
+compiler [forwards their input](#disable-a-node). **On draft route** means a dependency
 is retained, including the complete input contract of a retained Subgraph; it
 does not establish that its shaders, bindings or execution profile are valid.
 **Activity unknown** keeps normal visibility when broken wires, unresolved or

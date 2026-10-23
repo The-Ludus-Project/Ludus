@@ -216,7 +216,16 @@ InspectRenderGraphActivity(const RenderGraphDocument& document, const QString& f
     {
         const QString identity = value.toObject().value(QStringLiteral("id")).toString();
         RenderGraphActivityFeedback annotation;
-        if (hasUnknown == true)
+        if (IsRenderGraphNodeEnabled(value.toObject()) == false)
+        {
+            // An authored fact, so it holds even where dependency inspection is unknown.
+            annotation.Activity = RenderGraphActivity::Disabled;
+            annotation.Label = QStringLiteral("Disabled · bypassed");
+            annotation.Explanation = QStringLiteral(
+                "Disabled: the compiler connects this node's color input directly to its consumers and emits no "
+                "operation for it. Its settings and wires are kept; enable it from the context menu or Properties.");
+        }
+        else if (hasUnknown == true)
         {
             annotation.Label = QStringLiteral("Activity unknown");
             annotation.Explanation = QStringLiteral("Draft structure or imports are invalid, unresolved or exceed the "

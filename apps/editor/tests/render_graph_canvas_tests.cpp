@@ -12,6 +12,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
@@ -1474,6 +1475,86 @@ TEST_CASE("accumulation limits edit through canvas and Properties with undo and 
         QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
         QApplication::sendEvent(canvas.viewport(), &context);
     }
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+}
+
+TEST_CASE("disabling a node keeps its settings and wires through canvas and Properties",
+          "[editor][render-graph][disable-node]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(kinds != nullptr);
+    REQUIRE(add != nullptr);
+    kinds->setCurrentText(QStringLiteral("ToneMap"));
+    add->click();
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("tonemap")) == true);
+    const auto findNode = [&workspace]() {
+        QJsonObject graph;
+        REQUIRE(workspace.GetDocument().GetGraph(ROOT_GRAPH, graph) == true);
+        const QJsonArray nodes = graph.value(QStringLiteral("configurations"))
+                                     .toArray()
+                                     .at(0)
+                                     .toObject()
+                                     .value(QStringLiteral("nodes"))
+                                     .toArray();
+        for (const QJsonValueConstRef node : nodes)
+        {
+            if (node.toObject().value(QStringLiteral("id")).toString() == QStringLiteral("tonemap"))
+            {
+                return node.toObject();
+            }
+        }
+        return QJsonObject{};
+    };
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    QCheckBox* enabled = properties->findChild<QCheckBox*>(QStringLiteral("renderGraphField_enabled"));
+    REQUIRE(enabled != nullptr);
+    CHECK(enabled->isChecked() == true);
+    CHECK(findNode().contains(QStringLiteral("enabled")) == false);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    enabled->setChecked(false);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(findNode().value(QStringLiteral("enabled")) == QJsonValue(false));
+    CHECK(findNode().value(QStringLiteral("exposure")).toDouble() == 1);
+    CHECK(IsRenderGraphNodeEnabled(findNode()) == false);
+    workspace.Undo();
+    CHECK(findNode().contains(QStringLiteral("enabled")) == false);
+    workspace.Redo();
+    CHECK(IsRenderGraphNodeEnabled(findNode()) == false);
+
+    // The canvas context menu reflects and clears the same authored field without Properties.
+    workspace.resize(1200, 800);
+    workspace.show();
+    properties->hide();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.Rebuild();
+    bool wasChecked = false;
+    QTimer::singleShot(0, &canvas, [&wasChecked]() {
+        QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menu != nullptr);
+        QAction* disable = menu->findChild<QAction*>(QStringLiteral("renderGraphDisableNodeAction"));
+        REQUIRE(disable != nullptr);
+        wasChecked = disable->isChecked();
+        menu->close();
+        disable->trigger();
+    });
+    const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("tonemap")) + QPointF(20, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    CHECK(wasChecked == true);
+    CHECK(findNode().contains(QStringLiteral("enabled")) == false);
+    CHECK(IsRenderGraphNodeEnabled(findNode()) == true);
+    REQUIRE(workspace.Save() == true);
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
