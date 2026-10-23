@@ -1448,15 +1448,16 @@ render on the same adapter and driver as the editor.
 **Play mode.** The **Play mode** box next to **Play saved World** chooses **In
 viewport** (the default) or **In separate window**. The choice is an editor
 preference, saved for later sessions and never written to the project, and it
-applies to the next Play; a running game does not move. In separate-window mode
-the game is launched without the hosted-window variable, so it opens its own
-native window, and the World viewport is labelled as playing in a separate
-window until the game exits. Where the viewport cannot host the game (on a
-Vulkan adapter without `VK_KHR_external_memory_fd`, in the offscreen readback
-viewport, under offscreen Qt, while the viewport is paused, or without a GPU
-device), Play starts nothing: the World view states why and offers **Play in
-a separate window** for this one run, leaving the preference unchanged. Play
-never switches modes silently. See
+applies to the next Play; a running game does not move. The box is shown only
+with **Play saved World**, for Worlds the World demo adapter can play. In
+separate-window mode the game is launched without the hosted-window variable,
+so it opens its own native window, and the World viewport is labelled as
+playing in a separate window until the game exits. Where the viewport cannot
+host the game (on a Vulkan adapter without `VK_KHR_external_memory_fd`, in the
+offscreen readback viewport, under offscreen Qt, while the viewport is paused,
+or without a GPU device), Play starts nothing: the World view states why and
+offers **Play in a separate window** for this one run, leaving the preference
+unchanged. Play never switches modes silently. See
 [Play in the editor viewport](../architecture/editor-gui-systems.md#play-in-the-editor-viewport).
 
 The child independently reads and validates that saved file before activation;
