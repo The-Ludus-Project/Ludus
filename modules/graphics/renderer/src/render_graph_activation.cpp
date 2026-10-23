@@ -157,6 +157,7 @@ struct RenderGraphPackage::State final
     bool HasForwardStages = false;
     bool HasExplicitAccumulation = false;
     bool HasExplicitToneMapping = false;
+    bool HasBilinearUpscale = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -333,7 +334,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     // Each technique needs its vertex and fragment stage for exactly the same targets.
     for (usize technique = 0; technique < format::TECHNIQUE_COUNT; ++technique)
     {
-        if (technique == static_cast<usize>(format::Technique::RayTracing))
+        if (technique == static_cast<usize>(format::Technique::RayTracing) ||
+            technique == static_cast<usize>(format::Technique::BilinearUpscale))
         {
             continue;
         }
@@ -398,8 +400,9 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeUniforms(ByteReader& i
         binding.ValueOffset = inoutReader.ReadWord();
         binding.ValueCount = inoutReader.ReadWord();
         if (program > MAX_TECHNIQUE || (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) ||
-            program == static_cast<uint32>(format::Technique::RayTracing) || stages == 0 || stages > MAX_VISIBILITY ||
-            binding.Slot >= format::UNIFORM_SLOT_COUNT)
+            program == static_cast<uint32>(format::Technique::RayTracing) ||
+            program == static_cast<uint32>(format::Technique::BilinearUpscale) || stages == 0 ||
+            stages > MAX_VISIBILITY || binding.Slot >= format::UNIFORM_SLOT_COUNT)
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -536,8 +539,12 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
             const uint32 exposureBits = inoutReader.ReadWord();
             std::memcpy(&pass.ToneMappingExposure, &exposureBits, sizeof(exposureBits));
         }
-        if (program > MAX_TECHNIQUE || (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) ||
-            colorLoad > MAX_LOAD || depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
+        pass.SourceColor = HasBilinearUpscale == true ? inoutReader.ReadWord() : format::ABSENT;
+        const bool isUpscale = program == static_cast<uint32>(format::Technique::BilinearUpscale);
+        if ((isUpscale == true && (HasBilinearUpscale == false || pass.SceneData != 0)) ||
+            (isUpscale == false && pass.SourceColor != format::ABSENT) || program > MAX_TECHNIQUE ||
+            (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) || colorLoad > MAX_LOAD ||
+            depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
             pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
             (pass.ToneMappingExposure != 0 &&
              (pass.ToneMappingExposure >= format::MIN_TONE_MAPPING_EXPOSURE &&
@@ -545,7 +552,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
             (program != static_cast<uint32>(format::Technique::RayTracing) &&
              (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0)) ||
             (pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
-            (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
+            (isUpscale == false && (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0))
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -590,13 +597,13 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
-         version != format::FORWARD_PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
-         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
-         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
-         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
-         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
-         version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::TONE_MAPPING_PACKAGE_VERSION &&
+         version != format::ACCUMULATION_PACKAGE_VERSION && version != format::FORWARD_PACKAGE_VERSION &&
+         version != format::PIXEL_BUFFER_PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
+         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
+         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
+         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
+         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -606,7 +613,8 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
-    candidate->HasExplicitToneMapping = version >= format::PACKAGE_VERSION;
+    candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
+    candidate->HasBilinearUpscale = version >= format::PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->HasVisibilityFields = version >= format::VISIBILITY_PACKAGE_VERSION;

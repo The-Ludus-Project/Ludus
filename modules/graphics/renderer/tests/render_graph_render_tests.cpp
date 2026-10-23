@@ -1,3 +1,4 @@
+#include "../src/internal/render_graph_upscale.h"
 #include "internal/readback.h"
 #include "renderer_composite.h"
 #include "rg2_bound.h"
@@ -1149,4 +1150,109 @@ TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene 
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     CHECK(decoded.ForwardVertex.Inputs.size() == format::FORWARD_INPUT_COUNT);
     CHECK(decoded.ForwardFragment.Bindings.size() == programs.ForwardFragment.Bindings.size());
+}
+
+TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges", "[render-graph][gpu][bilinear]")
+{
+    GraphGpuFixture fixture;
+    constexpr usize SOURCE_BYTES = 16;
+    constexpr usize CHANNEL_COUNT = 4;
+    const StaticArray<uint8, SOURCE_BYTES> pixels{{255, 0, 0, 0, 0, 255, 0, 64, 0, 0, 255, 128, 255, 255, 255, 255}};
+    rhi::TextureDescription sourceDescription;
+    sourceDescription.Width = 2;
+    sourceDescription.Height = 2;
+    rhi::TextureHandle source;
+    REQUIRE(rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), 2 * CHANNEL_COUNT}, source) ==
+            rhi::RasterStatus::Ready);
+    renderer::internal::RenderGraphUpscaleProgram program;
+    REQUIRE(program.Initialize(fixture.Device,
+                               shaders::renderer_composite::Vertex(),
+                               shaders::renderer_composite::Fragment(),
+                               true) == rhi::RasterStatus::Ready);
+    renderer::internal::RenderGraphUpscalePass upscale;
+    REQUIRE(upscale.Initialize(program, source) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(fixture.Device, source) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(upscale.Draw({}) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    // Independent CPU reference: pixel centers map to source texel coordinates u*2-0.5,
+    // with edge clamping. The four source colors make red/green/blue orientation observable.
+    for (uint32 y = 0; y < HEIGHT; ++y)
+    {
+        const float32 positionY = (static_cast<float32>(y) + .5F) * 2 / static_cast<float32>(HEIGHT) - .5F;
+        const float32 weightY = positionY < 0 ? 0 : positionY > 1 ? 1 : positionY;
+        for (uint32 x = 0; x < WIDTH; ++x)
+        {
+            const float32 positionX = (static_cast<float32>(x) + .5F) * 2 / static_cast<float32>(WIDTH) - .5F;
+            const float32 weightX = positionX < 0 ? 0 : positionX > 1 ? 1 : positionX;
+            for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+            {
+                const float32 top = static_cast<float32>(pixels[channel]) * (1 - weightX) +
+                                    static_cast<float32>(pixels[CHANNEL_COUNT + channel]) * weightX;
+                const float32 bottom = static_cast<float32>(pixels[2 * CHANNEL_COUNT + channel]) * (1 - weightX) +
+                                       static_cast<float32>(pixels[3 * CHANNEL_COUNT + channel]) * weightX;
+                const int32 expected = static_cast<int32>(top * (1 - weightY) + bottom * weightY + .5F);
+                const int32 actual = fixture.Pixels[(static_cast<usize>(y) * WIDTH + x) * CHANNEL_COUNT + channel];
+                REQUIRE(actual >= expected - 1);
+                REQUIRE(actual <= expected + 1);
+            }
+        }
+    }
+}
+
+TEST_CASE("bilinear graph executes rendered scene color and responds to camera edits", "[render-graph][gpu][bilinear]")
+{
+    GraphGpuFixture fixture;
+    constexpr usize UPSCALE_RESOURCE_COUNT = 3;
+    constexpr usize UPSCALE_PASS_COUNT = 2;
+    const StaticArray<format::Resource, UPSCALE_RESOURCE_COUNT> resources{
+        {{WIDTH / 2, HEIGHT / 2, format::Aspect::Color, 0, 0, 0},
+         {WIDTH / 2, HEIGHT / 2, format::Aspect::Depth, 0, 0, 0},
+         {WIDTH, HEIGHT, format::Aspect::Color, 2, 1, 0}}};
+    StaticArray<format::Pass, UPSCALE_PASS_COUNT> passes{{packages::rg2_offscreen::PASSES[0],
+                                                          {format::Technique::BilinearUpscale,
+                                                           0,
+                                                           2,
+                                                           format::ABSENT,
+                                                           format::Load::Clear,
+                                                           format::Store::Store,
+                                                           format::Load::Discard,
+                                                           format::Store::Discard,
+                                                           0}}};
+    passes[1].SceneData = 0;
+    passes[1].SourceColor = 0;
+    const StaticArray<format::Camera, TABLE_COUNT> cameras{{{2}}};
+    renderer::RenderGraphPlan plan = packages::rg2_offscreen::MakePlan();
+    plan.Description.ResourceCount = UPSCALE_RESOURCE_COUNT;
+    plan.Description.PassCount = UPSCALE_PASS_COUNT;
+    plan.Resources = {resources.GetData(), resources.GetSize()};
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    plan.Cameras = {cameras.GetData(), cameras.GetSize()};
+    plan.PassNames = {};
+    fixture.Items[0].Material.Color = {.25F, .5F, .75F, 1};
+    REQUIRE(fixture.Graph.Initialize(fixture.Device,
+                                     plan,
+                                     packages::rg2_offscreen::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                           shaders::renderer_composite::Fragment())) ==
+            rhi::RasterStatus::Ready);
+    fixture.Update(1);
+    fixture.Render();
+    const StaticArray<uint8, PIXEL_BYTES> before = fixture.Pixels;
+    bool hasInterpolatedEdge = false;
+    for (usize pixel = 0; pixel < PIXEL_BYTES; pixel += TEXEL_BYTES)
+    {
+        hasInterpolatedEdge = hasInterpolatedEdge == true || (fixture.Pixels[pixel] > 0 && fixture.Pixels[pixel] < 64);
+    }
+    CHECK(hasInterpolatedEdge == true);
+    fixture.Cameras[0].WorldToClip.Columns[3].X = .2F;
+    fixture.Update(2);
+    fixture.Render();
+    bool hasChanged = false;
+    for (usize index = 0; index < PIXEL_BYTES; ++index)
+    {
+        hasChanged = hasChanged == true || before[index] != fixture.Pixels[index];
+    }
+    CHECK(hasChanged == true);
 }

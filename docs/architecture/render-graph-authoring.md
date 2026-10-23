@@ -195,8 +195,9 @@ errors; no graphics fallback or ignored setting is invented.
 
 ### Upscaling operations and presets
 
-`Upscale` is a version-2 supporting SDK operation, with vendor-specific node
-presets for DLSS SR, FSR 1/2/3 upscaling, MetalFX Spatial/Temporal and XeSS SR.
+`Upscale` is a version-2 supporting operation. Bilinear is an executable spatial
+method; vendor-specific authoring presets cover DLSS SR, FSR 1/2/3 upscaling,
+MetalFX Spatial/Temporal and XeSS SR.
 Its fixed typed interface is chosen by `algorithm`; it owns no shader program or
 pipeline-state record. Input color and output destination are distinct resource
 ports. Spatial presets expose two texture inputs; temporal presets additionally
@@ -204,13 +205,26 @@ expose depth, motion, jitter, motion scale, exposure and reset values. The outpu
 is the destination's written color version. Presets are small node records,
 rather than duplicated full renderer configurations.
 
-Current profiles admit source inspection and editing only. Execution selection
-reports an unavailable-backend diagnostic at the authored node, including inside
-nested graphs. Unused drafts are culled from execution while their source shape
+Vendor presets admit source inspection and editing only. Selecting one for
+execution reports an unavailable-backend diagnostic at the authored node,
+including inside nested graphs. Unused drafts are culled from execution while their source shape
 and wires still undergo structural validation. No placeholder dispatch, implicit
 copy or automatic fallback may stand in for a vendor SDK. Backend availability,
 texture precision, dynamic sizing and temporal history ownership require a
 separate Renderer/RHI adapter before this operation can produce runtime work.
+Bilinear lowers to an explicit image pass after its source producer. It samples
+an initialized offscreen RGBA8 allocation into a distinct full-target destination,
+with one propagated camera route, no scene coverage and no temporal state. The
+private renderer-owned program reuses the installed composition shader recipe,
+with an explicit linear-clamp sampler. Scene generations own immutable source
+bindings while the graph retains reusable shader/pipeline/quad setup. RHI owns
+resource hazards and completion leases. Resize preparation follows the existing
+Pending/Ready publication transaction, retaining the previous drawable generation.
+Numeric plan version 11 and runtime package version 15 add SourceColor and append
+BilinearUpscale after all existing scene technique IDs; shader-stage IDs remain
+unchanged. Older runtime versions decode with no image source, including version
+14's independent explicit ToneMap policy. Both compiled headers and runtime
+packages carry the same serialized source resource and authored pass name.
 See [upscaling presets](../development/render-graph-authoring.md#upscaling-presets)
 for the interface, references and editing workflow.
 

@@ -27,7 +27,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 10
+FORMAT_VERSION = 11
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -47,6 +47,7 @@ for variant in range(1, MAX_AUTHORED_TECHNIQUES):
         name = base + 'Variant' + str(variant)
         code = LEGACY_PROGRAM_COUNT + (variant - 1) * RASTER_FAMILY_COUNT + family
         PROGRAM_CODES[name] = code
+PROGRAM_CODES['BilinearUpscale'] = len(PROGRAM_CODES)
 VISIBILITY = {'Vertex': 1, 'Fragment': 2, 'Both': 3}
 
 
@@ -93,19 +94,20 @@ def lower_plan(package, configuration):
     plan = plans[0]
     resources = sorted(name for name, value in plan['resources'].items() if 'stride' not in value)
     rasters = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
+    operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing', 'Upscale')]
     cameras = sorted({p['view'] for p in rasters})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
                   'at most four triangle ray passes are admitted per configuration')
-    build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Accumulate', 'ToneMap', 'Export', 'Present') for p in plan['passes']) and
+    build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap', 'Export', 'Present') for p in plan['passes']) and
                   all((p['kind'] == 'RayTracing' and p['technique'] == ray.TECHNIQUE) or (p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
                       (p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] or
                        p['technique'].startswith(graph.MATERIALS[p['material']] + '.' + p['configuration'] + '.')) and
                       p['technique'] in roles and p['vertex_layout'] == 'RendererStatic') for p in rasters),
                   'Configuration', configuration, 'unqualified operation/layout/material/technique')
-    build.require(0 < len(rasters) <= MAX_PASSES and 0 < len(resources) <= MAX_RESOURCES and len(cameras) <= MAX_CAMERAS,
+    build.require(0 < len(operations) <= MAX_PASSES and 0 < len(resources) <= MAX_RESOURCES and len(cameras) <= MAX_CAMERAS,
                   'Capacity', configuration, 'Renderer execution limits exceeded')
     build.require(len({p['scene'] for p in rasters}) == 1, 'Configuration', configuration, 'one World extraction per execution profile')
-    ray_positions = [index for index, operation in enumerate(rasters) if operation['kind'] == 'RayTracing']
+    ray_positions = [index for index, operation in enumerate(operations) if operation['kind'] == 'RayTracing']
     build.require(not ray_positions or ray_positions == list(range(ray_positions[0], ray_positions[-1] + 1)),
                   'Capability', configuration, 'ray passes must form one consecutive ordered sequence')
     backing = {r: r for r in resources}
@@ -139,10 +141,22 @@ def lower_plan(package, configuration):
                                  'BytesPerPixel': value.get('bytes_per_pixel', 0)})
     pass_records = []
     color_defined = {r: False for r in resources}
-    for operation in rasters:
+    for operation in operations:
+        if operation['kind'] == 'Upscale':
+            build.require(operation.get('algorithm') == 'bilinear', 'Capability', operation['id'], 'unsupported upscaler')
+            source = operation['source_color']['resource']
+            color = operation['attachments']['color']['resource']
+            pass_records.append({'Program': 'BilinearUpscale', 'Camera': cameras.index(operation['view']),
+                'Color': resources.index(color), 'Depth': ABSENT, 'ColorLoad': 'Clear', 'ColorStore': 'Store',
+                'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': 0,
+                'RayProgram': 0, 'Buffer0': ABSENT, 'Buffer1': ABSENT, 'Visibility': ABSENT,
+                'VisibilityDepth': ABSENT, 'AccumulationSamples': 0, 'ToneMappingExposure': 0.0,
+                'SourceColor': resources.index(source)})
+            color_defined[color] = True
+            continue
         if operation['kind'] == 'RayTracing':
             if 'visibility' in operation:
-                producer = rasters[rasters.index(operation) - 1] if rasters.index(operation) != 0 else {}
+                producer = operations[operations.index(operation) - 1] if operations.index(operation) != 0 else {}
                 visibility = operation['visibility']['resource']
                 visibility_depth = operation['visibility_depth']['resource']
                 color_output = producer.get('attachments', {}).get('color', {})
@@ -197,7 +211,7 @@ def lower_plan(package, configuration):
                              'Visibility': ABSENT, 'VisibilityDepth': ABSENT, 'AccumulationSamples': 0, 'ToneMappingExposure': 0.0})
     # Distinct explicitly authored shader pairs represent deliberate passes (for
     # example GBuffer and beauty), rather than an accidental duplicate scene route.
-    for operation, record in zip(rasters, pass_records):
+    for operation, record in zip(operations, pass_records):
         if operation['kind'] != 'Raster':
             continue
         peers = [peer for peer in rasters if peer['kind'] == 'Raster' and
@@ -209,6 +223,8 @@ def lower_plan(package, configuration):
         if record.get('Visibility', ABSENT) != ABSENT:
             record['AllowsRepeatedCoverage'] = 1
             pass_records[index - 1]['AllowsRepeatedCoverage'] = 1
+    for record in pass_records:
+        record.setdefault('SourceColor', ABSENT)
     return plan, resource_records, pass_records, cameras
 
 
@@ -221,7 +237,7 @@ def stage_inputs(item):
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 14
+PACKAGE_VERSION = 15
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -482,7 +498,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
              f'inline constexpr foundation::usize UNIFORM_BINDING_COUNT = {len(contents["bindings"])};',
              f'inline constexpr foundation::usize UNIFORM_BLOCK_COUNT = {len(contents["blocks"])};',
              f'inline constexpr foundation::usize UNIFORM_FIELD_COUNT = {len(contents["fields"])};']
-    pass_names = [p['id'] for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
+    pass_names = [p['id'] for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing', 'Upscale')]
     for label in pass_names:
         build.require(0 < len(label.encode('utf-8')) <= MAX_PASS_NAME_BYTES and '\0' not in label,
                       'Capacity', label, 'pass debug name exceeds the runtime UTF-8 bound')
@@ -650,6 +666,7 @@ def encode_runtime_package(contents):
         data += u32(PROGRAM_CODES[p['Program']], p['Camera'], p['Color'], p['Depth'], loads[p['ColorLoad']],
                     stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'], p.get('SceneData', graph.scene_bundle.ALL_DATA), p['RayProgram'], p['Buffer0'], p['Buffer1'], p.get('Visibility', ABSENT), p.get('VisibilityDepth', ABSENT), p.get('AccumulationSamples', 0))
         data += struct.pack('<f', p.get('ToneMappingExposure', 0))
+        data += u32(p.get('SourceColor', ABSENT))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
@@ -682,7 +699,7 @@ def encode_runtime_package(contents):
     for buffer in storage:
         data += u32(buffer['Slot'], buffer['Stride'], buffer['Count'], buffer['IsReadOnly'])
     for operation in contents['plan']['passes']:
-        if operation['kind'] not in ('Raster', 'RayTracing'):
+        if operation['kind'] not in ('Raster', 'RayTracing', 'Upscale'):
             continue
         label = operation['id'].encode('utf-8')
         build.require(0 < len(label) <= MAX_PASS_NAME_BYTES and b'\0' not in label,
@@ -717,7 +734,7 @@ def encode_resource_names(contents):
     # Expanded operation IDs let a canvas node (Raster, Subgraph, Export, Present) find what it wrote or read.
     operations = []
     for operation in plan['passes']:
-        if operation['kind'] in ('Raster', 'RayTracing', 'Accumulate', 'ToneMap'):
+        if operation['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap'):
             attachments = {aspect: {'resource': value['resource'], 'load': value['load'], 'store': value['store']}
                            for aspect, value in sorted(operation['attachments'].items())}
         else:

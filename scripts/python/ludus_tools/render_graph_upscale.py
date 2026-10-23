@@ -1,4 +1,4 @@
-"""Upscaler authoring presets; device execution remains explicitly unavailable.
+"""Upscaling interfaces: executable bilinear and explicitly unavailable vendor adapters.
 
 Thanks to NVIDIA, DLSS Programming Guide (https://github.com/NVIDIA/DLSS/tree/main/doc),
 AMD, FidelityFX Super Resolution 2.3.3, Inputs
@@ -11,6 +11,7 @@ these records neither wrap SDK calls nor promise compatible native texture forma
 
 # Stable authored identities, independent of installed SDK versions or runtime detection.
 ALGORITHMS = {
+    'bilinear': ('Bilinear', False),
     'dlss-sr': ('DLSS Super Resolution', True),
     'fsr-1': ('FSR 1 spatial', False),
     'fsr-2': ('FSR 2 temporal', True),
@@ -45,6 +46,8 @@ def validate(node, where, graph):
 
 def reject_execution(node, where, graph):
     """Fail at the selected node, preserving the current executable generation."""
+    if node['algorithm'] == 'bilinear':
+        return
     label = ALGORITHMS[node['algorithm']][0]
     repair = ('Keep this as an unused draft, or disconnect its output and reconnect the '
               'previous color path. SDK adapters and runtime upscaling are not implemented.')

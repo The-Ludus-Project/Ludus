@@ -4,6 +4,7 @@
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
 #include "internal/render_graph_scene_resources.h"
+#include "internal/render_graph_upscale.h"
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -34,6 +35,7 @@ using Status = rhi::RasterStatus;
 namespace
 {
 constexpr usize ROLE_COUNT = 2;
+constexpr usize UPSCALE_TARGET_COUNT = 2;
 constexpr usize MAX_COVERAGE = format::MAX_ITEMS * format::MAX_CAMERAS * ROLE_COUNT;
 constexpr usize BOX_CORNER_COUNT = 8;
 constexpr usize BOX_INDEX_COUNT = 36;
@@ -63,7 +65,7 @@ bool IsMaskedTechnique(format::Technique technique) noexcept
 /// Whether a technique's authored family covers the item's declared static coverage contract.
 bool IsCompatible(format::Technique technique, const RenderGraphItem& item, const RenderGraphMesh& mesh) noexcept
 {
-    return mesh.Layout == RenderGraphLayout::Static &&
+    return technique != format::Technique::BilinearUpscale && mesh.Layout == RenderGraphLayout::Static &&
            ((item.Coverage == RenderGraphMaterial::Opaque && IsMaskedTechnique(technique) == false) ||
             (item.Coverage == RenderGraphMaterial::Masked && IsMaskedTechnique(technique) == true));
 }
@@ -220,7 +222,7 @@ GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::
 {
     const bool isVertex = stage == rhi::ShaderStage::Vertex;
     const usize index = static_cast<usize>(technique);
-    if (index >= format::LEGACY_TECHNIQUE_COUNT)
+    if (index >= format::LEGACY_TECHNIQUE_COUNT && index < format::SCENE_TECHNIQUE_COUNT)
     {
         return programs
             .AdditionalRasterStages[(index - format::LEGACY_TECHNIQUE_COUNT) * format::TECHNIQUE_STAGE_COUNT +
@@ -238,6 +240,8 @@ GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::
             return isVertex == true ? programs.MaskedColorVertex : programs.MaskedColorFragment;
         case format::Technique::MaskedDepthOnly:
             break;
+        case format::Technique::BilinearUpscale:
+            return isVertex == true ? programs.CompositeVertex : programs.CompositeFragment;
     }
     return isVertex == true ? programs.MaskedDepthVertex : programs.MaskedDepthFragment;
 }
@@ -433,6 +437,33 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
     {
         const format::Pass& pass = plan.Passes[passIndex];
+        if (pass.Program == format::Technique::BilinearUpscale)
+        {
+            if (pass.Camera >= plan.Cameras.GetSize() || pass.Color >= plan.Resources.GetSize() ||
+                pass.SourceColor >= plan.Resources.GetSize() || pass.SourceColor == pass.Color ||
+                plan.Resources[pass.SourceColor].Kind != format::Aspect::Color ||
+                plan.Resources[pass.SourceColor].IsSurface != 0 || colorDefined[pass.SourceColor] == false ||
+                plan.Resources[pass.Color].Kind != format::Aspect::Color || pass.Depth != format::ABSENT ||
+                pass.ColorLoad != format::Load::Clear || pass.ColorStore != format::Store::Store ||
+                pass.DepthLoad != format::Load::Discard || pass.DepthStore != format::Store::Discard ||
+                pass.AllowsRepeatedCoverage != 0 || pass.SceneData != 0 || pass.RayProgram != 0 ||
+                pass.Buffer0 != format::ABSENT || pass.Buffer1 != format::ABSENT || pass.Visibility != format::ABSENT ||
+                pass.VisibilityDepth != format::ABSENT || pass.AccumulationSamples != 0 ||
+                pass.ToneMappingExposure != 0)
+            {
+                return Status::InvalidDescription;
+            }
+            colorDefined[pass.Color] = true;
+            depthDefined[pass.Color] = false;
+            hasCameraRoute[pass.Camera] =
+                hasCameraRoute[pass.Camera] == true || plan.Cameras[pass.Camera].Target == pass.Color;
+            hasEndedRaySequence = rayPassCount != 0;
+            continue;
+        }
+        if (pass.SourceColor != format::ABSENT)
+        {
+            return Status::InvalidDescription;
+        }
         if (static_cast<uint32>(pass.Program) > MAX_TECHNIQUE || pass.Camera >= plan.Description.CameraCount ||
             (pass.Program != format::Technique::RayTracing && pass.Depth >= plan.Resources.GetSize()) ||
             pass.AllowsRepeatedCoverage > 1 ||
@@ -780,6 +811,8 @@ struct RenderGraph::State final
     bool HasRaySetup = false;
     StaticArray<bool, format::TECHNIQUE_COUNT> IsBound{};
     RenderGraphPrograms Programs{};
+    StaticArray<internal::RenderGraphUpscaleProgram, UPSCALE_TARGET_COUNT> UpscalePrograms{};
+    StaticArray<bool, UPSCALE_TARGET_COUNT> HasUpscalePrograms{};
     /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
     StaticArray<StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES>, format::MAX_UNIFORM_SETS> Packed{};
     StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES> Candidate{};
@@ -805,6 +838,7 @@ struct RenderGraph::State final
         StaticArray<Snapshot, format::MAX_PASSES> Snapshots{};
         StaticArray<PreparedView, format::MAX_PASSES> Views{};
         StaticArray<internal::RenderGraphRayPass, format::MAX_PASSES> RayPasses{};
+        StaticArray<internal::RenderGraphUpscalePass, format::MAX_PASSES> UpscalePasses{};
         rhi::OrderedGraph RayGraph{};
         bool IsRayGraphPrepared = false;
         StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
@@ -890,6 +924,10 @@ struct RenderGraph::State final
         for (usize i = 0; i < Header.PassCount; ++i)
         {
             const format::Pass& pass = Passes[i];
+            if (pass.Program == format::Technique::BilinearUpscale)
+            {
+                continue;
+            }
             Status status = Status::NotReady;
             if (pass.Program == format::Technique::RayTracing)
             {
@@ -925,6 +963,10 @@ struct RenderGraph::State final
         CameraUpdate& update = *PendingCamera;
         for (usize i = 0; i < Header.PassCount; ++i)
         {
+            if (Passes[i].Program == format::Technique::BilinearUpscale)
+            {
+                continue;
+            }
             const Status status = update.HasRayCamera[i] == true
                                       ? Current->RayPasses[i].PollCamera()
                                       : Contexts[static_cast<usize>(Passes[i].Program)].GetStatus(update.Views[i]);
@@ -943,6 +985,10 @@ struct RenderGraph::State final
         // Publication cannot allocate or fail, and no producer is open.
         for (usize i = 0; i < Header.PassCount; ++i)
         {
+            if (Passes[i].Program == format::Technique::BilinearUpscale)
+            {
+                continue;
+            }
             if (update.HasRayCamera[i] == true)
             {
                 Current->RayPasses[i].CommitCamera();
@@ -1084,6 +1130,46 @@ struct RenderGraph::State final
         }
         for (usize i = 0; i < Header.PassCount; ++i)
         {
+            if (Passes[i].Program == format::Technique::BilinearUpscale)
+            {
+                const StaticArray<rhi::TextureHandle, format::MAX_RESOURCES>& textures =
+                    Resizing.Get() != nullptr ? Resizing->Textures : Textures;
+                if (inoutScene.HasViews[i] == false)
+                {
+                    const usize programIndex = preparingResources[Passes[i].Color].IsSurface == 1 ? 0 : 1;
+                    internal::RenderGraphUpscaleProgram& program = UpscalePrograms[programIndex];
+                    if (HasUpscalePrograms[programIndex] == false)
+                    {
+                        const Status created = program.Initialize(Device,
+                                                                  Programs.CompositeVertex,
+                                                                  Programs.CompositeFragment,
+                                                                  programIndex == 0);
+                        if (IsAccepted(created) == false)
+                        {
+                            return created;
+                        }
+                        HasUpscalePrograms[programIndex] = true;
+                    }
+                    const Status ready = program.Poll();
+                    if (ready != Status::Ready)
+                    {
+                        return ready;
+                    }
+                    const Status created =
+                        inoutScene.UpscalePasses[i].Initialize(program, textures[Passes[i].SourceColor]);
+                    if (IsAccepted(created) == false)
+                    {
+                        return created;
+                    }
+                    inoutScene.HasViews[i] = true;
+                }
+                const Status ready = inoutScene.UpscalePasses[i].Poll();
+                if (ready != Status::Ready)
+                {
+                    return ready;
+                }
+                continue;
+            }
             Renderer& context = Contexts[static_cast<usize>(Passes[i].Program)];
             if (Passes[i].Program == format::Technique::RayTracing && inoutScene.HasViews[i] == true)
             {
@@ -1185,6 +1271,12 @@ struct RenderGraph::State final
         {
             const rhi::GpuScope scope(Device, PassScopes[pass]);
             const format::Pass& operation = Passes[pass];
+            if (operation.Program == format::Technique::BilinearUpscale)
+            {
+                HasAttemptedDraw = true;
+                RecordingStatus = Current->UpscalePasses[pass].Draw(Textures[operation.Color]);
+                continue;
+            }
             if (operation.Program == format::Technique::RayTracing)
             {
                 if (pass > 0 && Passes[pass - 1].Program == format::Technique::RayTracing)
@@ -1354,6 +1446,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
         {
+            if (plan.Passes[pass].Program == format::Technique::BilinearUpscale)
+            {
+                continue;
+            }
             if (plan.Passes[pass].Program != format::Technique::ColorAndDepth ||
                 plan.Passes[pass].SceneData != format::SCENE_DATA_ALL)
             {
@@ -1364,7 +1460,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     StaticArray<bool, format::TECHNIQUE_COUNT> isUsed{};
     for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
     {
-        isUsed[static_cast<usize>(plan.Passes[pass].Program)] = true;
+        if (plan.Passes[pass].Program != format::Technique::BilinearUpscale)
+        {
+            isUsed[static_cast<usize>(plan.Passes[pass].Program)] = true;
+        }
     }
     for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
     {
@@ -1963,11 +2062,11 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             for (usize pass = 0; pass < state.Header.PassCount; ++pass)
             {
                 const format::Pass& operation = state.Passes[pass];
-                routeCount +=
-                    operation.Camera == camera && ((role == 1 && operation.Program != format::Technique::RayTracing) ||
-                                                   (role == 0 && IsColorTechnique(operation.Program) == true))
-                        ? 1U
-                        : 0U;
+                routeCount += operation.Program != format::Technique::BilinearUpscale && operation.Camera == camera &&
+                                      ((role == 1 && operation.Program != format::Technique::RayTracing) ||
+                                       (role == 0 && IsColorTechnique(operation.Program) == true))
+                                  ? 1U
+                                  : 0U;
             }
             if (routeCount == 0)
             {

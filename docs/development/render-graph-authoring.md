@@ -205,12 +205,15 @@ node; separate state blocks and stream output are deferred.
 
 ## Upscaling presets
 
-**Authoring only:** all current execution profiles reject a selected `Upscale`
-node with a mapped `Capability` diagnostic. No vendor SDK is downloaded or
-executed. An unused preset can remain in a graph without blocking its existing
-render path. Validation/build failure retains the previously drawable generation.
+**Bilinear is executable** in the current single-sample RGBA8 renderer profile.
+The seven vendor presets remain authoring-only: selecting one reports a mapped
+`Capability` diagnostic. No vendor SDK is downloaded or executed, and no
+algorithm is substituted automatically. An unused preset can remain in a graph
+without blocking its existing render path. Validation/build failure retains the
+previously drawable generation.
 
-Use **Create Node → Upscale — … (draft)** on the canvas, or the same preset in
+Use **Create Node → Upscale — Bilinear** on the canvas, or **Upscale — … (draft)**
+for a vendor preset. The same choices are available in
 Properties' Add Node picker. Both create the same version-2 supporting operation:
 
 ```json
@@ -228,6 +231,7 @@ operations. Properties may stay hidden throughout canvas authoring.
 
 | Algorithm identity | Preset | Interface |
 | --- | --- | --- |
+| `bilinear` | Bilinear (implemented) | Spatial |
 | `dlss-sr` | DLSS Super Resolution | Temporal |
 | `fsr-1` | FSR 1 spatial | Spatial |
 | `fsr-2` | FSR 2 temporal | Temporal |
@@ -256,8 +260,8 @@ Temporal presets additionally declare the following required per-frame inputs:
 
 These names record a draft interface, **not an implemented native texture ABI**.
 The current RGBA8 graph texture vocabulary cannot establish HDR or motion-vector
-precision. Typed wiring checks remain active, including on unused branches, but
-no upscaling resource/content validation or history allocation occurs. A future
+precision. Typed wiring checks remain active, including on unused branches. Vendor presets
+do not allocate history or perform SDK resource/content validation. A future
 adapter must qualify texture formats, color/exposure and depth conventions,
 initialization, resource aliasing, dynamic extents, jitter/motion producers and
 history lifetime before execution is admitted. The current raster profile does
@@ -272,6 +276,43 @@ and Intel, [XeSS Super Resolution Developer Guide](https://github.com/intel/xess
 for the spatial/temporal input distinction. Ludus adapts that distinction into a
 shared draft interface; it does not copy their SDK implementations or imply
 that their native contracts are interchangeable.
+
+### Run a bilinear upscale
+
+Create the Bilinear preset to add OutputSize, RenderSize, render-sized source
+storage and an output-sized destination as one undoable group. The initial render
+scale is 1/2. Wire the existing renderer as follows:
+
+1. Connect `OutputSize.size` to `RenderSize.output` and the destination Target's
+   `size`. Connect `RenderSize.size` to the scene color and depth Targets' `size`.
+2. Render the scene into those smaller color/depth Targets. Replace the preset's
+   raw `color.texture → upscale.color` connection with the renderer's **written
+   color output**, which must retain initialized contents.
+3. Connect the output-sized destination Target to `upscale.destination` and the
+   upscaler's color output to Export or Present. The camera's target must name
+   that final destination; its rendered camera route survives the upscale.
+   Present additionally requires an imported presentation Target; the preset's
+   destination starts as an ordinary offscreen Target for Export.
+4. Use Project Settings → Rendering resolution to edit the exposed provider pair,
+   or edit either provider through its canvas menu. Build and Preview the graph.
+
+The pass samples the source with bilinear filtering, edge clamping and normalized
+pixel-center coordinates, covering the complete destination. Both textures must
+be distinct, single-sample RGBA8 images; the source must be initialized offscreen
+color with one camera route. Fixed dimensions and viewport-relative fractions
+both work. Odd render dimensions round up using the existing size-provider policy.
+Equal source/output dimensions are permitted. The pass interpolates stored RGBA
+channels; it does not apply tone mapping, color-space conversion, sharpening,
+alpha conversion or anti-aliasing. It needs no depth, motion, jitter or history.
+This initial profile does not expose HDR texture formats or temporal reconstruction.
+
+The installed renderer composition recipe supplies the shader stages. Its sampler
+is explicitly linear/clamp; ordinary viewport composition retains its own sampling
+policy. Shaders, buffers and pipelines are prepared outside drawing and reused
+across camera/scene edits and resize. Replacement source bindings become visible
+with their Ready scene/resource generation; pending or failed preparation retains
+the last drawable view. RHI tracks attachment-to-sampling dependencies and leases
+through submission completion. No CPU image copy or GPU readback runs in the pass.
 
 ## Output and render resolution
 
@@ -301,7 +342,8 @@ graph edits. Editing the built-in default creates its project copy under
 second resolution override in `ludus.project.json` or machine preferences.
 Selecting another graph changes which providers these controls expose. Source-root
 changes retain the existing save/discard confirmation for the previous renderer.
-Lower render scale only changes target sizing; it does not add an upscaling pass
+Lower render scale changes target sizing. Connect an explicit Bilinear Upscale
+operation to reconstruct the full output; resolution controls do not insert passes
 or make a vendor backend available.
 
 - **OutputSize → Viewport pixels** follows the current viewport drawable in

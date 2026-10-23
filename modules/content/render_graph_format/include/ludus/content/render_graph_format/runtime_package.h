@@ -42,12 +42,15 @@
 /// their implicit averaging; new packages require an authored Accumulate node.
 /// Version 14 appends float32 ToneMappingExposure to every pass. Older scene-ray packages
 /// retain Reinhard/sRGB conversion at unit exposure; new packages require an authored ToneMap.
+/// Version 15 appends SourceColor and admits the renderer-owned BilinearUpscale technique.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 14;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 15;
+/// First generation carrying explicit ToneMap exposure multipliers.
+inline constexpr foundation::uint32 TONE_MAPPING_PACKAGE_VERSION = 14;
 /// First generation requiring explicit Accumulate operations in the source graph.
 inline constexpr foundation::uint32 ACCUMULATION_PACKAGE_VERSION = 13;
 /// First generation carrying the six forward support roles and texture names.
