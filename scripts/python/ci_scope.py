@@ -33,24 +33,13 @@ NATIVE_JOBS = (
     "sanitizers", "filesystem-fuzz", "threading-races", "analysis", "editor",
     "assertion-policy", "pch", "build-budget", "scripting-qualification",
 )
-# Slow native jobs deferred from ordinary pull-request runs to the merge queue,
-# pushes to main and manual runs. Every change still passes them before landing.
-MERGE_QUEUE_JOBS = (
-    "macos-compile", "macos-sanitizers", "sanitizers", "editor", "build-budget",
-)
 FULL_TIER = "full"
-PULL_REQUEST_TIER = "pull-request"
 INTEGRATION_TIER = "integration"
 NIGHTLY_TIER = "nightly"
 NIGHTLY_JOBS = ("macos-analysis",)
-TIERS = frozenset({FULL_TIER, PULL_REQUEST_TIER, INTEGRATION_TIER, NIGHTLY_TIER})
+TIERS = frozenset({FULL_TIER, INTEGRATION_TIER, NIGHTLY_TIER})
 # Integration PRs run source/tooling checks; compiled variants run once per batch.
 INTEGRATION_JOBS = tuple(name for name in NATIVE_JOBS if name != "formatting")
-# Older trusted main workflows still report this removed PR-only job as skipped
-# during batch validation. Accept that exact legacy shape until main is promoted.
-LEGACY_INTEGRATION_JOB = "integration-compile"
-# A pull request carrying this label runs the full tier before entering the queue.
-FULL_VALIDATION_LABEL = "ci:full"
 # Bounded GitHub run metadata read by a cancelled pull-request gate.
 MAX_RUN_METADATA_BYTES = 2 * 1024 * 1024
 
@@ -68,20 +57,10 @@ def documentation_only(paths: list[str]) -> bool:
 
 
 def changed_paths(event_name: str, event: dict, root: Path) -> list[str]:
-    if event_name == "pull_request":
-        base = event["pull_request"]["base"]["sha"]
-        head = event["pull_request"]["head"]["sha"]
-        separator = "..."  # Entire PR since its merge base, not just its last commit.
-    elif event_name == "push":
-        base, head = event["before"], event["after"]
-        separator = ".."
-    elif event_name == "merge_group":
-        # The queue's candidate commit contains every PR ahead of it; compare
-        # it with the branch commit the group was built on.
-        base, head = event["merge_group"]["base_sha"], event["merge_group"]["head_sha"]
-        separator = ".."
-    else:
+    if event_name != "pull_request":
         raise ValueError("manual or unsupported event requires native validation")
+    base = event["pull_request"]["base"]["sha"]
+    head = event["pull_request"]["head"]["sha"]
     for sha in (base, head):
         if (
             not isinstance(sha, str)
@@ -93,8 +72,9 @@ def changed_paths(event_name: str, event: dict, root: Path) -> list[str]:
     # both paths, so moving an engine file into docs cannot qualify for exemption.
     # NUL-separated output also preserves filenames containing whitespace.
     # https://git-scm.com/docs/git-diff
+    # The three-dot range covers the entire PR since its merge base, not just its last commit.
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--no-renames", "-z", f"{base}{separator}{head}", "--"],
+        ["git", "diff", "--name-only", "--no-renames", "-z", f"{base}...{head}", "--"],
         cwd=root, check=True, capture_output=True, timeout=30,
     )
     return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
@@ -111,7 +91,7 @@ def classify(event_name: str, event: dict, root: Path) -> tuple[bool, str]:
 
 
 def validation_tier(event_name: str, event: dict, *, is_batch: bool = False) -> str:
-    """Use cheap checks for develop PRs, retain legacy main tiers, and fully validate batches."""
+    """Use cheap checks for develop PRs and fully validate batches and every other PR."""
     if is_batch:
         return FULL_TIER
     if event_name in {"schedule", "workflow_dispatch"}:
@@ -121,10 +101,9 @@ def validation_tier(event_name: str, event: dict, *, is_batch: bool = False) -> 
     try:
         if event["pull_request"].get("base", {}).get("ref") == "develop":
             return INTEGRATION_TIER
-        names = {label["name"] for label in event["pull_request"].get("labels") or []}
     except (AttributeError, KeyError, TypeError):
-        return FULL_TIER
-    return FULL_TIER if FULL_VALIDATION_LABEL in names else PULL_REQUEST_TIER
+        pass
+    return FULL_TIER
 
 
 def gate_failures(results: dict) -> list[str]:
@@ -139,16 +118,10 @@ def gate_failures(results: dict) -> list[str]:
     tier = outputs.get("validation_tier")
     if tier not in TIERS:
         return ["Change classification did not report a valid validation_tier output."]
-    inventory = {"changes", *NATIVE_JOBS}
-    if LEGACY_INTEGRATION_JOB in results and tier != INTEGRATION_TIER:
-        if results[LEGACY_INTEGRATION_JOB].get("result") != "skipped":
-            failures.append("Legacy integration compile must be skipped outside integration PRs.")
-        results = {name: job for name, job in results.items() if name != LEGACY_INTEGRATION_JOB}
-    if set(results) != inventory:
+    if set(results) != {"changes", *NATIVE_JOBS}:
         failures.append("Required native job inventory is incomplete or unexpected.")
     for name in NATIVE_JOBS:
-        deferred = ((tier == PULL_REQUEST_TIER and name in MERGE_QUEUE_JOBS)
-                    or (tier == INTEGRATION_TIER and name in INTEGRATION_JOBS)
+        deferred = ((tier == INTEGRATION_TIER and name in INTEGRATION_JOBS)
                     or (tier != NIGHTLY_TIER and name in NIGHTLY_JOBS))
         expected = "success" if required == "true" and not deferred else "skipped"
         actual = results.get(name, {}).get("result")

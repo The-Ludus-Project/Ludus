@@ -113,7 +113,7 @@ claims. The first increment's measurements above are unchanged.
   and `ludus_target_detection` lacks iOS/tvOS/watchOS SDKs. The renderer render
   tests are Linux/Slang-only, the editor tests need Qt, and the script-provider
   tests need cooked provider inputs. The filesystem benchmark is opt-in and was
-  syntax-checked only. Linux CI and the `ci:full` queue tier build these targets.
+  syntax-checked only. Linux CI and the full batch tier build these targets.
 
 ## M3 FixedArray and Input migration
 

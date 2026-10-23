@@ -7,7 +7,6 @@ name: Ludus Wiki
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
-  merge_group:
   workflow_call:
     inputs:
       batch_sha:
@@ -57,13 +56,13 @@ jobs:
         run: python -m unittest discover -s scripts/python -p 'test_api*.py' -v
       - name: Build the authored wiki
         run: python -m mkdocs build --strict
-      - name: Reject new API gaps and baseline additions in pull requests and the merge queue
-        if: inputs.batch_base_sha != '' || github.event_name == 'pull_request' || github.event_name == 'merge_group'
+      - name: Reject new API gaps and baseline additions in pull requests and batches
+        if: inputs.batch_base_sha != '' || github.event_name == 'pull_request'
         env:
-          API_BASELINE_REF: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          API_BASELINE_REF: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha }}
         run: python scripts/build-api --bootstrap --baseline-ref "$API_BASELINE_REF"
       - name: Validate API documentation on main and manual runs
-        if: inputs.batch_base_sha == '' && github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        if: inputs.batch_base_sha == '' && github.event_name != 'pull_request'
         run: python scripts/build-api --bootstrap
 
       - name: Validate canonical documentation without rebuilding the browser editor
@@ -226,8 +225,8 @@ jobs:
           path: out/wiki
 
   macos-documentation-tools:
-    # Pull requests build the wiki on Linux; the macOS tool checks run in the
-    # merge queue and on main, keeping scarce macOS runners for queued work.
+    # Pull requests build the wiki on Linux; the macOS tool checks run in
+    # batches and on main, keeping scarce macOS runners for combined work.
     if: github.event_name != 'pull_request'
     name: Documentation tools (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
