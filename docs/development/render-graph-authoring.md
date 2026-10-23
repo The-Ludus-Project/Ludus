@@ -147,6 +147,14 @@ when its shading needs `EvaluateMaterial(scene, hit)` and the full material prop
 The conversion reuses the existing program records, IDs and profile artifact slots.
 It works with full program/artifact budgets and preserves those authored limits;
 you do not need to edit the manifest before converting. **Save** publishes the manifest change.
+Projects converted by older editors may retain a generated `scene_legacy_callbacks.slang`
+helper that includes the original callbacks. The builder recognizes that generated
+helper, supplies the renderer-owned `RayHit` declaration, and includes each callback
+once from the pipeline wrapper. Replacing a callback can therefore retain its helper
+include without recursively including itself. This compatibility step leaves project
+files unchanged; customized helper declarations or directives are preserved without
+automatic migration. The compiled program's `compatibility-sources.json` records the
+staged helper text; the package's `sources/` retains the original source snapshot.
 The Source interface panel describes the active interface and available material
 fields. See [scene-aware ray shaders](#author-scene-aware-ray-shaders) for callback
 and material contracts.

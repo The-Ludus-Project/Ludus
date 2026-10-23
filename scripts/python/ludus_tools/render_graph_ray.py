@@ -4,6 +4,7 @@ The renderer owns native acceleration structures and the packed shading tables. 
 stage assignment, launch extent and publication. No CPU transport is selected.
 """
 from copy import deepcopy
+from pathlib import Path
 import re
 from . import render_graph_buffers as buffers
 
@@ -125,6 +126,43 @@ def validate_program(program, build):
                   'Schema', program['id'], 'ray function interface differs from declared profile')
 
 
+def migrate_legacy_scene_sources(sources, snapshot):
+    """Lift old editor bridge callbacks and shared types into the pipeline wrapper.
+
+    Match only the complete generated bridge grammar. Preserve authored files and
+    snapshot hashes; overrides apply solely to the compiler's private source tree.
+    In particular a replacement callback may include the bridge that once included
+    that callback, without being parsed twice or needing an authored include guard.
+    """
+    declaration = ('struct RayHit { Ray IncomingRay; float3 PositionWorld; float DistanceWorld; '
+                   'float3 NormalWorld; uint Primitive; float2 Barycentric; float4 Color; };')
+    expected = re.sub(r'\s+', '', '#pragma once\n' + declaration)
+    overrides, callbacks = {}, set()
+    dependencies = {path for source in sources for path in snapshot.shader_closure(source)}
+    for path in sorted(dependencies):
+        text = snapshot.files[path].decode('utf-8')
+        if re.search(r'^// Compatibility inputs for the original authored callbacks\.\r?$', text, re.M) is None:
+            continue
+        code = re.sub(r'/\*.*?\*/|//[^\n]*', lambda match: re.sub(r'[^\n]', ' ', match[0]), text, flags=re.S)
+        includes = list(re.finditer(r'^[ \t]*#include "([^"\n]+)"[ \t]*\r?$', code, re.M))
+        if not includes:
+            continue
+        # Remove only include rows, retaining their newlines for diagnostic locations.
+        shared = text
+        for match in reversed(includes):
+            shared = shared[:match.start()] + shared[match.end():]
+        tokens = re.sub(r'/\*.*?\*/|//[^\n]*', '', shared, flags=re.S)
+        if re.sub(r'\s+', '', tokens) != expected:
+            continue
+        # The wrapper supplies the renderer-owned RayHit once, including when
+        # multiple old bridges or a mixture of legacy/scene callbacks is selected.
+        shared = re.sub(r'\bstruct\s+RayHit\s*\{[^}]*\}\s*;',
+                        lambda match: re.sub(r'[^\r\n]', ' ', match[0]), shared)
+        overrides[path] = shared
+        callbacks.update((Path(path).parent / match[1]).as_posix() for match in includes)
+    return {'sources': overrides, 'callbacks': sorted(callbacks)}
+
+
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None):
     """Capture the engine kernel and all three functions in one linked compute entry."""
     selected = {stage: programs[identity] for stage, identity in zip(STAGES, variants[0])} if variants else {stage: programs[technique[stage]] for stage in STAGES}
@@ -194,15 +232,22 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         wrapper = wrapper.replace(token, selected[stage]['function'])
     wrapper = wrapper.replace('_ludus_ray/renderer_gpu_preview.slang', '_ludus_ray/' + compute_recipe['source'])
     wrapper = wrapper.replace('ComputeMain(positionPixel)', compute_recipe['compute'] + '(positionPixel)')
+    compatibility = {'sources': {}, 'callbacks': []}
     if technique.get('scene_interface') is not None:
-        wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe, storage_source)
+        sources = {programs[identity]['source'] for variant in variants for identity in variant} if variants else {
+            program['source'] for program in selected.values()}
+        compatibility = migrate_legacy_scene_sources(sources, snapshot)
+        wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe, storage_source,
+                                compatibility)
     if persistent:
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'ordered ray passes and persistent buffers require the scene callback interface')
-        wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe)
+        wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility)
     result = {identity: deepcopy(program) for identity, program in programs.items() if program['stage'] not in STAGES}
     result[COMPUTE_ID] = {'id': COMPUTE_ID, 'stage': 'compute', 'source': selected['ray_generation']['source'],
                           'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
+    if compatibility['sources']:
+        result[COMPUTE_ID]['source_overrides'] = compatibility['sources']
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
         # Use the same renderer-owned image recipe; its interface is validated by the runtime.
         source = '#include "_ludus_ray/' + image_recipe['source'] + '"\n'
@@ -268,7 +313,7 @@ def check_interface(program, result, build):
                       'ShaderInterface', program['id'], 'ray image fragment resources differ from renderer ABI')
 
 
-def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source=''):
+def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='', compatibility=None):
     """Link ordinary callbacks; the user raygen is the only sample/integrator driver."""
     payload = interface.get('payload', DEFAULT_PAYLOAD)
     if 'payload' in interface:
@@ -281,13 +326,16 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
 #include "_ludus_ray/scene_shader.slang"
 '''
     wrapper += storage_source
+    compatibility = compatibility or {'sources': {}, 'callbacks': []}
     if interface.get('visibility_buffer', False):
         wrapper += '#define LUDUS_RENDER_GRAPH_VISIBILITY_INPUTS 1\n#include "_ludus_ray/visibility_buffer.slang"\n'
-    if any(program['output'] in ('Ray', 'Color') for program in selected.values()):
+    if compatibility['sources'] or any(program['output'] in ('Ray', 'Color') for program in selected.values()):
         wrapper += '#include "_ludus_ray/ray_shader.slang"\n'
     wrapper += '#include "' + payload + '"\n'
+    for source in sorted(compatibility['sources']):
+        wrapper += '#include "' + source + '"\n'
     wrapper += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
-    for source in sorted({program['source'] for program in selected.values()}):
+    for source in sorted({program['source'] for program in selected.values()} | set(compatibility['callbacks'])):
         wrapper += '#include "' + source + '"\n'
     callbacks, adapters = adapt_legacy_callbacks(selected)
     wrapper += adapters
@@ -422,13 +470,13 @@ def validate_payload(data, budget, build):
     build.require(fields, 'ShaderInterface', 'ScenePayload', 'empty payload is not supported')
 
 
-def persistent_wrapper(programs, technique, variants, snapshot, build, recipe):
+def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, compatibility=None):
     """Namespace each unique authored source and dispatch its callbacks by pass index."""
     interface = technique['scene_interface']
     sources = sorted({programs[identity]['source'] for variant in variants for identity in variant})
     selected = {stage: dict(programs[identity], function=f'GraphSource{sources.index(programs[identity]["source"])}::' + programs[identity]['function'])
                 for stage, identity in zip(STAGES, variants[0])}
-    wrapper = scene_wrapper(selected, interface, snapshot, build, recipe)
+    wrapper = scene_wrapper(selected, interface, snapshot, build, recipe, compatibility=compatibility)
     prefix, body = wrapper.split('uint TraceAndShade(', 1)
     first_callbacks, first_adapters = adapt_legacy_callbacks(selected)
     body = body.replace(first_adapters, '', 1) if first_adapters else body
@@ -444,7 +492,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe):
     # Shared type/helper includes are global and captured before entry-source namespaces.
     # Includes are compiler-resolved from the same immutable source snapshot.
     dependencies = {path for source in sources for path in snapshot.shader_closure(source)} - set(sources)
-    for dependency in sorted(dependencies - {interface.get('payload')}):
+    for dependency in sorted(dependencies - {interface.get('payload')} - set((compatibility or {}).get('sources', {}))):
         prefix += '#include "' + dependency + '"\n'
     for index, source in enumerate(sources):
         prefix += f'namespace GraphSource{index} {{\n#include "{source}"\n}}\n'

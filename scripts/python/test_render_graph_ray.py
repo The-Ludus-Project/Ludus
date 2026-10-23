@@ -15,6 +15,42 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'tests/sdk_consumer/rg2/raytracing'
 
 
+def make_legacy_scene_bridge(root):
+    """Reproduce the old editor bridge after replacing its closest-hit source."""
+    helper = root / 'main_shaders/scene_legacy_callbacks.slang'
+    declaration = (ROOT / 'modules/graphics/renderer/shaders/ray_shader.slang').read_text().split('struct RayHit', 1)[1]
+    helper.write_text('#pragma once\n// Compatibility inputs for the original authored callbacks.\n'
+                      'struct RayHit' + declaration +
+                      '#include "closest.slang"\n#include "legacy_miss.slang"\n#include "legacy_generate.slang"\n')
+    (helper.parent / 'legacy_miss.slang').write_text('float3 OriginalMiss(Ray ray) { return float3(0); }\n')
+    (helper.parent / 'legacy_generate.slang').write_text('Ray OriginalGenerate(RayLaunch launch) { return launch.CameraRay; }\n')
+    (helper.parent / 'miss.slang').write_text('''#include "scene_legacy_callbacks.slang"
+void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)
+{
+    payload.Radiance = OriginalMiss(ray);
+}
+''')
+    (helper.parent / 'generate.slang').write_text('''#include "scene_legacy_callbacks.slang"
+float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+{
+    ScenePayload payload = (ScenePayload)0;
+    TraceAndShade(scene, queries, OriginalGenerate(launch), payload);
+    return payload.Radiance;
+}
+''')
+    (helper.parent / 'closest.slang').write_text('''#include "scene_legacy_callbacks.slang"
+#define LUDUS_EMITTER_SAMPLING_MODE_UNIFORM (0)
+struct ReplacementLighting { float3 Radiance; };
+void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
+{
+    ReplacementLighting lighting;
+    lighting.Radiance = EvaluateMaterial(scene, hit).BaseColor;
+    payload.Radiance = lighting.Radiance;
+}
+''')
+    return helper
+
+
 class RayPipelineTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -26,6 +62,38 @@ class RayPipelineTests(unittest.TestCase):
     def compile(self):
         self.path.write_bytes(graph.canonical_asset(self.document))
         return graph.compile_graph(self.path)
+
+    def test_legacy_scene_bridge_migration_preserves_snapshot_and_diagnostic_lines(self):
+        root = self.path.parent
+        shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray/main_shaders', root / 'main_shaders')
+        helper = make_legacy_scene_bridge(root)
+        # Comments are not dependencies; CRLF projects use the same migration.
+        helper.write_bytes((helper.read_text() + '/*\n#include "missing.slang"\n*/\n').replace('\n', '\r\n').encode())
+        snapshot = build.Snapshot(root)
+        original = helper.read_bytes()
+        compatibility = ray.migrate_legacy_scene_sources(['main_shaders/closest.slang'], snapshot)
+        shared = compatibility['sources']['main_shaders/scene_legacy_callbacks.slang']
+        self.assertNotIn('struct RayHit', shared)
+        self.assertNotIn('#include "closest.slang"', shared)
+        self.assertEqual(original.count(b'\n'), shared.count('\n'))
+        self.assertEqual(['main_shaders/closest.slang', 'main_shaders/legacy_generate.slang',
+                          'main_shaders/legacy_miss.slang'], compatibility['callbacks'])
+        self.assertEqual(original, snapshot.files['main_shaders/scene_legacy_callbacks.slang'])
+        snapshot.verify()
+
+    def test_legacy_scene_bridge_migration_leaves_custom_declarations_and_directives_alone(self):
+        root = self.path.parent
+        shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray/main_shaders', root / 'main_shaders')
+        helper = make_legacy_scene_bridge(root)
+        original = helper.read_text()
+        for addition in ('float3 CustomLighting(float3 color) { return color; }\n',
+                         '#define CUSTOM_LIGHTING 1\n', '#if CUSTOM_LIGHTING\n#endif\n'):
+            with self.subTest(addition=addition):
+                helper.write_text(original + addition)
+                snapshot = build.Snapshot(root)
+                self.assertEqual({'sources': {}, 'callbacks': []},
+                                 ray.migrate_legacy_scene_sources(['main_shaders/closest.slang'], snapshot))
+                snapshot.verify()
 
     def test_ray_image_dependencies_exclude_callbacks_and_preserve_engine_helpers(self):
         root = self.path.parent
@@ -393,6 +461,58 @@ class RayPipelineTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
                      'set LUDUS_RG1_SLANG, LUDUS_RG1_HELPER and LUDUS_RG1_CROSS for native ray compiler acceptance')
 class RayCompilerAcceptance(unittest.TestCase):
+    def test_old_editor_bridge_with_replaced_unguarded_callback_compiles_without_rewriting_project(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'scene_ray'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            helper = make_legacy_scene_bridge(source)
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text()
+                                .replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+            original = {p.relative_to(source): p.read_bytes() for p in source.rglob('*') if p.is_file()}
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            result = build.build_package(manifest, root / 'build', **options)
+            package = build.verify_package(Path(result['package']))
+            compute = next(program for program in package['programs'] if program['id'] == ray.COMPUTE_ID)
+            staged = json.loads((Path(result['package']) / 'programs' / compute['key'] /
+                                 'compatibility-sources.json').read_text())
+            self.assertNotIn('#include "closest.slang"', staged['main_shaders/scene_legacy_callbacks.slang'])
+            self.assertEqual(helper.read_bytes(), (Path(result['package']) / 'sources' /
+                                                  'main_shaders/scene_legacy_callbacks.slang').read_bytes())
+            self.assertEqual(original, {p.relative_to(source): p.read_bytes() for p in source.rglob('*') if p.is_file()})
+            warm = build.build_package(manifest, root / 'build', **options)
+            self.assertEqual(0, warm['cache_misses'])
+            helper.write_text(helper.read_text() + '// Edited bridge must invalidate its compute stage.\n')
+            changed = build.build_package(manifest, root / 'build', **options)
+            self.assertEqual(1, changed['cache_misses'])
+            current = (root / 'build/current.json').read_bytes()
+            helper.write_text(helper.read_text() + '#define CUSTOM_BRIDGE 1\n')
+            custom = helper.read_bytes()
+            with self.assertRaises(ToolingError):
+                build.build_package(manifest, root / 'build', **options)
+            self.assertEqual(custom, helper.read_bytes())
+            self.assertEqual(current, (root / 'build/current.json').read_bytes())
+
+    def test_old_editor_bridge_compiles_in_ordered_ray_passes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'ordered'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/ordered_ray', source)
+            make_legacy_scene_bridge(source)
+            manifest = source / 'main.lushader.json'
+            value = json.loads((source / 'main.lushader.json.in').read_text()
+                               .replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+            # A legacy stage and the old bridge must share one renderer-owned RayHit.
+            miss = next(program for program in value['programs'] if program['stage'] == 'miss')
+            miss.update(source='main_shaders/legacy_miss.slang', function='OriginalMiss', input='Ray', output='Color')
+            manifest.write_text(json.dumps(value))
+            result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                         compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            package = build.verify_package(Path(result['package']))
+            self.assertIn(ray.COMPUTE_ID, {program['id'] for program in package['programs']})
+
     def test_pipeline_supplies_default_payload_and_adapts_each_legacy_stage(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

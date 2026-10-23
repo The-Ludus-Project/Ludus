@@ -664,7 +664,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     for relative in closure:
         p = source / relative
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(snapshot.files[relative])
+        override = program.get('source_overrides', {}).get(relative)
+        p.write_bytes(override.encode('utf-8') if override is not None else snapshot.files[relative])
     wrapper = shader_source(program, schemas)
     (source / 'wrapper.slang').write_text(wrapper)
     output = work / 'artifact'
@@ -703,6 +704,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     # Readable provenance is separate from shader identities. No temporary or
     # machine paths enter immutable stage outputs/cache/package descriptors.
     (output / 'wrapper.slang').write_text(wrapper)
+    if program.get('source_overrides'):
+        (output / 'compatibility-sources.json').write_bytes(encoded(program['source_overrides']))
     result['source_map'] = {'wrapper': 'wrapper.slang', 'function': program['source'], 'schema_owner': 'build manifest'}
     (output / 'stage.json').write_bytes(encoded(result))
     (output / 'stage.d').unlink()
