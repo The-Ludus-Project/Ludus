@@ -34,10 +34,13 @@ inline constexpr usize MAX_SCATTER_VARIANTS = 64;
 inline constexpr uint16 MAX_SCATTER_CANDIDATES_PER_CELL = 64;
 /// Cells searched in each direction for conflicts; follows from exclusion radius <= cell size.
 inline constexpr int32 SCATTER_NEIGHBOR_CELLS = 2;
-/// Bit positions of the identity fields in a packed address scope; cell Y occupies the low 16 bits.
+/// Bit position of the room in a packed address scope.
 inline constexpr uint32 SCATTER_SCOPE_ROOM_SHIFT = 48U;
+/// Bit position of the layer in a packed address scope.
 inline constexpr uint32 SCATTER_SCOPE_LAYER_SHIFT = 40U;
+/// Bit position of the candidate in a packed address scope.
 inline constexpr uint32 SCATTER_SCOPE_CANDIDATE_SHIFT = 32U;
+/// Bit position of cell X in a packed address scope; cell Y occupies the low 16 bits.
 inline constexpr uint32 SCATTER_SCOPE_CELL_X_SHIFT = 16U;
 /// Default layer scale: one in thousandths, the example unit of ScatterLayer::MinimumScale.
 inline constexpr uint16 DEFAULT_SCATTER_SCALE = 1000;
