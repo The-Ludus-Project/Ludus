@@ -40,6 +40,14 @@ static analysis and the installed Behavior SDK journey. This replaces the separa
 PR with one authoring build per combined batch. Native dependency and compiler
 caches continue to be saved in the batch's `main` scope.
 
+Native build, test and analysis jobs depend only on change classification, not
+on the source/tooling job. A source-policy or formatting failure therefore no
+longer skips every Linux compile in a batch, including **Development and SDK**
+and the Editor job: each still reports its own result, so one batch shows every
+failure to fix. Promotion is unchanged: the `Ubuntu Clang` gate still requires
+the source/tooling job to succeed. Like every coordinator edit, this takes effect
+for batches only after it reaches `main`.
+
 Cheap PR checks establish source/tooling admission, not build readiness. A compile
 or runtime regression can enter `develop`; the batch must reject it before
 `main` advances. Inspect failed batch diagnostics and submit a focused fix or

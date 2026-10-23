@@ -554,7 +554,7 @@ jobs:
           python3 -m unittest discover -s scripts/python -p test_check_container_policy.py -v
           python3 tools/check_target_macros.py
           python3 -m unittest discover -s scripts/python -p test_check_target_macros.py -v
-      - name: Verify source formatting before builds
+      - name: Verify source formatting
         run: ./scripts/check --format
       - name: Enforce review-derived source rules
         env:
@@ -574,7 +574,7 @@ jobs:
         run: python3 -m unittest discover -s tools/script-cook -p 'test_*.py' -v
 
   debug-runtime:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Debug runtime and source debugger
     runs-on: ubuntu-24.04
@@ -602,7 +602,7 @@ jobs:
         run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
 
   development:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Development and SDK
     runs-on: ubuntu-24.04
@@ -918,7 +918,7 @@ jobs:
         run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
 
   sanitizers:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
     name: ASan and UBSan
     runs-on: ubuntu-24.04
@@ -1019,7 +1019,7 @@ jobs:
         run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
 
   scripting-qualification:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: S7 reference performance and release acceptance
     runs-on: ubuntu-24.04
@@ -1061,7 +1061,7 @@ jobs:
           if-no-files-found: error
 
   filesystem-fuzz:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Filesystem pack fuzzing
     runs-on: ubuntu-24.04
@@ -1094,7 +1094,7 @@ jobs:
           if-no-files-found: warn
 
   threading-races:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Threading race detection
     runs-on: ubuntu-24.04
@@ -1130,7 +1130,7 @@ jobs:
           retention-days: 14
 
   analysis:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Clang static analysis (${{ matrix.shard }})
     strategy:
@@ -1185,7 +1185,7 @@ jobs:
         run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
 
   editor:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
@@ -1285,7 +1285,7 @@ jobs:
 
   # Debug runtime already runs the complete Debug assertion/build contracts.
   assertion-policy:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Assertion policy (${{ matrix.preset }})
     runs-on: ubuntu-24.04
@@ -1311,7 +1311,7 @@ jobs:
         run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
 
   pch:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: PCH build (LUDUS_ENABLE_PCH=ON)
     runs-on: ubuntu-24.04
@@ -1338,7 +1338,7 @@ jobs:
         run: if command -v ccache >/dev/null; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
 
   build-budget:
-    needs: [changes, formatting]
+    needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
     name: Build-time budget
     runs-on: ubuntu-24.04
