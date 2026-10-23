@@ -24,6 +24,31 @@ LLVM_MAJOR = engine.pinned_llvm_major(engine.repo_root())
 CLANG_TIDY = engine.pinned_llvm_tool(engine.repo_root(), "clang-tidy")
 
 
+class WindowsThreadingClosureTests(unittest.TestCase):
+    """The Windows configure adds a fixed module list; every Ludus:: link in it must resolve."""
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def windows_modules(self) -> list[str]:
+        top = (self.ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        branch = re.search(r'if\(CMAKE_SYSTEM_NAME STREQUAL "Windows"\)(.*?)\nendif\(\)', top, re.S)
+        self.assertIsNotNone(branch, "Windows configure branch not found")
+        modules = re.search(r"foreach\(module IN ITEMS ([^)]*)\)", branch.group(1))
+        self.assertIsNotNone(modules, "Windows module list not found")
+        # FoundationBase is added before the platform branch.
+        return ["base", *modules.group(1).split()]
+
+    def test_windows_module_list_is_closed_over_its_links(self):
+        defined = set()
+        referenced = {}
+        for module in self.windows_modules():
+            text = (self.ROOT / "modules/foundation" / module / "CMakeLists.txt").read_text(encoding="utf-8")
+            defined.update(re.findall(r"add_library\((Ludus::\w+) ALIAS", text))
+            referenced[module] = set(re.findall(r"Ludus::\w+", text))
+        for module, targets in referenced.items():
+            self.assertEqual(targets - defined, set(),
+                             f"modules/foundation/{module} links targets the Windows configure does not add")
+
+
 class ToolchainPinTests(unittest.TestCase):
     """Copies of the LLVM pin that cannot read config/tool_versions.json must agree with it."""
     ROOT = Path(__file__).resolve().parents[2]

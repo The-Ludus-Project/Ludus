@@ -245,7 +245,10 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Windows validates only the FoundationThreading closure (threading.md, T3).
     # Other modules have no Windows backend; the SDK is not installed there yet.
-    foreach(module IN ITEMS memory containers time profiling threading)
+    # Keep the list closed over Ludus::Foundation* links: FoundationProfiling
+    # links FoundationStrings, which links FoundationHash.
+    # test_windows_threading_closure.py checks this.
+    foreach(module IN ITEMS memory containers hash strings time profiling threading)
         add_subdirectory(modules/foundation/${module})
     endforeach()
     return()
