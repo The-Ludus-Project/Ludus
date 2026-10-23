@@ -307,6 +307,10 @@ int main()
 /CMakeUserPresets.json
 /.vscode/settings.json
 /.ludus/
+# Scene-asset writer lock (flock target, recreated on demand).
+/assets/.scene-writer.lock
+# macOS Finder metadata.
+.DS_Store
 """,
         ),
         TemplateFile("assets/.keep", ""),
