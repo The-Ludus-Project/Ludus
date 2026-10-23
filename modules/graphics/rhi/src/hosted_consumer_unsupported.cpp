@@ -47,6 +47,7 @@ void DestroyHostedGeneration([[maybe_unused]] HostedConsumerBackend& inoutBacken
 }
 
 bool AcquireHostedImage([[maybe_unused]] HostedConsumerBackend& inoutBackend,
+                        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): shared backend signature
                         [[maybe_unused]] foundation::usize slot,
                         [[maybe_unused]] foundation::uint32 image,
                         [[maybe_unused]] HostedFrame& inoutFrame) noexcept
@@ -55,6 +56,7 @@ bool AcquireHostedImage([[maybe_unused]] HostedConsumerBackend& inoutBackend,
 }
 
 bool EnqueueHostedRelease([[maybe_unused]] HostedConsumerBackend& inoutBackend,
+                          // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): shared backend signature
                           [[maybe_unused]] foundation::usize slot,
                           [[maybe_unused]] foundation::uint32 image) noexcept
 {
@@ -62,6 +64,7 @@ bool EnqueueHostedRelease([[maybe_unused]] HostedConsumerBackend& inoutBackend,
 }
 
 bool TryCompleteHostedRelease([[maybe_unused]] HostedConsumerBackend& inoutBackend,
+                              // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): shared backend signature
                               [[maybe_unused]] foundation::usize slot,
                               [[maybe_unused]] foundation::uint32 image) noexcept
 {
@@ -69,6 +72,7 @@ bool TryCompleteHostedRelease([[maybe_unused]] HostedConsumerBackend& inoutBacke
 }
 
 void CompleteHostedRelease([[maybe_unused]] HostedConsumerBackend& inoutBackend,
+                           // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): shared backend signature
                            [[maybe_unused]] foundation::usize slot,
                            [[maybe_unused]] foundation::uint32 image) noexcept
 {
