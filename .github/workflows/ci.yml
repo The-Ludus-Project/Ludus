@@ -1191,6 +1191,9 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       LUDUS_TIDY_JOBS: "4"
+      # Compile the editor without its precompiled headers from the first
+      # configure (./init.sh in native-setup) onwards; see the configure step.
+      LUDUS_EDITOR_PRECOMPILED_HEADERS: "0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1205,9 +1208,12 @@ jobs:
       - name: Prepare and configure trusted authoring shaders
         run: |
           ./scripts/shader-probe bootstrap
-          out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
+          out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_EDITOR_PRECOMPILED_HEADERS=OFF -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
       # Compile authoring and live reload once per combined batch, including all
       # default targets previously built separately on every integration PR.
+      # The editor's precompiled headers stay off here, so an editor source that
+      # relies on a Qt or standard header it does not include fails this build.
+      # The macOS jobs and Linux sanitizer build keep the default (on).
       - name: Build every default target with the Editor and shader worker
         run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
       - name: Verify unit and Editor tests and worker-on target detection

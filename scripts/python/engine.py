@@ -1580,8 +1580,8 @@ def configure_needs_fresh_cache(root: Path, preset: str) -> bool:
 
 
 # Environment variables that CMakeLists.txt reads while configuring.
-CONFIGURE_ENVIRONMENT = ("CI", "LUDUS_ENABLE_CCACHE", "LUDUS_CCACHE_SHARE_CHECKOUTS", "CC", "CXX", "CFLAGS",
-                         "CXXFLAGS", "LDFLAGS", "SDKROOT")
+CONFIGURE_ENVIRONMENT = ("CI", "LUDUS_ENABLE_CCACHE", "LUDUS_CCACHE_SHARE_CHECKOUTS", "LUDUS_EDITOR_PRECOMPILED_HEADERS",
+                         "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS", "SDKROOT")
 CONFIGURE_STAMP_NAME = ".ludus-init-configure.json"
 COMPILER_CACHE_DEFINITION = "-DLUDUS_ENABLE_CCACHE="
 BOOLEAN_TRUE_WORDS = frozenset({"1", "ON", "YES", "TRUE", "Y"})
@@ -2724,6 +2724,9 @@ def command_profile_build(args: argparse.Namespace) -> int:
 
     extra_configure = ["-DLUDUS_ENABLE_TIME_TRACE=ON"] if not args.no_time_trace else []
     extra_configure.append("-DLUDUS_ENABLE_CCACHE=" + ("ON" if args.ccache else "OFF"))
+    # Build-time budgets measure real header parse costs (AGENTS.md "Build-time
+    # hygiene"), so profiles never precompile the editor's Qt and standard headers.
+    extra_configure.append("-DLUDUS_EDITOR_PRECOMPILED_HEADERS=OFF")
 
     print(f"Profiling clean build of preset '{preset}'.")
     configure_start = time.monotonic()
