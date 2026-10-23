@@ -903,6 +903,15 @@ void RenderPreview::SetLookSensitivity(float32 sensitivity)
     mLookSensitivity = sensitivity;
     Q_EMIT NavigationChanged();
 }
+void RenderPreview::SetViewportSize(usize presetIndex)
+{
+    if (presetIndex >= VIEWPORT_SIZE_PRESET_COUNT || presetIndex == mViewportSizeIndex)
+    {
+        return;
+    }
+    mViewportSizeIndex = presetIndex;
+    Q_EMIT NavigationChanged();
+}
 void RenderPreview::Orbit(float32 deltaX, float32 deltaY)
 {
     if ((deltaX == 0 && deltaY == 0) || beginNavigation() == false)
@@ -964,6 +973,46 @@ void RenderPreview::Fly(math::Vector3 movementControls, float32 deltaSeconds, fl
         navigationChanged();
     }
 }
+void RenderPreview::SetAxisView(EditorAxisView view)
+{
+    math::Aabb3 boundsWorld;
+    const bool hasBounds = Scene_.TryGetBounds({}, boundsWorld);
+    if (beginNavigation() == true &&
+        mCameraController.TrySetAxisView(view, hasBounds == true ? &boundsWorld : nullptr) == true)
+    {
+        navigationChanged();
+    }
+}
+void RenderPreview::SetOrthographic(bool isOrthographic)
+{
+    math::Aabb3 boundsWorld;
+    const bool hasBounds = Scene_.TryGetBounds({}, boundsWorld);
+    if (beginNavigation() == true &&
+        mCameraController.TrySetOrthographic(isOrthographic, hasBounds == true ? &boundsWorld : nullptr) == true)
+    {
+        navigationChanged();
+    }
+}
+void RenderPreview::SetVerticalFovDegrees(float32 degrees)
+{
+    if (math::IsFinite(degrees) == false ||
+        math::DegreesToRadians(degrees) == GetVisibleCameraSample().Lens.VerticalFov || beginNavigation() == false)
+    {
+        return;
+    }
+    if (mCameraController.TrySetVerticalFov(math::DegreesToRadians(degrees)) == true)
+    {
+        navigationChanged();
+    }
+}
+const gameplay::camera::CameraSample& RenderPreview::GetVisibleCameraSample() const noexcept
+{
+    if (Camera_ >= 0 && Camera_ < Scene_.Cameras.size())
+    {
+        return Scene_.Cameras[Camera_].Sample;
+    }
+    return mCameraController.GetSample();
+}
 void RenderPreview::Zoom(float32 steps)
 {
     if (steps == 0 || beginNavigation() == false)
@@ -998,6 +1047,7 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("radius"), OrbitRadius_},
             {QStringLiteral("navigationVersion"), NAVIGATION_STATE_VERSION},
             {QStringLiteral("lookSensitivity"), mLookSensitivity},
+            {QStringLiteral("viewportSize"), GetViewportSizeKey(mViewportSizeIndex)},
             {QStringLiteral("distance"), mCameraController.GetDistance()},
             {QStringLiteral("eyeX"), mCameraController.GetSample().Pose.Position.X},
             {QStringLiteral("eyeY"), mCameraController.GetSample().Pose.Position.Y},
@@ -1118,6 +1168,9 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     SetStatisticsVisible(state.value(QStringLiteral("statistics")).toBool(false));
     SetForceRaster(state.value(QStringLiteral("forceRaster")).toBool(false));
     SetLookSensitivity(static_cast<float32>(number(QStringLiteral("lookSensitivity"), 1)));
+    usize viewportSize = 0;
+    static_cast<void>(TryParseViewportSizeKey(state.value(QStringLiteral("viewportSize")).toString(), viewportSize));
+    SetViewportSize(viewportSize);
     navigationChanged();
     // An empty project reset supplies no saved pose to preserve when the first scene arrives.
     RestoredOrbit_ = state.isEmpty() == false;

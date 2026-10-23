@@ -2,6 +2,7 @@
 
 #include "internal/render_preview.h"
 #include "internal/viewport_frame_source.h"
+#include "internal/viewport_size.h"
 #if defined(Q_OS_MACOS)
 #    include "internal/viewport_relative_mouse.h"
 #endif
@@ -117,11 +118,16 @@ protected:
     void hideEvent(QHideEvent* event) override;
     void showEvent(QShowEvent* event) override;
     bool event(QEvent* event) override;
+    void paintEvent(QPaintEvent* event) override;
 
 private:
     struct State;
     foundation::UniquePtr<State> mState;
     void resizeSurface();
+    /// Letterbox the frame and resize the drawable for the preview's current size preset.
+    void applyViewportSize();
+    /// Size preset the frame layout currently uses; differs from the preview's until applied.
+    foundation::usize mAppliedViewportSize = VIEWPORT_SIZE_PRESET_COUNT;
     /// Reformat the statistics overlay from RenderPreview and push it to the active presentation.
     void updateStatistics();
     /// Copy the live shader status from its controller and push it to the active presentation.
