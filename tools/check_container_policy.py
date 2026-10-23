@@ -4,7 +4,8 @@
 Policy owner: docs/architecture/containers.md section 34.3, tracked as milestone
 M1 in docs/architecture/container-systems.md. std::vector is prohibited in all
 first-party code, engine sources and tests alike. The only exceptions are the
-benchmark comparison baselines listed in EXCEPTIONS and third-party/vendor or
+benchmark comparison baselines and the private Crashpad ABI adapter listed in
+EXCEPTIONS, and third-party/vendor or
 generated trees, which are never scanned.
 
 The scan is lexical: comments are removed and string/character literals are
@@ -27,6 +28,9 @@ SKIPPED_PARTS = {"out", "build", "third_party", "vendor", "generated", "node_mod
 
 # Repository-relative path -> reason. Keep this list exact; a stale entry fails.
 EXCEPTIONS = {
+    "apps/editor/src/crash_capture_macos.mm": (
+        "private macOS Crashpad ABI adapter; vectors are API arguments/results only, as scoped in ADR 0003"
+    ),
     "modules/foundation/containers/benchmarks/array_bench.cpp": (
         "benchmark baseline that measures Ludus Array/StaticArray against the standard containers"
     ),

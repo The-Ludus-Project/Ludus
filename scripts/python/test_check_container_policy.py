@@ -16,7 +16,11 @@ BENCHMARK = "modules/foundation/containers/benchmarks/array_bench.cpp"
 
 
 def write(root: Path, files: dict[str, str]) -> None:
-    for name, text in files.items():
+    # Every approved boundary must exist in a synthetic tree, otherwise the
+    # stale-exception gate correctly reports the fixture itself as incomplete.
+    sources = {name: "std::vector<int> upstreamBoundary;\n" for name in policy.EXCEPTIONS}
+    sources.update(files)
+    for name, text in sources.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -84,12 +88,22 @@ class ContainerPolicyTests(unittest.TestCase):
             )
 
     def test_stale_exception_is_reported(self) -> None:
+        for exception in policy.EXCEPTIONS:
+            with self.subTest(exception=exception), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                write(root, {exception: "ludus::foundation::Array<int> values;\n"})
+                problems = policy.violations(root)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertTrue(problems[0].startswith(exception + ": stale container-policy exception"))
+
+    def test_crashpad_exception_does_not_allow_an_adjacent_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            write(root, {BENCHMARK: "ludus::foundation::Array<int> values;\n"})
+            neighbor = "apps/editor/src/crash_capture_other.mm"
+            write(root, {neighbor: "std::vector<int> values;\n"})
             problems = policy.violations(root)
             self.assertEqual(len(problems), 1, problems)
-            self.assertIn("stale container-policy exception", problems[0])
+            self.assertTrue(problems[0].startswith(neighbor + ":1: std::vector is prohibited"))
 
     def test_repository(self) -> None:
         self.assertEqual(policy.violations(ROOT), [])

@@ -402,6 +402,7 @@ void ProfilingController::acceptSample(uint64 frameId,
         .DurationNanoseconds = durationNanoseconds,
         .FrameId = frameId,
         .DeviceSession = deviceSession,
+        .PassName = {},
     };
     if (mSamples.TryAdd(RecordedGpuSample{ .Sample = sample }) == false)
     {
@@ -440,6 +441,7 @@ void ProfilingController::acceptPassBatch(uint64 frameId,
             .DurationNanoseconds = static_cast<uint64>(duration + 0.5),
             .FrameId = frameId,
             .DeviceSession = deviceSession,
+            .PassName = {},
             .ScopeIdentity = pass.Scope.Identity,
             .ScopePassIndex = pass.ScopePassIndex,
             .LogicalPassCount = pass.Scope.LogicalPassCount,

@@ -126,6 +126,20 @@ closed argument set and an implementation-only parser.
 
 ### Ludus-owned runtime facilities
 
+The macOS Editor's private `crash_capture_macos.mm` adapter has one third-party
+ABI exception: `std::string`, `std::map<std::string, std::string>`,
+`std::vector<std::string>` and `std::vector<crashpad::CrashReportDatabase::Report>`
+are constructed only to call Crashpad's handler/database APIs.
+`std::unique_ptr<crashpad::CrashReportDatabase>` consumes the ownership returned
+by `CrashReportDatabase::Initialize`; it is not an engine ownership API. These
+objects exist only during healthy startup or explicit report-preference queries,
+never in a Ludus fault handler. This adapter and upstream Crashpad remain private
+to the native macOS editor; no engine module, public header, installed SDK or
+browser target inherits this permission. C++ exceptions stay disabled. Crashpad
+uses Mach exception ports; these OS exceptions are unrelated to C++ exceptions.
+See [crash reporting](../development/diagnostics.md#macos-editor-crash-reporting)
+for platform evidence and limitations.
+
 New containers, owning strings, smart pointers and algorithms must use Ludus
 implementations. This includes `std::vector`, `std::array`, maps/sets, queues,
 `std::string`, `std::unique_ptr`/`std::shared_ptr`, standard sorting/searching

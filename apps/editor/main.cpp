@@ -9,6 +9,9 @@
 #include "internal/controller.h"
 #include "internal/editor_files.h"
 #include "internal/main_window.h"
+#if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+#    include "internal/crash_reporting.h"
+#endif
 #include "internal/qt_accessibility.h"
 
 #include <ludus/foundation/base/types.h>
@@ -18,14 +21,25 @@
 #include <ludus/foundation/logging/log_system.hpp>
 
 #include <QApplication>
+#include <QByteArray>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QIcon>
 #include <QString>
+#if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+#    include <QTimer>
+#endif
+
+#include <string_view>
 
 namespace
 {
 LUDUS_DEFINE_LOG_CATEGORY(LOG_EDITOR_MAIN, "Editor");
+#if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+constexpr ludus::foundation::uint64 MAX_EDITOR_LOG_FILE_BYTES = 4ull * 1024ull * 1024ull;
+constexpr ludus::foundation::uint64 MAX_EDITOR_LOG_TOTAL_BYTES = 32ull * 1024ull * 1024ull;
+constexpr ludus::foundation::uint32 MAX_EDITOR_LOG_AGE_DAYS = 14;
+#endif
 
 // Bounded Qt message handler: forward Qt's own diagnostics to FoundationLogging
 // without recursion and without touching widgets. No global logger redesign.
@@ -52,13 +66,26 @@ void ForwardQtMessage(QtMsgType type, const QMessageLogContext& /*context*/, con
 
 int main(int argc, char** argv)
 {
+#if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+    // Register before Cocoa/Qt platform initialization, including Finder/IDE launches.
+    ludus::editor::InitializeEditorCrashReporting();
+#endif
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Ludus Editor"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
 
     namespace logging = ludus::foundation::logging;
     logging::LogConfig logConfig;
-    logConfig.EnableFile = false; // the editor is a short interactive session
+#if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+    const QByteArray logDirectory = ludus::editor::GetEditorLogDirectory().toUtf8();
+    logConfig.Directory =
+        std::string_view(logDirectory.constData(), static_cast<ludus::foundation::usize>(logDirectory.size()));
+    logConfig.MaxFileSizeBytes = MAX_EDITOR_LOG_FILE_BYTES;
+    logConfig.MaxTotalBytes = MAX_EDITOR_LOG_TOTAL_BYTES;
+    logConfig.MaxSessionAgeDays = MAX_EDITOR_LOG_AGE_DAYS;
+#else
+    logConfig.EnableFile = false;
+#endif
     logging::LogSystem::Initialize(logConfig);
     qInstallMessageHandler(ForwardQtMessage);
 #if defined(Q_OS_MACOS)
@@ -108,6 +135,9 @@ int main(int argc, char** argv)
     }
 #else
     window.show();
+#    if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+    QTimer::singleShot(0, &window, [&window]() { ludus::editor::PresentEditorCrashReportingNotice(&window); });
+#    endif
 #endif
 
     if (parser.isSet(projectOption))

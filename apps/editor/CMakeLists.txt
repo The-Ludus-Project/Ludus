@@ -295,6 +295,18 @@ target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationCon
 ludus_apply_project_defaults(ludus_editor_code)
 
 # --- Editor application ------------------------------------------------------
+option(LUDUS_EDITOR_CRASH_CAPTURE "Capture macOS editor crashes using a bundled external Crashpad handler" ${APPLE})
+set(LUDUS_EDITOR_SENTRY_DSN "" CACHE STRING "Default Sentry project DSN for distributed editors (public ingestion key, never an auth token)")
+if(LUDUS_EDITOR_CRASH_CAPTURE)
+    if(NOT APPLE OR EMSCRIPTEN)
+        message(FATAL_ERROR "LUDUS_EDITOR_CRASH_CAPTURE currently supports native macOS only")
+    endif()
+    include(cmake/EditorCrashReporting.cmake)
+    ludus_editor_add_crash_capture()
+    # Retain source locations in engine frames as well as app frames in optimized
+    # distributions. This build-only interface is never exported to SDK consumers.
+    target_compile_options(ludus_project_options INTERFACE "$<$<CONFIG:Release,MinSizeRel>:-g>")
+endif()
 qt_add_executable(ludus_editor
     ${editor_profiling_sources}
     src/internal/render_load_job.h
@@ -456,6 +468,46 @@ target_link_libraries(ludus_editor
         Ludus::FoundationParsingJson
 )
 ludus_apply_project_defaults(ludus_editor)
+if(LUDUS_EDITOR_CRASH_CAPTURE)
+    # dSYM is produced from this exact linked executable, before any later stripping/signing.
+    find_program(editor_dsymutil NAMES llvm-dsymutil dsymutil REQUIRED)
+    target_compile_options(ludus_editor PRIVATE -g)
+    add_custom_command(TARGET ludus_editor POST_BUILD
+        COMMAND "${editor_dsymutil}" "$<TARGET_FILE:ludus_editor>" -o "$<TARGET_BUNDLE_DIR:ludus_editor>.dSYM"
+        VERBATIM)
+    ludus_editor_bundle_crash_capture(ludus_editor)
+    target_sources(ludus_editor PRIVATE src/crash_reporting.cpp src/internal/crash_reporting.h)
+    target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_CRASH_CAPTURE=1)
+    target_link_libraries(ludus_editor PRIVATE Ludus::FoundationContainers)
+    set(editor_source_modified false)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${PROJECT_SOURCE_DIR}" status --porcelain --untracked-files=normal
+        OUTPUT_VARIABLE editor_source_status ERROR_QUIET)
+    if(editor_source_status)
+        set(editor_source_modified true)
+    endif()
+    if(LUDUS_EDITOR_SENTRY_DSN MATCHES "[\"\n\r]" OR LUDUS_EDITOR_SENTRY_DSN MATCHES "\\)ludus")
+        message(FATAL_ERROR "LUDUS_EDITOR_SENTRY_DSN must be a single-line project DSN")
+    endif()
+    set(editor_crash_config_directory "${CMAKE_CURRENT_BINARY_DIR}/crash-config")
+    file(MAKE_DIRECTORY "${editor_crash_config_directory}")
+    configure_file(src/internal/crash_config.h.in
+        "${editor_crash_config_directory}/ludus_editor_crash_config.h" @ONLY)
+    target_include_directories(ludus_editor PRIVATE "${editor_crash_config_directory}")
+    # Small production-path crash probe; enabled independently of the full Catch2 test graph.
+    option(LUDUS_EDITOR_CRASH_CAPTURE_TESTS "Build the native crash-capture subprocess probe" OFF)
+    if(LUDUS_EDITOR_CRASH_CAPTURE_TESTS)
+        add_executable(ludus_editor_crash_probe tests/crash_capture_probe.cpp src/crash_reporting.cpp)
+        target_include_directories(ludus_editor_crash_probe PRIVATE src "${editor_crash_config_directory}")
+        target_compile_definitions(ludus_editor_crash_probe PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+        target_link_libraries(ludus_editor_crash_probe PRIVATE Qt6::Widgets Ludus::FoundationContainers)
+        ludus_apply_project_defaults(ludus_editor_crash_probe)
+        ludus_editor_bundle_crash_capture(ludus_editor_crash_probe)
+        add_test(NAME ludus_editor_crash_capture
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_crash_capture.py"
+                "$<TARGET_FILE:ludus_editor_crash_probe>" "$<TARGET_FILE:crashpad_handler>")
+        set_tests_properties(ludus_editor_crash_capture PROPERTIES LABELS "editor;crash;native" TIMEOUT 180)
+    endif()
+endif()
 target_link_libraries(ludus_editor PRIVATE Ludus::Platform)
 # Scene import, save and assembly run in process (no Python scene backend),
 # including the browser Editor's MEMFS copies.

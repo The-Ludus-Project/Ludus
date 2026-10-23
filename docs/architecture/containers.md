@@ -1898,6 +1898,12 @@ occurrences are:
    STL types *are* the point of that translation unit, which is not part of the
    engine build graph.
 2. **Third-party / vendor / generated code** — code Ludus does not own.
+3. **Private Crashpad ABI adapter** — `apps/editor/src/crash_capture_macos.mm`
+   constructs exactly the `std::vector` argument/result types required by
+   Crashpad's external-handler/database API, as scoped in
+   [ADR 0003](../decisions/0003-standard-library-usage-policy.md#ludus-owned-runtime-facilities).
+   The adapter does not expose these containers or use them as Ludus storage.
+   This macOS editor boundary never enters the engine, SDK or browser.
 
 There is **no** "convenience", "cold path", "filesystem-related", "test-only",
 "temporary", or "will be rewritten later" exception. The element type being a
@@ -1954,6 +1960,8 @@ The original audit retained two categories of exceptions:
 - `containers/benchmarks/array_bench.cpp` — `std::vector`/`std::array`
   comparison baselines. Their whole purpose is to benchmark against the STL, and
   the translation unit is not in the engine build graph.
+- The macOS Editor's private Crashpad ABI adapter, limited to upstream
+  argument/result types under ADR 0003 (§34.3).
 
 The later first-party `std::vector` uses found by the 2026-10-06 review were
 migrated by [M1](container-systems.md#m1-consumer-migration). The tree again

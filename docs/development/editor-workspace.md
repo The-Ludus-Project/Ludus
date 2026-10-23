@@ -21,6 +21,11 @@ macOS bundles include the derived ICNS resource for Finder and Dock. The shared
 PNG sources live in `docs/wiki/assets/` and also supply the wiki and browser
 editor package; launching the native editor does not need those files on disk.
 
+macOS builds also bundle an external crash handler. **Help > Crash Reporting**
+controls consent and shows local report status; see
+[crash reporting setup and symbols](diagnostics.md#macos-editor-crash-reporting)
+before distributing a build to labmates.
+
 ## Work areas and document ownership
 
 The editor follows Visual Studio's layout: **documents** open as tabs in the
