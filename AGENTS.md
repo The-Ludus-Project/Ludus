@@ -499,6 +499,16 @@ It applies to production code in `modules/`, `apps/`, and `examples/`.
   `docs/development/build-profiling.md` and ADR 0005.
 - `./scripts/check --include-cleaner` gives an advisory include-hygiene report;
   it is not a gate.
+- **Editor precompiled headers are the one default-on exception.** The optional
+  Qt editor targets in `apps/editor` precompile a fixed list of stable Qt Core
+  and standard library headers (`LUDUS_EDITOR_PRECOMPILED_HEADERS`, default ON
+  for native builds; `apps/editor/cmake/EditorPrecompiledHeaders.cmake`). The
+  list never contains a Ludus header, so engine headers, the build-time budget
+  and header self-sufficiency are unaffected; `./scripts/profile-build` turns it
+  off. Editor sources must still include every Qt and standard header they use:
+  the batch **Editor, shader worker and unit tests** job compiles the editor
+  with the option OFF to catch a missing include. Do not add Ludus headers or
+  extend the exception to engine modules.
 
 ### Foundational headers and the include boundary
 
