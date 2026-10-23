@@ -246,6 +246,8 @@ private:
     QLabel* mSetupNoticeTextOrNull = nullptr;
     QPushButton* mSetupNoticeRepairOrNull = nullptr;
     QPushButton* mSetupNoticeCheckOrNull = nullptr;
+    /// Setup problem whose notice the user dismissed; a different problem shows it again.
+    QString mDismissedSetupProblem;
 
     // Project lifecycle presentation; controller actions own all operations.
     QLabel* ProjectIdentity_ = nullptr;

@@ -1234,15 +1234,21 @@ void MainWindow::RenderStatus()
     ProjectSetupStatus_->setText(setupStatus);
     const bool hasSetupProblem =
         state.Document == DocumentState::ProjectLoaded && state.SetupProblem.isEmpty() == false;
-    // Focus Viewport keeps the notice hidden; the status bar still reports setup state.
-    mSetupNoticeOrNull->setVisible(hasSetupProblem == true && mIsViewportFocused == false);
-    mSetupNoticeTextOrNull->setToolTip(state.SetupProblem);
+    if (hasSetupProblem == false)
+    {
+        mDismissedSetupProblem.clear();
+    }
+    // Dismissed and Focus Viewport keep the notice hidden; the status bar still reports setup state.
+    mSetupNoticeOrNull->setVisible(hasSetupProblem == true && state.SetupProblem != mDismissedSetupProblem &&
+                                   mIsViewportFocused == false);
+    mSetupNoticeTextOrNull->setToolTip(
+        QStringLiteral("%1\n\nRepair now, or keep editing and repair later. Repair updates local build settings "
+                       "and verifies a build and tests.")
+            .arg(state.SetupProblem));
     mSetupNoticeTextOrNull->setText(
-        QStringLiteral("Project setup needs attention: %1\nRepair now, or keep editing and repair later. %2")
+        QStringLiteral("Setup needs attention: %1%2")
             .arg(state.SetupProblem.section(QLatin1Char('\n'), 0, 0),
-                 state.Dirty() == true
-                     ? QStringLiteral("Save project settings to enable repair.")
-                     : QStringLiteral("Repair updates local build settings and verifies a build and tests.")));
+                 state.Dirty() == true ? QStringLiteral(" Save project settings to enable repair.") : QString()));
 
     QString next;
 #if defined(Q_OS_WASM)
@@ -1331,9 +1337,11 @@ void MainWindow::RenderStatus()
     {
         status += QStringLiteral("  —  operator recovery required; see Copy Job Details");
     }
-    if (state.SetupStatus.isEmpty() == false)
+    // One status line: setup state is appended unless the last result already said it.
+    const QString setupSummary = state.SetupStatus.section(QLatin1Char('\n'), 0, 0);
+    if (setupSummary.isEmpty() == false && setupSummary != state.Result.Message.section(QLatin1Char('\n'), 0, 0))
     {
-        status += QStringLiteral("\n") + state.SetupStatus.section(QLatin1Char('\n'), 0, 0);
+        status += QStringLiteral("  —  ") + setupSummary;
     }
     StatusLabel_->setText(status);
     StatusLabel_->setToolTip(status + QStringLiteral("\n") + state.Result.Message + QStringLiteral("\n") +

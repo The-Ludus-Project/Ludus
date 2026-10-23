@@ -55,6 +55,7 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QWidget>
@@ -97,10 +98,14 @@ void MainWindow::BuildUi()
     mSetupNoticeOrNull->setFloatable(false);
     QWidget* notice = new QWidget(mSetupNoticeOrNull);
     notice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    // One compact line: the problem, its two commands and a dismiss button. The full
+    // explanation is the text's tooltip; the status bar keeps reporting setup state.
     QHBoxLayout* noticeLayout = new QHBoxLayout(notice);
+    noticeLayout->setContentsMargins(0, 0, 0, 0);
     mSetupNoticeTextOrNull = new QLabel(notice);
     mSetupNoticeTextOrNull->setObjectName(QStringLiteral("projectSetupNoticeText"));
     mSetupNoticeTextOrNull->setTextFormat(Qt::PlainText);
+    mSetupNoticeTextOrNull->setWordWrap(false);
     mSetupNoticeTextOrNull->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     noticeLayout->addWidget(mSetupNoticeTextOrNull, 1);
     mSetupNoticeRepairOrNull = new QPushButton(QStringLiteral("Repair setup…"), notice);
@@ -109,12 +114,24 @@ void MainWindow::BuildUi()
     mSetupNoticeCheckOrNull = new QPushButton(QStringLiteral("Check again"), notice);
     mSetupNoticeCheckOrNull->setObjectName(QStringLiteral("projectSetupNoticeCheck"));
     noticeLayout->addWidget(mSetupNoticeCheckOrNull);
+    QToolButton* dismiss = new QToolButton(notice);
+    dismiss->setObjectName(QStringLiteral("projectSetupNoticeDismiss"));
+    dismiss->setText(QStringLiteral("✕"));
+    dismiss->setAutoRaise(true);
+    dismiss->setAccessibleName(QStringLiteral("Dismiss setup notice"));
+    dismiss->setToolTip(QStringLiteral("Hide this notice until the setup problem changes. Project > Repair Project "
+                                       "Setup… stays available."));
+    noticeLayout->addWidget(dismiss);
     mSetupNoticeOrNull->addWidget(notice);
     addToolBar(mSetupNoticeOrNull);
     addToolBarBreak();
     mSetupNoticeOrNull->hide();
     connect(mSetupNoticeRepairOrNull, &QPushButton::clicked, this, [this]() { SetupProjectAction_->trigger(); });
     connect(mSetupNoticeCheckOrNull, &QPushButton::clicked, this, [this]() { CheckSetupAction_->trigger(); });
+    connect(dismiss, &QToolButton::clicked, this, [this]() {
+        mDismissedSetupProblem = Controller_->State().SetupProblem;
+        RenderStatus();
+    });
 
     // Visual Studio layout: documents in the central well; tool windows dock around it.
     // The right dock area owns both right corners, so Project Explorer and Properties run

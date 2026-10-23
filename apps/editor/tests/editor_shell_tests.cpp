@@ -1095,6 +1095,49 @@ TEST_CASE("Missing rendering tools offer project repair directly above the viewp
     dialogOrNull->reject();
 }
 
+TEST_CASE("The setup notice is one dismissible line and the status bar keeps one line", "[editor][setup][layout]")
+{
+    QTemporaryDir directory;
+    const QString descriptor = WriteProject(directory);
+    WriteBytes(descriptor,
+               ReadBytes(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/apps/editor/tests/fixtures/valid_v2_cmake.json")));
+    EditorController controller(ToolingPaths{});
+    MainWindow window(&controller);
+    window.show();
+    controller.OpenProject(descriptor);
+    Settle();
+    QToolBar* noticeOrNull = window.findChild<QToolBar*>(QStringLiteral("projectSetupNotice"));
+    QLabel* textOrNull = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeText"));
+    QToolButton* dismissOrNull = window.findChild<QToolButton*>(QStringLiteral("projectSetupNoticeDismiss"));
+    QLabel* statusOrNull = window.findChild<QLabel*>(QStringLiteral("workspaceStatus"));
+    REQUIRE(noticeOrNull != nullptr);
+    REQUIRE(textOrNull != nullptr);
+    REQUIRE(dismissOrNull != nullptr);
+    REQUIRE(statusOrNull != nullptr);
+    controller.ReportProjectSetupProblem(QStringLiteral("Rendering tools need preparation.\nslangc was not found."));
+    Settle();
+    CHECK(noticeOrNull->isVisible() == true);
+    CHECK(textOrNull->text().contains(QLatin1Char('\n')) == false);
+    CHECK(textOrNull->text().contains(QStringLiteral("Rendering tools need preparation.")) == true);
+    CHECK(textOrNull->toolTip().contains(QStringLiteral("slangc was not found.")) == true);
+    CHECK(noticeOrNull->height() <=
+          2 * window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeRepair"))->sizeHint().height());
+    CHECK(statusOrNull->text().contains(QLatin1Char('\n')) == false);
+    CHECK(statusOrNull->text().count(QStringLiteral("Rendering tools need preparation.")) == 1);
+
+    dismissOrNull->click();
+    CHECK(noticeOrNull->isVisible() == false);
+    CHECK(Action(window, QStringLiteral("checkSetupAction"))->isVisible() == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Rendering tools need preparation.")) == true);
+    // The same problem stays dismissed; a different one is shown again.
+    controller.ReportProjectSetupProblem(QStringLiteral("Rendering tools need preparation.\nslangc was not found."));
+    Settle();
+    CHECK(noticeOrNull->isVisible() == false);
+    controller.ReportProjectSetupProblem(QStringLiteral("SDK or tool inputs changed; run repair"));
+    Settle();
+    CHECK(noticeOrNull->isVisible() == true);
+}
+
 TEST_CASE("Remove Unused Shaders is available in Edit and on the canvas with Properties hidden",
           "[editor][render-graph][shader-cleanup][shell]")
 {
