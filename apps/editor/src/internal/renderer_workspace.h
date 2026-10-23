@@ -44,6 +44,7 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+struct RenderGraphResolutionSelection;
 class CodeEditor;
 class CodeDocumentController;
 class CodeFormatter;
@@ -158,6 +159,16 @@ public:
     /// the project and continue editing it there. False when the default is not shown or the
     /// copy fails; an existing file at the destination is never replaced.
     [[nodiscard]] bool CustomizeBuiltIn();
+    /// True with a loaded graph, no running renderer job and no external source conflict.
+    [[nodiscard]] bool CanEditResolutionSettings() const;
+    /// Update an exposed provider pair in one graph undo step; does not save files.
+    [[nodiscard]] bool SetResolutionSettings(const RenderGraphResolutionSelection& selection,
+                                             const QJsonValue& extent,
+                                             const QJsonArray& scale,
+                                             QString& outError);
+    /// Add providers to an ordinary root configuration, preserving existing dimensions.
+    /// Rejects ambiguous layouts without mutation. GUI thread only; Save remains explicit.
+    [[nodiscard]] bool EnableResolutionSettings(QString& outError);
     [[nodiscard]] bool CanUndo() const;
     [[nodiscard]] bool CanRedo() const;
     void Undo();

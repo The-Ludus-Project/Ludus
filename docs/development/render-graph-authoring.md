@@ -281,6 +281,29 @@ its canvas menu. These are renderer settings, saved and reviewed with the graph;
 they are not machine preferences or shader compiler options. Separate graph
 configurations can own different output sizes and render scales.
 
+For everyday changes, open **Project → Project Settings → Rendering resolution**.
+Choose the renderer configuration/provider pair, **Viewport pixels** or **Fixed
+resolution**, and a **Render scale** preset or exact custom numerator/denominator.
+The 100% preset uses 1/1. These controls edit the same nodes as the canvas;
+Undo/Redo while focused in this section uses render-graph history. When several
+RenderSize nodes share an OutputSize, editing that output changes all its consumers.
+
+An ordinary root renderer with one color Target can use **Enable resolution
+controls** to add the pair in one undo step. Fixed target dimensions are retained,
+as are existing fixed/view-relative RenderSize dimensions and scale. Matching
+fixed Targets (including depth) are wired to the new render provider. Custom or
+ambiguous layouts are left intact with a setup message; expose the desired pair
+on the canvas instead. Simply opening settings never creates or changes nodes.
+
+**Save settings** saves the project descriptor and the active renderer's pending
+graph edits. Editing the built-in default creates its project copy under
+`graphs/Main/` on Save. The resolution values remain in the graph, so there is no
+second resolution override in `ludus.project.json` or machine preferences.
+Selecting another graph changes which providers these controls expose. Source-root
+changes retain the existing save/discard confirmation for the previous renderer.
+Lower render scale only changes target sizing; it does not add an upscaling pass
+or make a vendor backend available.
+
 - **OutputSize → Viewport pixels** follows the current viewport drawable in
   physical pixels, including display scaling and subsequent resizes. For an
   offscreen image or fixed resolution, choose **Fixed dimensions** and edit the

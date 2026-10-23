@@ -54,6 +54,7 @@ struct ErrorListEntry;
 enum class ProjectItemKind : foundation::uint8;
 class ScriptWorkspace;
 class RendererWorkspace;
+class ProjectRenderingSettings;
 class TimingPanel;
 class ProfilingPanel;
 class WorldWorkspace;
@@ -149,6 +150,7 @@ private:
     // Created with the other work tabs in the constructor; never null afterwards.
     RendererWorkspace* Renderer_;
     ConfigurationWorkspace* Configuration_ = nullptr;
+    ProjectRenderingSettings* mRenderingSettingsOrNull = nullptr;
     QWidget* ProjectSettings_ = nullptr;
     AudioWorkspace* Audio_ = nullptr;
     ContentWorkspace* Content_ = nullptr;
