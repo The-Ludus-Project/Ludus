@@ -22,6 +22,12 @@ namespace
 using internal::GpuPreviewRecord;
 using internal::GpuPreviewState;
 using internal::ReferenceJob;
+/// Bytes in one RGBA8 texel read from an authored preview image.
+constexpr usize RGBA8_TEXEL_BYTES = 4;
+/// Largest exposure multiplier a GPU preview accepts.
+constexpr float32 MAX_GPU_PREVIEW_EXPOSURE = 10000;
+/// GPU working memory charged per preview pixel: accumulation, sample and output images.
+constexpr usize GPU_PREVIEW_BYTES_PER_PIXEL = 64;
 static_assert(LUDUS_GRAPH_VISIBILITY_BINDING ==
               content::render_graph_format::FIRST_STORAGE_SLOT + content::render_graph_format::MAX_STORAGE_BUFFERS);
 // Shared cold serializer is defined by reference_services.h in this translation unit.
@@ -287,7 +293,9 @@ Status PackGpuScene(const ReferenceJob& job,
             for (usize x = 0; x < image.Width; ++x)
             {
                 uint32 word = 0;
-                if (foundation::TryReadLittleEndian({image.Bytes + y * image.RowPitch + x * 4, 4}, word) == false)
+                if (foundation::TryReadLittleEndian(
+                        {image.Bytes + y * image.RowPitch + x * RGBA8_TEXEL_BYTES, RGBA8_TEXEL_BYTES},
+                        word) == false)
                 {
                     return Status::InvalidDescription;
                 }
@@ -670,7 +678,8 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         return status;
     }
     if (options.CpuByteBudget <= sizeof(GpuPreviewState) || options.GpuByteBudget < 44 ||
-        math::IsFinite(options.Exposure) == false || options.Exposure <= 0 || options.Exposure > 10000)
+        math::IsFinite(options.Exposure) == false || options.Exposure <= 0 ||
+        options.Exposure > MAX_GPU_PREVIEW_EXPOSURE)
     {
         return Status::InvalidDescription;
     }
@@ -1140,7 +1149,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     const usize texelBytes = texels.GetSize() * sizeof(math::Vector4);
     const usize uploadBytes = dataBytes + texelBytes;
     usize gpuBytes = 0;
-    if (foundation::TryMultiply(pixels, usize{64}, gpuBytes) == false ||
+    if (foundation::TryMultiply(pixels, GPU_PREVIEW_BYTES_PER_PIXEL, gpuBytes) == false ||
         foundation::TryAdd(gpuBytes, uploadBytes, gpuBytes) == false ||
         foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) == false)
     {
@@ -1538,7 +1547,7 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
 }
 Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
                                    rhi::SurfaceHandle surface,
-                                   rhi::SubmissionToken& completion) noexcept
+                                   rhi::SubmissionToken& outCompletion) noexcept
 {
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
@@ -1581,7 +1590,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
     status = internal::BuildGpuGraph(mState->Device, state, *job, frame, graph);
     if (status == Status::Ready)
     {
-        status = rhi::ExecuteOrderedGraph(mState->Device, surface, graph, completion);
+        status = rhi::ExecuteOrderedGraph(mState->Device, surface, graph, outCompletion);
     }
     static_cast<void>(rhi::DiscardOrderedGraph(mState->Device, graph));
     if (status != Status::Ready)
@@ -1589,7 +1598,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
         return status;
     }
     job->PendingFrame = frame;
-    job->Frames[frame].Producer = completion;
+    job->Frames[frame].Producer = outCompletion;
     job->Info.Pending = true;
     if (job->HasImage && job->LatestFrame == frame)
     {

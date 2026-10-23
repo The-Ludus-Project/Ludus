@@ -171,8 +171,8 @@ rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::
     {
         direction = ReferenceNormalize(math::Vector3{far.X / far.W, far.Y / far.W, far.Z / far.W} - origin);
     }
-    if (math::IsFinite(origin) == false || math::Length(direction) == 0 || math::Abs(origin.X) > 1000000 ||
-        math::Abs(origin.Y) > 1000000 || math::Abs(origin.Z) > 1000000)
+    if (math::IsFinite(origin) == false || math::Length(direction) == 0 || math::Abs(origin.X) > MAX_WORLD_COORDINATE ||
+        math::Abs(origin.Y) > MAX_WORLD_COORDINATE || math::Abs(origin.Z) > MAX_WORLD_COORDINATE)
     {
         return rhi::RasterStatus::InvalidDescription;
     }

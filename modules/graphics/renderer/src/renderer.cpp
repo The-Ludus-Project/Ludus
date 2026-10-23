@@ -178,6 +178,18 @@ Status RendererAdmission(rhi::DeviceHandle device, bool mutation = true) noexcep
 /// Largest world-unit distance a debug depth range may name (matches the camera-position bound
 /// plus a full scene span), keeping the packed per-instance floats finite and ordered.
 constexpr float32 MAX_DEBUG_DEPTH_DISTANCE = 10000000.0F;
+/// Accepted scene lighting exposure multiplier.
+constexpr float32 MIN_EXPOSURE = 0.000001F;
+constexpr float32 MAX_EXPOSURE = 1000;
+/// Smallest perceptual roughness a lit surface accepts; lower values alias badly.
+constexpr float32 MIN_ROUGHNESS = 0.045F;
+/// Pipeline variants a scene program compiles: lit programs without HDR need fewer.
+constexpr uint32 LDR_LIT_PROGRAM_VARIANT_COUNT = 3;
+constexpr uint32 PROGRAM_VARIANT_COUNT = 6;
+/// Snapshot items per frustum-culling group.
+constexpr usize CULL_GROUP_ITEM_COUNT = 16;
+/// Output composite fragment bindings: uniforms, source texture and sampler.
+constexpr usize OUTPUT_FRAGMENT_BINDING_COUNT = 3;
 bool IsDebugDepthRangeValid(math::Vector2 range) noexcept
 {
     return math::IsFinite(range) == true && ((range.X == 0 && range.Y == 0) || (range.X >= 0 && range.X < range.Y &&
@@ -1650,8 +1662,8 @@ Status Renderer::PreparePresentationData(rhi::TextureHandle source,
     {
         return Status::NotReady;
     }
-    if (lighting != nullptr &&
-        (math::IsFinite(lighting->Exposure) == false || lighting->Exposure < 0.000001F || lighting->Exposure > 1000))
+    if (lighting != nullptr && (math::IsFinite(lighting->Exposure) == false || lighting->Exposure < MIN_EXPOSURE ||
+                                lighting->Exposure > MAX_EXPOSURE))
     {
         return Status::InvalidDescription;
     }
@@ -2176,7 +2188,7 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
     p.HasSurfaceMapProfile = hasSurfaceMapProfile;
     p.HasAuthoredProfile = hasAuthoredProfile;
     p.Hdr = lit && s.Hdr;
-    p.VariantCount = lit && p.Hdr == false ? 3U : 6U;
+    p.VariantCount = lit && p.Hdr == false ? LDR_LIT_PROGRAM_VARIANT_COUNT : PROGRAM_VARIANT_COUNT;
     status = rhi::CreateRasterShader(s.Device, vertex, p.Vertex);
     if (Accepted(status))
     {
@@ -3284,8 +3296,10 @@ Status Renderer::PrepareView(Snapshot handle,
     }
     if (math::IsFinite(description.WorldToClip) == false || math::IsFinite(description.CullMargin) == false ||
         description.CullMargin < 0 || math::IsFinite(description.OverlayToClip) == false ||
-        math::IsFinite(description.CameraPosition) == false || math::Abs(description.CameraPosition.X) > 1000000 ||
-        math::Abs(description.CameraPosition.Y) > 1000000 || math::Abs(description.CameraPosition.Z) > 1000000 ||
+        math::IsFinite(description.CameraPosition) == false ||
+        math::Abs(description.CameraPosition.X) > internal::MAX_WORLD_COORDINATE ||
+        math::Abs(description.CameraPosition.Y) > internal::MAX_WORLD_COORDINATE ||
+        math::Abs(description.CameraPosition.Z) > internal::MAX_WORLD_COORDINATE ||
         static_cast<uint8>(description.Depth) > static_cast<uint8>(DepthConvention::ReverseZ) ||
         (description.InfiniteFar && description.Depth != DepthConvention::ReverseZ) ||
         IsDebugDepthRangeValid(description.DebugDepthRange) == false)
@@ -3403,12 +3417,12 @@ Status Renderer::PrepareView(Snapshot handle,
             }
             math::FrustumRelation relation;
             if (description.Reference == false && pass == Layer::Opaque &&
-                groups[i / 16] == math::FrustumRelation::Outside)
+                groups[i / CULL_GROUP_ITEM_COUNT] == math::FrustumRelation::Outside)
             {
                 continue;
             }
             if (description.Reference == false &&
-                (pass != Layer::Opaque || groups[i / 16] != math::FrustumRelation::Inside))
+                (pass != Layer::Opaque || groups[i / CULL_GROUP_ITEM_COUNT] != math::FrustumRelation::Inside))
             {
                 ++boundsTests;
                 if (math::TryClassifyAabb(pass == Layer::Opaque ? frustum : overlay,
@@ -3864,7 +3878,7 @@ Status Renderer::InitializeLighting(const rhi::RasterShaderDescription& outputVe
     if (outputVertex.Artifact.Stage != rhi::ShaderStage::Vertex || outputVertex.Inputs.size() != 1 ||
         outputVertex.Inputs[0].Location != 0 || outputVertex.Inputs[0].Format != rhi::RasterVertexFormat::Float4 ||
         outputVertex.Bindings.empty() == false || outputFragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        outputFragment.Inputs.empty() == false || outputFragment.Bindings.size() != 3 ||
+        outputFragment.Inputs.empty() == false || outputFragment.Bindings.size() != OUTPUT_FRAGMENT_BINDING_COUNT ||
         outputFragment.UniformMembers.size() != 1 || outputFragment.UniformMembers[0].Binding != 0 ||
         outputFragment.UniformMembers[0].Name != "Output" || outputFragment.UniformMembers[0].Offset != 0 ||
         outputFragment.UniformMembers[0].Shape != rhi::RasterUniformShape::Float4 ||
@@ -4029,10 +4043,11 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     };
     const auto& bake = description.Bake;
     if (math::IsFinite(description.Metallic) == false || description.Metallic < 0 || description.Metallic > 1 ||
-        math::IsFinite(description.Roughness) == false || description.Roughness < 0.045F || description.Roughness > 1 ||
-        bounded(description.Emission) == false || bounded(description.EnvironmentIrradiance) == false ||
-        bounded(description.EnvironmentRadiance) == false || bounded(bake.Scale) == false ||
-        math::IsFinite(bake.UvTransform) == false || math::IsFinite(bake.Transform) == false)
+        math::IsFinite(description.Roughness) == false || description.Roughness < MIN_ROUGHNESS ||
+        description.Roughness > 1 || bounded(description.Emission) == false ||
+        bounded(description.EnvironmentIrradiance) == false || bounded(description.EnvironmentRadiance) == false ||
+        bounded(bake.Scale) == false || math::IsFinite(bake.UvTransform) == false ||
+        math::IsFinite(bake.Transform) == false)
     {
         return Status::InvalidDescription;
     }

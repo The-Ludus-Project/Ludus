@@ -20,6 +20,8 @@ namespace ludus::graphics::renderer::internal
 {
 /// Shared addressed-random domain for reference captures and authored triangle-ray graph jobs.
 inline constexpr foundation::uint32 REFERENCE_RANDOM_DOMAIN = 0x52543031;
+/// Largest absolute world-space coordinate, in metres, that reference and preview rays accept.
+inline constexpr foundation::float32 MAX_WORLD_COORDINATE = 1000000;
 namespace math = foundation::math;
 using namespace foundation;
 struct ReferenceMeshData final

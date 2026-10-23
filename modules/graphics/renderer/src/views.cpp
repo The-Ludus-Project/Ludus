@@ -11,6 +11,8 @@ namespace math = foundation::math;
 using Status = rhi::RasterStatus;
 namespace
 {
+/// Largest drawable width or height a view maps, in pixels.
+constexpr uint32 MAX_DRAWABLE_EXTENT = uint32{1} << 24;
 bool ValidScreen(VirtualScreen screen) noexcept
 {
     return math::IsFinite(screen.Width) && math::IsFinite(screen.Height) && screen.Width > 0 && screen.Height > 0 &&
@@ -22,9 +24,9 @@ bool ValidMapping(const ViewMapping& mapping) noexcept
     const auto& v = mapping.Viewport;
     return ValidScreen(mapping.Screen) && math::IsFinite(mapping.Origin) && math::IsFinite(mapping.Scale) &&
            math::IsFinite(mapping.ClipTransform) && mapping.Scale.X > 0 && mapping.Scale.Y > 0 &&
-           mapping.DrawableWidth > 0 && mapping.DrawableHeight > 0 && mapping.DrawableWidth <= (uint32{1} << 24) &&
-           mapping.DrawableHeight <= (uint32{1} << 24) && r.Width > 0 && r.Height > 0 && r.X <= mapping.DrawableWidth &&
-           r.Y <= mapping.DrawableHeight && r.Width <= mapping.DrawableWidth - r.X &&
+           mapping.DrawableWidth > 0 && mapping.DrawableHeight > 0 && mapping.DrawableWidth <= MAX_DRAWABLE_EXTENT &&
+           mapping.DrawableHeight <= MAX_DRAWABLE_EXTENT && r.Width > 0 && r.Height > 0 &&
+           r.X <= mapping.DrawableWidth && r.Y <= mapping.DrawableHeight && r.Width <= mapping.DrawableWidth - r.X &&
            r.Height <= mapping.DrawableHeight - r.Y && v.Width > 0 && v.Height > 0 && v.X >= r.X && v.Y >= r.Y &&
            static_cast<uint64>(v.X) + v.Width <= static_cast<uint64>(r.X) + r.Width &&
            static_cast<uint64>(v.Y) + v.Height <= static_cast<uint64>(r.Y) + r.Height;
@@ -37,7 +39,7 @@ Status ResolveViewMapping(VirtualScreen screen,
                           uint32 drawableHeight,
                           ViewMapping& output) noexcept
 {
-    if (ValidScreen(screen) == false || drawableWidth > (uint32{1} << 24) || drawableHeight > (uint32{1} << 24) ||
+    if (ValidScreen(screen) == false || drawableWidth > MAX_DRAWABLE_EXTENT || drawableHeight > MAX_DRAWABLE_EXTENT ||
         region.X > drawableWidth || region.Y > drawableHeight || region.Width > drawableWidth - region.X ||
         region.Height > drawableHeight - region.Y)
     {
