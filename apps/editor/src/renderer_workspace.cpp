@@ -556,8 +556,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QPushButton* add = new QPushButton(QStringLiteral("Add Node"), mInspector);
     add->setObjectName(QStringLiteral("renderGraphAddNode"));
     QHBoxLayout* addRow = new QHBoxLayout;
-    addRow->addWidget(mNewKind);
-    addRow->addStretch();
+    addRow->addWidget(mNewKind, 1);
     addRow->addWidget(add);
     inspectorLayout->addLayout(addRow);
     mNodeCreationMessage->setObjectName(QStringLiteral("renderGraphNodeCreationMessage"));
