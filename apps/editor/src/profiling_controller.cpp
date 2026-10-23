@@ -447,6 +447,13 @@ void ProfilingController::acceptPassBatch(uint64 frameId,
             .LogicalPassCount = pass.Scope.LogicalPassCount,
             .IsCompute = pass.Kind == graphics::rhi::GpuPassKind::Compute,
         };
+        if (pass.HasCpuInterval == true)
+        {
+            recorded.Sample.HasExecutionInterval = true;
+            recorded.Sample.ExecutionStartTicks = pass.StartTicks;
+            recorded.Sample.ExecutionEndTicks = pass.EndTicks;
+            recorded.Sample.ClockUncertaintyNanoseconds = batch.ClockUncertaintyNanoseconds;
+        }
         if (mSamples.GetSize() >= MAX_GPU_SAMPLES || mSamples.TryAdd(recorded) == false)
         {
             ++mCoverage.DroppedSamples;

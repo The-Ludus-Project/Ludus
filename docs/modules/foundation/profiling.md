@@ -69,7 +69,8 @@ The native [editor recording workflow](../../development/editor-workspace.md#rec
 provides CPU/GPU/Both selection and shared F9 Record/Stop controls. Its
 [GPU timing contract](../../architecture/profiling-final.md#basic-gpu-timing-for-perfetto)
 exports existing RHI frame-duration samples and named physical-pass duration
-counters in Perfetto. Hosted transport and calibrated execution lanes remain later work.
+counters in Perfetto. Metal passes with a validated clock calibration also become
+named execution slices; hosted transport and Vulkan calibration remain later work.
 
 `<ludus/foundation/profiling/perfetto_export.hpp>` provides
 `SerializePerfettoTrace`: stopped CPU events and optional borrowed completed
@@ -78,7 +79,10 @@ false leaves the CPU recorder untouched and supports GPU-only export without
 CPU instrumentation. Samples retain submission attribution, collection time,
 frame/device identity and integer duration. Optional borrowed pass names, scope
 identity, physical ordinal, kind and logical member count distinguish named pass
-counters. The caller retains the names until serialization returns. `GpuTraceCoverage` describes sampling
+counters. A named pass may also carry a calibrated execution interval on the CPU
+trace clock with its error bound; only those samples become `"X"` slices, assigned
+to the first GPU execution lane where they do not overlap an earlier slice.
+The caller retains the names until serialization returns. `GpuTraceCoverage` describes sampling
 gaps. Successful serialization can be retained for I/O retry; CPU events drained
 by a failed serialization are consumed, as documented by the API. All lifecycle
 and serialization calls require one coordinator. An entirely empty or disabled

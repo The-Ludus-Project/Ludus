@@ -6,6 +6,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/world_graph_view.h"
 
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/profiling/integration.hpp>
 #include <ludus/foundation/profiling/perfetto_export.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
@@ -371,6 +372,13 @@ TEST_CASE("real viewport GPU timing exports GPU-only and combined traces with St
             CHECK(coverage.value(QStringLiteral("passSampleCount")).toInt() > 0);
             CHECK(QJsonDocument(trace).toJson().contains("GPU/Pass/Viewport/Scene") == true);
             CHECK(QJsonDocument(trace).toJson().contains("GPU/Pass/Viewport/Composite") == true);
+#    if defined(LUDUS_PLATFORM_MACOS)
+            // Metal calibrates pass timestamps onto the CPU clock, so passes become named slices.
+            CHECK(coverage.value(QStringLiteral("executionSliceCount")).toInt() > 0);
+            CHECK(
+                QJsonDocument(trace).toJson(QJsonDocument::Compact).contains("\"name\":\"Viewport/Scene (Raster)\"") ==
+                true);
+#    endif
         }
         CHECK(coverage.value(QStringLiteral("eligibleFrames")).toInt() >=
               coverage.value(QStringLiteral("frameSampleCount")).toInt());
