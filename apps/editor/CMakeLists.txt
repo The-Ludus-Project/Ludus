@@ -838,6 +838,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         LABELS "unit;editor"
         TIMEOUT 600
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # Transitional, empty: batch CI runs the workflow definitions on main against
+    # the develop candidate, and main's ci.yml still builds this target, which
+    # 547148cf removed with SceneDocument. Delete it once a promotion carries the
+    # current ci.yml to main (continuous-integration.md, batched integration).
+    add_custom_target(ludus_editor_scene_tests)
 endif()
 
 if(EMSCRIPTEN)
