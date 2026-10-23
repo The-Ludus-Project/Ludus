@@ -115,8 +115,21 @@ After **Initialize**, a progress window runs setup and shows:
 - **Cancel**, which asks for confirmation and stops the runner and its
   CMake/Ninja/Conan/sudo children. Finished steps are kept, so rerunning resumes;
 - the outcome: *Ludus is ready* with the runner's summary, or *Setup failed
-  during: step* with the error and the log expanded. **Retry** reruns the same
+  during: step* with the failed step marked, the error, the output's last lines
+  and, for a recognised cause, a plain-language fix. **Retry** reruns the same
   choices after a failure or cancellation.
+
+When setup fails, **Open full log** opens `out/init/setup.log` in the desktop's
+viewer (`open` on macOS, `xdg-open` on Linux), **Copy path** copies its
+location and **Copy error report** copies the failed step, error, hint, log
+path and last lines for a bug report. Recognised causes are a full disk, a
+virtual environment left behind by a Python upgrade (`No module named
+'encodings'`), missing Xcode Command Line Tools, a missing compiler, a sudo
+password prompt without a terminal, a locked or interrupted apt, Conan remotes,
+network failures, and apt or Homebrew errors; the table lives in
+`scripts/python/init_failure.py`. After the window closes, the launching
+terminal repeats the step, error, hint and log path, and a `--cli` run prints
+the same hint below its error.
 
 Both windows are titled *Ludus Setup* and use the Ludus Block theme and icon
 (`scripts/python/init_theme.py`). They follow the desktop's dark or light
