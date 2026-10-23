@@ -79,7 +79,8 @@ class ErrorList final : public QWidget
 public:
     explicit ErrorList(QWidget* parentOrNull = nullptr);
 
-    /// Replace every row owned by producer with entries (copied).
+    /// Replace every row owned by producer with entries (copied). Emits ProblemsReported when
+    /// the new rows include an error or warning and differ from that producer's previous rows.
     void ReplaceEntries(ErrorListProducer producer, const QList<ErrorListEntry>& entries);
     /// All rows, filtered or not, in display order.
     [[nodiscard]] const QList<ErrorListEntry>& GetEntries() const noexcept
@@ -95,9 +96,13 @@ public:
 Q_SIGNALS:
     /// The user activated a row; the shell navigates to its source.
     void EntryActivated(const ludus::editor::ErrorListEntry& entry);
+    /// A producer reported a changed set of rows that includes an error or warning. Repeating
+    /// an unchanged result does not emit, so a list the user closed stays closed.
+    void ProblemsReported();
 
 protected:
     /// Reserve visible table rows before giving the selected diagnostic remaining height.
+    /// The details pane appears only when the row cannot show the whole description.
     void resizeEvent(QResizeEvent* event) override;
 
 private:

@@ -78,6 +78,9 @@ constexpr foundation::int32 MAX_SIDE_DOCK_PIXELS = 420;
 constexpr foundation::int32 BOTTOM_DOCK_PERCENT = 27;
 constexpr foundation::int32 MIN_BOTTOM_DOCK_PIXELS = 160;
 constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 300;
+// Below this window height (a 13-inch laptop at its default scale) the bottom group starts
+// closed so the documents keep their height; new errors or warnings open it again.
+constexpr foundation::int32 SHORT_WINDOW_HEIGHT_PIXELS = 1000;
 // Project Explorer's share of the right column; Properties gets the rest.
 constexpr foundation::int32 EXPLORER_SHARE_PERCENT = 40;
 constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = 8;
@@ -643,14 +646,26 @@ QByteArray MainWindow::getPersistentLayoutState() const
     return mIsViewportFocused == true ? mFocusRestoreState : saveState(LAYOUT_VERSION);
 }
 
+foundation::int32 MainWindow::getDefaultBottomDockHeight() const
+{
+    return qBound(MIN_BOTTOM_DOCK_PIXELS, height() * BOTTOM_DOCK_PERCENT / PERCENT, MAX_BOTTOM_DOCK_PIXELS);
+}
+
 void MainWindow::applyDefaultDockSizes()
 {
     const foundation::int32 side =
         qBound(MIN_SIDE_DOCK_PIXELS, width() * SIDE_DOCK_PERCENT / PERCENT, MAX_SIDE_DOCK_PIXELS);
-    const foundation::int32 bottom =
-        qBound(MIN_BOTTOM_DOCK_PIXELS, height() * BOTTOM_DOCK_PERCENT / PERCENT, MAX_BOTTOM_DOCK_PIXELS);
+    const bool isShortWindow = height() < SHORT_WINDOW_HEIGHT_PIXELS;
+    for (QDockWidget* dock : {mErrorListDock, OutputDock_, TimingDock_, mProfilingDock})
+    {
+        dock->setVisible(isShortWindow == false);
+    }
     resizeDocks({mProjectExplorerDock}, {side}, Qt::Horizontal);
-    resizeDocks({mErrorListDock}, {bottom}, Qt::Vertical);
+    if (isShortWindow == false)
+    {
+        mErrorListDock->raise();
+        resizeDocks({mErrorListDock}, {getDefaultBottomDockHeight()}, Qt::Vertical);
+    }
     const foundation::int32 explorer = height() * EXPLORER_SHARE_PERCENT / PERCENT;
     resizeDocks({mProjectExplorerDock, mPropertiesDock}, {explorer, height() - explorer}, Qt::Vertical);
 }
@@ -766,10 +781,21 @@ void MainWindow::renderWindowDocuments(QMenu* menu)
     }
 }
 
-void MainWindow::showToolWindow(QDockWidget* dock)
+void MainWindow::openToolWindow(QDockWidget* dock)
 {
+    const bool wasHidden = dock->isHidden();
     dock->show();
     dock->raise();
+    if (wasHidden == true && dockWidgetArea(dock) == Qt::BottomDockWidgetArea)
+    {
+        // A short window starts with the bottom group closed; open it at the default height.
+        resizeDocks({dock}, {getDefaultBottomDockHeight()}, Qt::Vertical);
+    }
+}
+
+void MainWindow::showToolWindow(QDockWidget* dock)
+{
+    openToolWindow(dock);
     dock->widget()->setFocus(Qt::ShortcutFocusReason);
 }
 

@@ -110,6 +110,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
     connect(mProjectExplorer, &ProjectExplorer::OpenRequested, this, &MainWindow::openProjectItem);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
+    connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
     mBuildErrorsTimer.setInterval(BUILD_ERRORS_DELAY_MILLISECONDS);
     connect(&mBuildErrorsTimer, &QTimer::timeout, this, &MainWindow::renderBuildErrors);

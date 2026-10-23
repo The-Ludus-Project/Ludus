@@ -1,6 +1,7 @@
 #include "internal/browser_player.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
+#include "internal/error_list.h"
 #include "internal/main_window.h"
 #include "internal/world_workspace.h"
 
@@ -19,6 +20,7 @@
 #include <QPixmap>
 #include <QScrollArea>
 #include <QSize>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
@@ -54,6 +56,9 @@ TEST_CASE("Browser players admit only shipped sample identifiers", "[editor][bro
 
 namespace
 {
+/// MainWindow's short-window threshold for opening the bottom tool-window group by default.
+constexpr int SHORT_WINDOW_HEIGHT_PIXELS = 1000;
+
 QDockWidget* Dock(MainWindow& window, const QString& name)
 {
     auto* dock = window.findChild<QDockWidget*>(name);
@@ -91,6 +96,14 @@ void CheckDefaultPanels(MainWindow& window)
     QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
     CHECK(window.dockWidgetArea(inspector) == Qt::RightDockWidgetArea);
     CHECK(window.dockWidgetArea(output) == Qt::BottomDockWidgetArea);
+    // Short windows start with the bottom group closed; it is still arranged under the documents.
+    const bool isBottomOpen = errors->isHidden() == false;
+    CHECK(isBottomOpen == (window.height() >= SHORT_WINDOW_HEIGHT_PIXELS));
+    for (QDockWidget* dock : {output, errors, Dock(window, QStringLiteral("timingDock"))})
+    {
+        CHECK(dock->isHidden() == (isBottomOpen == false));
+        dock->show();
+    }
     for (QDockWidget* dock : {inspector, output, errors, Dock(window, QStringLiteral("projectExplorerDock"))})
     {
         CHECK_FALSE(dock->isHidden());
@@ -487,4 +500,66 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
     CHECK(focus->isChecked() == false);
     CheckDefaultPanels(window);
     CHECK(world->IsChromeVisible() == true);
+}
+
+TEST_CASE("Short windows start with the bottom tool windows closed until a problem is reported",
+          "[editor][layout][error-list]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    window.resize(1470, 920);
+    window.show();
+    QApplication::processEvents();
+    Reset(window);
+    QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
+    for (const QString& name : {QStringLiteral("errorListDock"),
+                                QStringLiteral("outputDock"),
+                                QStringLiteral("timingDock"),
+                                QStringLiteral("profilingDock")})
+    {
+        INFO(name.toStdString());
+        CHECK(Dock(window, name)->isHidden() == true);
+    }
+    ErrorList* list = window.findChild<ErrorList*>();
+    REQUIRE(list != nullptr);
+    ErrorListEntry message;
+    message.Severity = ErrorListSeverity::Message;
+    message.Producer = ErrorListProducer::Build;
+    message.Description = QStringLiteral("Build finished.");
+    list->ReplaceEntries(ErrorListProducer::Build, {message});
+    QApplication::processEvents();
+    CHECK(errors->isHidden() == true);
+
+    // Focus Viewport stays in place; the status bar announces the problem instead.
+    QAction* focus = window.findChild<QAction*>(QStringLiteral("view.focusViewport"));
+    REQUIRE(focus != nullptr);
+    focus->trigger();
+    ErrorListEntry warning = message;
+    warning.Severity = ErrorListSeverity::Warning;
+    warning.Description = QStringLiteral("unused variable");
+    list->ReplaceEntries(ErrorListProducer::Build, {warning});
+    QApplication::processEvents();
+    CHECK(errors->isHidden() == true);
+    CHECK(window.statusBar()->currentMessage().contains(QStringLiteral("Error List")) == true);
+    focus->trigger();
+    QApplication::processEvents();
+    CHECK(errors->isHidden() == true);
+
+    ErrorListEntry error = warning;
+    error.Severity = ErrorListSeverity::Error;
+    list->ReplaceEntries(ErrorListProducer::Build, {error});
+    QApplication::processEvents();
+    CHECK(errors->isHidden() == false);
+    CHECK(window.dockWidgetArea(errors) == Qt::BottomDockWidgetArea);
+    CHECK(errors->height() <= window.height() / 3);
+
+    // Taller windows keep the bottom group open by default.
+    window.resize(1600, 1100);
+    Reset(window);
+    QApplication::processEvents();
+    if (window.height() >= SHORT_WINDOW_HEIGHT_PIXELS)
+    {
+        CHECK(errors->isHidden() == false);
+    }
 }

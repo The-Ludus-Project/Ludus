@@ -57,6 +57,9 @@ using ludus::foundation::int32;
 
 namespace
 {
+/// MainWindow's short-window threshold below which the bottom tool windows start closed.
+constexpr int SHORT_WINDOW_HEIGHT_PIXELS = 1000;
+
 /// objectNames of every tool window the shell creates.
 QStringList GetToolWindows()
 {
@@ -170,11 +173,23 @@ void Settle()
 void CheckDefaultToolWindows(const MainWindow& window)
 {
     CHECK(window.centralWidget() == &Well(window));
+    // Short windows start with the bottom group closed; View reopens it at the default height.
+    const bool isShortWindow = window.height() < SHORT_WINDOW_HEIGHT_PIXELS;
     for (const QString& name : GetToolWindows())
     {
         INFO(name.toStdString());
-        CHECK(Dock(window, name)->isHidden() == false);
+        const bool isBottom = window.dockWidgetArea(Dock(window, name)) == Qt::BottomDockWidgetArea;
+        CHECK(Dock(window, name)->isHidden() == (isShortWindow == true && isBottom == true));
         CHECK(Dock(window, name)->isFloating() == false);
+    }
+    if (isShortWindow == true)
+    {
+        for (const QString& command :
+             {QStringLiteral("view.output"), QStringLiteral("view.timing"), QStringLiteral("view.errorList")})
+        {
+            Action(window, command)->trigger();
+        }
+        Settle();
     }
     QDockWidget* explorer = Dock(window, QStringLiteral("projectExplorerDock"));
     QDockWidget* properties = Dock(window, QStringLiteral("propertiesDock"));
@@ -386,6 +401,8 @@ TEST_CASE("Window menu shows hides and resets every tool window", "[editor][layo
     QTemporaryDir settings;
     EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
     MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    // Tall enough that the default arrangement opens every tool window.
+    window.resize(1600, 1100);
     window.show();
     Settle();
     QMenu* menu = window.findChild<QMenu*>(QStringLiteral("windowMenu"));

@@ -9,6 +9,7 @@
 #include "internal/configuration_workspace.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
+#include "internal/editor_commands.h"
 #include "internal/error_list.h"
 #include "internal/main_window.h"
 #include "internal/options_dialog.h"
@@ -24,6 +25,7 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QFileInfo>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLatin1StringView>
 #include <QPlainTextEdit>
@@ -248,19 +250,24 @@ void MainWindow::renderGraphErrors()
     {
         Controller_->ReportProjectSetupProblem(result.Message);
     }
-    const QList<ErrorListEntry> entries = MakeRenderGraphErrorEntries(result);
-    mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, entries);
-    for (const ErrorListEntry& entry : entries)
-    {
-        if (entry.Severity == ErrorListSeverity::Error)
-        {
-            // Like VS after a failed build: bring the Error List forward without taking focus.
-            mErrorListDock->show();
-            mErrorListDock->raise();
-            break;
-        }
-    }
+    // ErrorList::ProblemsReported brings the list forward for new errors and warnings.
+    mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, MakeRenderGraphErrorEntries(result));
     renderGraphCommands();
+}
+
+void MainWindow::revealErrorList()
+{
+    if (mIsViewportFocused == true)
+    {
+        // Focus Viewport stays in place; the status bar says where to look.
+        statusBar()->showMessage(QStringLiteral("New errors or warnings are in the Error List (%1).")
+                                     .arg(QKeySequence(QString::fromUtf8(VIEW_ERROR_LIST_COMMAND.Shortcut))
+                                              .toString(QKeySequence::NativeText)),
+                                 STATUS_MESSAGE_MILLISECONDS);
+        return;
+    }
+    // Like Visual Studio after a failed build: bring the Error List forward without taking focus.
+    openToolWindow(mErrorListDock);
 }
 
 void MainWindow::renderBuildErrors()
