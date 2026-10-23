@@ -199,6 +199,12 @@ public:
     RemoveUnusedShaders(QStringList& outPrograms, QStringList& outSources, QString& outError);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// Add an unused upscaling preset and its size providers/targets in one undoable edit.
+    /// Failure preserves the draft; Save publishes graph-owned output and render settings.
+    [[nodiscard]] RenderGraphDocumentStatus AddUpscalePreset(const QString& file,
+                                                             const QString& configuration,
+                                                             const QString& algorithm,
+                                                             const QString& identity);
     /// Add or fill an empty library configuration from ReSTIR DI, including shaders/settings.
     /// For the root graph, create a new library and Subgraph node in parentConfiguration instead;
     /// an empty parent identity selects the root default. Existing files/nodes are never replaced.

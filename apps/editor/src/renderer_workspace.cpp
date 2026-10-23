@@ -301,7 +301,12 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
     }
     else if (kind == QStringLiteral("RenderSize"))
     {
-        node.insert(QStringLiteral("extent"), QJsonArray{DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT});
+        node.insert(QStringLiteral("extent"), QStringLiteral("OutputSize"));
+        node.insert(QStringLiteral("scale"), QJsonArray{1, 1});
+    }
+    else if (kind == QStringLiteral("OutputSize"))
+    {
+        node.insert(QStringLiteral("extent"), QStringLiteral("Viewport"));
     }
     else if (kind == QStringLiteral("Subgraph"))
     {
@@ -488,6 +493,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("Target"),
                         QStringLiteral("Buffer"),
                         QStringLiteral("StructuredBuffer"),
+                        QStringLiteral("OutputSize"),
                         QStringLiteral("RenderSize"),
                         QStringLiteral("GraphicsPipeline"),
                         QStringLiteral("ComputePipeline"),
@@ -2299,6 +2305,8 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     {
         const QString name = field.key();
         if (name == QStringLiteral("id") || name == QStringLiteral("kind") ||
+            (name == QStringLiteral("scale") &&
+             node.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize")) ||
             IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
         {
             continue;
@@ -2374,19 +2382,29 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             QComboBox* mode = new QComboBox(row);
             mode->setObjectName(QStringLiteral("renderGraphExtentMode"));
             const bool isSizeNode = node.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize");
-            const QString source = isSizeNode == true ? QStringLiteral("Texture") : QStringLiteral("RenderSize");
+            const bool isOutputSize = node.value(QStringLiteral("kind")).toString() == QStringLiteral("OutputSize");
+            const QString source = isOutputSize == true ? QStringLiteral("Viewport")
+                                   : isSizeNode == true ? QStringLiteral("Texture")
+                                                        : QStringLiteral("RenderSize");
             mode->addItem(QStringLiteral("Fixed dimensions"));
-            mode->addItem(isSizeNode == true ? QStringLiteral("Match texture") : QStringLiteral("From size input"));
-            const QJsonArray scale = field.value().toObject().value(QStringLiteral("scale")).toArray();
+            mode->addItem(isOutputSize == true ? QStringLiteral("Viewport pixels")
+                          : isSizeNode == true ? QStringLiteral("Match texture")
+                                               : QStringLiteral("From size input"));
+            const bool isDerived = field.value().toString() == QStringLiteral("OutputSize");
+            const QJsonArray scale = isDerived == true
+                                         ? node.value(QStringLiteral("scale")).toArray()
+                                         : field.value().toObject().value(QStringLiteral("scale")).toArray();
             constexpr int32 QUARTER_DENOMINATOR = 4;
             constexpr int32 FIRST_VIEW_MODE = 2;
             constexpr int32 VIEW_PRESET_COUNT = 3;
+            constexpr int32 OUTPUT_SIZE_MODE = FIRST_VIEW_MODE + VIEW_PRESET_COUNT + 1;
             if (isSizeNode == true)
             {
                 mode->addItems({QStringLiteral("Full view"),
                                 QStringLiteral("Half view"),
                                 QStringLiteral("Quarter view"),
-                                QStringLiteral("Custom view scale")});
+                                QStringLiteral("Custom view scale"),
+                                QStringLiteral("From OutputSize")});
             }
             const bool isFixed = field.value().isArray();
             int32 selectedMode = isFixed == true ? 0 : 1;
@@ -2400,6 +2418,10 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                         selectedMode = FIRST_VIEW_MODE + preset;
                     }
                 }
+            }
+            if (isDerived == true)
+            {
+                selectedMode = OUTPUT_SIZE_MODE;
             }
             mode->setCurrentIndex(selectedMode);
             rowLayout->addWidget(mode);
@@ -2422,7 +2444,11 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             QSpinBox* denominator = new QSpinBox(row);
             numerator->setObjectName(QStringLiteral("renderGraphScaleNumerator"));
             denominator->setObjectName(QStringLiteral("renderGraphScaleDenominator"));
-            const bool isCustom = selectedMode == mode->count() - 1 && selectedMode >= FIRST_VIEW_MODE;
+            numerator->setPrefix(QStringLiteral("× "));
+            denominator->setPrefix(QStringLiteral("÷ "));
+            numerator->setAccessibleName(QStringLiteral("Render scale numerator"));
+            denominator->setAccessibleName(QStringLiteral("Render scale denominator"));
+            const bool isCustom = isSizeNode == true && selectedMode >= FIRST_VIEW_MODE + VIEW_PRESET_COUNT;
             for (QSpinBox* spin : {numerator, denominator})
             {
                 spin->setRange(1, MAX_EXTENT);
@@ -2432,7 +2458,12 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             }
             numerator->setValue(scale.isEmpty() == true ? 1 : scale.at(0).toInt());
             denominator->setValue(scale.isEmpty() == true ? 1 : scale.at(1).toInt());
-            const auto commitScale = [this, numerator, denominator]() {
+            const auto commitScale = [this, mode, numerator, denominator]() {
+                if (mode->currentIndex() == OUTPUT_SIZE_MODE)
+                {
+                    replaceSelectedField(QStringLiteral("scale"), QJsonArray{numerator->value(), denominator->value()});
+                    return;
+                }
                 replaceSelectedField(
                     QStringLiteral("extent"),
                     QJsonObject{{QStringLiteral("reference"), QStringLiteral("View")},
@@ -2444,7 +2475,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                     &QComboBox::activated,
                     this,
                     [this, source, width, height, numerator, denominator](int32 index) {
-                        const bool isCustomScale = index == FIRST_VIEW_MODE + VIEW_PRESET_COUNT;
+                        const bool isCustomScale = index >= FIRST_VIEW_MODE + VIEW_PRESET_COUNT;
                         // Selecting Custom may keep the same fraction as a preset, so there may
                         // be no document edit/rebuild. Reveal its controls in that case too.
                         numerator->setEnabled(isCustomScale);
@@ -2455,6 +2486,10 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                         if (index == 0)
                         {
                             extentValue = QJsonArray{width->value(), height->value()};
+                        }
+                        else if (index == OUTPUT_SIZE_MODE)
+                        {
+                            extentValue = QStringLiteral("OutputSize");
                         }
                         else if (index >= FIRST_VIEW_MODE)
                         {
@@ -2475,7 +2510,10 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             };
             connect(width, &QSpinBox::editingFinished, this, commitExtent);
             connect(height, &QSpinBox::editingFinished, this, commitExtent);
-            outFields.addRow(name, row);
+            outFields.addRow(isOutputSize == true ? QStringLiteral("Output resolution")
+                             : isSizeNode == true ? QStringLiteral("Render resolution")
+                                                  : name,
+                             row);
         }
         else if (field.value().isDouble() == true)
         {
@@ -2802,6 +2840,18 @@ void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonVa
         return;
     }
     node.insert(field, value);
+    if (field == QStringLiteral("extent") &&
+        node.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize"))
+    {
+        if (value.toString() == QStringLiteral("OutputSize"))
+        {
+            node.insert(QStringLiteral("scale"), QJsonArray{1, 1});
+        }
+        else
+        {
+            node.remove(QStringLiteral("scale"));
+        }
+    }
     // Authored mode and texture-type choices carry their dependent fields explicitly.
     if (field == QStringLiteral("mode"))
     {
@@ -3331,8 +3381,9 @@ void RendererWorkspace::addNode()
     {
         identity = stem + QString::number(suffix);
     }
-    const QJsonObject node = isUpscalePreset == true ? MakeUpscaleNode(algorithm, identity) : MakeNode(kind, identity);
-    const RenderGraphDocumentStatus status = mDocument.AddNode(file, configuration, node);
+    const RenderGraphDocumentStatus status = isUpscalePreset == true
+                                                 ? mDocument.AddUpscalePreset(file, configuration, algorithm, identity)
+                                                 : mDocument.AddNode(file, configuration, MakeNode(kind, identity));
     if (status != RenderGraphDocumentStatus::Ok)
     {
         report(QStringLiteral("Cannot add %1 to %2#%3: %4").arg(kind, file, configuration, DescribeStatus(status)));

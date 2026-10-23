@@ -218,7 +218,8 @@ RenderGraphDomain GetRenderGraphDomain(const QString& kind)
         return RenderGraphDomain::SceneView;
     }
     if (kind == QStringLiteral("StructuredBuffer") || kind == QStringLiteral("Target") ||
-        kind == QStringLiteral("Export") || kind == QStringLiteral("RenderSize"))
+        kind == QStringLiteral("Export") || kind == QStringLiteral("RenderSize") ||
+        kind == QStringLiteral("OutputSize"))
     {
         return RenderGraphDomain::Resource;
     }
@@ -279,11 +280,15 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
         }
         ports.Outputs = {{QStringLiteral("texture"), node.value(QStringLiteral("type")).toString()}};
     }
-    else if (kind == QStringLiteral("RenderSize"))
+    else if (kind == QStringLiteral("RenderSize") || kind == QStringLiteral("OutputSize"))
     {
         if (node.value(QStringLiteral("extent")).toString() == QStringLiteral("Texture"))
         {
             ports.Inputs = {{QStringLiteral("texture"), QStringLiteral("Texture")}};
+        }
+        if (node.value(QStringLiteral("extent")).toString() == QStringLiteral("OutputSize"))
+        {
+            ports.Inputs = {{QStringLiteral("output"), QStringLiteral("RenderSize")}};
         }
         ports.Outputs = {{QStringLiteral("size"), QStringLiteral("RenderSize")}};
     }

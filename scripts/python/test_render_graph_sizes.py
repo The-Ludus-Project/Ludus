@@ -24,6 +24,96 @@ class RenderSizeTests(unittest.TestCase):
             self.config(value)['edges'].append({'from': 'size.size', 'to': identity + '.size'})
         return value
 
+    def provide_output_size(self, output_extent, scale):
+        value = self.share_size([1, 1])
+        self.node(value, 'size').update(extent='OutputSize', scale=scale)
+        self.config(value)['nodes'].append({'id': 'output_size', 'kind': 'OutputSize', 'extent': output_extent})
+        self.config(value)['edges'].append({'from': 'output_size.size', 'to': 'size.output'})
+        return value
+
+    def test_native_resolution_uses_equal_output_and_render_sizes(self):
+        self.write(self.provide_output_size([1921, 1081], [1, 1]))
+        plan = graph.compile_graph(self.path)
+        for identity in ('color', 'depth'):
+            resource = plan['resources']['Main/' + identity]
+            self.assertEqual([1921, 1081], resource['extent'])
+            self.assertNotIn('view_scale', resource)
+        self.assertNotIn('Main/output_size', plan['resources'])
+        self.assertNotIn('Main/size', plan['resources'])
+
+    def test_fixed_output_scales_with_integer_ceil_and_preserves_sources(self):
+        self.write(self.provide_output_size([1921, 1081], [1, 2]))
+        before = self.path.read_bytes()
+        plan = graph.compile_graph(self.path)
+        for identity in ('color', 'depth'):
+            self.assertEqual([961, 541], plan['resources']['Main/' + identity]['extent'])
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_viewport_output_retains_a_dynamic_render_fraction(self):
+        value = self.provide_output_size('Viewport', [2, 3])
+        self.write(value)
+        plan = graph.compile_graph(self.path)
+        self.assertEqual([427, 320], plan['resources']['Main/color']['extent'])
+        self.assertEqual([2, 3], plan['resources']['Main/color']['view_scale'])
+        self.node(value, 'size')['scale'] = [1, 1]
+        self.write(value)
+        self.assertEqual([1, 1], graph.compile_graph(self.path)['resources']['Main/color']['view_scale'])
+
+    def test_output_size_can_directly_drive_targets_without_an_internal_scale(self):
+        value = self.share_size([1, 1])
+        self.node(value, 'size').update(kind='OutputSize', extent='Viewport')
+        self.write(value)
+        resource = graph.compile_graph(self.path)['resources']['Main/color']
+        self.assertEqual([1, 1], resource['view_scale'])
+        self.assertEqual([640, 480], resource['extent'])
+
+    def test_bad_output_policies_and_scales_reject_without_mutating_saved_inputs(self):
+        for extent, scale in (('Texture', [1, 2]), ({'reference': 'View', 'scale': [1, 1]}, [1, 1]),
+                              ([0, 1080], [1, 1]), ('Viewport', [1, 0]), ('Viewport', [True, 2])):
+            value = self.provide_output_size(extent, scale)
+            self.write(value)
+            before = self.path.read_bytes()
+            with self.assertRaises(ToolingError):
+                graph.compile_graph(self.path)
+            self.assertEqual(before, self.path.read_bytes())
+        value = self.provide_output_size('Viewport', [1, 2])
+        value['version'] = 1
+        self.write(value)
+        self.fails('Version')
+
+    def test_unbound_output_reference_and_out_of_range_fixed_render_extent_reject(self):
+        value = self.provide_output_size([graph.MAX_TARGET_EXTENT, 1], [2, 1])
+        self.write(value)
+        self.fails('Capacity')
+        self.config(value)['edges'].pop()
+        self.write(value)
+        self.fails('UnboundInput')
+
+    def test_scaled_view_reference_cannot_be_scaled_again(self):
+        value = self.provide_output_size('Viewport', [1, 2])
+        self.node(value, 'output_size').update(kind='RenderSize', extent={'reference': 'View', 'scale': [1, 2]})
+        self.write(value)
+        self.assertIn('unscaled OutputSize', self.fails('SizePolicy'))
+
+    def test_output_and_render_provider_chain_crosses_subgraph_interfaces(self):
+        value = self.provide_output_size([1919, 1079], [2, 3])
+        child = {'version': 2, 'id': 'RenderSizing', 'default': 'Default', 'configurations': [{
+            'id': 'Default', 'inputs': [{'id': 'output', 'type': 'RenderSize'}],
+            'outputs': [{'id': 'render', 'type': 'RenderSize', 'source': 'size.size', 'required': False}],
+            'nodes': [{'id': 'size', 'kind': 'RenderSize', 'extent': 'OutputSize', 'scale': [2, 3]}],
+            'edges': [{'from': 'input.output', 'to': 'size.output'}]}]}
+        self.write(child, 'sizes.lurender.json')
+        node = self.node(value, 'size')
+        node.clear()
+        node.update(id='size', kind='Subgraph', asset='sizes.lurender.json', configuration='Default')
+        for edge in self.config(value)['edges']:
+            if edge['from'] == 'size.size':
+                edge['from'] = 'size.render'
+        self.write(value)
+        resource = graph.compile_graph(self.path)['resources']['Main/color']
+        self.assertEqual([1280, 720], resource['extent'])
+        self.assertEqual(child, self.read('sizes.lurender.json'))
+
     def test_view_size_policy_survives_targets_and_matching_metadata(self):
         value = self.share_size({'reference': 'View', 'scale': [2, 4]})
         self.write(value)
