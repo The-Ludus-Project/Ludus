@@ -4,6 +4,7 @@
 
 QT_BEGIN_NAMESPACE
 class QWidget;
+class QSettings;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -19,4 +20,6 @@ void PresentEditorCrashReportingNotice(QWidget* parentOrNull);
 QString GetEditorLogDirectory();
 /// Convert an HTTPS DSN to Sentry's minidump endpoint. Returns empty for invalid/unsafe DSNs.
 QString MakeSentryMinidumpUrl(const QString& dsn);
+/// Consent is bound to the exact destination the user approved, including across app updates.
+bool HasEditorCrashUploadConsent(const QSettings& settings, const QString& dsn);
 } // namespace ludus::editor

@@ -259,6 +259,9 @@ Thanks to the Chromium authors, **Crashpad Overview Design**, Overview,
 Registration/macOS and Privacy Considerations
 ([design](https://github.com/chromium/crashpad/blob/main/doc/overview_design.md)),
 for external Mach capture and consent/storage boundaries; and Sentry,
-**example-minidump-upload**, `upload.py`
-([source](https://github.com/getsentry/example-minidump-upload)), for DSN routing
-and the JSON event form protocol. This adapter uses Crashpad directly.
+**Sentry Native 0.17.4**, `sentry_utils.c`, `sentry__dsn_get_minidump_url`
+([source](https://github.com/getsentry/sentry-native/blob/0.17.4/src/sentry_utils.c)),
+and **Relay**, `formdata.rs`, `merge_formdata`
+([source](https://github.com/getsentry/relay/blob/master/relay-server/src/processing/errors/errors/utils/formdata.rs)),
+for DSN routing and the optional JSON event form field. This adapter uses
+Crashpad directly rather than embedding the Sentry SDK.

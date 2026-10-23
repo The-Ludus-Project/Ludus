@@ -41,6 +41,7 @@ const QString SETTINGS_ORGANIZATION = QStringLiteral("Ludus");
 const QString SETTINGS_APPLICATION = QStringLiteral("Editor");
 const QString DSN_KEY = QStringLiteral("crashReporting/dsn");
 const QString CONSENT_KEY = QStringLiteral("crashReporting/automaticSubmission");
+const QString APPROVED_DSN_KEY = QStringLiteral("crashReporting/approvedDsn");
 const QString SENTRY_PROTOCOL_VERSION = QStringLiteral("7");
 QString captureProblem;
 QString activeDsn;
@@ -61,9 +62,11 @@ QString ReadDsn(const QSettings& settings)
 }
 } // namespace
 
-// Thanks to Sentry, "example-minidump-upload", upload.py:
-// https://github.com/getsentry/example-minidump-upload . Adapt only DSN routing and the
-// JSON 'sentry' form field; the external Crashpad handler owns HTTPS and offline retries.
+// Thanks to Sentry Native 0.17.4, sentry_utils.c, sentry__dsn_get_minidump_url:
+// https://github.com/getsentry/sentry-native/blob/0.17.4/src/sentry_utils.c . Adapt DSN routing;
+// Relay's merge_formdata accepts the optional JSON 'sentry' field:
+// https://github.com/getsentry/relay/blob/master/relay-server/src/processing/errors/errors/utils/formdata.rs .
+// The external Crashpad handler owns HTTPS and offline retries.
 QString MakeSentryMinidumpUrl(const QString& dsn)
 {
     const QUrl input(dsn, QUrl::StrictMode);
@@ -95,12 +98,18 @@ QString GetEditorLogDirectory()
     return GetCrashDatabasePath() + QStringLiteral("/logs");
 }
 
+bool HasEditorCrashUploadConsent(const QSettings& settings, const QString& dsn)
+{
+    return dsn.isEmpty() == false && settings.value(CONSENT_KEY, false).toBool() == true &&
+           settings.value(APPROVED_DSN_KEY).toString() == dsn;
+}
+
 void InitializeEditorCrashReporting() noexcept
 {
     QSettings settings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION);
     activeDsn = ReadDsn(settings);
     const QString endpoint = MakeSentryMinidumpUrl(activeDsn);
-    const bool canUpload = endpoint.isEmpty() == false && settings.value(CONSENT_KEY, false).toBool() == true;
+    const bool canUpload = endpoint.isEmpty() == false && HasEditorCrashUploadConsent(settings, activeDsn) == true;
     const QString databasePath = GetCrashDatabasePath();
     if (QDir().mkpath(databasePath) == false)
     {
@@ -174,7 +183,7 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
     form->addRow(QStringLiteral("Sentry project DSN"), dsn);
     QCheckBox* consent = new QCheckBox(QStringLiteral("Automatically send crash reports"), &dialog);
     consent->setObjectName(QStringLiteral("crashReportingConsent"));
-    consent->setChecked(settings.value(CONSENT_KEY, false).toBool());
+    consent->setChecked(HasEditorCrashUploadConsent(settings, activeDsn));
     form->addRow(consent);
     foundation::usize pending = 0;
     foundation::usize uploaded = 0;
@@ -216,6 +225,7 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
         }
         settings.setValue(DSN_KEY, selectedDsn);
         settings.setValue(CONSENT_KEY, consent->isChecked());
+        settings.setValue(APPROVED_DSN_KEY, consent->isChecked() == true ? selectedDsn : QString());
         settings.sync();
         if (settings.status() != QSettings::NoError)
         {

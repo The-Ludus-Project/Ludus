@@ -174,6 +174,10 @@ class CrashCaptureTests(unittest.TestCase):
             with self.subTest(dsn=dsn):
                 self.assertEqual(self.run_probe("url", dsn).stdout, b"")
 
+    def test_saved_consent_cannot_authorize_a_different_destination(self):
+        result = self.run_probe("consent")
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+
     def test_production_startup_needs_no_launcher_environment(self):
         # Exercise the same before-QApplication initializer as main.cpp. HOME is
         # private so neither reports nor preferences touch the developer's account.

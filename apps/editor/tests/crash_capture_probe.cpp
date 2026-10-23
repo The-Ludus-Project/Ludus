@@ -11,7 +11,9 @@
 #include <QIODevice>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
 #include <QString>
+#include <QTemporaryDir>
 #include <QTimer>
 
 #include <cstdlib>
@@ -52,6 +54,30 @@ int main(int argc, char** argv)
         return 1;
     }
     const QString mode = QString::fromLocal8Bit(argv[1]);
+    if (mode == QStringLiteral("consent"))
+    {
+        QTemporaryDir temporary;
+        if (temporary.isValid() == false)
+        {
+            return 1;
+        }
+        QSettings settings(temporary.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+        const QString original = QStringLiteral("https://abc@first.example.test/42");
+        const QString different = QStringLiteral("https://abc@second.example.test/42");
+        settings.setValue(QStringLiteral("crashReporting/automaticSubmission"), true);
+        if (ludus::editor::HasEditorCrashUploadConsent(settings, original) == true)
+        {
+            return 1;
+        }
+        settings.setValue(QStringLiteral("crashReporting/approvedDsn"), original);
+        if (ludus::editor::HasEditorCrashUploadConsent(settings, original) == false ||
+            ludus::editor::HasEditorCrashUploadConsent(settings, different) == true)
+        {
+            return 1;
+        }
+        settings.setValue(QStringLiteral("crashReporting/automaticSubmission"), false);
+        return ludus::editor::HasEditorCrashUploadConsent(settings, original) == false ? 0 : 1;
+    }
     if (mode == QStringLiteral("production"))
     {
         ludus::editor::InitializeEditorCrashReporting();
