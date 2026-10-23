@@ -18,6 +18,9 @@
 #include <ludus/foundation/memory/owned_object.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/foundation/parsing/json.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/views.hpp>
+#include <ludus/graphics/rhi/raster.h>
 
 #include <string_view>
 

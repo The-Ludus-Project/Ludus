@@ -2,7 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
-#include <ludus/graphics/renderer/viewport.hpp>
+#include <ludus/graphics/renderer/viewport_frame.hpp>
 #include <ludus/graphics/rhi/native_interop.h>
 #include <ludus/graphics/rhi/raster.h>
 

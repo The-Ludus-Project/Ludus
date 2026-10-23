@@ -5,8 +5,8 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/math/vector.hpp>
-#include <ludus/graphics/renderer/renderer.hpp>
-#include <ludus/graphics/renderer/viewport.hpp>
+#include <ludus/graphics/renderer/view_description.hpp>
+#include <ludus/graphics/renderer/viewport_frame.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>

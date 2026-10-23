@@ -16,6 +16,7 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/render_graph.hpp
     include/ludus/graphics/renderer/render_graph_activation.hpp
     include/ludus/graphics/renderer/renderer.hpp
+    include/ludus/graphics/renderer/view_description.hpp
     include/ludus/graphics/renderer/world_grid.hpp
     include/ludus/graphics/renderer/views.hpp
     include/ludus/graphics/renderer/overlays.hpp
@@ -23,9 +24,11 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/environment.hpp
     include/ludus/graphics/renderer/static_lighting.hpp
     include/ludus/graphics/renderer/lighting_layout.h
+    include/ludus/graphics/renderer/light_selection.hpp
     include/ludus/graphics/renderer/lighting.hpp
     include/ludus/graphics/renderer/reference.hpp
     include/ludus/graphics/renderer/gpu_preview.hpp
+    include/ludus/graphics/renderer/viewport_frame.hpp
     include/ludus/graphics/renderer/viewport.hpp)
 target_link_libraries(ludus_graphics_renderer PUBLIC Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationThreading Ludus::GraphicsRhi Ludus::RenderGraphFormat
     PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::SceneFormat)

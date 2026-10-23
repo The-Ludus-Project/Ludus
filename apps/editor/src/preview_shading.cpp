@@ -1,6 +1,8 @@
 #include "internal/preview_shading.h"
 
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/view_description.hpp>
 
 namespace ludus::editor
 {
