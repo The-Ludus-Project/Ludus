@@ -25,6 +25,7 @@ import init_cache
 import init_failure
 import init_progress
 import init_terminal
+import build_slots
 import managed_venv
 from analysis_inventory import compilation_entries, inventory, request_codemodel, SOURCE_ROOTS
 from quality_process import ANALYSIS_SECONDS, LANE_BYTES, LOG_BYTES, LogBudget, run_bounded
@@ -1698,17 +1699,35 @@ def cmake_configure(root: Path, preset: str, extra_args: Sequence[str] = (), *, 
         init_cache.record(stamp, configure_stamp_inputs(root, preset, args))
 
 
+@contextlib.contextmanager
+def build_machine_share(root: Path, preset: str) -> Iterator[build_slots.BuildPolicy]:
+    """Hold a build slot shared with the user's other checkouts; see ``build_slots``."""
+    try:
+        policy = build_slots.policy_for(root, os.environ, build_slots.detect_machine())
+    except build_slots.BuildSlotError as exc:
+        raise EngineError(str(exc)) from exc
+    with build_slots.machine_share(root, preset, policy):
+        yield policy
+
+
 def cmake_build(root: Path, preset: str, extra_args: Sequence[str] = ()) -> None:
-    run([cmake(root), "--build", "--preset", preset, *extra_args], cwd=root, env=tool_env(root))
+    with build_machine_share(root, preset) as policy:
+        run([*build_slots.priority_prefix(policy.priority), cmake(root), "--build", "--preset", preset,
+             *build_slots.parallel_arguments(policy, extra_args, os.environ), *extra_args],
+            cwd=root, env=tool_env(root))
 
 
 def ctest(root: Path, preset: str, label: str | None = None) -> None:
-    args: list[object] = [cmake(root), "--build", "--preset", preset]
-    run(args, cwd=root, env=tool_env(root))
-    test_args: list[object] = [cmake(root), "-E", "env", "CTEST_OUTPUT_ON_FAILURE=1", managed_executable(root, "ctest"), "--preset", preset]
-    if label:
-        test_args.extend(["-L", label])
-    run(test_args, cwd=root, env=tool_env(root))
+    with build_machine_share(root, preset) as policy:
+        prefix = build_slots.priority_prefix(policy.priority)
+        args: list[object] = [*prefix, cmake(root), "--build", "--preset", preset,
+                              *build_slots.parallel_arguments(policy, (), os.environ)]
+        run(args, cwd=root, env=tool_env(root))
+        test_args: list[object] = [*prefix, cmake(root), "-E", "env", "CTEST_OUTPUT_ON_FAILURE=1",
+                                   managed_executable(root, "ctest"), "--preset", preset]
+        if label:
+            test_args.extend(["-L", label])
+        run(test_args, cwd=root, env=tool_env(root))
 
 
 def ensure_known_preset(preset: str) -> None:

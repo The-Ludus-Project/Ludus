@@ -706,6 +706,39 @@ tree. All checkouts of one user already share ccache's default directory
 development build stores about 52 MB there, well within ccache's default
 5 GiB limit.
 
+## Sharing the machine between builds
+
+Every compile job needs a core and up to about a gibibyte of memory, so several
+checkouts building at once, such as coding agents in linked Git worktrees,
+oversubscribe the machine. Each compile then runs many times slower and the
+machine swaps. `./scripts/build`, `./scripts/test` and the builds that
+`./init.sh` runs therefore share the machine:
+
+- A build from the primary checkout takes the one interactive slot, so two such
+  builds take turns. It keeps Ninja's default job count and normal priority.
+- A build from a linked Git worktree (its `.git` is a file) is an agent build.
+  It takes a slot from a separate agent pool, so agents never hold up the
+  primary checkout. It runs at low priority (`taskpolicy -c utility` on macOS,
+  `nice -n 10` and best-effort I/O at the lowest level on Linux). Its job count
+  is the core count, capped at one job per 2 GiB of memory. The pool has one
+  slot per 8 cores and 16 GiB, and at least one.
+- A build that waits prints who holds the slots, and then how long it waited.
+
+The slots are lock files in `~/Library/Caches/Ludus/build-slots` on macOS and
+`~/.cache/ludus/build-slots` on Linux. The operating system releases a slot
+when its build exits, even after a crash. Windows builds don't wait for slots.
+
+| Environment variable | Effect |
+| --- | --- |
+| `LUDUS_BUILD_ROLE` | `agent` or `interactive`; overrides the worktree detection |
+| `LUDUS_BUILD_SLOTS` | Size of this build's pool; `0` builds without waiting |
+| `LUDUS_BUILD_JOBS` | Job count; `-j` or `CMAKE_BUILD_PARALLEL_LEVEL` still win |
+| `LUDUS_BUILD_PRIORITY` | `normal`, `low` or `background`; `background` uses `taskpolicy -b` (efficiency cores only) on macOS and idle I/O with `nice -n 19` on Linux |
+| `LUDUS_BUILD_SLOT_DIRECTORY` | Where the lock files live |
+
+A scripted build started inside a build that already holds a slot doesn't wait
+for a second one.
+
 ## Presets
 
 Development is the default local flavor. Prepare each preset before selecting
