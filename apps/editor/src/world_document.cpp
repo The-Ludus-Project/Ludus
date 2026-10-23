@@ -67,6 +67,24 @@ namespace identity_records = content::identity_records;
 constexpr qsizetype MAX_MINTED_LABEL_CHARACTERS = 31;
 /// Bytes per KiB, for reporting the World size limit in the unit users read.
 constexpr foundation::int64 BYTES_PER_KIBIBYTE = 1024;
+/// Longest UTF-8 schema, component, property, asset, enum choice, entity or scene label.
+constexpr foundation::int64 MAX_LABEL_BYTES = 128;
+/// Longest UTF-8 component or property help text.
+constexpr foundation::int64 MAX_HELP_BYTES = 512;
+/// Longest UTF-8 property unit.
+constexpr foundation::int64 MAX_UNIT_BYTES = 32;
+/// Most named choices of one enum property.
+constexpr qsizetype MAX_ENUM_CHOICES = 64;
+/// Members of a `scene_transform` binding: component, translation, rotation and scale.
+constexpr qsizetype SCENE_TRANSFORM_BINDING_FIELD_COUNT = 4;
+/// Components of a vector: transform binding axes, camera vectors and placement vectors.
+constexpr qsizetype VECTOR_COMPONENT_COUNT = 3;
+/// Elements of a 3x3 placement basis.
+constexpr qsizetype BASIS_ELEMENT_COUNT = 9;
+/// Largest magnitude of a reference scene camera coordinate.
+constexpr double MAX_CAMERA_COORDINATE = 1e12;
+/// Largest magnitude of an instance placement value.
+constexpr double MAX_PLACEMENT_VALUE = 1000000;
 /// Root `version` value of a World document of envelope version `version`.
 QJsonValue MakeVersionValue(foundation::uint64 version)
 {
@@ -287,7 +305,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
         return Fail(error, QStringLiteral("Close the current world before loading another schema."));
     }
     QJsonObject schema;
-    if (Decode(bytes, 65536, schema, error) == false)
+    if (Decode(bytes, MAX_SCHEMA_BYTES, schema, error) == false)
     {
         return false;
     }
@@ -300,7 +318,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                 QStringLiteral("scene_transform")}) == false ||
         schema.value(QStringLiteral("version")) != QJsonValue(1) ||
         Id(schema.value(QStringLiteral("id")).toString()) == false ||
-        Text(schema.value(QStringLiteral("label")), 128) == false ||
+        Text(schema.value(QStringLiteral("label")), MAX_LABEL_BYTES) == false ||
         schema.value(QStringLiteral("components")).isArray() == false ||
         schema.value(QStringLiteral("assets")).isArray() == false)
     {
@@ -323,8 +341,8 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                     QStringLiteral("help"),
                     QStringLiteral("required"),
                     QStringLiteral("properties")}) == false ||
-            Id(id) == false || ids.contains(id) || Text(c.value(QStringLiteral("label")), 128) == false ||
-            Text(c.value(QStringLiteral("help")), 512) == false ||
+            Id(id) == false || ids.contains(id) || Text(c.value(QStringLiteral("label")), MAX_LABEL_BYTES) == false ||
+            Text(c.value(QStringLiteral("help")), MAX_HELP_BYTES) == false ||
             c.value(QStringLiteral("required")).isBool() == false ||
             c.value(QStringLiteral("properties")).isArray() == false)
         {
@@ -355,9 +373,9 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
                         QStringLiteral("unit"),
                         QStringLiteral("asset_kind")}) == false ||
                 Id(key) == false || propertiesSeen.contains(key) ||
-                Text(p.value(QStringLiteral("label")), 128) == false ||
-                Text(p.value(QStringLiteral("help")), 512) == false ||
-                Text(p.value(QStringLiteral("unit")), 32) == false)
+                Text(p.value(QStringLiteral("label")), MAX_LABEL_BYTES) == false ||
+                Text(p.value(QStringLiteral("help")), MAX_HELP_BYTES) == false ||
+                Text(p.value(QStringLiteral("unit")), MAX_UNIT_BYTES) == false)
             {
                 return Fail(error, QStringLiteral("Invalid or duplicate property definition: %1.%2").arg(id, key));
             }
@@ -380,13 +398,14 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
             {
                 const auto choices = p.value(QStringLiteral("choices")).toArray();
                 QSet<QString> unique;
-                if (p.value(QStringLiteral("choices")).isArray() == false || choices.isEmpty() || choices.size() > 64)
+                if (p.value(QStringLiteral("choices")).isArray() == false || choices.isEmpty() ||
+                    choices.size() > MAX_ENUM_CHOICES)
                 {
                     return Fail(error, QStringLiteral("Enums need 1–64 named choices."));
                 }
                 for (const auto choice : choices)
                 {
-                    if (Text(choice, 128) == false || unique.contains(choice.toString()))
+                    if (Text(choice, MAX_LABEL_BYTES) == false || unique.contains(choice.toString()))
                     {
                         return Fail(error, QStringLiteral("Invalid or duplicate enum choice."));
                     }
@@ -419,7 +438,8 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
         const auto id = asset.value(QStringLiteral("id")).toString();
         if (value.isObject() == false ||
             Fields(asset, {QStringLiteral("id"), QStringLiteral("label"), QStringLiteral("kind")}) == false ||
-            Id(id) == false || ids.contains(id) || Text(asset.value(QStringLiteral("label")), 128) == false ||
+            Id(id) == false || ids.contains(id) ||
+            Text(asset.value(QStringLiteral("label")), MAX_LABEL_BYTES) == false ||
             Id(asset.value(QStringLiteral("kind")).toString()) == false)
         {
             return Fail(error, QStringLiteral("Invalid or duplicate declared asset."));
@@ -429,7 +449,8 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
     if (schema.contains(QStringLiteral("scene_transform")))
     {
         const auto binding = schema.value(QStringLiteral("scene_transform")).toObject();
-        if (schema.value(QStringLiteral("scene_transform")).isObject() == false || binding.size() != 4 ||
+        if (schema.value(QStringLiteral("scene_transform")).isObject() == false ||
+            binding.size() != SCENE_TRANSFORM_BINDING_FIELD_COUNT ||
             Fields(binding,
                    {QStringLiteral("component"),
                     QStringLiteral("position"),
@@ -455,7 +476,7 @@ bool WorldDocument::LoadSchema(const QByteArray& bytes, QString& error)
         for (const auto& key : {QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")})
         {
             const auto axes = binding.value(key).toArray();
-            if (binding.value(key).isArray() == false || axes.size() != 3)
+            if (binding.value(key).isArray() == false || axes.size() != VECTOR_COMPONENT_COUNT)
             {
                 return Fail(error, QStringLiteral("Scene transform bindings need three property IDs per group."));
             }
@@ -597,7 +618,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                                QStringLiteral("scene")}) == true &&
                                            Id(id) == true;
         if (value.isObject() == false || hasIdentity == false || ids.contains(id) == true ||
-            Text(e.value(QStringLiteral("name")), 128) == false ||
+            Text(e.value(QStringLiteral("name")), MAX_LABEL_BYTES) == false ||
             e.value(QStringLiteral("name")).toString().trimmed().isEmpty() == true ||
             e.value(QStringLiteral("components")).isObject() == false)
         {
@@ -692,7 +713,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
             scene.size() != 6 || scene.value(QStringLiteral("version")) != QJsonValue(1) ||
             QUuid(scene.value(QStringLiteral("id")).toString()).isNull() ||
             scene.value(QStringLiteral("profile")) != QJsonValue(QStringLiteral("resident-reference-v1")) ||
-            Text(scene.value(QStringLiteral("name")), 128) == false ||
+            Text(scene.value(QStringLiteral("name")), MAX_LABEL_BYTES) == false ||
             scene.value(QStringLiteral("camera")).isObject() == false ||
             scene.value(QStringLiteral("imports")).isArray() == false)
         {
@@ -711,14 +732,14 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         for (const auto& key : {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up")})
         {
             const auto values = camera.value(key).toArray();
-            if (camera.value(key).isArray() == false || values.size() != 3)
+            if (camera.value(key).isArray() == false || values.size() != VECTOR_COMPONENT_COUNT)
             {
                 return Fail(error, QStringLiteral("Invalid camera vector."));
             }
             for (const auto number : values)
             {
                 if (number.isDouble() == false || foundation::math::IsFinite(number.toDouble()) == false ||
-                    number.toDouble() < -1e12 || number.toDouble() > 1e12)
+                    number.toDouble() < -MAX_CAMERA_COORDINATE || number.toDouble() > MAX_CAMERA_COORDINATE)
                 {
                     return Fail(error, QStringLiteral("Nonfinite or oversized camera vector."));
                 }
@@ -779,15 +800,16 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         {
             const auto placement = ScenePlacement(entity);
             const auto numbers = placement.value(key).toArray();
-            if (placement.value(key).isArray() == false || numbers.size() != (key == QStringLiteral("basis") ? 9 : 3))
+            if (placement.value(key).isArray() == false ||
+                numbers.size() != (key == QStringLiteral("basis") ? BASIS_ELEMENT_COUNT : VECTOR_COMPONENT_COUNT))
             {
                 return Fail(error, QStringLiteral("Invalid instance placement."));
             }
             for (const auto number : numbers)
             {
                 const auto n = number.toDouble();
-                if (number.isDouble() == false || foundation::math::IsFinite(n) == false || n < -1000000 ||
-                    n > 1000000 || (key == QStringLiteral("scale") && n <= 0) ||
+                if (number.isDouble() == false || foundation::math::IsFinite(n) == false || n < -MAX_PLACEMENT_VALUE ||
+                    n > MAX_PLACEMENT_VALUE || (key == QStringLiteral("scale") && n <= 0) ||
                     (key == QStringLiteral("rotation") && (n < -360 || n > 360)))
                 {
                     return Fail(error, QStringLiteral("Instance placement is outside its finite bounds."));
