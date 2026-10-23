@@ -517,7 +517,9 @@ RenderGraphDocumentStatus RenderGraphDocument::PasteNodes(const QString& file,
         node.insert(QStringLiteral("id"), identity);
         nodes.append(node);
         if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true ||
-            node.value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale"))
+            node.value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale") ||
+            node.value(QStringLiteral("kind")).toString() == QStringLiteral("OutputSize") ||
+            node.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize"))
         {
             graph.insert(QStringLiteral("version"), 2);
         }

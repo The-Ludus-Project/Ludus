@@ -147,6 +147,33 @@ class ExecutionTests(unittest.TestCase):
         execution.emit_runtime(self.output, destination, name='SizedGraph')
         self.assertNotIn('RenderSize', destination.read_text())
 
+    def test_output_and_render_providers_preserve_runtime_resize_metadata(self):
+        value = json.loads(self.graph.read_text())
+        value['version'] = 2
+        configuration = value['configurations'][0]
+        configuration['nodes'].extend([
+            {'id': 'outputSize', 'kind': 'OutputSize', 'extent': 'Viewport'},
+            {'id': 'renderSize', 'kind': 'RenderSize', 'extent': 'OutputSize', 'scale': [2, 3]}])
+        configuration['edges'].append({'from': 'outputSize.size', 'to': 'renderSize.output'})
+        for node in configuration['nodes']:
+            if node['kind'] == 'Target':
+                node['extent'] = 'RenderSize'
+                configuration['edges'].append({'from': 'renderSize.size', 'to': node['id'] + '.size'})
+        self.graph.write_bytes(graph.canonical_asset(value))
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        data = execution.encode_runtime_package(contents)
+        for index, resource in enumerate(contents['resources']):
+            self.assertEqual((resource['ViewNumerator'], resource['ViewDenominator']), (2, 3))
+            self.assertEqual(struct.unpack_from('<9I', data, 104 + index * execution.RESOURCE_RECORD_BYTES)[6:8], (2, 3))
+        configuration['nodes'][-2]['extent'] = [1921, 1081]
+        self.graph.write_bytes(graph.canonical_asset(value))
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        for resource in contents['resources']:
+            self.assertEqual((resource['Width'], resource['Height']), (1281, 721))
+            self.assertEqual((resource['ViewNumerator'], resource['ViewDenominator']), (0, 1))
+
     def test_relative_sizes_survive_lowering_and_runtime_serialization(self):
         value = json.loads(self.graph.read_text())
         value['version'] = 2

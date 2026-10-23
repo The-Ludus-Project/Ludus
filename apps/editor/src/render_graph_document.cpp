@@ -228,11 +228,12 @@ bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& argu
     if ((previous.value(QStringLiteral("kind")).toString() == QStringLiteral("Target") &&
          previousExtent == QStringLiteral("RenderSize")) ||
         (previous.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize") &&
-         previousExtent == QStringLiteral("Texture")))
+         (previousExtent == QStringLiteral("Texture") || previousExtent == QStringLiteral("OutputSize"))))
     {
-        const QString removedInput =
-            previous.value(QStringLiteral("id")).toString() +
-            (previousExtent == QStringLiteral("RenderSize") ? QStringLiteral(".size") : QStringLiteral(".texture"));
+        const QString removedInput = previous.value(QStringLiteral("id")).toString() +
+                                     (previousExtent == QStringLiteral("RenderSize")   ? QStringLiteral(".size")
+                                      : previousExtent == QStringLiteral("OutputSize") ? QStringLiteral(".output")
+                                                                                       : QStringLiteral(".texture"));
         if (node.value(QStringLiteral("extent")).toString() != previousExtent)
         {
             for (const QJsonValueConstRef edge : inoutConfiguration.value(QStringLiteral("edges")).toArray())
@@ -241,7 +242,7 @@ bool ReplaceNodeChecked(QJsonObject& inoutConfiguration, const QStringList& argu
                 {
                     if (outErrorOrNull != nullptr)
                     {
-                        *outErrorOrNull = QStringLiteral("Disconnect %1 before changing to fixed dimensions. "
+                        *outErrorOrNull = QStringLiteral("Disconnect %1 before changing its size source. "
                                                          "The connected size policy was preserved.")
                                               .arg(removedInput);
                     }
@@ -344,6 +345,11 @@ bool AddNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
     nodes.append(node);
     inoutConfiguration.insert(QStringLiteral("nodes"), nodes);
     return true;
+}
+
+bool AddUpscalePresetEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    return AppendUpscalePreset(inoutConfiguration, arguments.at(0), arguments.at(1));
 }
 
 bool IsEndpointOf(const QString& endpoint, const QString& node)
@@ -860,6 +866,7 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
         if (IsPipelineNode(node.toObject().value(QStringLiteral("kind")).toString()) == true ||
             node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale") ||
             node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize") ||
+            node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("OutputSize") ||
             node.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("StructuredBuffer") ||
             node.toObject().value(QStringLiteral("extent")).toString() == QStringLiteral("RenderSize"))
         {
@@ -1050,6 +1057,15 @@ RenderGraphDocument::AddNode(const QString& file, const QString& configuration, 
                              {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
                              &AddNodeEdit,
                              false);
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::AddUpscalePreset(const QString& file,
+                                                                const QString& configuration,
+                                                                const QString& algorithm,
+                                                                const QString& identity)
+{
+    mLastMove.clear();
+    return editConfiguration(file, configuration, {algorithm, identity}, &AddUpscalePresetEdit, false);
 }
 
 // File, child configuration and parent configuration are distinct authored identities.

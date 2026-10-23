@@ -164,11 +164,55 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
         }
         return result;
     }
-    if (kind == QStringLiteral("RenderSize") && port == QStringLiteral("size"))
+    if ((kind == QStringLiteral("RenderSize") || kind == QStringLiteral("OutputSize")) &&
+        port == QStringLiteral("size"))
     {
         ResourceDescription result;
         result.Type = QStringLiteral("RenderSize");
-        if (extent.toString() == QStringLiteral("Texture"))
+        if (kind == QStringLiteral("OutputSize") && extent.toString() == QStringLiteral("Viewport"))
+        {
+            result.ViewPolicy = {{QStringLiteral("reference"), QStringLiteral("View")},
+                                 {QStringLiteral("scale"), QJsonArray{1, 1}}};
+        }
+        else if (kind == QStringLiteral("RenderSize") && extent.toString() == QStringLiteral("OutputSize"))
+        {
+            const ResourceDescription output =
+                ResolveResource(context,
+                                FindSource(context.Configuration, identity + QStringLiteral(".output")),
+                                inoutRemainingSteps,
+                                depth + 1);
+            const QJsonArray scale = node.value(QStringLiteral("scale")).toArray();
+            if (HasKnownExtent(scale) == false ||
+                scale.at(0).toInteger() > content::render_graph_format::MAX_TARGET_EXTENT ||
+                scale.at(1).toInteger() > content::render_graph_format::MAX_TARGET_EXTENT)
+            {
+                return result;
+            }
+            if (output.ViewPolicy.isEmpty() == false)
+            {
+                const QJsonArray referenceScale = output.ViewPolicy.value(QStringLiteral("scale")).toArray();
+                if (output.ViewPolicy.value(QStringLiteral("reference")).toString() == QStringLiteral("View") &&
+                    HasKnownExtent(referenceScale) == true && referenceScale.at(0) == referenceScale.at(1))
+                {
+                    result.ViewPolicy = {{QStringLiteral("reference"), QStringLiteral("View")},
+                                         {QStringLiteral("scale"), scale}};
+                }
+            }
+            else if (HasKnownExtent(output.Extent) == true)
+            {
+                const int64 numerator = scale.at(0).toInteger();
+                const int64 denominator = scale.at(1).toInteger();
+                for (const QJsonValueConstRef dimension : output.Extent)
+                {
+                    if (dimension.toInteger() > content::render_graph_format::MAX_TARGET_EXTENT)
+                    {
+                        return ResourceDescription{};
+                    }
+                    result.Extent.append((dimension.toInteger() * numerator + denominator - 1) / denominator);
+                }
+            }
+        }
+        else if (extent.toString() == QStringLiteral("Texture"))
         {
             const ResourceDescription texture =
                 ResolveResource(context,

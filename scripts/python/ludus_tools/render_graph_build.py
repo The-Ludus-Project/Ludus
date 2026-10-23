@@ -508,6 +508,7 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, has
     paths['generator/render_graph_diagnostics.py'] = Path(diagnostics.__file__)
     paths['generator/render_graph_pipeline.py'] = Path(graph.pipeline.__file__)
     paths['generator/render_graph_upscale.py'] = Path(graph.upscale.__file__)
+    paths['generator/render_graph_sizes.py'] = Path(graph.sizes.__file__)
     paths['generator/render_graph_ray.py'] = Path(ray.__file__)
     paths['generator/render_graph_forward.py'] = Path(forward.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
@@ -900,7 +901,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'schemas': [schemas[s] for s in sorted(used) if s in schemas], 'target': target,
                                 'sources': {p: digest(snapshot.files[p]) for p in closure}, 'wrapper': shader_source(program, schemas),
                                 'tools': {k: h for k, h in tool_hashes.items()
-                                          if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py', 'generator/render_graph_diagnostics.py', 'generator/render_graph_upscale.py')
+                                          if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py', 'generator/render_graph_diagnostics.py', 'generator/render_graph_upscale.py', 'generator/render_graph_sizes.py')
                                           and not (target in ('metal', 'wgsl') and k == 'tool/spirv-val')
                                           and not (target != 'glsl' and not program.get('native_ray_queries') and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
                     key = identity(key_data)

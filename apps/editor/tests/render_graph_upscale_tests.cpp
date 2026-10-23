@@ -12,6 +12,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
@@ -19,6 +20,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -157,7 +159,7 @@ TEST_CASE("upscaler creation and algorithm editing work with Properties hidden",
             QComboBox* algorithmOrNull =
                 dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphField_algorithm"));
             REQUIRE(algorithmOrNull != nullptr);
-            algorithmOrNull->setCurrentText(QStringLiteral("fsr-1"));
+            algorithmOrNull->setCurrentText(QStringLiteral("xess-sr"));
             algorithmOrNull->activated(algorithmOrNull->currentIndex());
             dialogOrNull->reject();
         });
@@ -171,8 +173,8 @@ TEST_CASE("upscaler creation and algorithm editing work with Properties hidden",
     QContextMenuEvent editContext(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
     QApplication::sendEvent(canvas.viewport(), &editContext);
     CHECK(GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("dlss-sr")).value(QStringLiteral("algorithm")) ==
-          QStringLiteral("fsr-1"));
-    CHECK(canvas.GetPortPosition(QStringLiteral("dlss-sr.motion"), false).isNull() == true);
+          QStringLiteral("xess-sr"));
+    CHECK(canvas.GetPortPosition(QStringLiteral("dlss-sr.motion"), false).isNull() == false);
     workspace.Undo();
     CHECK(canvas.GetPortPosition(QStringLiteral("dlss-sr.motion"), false).isNull() == false);
     workspace.Redo();
@@ -237,4 +239,189 @@ TEST_CASE("pasted upscalers upgrade old graphs and infer their output from desti
     CHECK(destination.Undo() == true);
     CHECK(destination.Undo() == true);
     CHECK(destination.GetDraft(ROOT) == original);
+}
+
+TEST_CASE("upscaling presets own output and render providers in one undo transaction", "[editor][upscale][sizes]")
+{
+    QTemporaryDir project;
+    const QString package = MakeUpscaleTestPackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    const QByteArray before = document.GetDraft(ROOT);
+    for (const QString& algorithm : GetUpscaleAlgorithms())
+    {
+        CAPTURE(algorithm.toStdString());
+        REQUIRE(document.AddUpscalePreset(ROOT, CONFIGURATION, algorithm, QStringLiteral("upscale")) ==
+                RenderGraphDocumentStatus::Ok);
+        CHECK(GetUpscaleTestNode(document, QStringLiteral("upscale-output-size")).value(QStringLiteral("kind")) ==
+              QStringLiteral("OutputSize"));
+        CHECK(GetUpscaleTestNode(document, QStringLiteral("upscale-render-size"))
+                  .value(QStringLiteral("scale"))
+                  .toArray() == QJsonArray{1, 2});
+        const RenderGraphResourceFeedback color = DescribeRenderGraphResource(document,
+                                                                              ROOT,
+                                                                              CONFIGURATION,
+                                                                              QStringLiteral("upscale-color.texture"),
+                                                                              QSize(1921, 1081));
+        const RenderGraphResourceFeedback destination =
+            DescribeRenderGraphResource(document,
+                                        ROOT,
+                                        CONFIGURATION,
+                                        QStringLiteral("upscale-destination.texture"),
+                                        QSize(1921, 1081));
+        CHECK(color.SizeLabel.contains(QStringLiteral("961 × 541")) == true);
+        CHECK(destination.SizeLabel.contains(QStringLiteral("1921 × 1081")) == true);
+        if (algorithm != QStringLiteral("fsr-1") && algorithm != QStringLiteral("metalfx-spatial"))
+        {
+            const RenderGraphResourceFeedback depth =
+                DescribeRenderGraphResource(document,
+                                            ROOT,
+                                            CONFIGURATION,
+                                            QStringLiteral("upscale-depth.texture"),
+                                            QSize(1921, 1081));
+            const RenderGraphResourceFeedback motion =
+                DescribeRenderGraphResource(document,
+                                            ROOT,
+                                            CONFIGURATION,
+                                            QStringLiteral("upscale-motion.texture"),
+                                            QSize(1921, 1081));
+            CHECK(depth.SizeLabel == color.SizeLabel);
+            CHECK(motion.SizeLabel == color.SizeLabel);
+        }
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(ROOT) == before);
+    }
+    REQUIRE(document.AddUpscalePreset(ROOT, CONFIGURATION, QStringLiteral("fsr-1"), QStringLiteral("upscale")) ==
+            RenderGraphDocumentStatus::Ok);
+    const QByteArray configured = document.GetDraft(ROOT);
+    CHECK(document.AddUpscalePreset(ROOT, CONFIGURATION, QStringLiteral("fsr-1"), QStringLiteral("upscale")) !=
+          RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetDraft(ROOT) == configured);
+}
+
+TEST_CASE("output resolution and render scale settings save from Properties or the canvas",
+          "[editor][upscale][sizes][canvas]")
+{
+    bool shouldUseCanvas = false;
+    SECTION("Properties") {}
+    SECTION("canvas with Properties hidden")
+    {
+        shouldUseCanvas = true;
+    }
+    QTemporaryDir project;
+    const QString package = MakeUpscaleTestPackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT)) == true);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.GetDocument().AddUpscalePreset(ROOT,
+                                                     CONFIGURATION,
+                                                     QStringLiteral("fsr-1"),
+                                                     QStringLiteral("upscale")) == RenderGraphDocumentStatus::Ok);
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    constexpr int32 WINDOW_WIDTH = 1200;
+    constexpr int32 WINDOW_HEIGHT = 800;
+    workspace.resize(WINDOW_WIDTH, WINDOW_HEIGHT);
+    workspace.show();
+    properties->setVisible(shouldUseCanvas == false);
+    for (const QString& identity : {QStringLiteral("upscale-output-size"), QStringLiteral("upscale-render-size")})
+    {
+        REQUIRE(workspace.SelectNode(ROOT, CONFIGURATION, identity) == true);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        const auto exercise = [&identity](QWidget& inoutFields) {
+            if (identity.endsWith(QStringLiteral("output-size")) == true)
+            {
+                QComboBox* modeOrNull = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphExtentMode"));
+                REQUIRE(modeOrNull != nullptr);
+                modeOrNull->setCurrentIndex(0);
+                modeOrNull->activated(0);
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                QSpinBox* widthOrNull = inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphExtentWidth"));
+                REQUIRE(widthOrNull != nullptr);
+                constexpr int32 OUTPUT_WIDTH = 1919;
+                widthOrNull->setValue(OUTPUT_WIDTH);
+                widthOrNull->editingFinished();
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                QSpinBox* heightOrNull = inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphExtentHeight"));
+                REQUIRE(heightOrNull != nullptr);
+                constexpr int32 OUTPUT_HEIGHT = 1079;
+                heightOrNull->setValue(OUTPUT_HEIGHT);
+                heightOrNull->editingFinished();
+            }
+            else
+            {
+                QSpinBox* denominatorOrNull =
+                    inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphScaleDenominator"));
+                REQUIRE(denominatorOrNull != nullptr);
+                CHECK(denominatorOrNull->isHidden() == false);
+                CHECK(denominatorOrNull->isEnabled() == true);
+                constexpr int32 RENDER_DENOMINATOR = 3;
+                denominatorOrNull->setValue(RENDER_DENOMINATOR);
+                denominatorOrNull->editingFinished();
+            }
+        };
+        if (shouldUseCanvas == false)
+        {
+            exercise(*properties);
+        }
+        else
+        {
+            QApplication::processEvents();
+            RenderGraphCanvas& canvas = workspace.GetCanvas();
+            canvas.Rebuild();
+            canvas.RevealNode(identity);
+            QTimer::singleShot(0, &canvas, [&canvas, &exercise, properties]() {
+                QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+                REQUIRE(menuOrNull != nullptr);
+                QAction* editOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+                REQUIRE(editOrNull != nullptr);
+                QTimer::singleShot(0, &canvas, [&exercise, properties]() {
+                    QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                    REQUIRE(dialogOrNull != nullptr);
+                    CHECK(properties->isVisible() == false);
+                    exercise(*dialogOrNull);
+                    dialogOrNull->reject();
+                });
+                menuOrNull->close();
+                editOrNull->trigger();
+            });
+            constexpr int32 HEADER_X = 20;
+            constexpr int32 HEADER_Y = 10;
+            const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(identity) + QPointF(HEADER_X, HEADER_Y));
+            QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+            QApplication::sendEvent(canvas.viewport(), &context);
+        }
+    }
+    const RenderGraphResourceFeedback color = DescribeRenderGraphResource(workspace.GetDocument(),
+                                                                          ROOT,
+                                                                          CONFIGURATION,
+                                                                          QStringLiteral("upscale-color.texture"),
+                                                                          {});
+    const RenderGraphResourceFeedback destination =
+        DescribeRenderGraphResource(workspace.GetDocument(),
+                                    ROOT,
+                                    CONFIGURATION,
+                                    QStringLiteral("upscale-destination.texture"),
+                                    {});
+    CHECK(color.SizeLabel.contains(QStringLiteral("640 × 360")) == true);
+    CHECK(destination.SizeLabel.contains(QStringLiteral("1919 × 1079")) == true);
+    REQUIRE(workspace.Save() == true);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT) == workspace.GetDocument().GetDraft(ROOT));
+}
+
+TEST_CASE("sized preset admission is atomic at graph capacity", "[editor][upscale][sizes]")
+{
+    QJsonArray nodes;
+    for (int32 index = 0; index < RenderGraphDocument::MAX_NODES; ++index)
+    {
+        nodes.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("node%1").arg(index)},
+                                 {QStringLiteral("kind"), QStringLiteral("Scene")}});
+    }
+    QJsonObject configuration{{QStringLiteral("nodes"), nodes}, {QStringLiteral("edges"), QJsonArray{}}};
+    const QJsonObject before = configuration;
+    CHECK(AppendUpscalePreset(configuration, QStringLiteral("fsr-1"), QStringLiteral("upscale")) == false);
+    CHECK(configuration == before);
 }

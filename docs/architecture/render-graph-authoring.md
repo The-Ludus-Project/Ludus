@@ -214,6 +214,29 @@ separate Renderer/RHI adapter before this operation can produce runtime work.
 See [upscaling presets](../development/render-graph-authoring.md#upscaling-presets)
 for the interface, references and editing workflow.
 
+### Output and render size ownership
+
+OutputSize owns final physical image dimensions, either the current drawable or
+fixed offscreen dimensions. RenderSize can explicitly scale that output reference
+with a bounded positive fraction. Native-resolution rendering uses 1/1; upscaling
+presets wire scene attachments at 1/2 and destination storage at full output size.
+Each provider's saved graph record is the settings owner, editable through the
+same controls in Properties and the canvas dialog. Project/build descriptors and
+machine preferences do not duplicate those values.
+
+Both nodes expose the existing RenderSize graph value, including across subgraph
+interfaces. Viewport policies lower to the current runtime view numerator and
+denominator; fixed policies lower to fixed resource extents. Runtime resolution
+uses physical drawable pixels, integer ceil and existing extent limits. No new
+GPU pass or native texture representation is introduced. Existing legacy
+RenderSize records retain their meaning. Output-derived rendering rejects a
+scaled view as its output reference, avoiding hidden chains of rounding.
+
+Upscaling presets add their providers and paired targets as one document/history
+transaction, preserving existing execution paths and capacity-failure rollback.
+They remain authoring-only. See [resolution settings](../development/render-graph-authoring.md#output-and-render-resolution)
+for source examples and configuration controls.
+
 ### Connection domains and supporting operations
 
 The graph retains different connection domains:
