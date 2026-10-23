@@ -161,7 +161,11 @@ appearance; set `LUDUS_SETUP_APPEARANCE=dark` or `light` to choose one, and
 detected. **Enter** chooses the highlighted action (Initialize, Retry or
 Close) and **Esc** cancels or closes. On Linux the window class is
 `ludus-setup` and the process name is `ludus-setup`; on macOS the menu bar and
-Dock show *Ludus Setup* with the Ludus icon.
+Dock show *Ludus Setup* with the Ludus icon. The Dock takes its label from the
+app bundle on disk, so `./init.sh` runs the window from a generated
+`out/init/Ludus Setup.app` whose executable links to the selected framework
+Python's `Python.app`. Without that bundle (`engine.py init` run directly, or a
+Python that is not a framework build) the Dock shows *Python*.
 
 A sudo password prompt still appears in the launching terminal; the window
 shows a notice while it waits. Setup runs in a child `engine.py init --cli`

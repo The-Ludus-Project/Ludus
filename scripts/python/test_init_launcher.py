@@ -3,10 +3,12 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shlex
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -73,13 +75,90 @@ class LauncherTests(unittest.TestCase):
                     init_launcher.select_interpreter(self.root)
 
     def test_launcher_forwards_flags_and_arguments_without_starting_setup_itself(self):
-        with patch.object(init_launcher, "select_interpreter", return_value="/prepared/python"), \
+        with patch.object(init_launcher.platform, "system", return_value="Linux"), \
+                patch.object(init_launcher, "select_interpreter", return_value="/prepared/python"), \
                 patch.object(init_launcher.sys, "argv", ["init_launcher.py", "--gui", "--preset", "macos-clang-debug"]), \
                 patch.object(init_launcher.os, "execv") as execute:
             init_launcher.main()
         executable, arguments = execute.call_args.args
         self.assertEqual(executable, "/prepared/python")
         self.assertEqual(arguments[2:], ["init", "--gui", "--preset", "macos-clang-debug"])
+
+    def test_macos_window_setup_runs_from_named_application(self):
+        with patch.object(init_launcher.platform, "system", return_value="Darwin"), \
+                patch.object(init_launcher, "select_interpreter", return_value="/prepared/python"), \
+                patch.object(init_launcher, "prepare_macos_application", return_value="/app/ludus-setup"), \
+                patch.object(init_launcher.sys, "argv", ["init_launcher.py", "--gui"]), \
+                patch.dict(init_launcher.os.environ, {}, clear=False), \
+                patch.object(init_launcher.os, "execv") as execute:
+            init_launcher.main()
+            launcher = init_launcher.os.environ.get("__PYVENV_LAUNCHER__")
+        executable, arguments = execute.call_args.args
+        self.assertEqual(executable, "/app/ludus-setup")
+        self.assertEqual(arguments[0], "/app/ludus-setup")
+        self.assertEqual(arguments[2:], ["init", "--gui"])
+        self.assertEqual(launcher, "/prepared/python")
+
+    def test_macos_terminal_setup_or_unavailable_application_runs_interpreter(self):
+        for flags, application in ((["--cli"], "/app/ludus-setup"), (["--ci"], "/app/ludus-setup"), ([], None)):
+            with self.subTest(flags=flags, application=application):
+                with patch.object(init_launcher.platform, "system", return_value="Darwin"), \
+                        patch.object(init_launcher, "select_interpreter", return_value="/prepared/python"), \
+                        patch.object(init_launcher, "prepare_macos_application",
+                                     return_value=application) as prepare, \
+                        patch.object(init_launcher.sys, "argv", ["init_launcher.py", *flags]), \
+                        patch.object(init_launcher.os, "execv") as execute:
+                    init_launcher.main()
+                self.assertEqual(execute.call_args.args[0], "/prepared/python")
+                self.assertEqual(prepare.called, flags == [])
+
+    def fake_framework(self, name):
+        prefix = self.root / name / "Python.framework/Versions/3.12"
+        executable = prefix / "Resources/Python.app/Contents/MacOS/Python"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("")
+        return prefix, executable
+
+    def test_application_bundle_names_setup_and_follows_interpreter(self):
+        bundle = self.root / "out/init/Ludus Setup.app/Contents"
+        for name in ("3.12.14", "3.12.15"):
+            with self.subTest(interpreter=name):
+                prefix, target = self.fake_framework(name)
+                with patch.object(init_launcher.subprocess, "run",
+                                  return_value=subprocess.CompletedProcess([], 0, stdout=str(prefix) + "\n")):
+                    executable = init_launcher.prepare_macos_application(self.root, "/prepared/python")
+                self.assertEqual(executable, str(bundle / "MacOS/ludus-setup"))
+                self.assertEqual(os.readlink(executable), str(target))
+                information = plistlib.loads((bundle / "Info.plist").read_bytes())
+                self.assertEqual(information["CFBundleName"], "Ludus Setup")
+                self.assertEqual(information["CFBundleExecutable"], "ludus-setup")
+        self.assertEqual(sorted(path.name for path in (bundle / "MacOS").iterdir()), ["ludus-setup"])
+
+    def test_non_framework_or_broken_interpreter_runs_without_application(self):
+        for result in (subprocess.CompletedProcess([], 0, stdout=str(self.root) + "\n"),
+                       subprocess.CompletedProcess([], 1, stdout=""),
+                       OSError("missing")):
+            with self.subTest(result=result):
+                with patch.object(init_launcher.subprocess, "run") as run:
+                    if isinstance(result, Exception):
+                        run.side_effect = result
+                    else:
+                        run.return_value = result
+                    self.assertIsNone(init_launcher.prepare_macos_application(self.root, "/prepared/python"))
+        self.assertFalse((self.root / "out/init").exists())
+
+    @unittest.skipUnless(platform.system() == "Darwin" and sysconfig.get_config_var("PYTHONFRAMEWORK"),
+                         "requires a macOS framework Python")
+    def test_application_runs_the_selected_interpreter(self):
+        executable = init_launcher.prepare_macos_application(self.root, sys.executable)
+        if executable is None:
+            self.skipTest("this framework Python has no Python.app")
+        environment = os.environ.copy()
+        environment["__PYVENV_LAUNCHER__"] = sys.executable
+        result = subprocess.run([executable, "-I", "-c", "import json,sys; print(json.dumps([sys.executable, sys.prefix]))"],
+                                env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [sys.executable, sys.prefix])
 
     @unittest.skipUnless(shutil.which("bash"), "shell launcher requires bash")
     def test_shell_sdk_choice_survives_actual_python_launcher(self):
