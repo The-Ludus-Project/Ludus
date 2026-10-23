@@ -53,6 +53,8 @@ namespace
 {
 constexpr usize MAX_WINDOWS = 16;
 constexpr uint32 MAX_CONTENT_EXTENT = 16384;
+/// Longest window title, in UTF-8 bytes.
+constexpr usize MAX_WINDOW_NAME_BYTES = 4096;
 constexpr usize MAX_EVENTS_PER_PUMP = 256;
 CocoaWindow* gWindows[MAX_WINDOWS] = {};
 bool gInitialized = false;
@@ -302,7 +304,7 @@ bool Initialize([[maybe_unused]] const WindowManager::InitializeInfo& info) noex
 foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexcept
 {
     if (MainThread() == false || gInitialized == false || info.Width == 0 || info.Height == 0 ||
-        info.Width > MAX_CONTENT_EXTENT || info.Height > MAX_CONTENT_EXTENT || info.Name.size() > 4096)
+        info.Width > MAX_CONTENT_EXTENT || info.Height > MAX_CONTENT_EXTENT || info.Name.size() > MAX_WINDOW_NAME_BYTES)
     {
         return nullptr;
     }

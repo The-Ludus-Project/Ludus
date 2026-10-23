@@ -7,6 +7,15 @@ namespace ludus::audio::content
 {
 namespace
 {
+/// Largest spatial attenuation distance, in world units.
+constexpr float64 MAX_SPATIAL_DISTANCE = 1e30;
+/// Longest retrigger cooldown, in milliseconds (ten minutes).
+constexpr uint64 MAX_COOLDOWN_MILLISECONDS = 600000;
+/// Most variations one sound may declare.
+constexpr usize MAX_SOUND_VARIATIONS = 16;
+/// Initial scratch capacity for writing one sound or music definition, in bytes.
+constexpr usize SOUND_WRITE_SCRATCH_BYTES = 16384;
+constexpr usize MUSIC_WRITE_SCRATCH_BYTES = 4096;
 using ludus::content::JsonValue;
 ContentStatus Bad(Diagnostic& diagnostic, const char* field) noexcept
 {
@@ -68,7 +77,7 @@ bool Common(JsonValue root,
         (void)Bad(diagnostic, "bus");
         return false;
     }
-    if (root.Get("priority").Integer(p) == false || p > 7)
+    if (root.Get("priority").Integer(p) == false || p > PRIORITY_MAX)
     {
         (void)Bad(diagnostic, "priority");
         return false;
@@ -153,8 +162,9 @@ ContentStatus ReadSound(std::string_view json, Sound& output, Diagnostic& diagno
     std::string_view mode;
     if (spatial.Fields({"mode", "min_distance", "max_distance"}) == false ||
         spatial.Get("mode").String(mode) == false || (mode != "point" && mode != "none") ||
-        Number(spatial, "min_distance", next.MinDistance, 0, 1e30) == false ||
-        Number(spatial, "max_distance", next.MaxDistance, 0, 1e30) == false || next.MaxDistance <= next.MinDistance)
+        Number(spatial, "min_distance", next.MinDistance, 0, MAX_SPATIAL_DISTANCE) == false ||
+        Number(spatial, "max_distance", next.MaxDistance, 0, MAX_SPATIAL_DISTANCE) == false ||
+        next.MaxDistance <= next.MinDistance)
     {
         return Bad(diagnostic, "sound.spatial");
     }
@@ -162,14 +172,14 @@ ContentStatus ReadSound(std::string_view json, Sound& output, Diagnostic& diagno
     const auto policy = root.Get("policy");
     uint64 cooldown = 0;
     if (policy.Fields({"cooldown_ms", "suppress_while_active"}) == false ||
-        policy.Get("cooldown_ms").Integer(cooldown) == false || cooldown > 600000 ||
+        policy.Get("cooldown_ms").Integer(cooldown) == false || cooldown > MAX_COOLDOWN_MILLISECONDS ||
         policy.Get("suppress_while_active").Boolean(next.SuppressWhileActive) == false)
     {
         return Bad(diagnostic, "sound.policy");
     }
     next.CooldownMs = static_cast<uint32>(cooldown);
     const auto variations = root.Get("variations");
-    if (variations.Array() == false || variations.Count() == 0 || variations.Count() > 16)
+    if (variations.Array() == false || variations.Count() == 0 || variations.Count() > MAX_SOUND_VARIATIONS)
     {
         return Bad(diagnostic, "sound.variations");
     }
@@ -221,7 +231,7 @@ ContentStatus ReadMusic(std::string_view json, Music& output, Diagnostic& diagno
 ContentStatus WriteSound(const Sound& sound, Bytes& output) noexcept
 {
     Bytes scratch;
-    if (scratch.Resize(16384) == false)
+    if (scratch.Resize(SOUND_WRITE_SCRATCH_BYTES) == false)
     {
         return ContentStatus::OutOfMemory;
     }
@@ -275,7 +285,7 @@ ContentStatus WriteSound(const Sound& sound, Bytes& output) noexcept
 ContentStatus WriteMusic(const Music& music, Bytes& output) noexcept
 {
     Bytes scratch;
-    if (scratch.Resize(4096) == false)
+    if (scratch.Resize(MUSIC_WRITE_SCRATCH_BYTES) == false)
     {
         return ContentStatus::OutOfMemory;
     }
