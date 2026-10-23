@@ -28,6 +28,7 @@
 #include <QNativeGestureEvent>
 #include <QPainterPath>
 #include <QPen>
+#include <QPointingDevice>
 #include <QRubberBand>
 #include <QScrollBar>
 #include <QSet>
@@ -62,6 +63,7 @@ constexpr float64 CURVE_OFFSET = 70;
 constexpr float64 ZOOM_STEP = 1.15;
 constexpr float64 WHEEL_NOTCH = 120;
 constexpr float64 SCROLL_PIXELS_PER_ZOOM_STEP = 40;
+constexpr float64 PAN_PIXELS_PER_WHEEL_NOTCH = 60;
 constexpr float64 MINIMUM_VIEW_SCALE = 0.01;
 constexpr float64 MAXIMUM_VIEW_SCALE = 8;
 constexpr int32 LABEL_POINT_SIZE = 9;
@@ -538,11 +540,13 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     setTransformationAnchor(QGraphicsView::NoAnchor);
     setBackgroundBrush(QColor(28, 31, 36));
     setToolTip(QStringLiteral("Left-drag empty space to box-select · Shift adds to selection · middle-drag or "
-                              "Space+left-drag pans · Copy/Paste reuses node groups · drag nodes to arrange them (one "
+                              "Space+left-drag pans (two-finger scroll on a touchpad) · Copy/Paste reuses node groups "
+                              "· drag nodes to arrange them (one "
                               "undo step per drag) · drag from an output port to an "
                               "input port to connect or replace · right-click nodes, wires or ports to edit · "
                               "Delete removes the selected node or link · double-click a "
-                              "Subgraph to open its source · pinch or scroll to zoom around the pointer"));
+                              "Subgraph to open its source · pinch, wheel or Ctrl+scroll zooms around the pointer · "
+                              "two-finger double-tap frames the graph"));
 }
 
 RenderGraphCanvas::~RenderGraphCanvas()
@@ -1657,8 +1661,7 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
     {
         const QPoint delta = event->position().toPoint() - mPanPosition;
         mPanPosition = event->position().toPoint();
-        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
-        verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+        panBy(delta);
         event->accept();
         return;
     }
@@ -1862,6 +1865,24 @@ void RenderGraphCanvas::focusOutEvent(QFocusEvent* event)
 
 void RenderGraphCanvas::wheelEvent(QWheelEvent* event)
 {
+    // A touchpad has no middle button, so its two-finger scroll pans like middle-drag.
+    // Scroll phases identify macOS/Wayland scroll surfaces; a plain mouse wheel has none.
+    // Ctrl (Command on macOS) zooms from any device, which is also how Windows precision
+    // touchpads commonly deliver pinch.
+    const QPointingDevice* deviceOrNull = event->pointingDevice();
+    const bool isScrollSurface =
+        event->phase() != Qt::NoScrollPhase ||
+        (deviceOrNull != nullptr && deviceOrNull->type() == QInputDevice::DeviceType::TouchPad);
+    if (isScrollSurface == true && event->modifiers().testFlag(Qt::ControlModifier) == false)
+    {
+        const QPoint delta =
+            event->pixelDelta().isNull() == false
+                ? event->pixelDelta()
+                : (QPointF(event->angleDelta()) * (PAN_PIXELS_PER_WHEEL_NOTCH / WHEEL_NOTCH)).toPoint();
+        panBy(delta);
+        event->accept();
+        return;
+    }
     const float64 steps = event->pixelDelta().isNull() == false ? event->pixelDelta().y() / SCROLL_PIXELS_PER_ZOOM_STEP
                                                                 : event->angleDelta().y() / WHEEL_NOTCH;
     zoomAt(math::Pow(ZOOM_STEP, steps), event->position());
@@ -1883,6 +1904,13 @@ bool RenderGraphCanvas::viewportEvent(QEvent* event)
             event->accept();
             return true;
         }
+        if (gesture->gestureType() == Qt::SmartZoomNativeGesture)
+        {
+            // macOS two-finger double-tap: recover from a lost view by framing the graph.
+            fitGraph();
+            event->accept();
+            return true;
+        }
         if (gesture->gestureType() == Qt::BeginNativeGesture || gesture->gestureType() == Qt::EndNativeGesture)
         {
             event->accept();
@@ -1890,6 +1918,13 @@ bool RenderGraphCanvas::viewportEvent(QEvent* event)
         }
     }
     return QGraphicsView::viewportEvent(event);
+}
+
+void RenderGraphCanvas::panBy(QPoint delta)
+{
+    // Content follows the pointer or fingers: a positive delta reveals the left/top.
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
 }
 
 void RenderGraphCanvas::zoomAt(float64 factor, QPointF position)
