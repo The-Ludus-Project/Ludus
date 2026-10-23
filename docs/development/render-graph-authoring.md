@@ -2261,7 +2261,10 @@ and on the Render Graph toolbar (see the
   the active document, including while you edit it in Properties.
   Save writes only changed files, each through an atomic replacement, and first
   checks that disk still holds the bytes that were loaded or last saved. An
-  external change returns a conflict and writes nothing. Graph documents are
+  external change returns a conflict and writes nothing. Template shader directories
+  are created before any changed files are published in an existing package. A
+  blocked or linked parent directory fails Save before graph/manifest references
+  change, leaving the draft available for retry. Graph documents are
   saved in the same canonical form as `ludus render-graph new`.
 
 Closing the project, opening another one or launching a build asks to save or

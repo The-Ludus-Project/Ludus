@@ -219,7 +219,9 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
     inspector->hide();
     properties.hide();
     workspace.show();
-    REQUIRE(workspace.Save() == true); // Existing saved package, with a subsequently unsaved template import.
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    REQUIRE(workspace.IsBuiltIn() == false);
+    REQUIRE(QFileInfo::exists(QDir(workspace.GetDocument().GetPackageRoot()).filePath(ROOT_GRAPH)) == true);
     REQUIRE(workspace.CreateSubgraph(QStringLiteral("raytracing")) == true);
     REQUIRE(workspace.CreateConfiguration(QStringLiteral("RestirDi")) == true);
     RenderGraphDocument& document = workspace.GetDocument();
@@ -368,6 +370,29 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
     RenderGraphDocument reloaded;
     REQUIRE(reloaded.Load(document.GetPackageRoot(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reloaded.GetDraft(library) == afterLibrary);
+    for (const QString& file : document.GetFiles())
+    {
+        INFO(file.toStdString());
+        CHECK(reloaded.GetDraft(file) == document.GetDraft(file));
+    }
+    if (helper.isEmpty() == false && compiler.isEmpty() == false)
+    {
+        RendererWorkspace reopened({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+        reopened.SetProject(project.path(), 2);
+        reopened.SetLivePreview(false);
+        REQUIRE(reopened.IsBuiltIn() == false);
+        RenderGraphBuildSettings settings;
+        settings.ShouldOverrideTools = true;
+        settings.Tools.Helper = helper;
+        settings.Tools.Compiler = compiler;
+        settings.Tools.SpirvCross = qEnvironmentVariable("LUDUS_RESTIR_TEST_TRANSLATOR");
+        reopened.SetBuildSettings(settings);
+        QSignalSpy built(&reopened, &RendererWorkspace::JobFinished);
+        REQUIRE(reopened.Build() == true);
+        REQUIRE(built.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+        INFO(reopened.GetLastResult().Message.toStdString());
+        CHECK(reopened.GetLastResult().IsSuccessful == true);
+    }
     const QString fixture = qEnvironmentVariable("LUDUS_RESTIR_LIBRARY_FIXTURE");
     if (fixture.isEmpty() == false)
     {
@@ -1080,4 +1105,59 @@ TEST_CASE("ReSTIR import rejects a missing declared shader or transitive include
     CHECK(error.contains(missing) == true);
     CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == beforeManifest);
     CHECK(document.GetDraft(library).isEmpty() == true);
+}
+
+TEST_CASE("Nested template shader directories are prepared before saved graph references change",
+          "[editor][render-graph][restir-library][nested-save]")
+{
+    const bool isLinkedDirectory = GENERATE(false, true);
+    QTemporaryDir project;
+    QTemporaryDir outside;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString package = document.GetPackageRoot();
+    const QString manifest = QStringLiteral("main.lushader.json");
+    QFile savedManifest(QDir(package).filePath(manifest));
+    REQUIRE(savedManifest.open(QIODevice::ReadOnly) == true);
+    const QByteArray beforeManifest = savedManifest.readAll();
+    savedManifest.close();
+    QString error;
+    REQUIRE(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("RestirDi"), error) ==
+            RenderGraphDocumentStatus::Ok);
+    const QString parent = QDir(package).filePath(QStringLiteral("restir_di"));
+    if (isLinkedDirectory == true)
+    {
+        REQUIRE(QFile::link(outside.path(), parent) == true);
+    }
+    else
+    {
+        QFile blocker(parent);
+        REQUIRE(blocker.open(QIODevice::WriteOnly | QIODevice::NewOnly) == true);
+        blocker.close();
+    }
+    QStringList saved;
+    const RenderGraphDocumentStatus expected =
+        isLinkedDirectory == true ? RenderGraphDocumentStatus::Conflict : RenderGraphDocumentStatus::WriteFailed;
+    CHECK(document.Save(saved) == expected);
+    CHECK(saved.isEmpty() == true);
+    CHECK(document.GetSaved(manifest) == beforeManifest);
+    REQUIRE(savedManifest.open(QIODevice::ReadOnly) == true);
+    CHECK(savedManifest.readAll() == beforeManifest);
+    savedManifest.close();
+    CHECK(document.IsDirty() == true);
+    CHECK(QFileInfo::exists(QDir(package).filePath(QStringLiteral("RestirDi.lurender.json"))) == false);
+    CHECK(QDir(outside.path()).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty() == true);
+    REQUIRE(QFile::remove(parent) == true);
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    CHECK(QFileInfo::exists(QDir(parent).filePath(QStringLiteral("main_shaders/miss.slang"))) == true);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    for (const QString& file : document.GetFiles())
+    {
+        INFO(file.toStdString());
+        CHECK(reloaded.GetDraft(file) == document.GetDraft(file));
+    }
 }
