@@ -835,7 +835,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         ludus_editor_enable_reference_queries(ludus_editor_tests)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp)
-        target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp)
+        target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
